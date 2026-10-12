@@ -1,6 +1,17 @@
 import Foundation
 import os
 
+/// What the phone can say about the Mac from the DataZone heartbeat.
+public enum DesktopReachability: Equatable, Sendable {
+    /// The heartbeat is under `RelayFeed.heartbeatStaleAfter` old.
+    case reachable
+    /// No heartbeat, an old one, or one that does not read.
+    case unreachable
+    /// The heartbeat is sealed and cannot be opened now: the keychain is
+    /// locked, or the keys for its epoch have not arrived. Never "offline".
+    case keysUnavailable
+}
+
 /// The phone's SINGLE relay consumer (Plan 4 decision 3): owns the persisted
 /// relay-zone change token (`replica_meta`, key `relay_change_token`) and
 /// fans records out in-process —
@@ -22,14 +33,22 @@ import os
 /// left behind by the advancing token.
 ///
 /// Buffer retention: once the token advances, the consumed relay events are
-/// compacted from a `CompactingTransport` (best-effort, logged) — without it
-/// every hub echo would stay in the phone's transport store forever.
+/// compacted through `SecureTransport`'s `CompactingTransport` conformance
+/// (best-effort, logged) — without it every hub echo would stay in the
+/// phone's transport store forever.
+///
+/// Mobile E2E: the feed reads through `SecureTransport`, which opens the
+/// hub's h2p echoes (and the phone's own p2h records) and drops anything
+/// else before routing. A locked keychain makes `changes` throw
+/// `SecureTransportError.keysUnavailable`: the cycle fails with the token
+/// untouched, so the same batch replays after unlock (Review Focus 1). An
+/// older version of an echo already seen is dropped by the rollback guard.
 public actor RelayFeed {
     /// The desktop refreshes its heartbeat every 300 s; the phone shows the
     /// Mac online while the heartbeat is UNDER 720 s old (mobile POC spec §3).
     public static let heartbeatStaleAfter: Duration = .seconds(12 * 60)
 
-    private let transport: any CloudSyncTransport
+    private let transport: SecureTransport
     private let store: ReplicaStore
     private let outbox: ActionOutbox
     /// `RecordingUploader` in the app (wired by AppEnvironment); nil in
@@ -62,7 +81,7 @@ public actor RelayFeed {
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
 
     public init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         store: ReplicaStore,
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
@@ -143,9 +162,8 @@ public actor RelayFeed {
     /// against the hub's own buffer. Hygiene only — a failure is logged and
     /// retried at the next advancing cycle; it never fails this one.
     private func compactConsumedRelay(keepSince token: CloudChangeToken) async {
-        guard let compacting = transport as? any CompactingTransport else { return }
         do {
-            try await compacting.compact(in: .relay, keepSince: token)
+            try await transport.compact(in: .relay, keepSince: token)
         } catch {
             logger.warning("relay-zone compaction failed (will retry next cycle): \(error.localizedDescription, privacy: .public)")
         }
@@ -206,14 +224,24 @@ public actor RelayFeed {
 
     // MARK: - Liveness
 
-    /// True while the last desktop heartbeat is under 720 s old (spec §3);
-    /// false when none was ever seen. `now` is injectable for
-    /// tests and for view models that batch-evaluate against one timestamp.
-    nonisolated public func isDesktopReachable(now: Date = Date()) -> Bool {
-        // A read error means we cannot prove liveness — report unreachable
-        // (try? flattens heartbeatAge's own nil into the same branch).
-        guard let age = try? store.heartbeatAge(now: now) else { return false }
-        return age < Self.heartbeatStaleAfter
+    /// `.reachable` while the last desktop heartbeat is under 720 s old
+    /// (spec §3); `.unreachable` when none was ever seen or it is older;
+    /// `.keysUnavailable` while the sealed heartbeat cannot be opened (a
+    /// locked keychain is not an offline Mac). `now` is injectable for tests
+    /// and for view models that batch-evaluate against one timestamp.
+    nonisolated public func desktopReachability(now: Date = Date()) -> DesktopReachability {
+        let age: Duration?
+        do {
+            age = try store.heartbeatAge(now: now)
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            return .keysUnavailable
+        } catch {
+            // Any other read error: liveness cannot be proven.
+            logger.warning("heartbeat unreadable, the Mac reads as offline: \(String(describing: error), privacy: .public)")
+            return .unreachable
+        }
+        guard let age else { return .unreachable }
+        return age < Self.heartbeatStaleAfter ? .reachable : .unreachable
     }
 
     // MARK: - Poll loop

@@ -703,7 +703,7 @@ final class ReplicaTests: XCTestCase {
         let audio = dir.appendingPathComponent("new.m4a")
         try Data(repeating: 1, count: 16).write(to: audio)
         let ended = Date()
-        let uploader = RecordingUploader(transport: InMemoryCloudTransport(), store: store)
+        let uploader = RecordingUploader(transport: TestE2E.phoneTransport(try TestE2E.phone()), store: store)
         let registered = try await uploader.register(
             fileURL: audio, startedAt: ended.addingTimeInterval(-30), endedAt: ended, titleHint: nil, eventID: "evt-1"
         )
@@ -711,10 +711,11 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.eventID, "evt-1")
     }
 
-    /// A replica written before the overlay kept an echo's reason and result
-    /// opens with its rows intact and the reason, result and echo status
-    /// columns added in place.
-    func testOlderPendingActionsTableGainsReasonAndResult() async throws {
+    /// A replica written before the overlay kept an echo's reason, result,
+    /// echo status and (mobile E2E) wire name gains the columns in place.
+    /// Rewritten for E2E: its rows held plaintext actions for a pre-E2E hub
+    /// (the hard cut removed it), so they are dropped instead of kept.
+    func testOlderPendingActionsTableGainsTheNewColumnsAndDropsPlaintextRows() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-pending-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
@@ -735,17 +736,11 @@ final class ReplicaTests: XCTestCase {
             )
         }
         let store = try ReplicaStore(path: path, opener: TestE2E.opener())
-        let row = try XCTUnwrap(store.pendingActions().first)
-        XCTAssertEqual(row.id, "old")
-        XCTAssertEqual(row.errorMessage, "boom")
-        XCTAssertNil(row.reason)
-        XCTAssertNil(row.result)
-        XCTAssertNil(row.echoStatus)
-
-        try store.markPendingActionFailed(id: "old", errorMessage: "conflict", reason: .conflict, result: ["current": .string("done")])
-        let failed = try XCTUnwrap(ReplicaStore(path: path, opener: TestE2E.opener()).pendingActions().first)
-        XCTAssertEqual(failed.reason, .conflict)
-        XCTAssertEqual(failed.result, ["current": .string("done")])
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+        let columns = try await store.reader.read { db in try db.columns(in: "pending_actions").map(\.name) }
+        XCTAssertTrue(Set(columns).isSuperset(of: ["reason", "result", "echo_status", "wire_name"]), "\(columns)")
+        // A second open leaves the (now current) table alone.
+        XCTAssertTrue(try ReplicaStore(path: path, opener: TestE2E.opener()).pendingActions().isEmpty)
     }
 
     /// A ledger whose CHECK predates the `recording` state is rebuilt with
@@ -780,7 +775,7 @@ final class ReplicaTests: XCTestCase {
 
         let audio = dir.appendingPathComponent("new.m4a")
         try Data(repeating: 1, count: 16).write(to: audio)
-        let uploader = RecordingUploader(transport: InMemoryCloudTransport(), store: store)
+        let uploader = RecordingUploader(transport: TestE2E.phoneTransport(try TestE2E.phone()), store: store)
         let row = try await uploader.beginCapture(fileURL: audio, startedAt: Date(), titleHint: nil, eventID: nil)
         XCTAssertEqual(try store.phoneRecording(id: row.id)?.state, .recording)
 

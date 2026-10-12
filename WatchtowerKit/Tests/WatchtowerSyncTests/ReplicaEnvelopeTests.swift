@@ -481,7 +481,9 @@ final class ReplicaEnvelopeTests: XCTestCase {
         XCTAssertEqual(try store.lastAlertedWatermark(), stamp)
         XCTAssertEqual(try store.phoneRecordings().map(\.id), ["rec-1"])
         XCTAssertEqual(try store.phoneRecordingMarks(id: "rec-1"), [12])
-        XCTAssertEqual(try store.pendingActions().map(\.id), ["a1"])
+        // Mobile E2E Task 9: a pre-E2E overlay row is a plaintext action for a hub the hard cut removed; it is
+        // dropped when the overlay gains `wire_name` (rewritten from "kept").
+        XCTAssertTrue(try store.pendingActions().isEmpty)
         let format = try read(store) { db in
             try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = 'replica_format'")
         }
@@ -511,11 +513,11 @@ final class ReplicaEnvelopeTests: XCTestCase {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         try store.record(wireName: "w1", senderID: TestE2E.hubID, epoch: 1, seq: 5)
 
-        try await ActionOutbox(transport: InMemoryCloudTransport(), store: store) { Date().addingTimeInterval(7 * 86_400) }
+        try await ActionOutbox(transport: TestE2E.phoneTransport(try TestE2E.phone()), store: store) { Date().addingTimeInterval(7 * 86_400) }
             .sweepSilentPending()
         XCTAssertEqual(try store.check(wireName: "w1", senderID: TestE2E.hubID, epoch: 1, seq: 5), .same)
 
-        try await ActionOutbox(transport: InMemoryCloudTransport(), store: store) { Date().addingTimeInterval(9 * 86_400) }
+        try await ActionOutbox(transport: TestE2E.phoneTransport(try TestE2E.phone()), store: store) { Date().addingTimeInterval(9 * 86_400) }
             .sweepSilentPending()
         XCTAssertEqual(try store.check(wireName: "w1", senderID: TestE2E.hubID, epoch: 1, seq: 5), .newer)
     }

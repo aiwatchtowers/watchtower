@@ -116,7 +116,8 @@ public final class ReplicaStore: Sendable {
             let stored = try String.fetchOne(
                 db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.formatKey])
             guard stored != Self.format else { return false }
-            // `pending_actions`, `phone_recordings` (with marks), the alert
+            // `pending_actions` (whose pre-E2E rows the `wire_name` upgrade
+            // below drops), `phone_recordings` (with marks), the alert
             // watermark and `envelope_seq_ceiling` (F29) stay.
             try db.execute(sql: "DROP TABLE IF EXISTS slice_records; DROP TABLE IF EXISTS slice_assets; DROP TABLE IF EXISTS data_seen")
             try db.execute(
@@ -152,7 +153,8 @@ public final class ReplicaStore: Sendable {
                     error_message TEXT,
                     reason TEXT,
                     result BLOB,
-                    echo_status TEXT
+                    echo_status TEXT,
+                    wire_name TEXT
                 );
                 \(Self.phoneRecordingsTableSQL(name: "phone_recordings", ifNotExists: true));
                 CREATE TABLE IF NOT EXISTS phone_recording_marks (
@@ -165,29 +167,50 @@ public final class ReplicaStore: Sendable {
                 \(Self.relaySeenTableSQL);
                 \(Self.dataSeenTableSQL);
                 """)
-            // A replica created before `event_id` existed keeps its ledger:
-            // the column is added in place (CREATE IF NOT EXISTS skipped it).
-            let columns = try db.columns(in: "phone_recordings").map(\.name)
-            if !columns.contains("event_id") {
-                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN event_id TEXT")
-            }
-            if !columns.contains("failure_kind") {
-                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
-            }
-            // The same for an overlay written before it kept an echo's
-            // reason, result and last in-flight status.
-            let pendingColumns = try db.columns(in: "pending_actions").map(\.name)
-            if !pendingColumns.contains("reason") {
-                try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN reason TEXT")
-            }
-            if !pendingColumns.contains("result") {
-                try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN result BLOB")
-            }
-            if !pendingColumns.contains("echo_status") {
-                try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN echo_status TEXT")
-            }
+            try upgradeSidecarColumns(db)
         }
         try upgradePhoneRecordingsStates()
+    }
+
+    /// Columns added to the sidecar tables after they first shipped, added in
+    /// place (CREATE IF NOT EXISTS skips an existing table).
+    private func upgradeSidecarColumns(_ db: Database) throws {
+        // A replica created before `event_id` existed keeps its ledger:
+        // the column is added in place (CREATE IF NOT EXISTS skipped it).
+        let columns = try db.columns(in: "phone_recordings").map(\.name)
+        if !columns.contains("event_id") {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN event_id TEXT")
+        }
+        if !columns.contains("failure_kind") {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
+        }
+        // Mobile E2E: the sealed upload record (kept for every re-send), its wire name, and the sealed file.
+        for (name, type) in [("envelope", "BLOB"), ("wire_name", "TEXT"), ("sealed_path", "TEXT")]
+        where !columns.contains(name) {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN \(name) \(type)")
+        }
+        // The same for an overlay written before it kept an echo's
+        // reason, result and last in-flight status.
+        let pendingColumns = try db.columns(in: "pending_actions").map(\.name)
+        if !pendingColumns.contains("reason") {
+            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN reason TEXT")
+        }
+        if !pendingColumns.contains("result") {
+            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN result BLOB")
+        }
+        if !pendingColumns.contains("echo_status") {
+            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN echo_status TEXT")
+        }
+        // Mobile E2E: `payload` is the sealed envelope sent under `wire_name`. A row from before holds a
+        // plaintext action for a hub the hard cut removed (no echo can ever come): dropped, so no plaintext
+        // action stays at rest.
+        if !pendingColumns.contains("wire_name") {
+            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN wire_name TEXT")
+            try db.execute(sql: "DELETE FROM pending_actions")
+            if db.changesCount > 0 {
+                logger.notice("dropped \(db.changesCount) pre-E2E pending actions")
+            }
+        }
     }
 
     /// The `phone_recordings` ledger. `recording` is a capture still being
@@ -207,7 +230,10 @@ public final class ReplicaStore: Sendable {
                 CHECK(state IN ('recording','waiting','uploading','delivered','failed')),
             error_message TEXT,
             event_id TEXT,
-            failure_kind TEXT
+            failure_kind TEXT,
+            envelope BLOB,
+            wire_name TEXT,
+            sealed_path TEXT
         )
         """
     }
@@ -230,7 +256,8 @@ public final class ReplicaStore: Sendable {
             try db.inTransaction {
                 let columns = """
                     recording_id, file_path, started_at, ended_at, duration_sec,
-                    title_hint, sample_format, state, error_message, event_id, failure_kind
+                    title_hint, sample_format, state, error_message, event_id, failure_kind,
+                    envelope, wire_name, sealed_path
                     """
                 try db.execute(sql: Self.phoneRecordingsTableSQL(name: "phone_recordings_upgrade", ifNotExists: false))
                 try db.execute(sql: "INSERT INTO phone_recordings_upgrade (\(columns)) SELECT \(columns) FROM phone_recordings")

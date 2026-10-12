@@ -65,6 +65,15 @@ public enum TestE2E {
         SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard())
     }
 
+    /// A transport that seals and opens as the paired phone over `inner`: the phone's own p2h envelopes and the
+    /// hub's h2p echoes open, so tests drive the outbox, the uploader and the relay feed exactly as on a device.
+    public static func phoneTransport(
+        _ keys: PhoneKeyProvider,
+        inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()
+    ) -> SecureTransport {
+        SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard())
+    }
+
     /// A plain `device_grant-<deviceID>` record whose payload is the RelayCoder `Keybox` (grant only) the hub seals
     /// as `keybox-<deviceID>`.
     public static func keyboxRecord(deviceID: UUID = deviceID, modifiedAt: Date) throws -> CloudRecord {

@@ -54,6 +54,8 @@ final class AppEnvironment {
     /// by F2's `HubRegistry`): no Mac has zones of this name, so it syncs
     /// nothing.
     nonisolated static let unlinkedHubID = "unlinked"
+    /// The compile-only SecureTransport's hub id until Task 16 wires the linked hub (it must be a UUID).
+    nonisolated static let placeholderHubID = "00000000-0000-0000-0000-000000000000"
 
     let store: ReplicaStore
     let transportKind: TransportKind
@@ -167,7 +169,7 @@ final class AppEnvironment {
     /// fetch loop's wait between cycles. `linkedDevice` is the saved link
     /// (the demo kind is always `DemoSeed.device`).
     init(
-        transport: any CloudSyncTransport,
+        transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
         linkedDevice: LinkedDevice? = nil,
@@ -188,13 +190,24 @@ final class AppEnvironment {
         // Compile-only placeholder (mobile E2E Task 8, F6): the replica now keeps the hub's envelopes and needs
         // the phone's key store, which Task 16 wires (with the SecureTransport and the demo hub). Until then no
         // link material exists, so `apply` refuses every batch and the replica stays empty.
+        let placeholderKeys = InMemoryPhoneKeyStore()
         store = try ReplicaStore(
             path: replicaPath,
             opener: EnvelopeReplicaOpener(
                 hubID: Self.unlinkedHubID,
                 deviceID: device.flatMap { UUID(uuidString: $0.deviceID) } ?? UUID(),
-                keys: InMemoryPhoneKeyStore()
+                keys: placeholderKeys
             )
+        )
+        // Compile-only placeholder (mobile E2E Task 9, F6): the outbox and the uploader seal, and the feed opens,
+        // through a SecureTransport. Task 16 wires the real one (the linked hub's id, the Keychain store, the
+        // persisted seq ceiling). Until then no link material exists, so every seal throws keysUnavailable.
+        let secure = SecureTransport(
+            inner: transport,
+            keys: try PhoneKeyProvider(
+                store: placeholderKeys, hubID: Self.placeholderHubID,
+                seq: SeqAllocator(load: { 0 }, store: { _ in })),
+            rollback: InMemoryRollbackGuard()
         )
 
         // On the live path the hydrator nudges the CKSyncEngine before each
@@ -204,7 +217,7 @@ final class AppEnvironment {
             .map { cloud in { @Sendable in try await cloud.pull() } }
         let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull)
         self.hydrator = hydrator
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: device?.deviceID)
+        let outbox = ActionOutbox(transport: secure, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
         boardWriter = BoardWriter.sending(through: outbox, store: store)
@@ -220,7 +233,7 @@ final class AppEnvironment {
             }
         }
         let uploader = RecordingUploader(
-            transport: transport,
+            transport: secure,
             store: store,
             directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
             deviceID: device?.deviceID
@@ -228,7 +241,7 @@ final class AppEnvironment {
         self.uploader = uploader
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
         feed = RelayFeed(
-            transport: transport,
+            transport: secure,
             store: store,
             outbox: outbox,
             uploads: uploader,

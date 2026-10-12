@@ -16,17 +16,27 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
         }
     }
 
-    private func makeFeed(
-        transport: InMemoryCloudTransport,
-        store: ReplicaStore,
-        uploads: (any RecordingUploadAcking)?
-    ) -> RelayFeed {
-        RelayFeed(
-            transport: transport,
+    /// The paired test phone's feed and the test hub over one in-memory zone; the hub seals its verdicts to the
+    /// phone named in the payload's `device_id`.
+    private struct Stack {
+        let phone: SecureTransport
+        let hub: SecureTransport
+        let store: ReplicaStore
+        let feed: RelayFeed
+    }
+
+    private func makeStack(uploads: (any RecordingUploadAcking)?) throws -> Stack {
+        let inner = InMemoryCloudTransport()
+        let keys = try TestE2E.phoneStore()
+        let phone = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: inner)
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let feed = RelayFeed(
+            transport: phone,
             store: store,
-            outbox: ActionOutbox(transport: transport, store: store, deviceID: "D1"),
+            outbox: ActionOutbox(transport: phone, store: store, deviceID: TestE2E.deviceID.uuidString),
             uploads: uploads
         )
+        return Stack(phone: phone, hub: TestE2E.hubTransport(inner: inner), store: store, feed: feed)
     }
 
     private func uploadRecord(
@@ -40,7 +50,8 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
             endedAt: base.addingTimeInterval(60),
             durationSec: 60,
             titleHint: nil,
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            deviceID: TestE2E.deviceID.uuidString
         )
         payload.status = status
         payload.errorMessage = errorMessage
@@ -48,16 +59,14 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
     }
 
     func testHubVerdictsRouteToTheSeam() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploads = CapturingUploads()
-        let feed = makeFeed(transport: transport, store: store, uploads: uploads)
+        let stack = try makeStack(uploads: uploads)
 
-        try await transport.save([
+        try await stack.hub.save([
             try uploadRecord(id: "R1", status: .received),
             try uploadRecord(id: "R2", status: .failed, errorMessage: "no asset")
         ])
-        let result = try await feed.pollOnce()
+        let result = try await stack.feed.pollOnce()
 
         XCTAssertEqual(result, 2)
         let routed = await uploads.echoes
@@ -66,13 +75,11 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
     }
 
     func testOwnPendingSaveIsSkipped() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploads = CapturingUploads()
-        let feed = makeFeed(transport: transport, store: store, uploads: uploads)
+        let stack = try makeStack(uploads: uploads)
 
-        try await transport.save([try uploadRecord(id: "R1", status: .pending)])
-        let result = try await feed.pollOnce()
+        try await stack.phone.save([try uploadRecord(id: "R1", status: .pending)])
+        let result = try await stack.feed.pollOnce()
 
         XCTAssertEqual(result, 0)
         let routed = await uploads.echoes
@@ -80,16 +87,14 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
     }
 
     func testMissingUploaderSkipsWithoutWedgingTheToken() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let feed = makeFeed(transport: transport, store: store, uploads: nil)
+        let stack = try makeStack(uploads: nil)
 
-        try await transport.save([try uploadRecord(id: "R1", status: .received)])
-        _ = try await feed.pollOnce()
+        try await stack.hub.save([try uploadRecord(id: "R1", status: .received)])
+        _ = try await stack.feed.pollOnce()
 
         // The token advanced past the skipped record: an empty follow-up
         // poll routes nothing and the stored token matches the zone head.
-        let token = try XCTUnwrap(try store.relayToken())
+        let token = try XCTUnwrap(try stack.store.relayToken())
         XCTAssertEqual(token.value, 1)
     }
 }

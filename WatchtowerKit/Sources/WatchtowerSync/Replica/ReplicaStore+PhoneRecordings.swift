@@ -51,6 +51,18 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     /// Set with a `failed` state for a local failure; nil otherwise.
     public let failure: LocalFailure?
 
+    /// Mobile E2E: the sealed audio (`<id>.enc`, by name inside the
+    /// recordings folder like `storedPath`); nil until the recording is
+    /// sealed. Once set, the plain file at `storedPath` is gone.
+    public internal(set) var sealedPath: String?
+    /// The sealed upload record (envelope bytes) and the wire name it travels
+    /// under, made once at sealing and re-sent unchanged by every retry.
+    var envelope: Data?
+    var wireName: String?
+
+    /// Whether the upload record is sealed and ready to send.
+    var isSealed: Bool { envelope != nil && wireName != nil && sealedPath != nil }
+
     /// Retry is offered for a failure the Mac or the network caused. A local
     /// failure that a retry can only repeat (the file is gone, too large,
     /// or not recoverable) offers none.
@@ -60,10 +72,19 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
 
     /// The audio file, resolved against the CURRENT recordings folder.
     public func fileURL(in directory: URL?) -> URL {
-        if let directory, !storedPath.hasPrefix("/") {
-            return directory.appendingPathComponent(storedPath)
+        Self.resolve(storedPath, in: directory)
+    }
+
+    /// The sealed audio, resolved like `fileURL(in:)`; nil before sealing.
+    public func sealedFileURL(in directory: URL?) -> URL? {
+        sealedPath.map { Self.resolve($0, in: directory) }
+    }
+
+    private static func resolve(_ path: String, in directory: URL?) -> URL {
+        if let directory, !path.hasPrefix("/") {
+            return directory.appendingPathComponent(path)
         }
-        return URL(fileURLWithPath: storedPath)
+        return URL(fileURLWithPath: path)
     }
 }
 
@@ -94,7 +115,10 @@ extension ReplicaStore {
                 state: state,
                 errorMessage: row["error_message"],
                 eventID: row["event_id"],
-                failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:))
+                failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:)),
+                sealedPath: row["sealed_path"],
+                envelope: row["envelope"],
+                wireName: row["wire_name"]
             )
         }
     }
@@ -191,6 +215,23 @@ extension ReplicaStore {
                 sql: "UPDATE phone_recordings SET state = ?, error_message = ?, failure_kind = ? WHERE recording_id = ?",
                 arguments: [state.rawValue, errorMessage, failure?.rawValue, id]
             )
+        }
+    }
+
+    /// Records a recording's seal in one update: the envelope, its wire name
+    /// and the sealed file. Only an unsealed row takes it (a second seal of
+    /// the same recording would send a different envelope); returns whether
+    /// this call sealed the row.
+    func setPhoneRecordingSealed(id: String, envelope: Data, wireName: String, sealedPath: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET envelope = ?, wire_name = ?, sealed_path = ?
+                    WHERE recording_id = ? AND envelope IS NULL
+                    """,
+                arguments: [envelope, wireName, sealedPath, id]
+            )
+            return db.changesCount > 0
         }
     }
 

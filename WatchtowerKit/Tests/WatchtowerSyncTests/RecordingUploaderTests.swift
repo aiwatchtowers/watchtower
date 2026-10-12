@@ -9,8 +9,11 @@ import XCTest
 final class RecordingUploaderTests: XCTestCase {
     private static let deviceID = "device-a"
     private var dir: URL!
+    /// The paired test phone's key store, shared by every transport and replica of one test.
+    private var phoneKeys: InMemoryPhoneKeyStore!
 
     override func setUpWithError() throws {
+        phoneKeys = try TestE2E.phoneStore()
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("recording-uploader-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -26,10 +29,29 @@ final class RecordingUploaderTests: XCTestCase {
         return url
     }
 
+    /// The paired phone's transport over `inner`: it seals what the uploader sends and opens its own records.
+    private func phone(_ inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()) throws -> SecureTransport {
+        TestE2E.phoneTransport(try TestE2E.phone(store: phoneKeys), inner: inner)
+    }
+
+    private func makeStore() throws -> ReplicaStore {
+        try ReplicaStore.inMemory(opener: TestE2E.opener(store: phoneKeys))
+    }
+
+    /// The opaque name an upload record travels under (what an inner transport sees).
+    private func wire(_ id: String) throws -> String {
+        try phone().wireName(plain: "recupload-\(id)", zone: .relay)
+    }
+
+    private func sealedFile(_ id: String, in folder: URL? = nil) -> URL {
+        (folder ?? dir).appendingPathComponent("\(id).enc")
+    }
+
     private func makeStack(
-        transport: any CloudSyncTransport = InMemoryCloudTransport()
-    ) throws -> (RecordingUploader, ReplicaStore, any CloudSyncTransport) {
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        transport inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()
+    ) throws -> (RecordingUploader, ReplicaStore, SecureTransport) {
+        let store = try makeStore()
+        let transport = try phone(inner)
         return (RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID), store, transport)
     }
 
@@ -81,20 +103,23 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(sent, 1)
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
 
-        // The relay record carries the asset and a pending payload.
+        // The relay record carries the sealed asset and a pending payload.
+        let sealed = sealedFile(recording.id)
         let batch = try await transport.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first { $0.recordName == "recupload-\(recording.id)" })
         XCTAssertEqual(record.kind, "recording_upload")
-        XCTAssertEqual(record.assetFileURL, file)
+        XCTAssertEqual(record.assetFileURL, sealed)
+        XCTAssertNotNil(record.asset, "the asset descriptor rides inside the envelope")
         let payload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
         XCTAssertEqual(payload.status, .pending)
         XCTAssertEqual(payload.durationSec, 120)
 
-        // Hub ack: received → delivered, and ONLY now the local file goes.
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        // Hub ack: received → delivered, and ONLY now the sealed copy goes.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "no plaintext audio left after sealing")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path))
     }
 
     // MARK: - Degenerate captures
@@ -129,8 +154,8 @@ final class RecordingUploaderTests: XCTestCase {
     // MARK: - Retry paths
 
     func testRelaunchResendsUndeliveredUploads() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let file = try makeAudioFile()
 
         let first = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
@@ -166,8 +191,8 @@ final class RecordingUploaderTests: XCTestCase {
         _ = try await uploader.uploadPending()
 
         let saves = await spy.savedNames
-        XCTAssertEqual(saves.filter { $0 == "recupload-\(first.id)" }.count, 1)
-        XCTAssertEqual(saves.filter { $0 == "recupload-\(second.id)" }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == (try? self.wire(first.id)) }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == (try? self.wire(second.id)) }.count, 1)
     }
 
     /// Two passes that overlap (a capture's stop while the launch pass is
@@ -190,28 +215,28 @@ final class RecordingUploaderTests: XCTestCase {
         _ = try await passB.value
 
         let saves = await spy.savedNames
-        XCTAssertEqual(saves.filter { $0 == "recupload-\(first.id)" }.count, 1)
-        XCTAssertEqual(saves.filter { $0 == "recupload-\(second.id)" }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == (try? self.wire(first.id)) }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == (try? self.wire(second.id)) }.count, 1)
     }
 
     /// The launch pass of a new process re-sends an `uploading` row once —
     /// the relaunch retry — and later passes leave it alone.
     func testTheLaunchPassResendsAnUploadingRowOnce() async throws {
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let store = try makeStore()
+        let before = RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
 
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        let relaunched = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID)
         let launch = try await relaunched.uploadPending()
         let later = try await relaunched.uploadPending()
 
         XCTAssertEqual(launch, 1)
         XCTAssertEqual(later, 0)
         let saves = await spy.savedNames
-        XCTAssertEqual(saves, ["recupload-\(recording.id)"])
+        XCTAssertEqual(saves, [try wire(recording.id)])
     }
 
     /// A launch pass that exits by throwing (a store write failing after a
@@ -219,14 +244,14 @@ final class RecordingUploaderTests: XCTestCase {
     /// the `uploading` row instead of stranding it until the next launch
     /// (final-review P1-M1). The store's failure seam is an SQLite trigger.
     func testALaunchPassThatThrowsKeepsTheInFlightResendArmed() async throws {
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let store = try makeStore()
+        let before = RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
 
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        let relaunched = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID)
         try await store.writer.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_state BEFORE UPDATE ON phone_recordings
@@ -243,25 +268,25 @@ final class RecordingUploaderTests: XCTestCase {
 
         XCTAssertEqual(retried, 1, "the uploading row is re-sent by the next pass")
         let saves = await spy.savedNames
-        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+        XCTAssertEqual(saves, [try wire(recording.id), try wire(recording.id)])
     }
 
     /// The launch pass waits for a link: a pass without a device sends
     /// nothing and does not use up the re-send of in-flight rows.
     func testTheLaunchResendWaitsForALinkedDevice() async throws {
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let store = try makeStore()
+        let before = RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
 
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: nil)
+        let relaunched = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: nil)
         _ = try await relaunched.uploadPending()
         await relaunched.setDeviceID(Self.deviceID)
         _ = try await relaunched.uploadPending()
 
         let saves = await spy.savedNames
-        XCTAssertEqual(saves, ["recupload-\(recording.id)"])
+        XCTAssertEqual(saves, [try wire(recording.id)])
     }
 
     /// A wiped transport store lost its send queue: the next pass re-sends
@@ -278,7 +303,7 @@ final class RecordingUploaderTests: XCTestCase {
         _ = try await uploader.uploadPending()
 
         let saves = await spy.savedNames
-        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+        XCTAssertEqual(saves, [try wire(recording.id), try wire(recording.id)])
     }
 
     /// Polls `condition` until it holds or `timeout` passes (then throws).
@@ -300,7 +325,9 @@ final class RecordingUploaderTests: XCTestCase {
         let sent = try await uploader.uploadPending()
         XCTAssertEqual(sent, 0)
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .waiting)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        // Sealed before the save: the sealed copy is the one kept for the next pass.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        XCTAssertNotNil(try store.phoneRecording(id: recording.id)?.envelope)
     }
 
     func testVanishedLocalFileFailsRowLocally() async throws {
@@ -324,8 +351,8 @@ final class RecordingUploaderTests: XCTestCase {
         var row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.state, .failed)
         XCTAssertEqual(row.errorMessage, "disk full")
-        // The local file survives a failed ingest — it is the only copy.
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        // The local (sealed) file survives a failed ingest — it is the only copy.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
 
         try await uploader.retryFailed(id: recording.id)
         row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
@@ -359,7 +386,7 @@ final class RecordingUploaderTests: XCTestCase {
         _ = try await uploader.uploadPending()
         try await uploader.applyEcho(echo(for: recording, status: .pending))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
     }
 
     func testLateFailedEchoNeverDowngradesDelivered() async throws {
@@ -376,7 +403,7 @@ final class RecordingUploaderTests: XCTestCase {
 
     private func uploadedPayload(
         _ recording: PhoneRecording,
-        transport: any CloudSyncTransport
+        transport: SecureTransport
     ) async throws -> (RecordingUploadPayload, [String: Any]) {
         let batch = try await transport.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first { $0.recordName == "recupload-\(recording.id)" })
@@ -415,8 +442,8 @@ final class RecordingUploaderTests: XCTestCase {
     }
 
     func testNothingIsSentWithoutALinkedDevice() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let uploader = RecordingUploader(transport: transport, store: store)
         let recording = try await register(uploader, file: try makeAudioFile())
 
@@ -435,8 +462,8 @@ final class RecordingUploaderTests: XCTestCase {
     /// upload waits locally instead of failing at the hub as
     /// `device_not_linked` (final-review P2-M5).
     func testABlankDeviceIDLeavesUploadsWaiting() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let viaInit = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: "")
         let recording = try await register(viaInit, file: try makeAudioFile())
         let viaSetter = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID)
@@ -491,8 +518,8 @@ final class RecordingUploaderTests: XCTestCase {
     }
 
     func testOversizedAssetFailsLocallyWithoutSending() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let uploader = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID, maxAssetBytes: 32)
         let file = try makeAudioFile(bytes: 64)
         let recording = try await register(uploader, file: file)
@@ -656,7 +683,7 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.offersRetry, true)
 
         let small = RecordingUploader(
-            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID, maxAssetBytes: 1
+            transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID, maxAssetBytes: 1
         )
         let big = try await register(small, file: try makeAudioFile(name: "big.m4a"))
         _ = try await small.uploadPending()
@@ -674,8 +701,8 @@ final class RecordingUploaderTests: XCTestCase {
 
     /// The uploader of a new process over the same replica: it has begun
     /// no capture, so every `recording` row is a capture cut short.
-    private func relaunched(_ store: ReplicaStore) -> RecordingUploader {
-        RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+    private func relaunched(_ store: ReplicaStore) throws -> RecordingUploader {
+        RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID)
     }
 
     // MARK: - Relative paths (iOS may move the container)
@@ -712,7 +739,8 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertTrue(removed.isEmpty, "a moved container must not look like orphans")
         XCTAssertEqual(sent, 2)
         let assets = try await transport.changes(in: .relay, since: nil).changed.compactMap(\.assetFileURL)
-        XCTAssertEqual(Set(assets.map(\.lastPathComponent)), ["saved.m4a", "stranded.m4a"])
+        XCTAssertEqual(Set(assets.map(\.lastPathComponent)), ["\(saved.id).enc", "\(stranded.id).enc"])
+        XCTAssertEqual(Set(assets.map { $0.deletingLastPathComponent().standardizedFileURL }), [moved.standardizedFileURL])
         XCTAssertTrue(assets.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
         XCTAssertEqual(try store.phoneRecording(id: saved.id)?.state, .uploading)
     }
@@ -720,8 +748,8 @@ final class RecordingUploaderTests: XCTestCase {
     /// A row written by an older build holds an absolute path into the old
     /// container. It is rewritten to the bare name and found in the new one.
     func testALegacyAbsolutePathIsMovedToTheCurrentFolder() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         XCTAssertTrue(legacy.storedPath.hasPrefix("/"))
@@ -739,8 +767,8 @@ final class RecordingUploaderTests: XCTestCase {
     /// it still resolves a legacy row against the CURRENT folder, so the
     /// delivered audio is deleted, not leaked in the moved container.
     func testAnEchoBeforeAnyOtherCallUsesTheMigratedPath() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         let moved = try moveFolder()
@@ -756,8 +784,8 @@ final class RecordingUploaderTests: XCTestCase {
     /// The owner's delete can come first too: it removes the file from
     /// the current folder.
     func testADiscardBeforeAnyOtherCallUsesTheMigratedPath() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = try phone()
+        let store = try makeStore()
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         let moved = try moveFolder()
@@ -827,6 +855,197 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(try store.phoneRecording(id: recording.id)).offersRetry, "a Mac failure's text never decides")
     }
 
+    // MARK: - Sealing (mobile E2E: sealed at finalization, the same envelope re-sent)
+
+    /// A capture that finished and was finalized: `finishCapture` leaves the plain audio `waiting`.
+    private func finishedCapture(_ uploader: RecordingUploader, bytes: Data) async throws -> (PhoneRecording, URL) {
+        let file = dir.appendingPathComponent("capture-\(UUID().uuidString).m4a")
+        let started = Date()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: started, titleHint: "Design sync", eventID: nil)
+        try bytes.write(to: file)
+        let finished = try await uploader.finishCapture(
+            id: row.id, endedAt: started.addingTimeInterval(60), activeDuration: 60, titleHint: "Design sync", eventID: nil)
+        return (try XCTUnwrap(finished), file)
+    }
+
+    func testSealPendingEncryptsTheFileDeletesThePlainAudioAndStoresTheEnvelope() async throws {
+        let (uploader, store, _) = try makeStack()
+        let audio = Data((0 ..< 3_000).map { UInt8($0 % 251) })
+        let (recording, file) = try await finishedCapture(uploader, bytes: audio)
+
+        let sealedCount = try await uploader.sealPending()
+
+        XCTAssertEqual(sealedCount, 1)
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .waiting, "sealed, not yet sent")
+        XCTAssertEqual(row.sealedPath, "\(recording.id).enc")
+        let sealed = sealedFile(recording.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the plain audio is gone")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
+        XCTAssertNotEqual(try Data(contentsOf: sealed), audio)
+
+        // The stored envelope opens at the hub to the upload record, whose descriptor decrypts the sealed file.
+        let envelope = try XCTUnwrap(row.envelope)
+        let wireName = try XCTUnwrap(row.wireName)
+        XCTAssertEqual(wireName, try wire(recording.id))
+        let zone = InMemoryCloudTransport()
+        try await zone.save([CloudRecord(
+            recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: envelope,
+            assetFileURL: sealed)])
+        let hubView = try await TestE2E.hubTransport(inner: zone).changes(in: .relay, since: nil)
+        let opened = try XCTUnwrap(hubView.changed.first)
+        XCTAssertEqual(opened.recordName, "recupload-\(recording.id)")
+        let payload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: opened.payload)
+        XCTAssertEqual(payload.id, recording.id)
+        XCTAssertEqual(payload.deviceID, Self.deviceID)
+        let decrypted = dir.appendingPathComponent("decrypted.m4a")
+        try ChunkedAssetCipher.decryptFile(at: sealed, to: decrypted, descriptor: try XCTUnwrap(opened.asset))
+        XCTAssertEqual(try Data(contentsOf: decrypted), audio)
+    }
+
+    func testSealPendingWhileLockedKeepsThePlainFileAndSealsAfterUnlock() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 7, count: 128))
+
+        phoneKeys.isLocked = true
+        let lockedSeal = try await uploader.sealPending()
+        let lockedSend = try await uploader.uploadPending()
+
+        XCTAssertEqual(lockedSeal, 0)
+        XCTAssertEqual(lockedSend, 0)
+        let waiting = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(waiting.state, .waiting)
+        XCTAssertNil(waiting.envelope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the only copy stays until it is sealed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        let savedWhileLocked = await spy.saves
+        XCTAssertTrue(savedWhileLocked.isEmpty)
+
+        phoneKeys.isLocked = false
+        let sent = try await uploader.uploadPending()
+
+        XCTAssertEqual(sent, 1)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+    }
+
+    /// Review Focus 2: the relaunch retry sends the stored envelope and the same sealed file, never a re-seal
+    /// (a re-seal would carry a new nonce and seq, and the hub would see a different record version).
+    func testRelaunchRetryResendsTheStoredEnvelopeByteForByte() async throws {
+        let spy = SpyTransport()
+        let store = try makeStore()
+        let first = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID)
+        let (recording, _) = try await finishedCapture(first, bytes: Data(repeating: 3, count: 2_048))
+        let firstPass = try await first.uploadPending()
+        XCTAssertEqual(firstPass, 1)
+
+        let relaunched = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID)
+        let resent = try await relaunched.uploadPending()
+
+        XCTAssertEqual(resent, 1)
+        let saves = await spy.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertEqual(saves.map(\.name), [try wire(recording.id), try wire(recording.id)])
+        XCTAssertEqual(saves[0].payload, saves[1].payload, "the identical envelope bytes")
+        XCTAssertNotNil(saves[0].asset)
+        XCTAssertEqual(saves[0].asset, saves[1].asset, "the identical sealed asset")
+    }
+
+    func testRetryAfterAFailedEchoReusesTheEnvelope() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 9, count: 512))
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "disk full"))
+
+        try await uploader.retryFailed(id: recording.id)
+
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+        let saves = await spy.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertEqual(saves[0], saves[1], "Retry re-sends the stored envelope and sealed file")
+    }
+
+    /// The cap is the spec's 90 MB of audio: the plain size decides, before sealing adds its tags.
+    func testTheNinetyMBCapIsCheckedOnThePlainSizeBeforeSealing() async throws {
+        let store = try makeStore()
+        let atCap = RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID, maxAssetBytes: 64)
+        let fits = try await register(atCap, file: try makeAudioFile(name: "fits.m4a", bytes: 64))
+        let sent = try await atCap.uploadPending()
+        XCTAssertEqual(sent, 1, "64 plain bytes fit a 64-byte cap although the sealed file is larger")
+        XCTAssertEqual(try store.phoneRecording(id: fits.id)?.state, .uploading)
+
+        let underCap = RecordingUploader(transport: try phone(), store: store, directory: dir, deviceID: Self.deviceID, maxAssetBytes: 63)
+        let over = try await register(underCap, file: try makeAudioFile(name: "over.m4a", bytes: 64))
+        let sealedCount = try await underCap.sealPending()
+        XCTAssertEqual(sealedCount, 0)
+        let row = try XCTUnwrap(try store.phoneRecording(id: over.id))
+        XCTAssertEqual(row.failure, .tooLarge)
+        XCTAssertNil(row.envelope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("over.m4a").path), "the only copy is kept")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(over.id).path), "nothing is sealed past the cap")
+    }
+
+    func testReceivedDeletesTheSealedFile() async throws {
+        let (uploader, store, _) = try makeStack()
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 1, count: 256))
+        _ = try await uploader.uploadPending()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+
+        try await uploader.applyEcho(echo(for: recording, status: .received))
+
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// A kill between the seal's row update and the plain file's delete leaves both: the sweep keeps the sealed
+    /// copy and deletes the plain leftover, so no plaintext stays at rest.
+    func testTheSweepKeepsTheSealedFileAndDeletesAPlainLeftover() async throws {
+        let (uploader, _, _) = try makeStack()
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 2, count: 256))
+        _ = try await uploader.sealPending()
+        try Data(repeating: 2, count: 256).write(to: file)
+
+        let removed = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(removed.map(\.lastPathComponent), [file.lastPathComponent])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+    }
+
+    /// `sealPending` is public and a pass seals too: overlapping calls seal each recording once, and no call
+    /// overwrites or deletes another's sealed file.
+    func testOverlappingSealCallsSealEachRecordingOnce() async throws {
+        let (uploader, store, _) = try makeStack()
+        var ids: [String] = []
+        for byte in UInt8(1) ... 3 {
+            ids.append(try await finishedCapture(uploader, bytes: Data(repeating: byte, count: 4_096)).0.id)
+        }
+
+        async let first = uploader.sealPending()
+        async let second = uploader.sealPending()
+        let (a, b) = try await (first, second)
+
+        XCTAssertEqual(a + b, 3)
+        for id in ids {
+            XCTAssertNotNil(try store.phoneRecording(id: id)?.envelope, id)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(id).path), id)
+        }
+    }
+
+    func testDiscardRemovesTheSealedFile() async throws {
+        let (uploader, store, _) = try makeStack()
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 256))
+        _ = try await uploader.sealPending()
+
+        try await uploader.discard(id: recording.id)
+
+        XCTAssertNil(try store.phoneRecording(id: recording.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+    }
+
     // MARK: - Discard
 
     func testDiscardRemovesRowAndFile() async throws {
@@ -855,7 +1074,15 @@ private struct EventuallyTimedOut: Error {}
 /// Transport that records every saved record name and, when told to,
 /// holds each save until `release()` — the overlapping-pass branch.
 private actor SpyTransport: CloudSyncTransport {
+    struct Save: Equatable {
+        let name: String
+        let payload: Data
+        /// The asset file's bytes when it was saved.
+        let asset: Data?
+    }
+
     private(set) var savedNames: [String] = []
+    private(set) var saves: [Save] = []
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
 
@@ -872,6 +1099,9 @@ private actor SpyTransport: CloudSyncTransport {
 
     func save(_ records: [CloudRecord]) async throws {
         savedNames += records.map(\.recordName)
+        saves += records.map { record in
+            Save(name: record.recordName, payload: record.payload, asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) })
+        }
         if holding {
             await withCheckedContinuation { held.append($0) }
         }
