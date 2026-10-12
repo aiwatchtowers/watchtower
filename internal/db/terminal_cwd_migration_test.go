@@ -16,9 +16,9 @@ func TestMigration00110_AddsTheCwdColumns(t *testing.T) {
 	}
 	pid := newTestWorkbench(t, d)
 	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-	s := storedSession(t, d, id)
-	if s.Cwd != "" || !s.CwdAt.IsZero() {
-		t.Fatalf("a fresh row reads cwd %q at %v, want empty and zero", s.Cwd, s.CwdAt)
+	s := storedCwd(t, d, id)
+	if s.Path != "" || !s.At.IsZero() {
+		t.Fatalf("a fresh row reads cwd %q at %v, want empty and zero", s.Path, s.At)
 	}
 }
 
@@ -61,12 +61,12 @@ func TestMigration00110_DownDropsAndReUpRestores(t *testing.T) {
 	if !cols["agent_cwd"] || !cols["agent_cwd_at"] {
 		t.Fatal("re-Up did not restore the cwd columns")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "" || !s.CwdAt.IsZero() {
-		t.Fatalf("re-Up cwd = %q at %v, want NULL", s.Cwd, s.CwdAt)
+	if s := storedCwd(t, d, id); s.Path != "" || !s.At.IsZero() {
+		t.Fatalf("re-Up cwd = %q at %v, want NULL", s.Path, s.At)
 	}
 }
 
-func TestGetTerminalSessionReadsTheCwd(t *testing.T) {
+func TestTerminalAgentCwdReadsTheCwd(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
@@ -75,16 +75,16 @@ func TestGetTerminalSessionReadsTheCwd(t *testing.T) {
 		at.Format(agentStateAtLayout), id); err != nil {
 		t.Fatal(err)
 	}
-	s := storedSession(t, d, id)
-	if s.Cwd != "/tmp/wb" || !s.CwdAt.Equal(at) {
-		t.Fatalf("cwd = %q at %v, want /tmp/wb at %v", s.Cwd, s.CwdAt, at)
+	s := storedCwd(t, d, id)
+	if s.Path != "/tmp/wb" || !s.At.Equal(at) {
+		t.Fatalf("cwd = %q at %v, want /tmp/wb at %v", s.Path, s.At, at)
 	}
 
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_cwd_at = 'yesterday' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	s = storedSession(t, d, id)
-	if s.Cwd != "/tmp/wb" || !s.CwdAt.IsZero() {
-		t.Fatalf("an unreadable stamp read as %v (cwd %q), want zero time", s.CwdAt, s.Cwd)
+	s = storedCwd(t, d, id)
+	if s.Path != "/tmp/wb" || !s.At.IsZero() {
+		t.Fatalf("an unreadable stamp read as %v (cwd %q), want zero time", s.At, s.Path)
 	}
 }

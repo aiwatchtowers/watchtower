@@ -383,15 +383,15 @@ func TestSessionStartRecordsTheRunsCwd(t *testing.T) {
 		assert.Empty(t, errOut)
 		s, err := database.GetTerminalSession(row)
 		require.NoError(t, err)
-		assert.Equal(t, wt, s.Cwd)
-		assert.True(t, s.CwdAt.Equal(s.AgentStateAt), "stamped with the run mark")
+		assert.Equal(t, wt, storedCwd(t, database, row).Path)
+		assert.True(t, storedCwd(t, database, row).At.Equal(s.AgentStateAt), "stamped with the run mark")
 
 		_, errOut = runBriefHook(t, pid, withCwd(t, hookPayload("clear", briefClearedID), "/tmp/elsewhere"))
 		assert.Empty(t, errOut)
 		s, err = database.GetTerminalSession(row)
 		require.NoError(t, err)
 		assert.Equal(t, briefClearedID, s.ClaudeSessionID.String)
-		assert.Equal(t, wt, s.Cwd, "/clear keeps the run's cwd")
+		assert.Equal(t, wt, storedCwd(t, database, row).Path, "/clear keeps the run's cwd")
 	})
 	t.Run("no state hooks", func(t *testing.T) {
 		database, pid, row := briefSessionFixture(t)
@@ -402,9 +402,28 @@ func TestSessionStartRecordsTheRunsCwd(t *testing.T) {
 
 		_, errOut := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
 		assert.Empty(t, errOut)
-		s, err := database.GetTerminalSession(row)
-		require.NoError(t, err)
-		assert.Empty(t, s.Cwd, "no hook of this run will report a cwd")
-		assert.True(t, s.CwdAt.IsZero())
+		assert.Empty(t, storedCwd(t, database, row).Path, "no hook of this run will report a cwd")
+		assert.True(t, storedCwd(t, database, row).At.IsZero())
 	})
+}
+
+// Board #566 review: a run whose SessionStart reported no cwd leaves
+// agent_cwd_at NULL; a late async hook of the previous run (stamped before
+// the run mark) still records no cwd, a hook of the new run does.
+func TestSessionStartWithoutCwdKeepsALateHooksCwdOut(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	installBriefStateHooks(t, database, pid)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+
+	at(10)
+	_, errOut := runBriefHook(t, pid, withCwd(t, hookPayload("startup", briefLaunchID), ""))
+	require.Empty(t, errOut)
+	require.Empty(t, storedCwd(t, database, row).Path)
+
+	hookStep(t, database, pid, row, at, 5, withCwd(t, toolResultPayload("toolu_old", "/tmp/x.jsonl"), "/tmp/old"))
+	assert.Empty(t, storedCwd(t, database, row).Path, "the previous run's late hook recorded its cwd")
+
+	hookStep(t, database, pid, row, at, 15, withCwd(t, toolResultPayload("toolu_new", "/tmp/x.jsonl"), "/tmp/new"))
+	assert.Equal(t, "/tmp/new", storedCwd(t, database, row).Path, "the new run's hook")
 }

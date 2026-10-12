@@ -388,10 +388,10 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 		if turn.stop && turn.background.Valid {
 			reportErr = writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil)
 		}
-		return errors.Join(reportErr, recordCwdAlone(database, row, workbenchID, sessionID, turn.cwd, at))
+		return errors.Join(reportErr, recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at))
 	case onlyFrom != "" && row.AgentState.String != onlyFrom,
 		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt) && !stopEndsToolRun(row, turn):
-		return recordCwdAlone(database, row, workbenchID, sessionID, turn.cwd, at)
+		return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
 	}
 	return writeAgentState(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn)
 }
@@ -407,7 +407,7 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 		if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
 			// The ended turn's tool result: no state, but its cwd is the
 			// agent's.
-			return recordCwdAlone(database, row, workbenchID, sessionID, turn.cwd, at)
+			return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
 		}
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
@@ -417,7 +417,7 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 	if err == nil && !written {
 		// A guard held the write back after the read (a racing hook): the
 		// cwd still goes, under its own guards.
-		return recordCwdAlone(database, row, workbenchID, sessionID, turn.cwd, at)
+		return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
 	}
 	if err != nil || !turn.toolRun || row.AgentState.String != agentStateWaiting {
 		return err
@@ -425,18 +425,23 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 	return clearChatQuestion(database, row, workbenchID, sessionID, at)
 }
 
-// recordCwdAlone records cwd when no state write carries it (board #566):
-// only when it differs from the row's and is reported after the row's
-// (read first, so the common case — the same folder — never waits for the
-// write lock); SetTerminalAgentCwd repeats both guards. "" writes nothing.
-func recordCwdAlone(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, cwd string, at time.Time) error {
-	if cwd == "" || cwd == row.Cwd || (!row.CwdAt.IsZero() && !at.After(row.CwdAt)) {
+// recordCwdAlone records cwd on row rowID when no state write carries it
+// (board #566): only when it differs from the row's, is reported after the
+// row's and not before the run mark (AgentCwd.WouldRecord; read first, so
+// the common case — the same folder — never waits for the write lock);
+// SetTerminalAgentCwd repeats the guards. "" writes nothing.
+func recordCwdAlone(database *db.DB, rowID, workbenchID int64, sessionID, cwd string, at time.Time) error {
+	if cwd == "" {
 		return nil
+	}
+	stored, err := database.TerminalAgentCwd(rowID)
+	if err != nil || !stored.WouldRecord(cwd, at) {
+		return err
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err := setTerminalAgentCwd(database, row.ID, workbenchID, sessionID, cwd, at)
+	_, err = setTerminalAgentCwd(database, rowID, workbenchID, sessionID, cwd, at)
 	return err
 }
 

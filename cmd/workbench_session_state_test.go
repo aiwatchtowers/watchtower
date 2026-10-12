@@ -356,9 +356,7 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			}
 			if tc.name != "deleted row" {
 				assert.Equal(t, tc.wantState, storedAgentState(t, database, row))
-				s, err := database.GetTerminalSession(row)
-				require.NoError(t, err)
-				assert.Equal(t, tc.wantCwd, s.Cwd, "the recorded cwd")
+				assert.Equal(t, tc.wantCwd, storedCwd(t, database, row).Path, "the recorded cwd")
 			}
 			if tc.name == "repeat is a no-op" {
 				s, err := database.GetTerminalSession(row)
@@ -398,9 +396,7 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 	assert.Empty(t, errOut)
 
 	assert.Equal(t, "working", storedAgentState(t, database, row))
-	s, err := database.GetTerminalSession(row)
-	require.NoError(t, err)
-	assert.Equal(t, "/tmp/acme", s.Cwd, "the nested run moved the cwd")
+	assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "the nested run moved the cwd")
 
 	// Board #411: over a counted `waiting`, the nested run's SubagentStop and
 	// its subagent's tool result neither lower nor stamp the count.
@@ -1500,6 +1496,14 @@ func fixtureInput(t *testing.T, file string, replace ...string) string {
 // hookStep runs one hook input at second sec of the hook clock — the sync
 // Stop hook for a Stop, `workbench session-state` otherwise — and returns the
 // row after it.
+// storedCwd is row's recorded working directory (board #566).
+func storedCwd(t *testing.T, database *db.DB, row int64) db.AgentCwd {
+	t.Helper()
+	cwd, err := database.TerminalAgentCwd(row)
+	require.NoError(t, err)
+	return cwd
+}
+
 func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec int, input string) *db.TerminalSession {
 	t.Helper()
 	at(sec)
@@ -2090,13 +2094,13 @@ func TestProj11_CwdNeverChangesTheState(t *testing.T) {
 	}
 	for i, step := range steps {
 		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-		s := hookStep(t, database, pid, row, at, i+1, step.input)
+		hookStep(t, database, pid, row, at, i+1, step.input)
 		t.Setenv(terminalSessionEnv, strconv.FormatInt(twin, 10))
 		hookStep(t, database, pid, twin, at, i+1, withCwd(t, step.input, ""))
 
 		assert.Equal(t, withoutCwdColumns(t, database, twin), withoutCwdColumns(t, database, row),
 			"%s: the cwd changed the state write", step.name)
-		assert.Equal(t, step.wantCwd, s.Cwd, step.name)
+		assert.Equal(t, step.wantCwd, storedCwd(t, database, row).Path, step.name)
 	}
 }
 
@@ -2126,9 +2130,7 @@ func TestProj11_UnchangedCwdWritesNothing(t *testing.T) {
 
 	sessionStateStep(t, pid, withCwd(t, toolResultPayload("toolu_x", "/tmp/x.jsonl"), "/tmp/acme/sub"))
 	assert.Equal(t, 1, calls, "a changed cwd is written alone")
-	s, err := database.GetTerminalSession(row)
-	require.NoError(t, err)
-	assert.Equal(t, "/tmp/acme/sub", s.Cwd)
+	assert.Equal(t, "/tmp/acme/sub", storedCwd(t, database, row).Path)
 }
 
 // PROJ-11, board #566: a subagent or teammate may work in its own worktree;
@@ -2146,7 +2148,7 @@ func TestProj11_SubagentCwdIsNeverRecorded(t *testing.T) {
 
 	s := hookStep(t, database, pid, row, at, 3, withCwd(t, subagentToolResult(briefLaunchID), other))
 	assert.Equal(t, "working", s.AgentState.String, "the subagent's tool result clears approval")
-	assert.Equal(t, "/tmp/acme", s.Cwd, "over approval")
+	assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "over approval")
 
 	countedWaiting(t, database, pid, row, at, 4, subagents("a1b2c3"))
 	for i, input := range []string{
@@ -2155,7 +2157,7 @@ func TestProj11_SubagentCwdIsNeverRecorded(t *testing.T) {
 		subagentStop("aalpha-1", "alpha", subagents("a1b2c3")),
 		subagentStop("a1b2c3", "general-purpose", "[]"),
 	} {
-		s = hookStep(t, database, pid, row, at, 5+i, withCwd(t, input, other))
-		assert.Equal(t, "/tmp/acme", s.Cwd, "input %d", i)
+		hookStep(t, database, pid, row, at, 5+i, withCwd(t, input, other))
+		assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "input %d", i)
 	}
 }

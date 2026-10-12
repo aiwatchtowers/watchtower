@@ -399,6 +399,16 @@ func writeResult(t *testing.T) func(bool, error) bool {
 }
 
 // storedSession reads row id, failing the test on an error.
+// storedCwd is row id's recorded working directory (board #566).
+func storedCwd(t *testing.T, d *DB, id int64) AgentCwd {
+	t.Helper()
+	cwd, err := d.TerminalAgentCwd(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cwd
+}
+
 func storedSession(t *testing.T, d *DB, id int64) *TerminalSession {
 	t.Helper()
 	s, err := d.GetTerminalSession(id)
@@ -1002,6 +1012,23 @@ func TestGetTerminalSessionNeedsNoAgentTurnsColumn(t *testing.T) {
 	}
 	if _, err := d.GetTerminalSession(id); err != nil {
 		t.Fatalf("GetTerminalSession on a 00107 schema: %v", err)
+	}
+}
+
+// Board #566 review: GetTerminalSession never reads agent_cwd or
+// agent_cwd_at either (TerminalAgentCwd does), so the readers that open a
+// database without migrating it keep working on a database without 00110.
+func TestGetTerminalSessionNeedsNoCwdColumns(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	for _, col := range []string{"agent_cwd_at", "agent_cwd"} {
+		if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession on a pre-00110 schema: %v", err)
 	}
 }
 
@@ -1821,8 +1848,8 @@ func TestProj11_CwdWriteNeverTouchesTheState(t *testing.T) {
 		if a, b := rowExcept(t, d, plain, cwdRowSkip...), rowExcept(t, d, withCwd, cwdRowSkip...); a != b {
 			t.Fatalf("%s: the cwd changed the state write:\n%s\n%s", tc.name, a, b)
 		}
-		if s := storedSession(t, d, withCwd); s.Cwd != "/tmp/wb" || !s.CwdAt.Equal(at) {
-			t.Fatalf("%s: cwd = %q at %v, want /tmp/wb at %v", tc.name, s.Cwd, s.CwdAt, at)
+		if s := storedCwd(t, d, withCwd); s.Path != "/tmp/wb" || !s.At.Equal(at) {
+			t.Fatalf("%s: cwd = %q at %v, want /tmp/wb at %v", tc.name, s.Path, s.At, at)
 		}
 	}
 
@@ -1851,8 +1878,8 @@ func TestProj11_OlderCwdNeverOverwritesANewerOne(t *testing.T) {
 	}
 	requireCwd := func(what string) {
 		t.Helper()
-		if s := storedSession(t, d, id); s.Cwd != "/b" || !s.CwdAt.Equal(newer) {
-			t.Fatalf("%s: cwd = %q at %v, want /b at %v", what, s.Cwd, s.CwdAt, newer)
+		if s := storedCwd(t, d, id); s.Path != "/b" || !s.At.Equal(newer) {
+			t.Fatalf("%s: cwd = %q at %v, want /b at %v", what, s.Path, s.At, newer)
 		}
 	}
 	if w(d.SetTerminalAgentCwd(id, pid, agentStateUUID, "/a", t0.Add(time.Second))) {
@@ -1899,8 +1926,8 @@ func TestSetTerminalAgentCwdWritesOnlyAChange(t *testing.T) {
 	if !w(d.SetTerminalAgentCwd(id, pid, agentStateUUID, "/b", t0)) {
 		t.Fatal("an unreadable stamp blocked the cwd")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "/b" || !s.CwdAt.Equal(t0) {
-		t.Fatalf("cwd = %q at %v, want /b at %v", s.Cwd, s.CwdAt, t0)
+	if s := storedCwd(t, d, id); s.Path != "/b" || !s.At.Equal(t0) {
+		t.Fatalf("cwd = %q at %v, want /b at %v", s.Path, s.At, t0)
 	}
 }
 
@@ -1926,8 +1953,8 @@ func TestSetTerminalAgentCwdRowGuards(t *testing.T) {
 			t.Fatalf("%s: the cwd wrote", tc.name)
 		}
 	}
-	if s := storedSession(t, d, id); s.Cwd != "" {
-		t.Fatalf("cwd = %q, want none", s.Cwd)
+	if s := storedCwd(t, d, id); s.Path != "" {
+		t.Fatalf("cwd = %q, want none", s.Path)
 	}
 }
 
@@ -1940,14 +1967,14 @@ func TestRunMarkStoresTheRunsCwdClearRemovesIt(t *testing.T) {
 	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0, "/tmp/wb")) {
 		t.Fatal("the run mark did not write")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "/tmp/wb" || !s.CwdAt.Equal(t0) {
-		t.Fatalf("after the mark: cwd = %q at %v, want /tmp/wb at %v", s.Cwd, s.CwdAt, t0)
+	if s := storedCwd(t, d, id); s.Path != "/tmp/wb" || !s.At.Equal(t0) {
+		t.Fatalf("after the mark: cwd = %q at %v, want /tmp/wb at %v", s.Path, s.At, t0)
 	}
 	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(time.Second), "")) {
 		t.Fatal("the second run mark did not write")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "" || !s.CwdAt.IsZero() {
-		t.Fatalf("a run with no cwd kept %q at %v", s.Cwd, s.CwdAt)
+	if s := storedCwd(t, d, id); s.Path != "" || !s.At.IsZero() {
+		t.Fatalf("a run with no cwd kept %q at %v", s.Path, s.At)
 	}
 
 	// A row holding only a cwd still has something to clear.
@@ -1958,8 +1985,8 @@ func TestRunMarkStoresTheRunsCwdClearRemovesIt(t *testing.T) {
 	if !w(d.ClearTerminalAgentState(id, pid, agentStateUUID)) {
 		t.Fatal("the clear did not write")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "" || !s.CwdAt.IsZero() {
-		t.Fatalf("the clear kept %q at %v", s.Cwd, s.CwdAt)
+	if s := storedCwd(t, d, id); s.Path != "" || !s.At.IsZero() {
+		t.Fatalf("the clear kept %q at %v", s.Path, s.At)
 	}
 }
 
@@ -1975,7 +2002,41 @@ func TestConversationSwitchKeepsTheCwd(t *testing.T) {
 	if !w(d.SetTerminalClaudeSessionID(id, pid, "new")) {
 		t.Fatal("the switch did not write")
 	}
-	if s := storedSession(t, d, id); s.Cwd != "/tmp/wb" || !s.CwdAt.Equal(t0) {
-		t.Fatalf("the switch moved the cwd: %q at %v", s.Cwd, s.CwdAt)
+	if s := storedCwd(t, d, id); s.Path != "/tmp/wb" || !s.At.Equal(t0) {
+		t.Fatalf("the switch moved the cwd: %q at %v", s.Path, s.At)
+	}
+}
+
+// Board #566 review: a run mark with no cwd leaves agent_cwd_at NULL; a
+// cwd reported before the mark (a late async hook of the previous run) is
+// still refused — alone or riding in a state write — and one at or after it
+// is recorded.
+func TestProj11_LateHookOfThePreviousRunWritesNoCwd(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0, "")) {
+		t.Fatal("the run mark did not write")
+	}
+	early := t0.Add(-time.Second)
+	if stored := storedCwd(t, d, id); !stored.RunStart.Equal(t0) || stored.WouldRecord("/old", early) {
+		t.Fatalf("run start %v, WouldRecord(early) = %v; want %v and false",
+			stored.RunStart, stored.WouldRecord("/old", early), t0)
+	}
+	if w(d.SetTerminalAgentCwd(id, pid, agentStateUUID, "/old", early)) {
+		t.Fatal("a cwd from before the run mark wrote")
+	}
+	order := AgentOrder{Stop: true, Cwd: "/old"}
+	_, _ = d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", early, "", nil, false, order)
+	if s := storedCwd(t, d, id); s.Path != "" || !s.At.IsZero() {
+		t.Fatalf("the previous run's cwd landed: %q at %v", s.Path, s.At)
+	}
+	if !w(d.SetTerminalAgentCwd(id, pid, agentStateUUID, "/new", t0)) {
+		t.Fatal("a cwd at the run mark did not write")
+	}
+	if s := storedCwd(t, d, id); s.Path != "/new" || !s.At.Equal(t0) {
+		t.Fatalf("cwd = %q at %v, want /new at %v", s.Path, s.At, t0)
 	}
 }

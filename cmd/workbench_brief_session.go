@@ -116,12 +116,12 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID, cwd
 	if err != nil {
 		return err
 	}
-	writes, hooksErr := planSessionStart(database, row, workbenchID, sessionID, switches, newRun)
+	writes, planErr := planSessionStart(database, row, workbenchID, sessionID, switches, newRun)
 	writes.cwd = cwd
 	if err := writes.apply(database, rowID, workbenchID, sessionID); err != nil {
-		return errors.Join(err, hooksErr)
+		return errors.Join(err, planErr)
 	}
-	return hooksErr
+	return planErr
 }
 
 // sessionStartWrites is what a SessionStart hook writes on its row.
@@ -132,9 +132,9 @@ type sessionStartWrites struct {
 
 // planSessionStart decides the writes for row. A nested `claude -p`
 // (another id, no switch) owns no run of the row and is not even asked
-// about the hooks; a failed read of the hooks neither marks nor clears,
-// but the id still moves (board #160) and the error is returned with the
-// plan.
+// about the hooks; a failed read of the hooks (or of the cwd a clear
+// decides on) neither marks nor clears, but the id still moves (board #160)
+// and the error is returned with the plan.
 func planSessionStart(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID string,
 	switches, newRun bool) (sessionStartWrites, error) {
 	moveID := switches && row.ClaudeSessionID.String != sessionID
@@ -145,13 +145,25 @@ func planSessionStart(database *db.DB, row *db.TerminalSession, workbenchID int6
 	if err != nil {
 		return sessionStartWrites{moveID: moveID}, fmt.Errorf("reading the workbench's state hooks: %w", err)
 	}
-	return sessionStartWrites{moveID: moveID, markRun: hooks, clearState: !hooks && hasRunState(row)}, nil
+	if hooks {
+		return sessionStartWrites{moveID: moveID, markRun: true}, nil
+	}
+	clearState, err := hasRunState(database, row)
+	return sessionStartWrites{moveID: moveID, clearState: clearState}, err
 }
 
 // hasRunState says the row keeps anything of a run: a state, its stamp, a
-// turn order or a working directory.
-func hasRunState(row *db.TerminalSession) bool {
-	return row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun || row.Cwd != ""
+// turn order or a working directory (read apart, TerminalAgentCwd, only
+// when the row holds nothing else).
+func hasRunState(database *db.DB, row *db.TerminalSession) (bool, error) {
+	if row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun {
+		return true, nil
+	}
+	cwd, err := database.TerminalAgentCwd(row.ID)
+	if err != nil {
+		return false, fmt.Errorf("reading the row's working directory: %w", err)
+	}
+	return cwd.Path != "" || !cwd.At.IsZero(), nil
 }
 
 // apply makes the writes, the id move first so the mark's or the clear's

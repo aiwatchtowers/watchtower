@@ -375,13 +375,13 @@ func TestStopHookRecordsTheCwd(t *testing.T) {
 
 	s := hookStep(t, database, pid, row, at, 1, withCwd(t, stopPayload("/tmp/x.jsonl"), wt))
 	assert.Equal(t, "waiting", s.AgentState.String)
-	assert.Equal(t, wt, s.Cwd)
-	assert.True(t, s.CwdAt.Equal(s.AgentStateAt), "the cwd rides in the state write")
+	assert.Equal(t, wt, storedCwd(t, database, row).Path)
+	assert.True(t, storedCwd(t, database, row).At.Equal(s.AgentStateAt), "the cwd rides in the state write")
 
 	s = hookStep(t, database, pid, row, at, 2, stopPayload("/tmp/x.jsonl"))
-	assert.Equal(t, "/tmp/acme", s.Cwd, "a repeated waiting records the cwd alone")
-	assert.True(t, s.CwdAt.After(s.AgentStateAt), "the state's time kept")
+	assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "a repeated waiting records the cwd alone")
+	assert.True(t, storedCwd(t, database, row).At.After(s.AgentStateAt), "the state's time kept")
 
-	s = hookStep(t, database, pid, row, at, 3, withCwd(t, stopPayload("/tmp/x.jsonl"), "acme"))
-	assert.Equal(t, "/tmp/acme", s.Cwd, "a relative cwd is ignored")
+	hookStep(t, database, pid, row, at, 3, withCwd(t, stopPayload("/tmp/x.jsonl"), "acme"))
+	assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "a relative cwd is ignored")
 }
