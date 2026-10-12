@@ -5,13 +5,19 @@ import Security
 /// The device id in the Keychain (`kSecClassGenericPassword`, this device
 /// only, readable after the first unlock), created on first use.
 ///
-/// Only a confirmed "no entry" (`errSecItemNotFound`) mints a new id. Any
-/// other read status — `errSecInteractionNotAllowed` when a push launches
-/// the app before the first unlock, or anything unexpected — throws
-/// `DeviceIDKeychain.Unavailable` instead: a new id would make this phone a
-/// stranger to its Mac (actions fail `device_not_linked`, the grant is
-/// another device's). The boot then waits for protected data and retries
-/// (`WatchtowerMobileApp.Boot.waitingForUnlock`).
+/// The read decides, in order:
+/// - an id in the Keychain is the id;
+/// - `errSecItemNotFound`: the id kept in `UserDefaults` (an earlier
+///   Keychain refused the write), else a new one;
+/// - `errSecInteractionNotAllowed` (a push launch before the first unlock):
+///   `Unavailable`, locked — the boot waits for protected data
+///   (`WatchtowerMobileApp.Boot.waitingForUnlock`) and retries;
+/// - any other status: the id kept in `UserDefaults` when there is one
+///   (a Keychain that refused the write may refuse the read too), else
+///   `Unavailable`, shown by `BootFailureView`.
+/// A new id is minted only on a confirmed "no entry": it would make this
+/// phone a stranger to its Mac (actions fail `device_not_linked`, the grant
+/// is another device's).
 enum DeviceIDKeychain {
     /// The Keychain could not say whether a device id is stored.
     struct Unavailable: LocalizedError, Equatable {
@@ -46,18 +52,20 @@ enum DeviceIDKeychain {
     static let fallbackKey = "device.id"
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceIDKeychain")
 
-    /// The stored id; on a confirmed "no entry", the id kept in `fallback`
-    /// (an earlier Keychain refused the write), else a new one saved now. A
-    /// Keychain that refuses the write keeps the id in `fallback` (lost on
-    /// reinstall) instead. Throws `Unavailable` when the read neither found
-    /// an id nor confirmed there is none.
+    /// The device id, by the order above. A Keychain that refuses the write
+    /// of a new id keeps it in `fallback` (lost on reinstall) instead.
     static func deviceID(fallback: UserDefaults, access: Access = .live) throws -> String {
         switch access.read() {
         case let .found(stored):
             return stored
         case let .failed(status):
+            let unavailable = Unavailable(status: status)
+            if !unavailable.isLocked, let kept = fallback.string(forKey: fallbackKey) {
+                logger.warning("keychain read failed (\(status, privacy: .public)); using the id kept in defaults")
+                return kept
+            }
             logger.error("keychain read failed (\(status, privacy: .public)); not minting a new device id")
-            throw Unavailable(status: status)
+            throw unavailable
         case .notFound:
             break
         }

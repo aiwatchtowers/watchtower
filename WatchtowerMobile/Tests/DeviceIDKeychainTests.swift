@@ -83,6 +83,30 @@ final class DeviceIDKeychainTests: XCTestCase {
         XCTAssertTrue(keychain.added.isEmpty)
     }
 
+    /// Review F4/F5: an id an older build kept in defaults (its Keychain
+    /// refused the write) is still this phone's id when the read fails for
+    /// any reason other than the lock.
+    func testAnotherReadFailureUsesTheIDKeptInDefaults() throws {
+        let defaults = try makeDefaults()
+        defaults.set("device-kept", forKey: DeviceIDKeychain.fallbackKey)
+        for status in [errSecMissingEntitlement, errSecNotAvailable, errSecDecode] {
+            let keychain = FakeKeychain(read: .failed(status))
+
+            XCTAssertEqual(try DeviceIDKeychain.deviceID(fallback: defaults, access: keychain.access), "device-kept", "status \(status)")
+            XCTAssertTrue(keychain.added.isEmpty)
+        }
+    }
+
+    func testALockedKeychainWaitsEvenWithAnIDKeptInDefaults() throws {
+        let defaults = try makeDefaults()
+        defaults.set("device-kept", forKey: DeviceIDKeychain.fallbackKey)
+        let keychain = FakeKeychain(read: .failed(errSecInteractionNotAllowed))
+
+        XCTAssertThrowsError(try DeviceIDKeychain.deviceID(fallback: defaults, access: keychain.access)) { error in
+            XCTAssertEqual((error as? DeviceIDKeychain.Unavailable)?.isLocked, true)
+        }
+    }
+
     func testALockedKeychainAtBootWaitsForTheUnlockAndAnotherFailureShowsIt() {
         let locked = WatchtowerMobileApp.Boot.make(processEnvironment: [:]) {
             throw DeviceIDKeychain.Unavailable(status: errSecInteractionNotAllowed)

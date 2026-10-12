@@ -94,20 +94,7 @@ struct WatchtowerMobileApp: App {
             case let .failed(message):
                 BootFailureView(message: message)
             case .waitingForUnlock:
-                // A background launch may draw nothing until the owner opens
-                // the app, by when the notification has passed: the first
-                // appearance retries too.
-                Color.clear
-                    .task {
-                        if UIApplication.shared.isProtectedDataAvailable {
-                            boot = Boot.make()
-                        }
-                    }
-                    .onReceive(NotificationCenter.default.publisher(
-                        for: UIApplication.protectedDataDidBecomeAvailableNotification
-                    )) { _ in
-                        boot = Boot.make()
-                    }
+                WaitingForUnlockView { boot = Boot.make() }
             case .hostingTests:
                 Color.clear
             }
@@ -124,6 +111,37 @@ struct BootFailureView: View {
             Label("Watchtower can't start", systemImage: "externaldrive.badge.xmark")
         } description: {
             Text("The on-device database could not be opened.\n\(message)")
+        }
+    }
+}
+
+/// The boot while the Keychain is locked (`Boot.waitingForUnlock`): asks
+/// for the unlock and retries the boot until it gets past the lock. It
+/// retries on `protectedDataDidBecomeAvailable`, and every
+/// `retryInterval` while protected data is available: a background launch
+/// may draw nothing until the owner opens the app, by when the
+/// notification has passed, and a retry that is still locked out leaves
+/// this view up, so the loop tries again.
+struct WaitingForUnlockView: View {
+    static let retryInterval: Duration = .seconds(2)
+    let retry: @MainActor () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Unlock your iPhone to continue", systemImage: "lock")
+        } description: {
+            Text("Watchtower starts once this iPhone is unlocked.")
+        }
+        .task {
+            while !Task.isCancelled {
+                if UIApplication.shared.isProtectedDataAvailable {
+                    retry()
+                }
+                try? await Task.sleep(for: Self.retryInterval)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            retry()
         }
     }
 }
