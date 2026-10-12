@@ -167,7 +167,7 @@ const (
 	codexBashToolCall = "exec-00000000-0000-4000-8000-000000000004"
 )
 
-func codexFixture(t *testing.T, name string) []byte {
+func codexHookFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", name+".json"))
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestParseHookEvent_CodexFixtures(t *testing.T) {
 	require.Len(t, files, len(codexFixtureWants), "every Task 0 fixture has a want")
 	for name, want := range codexFixtureWants {
 		t.Run(name, func(t *testing.T) {
-			ev, err := parseHookEvent(agentkind.Codex, codexFixture(t, name))
+			ev, err := parseHookEvent(agentkind.Codex, codexHookFixture(t, name))
 			require.NoError(t, err)
 			assert.Equal(t, want, ev)
 			assert.False(t, ev.BackgroundTasks.present, "codex has no background_tasks")
@@ -223,7 +223,7 @@ func TestParseHookEvent_CodexFixtures(t *testing.T) {
 
 // A Codex payload that carried Claude-only fields still leaves them empty.
 func TestParseHookEvent_CodexDropsClaudeOnlyFields(t *testing.T) {
-	raw := strings.Replace(string(codexFixture(t, "stop")), `"stop_hook_active": false,`,
+	raw := strings.Replace(string(codexHookFixture(t, "stop")), `"stop_hook_active": false,`,
 		`"stop_hook_active": false, "background_tasks": [{"id":"a1","type":"subagent"}],`+
 			` "notification_type": "permission_prompt", "error": "rate_limit",`, 1)
 	require.Contains(t, raw, "background_tasks")
@@ -266,7 +266,7 @@ func TestParseHookEvent_NonJSONIsNoop(t *testing.T) {
 }
 
 func TestParseHookEvent_UnknownEventIsNoop(t *testing.T) {
-	raw := strings.Replace(string(codexFixture(t, "session_end")), `"SessionEnd"`, `"PreCompact"`, 1)
+	raw := strings.Replace(string(codexHookFixture(t, "session_end")), `"SessionEnd"`, `"PreCompact"`, 1)
 
 	ev, err := parseHookEvent(agentkind.Codex, []byte(raw))
 
@@ -288,7 +288,7 @@ func TestParseHookEvent_UnknownEventIsNoop(t *testing.T) {
 
 func TestParseHookEvent_MissingSessionIDIsNoWrite(t *testing.T) {
 	var fields map[string]any
-	require.NoError(t, json.Unmarshal(codexFixture(t, "user_prompt_submit"), &fields))
+	require.NoError(t, json.Unmarshal(codexHookFixture(t, "user_prompt_submit"), &fields))
 	delete(fields, "session_id")
 	raw, err := json.Marshal(fields)
 	require.NoError(t, err)
@@ -317,6 +317,6 @@ func TestParseHookEvent_MissingSessionIDIsNoWrite(t *testing.T) {
 }
 
 func TestParseHookEvent_UnknownAgentIsAnError(t *testing.T) {
-	_, err := parseHookEvent("shell", codexFixture(t, "stop"))
+	_, err := parseHookEvent("shell", codexHookFixture(t, "stop"))
 	assert.ErrorContains(t, err, "unknown agent")
 }

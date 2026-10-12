@@ -159,7 +159,7 @@ func TestCodexHook_WithoutItsRowWritesNothing(t *testing.T) {
 	deleted := insertHookRow(t, database, pid, "codex")
 	_, err := database.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, deleted)
 	require.NoError(t, err)
-	stop := strings.ReplaceAll(string(codexFixture(t, "stop")), codexTUISession, briefLaunchID)
+	stop := strings.ReplaceAll(string(codexHookFixture(t, "stop")), codexTUISession, briefLaunchID)
 	before := rowSnapshot(t, database, claude)
 	for _, env := range []struct{ name, value string }{
 		{"another kind", strconv.FormatInt(claude, 10)},
@@ -186,7 +186,7 @@ func TestCodexHook_OnItsRowDecodesAndWritesNothingYet(t *testing.T) {
 	codex := insertHookRow(t, database, pid, "codex")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(codex, 10))
 	before := rowSnapshot(t, database, codex)
-	inputs := []string{"", "not json", string(codexFixture(t, "stop")), string(codexFixture(t, "user_prompt_submit"))}
+	inputs := []string{"", "not json", string(codexHookFixture(t, "stop")), string(codexHookFixture(t, "user_prompt_submit"))}
 	for _, hook := range codexHookCommands[1:] {
 		for _, in := range inputs {
 			out, errOut := runCodexHook(t, in, hook.args...)
@@ -208,7 +208,7 @@ func TestCodexHook_BriefIsTheRowsWorkbench(t *testing.T) {
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(codex, 10))
 	before := rowSnapshot(t, database, codex)
 
-	out, errOut := runCodexHook(t, string(codexFixture(t, "session_start_startup")), "brief", "--agent", "codex")
+	out, errOut := runCodexHook(t, string(codexHookFixture(t, "session_start_startup")), "brief", "--agent", "codex")
 
 	assert.Contains(t, out, "Watchtower workbench #"+strconv.FormatInt(pid, 10))
 	assert.Contains(t, out, "watchtower-workbench", "the current vocabulary")
