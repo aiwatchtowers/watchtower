@@ -258,4 +258,42 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(rows[1].chatQuestionAt)
         }
     }
+
+    // MARK: - Agent cwd (board #565)
+
+    func testFetchAgentCwdsReadsTheWorkbenchRowsThatHaveOne() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let other = try TestDatabase.insertWorkbench(db, name: "Other", folder: "/tmp/other")
+            let moved = try TerminalSessionQueries.create(db, claude(project, "Moved"))
+            let unknown = try TerminalSessionQueries.create(db, claude(project, "Unknown"))
+            let elsewhere = try TerminalSessionQueries.create(db, claude(other, "Elsewhere"))
+            for id in [moved.id, elsewhere.id] {
+                try db.execute(sql: """
+                    UPDATE terminal_sessions SET agent_cwd = '/tmp/acme/.claude/worktrees/mobile-a',
+                        agent_cwd_at = '2026-10-12T10:00:00.000Z' WHERE id = ?
+                    """, arguments: [id])
+            }
+            let cwds = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            XCTAssertEqual(cwds, [moved.id: SessionAgentCwd(sessionID: moved.id,
+                                                            path: "/tmp/acme/.claude/worktrees/mobile-a",
+                                                            at: "2026-10-12T10:00:00.000Z")])
+            XCTAssertNil(cwds[unknown.id])
+        }
+    }
+
+    /// A database without migration 00110: no cwds, and every other session
+    /// read still works (the cwd stays out of `TerminalSession`).
+    func testADatabaseWithoutTheCwdColumnsStillLoadsSessions() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd")
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id), [row.id])
+            XCTAssertEqual(try TerminalSessionQueries.fetchAgentCwds(db, projectID: project), [:])
+        }
+    }
 }

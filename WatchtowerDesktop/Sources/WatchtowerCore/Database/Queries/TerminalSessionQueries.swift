@@ -120,6 +120,24 @@ package enum TerminalSessionQueries {
         )
     }
 
+    /// The recorded main-agent working directory of workbench `projectID`'s
+    /// rows that have one (board #565), by session id. Read-only: Go's hooks
+    /// write it. Kept out of `TerminalSession` and its `SELECT *` readers, as
+    /// Go keeps it out of `GetTerminalSession`: a database without migration
+    /// 00110 yields no cwds rather than failing anything else.
+    package static func fetchAgentCwds(_ db: Database, projectID: Int64) throws -> [Int64: SessionAgentCwd] {
+        guard try db.columns(in: "terminal_sessions").contains(where: { $0.name == "agent_cwd_at" }) else { return [:] }
+        let rows = try SessionAgentCwd.fetchAll(
+            db,
+            sql: """
+                SELECT id, agent_cwd, agent_cwd_at FROM terminal_sessions
+                WHERE project_id = ? AND agent_cwd IS NOT NULL
+                """,
+            arguments: [projectID]
+        )
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.sessionID, $0) })
+    }
+
     /// Best-effort, unchecked: a session deleted meanwhile is not active,
     /// which is what it asks for.
     package static func touch(_ db: Database, id: Int64) throws {
