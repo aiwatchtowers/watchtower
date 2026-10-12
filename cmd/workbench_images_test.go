@@ -19,15 +19,15 @@ import (
 )
 
 // attachTestImage stores a fake PNG (a PNG signature is all the sniff needs)
-// in projectID's image directory and attaches it to targetID.
-func attachTestImage(t *testing.T, database *db.DB, store workbenchfiles.Store, projectID, targetID int64, payload string) string {
+// in workbenchID's image directory and attaches it to targetID.
+func attachTestImage(t *testing.T, database *db.DB, store workbenchfiles.Store, workbenchID, targetID int64, payload string) string {
 	t.Helper()
 	src := filepath.Join(t.TempDir(), "shot.png")
 	require.NoError(t, os.WriteFile(src, []byte("\x89PNG\r\n\x1a\n"+payload), 0o600))
-	img, err := store.Ingest(projectID, src)
+	img, err := store.Ingest(workbenchID, src)
 	require.NoError(t, err)
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{WorkbenchID: projectID, TargetID: targetID,
+		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{WorkbenchID: workbenchID, TargetID: targetID,
 			FileName: img.FileName, MIME: img.MIME, Size: img.Size, SHA256: img.SHA256, Path: img.Path})
 		return err
 	}))
