@@ -141,6 +141,10 @@ final class MobileHubService {
     /// (multi-hub spec §3.3): the link center forgets codes and phones. A
     /// throw keeps the delete pending, so the next start redoes it.
     @ObservationIgnored var onZonesDeleted: (@MainActor () throws -> Void)?
+    /// Runs on the main actor after the iCloud account signed out or
+    /// switched (the transport's account reset): the link center forgets
+    /// the old user.
+    @ObservationIgnored var onAccountChanged: (@MainActor () -> Void)?
     /// Phone linking (Settings → Mobile); nil when the storage has no share
     /// service.
     @ObservationIgnored var linkCenter: MobileLinkCenter?
@@ -157,8 +161,12 @@ final class MobileHubService {
     @ObservationIgnored private let heartbeatEvery: Duration
     @ObservationIgnored private let cloudTimeout: Duration
     @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
-    /// The iCloud user record name, once looked up.
+    /// The iCloud user record name, once looked up; forgotten when the
+    /// account changes.
     @ObservationIgnored private var ownerUser: String?
+    /// Bumped by an account change, so a lookup still running then never
+    /// stores the old user.
+    @ObservationIgnored private var ownerEpoch = 0
     /// Heartbeat ticks failed in a row; reset by a good tick and a start.
     @ObservationIgnored private var tickFailures = 0
     @ObservationIgnored private let relayIdleInterval: Duration
@@ -317,7 +325,7 @@ final class MobileHubService {
         let publisher = self.publisher
         let logger = self.logger
         let now = self.now
-        await transport.setAccountResetHandler {
+        await transport.setAccountResetHandler { [weak self] in
             do {
                 try sidecar.wipeSyncState(now: now())
             } catch {
@@ -325,6 +333,7 @@ final class MobileHubService {
             }
             // The new account's zone gets every record again, restaged.
             publisher.removeStagedAssets()
+            Task { @MainActor in self?.accountChanged() }
         }
         await transport.setDataZoneResetHandler {
             do {
@@ -691,9 +700,18 @@ final class MobileHubService {
     private func resolveOwnerUser() async {
         guard ownerUser == nil else { return }
         let lookup = hostInfo.ownerUser
-        if let found = await Self.bounded(cloudTimeout, { await lookup() }) {
+        let epoch = ownerEpoch
+        if let found = await Self.bounded(cloudTimeout, { await lookup() }), epoch == ownerEpoch {
             ownerUser = found
         }
+    }
+
+    /// The account signed out or switched: the heartbeat's `owner_user` and
+    /// the link center's are looked up again.
+    func accountChanged() {
+        ownerUser = nil
+        ownerEpoch += 1
+        onAccountChanged?()
     }
 
     /// Runs `operation` for at most `timeout`. On timeout it is cancelled,

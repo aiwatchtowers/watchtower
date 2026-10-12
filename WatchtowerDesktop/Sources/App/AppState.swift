@@ -338,6 +338,9 @@ final class AppState {
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored private var mobileHubPool: DatabasePool?
+    /// Built with the first hub and kept across rebuilds, so a QR on screen
+    /// keeps its link when `initWorkbenches` replaces the hub.
+    @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
