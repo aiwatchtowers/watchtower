@@ -41,6 +41,11 @@ struct WatchtowerMobileApp: App {
     enum Boot {
         case ready(AppRoot)
         case failed(String)
+        /// The Keychain is locked (a push launched the app before the first
+        /// unlock since a restart): the device id cannot be read, and a new
+        /// one would unlink the phone from its Mac. The boot runs again once
+        /// protected data is available.
+        case waitingForUnlock
         case hostingTests
 
         /// XCTest sets `XCTestConfigurationFilePath` in the process it
@@ -67,9 +72,13 @@ struct WatchtowerMobileApp: App {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
                 return .ready(root)
+            } catch let locked as DeviceIDKeychain.Unavailable where locked.isLocked {
+                Logger(subsystem: "WatchtowerMobile", category: "Boot")
+                    .notice("keychain locked before the first unlock: the boot waits for it")
+                return .waitingForUnlock
             } catch {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
-                    .critical("replica failed to open: \(error.localizedDescription, privacy: .public)")
+                    .critical("boot failed: \(error.localizedDescription, privacy: .public)")
                 return .failed(error.localizedDescription)
             }
         }
@@ -84,6 +93,21 @@ struct WatchtowerMobileApp: App {
                 AppRootView(root: root)
             case let .failed(message):
                 BootFailureView(message: message)
+            case .waitingForUnlock:
+                // A background launch may draw nothing until the owner opens
+                // the app, by when the notification has passed: the first
+                // appearance retries too.
+                Color.clear
+                    .task {
+                        if UIApplication.shared.isProtectedDataAvailable {
+                            boot = Boot.make()
+                        }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(
+                        for: UIApplication.protectedDataDidBecomeAvailableNotification
+                    )) { _ in
+                        boot = Boot.make()
+                    }
             case .hostingTests:
                 Color.clear
             }

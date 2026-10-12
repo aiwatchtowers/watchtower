@@ -63,7 +63,7 @@ final class AppRoot {
             return demo(try AppEnvironment(), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
-        let identity = DeviceIdentity.current(defaults: defaults)
+        let identity = try DeviceIdentity.current(defaults: defaults)
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
             try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device)
         }

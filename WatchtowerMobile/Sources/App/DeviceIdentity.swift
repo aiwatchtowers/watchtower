@@ -27,11 +27,13 @@ struct DeviceIdentity: Equatable, Sendable {
     }
 
     /// This phone: the Keychain device id, the device's name (at most 60
-    /// grapheme clusters) and model, the app's marketing version.
+    /// grapheme clusters) and model, the app's marketing version. Throws
+    /// `DeviceIDKeychain.Unavailable` while the Keychain cannot be read
+    /// (before the first unlock): never a new id in place of the stored one.
     @MainActor
-    static func current(defaults: UserDefaults = .standard) -> Self {
+    static func current(defaults: UserDefaults = .standard) throws -> Self {
         Self(
-            deviceID: DeviceIDKeychain.deviceID(fallback: defaults),
+            deviceID: try DeviceIDKeychain.deviceID(fallback: defaults),
             name: String(UIDevice.current.name.prefix(DevicePayload.maxNameLength)),
             model: UIDevice.current.model,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
