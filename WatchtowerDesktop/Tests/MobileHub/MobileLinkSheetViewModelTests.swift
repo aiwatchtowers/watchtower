@@ -105,6 +105,18 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         await sheet.close()
     }
 
+    /// #65: a code closed by an account change says so, not "expired".
+    func testAnAccountChangeShowsWhyTheCodeClosed() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+
+        fixture.center.accountChanged()
+        await awaitHubCondition("the center closed the code") { fixture.center.lastCloseReason == .accountChanged }
+        await sheet.tick()
+
+        XCTAssertEqual(sheet.phase, .failed("This Mac's iCloud account changed. Show a new code."))
+    }
+
     func testCloseClosesTheLink() async throws {
         let sheet = makeSheet()
         await sheet.start()

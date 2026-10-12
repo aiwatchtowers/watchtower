@@ -846,10 +846,34 @@ final class MobileHubServiceTests: XCTestCase {
         await awaitHubCondition("the rebuilt hub runs") { rebuilt.status == .running }
 
         XCTAssertTrue(rebuilt.linkCenter === center)
+        XCTAssertEqual(rebuilt.sharing, .available, "the rebuilt heartbeat says the link is open")
         XCTAssertEqual(center.openCode?.nonce, code.nonce)
         XCTAssertTrue(shares.isLinkOpen)
         XCTAssertFalse(shares.calls.contains("setPublicLink:false"), "\(shares.calls)")
         await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// A hub rebuilt with no QR on screen still retries a pending sweep.
+    func testAHubRebuiltWithoutAQRRetriesAPendingSweep() async throws {
+        let shares = FakeShareService()
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        center.attach(to: makeService(transport: StubHubTransport()))
+        await awaitHubCondition("the first attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.clearCalls()
+
+        center.attach(to: makeService(transport: StubHubTransport()))
+
+        await awaitHubCondition("the rebuilt hub's attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        XCTAssertTrue(shares.calls.contains("setPublicLink:false"))
     }
 
     func testWakeRelayWhileStoppedDoesNothing() async throws {

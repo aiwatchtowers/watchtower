@@ -984,6 +984,54 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(next.ownerUser, "_owner-new")
     }
 
+    /// #65: a lookup still running when the account changes may answer
+    /// with the old user; it is not cached, and the code is refused.
+    func testAnOwnerLookupRunningAcrossAnAccountChangeIsNotCached() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        center = try makeCenter {
+            let answer = owner.value
+            await gate.park()
+            return answer
+        }
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("a code naming the old user is not shown")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .ownerUnknown)
+        }
+        let next = try await center.issueCode()
+        XCTAssertEqual(next.ownerUser, "_owner-new")
+    }
+
+    /// #65: a code still being made when the account changes is closed, not shown.
+    func testACodeBeingIssuedAcrossAnAccountChangeIsClosed() async throws {
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("the code is refused")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .accountChanged)
+        }
+        XCTAssertNil(center.openCode)
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertEqual(center.lastCloseReason, .accountChanged)
+    }
+
     /// #65: a QR on screen names the old user, so an account change closes it.
     func testAnAccountChangeClosesTheOpenCodeAndItsLink() async throws {
         _ = try await center.issueCode()

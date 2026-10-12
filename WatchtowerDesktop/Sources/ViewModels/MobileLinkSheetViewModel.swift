@@ -126,6 +126,10 @@ final class MobileLinkSheetViewModel: Identifiable {
         }
         updateRemaining(code)
         guard remainingSeconds <= 0 || center.openCode?.nonce != code.nonce else { return true }
+        if center.openCode == nil, center.lastCloseReason == .accountChanged {
+            phase = .failed(MobileLinkError.accountChanged.localizedDescription)
+            return false
+        }
         phase = .expired
         let close = Task { [center] in await center.closeLink(reason: .expired) }
         expiryClose = close

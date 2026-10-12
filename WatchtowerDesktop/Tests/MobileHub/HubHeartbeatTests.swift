@@ -114,6 +114,35 @@ final class HubHeartbeatTests: XCTestCase {
         await center.closeLink(reason: .sheetClosed)
     }
 
+    /// A lookup still running when the account changes may answer with the
+    /// old user: the heartbeat never carries it.
+    func testAnOwnerLookupRunningAcrossAnAccountResetNeverReachesTheHeartbeat() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        let transport = StubHubTransport()
+        let host = HubHostInfo(
+            macName: "Mac acme", appVersion: "0.0.0-test", flavor: .default, accounts: { [] },
+            ownerUser: {
+                let answer = owner.value
+                await gate.park()
+                return answer
+            }
+        )
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), host: host)
+        let enabling = Task { await hub.enable() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        hub.accountChanged()
+        gate.release()
+        await enabling.value
+        await hub.heartbeatTick()
+
+        let owners = try savedHeartbeats(transport).map(\.ownerUser)
+        XCTAssertFalse(owners.contains("_owner-acme"), "\(owners)")
+        XCTAssertEqual(owners.last, "_owner-new")
+    }
+
     // MARK: - Enable
 
     func testPinnedHeartbeatTiming() {
