@@ -664,6 +664,63 @@ final class LinkingViewModelTests: XCTestCase {
         assertStillLinked(model, "a heartbeat from before the link")
     }
 
+    /// Review round 2: a linked grant clears the first look whatever else
+    /// that fetch held. Each `between` is a fetch that sees the grant linked
+    /// but would fail one of the heartbeat or busy conditions; the grant
+    /// gone again afterwards is a new first look, not the second.
+    private func assertALinkedGrantClearsTheFirstLook(
+        _ why: String,
+        between: (LinkingViewModel) async throws -> Void,
+        line: UInt = #line
+    ) async throws {
+        let model = try await modelOneLookFromRemoval()
+        try await between(model)
+        XCTAssertNil(LinkStore(defaults: defaults).grantMissingSince, why, line: line)
+        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        assertStillLinked(model, why, line: line)
+    }
+
+    func testALinkedGrantWithoutAHeartbeatClearsTheFirstLook() async throws {
+        try await assertALinkedGrantClearsTheFirstLook("no heartbeat in that fetch") { model in
+            await model.evaluate(grant: self.grant(linked: true), heartbeat: nil)
+        }
+    }
+
+    func testALinkedGrantWithAnotherHubsHeartbeatClearsTheFirstLook() async throws {
+        try await assertALinkedGrantClearsTheFirstLook("another hub's heartbeat in that fetch") { model in
+            let other = self.heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: self.start.addingTimeInterval(60))
+            await model.evaluate(grant: self.grant(linked: true), heartbeat: other)
+        }
+    }
+
+    func testALinkedGrantWithAnOlderHeartbeatClearsTheFirstLook() async throws {
+        try await assertALinkedGrantClearsTheFirstLook("a heartbeat from before the link") { model in
+            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.heartbeat(updatedAt: self.start))
+        }
+    }
+
+    func testALinkedGrantWhileALinkIsPendingClearsTheFirstLook() async throws {
+        try await assertALinkedGrantClearsTheFirstLook("a pending link") { model in
+            let store = LinkStore(defaults: self.defaults)
+            store.pending = PendingLink(link: self.linkRecord(), deadline: self.start.addingTimeInterval(600), baseline: nil)
+            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
+            store.pending = nil
+        }
+    }
+
+    func testALinkedGrantWhileAScanRunsClearsTheFirstLook() async throws {
+        try await assertALinkedGrantClearsTheFirstLook("a scan running") { model in
+            self.host.mac = { _ in nil }
+            self.host.parksFetchGrant = true
+            let scan = Task { await model.open(self.code().url()) }
+            try await self.poll({ model.isBusy }, "the scan is checking")
+            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
+            scan.cancel()
+            self.host.parksFetchGrant = false
+            _ = await scan.value
+        }
+    }
+
     func testNoRemovalFromAnotherHubsHeartbeatOrGrant() async throws {
         let model = try await modelOneLookFromRemoval()
         await model.evaluate(grant: nil, heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start.addingTimeInterval(60)))

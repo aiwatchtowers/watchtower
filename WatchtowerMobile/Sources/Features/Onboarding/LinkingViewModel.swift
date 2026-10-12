@@ -544,20 +544,22 @@ final class LinkingViewModel {
     /// - no linked grant for that device id (absent, or `linked: false`)
     ///   on two looks at least `removalConfirmAfter` apart, with none in
     ///   between: the first look is kept in `LinkStore.grantMissingSince`
-    ///   (across a relaunch) and a linked grant clears it.
+    ///   (across a relaunch) and a linked grant of the linked device and hub
+    ///   clears it in any fetch, whatever its heartbeat or a scan running —
+    ///   so a stale first look never counts as the second.
     /// Then it is the same removal as that event. A shared phone whose
     /// participant removal failed is told the same way.
     func evaluate(grant: DeviceGrant?, heartbeat: HeartbeatPayload?) async {
-        guard let link, let deviceID = link.deviceID, let linkedAt = link.linkedAt,
-              !isBusy, store.pending == nil,
-              let heartbeat, heartbeat.hubID == link.hubID else { return }
+        guard let link, let deviceID = link.deviceID, let linkedAt = link.linkedAt else { return }
         // Another device's or hub's grant says nothing about this link.
         if let grant, grant.deviceID != deviceID || grant.hubID != link.hubID { return }
         if grant?.linked == true {
             store.grantMissingSince = nil
             return
         }
-        guard heartbeat.updatedAt > linkedAt else { return }
+        // Only the missing or unlinked grant needs the rest.
+        guard !isBusy, store.pending == nil,
+              let heartbeat, heartbeat.hubID == link.hubID, heartbeat.updatedAt > linkedAt else { return }
         let now = clock.now()
         guard let since = store.grantMissingSince else {
             store.grantMissingSince = now
