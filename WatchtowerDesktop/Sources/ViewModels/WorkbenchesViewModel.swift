@@ -264,7 +264,7 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
-    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor () -> Void)
+    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)
         -> any GitRefsWatching = { GitRefsWatcher(gitDir: $0, commonDir: $1, onChange: $2) }
     @ObservationIgnored var gitPollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var gitNotificationCenter: NotificationCenter = .default
@@ -339,14 +339,17 @@ final class WorkbenchesViewModel {
         }
         // A failed read (or no states at all) vouches for nothing: no Return.
         lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
-        agentStates?.onChange = { [weak lineDelivery] in
+        agentStates?.onChange = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
             Task { await lineDelivery?.deliverHeld() }
+            // A session started, stopped or began a run: whether its stored
+            // cwd is trusted may have moved (board #565).
+            sessionPlaces?.cwdsMayHaveChanged()
         }
         // Also on an unchanged read: a line held because a read failed.
-        agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
+        agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
             Task { await lineDelivery?.deliverHeld() }
-            // A hook event may have stored a new cwd (board #565).
-            sessionPlaces?.cwdsMayHaveChanged()
+            // A hook may have stored a new cwd: re-read only on a new stamp.
+            sessionPlaces?.stateRowsRead(agentStates?.rows ?? [])
         }
     }
 
@@ -397,6 +400,7 @@ final class WorkbenchesViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
+            sessionPlaces.forgetWorkbench(id)
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }

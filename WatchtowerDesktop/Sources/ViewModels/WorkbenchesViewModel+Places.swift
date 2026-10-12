@@ -70,7 +70,7 @@ extension WorkbenchesViewModel {
     private func sessionPlaceLabel(sessionID: Int64, projectID: Int64) -> SessionPlacePresentation.PlaceLabel {
         SessionPlacePresentation.placeLabel(
             sessionPlaces.currentPlace(sessionID: sessionID), mainStatus: gitStatus[projectID],
-            stale: sessionPlaces.isStale(sessionID: sessionID)
+            stale: sessionPlaces.isPlaceStale(sessionID: sessionID)
         )
     }
 }

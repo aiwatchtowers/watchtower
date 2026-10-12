@@ -220,7 +220,7 @@ watcher and activation); `SessionSwitcherPresentation.Row.place`; `TerminalsSect
 `WorkbenchPageView` header; tests `Tests/SessionPlaceCenterTests.swift`,
 `Tests/Core/SessionSwitcherPresentationTests.swift`, `Tests/WorkbenchCLITests.swift`.
 
-**Interfaces:** `@MainActor @Observable final class SessionPlaceCenter { func place(for: TerminalSession, workbench: Workbench) -> SessionPlace; func refresh(workbenchID:) }` — one in-flight read per cwd + one queued; main-folder cwds reuse the header's status (no process); stale flag on failure.
+**Interfaces (as built):** `@MainActor @Observable final class SessionPlaceCenter` on `WorkbenchesViewModel.sessionPlaces` — `currentPlace(sessionID:) -> SessionPlace`, `isPlaceStale(sessionID:)` (true while the cwd's read is pending or after it failed), `followWorkbench(_:folder:)` / `unfollowWorkbench(_:)` (from `startGitWatching`/`stopGitWatching`; following again re-reads the known places), `forgetWorkbench(_:)` (a deleted workbench), `cwdsMayHaveChanged()` (`SessionAgentStateCenter.onChange`), `stateRowsRead(_:)` (`onRead`, re-reads only on a new `agent_cwd_at` stamp carried by `SessionAgentStateRow.agentCwdAt`), `refreshPlaces(workbenchID:)` (refs watcher when `GitRefsChange.mayMoveWorktrees`, app activation). One in-flight read per cwd + one queued; a cwd equal to the workbench folder is `.main` with no process; a cwd moved to one not yet read is `.unknown` (fail closed), a failed re-read of the same cwd keeps its last place, stale.
 
 - [ ] Tests: `testAWorktreeCwdIsResolvedOnceAndCached`; `testAMainFolderCwdRunsNoProcess`;
   `testACwdChangeRereadsThePlace`; `testARefsChangeRefreshesEveryWorktreePlace`; `testAFailedReadKeepsTheLastPlaceStale`;

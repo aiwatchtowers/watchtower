@@ -46,6 +46,11 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// When it was recorded (same format as `agentStateAt`), kept raw: the
     /// escalation passes it back to Go verbatim as `--at`.
     package var chatQuestionAt: String?
+    /// When the hooks last stored the main agent's working directory
+    /// (migration 00110, board #565); nil = none, or a database without the
+    /// column. Only a change of it is used: the sessions' places re-read
+    /// their cwds then.
+    package var agentCwdAt: String?
 
     package init(
         id: Int64,
@@ -63,7 +68,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         agentBackground: Int? = nil,
         agentBackgroundAt: String? = nil,
         chatQuestion: String? = nil,
-        chatQuestionAt: String? = nil
+        chatQuestionAt: String? = nil,
+        agentCwdAt: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -81,6 +87,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.agentBackgroundAt = agentBackgroundAt
         self.chatQuestion = chatQuestion
         self.chatQuestionAt = chatQuestionAt
+        self.agentCwdAt = agentCwdAt
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -101,6 +108,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case agentBackgroundAt = "agent_background_at"
         case chatQuestion = "chat_question"
         case chatQuestionAt = "chat_question_at"
+        case agentCwdAt = "agent_cwd_at"
     }
 }
 

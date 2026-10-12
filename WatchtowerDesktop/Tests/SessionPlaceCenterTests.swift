@@ -158,32 +158,32 @@ final class SessionPlaceCenterTests: XCTestCase {
         reads.cwds = [1: cwd(1, worktreeA)]
         let center = makeCenter(reads)
         await center.followWorkbench(workbenchID, folder: folder).value
-        XCTAssertFalse(center.isStale(sessionID: 1))
+        XCTAssertFalse(center.isPlaceStale(sessionID: 1))
 
         reads.statusError = Failure()
         await center.refreshPlaces(workbenchID: workbenchID).value
         XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-a")
-        XCTAssertTrue(center.isStale(sessionID: 1))
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
 
         // No verdict (the worktrees could not be listed) is stale too.
         reads.statusError = nil
         reads.scope = .unresolved
         await center.refreshPlaces(workbenchID: workbenchID).value
         XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-a")
-        XCTAssertTrue(center.isStale(sessionID: 1))
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
 
-        // A new cwd that cannot be read keeps the last place as well.
+        // A new cwd that cannot be read is unknown, never the old place.
         reads.statusError = Failure()
         reads.cwds = [1: cwd(1, worktreeB)]
         await center.cwdsMayHaveChanged().value
-        XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-a")
-        XCTAssertTrue(center.isStale(sessionID: 1))
+        XCTAssertEqual(center.currentPlace(sessionID: 1), .unknown)
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
 
         reads.statusError = nil
         reads.scope = .worktree
         await center.refreshPlaces(workbenchID: workbenchID).value
         XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-b")
-        XCTAssertFalse(center.isStale(sessionID: 1))
+        XCTAssertFalse(center.isPlaceStale(sessionID: 1))
     }
 
     /// A worktree whose folder went away is removed, named after the
@@ -236,41 +236,146 @@ final class SessionPlaceCenterTests: XCTestCase {
         XCTAssertEqual(reads.statusCalls, [worktreeA, worktreeA], "the burst costs one rerun")
     }
 
-    /// The center lives on the view model and reads the stored cwd through
-    /// the database; the page starting its git watch follows the workbench.
-    func testTheViewModelPlacesASessionFromItsStoredCwd() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        let worktree = worktreeA
-        let (project, sessionID) = try await pool.write { db -> (Workbench, Int64) in
-            let id = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
-            let row = try TerminalSessionQueries.create(db, .init(
-                projectID: id, kind: .claude, title: "s", folderPath: "/tmp/acme", claudeSessionID: "uuid-1"
-            ))
-            try db.execute(
-                sql: "UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-12 10:00:00.000' WHERE id = ?",
-                arguments: [worktree, row.id]
-            )
-            return (try XCTUnwrap(WorkbenchQueries.fetch(db, id: id)), row.id)
+    /// Fail closed (spec §4): a session that left the main folder for a
+    /// worktree not read yet is unknown and stale while git runs, and stays
+    /// unknown when that read fails — never the main folder it left.
+    func testAMoveToAnUnreadCwdIsUnknownUntilRead() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, folder)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        XCTAssertEqual(center.currentPlace(sessionID: 1), .main)
+        XCTAssertFalse(center.isPlaceStale(sessionID: 1))
+
+        reads.holding = true
+        let called = expectation(description: "B read started")
+        reads.onStatusCall = { called.fulfill() }
+        reads.cwds = [1: cwd(1, worktreeB)]
+        let moved = center.cwdsMayHaveChanged()
+        await fulfillment(of: [called], timeout: 5)
+        XCTAssertEqual(center.currentPlace(sessionID: 1), .unknown, "pending: not the main folder")
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
+
+        reads.statusError = Failure()
+        reads.release()
+        await moved.value
+        XCTAssertEqual(center.currentPlace(sessionID: 1), .unknown, "failed: still not the main folder")
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
+    }
+
+    /// Coming back to a page re-reads the places known: the branch may have
+    /// moved while the refs watcher was stopped.
+    func testFollowingAgainRereadsKnownPlaces() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        XCTAssertEqual(reads.statusCalls, [worktreeA])
+        await center.followWorkbench(workbenchID, folder: folder).value
+        XCTAssertEqual(reads.statusCalls, [worktreeA], "still on screen: no re-read")
+
+        center.unfollowWorkbench(workbenchID)
+        reads.branches = [worktreeA: "feature/moved"]
+        await center.followWorkbench(workbenchID, folder: folder).value
+        XCTAssertEqual(reads.statusCalls, [worktreeA, worktreeA])
+        XCTAssertEqual(branch(center.currentPlace(sessionID: 1)), "feature/moved")
+    }
+
+    /// A read of the cwd a session left lands on nobody: neither on that
+    /// session (now in B) nor on another one.
+    func testAReadOfALeftCwdDoesNotLand() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA), 2: cwd(2, worktreeB)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+
+        reads.holding = true
+        reads.branches = [worktreeA: "feature/a-moved", worktreeB: "feature/b"]
+        let refreshed = expectation(description: "A and B reads started")
+        refreshed.expectedFulfillmentCount = 2
+        reads.onStatusCall = { refreshed.fulfill() }
+        let refresh = center.refreshPlaces(workbenchID: workbenchID)
+        await fulfillment(of: [refreshed], timeout: 5)
+        reads.onStatusCall = nil
+
+        // Session 1 moves to B while A's read runs.
+        reads.cwds = [1: cwd(1, worktreeB), 2: cwd(2, worktreeB)]
+        let moved = center.cwdsMayHaveChanged()
+        await settle()
+        reads.release()
+        await refresh.value
+        await moved.value
+        XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-b")
+        XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 2)), "mobile-b")
+        XCTAssertEqual(branch(center.currentPlace(sessionID: 1)), "feature/b")
+        XCTAssertFalse(center.staleCwds.contains { $0.cwd == worktreeA })
+    }
+
+    /// Deleted sessions and workbenches leave nothing behind; a stale cwd no
+    /// session holds leaves the stale set.
+    func testDeletedSessionsAndWorkbenchesAreEvicted() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA), 2: cwd(2, worktreeB)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        reads.statusError = Failure()
+        await center.refreshPlaces(workbenchID: workbenchID).value
+        XCTAssertEqual(center.staleCwds.count, 2)
+
+        // Session 2 was deleted.
+        reads.cwds = [1: cwd(1, worktreeA)]
+        await center.cwdsMayHaveChanged().value
+        XCTAssertNil(center.sessionPlaces[2])
+        XCTAssertFalse(center.isPlaceStale(sessionID: 2))
+        XCTAssertEqual(center.staleCwds.map(\.cwd), [worktreeA])
+
+        center.forgetWorkbench(workbenchID)
+        XCTAssertTrue(center.sessionPlaces.isEmpty)
+        XCTAssertTrue(center.staleCwds.isEmpty)
+        reads.statusCalls = []
+        await center.cwdsMayHaveChanged().value
+        XCTAssertEqual(reads.statusCalls, [], "a forgotten workbench is not followed")
+    }
+
+    /// A repeated failure does not touch `staleCwds` (no re-render).
+    func testARepeatedFailureLeavesTheStaleSetAlone() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        reads.statusError = Failure()
+        await center.refreshPlaces(workbenchID: workbenchID).value
+        XCTAssertTrue(center.isPlaceStale(sessionID: 1))
+
+        var changed = false
+        withObservationTracking { _ = center.staleCwds } onChange: { changed = true }
+        await center.refreshPlaces(workbenchID: workbenchID).value
+        XCTAssertFalse(changed)
+    }
+
+    /// The state poll re-reads the cwds only when a cwd stamp changed.
+    func testStateRowsReadRereadsOnlyOnANewCwdStamp() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, folder)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        func row(_ stamp: String?) -> SessionAgentStateRow {
+            SessionAgentStateRow(id: 1, projectID: workbenchID, title: "s", agentState: "working",
+                                 agentStateAt: nil, workbenchName: "acme", agentCwdAt: stamp)
         }
-        let envelope = #"""
-            {"workbench_id":\#(project.id),"git":true,"branch":"feature/x","status_ok":true,
-             "folder_requested":"\#(worktree)","folder_scope":"worktree","folder_root":"\#(worktree)","worktree_name":"mobile-a"}
-            """#
-        let runner = ScriptedCLIRunner(results: [.success(Data(envelope.utf8))])
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "SessionPlaceCenterTests-\(UUID().uuidString)"))
-        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        await center.stateRowsRead([row("2026-10-12 10:00:00.000")]).value
+        reads.cwds = [1: cwd(1, worktreeA)]
+        await center.stateRowsRead([row("2026-10-12 10:00:00.000")]).value
+        XCTAssertEqual(reads.statusCalls, [], "same stamp: the cwds are not read")
 
-        await vm.startGitWatching(project: project)
-        await vm.sessionPlaces.followWorkbench(project.id, folder: project.folderPath).value
-        vm.stopGitWatching(projectID: project.id)
+        await center.stateRowsRead([row("2026-10-12 10:00:05.000")]).value
+        XCTAssertEqual(reads.statusCalls, [worktreeA])
+        XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-a")
+    }
 
-        XCTAssertEqual(worktreeName(vm.sessionPlaces.currentPlace(sessionID: sessionID)), "mobile-a")
-        XCTAssertTrue(runner.invocations.contains(
-            ["workbench", "git", "status", "--workbench", String(project.id), "--folder", worktree, "--json"]
-        ))
-        let stored = try await pool.read { try TerminalSessionQueries.fetch($0, id: sessionID) }
-        let session = try XCTUnwrap(stored)
-        XCTAssertEqual(vm.sessionRows([session]).first?.place?.text, "⑂ mobile-a · feature/x")
+    /// Lets queued main-actor tasks run.
+    private func settle() async {
+        for _ in 0..<20 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(50))
     }
 }

@@ -18,10 +18,10 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     final class FakeWatcher: GitRefsWatching {
         let gitDir: String
         let commonDir: String
-        let onChange: @MainActor () -> Void
+        let onChange: @MainActor (GitRefsChange) -> Void
         private(set) var stopped = false
 
-        init(gitDir: String, commonDir: String, onChange: @escaping @MainActor () -> Void) {
+        init(gitDir: String, commonDir: String, onChange: @escaping @MainActor (GitRefsChange) -> Void) {
             self.gitDir = gitDir
             self.commonDir = commonDir
             self.onChange = onChange
@@ -858,7 +858,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(watchers.first?.commonDir, "/r/.git")
 
         // A ref change re-reads the status; new dirs re-arm the watcher.
-        watchers[0].onChange()
+        watchers[0].onChange(GitRefsChange(mayMoveWorktrees: true))
         await waitUntil { runner.invocations.count == 2 && watchers.count == 2 }
         XCTAssertTrue(watchers[0].stopped)
         XCTAssertEqual(watchers[1].gitDir, "/r2/.git")

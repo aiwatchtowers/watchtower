@@ -318,10 +318,11 @@ extension WorkbenchesViewModel {
         gitWatchers.removeValue(forKey: projectID)?.stop()
         gitWatchedDirs[projectID] = dirs
         guard !dirs.isEmpty else { return }
-        // The common dir holds every worktree's HEAD: a worktree session's
-        // branch is read again too.
-        gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] in
-            self?.sessionPlaces.refreshPlaces(workbenchID: projectID)
+        // The common dir holds every worktree's HEAD and the refs: a
+        // worktree session's branch is read again too, unless only the
+        // folder's own HEAD or index moved (board #565).
+        gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] change in
+            if change.mayMoveWorktrees { self?.sessionPlaces.refreshPlaces(workbenchID: projectID) }
             Task { await self?.refreshGitStatus(projectID: projectID) }
         }
     }

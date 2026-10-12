@@ -13,11 +13,16 @@ import WatchtowerCore
 /// workbench folder is the main folder with no process; any other cwd is
 /// read once and cached by `(workbench, cwd)`, so sessions sharing a cwd share
 /// the read and an unchanged cwd is never read again. At most one read per
-/// cwd runs, plus one queued rerun. A cwd is re-read only when it changes
-/// (the hook stored a new one), on the workbench's refs watcher and on app
-/// activation (`refreshPlaces`, the branch of a worktree may have moved) — only for
-/// workbenches on screen (`followWorkbench`). A failed read, or an envelope that is no
-/// verdict, keeps the last place, marked stale.
+/// cwd runs, plus one queued rerun. Cwds are read again when the session
+/// states show a change (`stateRowsRead`, `cwdsMayHaveChanged`); a cwd's place
+/// is read again on the workbench's refs watcher, on app activation and on
+/// coming back to the page (`refreshPlaces`, the branch of a worktree may
+/// have moved) — only for workbenches on screen (`followWorkbench`).
+///
+/// Fail closed: a session whose cwd moved to one not read yet, or whose read
+/// failed, is unknown — never its previous place — and reads as stale
+/// (`isPlaceStale`). A failed or no-verdict re-read of the same cwd keeps
+/// that cwd's last place, marked stale.
 @MainActor
 @Observable
 final class SessionPlaceCenter {
@@ -35,7 +40,7 @@ final class SessionPlaceCenter {
     /// Each session's place, by session id; absent = unknown.
     private(set) var sessionPlaces: [Int64: SessionPlace] = [:]
     /// Cwds whose last read failed or gave no verdict: their place is the
-    /// last one known.
+    /// last one known (or unknown when none).
     private(set) var staleCwds: Set<CwdKey> = []
 
     @ObservationIgnored private let readCwds: CwdReader
@@ -43,10 +48,12 @@ final class SessionPlaceCenter {
     @ObservationIgnored private let isLive: (Int64) -> Bool
     /// Workbenches on screen, with their folder.
     @ObservationIgnored private var followed: [Int64: String] = [:]
-    /// Each session's trusted cwd (nil = untrusted or none) and workbench.
-    @ObservationIgnored private var sessionKeys: [Int64: (workbenchID: Int64, cwd: String?)] = [:]
+    /// Each session's trusted cwd; a session without one is absent.
+    @ObservationIgnored private var sessionKeys: [Int64: CwdKey] = [:]
     /// The resolved place of every cwd in use.
     @ObservationIgnored private var cwdPlaces: [CwdKey: SessionPlace] = [:]
+    /// The last cwd stamps the session states read showed, by session id.
+    @ObservationIgnored private var cwdStamps: [Int64: String] = [:]
     /// The read running per cwd / per workbench, and whether one more is
     /// asked for after it.
     @ObservationIgnored private var statusReads: [CwdKey: Task<Void, Never>] = [:]
@@ -65,19 +72,27 @@ final class SessionPlaceCenter {
         sessionPlaces[sessionID] ?? .unknown
     }
 
-    /// Whether the session's place is the last one known: its cwd's latest
-    /// read failed or gave no verdict.
-    func isStale(sessionID: Int64) -> Bool {
-        guard let entry = sessionKeys[sessionID], let cwd = entry.cwd else { return false }
-        return staleCwds.contains(CwdKey(workbenchID: entry.workbenchID, cwd: cwd))
+    /// Whether the session's place is unproven: its cwd has not been read
+    /// yet (a read pending), or its latest read failed or gave no verdict.
+    func isPlaceStale(sessionID: Int64) -> Bool {
+        guard let key = sessionKeys[sessionID] else { return false }
+        return cwdPlaces[key] == nil || staleCwds.contains(key)
     }
 
     /// The workbench's page is on screen: its cwds are read now and kept up
-    /// to date by `cwdsMayHaveChanged` and `refreshPlaces`.
+    /// to date by `cwdsMayHaveChanged` and `refreshPlaces`. Coming back to it,
+    /// the places already known are read again too — their branch may have
+    /// moved while nothing watched.
     @discardableResult
     func followWorkbench(_ workbenchID: Int64, folder: String) -> Task<Void, Never> {
+        let returning = followed[workbenchID] == nil
         followed[workbenchID] = folder
-        return rereadCwds(workbenchID: workbenchID)
+        let cwds = rereadCwds(workbenchID: workbenchID)
+        let places = returning ? refreshPlaces(workbenchID: workbenchID) : Task {}
+        return Task {
+            await cwds.value
+            await places.value
+        }
     }
 
     /// The page went away: nothing new is started for it. Places, and reads
@@ -86,13 +101,35 @@ final class SessionPlaceCenter {
         followed[workbenchID] = nil
     }
 
-    /// A hook may have stored a new cwd (the session states were read):
-    /// every followed workbench's cwds are read again; only a changed cwd
-    /// starts a git read.
+    /// The workbench was deleted: everything known about it goes.
+    func forgetWorkbench(_ workbenchID: Int64) {
+        followed[workbenchID] = nil
+        for (sessionID, key) in sessionKeys where key.workbenchID == workbenchID {
+            evictSession(sessionID)
+        }
+        dropUnusedCwds(workbenchID: workbenchID)
+    }
+
+    /// A session started, stopped or began a new run (the states changed):
+    /// whether its stored cwd is trusted may have moved. Every followed
+    /// workbench's cwds are read again; only a changed cwd starts a git read.
     @discardableResult
     func cwdsMayHaveChanged() -> Task<Void, Never> {
         let reads = followed.keys.map { rereadCwds(workbenchID: $0) }
         return Task { for read in reads { await read.value } }
+    }
+
+    /// The session states were read: the cwds are read again only when a
+    /// hook stored a new one (a cwd stamp changed) — no extra read per poll.
+    @discardableResult
+    func stateRowsRead(_ rows: [SessionAgentStateRow]) -> Task<Void, Never> {
+        var stamps: [Int64: String] = [:]
+        for row in rows {
+            if let stamp = row.agentCwdAt { stamps[row.id] = stamp }
+        }
+        guard stamps != cwdStamps else { return Task {} }
+        cwdStamps = stamps
+        return cwdsMayHaveChanged()
     }
 
     /// The refs watcher fired or the app became active: every cwd in use of
@@ -145,46 +182,66 @@ final class SessionPlaceCenter {
     }
 
     /// Records each session's trusted cwd and returns the cwds that need a
-    /// read: new ones not yet placed.
+    /// read: new ones not yet placed. A session without a trusted cwd (or
+    /// deleted) is dropped: unknown.
     private func assignCwds(_ rows: [Int64: SessionAgentCwd], workbenchID: Int64, folder: String) -> [CwdKey] {
         let known = sessionKeys.filter { $0.value.workbenchID == workbenchID }.map(\.key)
         var toRead: [CwdKey] = []
         for sessionID in Set(known).union(rows.keys) {
-            let cwd = SessionPlace.trustedCwd(row: rows[sessionID], live: isLive(sessionID))
-            if let entry = sessionKeys[sessionID], entry.cwd == cwd { continue }
-            sessionKeys[sessionID] = (workbenchID, cwd)
-            guard let cwd else {
-                sessionPlaces[sessionID] = .unknown
+            guard let cwd = SessionPlace.trustedCwd(row: rows[sessionID], live: isLive(sessionID)) else {
+                evictSession(sessionID)
                 continue
             }
             let key = CwdKey(workbenchID: workbenchID, cwd: cwd)
+            guard sessionKeys[sessionID] != key else { continue }
+            sessionKeys[sessionID] = key
             if SessionPlace.isWorkbenchFolder(cwd, workbenchFolder: folder) {
                 cwdPlaces[key] = .main
             }
-            if let place = cwdPlaces[key] {
-                sessionPlaces[sessionID] = place
-            } else if !toRead.contains(key) {
-                // Until it is read, the session keeps its last place.
+            // Until a new cwd is read the session is unknown, never its
+            // previous place (fail closed).
+            setPlace(cwdPlaces[key], sessionID: sessionID)
+            if cwdPlaces[key] == nil, !toRead.contains(key) {
                 toRead.append(key)
             }
         }
         return toRead
     }
 
-    /// A cwd no session of the workbench holds any more leaves the cache.
-    private func dropUnusedCwds(workbenchID: Int64) {
-        let inUse = keysInUse(workbenchID: workbenchID)
-        for key in cwdPlaces.keys where key.workbenchID == workbenchID && !inUse.contains(key) {
-            cwdPlaces[key] = nil
+    private func evictSession(_ sessionID: Int64) {
+        sessionKeys[sessionID] = nil
+        setPlace(nil, sessionID: sessionID)
+    }
+
+    /// Assigns only on a change, so an unchanged place re-renders nothing.
+    private func setPlace(_ place: SessionPlace?, sessionID: Int64) {
+        guard sessionPlaces[sessionID] != place else { return }
+        sessionPlaces[sessionID] = place
+    }
+
+    /// Changes `staleCwds` only when the membership changes.
+    private func setStale(_ key: CwdKey, _ stale: Bool) {
+        guard staleCwds.contains(key) != stale else { return }
+        if stale {
+            staleCwds.insert(key)
+        } else {
             staleCwds.remove(key)
         }
     }
 
+    /// A cwd no session of the workbench holds any more leaves the cache and
+    /// the stale set.
+    private func dropUnusedCwds(workbenchID: Int64) {
+        let inUse = keysInUse(workbenchID: workbenchID)
+        for key in cwdPlaces.keys where key.workbenchID == workbenchID && !inUse.contains(key) {
+            cwdPlaces[key] = nil
+        }
+        let unusedStale = staleCwds.filter { $0.workbenchID == workbenchID && !inUse.contains($0) }
+        if !unusedStale.isEmpty { staleCwds.subtract(unusedStale) }
+    }
+
     private func keysInUse(workbenchID: Int64) -> Set<CwdKey> {
-        Set(sessionKeys.values.compactMap { entry in
-            guard entry.workbenchID == workbenchID, let cwd = entry.cwd else { return nil }
-            return CwdKey(workbenchID: workbenchID, cwd: cwd)
-        })
+        Set(sessionKeys.values.filter { $0.workbenchID == workbenchID })
     }
 
     /// One `--folder` read for `key`, coalesced as `rereadCwds`.
@@ -204,33 +261,37 @@ final class SessionPlaceCenter {
         return read
     }
 
+    /// Lands only on the sessions holding `key` when it ends: a session
+    /// that moved meanwhile keeps its new cwd's place.
     private func readPlaceOnce(_ key: CwdKey, folder: String) async {
-        let status: WorkbenchGitStatus
+        let place = await resolvedPlace(key, folder: folder)
+        let holders = sessionsHolding(key)
+        // A cwd every session left meanwhile is not cached again.
+        guard !holders.isEmpty else {
+            setStale(key, false)
+            return
+        }
+        guard let place else {
+            setStale(key, true)
+            return
+        }
+        setStale(key, false)
+        cwdPlaces[key] = place
+        for sessionID in holders { setPlace(place, sessionID: sessionID) }
+    }
+
+    /// nil = the read failed or gave no verdict.
+    private func resolvedPlace(_ key: CwdKey, folder: String) async -> SessionPlace? {
         do {
-            status = try await readStatus(key.workbenchID, key.cwd)
+            let status = try await readStatus(key.workbenchID, key.cwd)
+            return SessionPlace.resolvePlace(cwd: key.cwd, status: status, workbenchFolder: folder, last: cwdPlaces[key])
         } catch {
             print("[SessionPlace] workbench git status --folder for workbench \(key.workbenchID) failed: \(error)")
-            staleCwds.insert(key)
-            return
-        }
-        let last = cwdPlaces[key] ?? sessionsHolding(key).lazy.compactMap { self.sessionPlaces[$0] }.first
-        guard let place = SessionPlace.resolvePlace(cwd: key.cwd, status: status, workbenchFolder: folder, last: last) else {
-            staleCwds.insert(key)
-            return
-        }
-        staleCwds.remove(key)
-        // A cwd every session left meanwhile is not cached again.
-        let holders = sessionsHolding(key)
-        guard !holders.isEmpty else { return }
-        cwdPlaces[key] = place
-        for sessionID in holders where sessionPlaces[sessionID] != place {
-            sessionPlaces[sessionID] = place
+            return nil
         }
     }
 
     private func sessionsHolding(_ key: CwdKey) -> [Int64] {
-        sessionKeys.compactMap { id, entry in
-            entry.workbenchID == key.workbenchID && entry.cwd == key.cwd ? id : nil
-        }
+        sessionKeys.compactMap { id, held in held == key ? id : nil }
     }
 }
