@@ -728,10 +728,12 @@ extension WorkbenchesViewModel {
     ) async -> (row: TerminalSession, codexResume: Bool?)? { // swiftlint:disable:this discouraged_optional_boolean
         guard row.kind == .codex else { return (row, nil) }
         guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
-        // Never reset an id on a lookup in a home that is not the login
-        // shell's: an unresolved environment is "unknown", not "no rollout".
+        // The stored rollout path needs no home. Past it, never reset an id
+        // on a lookup in a home that is not the login shell's: an
+        // unresolved environment is "unknown", not "no rollout".
         let codexHome: URL
         do {
+            if try center.codexResumes(row, codexHome: nil) { return (row, true) }
             guard let home = await resolveCodexHome() else { throw CodexHomeUnresolved() }
             codexHome = home
             if try center.codexResumes(row, codexHome: home) { return (row, true) }
@@ -810,6 +812,7 @@ extension WorkbenchesViewModel {
 /// The login shell did not answer, so its CODEX_HOME is unknown.
 private struct CodexHomeUnresolved: LocalizedError {
     var errorDescription: String? {
-        "your login shell did not answer, so Codex's CODEX_HOME is unknown; try again, or use Start fresh"
+        "your login shell did not answer (it timed out or failed), so Codex's CODEX_HOME is unknown and "
+            + "the saved session was kept; try again, or use Start fresh"
     }
 }

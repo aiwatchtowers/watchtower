@@ -160,7 +160,7 @@ final class TerminalCenter {
     /// Whether Codex has a rollout for a session id (`CodexRollout`), given
     /// the path its SessionStart stored; throws when Codex's sessions folder
     /// could not be listed. A seam for tests.
-    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?, _ codexHome: URL) throws -> Bool = {
+    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?, _ codexHome: URL?) throws -> Bool = {
         try CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: $2)
     }
     /// `watchtower workbench launch-args` for a Codex session of a workbench
@@ -365,10 +365,11 @@ final class TerminalCenter {
     }
 
     /// Whether relaunching the Codex row (not fresh) resumes its stored id:
-    /// a valid id whose rollout exists under `codexHome` (the login shell's,
-    /// resolved by the caller). Throws when Codex's sessions folder could not
-    /// be listed, so the caller does not drop the id on it.
-    func codexResumes(_ session: TerminalSession, codexHome: URL) throws -> Bool {
+    /// a valid id whose rollout exists — at its stored path, or under
+    /// `codexHome` (the login shell's, resolved by the caller; nil checks the
+    /// stored path alone). Throws when Codex's sessions folder could not be
+    /// listed, so the caller does not drop the id on it.
+    func codexResumes(_ session: TerminalSession, codexHome: URL?) throws -> Bool {
         guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
             return false
         }

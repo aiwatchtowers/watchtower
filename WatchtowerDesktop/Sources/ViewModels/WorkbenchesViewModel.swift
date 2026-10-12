@@ -68,7 +68,8 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }
     /// The Codex home a relaunch looks for rollouts in: the login shell's
     /// CODEX_HOME (spec 2026-10-12 §7), resolved off the main thread; nil when
-    /// the login shell did not answer — the relaunch then resets nothing.
+    /// the login shell did not answer (asked again on the next relaunch) —
+    /// the relaunch then resets nothing.
     @ObservationIgnored var resolveCodexHome: () async -> URL? = {
         await Constants.resolvedLoginEnvironment().map { CodexRollout.home(environment: $0) }
     }

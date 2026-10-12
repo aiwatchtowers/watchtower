@@ -74,6 +74,14 @@ final class CodexRolloutTests: XCTestCase {
                       "a stored path that is still a file needs no listing")
     }
 
+    /// Without a home only the stored path counts: no date folder is read.
+    func testNilHomeChecksTheStoredPathAlone() throws {
+        let file = try rollout("rollout-2026-10-12T09-00-00-\(id).jsonl")
+        XCTAssertTrue(try CodexRollout.exists(sessionID: id, storedPath: file.path, codexHome: nil))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: nil))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: id, storedPath: "/nonexistent/rollout-x-\(id).jsonl", codexHome: nil))
+    }
+
     func testInvalidIDIsNeverLookedUp() throws {
         let upper = id.uppercased()
         try rollout("rollout-x-\(upper).jsonl")

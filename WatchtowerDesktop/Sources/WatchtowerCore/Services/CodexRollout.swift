@@ -22,9 +22,12 @@ package enum CodexRollout {
     /// missing folder lists nothing; a folder that exists but could not be
     /// listed (no permission, say) throws, so "could not look" is never
     /// read as "no rollout".
-    package static func exists(sessionID: String, storedPath: String?, codexHome: URL) throws -> Bool {
+    /// A nil `codexHome` checks the stored path alone (no home is needed
+    /// for it).
+    package static func exists(sessionID: String, storedPath: String?, codexHome: URL?) throws -> Bool {
         guard TerminalLaunch.isValidSessionID(sessionID) else { return false }
         if let storedPath, isRollout(storedPath, of: sessionID), isRegularFile(storedPath) { return true }
+        guard let codexHome else { return false }
         let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true).path
         for year in try subdirectories(of: sessions) {
             for month in try subdirectories(of: year) {

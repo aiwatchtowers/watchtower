@@ -17,7 +17,8 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
     private var folder: URL!
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
-    private var rollouts: Set<String> = []
+    private var rollouts: Set<String> = [] // ids with a rollout under the Codex home
+    private var storedFiles: Set<String> = [] // stored rollout paths that are still files
     private var argsCalls: [Int64] = []
     private var argsResult: Result<CodexLaunchArgs, Error> = .success(TerminalCenterStartDecisionTests.codexArgs)
     private var clock = Date(timeIntervalSince1970: 1_000_000)
@@ -35,6 +36,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         processes = []
         rollouts = []
+        storedFiles = []
         argsCalls = []
         argsResult = .success(Self.codexArgs)
         center = TerminalCenter { [weak self] in
@@ -44,7 +46,10 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         }
         center.shell = { "/bin/zsh" }
         center.transcriptExists = { _ in false }
-        center.codexRolloutExists = { [weak self] id, _, _ in self?.rollouts.contains(id) ?? false }
+        center.codexRolloutExists = { [weak self] id, path, home in
+            guard let self else { return false }
+            return path.map { self.storedFiles.contains($0) } ?? false || (home != nil && rollouts.contains(id))
+        }
         stubLaunchArgs()
     }
 
@@ -207,32 +212,78 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         XCTAssertTrue(error.hasPrefix("Could not reset the Codex session"), error)
     }
 
-    /// Before the login shell's environment is known, a relaunch neither
-    /// resets the stored id nor launches: a lookup in the wrong home would
-    /// wipe it for good (#399 V1).
+    /// Before the login shell's environment is known, a relaunch whose
+    /// stored rollout path is gone neither resets the stored id nor launches:
+    /// a lookup in the wrong home would wipe it for good (#399 V1, F1).
     func testCodexUnresolvedHomeNeverResetsTheID() async throws {
         let p = try await workbench()
-        let row = try await codexRow(p, id: storedID)
-        var lookups = 0
-        center.codexRolloutExists = { _, _, _ in lookups += 1; return false }
+        let row = try await codexRow(p, id: storedID, transcript: "/Users/example/gone/rollout-x-\(storedID).jsonl")
+        var homes: [URL] = []
+        center.codexRolloutExists = { _, _, home in
+            if let home { homes.append(home) }
+            return false
+        }
         let vm = makeVM()
         vm.resolveCodexHome = { nil }
 
         await vm.open(row)
 
-        XCTAssertEqual(lookups, 0, "no lookup in an unresolved home")
+        XCTAssertTrue(homes.isEmpty, "no lookup in an unresolved home")
         XCTAssertTrue(processes.isEmpty, "no process starts")
         let after = try await stored(row.id)
         XCTAssertEqual(after?.claudeSessionID, storedID)
         let error = try XCTUnwrap(vm.sessionActionErrors[p])
         XCTAssertTrue(error.hasPrefix("Could not check Codex's saved sessions"), error)
+        XCTAssertTrue(error.contains("the saved session was kept"), error)
+    }
+
+    /// A stored rollout file that is still there resumes without the home:
+    /// an unresolved login shell does not block it (#399 F1).
+    func testCodexStoredRolloutResumesWithoutTheHome() async throws {
+        let path = "/Users/example/.codex/sessions/2026/10/12/rollout-x-\(storedID).jsonl"
+        let row = try await codexRow(try await workbench(), id: storedID, transcript: path)
+        storedFiles = [path]
+        let vm = makeVM()
+        var asked = 0
+        vm.resolveCodexHome = { asked += 1; return nil }
+
+        await vm.open(row)
+
+        XCTAssertEqual(asked, 0, "the stored path needs no home")
+        XCTAssertTrue(lastScript.hasSuffix(" resume '\(storedID)'"), lastScript)
+        let after = try await stored(row.id)
+        XCTAssertEqual(after?.claudeSessionID, storedID)
+    }
+
+    /// A login shell that did not answer is asked again: the next relaunch
+    /// resolves the home and resumes (#399 F1).
+    func testCodexRelaunchRetriesAnUnansweredLoginShell() async throws {
+        let p = try await workbench()
+        let row = try await codexRow(p, id: storedID)
+        rollouts = [storedID]
+        let vm = makeVM()
+        var answers: [URL?] = [nil, URL(fileURLWithPath: "/Users/example/codex-work")]
+        vm.resolveCodexHome = { answers.removeFirst() }
+
+        await vm.open(row)
+        XCTAssertTrue(processes.isEmpty, "the first relaunch waits for the shell")
+        await vm.open(row)
+
+        XCTAssertTrue(answers.isEmpty)
+        XCTAssertTrue(lastScript.hasSuffix(" resume '\(storedID)'"), lastScript)
+        let after = try await stored(row.id)
+        XCTAssertEqual(after?.claudeSessionID, storedID)
     }
 
     /// The lookup uses the resolved login-shell home.
     func testCodexRelaunchLooksInTheResolvedHome() async throws {
         let row = try await codexRow(try await workbench(), id: storedID)
         var homes: [String] = []
-        center.codexRolloutExists = { _, _, home in homes.append(home.path); return true }
+        center.codexRolloutExists = { _, _, home in
+            guard let home else { return false }
+            homes.append(home.path)
+            return true
+        }
         let vm = makeVM()
         vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/codex-work") }
 
@@ -261,8 +312,11 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
     /// A relaunch walks Codex's rollout tree once: the view model decides
     /// and passes the answer, the center does not look again (#399 N2/N3).
     func testCodexRelaunchLooksForTheRolloutOnce() async throws {
-        var lookups: [String] = [] // the title refresh of the session left also looks: count per id
-        center.codexRolloutExists = { [weak self] id, _, _ in
+        // Tree walks only (a home given); the title refresh of the session
+        // left also looks: count per id.
+        var lookups: [String] = []
+        center.codexRolloutExists = { [weak self] id, _, home in
+            guard home != nil else { return false }
             lookups.append(id)
             return self?.rollouts.contains(id) ?? false
         }
