@@ -45,7 +45,7 @@ package struct PendingSessionDeletes: Equatable, Sendable {
 
     /// Joins the batch (a session already in it is not listed twice) and
     /// restarts the window from `now`.
-    package mutating func enqueueDelete(_ entry: Entry, now: Date) {
+    package mutating func enqueueSessionDelete(_ entry: Entry, now: Date) {
         if !batch.contains(where: { $0.sessionID == entry.sessionID }) { batch.append(entry) }
         deadline = now.addingTimeInterval(Self.window)
     }
