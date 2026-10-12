@@ -29,7 +29,7 @@ struct SessionSwitcherPopover: View {
             list
             Divider()
             // One entry per agent; ⌘T is the default agent's.
-            ForEach(AgentChoicePresentation.newSession { vm.agentAvailable($0, projectID: project.id) }) { choice in
+            ForEach(AgentChoicePresentation.newSessionAgentChoices { vm.agentAvailable($0, projectID: project.id) }) { choice in
                 Button { onNewSession(choice.agent) } label: {
                     shortcutLabel(choice.title, systemImage: "plus", keys: choice.agent == vm.defaultAgent ? "⌘T" : "")
                 }
