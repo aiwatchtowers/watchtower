@@ -320,8 +320,11 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     struct Codex: Decodable, Equatable {
         /// A codex binary was found (`codex_path`, then PATH).
         let found: Bool
-        /// The skill copy in `.agents/skills` is there and current.
+        /// The skill copy in `.agents/skills` is there (current or not).
         let skill: Bool
+        /// The copy's state: `updated` = a previously shipped version the
+        /// next setup replaces (Repair); nil from a CLI that does not send it.
+        let skillState: String?
         /// nil: codex could not be asked (it timed out, or speaks an unknown
         /// protocol) — no Repair is offered for an unknown.
         let hooksTrusted: Bool? // swiftlint:disable:this discouraged_optional_boolean
@@ -338,10 +341,12 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             skill: Bool,
             hooksTrusted: Bool?, // swiftlint:disable:this discouraged_optional_boolean
             importedDuplicates: Bool = false,
-            trustError: String? = nil
+            trustError: String? = nil,
+            skillState: String? = nil
         ) {
             self.found = found
             self.skill = skill
+            self.skillState = skillState
             self.hooksTrusted = hooksTrusted
             self.importedDuplicates = importedDuplicates
             self.trustError = trustError
@@ -349,6 +354,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case found, skill
+            case skillState = "skill_state"
             case hooksTrusted = "hooks_trusted"
             case importedDuplicates = "imported_duplicates"
             case trustError = "trust_error"
@@ -357,13 +363,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         /// The Codex part's state, for the page header: nothing without
         /// codex (D5: skipped quietly); never set up — a neutral "Set up
         /// Codex", not a failure; set up and whole; set up and broken since
-        /// (its hooks untrusted, say after a Codex update, or imported twice)
-        /// — Repair. An unknown trust is no break: it is only logged.
+        /// (its hooks untrusted, say after a Codex update, imported twice, or
+        /// its skill copy outdated) — Repair. An unknown trust is no break:
+        /// it is only logged.
         var state: State {
             guard found else { return .absent }
             guard skill else { return .notSetUp }
-            return hooksTrusted == false || importedDuplicates ? .broken : .ready
+            return hooksTrusted == false || importedDuplicates || skillOutdated ? .broken : .ready
         }
+
+        /// The skill copy is a previously shipped version (`skill_state`
+        /// `updated`).
+        var skillOutdated: Bool { skillState == "updated" }
 
         enum State: Equatable {
             case absent, notSetUp, ready, broken
@@ -382,7 +393,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             case false?: "not trusted"
             case nil: "trust unknown"
             }
-            return "Codex: skill \(skill ? "on" : "missing") · hooks \(trust)"
+            let skillText = skillOutdated ? "outdated" : skill ? "on" : "missing"
+            return "Codex: skill \(skillText) · hooks \(trust)"
                 + (importedDuplicates ? " · imported duplicate hooks in .codex" : "")
         }
     }

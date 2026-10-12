@@ -36,8 +36,9 @@ var ErrCodexHooksNotEditable = errors.New("cannot remove the imported workbench 
 var ErrCodexUnresolved = errors.New("could not resolve the codex binary")
 
 // CodexStatus is the codex part of a workbench folder. Found: a codex binary
-// was resolved. Skill: the skill copy in .agents/skills is in and current
-// (an owner-edited copy counts: it is theirs, PROJ-04). HooksTrusted: every
+// was resolved. Skill: the skill copy in .agents/skills is in, current or
+// not (an owner-edited copy counts: it is theirs, PROJ-04; an outdated one
+// reads SkillState "updated" in a status). HooksTrusted: every
 // hook of the codex hook set is trusted, nil when codex could not be asked.
 // ImportedDuplicates: codex's import left our hook commands in the folder's
 // .codex/hooks.json or .codex/config.toml. SkillState and DuplicatesRemoved
@@ -201,7 +202,9 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() 
 		return CodexStatus{}, err
 	}
 	st.SkillState = sk.State
-	st.Skill = sk.State != StateMissing && sk.State != StateUpdated
+	// An outdated copy (StateUpdated: a previously shipped version) is set
+	// up and needs a Repair, not "never set up"; SkillState says which.
+	st.Skill = sk.State != StateMissing
 	st.ImportedDuplicates = hasImportedDuplicates(o.Folder, o.WorkbenchID)
 	// Status reports, it does not fail: the trust failure goes on the wire.
 	var trustErr error

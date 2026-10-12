@@ -389,6 +389,24 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(unknown.repairHelp.contains("trust unknown"))
     }
 
+    /// An outdated skill copy is set up and broken (Repair), never the
+    /// neutral "not set up"; an older CLI without `skill_state` keeps its
+    /// reading.
+    func testOutdatedCodexSkillIsRepair() throws {
+        let outdated = try status(#"{"found":true,"skill":true,"skill_state":"updated","hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertEqual(outdated.codex?.state, .broken)
+        XCTAssertTrue(outdated.codexNeedsRepair)
+        XCTAssertFalse(outdated.codexNeedsSetup)
+        XCTAssertTrue(outdated.repairHelp.contains("Codex: skill outdated"), outdated.repairHelp)
+
+        let edited = try status(#"{"found":true,"skill":true,"skill_state":"drifted","hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertEqual(edited.codex?.state, .ready, "an owner-edited copy is theirs")
+
+        let older = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertNil(older.codex?.skillState)
+        XCTAssertEqual(older.codex?.state, .ready)
+    }
+
     /// The CLI's `trust_error` reaches the tooltip — also when the config
     /// did not load and codex reads as not found — and an older CLI without
     /// the key decodes as nil.

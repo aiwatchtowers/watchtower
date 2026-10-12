@@ -26,12 +26,12 @@ const codexTestBin = "/Users/example/Library/Application Support/Watchtower/bin/
 // -c hooks.<Event>=… flags it was started with, the way codex does, so a
 // hashed string that differs from the launched one cannot be trusted.
 type fakeAppServer struct {
-	state   map[string]string // hooks.state key → trusted_hash
-	extra   []codex.HookEntry // non-launch-flag hooks hooks/list also reports
-	starts  int
-	writes  [][]codex.HookEntry
-	args    []string // the last start's extraArgs
-	env     []string
+	state    map[string]string // hooks.state key → trusted_hash
+	extra    []codex.HookEntry // non-launch-flag hooks hooks/list also reports
+	starts   int
+	writes   [][]codex.HookEntry
+	args     []string // the last start's extraArgs
+	env      []string
 	listErr  error
 	trustErr error
 	closeErr error
@@ -757,4 +757,27 @@ func TestProj04_LiveUpsertKeepsForeignHooksState(t *testing.T) {
 		ours[e.Key] = true
 	}
 	assert.Equal(t, ours, added, "the upsert adds exactly our hook set's keys")
+}
+
+// An outdated skill copy (a previously shipped version, never edited) is
+// set up: Skill true, SkillState "updated" (the Desktop's Repair), and the
+// trust is still asked so an untrusted hook is not hidden (#399 m2).
+func TestStatusCodex_OutdatedSkillIsSetUpAndAsked(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeAppServer(t)
+	_, err := InstallCodex(context.Background(), codexOpts(folder), f.factory())
+	require.NoError(t, err)
+	prev := readTestFile(t, filepath.Join("testdata", "watchtower-workbench-v6.md"))
+	writeTestFile(t, codexSkillFile(folder), prev)
+	sum := sha256.Sum256([]byte(prev)) // the copy is the version we wrote last
+	writeTestFile(t, filepath.Join(filepath.Dir(codexSkillFile(folder)), shippedDigestFile), hex.EncodeToString(sum[:]))
+	for k := range f.state {
+		f.state[k] = "sha256:stale"
+		break
+	}
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
+	require.NoError(t, err)
+	assert.Equal(t, StateUpdated, st.SkillState)
+	assert.True(t, st.Skill)
+	assert.Equal(t, ptrFalse(), st.HooksTrusted)
 }

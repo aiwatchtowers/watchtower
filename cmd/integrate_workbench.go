@@ -419,9 +419,13 @@ type workbenchStatusJSON struct {
 	Codex codexStatusJSON `json:"codex"`
 }
 
+// codexStatusJSON: skill is the copy being there; skill_state says whether
+// it is current ("unchanged", "drifted" = owner-edited) or a previously
+// shipped version ("updated": Repair), "missing" without one.
 type codexStatusJSON struct {
 	Found              bool   `json:"found"`
 	Skill              bool   `json:"skill"`
+	SkillState         string `json:"skill_state"`
 	HooksTrusted       *bool  `json:"hooks_trusted"`
 	ImportedDuplicates bool   `json:"imported_duplicates"`
 	TrustError         string `json:"trust_error,omitempty"`
@@ -463,7 +467,8 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
 			Codex: codexStatusJSON{
-				Found: cs.Found, Skill: cs.Skill, HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
+				Found: cs.Found, Skill: cs.Skill, SkillState: string(cs.SkillState),
+				HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
 				TrustError: cs.TrustError,
 			},
 		})

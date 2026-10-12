@@ -16,6 +16,7 @@
   "codex": {
     "found": true,
     "skill": true,
+    "skill_state": "unchanged",
     "hooks_trusted": true,
     "imported_duplicates": false
   }

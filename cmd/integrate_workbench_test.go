@@ -385,7 +385,7 @@ func TestIntegrateStatusJSON_CodexNotFoundIsNullTrust(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"found": false, "skill": false, "hooks_trusted": nil, "imported_duplicates": false}
+	want := map[string]any{"found": false, "skill": false, "skill_state": "missing", "hooks_trusted": nil, "imported_duplicates": false}
 	if fmt.Sprint(got["codex"]) != fmt.Sprint(want) {
 		t.Fatalf("codex = %v, want %v", got["codex"], want)
 	}
