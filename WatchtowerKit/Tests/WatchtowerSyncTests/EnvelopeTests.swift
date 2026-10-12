@@ -84,7 +84,7 @@ struct EnvelopeVectors: Codable, Equatable {
             guard let signature = item.signature else { continue }
             let header = try EnvelopeHeader.parse(Data(hex: item.header))
             let zone = try XCTUnwrap(CloudZoneID(rawValue: item.zone))
-            let message = EnvelopeSealer.signatureMessage(
+            let message = try EnvelopeSealer.signatureMessage(
                 header, body: Data(hex: item.body), context: EnvelopeContext(zone: zone, wireName: item.wireName))
             XCTAssertTrue(key.isValidSignature(Data(hex: signature), for: message))
             verified += 1
@@ -232,6 +232,61 @@ final class EnvelopeTests: XCTestCase {
         let envelope = try Envelope.parse(try seal(InnerFrame(kind: "x", id: "1", payload: Data())))
         XCTAssertNoThrow(try EnvelopeSealer.verify(envelope, context: context, key: k.hubSig.publicKey))
         XCTAssertThrowsError(try EnvelopeSealer.verify(envelope, context: context, key: k.devSig.publicKey))
+    }
+
+    private func sealRelay(context: EnvelopeContext? = nil) throws -> Data {
+        try EnvelopeSealer.sealSymmetric(InnerFrame(kind: "action", id: "1", payload: Data()), envelopeClass: .relayToHub,
+                                         key: dataKey, hubID: k.hubID, senderID: k.deviceID, epoch: 1, seq: 3,
+                                         context: context ?? EnvelopeContext(zone: .relay, wireName: "relay-record-aaaaaaaaaaa"),
+                                         signer: nil, nonce: fixedNonce)
+    }
+
+    private func openRelay(_ data: Data, context: EnvelopeContext) throws {
+        _ = try EnvelopeSealer.openSymmetric(data, accepting: [.relayToHub], context: context, verifier: nil) { _ in self.dataKey }
+    }
+
+    func testRelayAADBindsNameZoneAndHeaderWithoutASignature() throws {
+        let home = EnvelopeContext(zone: .relay, wireName: "relay-record-aaaaaaaaaaa")
+        let data = try sealRelay()
+        XCTAssertNoThrow(try openRelay(data, context: home))
+        for other in [EnvelopeContext(zone: .relay, wireName: "relay-record-bbbbbbbbbbb"),
+                      EnvelopeContext(zone: .data, wireName: home.wireName)] {
+            XCTAssertThrowsError(try openRelay(data, context: other)) { XCTAssertEqual($0 as? EnvelopeError, .authenticationFailed) }
+        }
+        var flipped = data
+        flipped[45] ^= 1   // seq
+        XCTAssertThrowsError(try openRelay(flipped, context: home)) { XCTAssertEqual($0 as? EnvelopeError, .authenticationFailed) }
+    }
+
+    func testDataAndAlertRequireAVerifier() throws {
+        let signed = try seal(InnerFrame(kind: "x", id: "1", payload: Data()))
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(signed, accepting: [.data], context: context,
+                                                              verifier: nil) { _ in self.dataKey }) {
+            XCTAssertEqual($0 as? EnvelopeError, .signatureRequired)
+        }
+        let alert = try EnvelopeSealer.sealSymmetric(InnerFrame(kind: "x", id: "1", payload: Data()), envelopeClass: .alert,
+                                                     key: dataKey, hubID: k.hubID, senderID: k.hubID, epoch: 1, seq: 1,
+                                                     context: context, signer: nil)
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(alert, accepting: [.alert], context: context,
+                                                              verifier: nil) { _ in self.dataKey }) {
+            XCTAssertEqual($0 as? EnvelopeError, .signatureRequired)
+        }
+    }
+
+    func testAKeyResolverErrorSurfacesUnchanged() throws {
+        struct Locked: Error, Equatable {}
+        let data = try seal(InnerFrame(kind: "x", id: "1", payload: Data()))
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(data, accepting: [.data], context: context,
+                                                              verifier: k.hubSig.publicKey) { _ in throw Locked() }) {
+            XCTAssertEqual($0 as? Locked, Locked())
+        }
+    }
+
+    func testAnOverlongRecordNameIsRefused() {
+        let long = EnvelopeContext(zone: .data, wireName: String(repeating: "a", count: 65_536))
+        XCTAssertThrowsError(try seal(InnerFrame(kind: "x", id: "1", payload: Data()), context: long)) {
+            XCTAssertEqual($0 as? EnvelopeError, .frameMalformed)
+        }
     }
 
     func testVectorsMatchTheFrozenFile() throws {

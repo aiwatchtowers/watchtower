@@ -12,7 +12,7 @@ public enum EnvelopeClass: UInt16, Sendable, CaseIterable {
 public enum EnvelopeError: Error, Equatable {
     case tooShort, badMagic, unsupportedVersion(UInt8), unsupportedSuite(UInt8), unknownClass(UInt16)
     case lengthMismatch, signatureMissing, signatureInvalid, authenticationFailed, frameMalformed
-    case oversized, wrongClass(EnvelopeClass), wrongHub, wrongSender
+    case signatureRequired, oversized, wrongClass(EnvelopeClass), wrongHub, wrongSender
 }
 
 /// 68 bytes: "WTE" | ver | suite | flags | hub_id 16 | sender_id 16 | epoch u32 | seq u64 | nonce 12 | class u16 | body_len u32.
@@ -111,12 +111,13 @@ public struct EnvelopeContext: Equatable, Sendable {
     }
 
     /// header ‖ zone u8 ‖ name_len u16 ‖ name utf8
-    func aad(header: EnvelopeHeader) -> Data {
+    /// Throws `.frameMalformed` for a name above 65 535 UTF-8 bytes (it cannot be length-prefixed).
+    func aad(header: EnvelopeHeader) throws -> Data {
         let name = Data(wireName.utf8)
         var out = header.encoded()
         out.append(KeyDerivation.zoneByte[zone] ?? 0)
-        // CloudKit record names are at most 255 bytes; the truncated prefix still binds the full name that follows.
-        WireBytes.append(UInt16(truncatingIfNeeded: name.count), to: &out)
+        guard let nameLength = UInt16(exactly: name.count) else { throw EnvelopeError.frameMalformed }
+        WireBytes.append(nameLength, to: &out)
         out.append(name)
         return out
     }

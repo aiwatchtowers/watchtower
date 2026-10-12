@@ -10,15 +10,16 @@ public enum EnvelopeSealer {
         Envelope.maxBytes - EnvelopeHeader.length - tagLength - (signed ? Envelope.signatureLength : 0)
     }
 
-    /// The envelope size a frame produces (header + padded frame + tag + signature); nil when it cannot fit.
+    /// The envelope size for a frame whose length is ALREADY padded (header + frameLength + tag + signature);
+    /// nil when it cannot fit. It does not pad: pass `Padding.paddedLength(...)`.
     public static func sealedLength(frameLength: Int, signed: Bool) -> Int? {
         guard frameLength >= 0, frameLength <= frameCap(signed: signed) else { return nil }
         return EnvelopeHeader.length + frameLength + tagLength + (signed ? Envelope.signatureLength : 0)
     }
 
     /// Message signed: "wt/sig/v1" ‖ context.aad(header) ‖ body.
-    static func signatureMessage(_ header: EnvelopeHeader, body: Data, context: EnvelopeContext) -> Data {
-        Data("wt/sig/v1".utf8) + context.aad(header: header) + body
+    static func signatureMessage(_ header: EnvelopeHeader, body: Data, context: EnvelopeContext) throws -> Data {
+        try Data("wt/sig/v1".utf8) + context.aad(header: header) + body
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -47,7 +48,7 @@ public enum EnvelopeSealer {
             nonce: nonce.withUnsafeBytes { Data($0) }, envelopeClass: envelopeClass,
             bodyLength: UInt32(padded + tagLength))
         let box = try ChaChaPoly.seal(
-            frame.encoded(paddedTo: padded), using: key, nonce: nonce, authenticating: context.aad(header: header))
+            frame.encoded(paddedTo: padded), using: key, nonce: nonce, authenticating: try context.aad(header: header))
         let body = box.ciphertext + box.tag
         let signature = try signer.map { try Data($0.signature(for: signatureMessage(header, body: body, context: context))) }
         return Envelope(header: header, body: body, signature: signature).encoded()
@@ -67,15 +68,22 @@ public enum EnvelopeSealer {
         guard accepting.contains(header.envelopeClass), symmetricClasses.contains(header.envelopeClass) else {
             throw EnvelopeError.wrongClass(header.envelopeClass)
         }
+        // Spec §2.2: every DataZone/alert envelope is signed by hub_sig; the AEAD key alone is not authorship.
+        if header.envelopeClass == .data || header.envelopeClass == .alert {
+            guard verifier != nil else { throw EnvelopeError.signatureRequired }
+        }
         if let verifier { try verify(envelope, context: context, key: verifier) }
         guard envelope.body.count >= tagLength else { throw EnvelopeError.lengthMismatch }
         let split = envelope.body.count - tagLength
+        // Resolved outside the do/catch: a locked keychain or unknown epoch must surface as itself.
+        let symmetricKey = try key(header)
+        let aad = try context.aad(header: header)
         let plain: Data
         do {
             let box = try ChaChaPoly.SealedBox(
                 nonce: ChaChaPoly.Nonce(data: header.nonce),
                 ciphertext: envelope.body.prefix(split), tag: envelope.body.suffix(tagLength))
-            plain = try ChaChaPoly.open(box, using: key(header), authenticating: context.aad(header: header))
+            plain = try ChaChaPoly.open(box, using: symmetricKey, authenticating: aad)
         } catch let error as EnvelopeError {
             throw error
         } catch {
@@ -92,7 +100,7 @@ public enum EnvelopeSealer {
         guard envelope.header.flags.contains(.signed), let signature = envelope.signature else {
             throw EnvelopeError.signatureMissing
         }
-        let message = signatureMessage(envelope.header, body: envelope.body, context: context)
+        let message = try signatureMessage(envelope.header, body: envelope.body, context: context)
         guard key.isValidSignature(signature, for: message) else { throw EnvelopeError.signatureInvalid }
     }
 }
