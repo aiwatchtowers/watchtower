@@ -57,7 +57,8 @@ import WatchtowerSync
 /// The authenticated `created_at` then decides the age. The sender's
 /// `devices.last_seq` is raised as a high-water mark for diagnostics only
 /// (D4: no ordering gate, CloudKit delivers out of order). A `device` record
-/// goes to `deviceRecords`, the link center, unbudgeted.
+/// and a sealed `hello` (a link request, F4) go to `deviceRecords`, the link
+/// center, unbudgeted.
 ///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
@@ -74,10 +75,13 @@ final class RelayProcessor: Sendable {
         var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     }
 
-    /// Where phone `device` records go (`MobileLinkCenter.handleDevice`).
-    /// A value, not a closure parameter, like `RecordingUploads`.
+    /// Where phone `device` records go (`MobileLinkCenter.handleDevice`), and
+    /// hellos, still sealed (`MobileLinkCenter.handleHello`, F4). A value, not
+    /// a closure parameter, like `RecordingUploads`.
     struct DeviceRecords: Sendable {
         let handle: @Sendable (CloudRecord) async throws -> Void
+        /// nil: hellos are left for a hub that links phones.
+        var hello: (@Sendable (CloudRecord) async throws -> Void)?
     }
 
     struct Pass: Equatable, Sendable {
@@ -273,6 +277,13 @@ final class RelayProcessor: Sendable {
                 // Phone activity: the grant traffic that follows runs at the active cadence.
                 self.lastActivity.withLock { $0 = self.now() }
                 try await deviceRecords.handle(record)
+            }, budgeted: false)
+        case RelayRecordKind.hello.rawValue:
+            // A link request, unbudgeted like a device record; the link center opens it.
+            guard let hello = deviceRecords?.hello else { return nil }
+            return Work(run: {
+                self.lastActivity.withLock { $0 = self.now() }
+                try await hello(record)
             }, budgeted: false)
         default:
             // Future kinds have no relay work.
@@ -674,7 +685,10 @@ final class RelayProcessor: Sendable {
             return
         }
         let scan = try await transport.relayHygieneScan()
-        let staleOpened = try scan.opened.filter { try isStale($0, at: current) }.compactMap(\.sealed?.wireName)
+        // A hello passes through sealed (F4): its record name is its wire name.
+        let staleOpened = try scan.opened.filter { try isStale($0, at: current) }.compactMap { record in
+            record.sealed?.wireName ?? (record.kind == RelayRecordKind.hello.rawValue ? record.recordName : nil)
+        }
         let staleUnopenable = scan.unopenable
             .filter { current.timeIntervalSince($0.modifiedAt) > Self.actionMaxAge }
             .map(\.wireName)
@@ -700,6 +714,9 @@ final class RelayProcessor: Sendable {
             let upload = try? RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
             guard let upload, upload.status == .pending else { return true }
             return try sidecar.relayPhase(record.recordName) == .done
+        case RelayRecordKind.hello.rawValue:
+            // A link request outlives every code it can carry (600 s): a week-old one is answered or unanswerable.
+            return true
         default:
             // Device records and future kinds are kept.
             return false

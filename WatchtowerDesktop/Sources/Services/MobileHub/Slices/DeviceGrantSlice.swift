@@ -14,9 +14,12 @@ import WatchtowerSync
 ///
 /// Mobile E2E (spec §2.3, D7): the payload is a `Keybox` carrying the grant,
 /// which the hub's `SecureTransport` seals to the phone's agreement key under
-/// the key-free name `keybox-<device id>`. `keys` stays nil here: Tasks 13/14
-/// fill the epoch keys and revocations. The plain name uses the uppercase
-/// `uuidString` form (F30), the form the transport and the phone use.
+/// the key-free name `keybox-<device id>` and signs with `hub_sig`. A phone
+/// linked with keys (its hello confirmed on the Mac) gets the current epoch's
+/// keys and `K_meta`; a pending request (`pending_devices`) reads
+/// `awaitingConfirmation: true` with no keys; a refusal has no keys. Keys are
+/// never wrapped for a device that is not linked. The plain name uses the
+/// uppercase `uuidString` form (F30), the form the transport and the phone use.
 struct DeviceGrantSlice: SliceSource {
     let kind = SliceKind.deviceGrant
 
@@ -26,12 +29,16 @@ struct DeviceGrantSlice: SliceSource {
 
     let sidecar: HubSyncState
     let hubID: String
+    /// The epoch keys a linked phone's keybox carries; nil: no keys in any keybox (a hub without E2E keys publishes
+    /// nothing anyway).
+    let keyring: HubKeyring?
     let now: @Sendable () -> Date
     private static let logger = Logger(subsystem: Constants.bundleID, category: "DeviceGrantSlice")
 
-    init(sidecar: HubSyncState, hubID: String, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(sidecar: HubSyncState, hubID: String, keyring: HubKeyring? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
         self.sidecar = sidecar
         self.hubID = hubID
+        self.keyring = keyring
         self.now = now
     }
 
@@ -43,27 +50,37 @@ struct DeviceGrantSlice: SliceSource {
             // Housekeeping only: the next tick prunes.
             Self.logger.warning("link refusal prune failed: \(error.localizedDescription, privacy: .public)")
         }
+        // Only a phone linked through a confirmed hello has keys stored, and only its keybox carries the epoch keys.
+        let keyed = Set(try sidecar.deviceKeyRows().map { $0.deviceID.uppercased() })
+        let keys = try keyed.isEmpty ? nil : keyring?.keyboxKeys()
         let linked = try sidecar.linkedDevices().reversed().map { device in
-            (device.decidedAt.map { max($0, device.linkedAt) } ?? device.linkedAt, DeviceGrant(
+            (device.decidedAt.map { max($0, device.linkedAt) } ?? device.linkedAt, Keybox(grant: DeviceGrant(
                 deviceID: device.deviceID, hubID: hubID, name: device.name, scope: device.scope, linked: true,
                 linkedAt: device.linkedAt, typingAllowed: device.typingAllowed,
                 startSessionsAllowed: device.startSessionsAllowed, decidedAt: device.decidedAt
-            ))
+            ), keys: keyed.contains(device.deviceID.uppercased()) ? keys : nil))
         }
-        let linkedIDs = Set(linked.map(\.1.deviceID))
-        let refused = try sidecar.linkRefusals().filter { !linkedIDs.contains($0.deviceID) }.map { refusal in
-            (refusal.at, DeviceGrant(
+        var answered = Set(linked.map { $0.1.grant.deviceID.uppercased() })
+        let pending = try sidecar.pendingDevices().reversed().filter { !answered.contains($0.deviceID.uppercased()) }.map { request in
+            (request.receivedAt, Keybox(grant: DeviceGrant(
+                deviceID: request.deviceID, hubID: hubID, name: request.name, scope: request.scope, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, awaitingConfirmation: true
+            ), keys: nil))
+        }
+        answered.formUnion(pending.map { $0.1.grant.deviceID.uppercased() })
+        let refused = try sidecar.linkRefusals().filter { !answered.contains($0.deviceID.uppercased()) }.map { refusal in
+            (refusal.at, Keybox(grant: DeviceGrant(
                 deviceID: refusal.deviceID, hubID: hubID, name: refusal.name, scope: refusal.scope, linked: false,
                 // The refusal's time: a second identical refusal still
                 // differs, so the phone reads it as an answer.
                 linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: true, decidedAt: refusal.at
-            ))
+            ), keys: nil))
         }
         let encoder = RelayCoder.makeEncoder()
-        return try (linked + refused).prefix(Self.maxRecords).map { modifiedAt, grant in
+        return try (linked + pending + refused).prefix(Self.maxRecords).map { modifiedAt, keybox in
             SliceRecord(
-                kind: kind, id: UUID(uuidString: grant.deviceID)?.uuidString ?? grant.deviceID, modifiedAt: modifiedAt,
-                payload: try encoder.encode(Keybox(grant: grant, keys: nil))
+                kind: kind, id: UUID(uuidString: keybox.grant.deviceID)?.uuidString ?? keybox.grant.deviceID,
+                modifiedAt: modifiedAt, payload: try encoder.encode(keybox)
             )
         }
     }

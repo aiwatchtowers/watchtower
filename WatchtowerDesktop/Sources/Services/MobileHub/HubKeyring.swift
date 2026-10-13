@@ -132,6 +132,17 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
         return EpochKeys(epoch: epoch, dataKey: Data(plain.prefix(32)), alertKey: Data(plain.suffix(32)))
     }
 
+    /// The keys a linked phone's keybox carries (spec §2.3): the current epoch's `K_data` and `K_alert`, and `K_meta`.
+    /// `keysUnavailable` before `ensureGroupKeys`.
+    func keyboxKeys() throws -> KeyboxKeys {
+        let epoch = try currentEpoch()
+        let keys = try epochKeys(epoch)
+        let meta = try metaKey().withUnsafeBytes { Data($0) }
+        return KeyboxKeys(
+            epoch: epoch, dataKey: WireBytes.base64URL(keys.dataKey), alertKey: WireBytes.base64URL(keys.alertKey),
+            metaKey: WireBytes.base64URL(meta))
+    }
+
     /// Due when the current epoch is 90 days old or has used 2^28 seqs (spec §2.2). False before the first epoch.
     func rotationDue() throws -> Bool {
         guard let current = try sidecar.latestEpochs().last else { return false }

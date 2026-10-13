@@ -88,7 +88,7 @@ extension AppState {
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
             RecordingJobSlice(sidecar: storage.sidecar),
             SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
         // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.

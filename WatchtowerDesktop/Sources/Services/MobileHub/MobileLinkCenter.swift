@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import os
 import WatchtowerCore
@@ -13,6 +14,8 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
     case ownerUnknown
     /// The Mac's iCloud account changed while the code was being made.
     case accountChanged
+    /// The hub has no E2E keys (a build without the CloudKit entitlement): a QR without them links no phone.
+    case noKeys
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +24,7 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
         case .account(.unavailable(let reason)): return "Mobile isn't available on this Mac: \(reason)"
         case .account(.available), .ownerUnknown: return "This Mac couldn't read its iCloud account. Try again."
         case .accountChanged: return "This Mac's iCloud account changed. Show a new code."
+        case .noKeys: return "Mobile isn't available on this Mac: its encryption keys are missing."
         }
     }
 }
@@ -42,14 +46,23 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 /// - Every share call is bounded (`shareTimeout`): offline CloudKit waits
 ///   for connectivity, and `handleDevice` runs inside the relay pass, which a
 ///   hub stop waits for. The close after a link runs outside the pass.
-/// - `handleDevice(_:)` links a phone whose record carries a valid nonce,
-///   written by the phone's own user (`shared`: the record's creator equals
-///   `user_record_name` and has accepted both shares). A refused nonce is
-///   published as `device_grant` with `link_refused`; a wrong creator gets
-///   no grant at all. A linked phone keeps its link whatever nonce it sends
-///   later; a removed one is never re-linked by an old nonce. A linked
-///   phone's own rewrite without a nonce unlinks it (`unlinked: true`) or
-///   sets its start-sessions grant.
+/// - Mobile E2E (spec §2.3): the QR carries the hub's public keys. A phone
+///   asks to link with a hello sealed to `hub_kx` under the scanned code's
+///   nonce; `handleHello(_:)` opens it with each kept code's nonce (F4),
+///   checks its signature and that `device_id` is the hash of its signing
+///   key, runs the creator check (`shared`: the record's creator equals
+///   `user_record_name` and has accepted both shares; a wrong creator gets no
+///   answer at all) and the nonce decision without consuming the code. A
+///   refused nonce is answered with a refusal keybox sealed to the hello's
+///   key (F5); a valid one waits in `pendingLinks` with its four-digit code
+///   (SAS) until the owner clicks Link (`confirmLink`, which links it and
+///   publishes its keys) or Refuse (`refuseLink`, `not_confirmed`). Closing
+///   the link refuses every request still waiting: `used_code` after a link
+///   (F17), `expired_code` at expiry, `not_confirmed` otherwise. A linked
+///   phone keeps its link whatever code it sends later; a removed one is
+///   never re-linked by an old nonce.
+/// - `handleDevice(_:)`: a linked phone's own sealed rewrite without a nonce
+///   unlinks it (`unlinked: true`) or sets its start-sessions grant.
 ///
 /// The `device_grant` records are `DeviceGrantSlice`'s, from the sidecar;
 /// every change here nudges that kind.
@@ -84,6 +97,19 @@ final class MobileLinkCenter {
     /// The linked phones, oldest link first.
     private(set) var devices: [HubSyncState.LinkedDevice] = []
 
+    /// A phone whose hello carried a valid code, waiting for the owner's Link or Refuse.
+    struct PendingLink: Identifiable, Equatable {
+        /// The device id.
+        let id: String
+        let name: String
+        /// The four-digit code the phone shows too.
+        let sas: String
+        let receivedAt: Date
+    }
+
+    /// The link requests waiting for the owner, oldest first. Kept here (and in the sidecar), not in the sheet.
+    private(set) var pendingLinks: [PendingLink] = []
+
     /// The heartbeat's `sharing` (set to `MobileHubService.sharing`).
     @ObservationIgnored var onSharingChanged: (@MainActor (HubSharing) -> Void)?
     /// The last `sharing` reported, re-applied to a rebuilt hub.
@@ -93,6 +119,8 @@ final class MobileLinkCenter {
     @ObservationIgnored private let shares: any ShareService
     @ObservationIgnored private let macName: String
     @ObservationIgnored private let ownerUser: @Sendable () async -> String?
+    /// The hub's E2E keys: the QR's public keys, the hello's recipient key, the SAS. nil: no QR is issued.
+    @ObservationIgnored private let keyring: HubKeyring?
     /// nil: the attached hub's publisher.
     @ObservationIgnored private let nudge: (@MainActor (Set<SliceKind>) -> Void)?
     /// The hub the center hangs on now; a rebuilt hub replaces it.
@@ -124,6 +152,7 @@ final class MobileLinkCenter {
         shares: any ShareService,
         macName: String,
         ownerUser: @escaping @Sendable () async -> String?,
+        keyring: HubKeyring? = nil,
         nudge: (@MainActor (Set<SliceKind>) -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
@@ -133,11 +162,13 @@ final class MobileLinkCenter {
         self.shares = shares
         self.macName = macName
         self.ownerUser = ownerUser
+        self.keyring = keyring
         self.nudge = nudge
         self.now = now
         self.sleep = sleep
         self.shareTimeout = shareTimeout
         reloadDevices()
+        reloadPendingLinks()
     }
 
     /// The run's link center over `storage`'s shares, kept across hub
@@ -145,12 +176,15 @@ final class MobileLinkCenter {
     /// links no phone.
     static func forRun(storage: MobileHubStorage, macName: String) -> MobileLinkCenter? {
         guard let shares = storage.shares else { return nil }
-        return MobileLinkCenter(sidecar: storage.sidecar, shares: shares, macName: macName, ownerUser: storage.ownerUser)
+        return MobileLinkCenter(
+            sidecar: storage.sidecar, shares: shares, macName: macName, ownerUser: storage.ownerUser, keyring: storage.keyring)
     }
 
-    /// Where the relay sends phone `device` records.
+    /// Where the relay sends phone `device` records and hellos.
     var relayRoute: RelayProcessor.DeviceRecords {
-        RelayProcessor.DeviceRecords { [weak self] in try await self?.handleDevice($0) }
+        RelayProcessor.DeviceRecords(
+            handle: { [weak self] in try await self?.handleDevice($0) },
+            hello: { [weak self] in try await self?.handleHello($0) })
     }
 
     /// Hangs the center on `hub`: Settings reaches it there, the hub's
@@ -193,6 +227,7 @@ final class MobileLinkCenter {
         let account = await accountAvailability()
         guard account == .available else { throw MobileLinkError.account(account) }
         guard let owner = await resolveOwnerUser() else { throw MobileLinkError.ownerUnknown }
+        guard let keyring else { throw MobileLinkError.noKeys }
         let hubID = try sidecar.ensureHubID()
         let urls = await openPublicLink()
         guard epoch == ownerEpoch else {
@@ -203,9 +238,8 @@ final class MobileLinkCenter {
         let code = LinkPayload.issue(
             hubID: hubID, macName: macName, ownerUser: owner,
             dataShare: urls?.data, relayShare: urls?.relay,
-            // Task 13 replaces these with the hub identity's public keys; an all-zero key never decodes on a phone.
-            hubSigningKey: WireBytes.base64URL(Data(count: 32)),
-            hubAgreementKey: WireBytes.base64URL(Data(count: 32)), now: now()
+            hubSigningKey: WireBytes.base64URL(keyring.signingPublicKey.rawRepresentation),
+            hubAgreementKey: WireBytes.base64URL(keyring.agreementPublicKey.rawRepresentation), now: now()
         )
         do {
             try sidecar.addLinkCode(
@@ -265,13 +299,16 @@ final class MobileLinkCenter {
         await closeLink(reason: .expired)
     }
 
-    /// Closes the public link and removes every participant not bound to a
-    /// used nonce (spec §2.3). No share call when no link was opened.
+    /// Refuses every link request still waiting (before the sweep, so a
+    /// waiting phone's participant is never swept before the owner decided),
+    /// then closes the public link and removes every participant not bound to
+    /// a used nonce (spec §2.3). No share call when no link was opened.
     func closeLink(reason: CloseReason) async {
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil
         lastCloseReason = reason
+        refusePendingLinks(closing: reason)
         do {
             guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return }
             let epoch = sweepEpoch
@@ -291,9 +328,11 @@ final class MobileLinkCenter {
 
     // MARK: - Device records (spec §2.3, §5.1)
 
-    /// Decides one phone `device` record from RelayZone. Share lookups that
-    /// fail leave the phone without a grant (logged; it scans again); only a
-    /// sidecar failure throws.
+    /// Decides one sealed phone `device` record from RelayZone (the relay
+    /// hands over only a linked phone's own record). A record with a nonce
+    /// changes nothing: a link request arrives as a hello, and a linked phone
+    /// keeps its link whatever code it sends later. Only a sidecar failure
+    /// throws.
     func handleDevice(_ record: CloudRecord) async throws {
         let payload: DevicePayload
         do {
@@ -306,41 +345,7 @@ final class MobileLinkCenter {
             try await handleLinkedRewrite(record, payload)
             return
         }
-        guard DeviceScope.knownValues.contains(payload.scope), await creatorMatches(record, payload) else {
-            logger.warning("device record \(record.recordName, privacy: .public) not written by its phone's user: no grant")
-            return
-        }
-        let current = now()
-        switch HubSyncState.LinkDecision.of(try sidecar.linkCode(nonce), deviceID: payload.deviceID, now: current) {
-        case .alreadyUsedByThisDevice:
-            return
-        case .refused(let reason):
-            try refuse(payload, reason, at: current)
-            return
-        case .valid:
-            break
-        }
-        if payload.scope == .shared {
-            guard await hasAcceptedBothShares(payload.userRecordName) else { return }
-        }
-        let device = HubSyncState.LinkedDevice(
-            deviceID: payload.deviceID,
-            name: String(payload.name.prefix(DevicePayload.maxNameLength)),
-            scope: payload.scope,
-            userRecordName: payload.userRecordName,
-            linkedAt: Self.wholeSeconds(current)
-        )
-        let decision = try sidecar.linkDevice(device, nonce: nonce, now: current)
-        if case .refused(let reason) = decision {
-            try refuse(payload, reason, at: current)
-            return
-        }
-        guard decision == .valid else { return }
-        logger.info("linked phone \(payload.deviceID, privacy: .public) (\(payload.scope.rawValue, privacy: .public))")
-        reloadDevices()
-        nudgeKinds([.deviceGrant])
-        // Outside the relay pass: the close's share calls never hold it.
-        closeAfterLink = Task { await self.closeLink(reason: .used) }
+        logger.notice("device record \(record.recordName, privacy: .public) carries a code: a link needs a hello, ignored")
     }
 
     /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
@@ -372,17 +377,6 @@ final class MobileLinkCenter {
         try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
     }
 
-    /// Publishes the refusal, unless the phone is linked already: a linked
-    /// phone keeps its link whatever code it sends later.
-    private func refuse(_ payload: DevicePayload, _ reason: LinkRefusal, at date: Date) throws {
-        guard try sidecar.linkedDevice(payload.deviceID) == nil else { return }
-        try sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
-            deviceID: payload.deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)),
-            scope: payload.scope, reason: reason, at: Self.wholeSeconds(date)
-        ))
-        nudgeKinds([.deviceGrant])
-    }
-
     /// `shared`: the record's creator is the phone's own user. `private`:
     /// the Mac's user wrote it (a stranger on a share cannot pass as a
     /// same-Apple-ID phone). An unknown creator passes `private` only.
@@ -407,6 +401,205 @@ final class MobileLinkCenter {
             logger.error("share participants unreadable, phone not linked: \(error.localizedDescription, privacy: .public)")
             return false
         }
+    }
+
+    // MARK: - Hellos and the owner's confirmation (mobile E2E spec §2.3)
+
+    /// A hello opened and checked: its payload, the device id its signing key hashes to, and the kept code whose
+    /// nonce opened it.
+    private struct OpenedHello {
+        let hello: DeviceHello
+        let deviceID: UUID
+        let code: HubSyncState.LinkCode
+        let nonce: Data
+        let signingKey: Curve25519.Signing.PublicKey
+        let agreementKey: Curve25519.KeyAgreement.PublicKey
+    }
+
+    /// Decides one hello the relay handed over still sealed (F4). A hello that does not open under any kept code,
+    /// or fails a check, is logged and dropped (nothing is published: an unknown code is unanswerable, so the phone
+    /// ends on its wait timeout). A refused code gets a refusal keybox sealed to the hello's key (F5); a valid one
+    /// waits for the owner, the code still unused. Share lookups that fail leave the phone unanswered (logged; it
+    /// scans again); only a sidecar failure throws.
+    func handleHello(_ record: CloudRecord) async throws {
+        guard let keyring else {
+            logger.warning("hello \(record.recordName, privacy: .public): this Mac has no encryption keys, dropped")
+            return
+        }
+        guard let opened = try openHello(record, keyring: keyring) else { return }
+        let payload = opened.hello.device
+        guard DeviceScope.knownValues.contains(payload.scope), await creatorMatches(record, payload) else {
+            logger.warning("hello \(record.recordName, privacy: .public) not written by its phone's user: no answer")
+            return
+        }
+        let deviceID = opened.deviceID.uuidString
+        let current = Self.wholeSeconds(now())
+        switch HubSyncState.LinkDecision.of(opened.code, deviceID: deviceID, now: current) {
+        case .alreadyUsedByThisDevice:
+            return
+        case .refused(let reason):
+            try refuse(opened, reason, at: current)
+            return
+        case .valid:
+            break
+        }
+        if payload.scope == .shared {
+            guard await hasAcceptedBothShares(payload.userRecordName) else { return }
+        }
+        let sas = KeyDerivation.sas(
+            hubID: try WireBytes.hubUUID(sidecar.ensureHubID()), linkNonce: opened.nonce,
+            hubSigning: keyring.signingPublicKey, hubAgreement: keyring.agreementPublicKey,
+            deviceSigning: opened.signingKey, deviceAgreement: opened.agreementKey)
+        let saved = try sidecar.savePendingDevice(HubSyncState.PendingDevice(
+            deviceID: deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)), model: payload.model,
+            scope: payload.scope, userRecordName: payload.userRecordName,
+            signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
+            linkNonce: opened.code.nonce, sas: sas, receivedAt: current))
+        guard saved else { return }
+        logger.info("link request from phone \(deviceID, privacy: .public) waits for the owner")
+        reloadPendingLinks()
+        nudgeKinds([.deviceGrant])
+    }
+
+    /// Link: links the waiting phone (the code is re-checked: it may have expired or been used meanwhile, then the
+    /// phone gets that refusal), stores its keys and publishes its keybox with the epoch keys; the post-link close
+    /// then refuses every other request with `used_code` (F17).
+    func confirmLink(deviceID: String) async throws {
+        guard let outcome = try sidecar.confirmPendingDevice(deviceID, now: Self.wholeSeconds(now())) else { return }
+        let (pending, decision) = outcome
+        reloadPendingLinks()
+        nudgeKinds([.deviceGrant])
+        switch decision {
+        case .valid:
+            if let id = UUID(uuidString: pending.deviceID) { keyring?.forgetRelayKeys(deviceID: id) }
+            logger.info("linked phone \(pending.deviceID, privacy: .public) (\(pending.scope.rawValue, privacy: .public))")
+            reloadDevices()
+            // Outside the caller: the close's share calls never hold it.
+            closeAfterLink = Task { await self.closeLink(reason: .used) }
+        case .refused(let reason):
+            logger.notice("link request of \(pending.deviceID, privacy: .public) refused at Link: \(reason.rawValue, privacy: .public)")
+        case .alreadyUsedByThisDevice:
+            return
+        }
+    }
+
+    /// Refuse (and the sheet's close or expiry through `closeLink`): the phone reads `not_confirmed`.
+    func refuseLink(deviceID: String) async throws {
+        guard try sidecar.refusePendingDevice(deviceID, reason: .notConfirmed, at: Self.wholeSeconds(now())) != nil else {
+            return
+        }
+        logger.info("link request of \(deviceID, privacy: .public) refused by the owner")
+        reloadPendingLinks()
+        nudgeKinds([.deviceGrant])
+    }
+
+    /// Refuses every request still waiting when the link closes (F17): after a link no other request can link
+    /// (`used_code`), at expiry the code is gone (`expired_code`), otherwise the owner did not confirm.
+    private func refusePendingLinks(closing reason: CloseReason) {
+        let refusal: LinkRefusal = switch reason {
+        case .used: .usedCode
+        case .expired: .expiredCode
+        case .sheetClosed, .restart, .issueFailed, .accountChanged: .notConfirmed
+        }
+        do {
+            let refused = try sidecar.refusePendingDevices(reason: refusal, at: Self.wholeSeconds(now()))
+            guard refused > 0 else { return }
+            logger.info("link closed (\(reason.rawValue, privacy: .public)): \(refused) waiting requests refused")
+            reloadPendingLinks()
+            nudgeKinds([.deviceGrant])
+        } catch {
+            logger.error("waiting link requests not refused: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Publishes the refusal sealed to the hello's key (F5), unless the phone is linked already: a linked phone
+    /// keeps its link whatever code it sends later.
+    private func refuse(_ opened: OpenedHello, _ reason: LinkRefusal, at date: Date) throws {
+        let deviceID = opened.deviceID.uuidString
+        guard try sidecar.linkedDevice(deviceID) == nil else { return }
+        let payload = opened.hello.device
+        try sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
+            deviceID: deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)), scope: payload.scope,
+            reason: reason, at: date, agreementKey: opened.agreementKey.rawRepresentation
+        ))
+        nudgeKinds([.deviceGrant])
+    }
+
+    /// Opens the hello under each kept code's nonce (newest first, at most `keptCodes`), then checks it: the frame
+    /// is the hello named by the record, the envelope is signed by the enclosed signing key, and the device id, the
+    /// header's sender and the record name all name the hash of that key (D7). nil (logged by wire name only) when
+    /// it opens under no kept code or fails a check.
+    private func openHello(_ record: CloudRecord, keyring: HubKeyring) throws -> OpenedHello? {
+        let hubUUID = try WireBytes.hubUUID(sidecar.ensureHubID())
+        let context = EnvelopeContext(zone: .relay, wireName: record.recordName)
+        let recipient = try keyring.hubAgreement()
+        let codes = try sidecar.linkCodes()
+        for code in codes {
+            guard let nonce = WireBytes.fromBase64URL(code.nonce) else { continue }
+            let opened: (header: EnvelopeHeader, frame: InnerFrame)
+            do {
+                opened = try SealedBox.open(
+                    record.payload, envelopeClass: .hello, recipient: recipient,
+                    info: SealedBox.helloInfo(hubID: hubUUID, linkNonce: nonce), context: context, verifier: nil)
+            } catch EnvelopeError.authenticationFailed {
+                // Sealed under another kept code's nonce: the expected miss.
+                continue
+            } catch {
+                logger.warning("hello \(record.recordName, privacy: .public) is malformed (\(String(describing: error), privacy: .public)): dropped")
+                return nil
+            }
+            return checkHello(record, opened, code: code, nonce: nonce, context: context, recipient: recipient)
+        }
+        logger.warning("hello \(record.recordName, privacy: .public) opens under none of the \(codes.count) kept codes: dropped")
+        return nil
+    }
+
+    private func checkHello(
+        _ record: CloudRecord,
+        _ opened: (header: EnvelopeHeader, frame: InnerFrame),
+        code: HubSyncState.LinkCode,
+        nonce: Data,
+        context: EnvelopeContext,
+        recipient: Curve25519.KeyAgreement.PrivateKey
+    ) -> OpenedHello? {
+        let name = record.recordName
+        guard opened.frame.kind == RelayRecordKind.hello.rawValue, opened.frame.id == name else {
+            logger.warning("hello \(name, privacy: .public) names another record: dropped")
+            return nil
+        }
+        let hello: DeviceHello
+        let signingKey: Curve25519.Signing.PublicKey
+        let agreementKey: Curve25519.KeyAgreement.PublicKey
+        do {
+            hello = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: opened.frame.payload)
+            signingKey = try Curve25519.Signing.PublicKey(rawRepresentation: try Self.keyBytes(hello.signingKey))
+            agreementKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: try Self.keyBytes(hello.agreementKey))
+            // A key ECDH refuses (a small-order point) could never carry a keybox or a relay key.
+            _ = try recipient.sharedSecretFromKeyAgreement(with: agreementKey)
+        } catch {
+            logger.warning("hello \(name, privacy: .public) has an unusable payload: dropped")
+            return nil
+        }
+        do {
+            try EnvelopeSealer.verify(try Envelope.parse(record.payload), context: context, key: signingKey)
+        } catch {
+            logger.warning("hello \(name, privacy: .public) is not signed by its own key: dropped")
+            return nil
+        }
+        let deviceID = KeyDerivation.deviceID(signingPublicKey: signingKey)
+        let namedID = UUID(uuidString: String(name.dropFirst("\(RelayRecordKind.hello.rawValue)-".count)))
+        guard UUID(uuidString: hello.device.deviceID) == deviceID, opened.header.senderID == deviceID, namedID == deviceID else {
+            logger.warning("hello \(name, privacy: .public): its device id is not its signing key's: dropped")
+            return nil
+        }
+        return OpenedHello(
+            hello: hello, deviceID: deviceID, code: code, nonce: nonce, signingKey: signingKey, agreementKey: agreementKey)
+    }
+
+    /// A public key from the hello: base64url of exactly 32 bytes.
+    private static func keyBytes(_ text: String) throws -> Data {
+        guard let bytes = WireBytes.fromBase64URL(text), bytes.count == 32 else { throw EnvelopeError.frameMalformed }
+        return bytes
     }
 
     // MARK: - The phone list (Settings → Mobile)
@@ -507,6 +700,7 @@ final class MobileLinkCenter {
             clearFailure = error
         }
         reloadDevices()
+        reloadPendingLinks()
         nudgeKinds([.deviceGrant])
         report(.none)
         if let clearFailure { throw clearFailure }
@@ -543,6 +737,16 @@ final class MobileLinkCenter {
             nudge(kinds)
         } else {
             hub?.nudge(kinds: kinds)
+        }
+    }
+
+    private func reloadPendingLinks() {
+        do {
+            pendingLinks = try sidecar.pendingDevices().map {
+                PendingLink(id: $0.deviceID, name: $0.name, sas: $0.sas, receivedAt: $0.receivedAt)
+            }
+        } catch {
+            logger.error("waiting link requests unreadable: \(error.localizedDescription, privacy: .public)")
         }
     }
 

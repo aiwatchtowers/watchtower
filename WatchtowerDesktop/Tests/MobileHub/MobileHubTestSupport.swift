@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -612,5 +613,68 @@ extension StubHubTransport {
     /// The hub's sealing transport over this stub (`TestE2E` keys).
     func sealing(names: (any WireNameIndex)? = nil) -> SecureTransport {
         testSecureTransport(self, names: names)
+    }
+}
+
+// MARK: - Hellos (Task 13)
+
+extension HubSyncState {
+    /// The hub's keyring over this sidecar (an in-memory Keychain), its K_meta and first epoch made.
+    func testKeyring() throws -> HubKeyring {
+        let keyring = try HubKeyring(hubID: try ensureHubID(), sidecar: self, store: InMemoryHubKeyStore())
+        try keyring.ensureGroupKeys()
+        return keyring
+    }
+}
+
+/// A test phone's side of linking: its hello sealed to the hub's agreement key under a code's nonce, exactly as the
+/// phone's `SecureTransport` seals it, and its keybox opened with its own key and checked against the hub's signing key.
+enum TestHello {
+    /// A fresh phone identity (random keys; its device id is the hash of its signing key).
+    static func newPhone() -> DeviceIdentityKeys {
+        DeviceIdentityKeys(signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey())
+    }
+
+    /// `device` (whose `device_id` names the record) as a hello sealed by `phone` under `nonce`. `signer` and
+    /// `senderID` override the phone's own (forgeries); `wire` gives the CloudKit form (kind `wt`) the relay reads,
+    /// otherwise the form `SecureTransport` hands over (kind `hello`, still sealed).
+    static func record(
+        _ device: DevicePayload,
+        from phone: DeviceIdentityKeys,
+        to keyring: HubKeyring,
+        nonce: String,
+        signer: Curve25519.Signing.PrivateKey? = nil,
+        senderID: UUID? = nil,
+        creator: String? = nil,
+        wire: Bool = false
+    ) throws -> CloudRecord {
+        let hello = DeviceHello(
+            device: device, signingKey: WireBytes.base64URL(phone.signing.publicKey.rawRepresentation),
+            agreementKey: WireBytes.base64URL(phone.agreement.publicKey.rawRepresentation))
+        let plain = try CloudRecordFactory.record(for: hello, modifiedAt: device.updatedAt)
+        guard case .hub(let hubID) = keyring.role else { throw TestOpeningError.notAnEnvelope("not a hub keyring") }
+        let envelope = try SealedBox.seal(
+            InnerFrame(kind: plain.kind, id: plain.recordName, payload: plain.payload), envelopeClass: .hello,
+            to: keyring.agreementPublicKey,
+            info: SealedBox.helloInfo(hubID: hubID, linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(nonce))),
+            hubID: hubID, senderID: senderID ?? phone.deviceID, epoch: 0, seq: 1,
+            context: EnvelopeContext(zone: .relay, wireName: plain.recordName), signer: signer ?? phone.signing)
+        return CloudRecord(
+            recordName: plain.recordName, zone: .relay, kind: wire ? WireKind.envelope : plain.kind,
+            modifiedAt: plain.modifiedAt, payload: envelope, creatorUserRecordName: creator)
+    }
+
+    /// `phone`'s keybox among `records` (the `device_grant` slice), sealed by the hub's transport and opened with the
+    /// phone's agreement key, its signature checked with the hub's public signing key; nil when there is none.
+    static func keybox(for phone: DeviceIdentityKeys, in records: [SliceRecord], keyring: HubKeyring) async throws -> Keybox? {
+        guard let record = records.first(where: { $0.id == phone.deviceID.uuidString }) else { return nil }
+        guard case .hub(let hubID) = keyring.role else { return nil }
+        let secure = SecureTransport(inner: InMemoryCloudTransport(), keys: keyring, rollback: keyring)
+        let wire = try await secure.seal(CloudRecordFactory.record(for: record))
+        let opened = try SealedBox.open(
+            wire.payload, envelopeClass: .keybox, recipient: phone.agreement,
+            info: SealedBox.keyboxInfo(hubID: hubID, deviceID: phone.deviceID),
+            context: EnvelopeContext(zone: .data, wireName: wire.recordName), verifier: keyring.signingPublicKey)
+        return try RelayCoder.makeDecoder().decode(Keybox.self, from: opened.frame.payload)
     }
 }

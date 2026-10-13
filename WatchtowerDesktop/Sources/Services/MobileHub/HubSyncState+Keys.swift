@@ -11,7 +11,7 @@ import WatchtowerSync
 /// - `devices` + `signing_key`, `agreement_key`, `link_nonce` (the QR nonce text), `last_seq` (D4 diagnostics).
 /// - `link_refusals` + `agreement_key`: the refused hello's key, so the refusal keybox can be sealed (F5).
 /// - `slice_state` + `wire_name`: the opaque record name beside the plain one (F19, written by Task 11).
-/// - `pending_devices` (Task 13), `revoked_devices` (Task 14), `relay_seen` (the relay rollback guard, F3).
+/// - `pending_devices` (Task 13: `savePendingDevice`, `confirmPendingDevice`), `revoked_devices` (Task 14), `relay_seen` (the relay rollback guard, F3).
 /// No column holds a key in the clear: epoch keys and K_meta are sealed, the device columns are public keys.
 extension HubSyncState {
     private static let keysLogger = Logger(subsystem: Constants.bundleID, category: "HubKeys")
@@ -195,6 +195,134 @@ extension HubSyncState {
             }
             return nil
         }
+    }
+
+    // MARK: - Pending link requests (Task 13)
+
+    /// A phone whose hello carried a valid code, waiting for the owner's Link or Refuse on the Mac. Its keys are
+    /// public keys; `sas` is the four-digit code both screens show.
+    struct PendingDevice: Equatable, Sendable {
+        let deviceID: String
+        let name: String
+        let model: String
+        let scope: DeviceScope
+        let userRecordName: String
+        let signingKey: Data
+        let agreementKey: Data
+        /// The QR nonce text of the code the hello was sealed under.
+        let linkNonce: String
+        let sas: String
+        let receivedAt: Date
+    }
+
+    /// Stores a pending request; false (nothing written) when the same device already waits with the same code. The
+    /// same device with another code replaces its request.
+    @discardableResult
+    func savePendingDevice(_ pending: PendingDevice) throws -> Bool {
+        try queue.write { db in
+            if let stored = try Row.fetchOne(
+                db, sql: "SELECT link_nonce, signing_key, agreement_key FROM pending_devices WHERE device_id = ? COLLATE NOCASE",
+                arguments: [pending.deviceID]),
+               stored["link_nonce"] as String? == pending.linkNonce, stored["signing_key"] as Data? == pending.signingKey,
+               stored["agreement_key"] as Data? == pending.agreementKey {
+                return false
+            }
+            try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
+            try db.execute(
+                sql: """
+                    INSERT INTO pending_devices (device_id, name, model, scope, user_record_name, signing_key, agreement_key,
+                                                 link_nonce, sas, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    pending.deviceID, pending.name, pending.model, pending.scope.rawValue, pending.userRecordName,
+                    pending.signingKey, pending.agreementKey, pending.linkNonce, pending.sas,
+                    pending.receivedAt.timeIntervalSince1970
+                ])
+            return true
+        }
+    }
+
+    /// Every pending request, oldest first.
+    func pendingDevices() throws -> [PendingDevice] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM pending_devices ORDER BY received_at, device_id").compactMap(Self.pending)
+        }
+    }
+
+    /// The owner clicked Link: in one transaction the code is re-checked (`linkDevice`: it may have expired or been
+    /// used meanwhile), a valid one links the phone with its keys and nonce, a refused one becomes a refusal sealed
+    /// to the phone's key (F5), and the request goes. nil when no request waits for `deviceID`.
+    func confirmPendingDevice(_ deviceID: String, now: Date) throws -> (pending: PendingDevice, decision: LinkDecision)? {
+        try writeKeys { db in
+            guard let pending = try Self.pendingDevice(deviceID, db) else { return nil }
+            let device = LinkedDevice(
+                deviceID: pending.deviceID, name: pending.name, scope: pending.scope,
+                userRecordName: pending.userRecordName, linkedAt: now)
+            let decision = try Self.linkDevice(device, nonce: pending.linkNonce, now: now, db)
+            switch decision {
+            case .valid:
+                try db.execute(
+                    sql: "UPDATE devices SET signing_key = ?, agreement_key = ?, link_nonce = ? WHERE device_id = ? COLLATE NOCASE",
+                    arguments: [pending.signingKey, pending.agreementKey, pending.linkNonce, pending.deviceID])
+            case .refused(let reason):
+                try Self.refuse(pending, reason, at: now, db)
+            case .alreadyUsedByThisDevice:
+                break
+            }
+            try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
+            return (pending, decision)
+        }
+    }
+
+    /// Refuses one pending request with `reason` (the owner's Refuse: `not_confirmed`); the removed request, nil when
+    /// none waited.
+    @discardableResult
+    func refusePendingDevice(_ deviceID: String, reason: LinkRefusal, at date: Date) throws -> PendingDevice? {
+        try writeKeys { db in
+            guard let pending = try Self.pendingDevice(deviceID, db) else { return nil }
+            try Self.refuse(pending, reason, at: date, db)
+            try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
+            return pending
+        }
+    }
+
+    /// Refuses every pending request with `reason` (the link closed); how many there were.
+    func refusePendingDevices(reason: LinkRefusal, at date: Date) throws -> Int {
+        try writeKeys { db in
+            let all = try Row.fetchAll(db, sql: "SELECT * FROM pending_devices").compactMap(Self.pending)
+            for pending in all { try Self.refuse(pending, reason, at: date, db) }
+            try db.execute(sql: "DELETE FROM pending_devices")
+            return all.count
+        }
+    }
+
+    /// A refusal sealed to the request's key, unless the phone is linked already (it keeps its link).
+    private static func refuse(_ pending: PendingDevice, _ reason: LinkRefusal, at date: Date, _ db: Database) throws {
+        let linked = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS (SELECT 1 FROM devices WHERE device_id = ? COLLATE NOCASE)", arguments: [pending.deviceID]
+        ) ?? false
+        guard !linked else { return }
+        try saveLinkRefusal(LinkRefusalRecord(
+            deviceID: pending.deviceID, name: pending.name, scope: pending.scope, reason: reason, at: date,
+            agreementKey: pending.agreementKey), db)
+    }
+
+    private static func pendingDevice(_ deviceID: String, _ db: Database) throws -> PendingDevice? {
+        try Row.fetchOne(db, sql: "SELECT * FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            .flatMap(pending)
+    }
+
+    /// nil for a row missing a key column (never written so by `savePendingDevice`).
+    private static func pending(_ row: Row) -> PendingDevice? {
+        guard let signingKey = row["signing_key"] as Data?, let agreementKey = row["agreement_key"] as Data?,
+              let nonce = row["link_nonce"] as String?, let sas = row["sas"] as String?,
+              let receivedAt = row["received_at"] as Double? else { return nil }
+        return PendingDevice(
+            deviceID: row["device_id"], name: row["name"] ?? "", model: row["model"] ?? "",
+            scope: DeviceScope(rawValue: row["scope"] ?? DeviceScope.private.rawValue),
+            userRecordName: row["user_record_name"] ?? "", signingKey: signingKey, agreementKey: agreementKey,
+            linkNonce: nonce, sas: sas, receivedAt: Date(timeIntervalSince1970: receivedAt))
     }
 
     // MARK: - Relay seq high-water mark (D4)

@@ -95,7 +95,8 @@ final class HubHeartbeatTests: XCTestCase {
         let hub = try makeHub(transport: transport, sidecar: sidecar, host: host)
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { owner.value },
-            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
         )
         center.attach(to: hub)
         await hub.enable()

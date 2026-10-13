@@ -91,6 +91,7 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(hub.relayInterval(), .seconds(30))
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: try sidecar.testKeyring(),
             nudge: { _ in }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
         )
         hub.linkCenter = center
@@ -635,7 +636,8 @@ final class MobileHubServiceTests: XCTestCase {
         let service = makeService(transport: transport)
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
-            nudge: { _ in }
+            keyring: try sidecar.testKeyring(),
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
         )
         center.attach(to: service)
         await service.start()
@@ -845,7 +847,8 @@ final class MobileHubServiceTests: XCTestCase {
         let service = makeService(transport: transport, relayInterval: .seconds(3600))
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
-            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
         )
         center.attach(to: service)
         await service.start()
@@ -890,7 +893,8 @@ final class MobileHubServiceTests: XCTestCase {
         let shares = FakeShareService()
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
-            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
         )
         try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
         center.attach(to: makeService(transport: StubHubTransport()))

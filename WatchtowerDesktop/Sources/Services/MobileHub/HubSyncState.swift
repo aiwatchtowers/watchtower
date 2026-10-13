@@ -765,6 +765,9 @@ final class HubSyncState: Sendable {
         let scope: DeviceScope
         let reason: LinkRefusal
         let at: Date
+        /// The refused hello's agreement key: the refusal keybox is sealed to it (F5). nil for a refusal from
+        /// before E2E.
+        var agreementKey: Data?
     }
 
     /// What a nonce does for a device.
@@ -777,7 +780,10 @@ final class HubSyncState: Sendable {
 
         static func of(_ code: LinkCode?, deviceID: String, now: Date) -> Self {
             guard let code else { return .refused(.unknownCode) }
-            if let used = code.usedByDevice { return used == deviceID ? .alreadyUsedByThisDevice : .refused(.usedCode) }
+            if let used = code.usedByDevice {
+                // Ids are UUID text whose spelling may differ (`linkDevice` keeps the stored row's).
+                return used.caseInsensitiveCompare(deviceID) == .orderedSame ? .alreadyUsedByThisDevice : .refused(.usedCode)
+            }
             return code.exp >= now ? .valid : .refused(.expiredCode)
         }
     }
@@ -825,35 +831,38 @@ final class HubSyncState: Sendable {
     /// device, upserts its row (a re-link keeps the owner's grants) and
     /// forgets its refusal. Returns the decision it found.
     func linkDevice(_ device: LinkedDevice, nonce: String, now: Date) throws -> LinkDecision {
-        try queue.write { db in
-            let decision = LinkDecision.of(try Self.fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
-            guard decision == .valid else { return decision }
-            // A re-link keeps the row's own spelling: ids match ignoring case (`linkedDevice`), the key does not.
-            let deviceID = try String.fetchOne(
-                db, sql: "SELECT device_id FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [device.deviceID]
-            ) ?? device.deviceID
-            try db.execute(
-                sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
-                arguments: [deviceID, now.timeIntervalSince1970, nonce]
-            )
-            try db.execute(
-                sql: """
-                    INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
-                                         start_sessions_allowed, decided_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id) DO UPDATE SET
-                        name = excluded.name, scope = excluded.scope,
-                        user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
-                    """,
-                arguments: [
-                    deviceID, device.name, device.scope.rawValue, device.userRecordName,
-                    device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
-                    device.decidedAt?.timeIntervalSince1970
-                ]
-            )
-            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
-            return .valid
-        }
+        try queue.write { db in try Self.linkDevice(device, nonce: nonce, now: now, db) }
+    }
+
+    /// `linkDevice` inside the caller's transaction.
+    static func linkDevice(_ device: LinkedDevice, nonce: String, now: Date, _ db: Database) throws -> LinkDecision {
+        let decision = LinkDecision.of(try fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
+        guard decision == .valid else { return decision }
+        // A re-link keeps the row's own spelling: ids match ignoring case (`linkedDevice`), the key does not.
+        let deviceID = try String.fetchOne(
+            db, sql: "SELECT device_id FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [device.deviceID]
+        ) ?? device.deviceID
+        try db.execute(
+            sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
+            arguments: [deviceID, now.timeIntervalSince1970, nonce]
+        )
+        try db.execute(
+            sql: """
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
+                                     start_sessions_allowed, decided_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    name = excluded.name, scope = excluded.scope,
+                    user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
+                """,
+            arguments: [
+                deviceID, device.name, device.scope.rawValue, device.userRecordName,
+                device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
+                device.decidedAt?.timeIntervalSince1970
+            ]
+        )
+        try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        return .valid
     }
 
     /// Device ids are UUID text; the lookup ignores case, like the key rows (`deviceKeyRow`).
@@ -904,23 +913,27 @@ final class HubSyncState: Sendable {
     }
 
     func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
-        try queue.write { db in
-            // One refusal per phone whatever the id's spelling (the upsert key is case-sensitive).
-            try db.execute(
-                sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE AND device_id != ?",
-                arguments: [refusal.deviceID, refusal.deviceID])
-            try db.execute(
-                sql: """
-                    INSERT INTO link_refusals (device_id, name, scope, reason, at) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id) DO UPDATE SET
-                        name = excluded.name, scope = excluded.scope, reason = excluded.reason, at = excluded.at
-                    """,
-                arguments: [
-                    refusal.deviceID, refusal.name, refusal.scope.rawValue, refusal.reason.rawValue,
-                    refusal.at.timeIntervalSince1970
-                ]
-            )
-        }
+        try queue.write { db in try Self.saveLinkRefusal(refusal, db) }
+    }
+
+    /// `saveLinkRefusal` inside the caller's transaction. A refusal without an agreement key keeps the one stored.
+    static func saveLinkRefusal(_ refusal: LinkRefusalRecord, _ db: Database) throws {
+        // One refusal per phone whatever the id's spelling (the upsert key is case-sensitive).
+        try db.execute(
+            sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE AND device_id != ?",
+            arguments: [refusal.deviceID, refusal.deviceID])
+        try db.execute(
+            sql: """
+                INSERT INTO link_refusals (device_id, name, scope, reason, at, agreement_key) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    name = excluded.name, scope = excluded.scope, reason = excluded.reason, at = excluded.at,
+                    agreement_key = COALESCE(excluded.agreement_key, link_refusals.agreement_key)
+                """,
+            arguments: [
+                refusal.deviceID, refusal.name, refusal.scope.rawValue, refusal.reason.rawValue,
+                refusal.at.timeIntervalSince1970, refusal.agreementKey
+            ]
+        )
     }
 
     /// Every remembered refusal, newest first.
@@ -929,7 +942,8 @@ final class HubSyncState: Sendable {
             try Row.fetchAll(db, sql: "SELECT * FROM link_refusals ORDER BY at DESC, device_id").map { row in
                 LinkRefusalRecord(
                     deviceID: row["device_id"], name: row["name"], scope: DeviceScope(rawValue: row["scope"]),
-                    reason: LinkRefusal(rawValue: row["reason"]), at: Date(timeIntervalSince1970: row["at"])
+                    reason: LinkRefusal(rawValue: row["reason"]), at: Date(timeIntervalSince1970: row["at"]),
+                    agreementKey: row["agreement_key"]
                 )
             }
         }
@@ -942,14 +956,15 @@ final class HubSyncState: Sendable {
     }
 
     /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
-    /// code, linked phone and refusal.
+    /// code, linked phone, pending link request and refusal.
     func clearLinkState() throws {
         try queue.write { db in
-            try db.execute(sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM link_refusals")
+            try db.execute(
+                sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM pending_devices; DELETE FROM link_refusals")
         }
     }
 
-    private static func fetchLinkCode(_ nonce: String, _ db: Database) throws -> LinkCode? {
+    static func fetchLinkCode(_ nonce: String, _ db: Database) throws -> LinkCode? {
         try Row.fetchOne(db, sql: "SELECT * FROM link_codes WHERE nonce = ?", arguments: [nonce]).map(linkCode)
     }
 

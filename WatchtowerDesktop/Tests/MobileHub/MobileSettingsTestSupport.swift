@@ -36,6 +36,7 @@ final class MobileSettingsFixture {
     let clock: LinkTestClock
     let hub: MobileHubService
     let center: MobileLinkCenter
+    let keyring: HubKeyring
     let host: FakeMobileSettingsHost
 
     /// `shareAccount` is what the link center's probe reads; the hub's own
@@ -69,8 +70,10 @@ final class MobileSettingsFixture {
             availabilityReprobeInterval: .milliseconds(20)
         ) { [weak host] in host?.isMobileSyncEnabled ?? false }
         let clock = self.clock
+        keyring = try sidecar.testKeyring()
         center = MobileLinkCenter(
             sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: keyring,
             nudge: { _ in },
             now: { clock.now },
             // The center's own expiry timer parks: only the code under test closes.
@@ -87,6 +90,19 @@ final class MobileSettingsFixture {
             now: { clock.now },
             sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
         )
+    }
+
+    /// A fresh phone's hello for the open code, handed to the center: it waits for the owner.
+    @discardableResult
+    func pendingHello(name: String) async throws -> DeviceIdentityKeys {
+        let phone = TestHello.newPhone()
+        let nonce = try XCTUnwrap(center.openCode?.nonce, "no code open")
+        let device = DevicePayload(
+            deviceID: phone.deviceID.uuidString, name: name, model: "iPhone18,1", appVersion: "0.0.0-test",
+            scope: .private, userRecordName: "_owner-acme", linkNonce: nonce, unlinked: nil, typingRequested: false,
+            startSessions: true, updatedAt: clock.now)
+        try await center.handleHello(try TestHello.record(device, from: phone, to: keyring, nonce: nonce))
+        return phone
     }
 
     func startHub() async {
