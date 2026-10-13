@@ -34,8 +34,10 @@ final class MobileLinkSheetViewModel: Identifiable {
     /// The close at 0, outside the countdown task: a New code waits for it,
     /// so the old close never lands on the new code's link.
     @ObservationIgnored private var expiryClose: Task<Void, Never>?
-    /// The phones linked before the code was shown: a new one used it.
-    @ObservationIgnored private var knownDevices: Set<String> = []
+    /// The phones linked before the code was shown, with their link time:
+    /// a new one used the code, and so did a linked one whose link time
+    /// moved (a phone that scans again re-links, keeping its grants).
+    @ObservationIgnored private var knownDevices: [String: Date] = [:]
     @ObservationIgnored private var started = false
     /// A code is being issued: a second New code click is dropped.
     @ObservationIgnored private var issuing = false
@@ -85,7 +87,7 @@ final class MobileLinkSheetViewModel: Identifiable {
         await expiryClose?.value
         guard !closed else { return }
         phase = .issuing
-        knownDevices = Set(center.devices.map(\.deviceID))
+        knownDevices = Dictionary(center.devices.map { ($0.deviceID, $0.linkedAt) }) { first, _ in first }
         do {
             let code = try await center.issueCode()
             // Closed while the code was being made: it must not stay open.
@@ -119,7 +121,7 @@ final class MobileLinkSheetViewModel: Identifiable {
     func tick() async -> Bool {
         guard case .showing(let code) = phase else { return false }
         if center.openCode?.nonce != code.nonce {
-            if let linked = center.devices.first(where: { !knownDevices.contains($0.deviceID) }) {
+            if let linked = center.devices.first(where: { knownDevices[$0.deviceID] != $0.linkedAt }) {
                 phase = .linked(linked.name)
                 return false
             }

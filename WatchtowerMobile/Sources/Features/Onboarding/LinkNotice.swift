@@ -1,7 +1,9 @@
 /// What the phone tells the owner about its link outside a scan (spec §9).
 enum LinkNotice: Equatable {
-    /// `TransportEvent.unlinked`: the Mac removed this phone.
-    case removed
+    /// `TransportEvent.unlinked` or the Mac's deleted grant: the Mac
+    /// removed this phone. `notSent`: the outbox items and recordings the
+    /// wipe dropped before the Mac got them.
+    case removed(notSent: Int = 0)
     /// The heartbeat's `hub_id` is another hub's.
     case moved(macName: String)
     /// No heartbeat for a day.
@@ -29,7 +31,8 @@ enum LinkNotice: Equatable {
 
     var message: String {
         switch self {
-        case .removed: "This Mac removed this phone"
+        case let .removed(notSent):
+            "This Mac removed this phone" + (notSent > 0 ? " — \(Self.notSentText(notSent))" : "")
         case let .moved(macName): "Watchtower moved to \(macName) — scan the code on that Mac"
         case .stale: "Your Mac hasn't synced for a day — if it changed iCloud account, link again"
         case let .notSent(count):

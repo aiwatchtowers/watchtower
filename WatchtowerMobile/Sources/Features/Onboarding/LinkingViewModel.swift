@@ -240,7 +240,8 @@ final class LinkingViewModel {
             userRecordName: userRecordName,
             nonce: payload.nonce,
             dataShareURL: shared ? payload.dataShare : nil,
-            relayShareURL: shared ? payload.relayShare : nil
+            relayShareURL: shared ? payload.relayShare : nil,
+            deviceID: identity.deviceID
         )
         guard let host else { return }
         // From the accept on, a kill is resumed (the scope's database, the
@@ -317,7 +318,9 @@ final class LinkingViewModel {
                     return
                 }
                 if grant.linked {
-                    await complete(pending.link)
+                    var linked = pending.link
+                    linked.linkedAt = grant.linkedAt
+                    await complete(linked)
                     return
                 }
             }
@@ -336,6 +339,7 @@ final class LinkingViewModel {
     private func complete(_ record: LinkRecord) async {
         store.link = record
         store.pending = nil
+        store.grantMissingSince = nil
         link = record
         writesBlocked = false
         // A notice about an old link no longer applies; the report of a
@@ -365,7 +369,8 @@ final class LinkingViewModel {
     }
 
     /// `TransportEvent.unlinked`: the Mac's zones are gone (the phone was
-    /// removed, maybe while offline).
+    /// removed, maybe while offline); or the Mac deleted this phone's grant
+    /// (`evaluate(grant:heartbeat:)`).
     func removedByMac() async {
         guard link != nil else { return }
         let wipe = await unlinkCurrent(writeUnlinked: false)
@@ -373,7 +378,7 @@ final class LinkingViewModel {
         if !isBusy { phase = .idle }
         // A recording problem, or a capture the removal cut short, is the
         // news that matters: it also says the link ended.
-        notice = LinkNotice.after(wipe, otherwise: .removed)
+        notice = LinkNotice.after(wipe, otherwise: .removed(notSent: wipe.notSent))
     }
 
     /// The transport saw an iCloud account change. Another account ends the
@@ -399,6 +404,50 @@ final class LinkingViewModel {
         pendingSwitch = nil
         phase = .idle
         notice = LinkNotice.after(wipe)
+    }
+
+    /// How long the linked hub must go on without this phone's grant,
+    /// across two fetches, before the phone reads it as removed (#64).
+    static let removalConfirmAfter: TimeInterval = 30
+
+    /// After each fetch: this phone's own `device_grant` in the linked hub's
+    /// replica. The Mac's Remove deletes it (`DeviceGrantSlice` publishes no
+    /// record for a removed phone), and for a same-Apple-ID phone that is
+    /// the only sign: its zones are the Mac's own and never vanish, so no
+    /// `unlinked` event comes (#64). A wrongful wipe loses data, so the
+    /// removal needs all of:
+    /// - a link that kept the device id it linked with and its grant's
+    ///   `linked_at` (an older link never reads a removal);
+    /// - no scan, unlink or pending link running;
+    /// - the linked hub's heartbeat, newer than the link's `linked_at` (the
+    ///   replica holds that hub's zone as the Mac wrote it after the link);
+    /// - no linked grant for that device id (absent, or `linked: false`)
+    ///   on two looks at least `removalConfirmAfter` apart, with none in
+    ///   between: the first look is kept in `LinkStore.grantMissingSince`
+    ///   (across a relaunch) and a linked grant of the linked device and hub
+    ///   clears it in any fetch, whatever its heartbeat or a scan running —
+    ///   so a stale first look never counts as the second.
+    /// Then it is the same removal as that event. A shared phone whose
+    /// participant removal failed is told the same way.
+    func evaluate(grant: DeviceGrant?, heartbeat: HeartbeatPayload?) async {
+        guard let link, let deviceID = link.deviceID, let linkedAt = link.linkedAt else { return }
+        // Another device's or hub's grant says nothing about this link.
+        if let grant, grant.deviceID != deviceID || grant.hubID != link.hubID { return }
+        if grant?.linked == true {
+            store.grantMissingSince = nil
+            return
+        }
+        // Only the missing or unlinked grant needs the rest.
+        guard !isBusy, store.pending == nil,
+              let heartbeat, heartbeat.hubID == link.hubID, heartbeat.updatedAt > linkedAt else { return }
+        let now = clock.now()
+        guard let since = store.grantMissingSince else {
+            store.grantMissingSince = now
+            return
+        }
+        guard now.timeIntervalSince(since) >= Self.removalConfirmAfter else { return }
+        Self.logger.notice("the linked Mac no longer grants this phone: removed")
+        await removedByMac()
     }
 
     /// After each fetch: the heartbeat names another hub (moved: writes
@@ -448,6 +497,7 @@ final class LinkingViewModel {
         guard let current = link, let host else { return LocalWipe() }
         let device = linkedDevice
         store.link = nil
+        store.grantMissingSince = nil
         link = nil
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)

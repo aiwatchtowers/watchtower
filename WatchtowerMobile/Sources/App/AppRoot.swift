@@ -41,6 +41,10 @@ final class AppRoot {
     @ObservationIgnored private var retired = false
     /// The restart running or queued last: restarts run one at a time.
     @ObservationIgnored private var restartTask: Task<LocalWipe, Error>?
+    /// The link check of the last fetch (`checkHeartbeat`); a test awaits it.
+    @ObservationIgnored private(set) var linkCheck: Task<Void, Never>?
+    /// The last undecodable grant payload, logged once.
+    @ObservationIgnored private var unreadableGrant: Data?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     /// `restarter` nil keeps `env` for good (the demo, tests).
@@ -137,21 +141,64 @@ final class AppRoot {
         }
     }
 
-    /// The heartbeat after each fetch: the moved and stale checks.
+    /// The heartbeat and the linked device's grant after each fetch: the
+    /// moved and stale checks, and the Mac's Remove (#64). The grant is the
+    /// one of the device id the link was made with (`LinkRecord.deviceID`),
+    /// never the Keychain's current id; a link without it is judged on the
+    /// heartbeat only.
     private func checkHeartbeat() {
-        guard !isDemo, linking.link != nil else { return }
+        guard !isDemo, let link = linking.link else { return }
         let store = env.store
+        let grantName = link.deviceID.map { SliceKind.deviceGrant.recordName(id: $0) }
         let heartbeat: HeartbeatPayload?
+        let grantPayload: Data?
         do {
-            heartbeat = try store.reader.read { db in
-                try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+            (heartbeat, grantPayload) = try store.reader.read { db in
+                (
+                    try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db),
+                    try grantName.flatMap { try store.payload(forRecordName: $0, from: db) }
+                )
             }
         } catch {
-            Self.logger.error("heartbeat read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
             return
         }
+        let grant = grantName == nil ? .unreadable : readGrant(grantPayload)
         let linking = linking
-        Task { await linking.evaluate(heartbeat: heartbeat) }
+        linkCheck = Task {
+            await linking.evaluate(heartbeat: heartbeat)
+            switch grant {
+            case .absent: await linking.evaluate(grant: nil, heartbeat: heartbeat)
+            case let .decoded(value): await linking.evaluate(grant: value, heartbeat: heartbeat)
+            case .unreadable: break
+            }
+        }
+    }
+
+    /// The linked device's stored grant as the removal check may judge it.
+    private enum GrantReading {
+        case absent
+        case decoded(DeviceGrant)
+        /// Stored but undecodable (a newer Mac's), or no device id to read
+        /// it by: never judged — unreadable is not absent.
+        case unreadable
+    }
+
+    /// Reads the grant's payload. An undecodable one is logged once per
+    /// payload, not on every fetch.
+    private func readGrant(_ payload: Data?) -> GrantReading {
+        guard let payload else { return .absent }
+        do {
+            let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: payload)
+            unreadableGrant = nil
+            return .decoded(grant)
+        } catch {
+            if unreadableGrant != payload {
+                unreadableGrant = payload
+                Self.logger.warning("undecodable device grant kept, not judged: \(error.localizedDescription, privacy: .public)")
+            }
+            return .unreadable
+        }
     }
 
     /// Shuts the current environment down and builds the next one on
