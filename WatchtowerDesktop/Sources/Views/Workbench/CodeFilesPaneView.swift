@@ -22,6 +22,7 @@ struct CodeFilesPaneView: View {
         let tabs = files.tabs(for: root)
         let git = files.git(for: root)
         VStack(spacing: 0) {
+            RemovedWorktreeBanner(files: files, orphans: files.orphanedEdits(workbenchID: project.id))
             if let error = files.editorErrors[root] {
                 Text(error)
                     .font(.caption)
@@ -44,8 +45,9 @@ struct CodeFilesPaneView: View {
                 Divider()
                 if let active = tabs.active {
                     let buffer = files.buffer(for: root, relPath: active)
+                    // A new jump bar per root: its controller holds the root.
                     JumpBar(files: files, root: root, buffer: buffer, status: git.files[active])
-                        .id(project.id)
+                        .id(root)
                     Divider()
                     CodeFileBanners(buffer: buffer)
                 }
@@ -119,6 +121,61 @@ struct CodeFilesPaneView: View {
     }
 
     static func name(_ path: String) -> String { (path as NSString).lastPathComponent }
+}
+
+/// Over the Files pane once a worktree with unsaved edits was removed
+/// (spec §7): those edits are never written; each file offers Copy (its
+/// text to the pasteboard) and Discard.
+private struct RemovedWorktreeBanner: View {
+    let files: CodeFilesCenter
+    let orphans: [CodeFilesCenter.OrphanedEdit]
+
+    var body: some View {
+        if !orphans.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(groups, id: \.root) { group in
+                    Text(group.root.removedBannerText(unsavedFiles: group.edits.count))
+                        .font(.caption.weight(.semibold))
+                    ForEach(group.edits) { edit in
+                        row(edit)
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.12))
+            Divider()
+        }
+    }
+
+    private var groups: [(root: CodeRoot, edits: [CodeFilesCenter.OrphanedEdit])] {
+        var order: [CodeRoot] = []
+        var byRoot: [CodeRoot: [CodeFilesCenter.OrphanedEdit]] = [:]
+        for edit in orphans {
+            if byRoot[edit.root] == nil { order.append(edit.root) }
+            byRoot[edit.root, default: []].append(edit)
+        }
+        return order.map { ($0, byRoot[$0] ?? []) }
+    }
+
+    private func row(_ edit: CodeFilesCenter.OrphanedEdit) -> some View {
+        HStack(spacing: 8) {
+            Text(edit.buffer.relPath)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Button("Copy") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(edit.buffer.text, forType: .string)
+            }
+            .help("Copy the unsaved text of \(edit.buffer.relPath)")
+            Button("Discard") { files.discardOrphanedEdit(id: edit.id) }
+                .help("Drop these edits — nothing was written")
+        }
+        .controlSize(.small)
+    }
 }
 
 /// The tab strip: drag to reorder, double click keeps a preview tab.
@@ -346,6 +403,10 @@ struct MonacoEditorView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        // The session on screen moved the page to another root (#565): the
+        // page's other registrations follow; its unsent edits are the
+        // center's `switchRoot(to:from:)` business.
+        if context.coordinator.root != root { context.coordinator.followRoot(root) }
         // Read here so a reload or a rename re-runs this (observation).
         let open = tabs.paths.compactMap { files.existingBuffer(root, $0) }
         let state = Dictionary(uniqueKeysWithValues: open.map { buffer in
@@ -353,7 +414,10 @@ struct MonacoEditorView: NSViewRepresentable {
         })
         let active = tabs.active.flatMap { files.existingBuffer(root, $0) }
         let shown = active?.state == .loaded ? active?.id : nil
-        context.coordinator.sync(buffers: state, active: shown, reveal: files.reveals[root])
+        context.coordinator.sync(
+            buffers: state, active: shown, reveal: files.reveals[root],
+            kept: files.openBufferIDs(workbenchID: root.workbenchID, except: root)
+        )
     }
 
     /// The pane goes away: what the page has not sent yet is pulled and
@@ -372,7 +436,8 @@ struct MonacoEditorView: NSViewRepresentable {
 
         let files: CodeFilesCenter
         let project: Workbench
-        let root: CodeRoot
+        /// The root the pane shows; follows the session on screen.
+        private(set) var root: CodeRoot
         weak var webView: WKWebView?
         private var ready = false
         private var shown: String?
@@ -380,6 +445,9 @@ struct MonacoEditorView: NSViewRepresentable {
         private var told: [String: BufferState] = [:]
         private var wanted: [String: BufferState] = [:]
         private var wantedActive: String?
+        /// Models of the other roots' open tabs: kept in the page, so a
+        /// return to that root finds its undo (spec §6.3).
+        private var keptModels: Set<String> = []
         private var wantedReveal: CodeRevealRequest?
         /// The last reveal sent: the center clears it a turn later, and an
         /// update in between must not send it again.
@@ -409,7 +477,7 @@ struct MonacoEditorView: NSViewRepresentable {
                     return
                 }
                 files.edited(
-                    buffer, text: text, base: base, root: root,
+                    buffer, text: text, base: base,
                     now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false
                 )
             case "definition":
@@ -434,7 +502,29 @@ struct MonacoEditorView: NSViewRepresentable {
             }
         }
 
-        func sync(buffers: [String: BufferState], active: String?, reveal: CodeRevealRequest?) {
+        /// The pane now shows `newRoot`: the page's messages name it at once;
+        /// then (after this view update, as it changes observed state) a
+        /// question popover about the old root's code closes, and go to
+        /// definition, usages and questions re-register, which drops any
+        /// request still running for the old root — its answer must not
+        /// land in this one.
+        func followRoot(_ newRoot: CodeRoot) {
+            root = newRoot
+            Task { @MainActor [weak self] in self?.registerAgainForRoot() }
+        }
+
+        private func registerAgainForRoot() {
+            files.questions?.closeQuestion(workbenchID: project.id)
+            files.questions?.unregisterPage(self, for: project.id)
+            files.navigation?.unregisterPage(self, for: project.id)
+            files.usages?.unregisterPage(self, for: project.id)
+            files.navigation?.registerPage(self, for: project.id)
+            files.usages?.registerPage(self, for: project.id)
+            files.questions?.registerPage(self, for: project.id)
+        }
+
+        func sync(buffers: [String: BufferState], active: String?, reveal: CodeRevealRequest?, kept: Set<String>) {
+            keptModels = kept
             wanted = buffers
             wantedActive = active
             wantedReveal = reveal
@@ -444,7 +534,7 @@ struct MonacoEditorView: NSViewRepresentable {
         /// Brings the page in line with `wanted`: closed tabs go, reloads
         /// and renames reach their models, the active file is shown.
         private func push() {
-            for id in told.keys where wanted[id] == nil {
+            for id in told.keys where wanted[id] == nil && !keptModels.contains(id) {
                 call("wt.close", id)
                 told[id] = nil
             }
@@ -682,17 +772,16 @@ struct MonacoEditorView: NSViewRepresentable {
             questionPopover?.close()
             questionPopover = nil
             files.questions?.unregisterPage(self, for: project.id)
-            files.unregister(self, for: root)
+            files.unregisterBridge(self)
             files.navigation?.unregisterPage(self, for: project.id)
             files.usages?.unregisterPage(self, for: project.id)
             let files = files
-            let root = root
             let wasReady = ready
             Task { @MainActor in
                 // `webView` and `files` are held by this task, not by the
                 // coordinator SwiftUI is releasing.
                 if wasReady, let edits = await Self.takePending(from: webView) {
-                    files.apply(edits, root: root, now: true)
+                    files.apply(edits, now: true)
                 }
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "wt")
             }

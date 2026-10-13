@@ -106,6 +106,17 @@ final class WorkbenchesViewModel {
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter
+    /// The code root last worked out per workbench and session, with what
+    /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
+    /// read it without touching the disk again.
+    @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// The ask link clicked last per workbench, while it runs
+    /// (`clickAskLink`): a newer click cancels it, and so does its view
+    /// (`owner`) going away.
+    @ObservationIgnored var askLinkTasks: [Int64: AskLinkInFlight] = [:]
+    /// How long an ask link waits for a session brought onto the page to
+    /// prove its place. Internal for tests.
+    @ObservationIgnored var askPlaceTimeout: Duration = .seconds(3)
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -270,46 +281,56 @@ final class WorkbenchesViewModel {
     static let driftMinInterval: TimeInterval = 30
 
     // Git state (#233). Written only by WorkbenchesViewModel+Git.swift,
-    // keyed by workbench id; kept here so a switch in flight, its pending
-    // confirmation and the last status survive navigating away.
+    // keyed by the root the branch menu works on (board #565: the main
+    // folder, `[workbenchID]`, or a session's worktree, `[codeRoot]`); kept
+    // here so a switch in flight, its pending confirmation and the last
+    // status survive navigating away.
 
-    /// The last `workbench git status` per workbench.
-    var gitStatus: [Int64: WorkbenchGitStatus] = [:]
+    /// The last `workbench git status` per root.
+    var gitStatus: [GitRootKey: WorkbenchGitStatus] = [:]
     /// The popover's branch list: the last one read in full.
-    var gitBranches: [Int64: WorkbenchGitBranches] = [:]
+    var gitBranches: [GitRootKey: WorkbenchGitBranches] = [:]
     /// Where the latest read of that list stands; a failure beside a list
     /// in `gitBranches` means that list is stale. nil before the first read.
-    var branchListStates: [Int64: BranchListState] = [:]
+    var branchListStates: [GitRootKey: BranchListState] = [:]
     /// Board targets carrying a branch, by branch name — the `#id` badges.
-    var branchTargets: [Int64: [String: [WorkbenchBranchTarget]]] = [:]
+    var branchTargets: [GitRootKey: [String: [WorkbenchBranchTarget]]] = [:]
     /// Why the last branch action (list, switch, create) failed or was
     /// refused; the popover shows it. The next action clears it.
-    var gitErrors: [Int64: String] = [:]
+    var gitErrors: [GitRootKey: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
-    var gitStatusErrors: [Int64: String] = [:]
+    var gitStatusErrors: [GitRootKey: String] = [:]
+    /// A worktree root Go did not place in that worktree (board #565:
+    /// `outside`/`missing`/unresolved — the envelope was the main folder's):
+    /// why its branch menu is off. A neutral note, not a failed read; the
+    /// next read that places the folder in its worktree clears it.
+    var gitScopeNotes: [GitRootKey: String] = [:]
     /// What the last branch action left to note (git's warning).
-    var gitNotices: [Int64: String] = [:]
+    var gitNotices: [GitRootKey: String] = [:]
     /// The stash entry the latest stashing switch left, with its sha (Go
     /// keeps no record of it). In memory only: it survives popover reopens
     /// and status reads until the owner dismisses it, a newer stash replaces
     /// it or the app quits — after that `git stash list` finds the entry by
     /// its `watchtower: switching from …` message.
-    var gitStashNotes: [Int64: WorkbenchBranchPresentation.StashNote] = [:]
+    var gitStashNotes: [GitRootKey: WorkbenchBranchPresentation.StashNote] = [:]
     /// The branch a switch or create is running for.
-    var switchingBranch: [Int64: String] = [:]
+    var switchingBranch: [GitRootKey: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).
-    var pendingBranchConfirmation: [Int64: BranchSwitchConfirmation] = [:]
+    var pendingBranchConfirmation: [GitRootKey: BranchSwitchConfirmation] = [:]
     /// The header's label when Go asked: a status showing anything else
     /// means the branch moved since, and the question is dropped.
-    @ObservationIgnored var pendingBranchBase: [Int64: String] = [:]
+    @ObservationIgnored var pendingBranchBase: [GitRootKey: String] = [:]
     /// Status reads running, and those asked for again meanwhile: at most
-    /// one read in flight per workbench plus one rerun.
-    @ObservationIgnored var gitRefreshing: Set<Int64> = []
-    @ObservationIgnored var gitRefreshQueued: Set<Int64> = []
+    /// one read in flight per root plus one rerun.
+    @ObservationIgnored var gitRefreshing: Set<GitRootKey> = []
+    @ObservationIgnored var gitRefreshQueued: Set<GitRootKey> = []
     /// Workbench pages on screen that watch their refs.
     @ObservationIgnored var gitWatching: Set<Int64> = []
-    @ObservationIgnored var gitWatchers: [Int64: any GitRefsWatching] = [:]
-    @ObservationIgnored var gitWatchedDirs: [Int64: [String]] = [:]
+    /// The worktree root a watching page's branch menu works on, watched
+    /// beside its main folder; none while the page shows the main folder.
+    @ObservationIgnored var gitWatchedWorktree: [Int64: CodeRoot] = [:]
+    @ObservationIgnored var gitWatchers: [GitRootKey: any GitRefsWatching] = [:]
+    @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
@@ -353,8 +374,11 @@ final class WorkbenchesViewModel {
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
-        terminalCenter?.onPathLink = { [weak self] workbenchID, location in
-            Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
+        terminalCenter?.onPathLink = { [weak self] workbenchID, sessionID, location in
+            Task { await self?.openTerminalLink(location, workbenchID: workbenchID, sessionID: sessionID) }
+        }
+        terminalCenter?.pathLinkRoot = { [weak self] workbenchID, sessionID in
+            self?.terminalLinkFolder(workbenchID: workbenchID, sessionID: sessionID)
         }
         // A hover card that cannot be read shows nothing (logged); a click
         // still reports the failure (`openTerminalAskLink`).
@@ -454,6 +478,8 @@ final class WorkbenchesViewModel {
             discardPendingDeletes(workbenchID: id)
             terminalSessions[id] = nil
             sessionPlaces.forgetWorkbench(id)
+            codeFiles.forgetRemovedBuffers(workbenchID: id)
+            askLinkTasks.removeValue(forKey: id)?.task.cancel()
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }

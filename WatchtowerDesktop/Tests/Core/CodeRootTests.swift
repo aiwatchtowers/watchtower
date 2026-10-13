@@ -71,4 +71,14 @@ final class CodeRootTests: XCTestCase {
         XCTAssertEqual(workbench.mainCodeRoot.folder.path, workbench.folderURL.path)
         XCTAssertEqual(workbench.mainCodeRoot.folder.path, privateSpelling)
     }
+
+    func testTheWorktreeFolderNameShowsInTheCaptionAndTheBanner() {
+        let worktree = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/nonexistent/acme/.claude/worktrees/mobile-a"))
+        XCTAssertEqual(worktree.worktreeFolderName, "mobile-a")
+        XCTAssertEqual(worktree.filesCaption, "FILES — ⑂ mobile-a")
+        XCTAssertEqual(worktree.removedBannerText(unsavedFiles: 1), "The worktree mobile-a was removed — 1 file had unsaved edits")
+        XCTAssertEqual(worktree.removedBannerText(unsavedFiles: 2), "The worktree mobile-a was removed — 2 files had unsaved edits")
+        let main = Workbench(row: Row(["id": 7, "name": "acme", "folder_path": "/nonexistent/acme"])).mainCodeRoot
+        XCTAssertEqual(main.filesCaption, "FILES")
+    }
 }

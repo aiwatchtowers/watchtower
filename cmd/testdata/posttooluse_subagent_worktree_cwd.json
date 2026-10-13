@@ -1,0 +1,21 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000543",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-acme/00000000-0000-4000-8000-000000000543.jsonl",
+  "cwd": "/tmp/acme/.claude/worktrees/agent-x",
+  "permission_mode": "acceptEdits",
+  "agent_id": "aworktree-0000000000000001",
+  "agent_type": "general-purpose",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "pwd",
+    "description": "Print the working directory"
+  },
+  "tool_response": {
+    "stdout": "/tmp/acme/.claude/worktrees/agent-x",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  },
+  "tool_use_id": "toolu_00000000000000000000000001"
+}

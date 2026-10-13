@@ -501,6 +501,13 @@ final class CodeQuestionCenter {
         questionPopoverClosed(workbenchID: workbenchID)
     }
 
+    /// A question about a removed worktree's code closes with its popover
+    /// (board #565, spec §7); its conversation stays in the list.
+    func codeRootRemoved(_ root: CodeRoot) {
+        guard sessions[root.workbenchID]?.root == root else { return }
+        closeQuestion(workbenchID: root.workbenchID)
+    }
+
     /// The popover closed (Esc, a click outside): its diff goes with it.
     func questionPopoverClosed(workbenchID: Int64) {
         cancelUsageSearch(workbenchID)

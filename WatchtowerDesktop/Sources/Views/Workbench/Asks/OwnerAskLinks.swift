@@ -13,6 +13,11 @@ import WatchtowerCore
 struct OwnerAskLinks: ViewModifier {
     let vm: WorkbenchesViewModel
     let projectID: Int64
+    /// The ask's session: a path resolves in its folder (its worktree).
+    var sessionID: Int64?
+    /// This view's identity: its going away cancels only the link it
+    /// started, not one another ask view of the workbench has in flight.
+    @State private var owner = UUID()
 
     enum Route: Equatable {
         case file(OpenQuicklyTarget)
@@ -45,13 +50,13 @@ struct OwnerAskLinks: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.markdownCodeLinks, true)
-            .environment(\.openURL, OpenURLAction { [vm, projectID] url in
+            .environment(\.openURL, OpenURLAction { [vm, projectID, sessionID, owner] url in
                 Self.handleAskLink(url, openFile: { target in
-                    // A beep when it names no file of the folder.
-                    Task {
-                        if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
-                    }
+                    // A beep when it names no file of the folder; one link
+                    // in flight, a newer click cancels it.
+                    vm.clickAskLink(target, projectID: projectID, sessionID: sessionID, owner: owner) { NSSound.beep() }
                 }, beep: NSSound.beep)
             })
+            .onDisappear { vm.cancelAskLink(projectID: projectID, owner: owner) }
     }
 }

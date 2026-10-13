@@ -147,7 +147,7 @@ struct OwnerAskDrawer: View {
                     if let stop = keys.shownStop { withAnimation { proxy.scrollTo(stop) } }
                 }
         }
-        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
+        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID, sessionID: ask.sessionID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
         // "k of N ›" swaps the ask under the same drawer.
         .onChange(of: ask.id) { _, _ in

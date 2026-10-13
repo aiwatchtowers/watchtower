@@ -286,25 +286,21 @@ extension WorkbenchesViewModel {
     /// A ⌘-clicked `path:line` in a workbench session's terminal (spec
     /// §9.5): the file in Files at the line, beside the terminal (⌥↩'s
     /// placement). A workbench no longer listed opens nothing.
-    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64) async {
+    /// It opens in the root of the session it was clicked in (its worktree
+    /// when proven, else the main folder) — the root the page shows once
+    /// that session is on screen.
+    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64, sessionID: Int64) async {
         guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return }
         let target = OpenQuicklyTarget(path: location.path, line: location.line, col: location.col)
-        await openFile(at: target, root: project.mainCodeRoot, beside: true)
+        await openFile(at: target, root: codeRoot(sessionID: sessionID, project: project), beside: true)
     }
 
-    /// A workbench path clicked in an ask's text (#394): the file in Files
-    /// at the line, beside the terminal (a terminal link's placement); an
-    /// expanded drawer goes back beside it so the file shows. The file
-    /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
-    /// False — and nothing opened — for a path that is not a file of the
-    /// folder or a workbench no longer listed.
-    @discardableResult
-    func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64) async -> Bool {
-        guard let project = summaries.first(where: { $0.id == projectID })?.project,
-              let path = WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) else { return false }
-        asks.drawerExpanded = false
-        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), root: project.mainCodeRoot, beside: true)
-        return true
+    /// The folder a session's ⌘-clicked `path:line` resolves in: the root
+    /// `openTerminalLink` opens it in, so a file only the session's worktree
+    /// has is a link (board #565). nil for a workbench no longer listed.
+    func terminalLinkFolder(workbenchID: Int64, sessionID: Int64) -> String? {
+        guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return nil }
+        return codeRoot(sessionID: sessionID, project: project).folder.path
     }
 
     /// Go to definition and back/forward (spec §8.2): `location` in the Files

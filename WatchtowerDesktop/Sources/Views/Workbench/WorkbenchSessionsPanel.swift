@@ -62,7 +62,7 @@ struct WorkbenchSessionsPanel: View {
                     proxy.followSelection(along: sections.panelScrollPath(to: target))
                 }
             }
-            WorkbenchFilesSection(vm: vm, root: project.mainCodeRoot)
+            WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
     }

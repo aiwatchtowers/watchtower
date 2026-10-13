@@ -175,8 +175,10 @@ when (a) its trusted place resolves to the target work tree or inside it, (b) it
 removed** (§7 — a removed or unproven place may be anywhere; fail closed), or (c) it is not this workbench's row and
 its `folder_path` is in the work tree (today's rule for other rows). A live row of this workbench whose place is known
 to be another worktree no longer counts. `WorkbenchBranchPresentation` gains the `folder_not_a_worktree` texts:
-detail `outside` → "That session is outside this repository — the branch menu shows the main folder."; `missing` (or
-any other detail) → "That session's worktree is gone — the branch menu shows the main folder.".
+detail `outside` → "This session's folder is outside this repository — the branch menu is unavailable."; `missing` (or
+any other detail) → "This session's worktree is gone — the branch menu is unavailable.". The same texts are the scope
+note of a worktree root Go does not place there; a `main` scope or a `worktree` scope naming another root says the
+folder resolved to the main folder / another worktree instead (fix round, #569).
 
 ### 5.4 #563 coordination
 
