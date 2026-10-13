@@ -82,8 +82,10 @@ enum RecapLoader {
 @Observable
 final class RecapBodyModel {
     private(set) var loaded: RecapLoader.Loaded?
-    /// The decoded body between reads (and the tests' decode counter).
-    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
+    /// The decoded body between reads (and the tests' decode counter);
+    /// each `observe` starts an empty one, so earlier transcripts' bodies
+    /// are not kept for the view's lifetime.
+    @ObservationIgnored private(set) var decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
 
     func observe(
@@ -94,6 +96,7 @@ final class RecapBodyModel {
     ) {
         cancellable?.cancel()
         loaded = nil
+        decodeCache = ReplicaDecodeCache()
         let recordName = transcript.recordName
         let cache = decodeCache
         cancellable = ResilientObservation(

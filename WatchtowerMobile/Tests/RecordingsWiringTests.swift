@@ -469,6 +469,28 @@ final class RecordingsWiringTests: XCTestCase {
         try await poll({ model.loaded?.marks == [10, 70] }, "a new mark must reload")
     }
 
+    /// Each `observe` starts an empty decode cache: an earlier transcript's
+    /// body is not kept for the view's lifetime.
+    func testObservingAgainStartsAnEmptyDecodeCache() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        try await DemoSeed.load(into: transport, now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let replica = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
+        let demo = try XCTUnwrap(replica.transcripts.first)
+
+        let model = RecapBodyModel()
+        model.observe(transcript: demo, phoneRecordingID: nil, store: store)
+        try await poll({ model.loaded != nil }, "the recap never loaded")
+        let first = model.decodeCache
+        XCTAssertEqual(first.decodes(demo.recordName), 1)
+
+        model.observe(transcript: demo, phoneRecordingID: nil, store: store)
+        XCTAssertFalse(model.decodeCache === first, "a new cache per observation")
+        try await poll({ model.loaded != nil }, "the recap never reloaded")
+        XCTAssertEqual(model.decodeCache.decodes(demo.recordName), 1)
+    }
+
     func testTheDemoTranscriptCarriesItsSegments() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
