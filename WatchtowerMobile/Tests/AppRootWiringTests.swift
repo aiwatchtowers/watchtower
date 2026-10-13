@@ -837,6 +837,10 @@ final class AppRootWiringTests: XCTestCase {
         let now = Date()
         try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
             [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // Nothing pushes here and the launch fetch may have ended before the
+        // save: a fetch begun after it brings the record in.
+        await first.waitForBoot()
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCount(first)) == 1 }
 
         let samePrivate = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
@@ -861,6 +865,10 @@ final class AppRootWiringTests: XCTestCase {
         let now = Date()
         try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
             [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // Nothing pushes here and the launch fetch may have ended before the
+        // save: a fetch begun after it brings the record in.
+        await acme.waitForBoot()
+        _ = await acme.refresh(.pull)
         try await poll { (try? self.sliceCount(acme)) == 1 }
 
         _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
@@ -1701,6 +1709,10 @@ final class AppRootWiringTests: XCTestCase {
         let now = Date()
         try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
             [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // Nothing pushes here and the launch fetch may have ended before the
+        // save: a fetch begun after it brings the record in.
+        await first.waitForBoot()
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCount(first)) == 1 }
 
         _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
