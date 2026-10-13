@@ -43,6 +43,7 @@ final class MobileHubServiceTests: XCTestCase {
         assets: SliceAssetStore? = nil,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         keyring: HubKeyring? = nil,
+        reprobeInterval: Duration = .milliseconds(20),
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
@@ -57,7 +58,7 @@ final class MobileHubServiceTests: XCTestCase {
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
             hostInfo: testHostInfo(), keyring: keyring, companions: companions,
             relayIdleInterval: relayInterval, relayActiveInterval: relayActiveInterval ?? relayInterval,
-            availabilityReprobeInterval: .milliseconds(20), cloudTimeout: cloudTimeout, isEnabled: isEnabled
+            availabilityReprobeInterval: reprobeInterval, cloudTimeout: cloudTimeout, isEnabled: isEnabled
         )
     }
 
@@ -835,7 +836,8 @@ final class MobileHubServiceTests: XCTestCase {
     func testACutWhosePhonesWereNotForgottenIsRedoneAtTheNextStart() async throws {
         let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
         let transport = StubHubTransport()
-        let service = makeService(transport: transport, keyring: keyring)
+        // No reprobe retry in between: exactly one delete per start.
+        let service = makeService(transport: transport, keyring: keyring, reprobeInterval: .seconds(3600))
         service.onZonesDeleted = { throw URLError(.cannotWriteToFile) }
 
         await service.start()
@@ -848,7 +850,7 @@ final class MobileHubServiceTests: XCTestCase {
         _ = attachLinkCenter(to: service, keyring: keyring)
         await service.start()
         XCTAssertEqual(service.status, .running)
-        XCTAssertGreaterThanOrEqual(transport.zoneDeletes, 2, "the cut ran again")
+        XCTAssertEqual(transport.zoneDeletes, 2, "the cut ran again, once")
         XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
         XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
         service.stop()
@@ -872,7 +874,7 @@ final class MobileHubServiceTests: XCTestCase {
     }
 
     func testAFreshHubSetsTheMarkerWithoutACut() async throws {
-        sidecar = try HubSyncState.inMemoryPerHub()
+        sidecar = try HubSyncState.inMemory()
         let transport = StubHubTransport()
         let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
         let service = makeService(transport: transport, keyring: keyring)
@@ -881,6 +883,44 @@ final class MobileHubServiceTests: XCTestCase {
 
         XCTAssertEqual(service.status, .running)
         XCTAssertEqual(transport.zoneDeletes, 0, "a hub that never ran has no zones to cut")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    /// Review fix 3: a pre-E2E hub whose `enabled_at` is missing and whose phones are gone still published (its
+    /// slice hashes, or the per-hub adoption, say so): it cuts, never leaving plaintext zones behind.
+    func testAPreE2EHubWithoutEnabledAtOrPhonesStillCuts() async throws {
+        for published in [true, false] {
+            sidecar = try HubSyncState.inMemory()
+            if published {
+                XCTAssertTrue(try sidecar.setHashes(["task-1": "legacy"], ifGeneration: try sidecar.generation()))
+            } else {
+                try sidecar.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+            }
+            let transport = StubHubTransport()
+            let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+            let service = makeService(transport: transport, keyring: keyring)
+
+            await service.start()
+
+            XCTAssertEqual(transport.zoneDeletes, 1, "published: \(published)")
+            XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+            service.stop()
+            await service.waitUntilStopped()
+        }
+    }
+
+    /// Review fix 2: without a link center (no `onZonesDeleted`), the cut still forgets the pre-E2E phones: marker
+    /// `1` never coexists with their rows.
+    func testACutWithoutALinkCenterStillForgetsThePhones() async throws {
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
         XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
         service.stop()
     }

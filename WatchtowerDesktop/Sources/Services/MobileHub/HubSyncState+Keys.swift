@@ -97,12 +97,15 @@ extension HubSyncState {
     }
 
     /// True when a hub ran on this sidecar before the E2E build could have: it was enabled (its heartbeat went out,
-    /// so its zones and records exist) or a phone is linked. A sidecar with neither has nothing to cut.
+    /// so its zones and records exist), a phone is linked, something was published (`slice_state`), or a start
+    /// adopted the per-hub zones. A sidecar with none of these has nothing to cut. Checked before this start's
+    /// adoption, so a fresh sidecar's own `per_hub_zones` is not yet there.
     func ranBeforeE2E() throws -> Bool {
         try queue.read { db in
             try Bool.fetchOne(db, sql: """
-                SELECT EXISTS (SELECT 1 FROM devices) OR EXISTS (SELECT 1 FROM hub_meta WHERE key = ?)
-                """, arguments: [HubIdentity.enabledAtKey]) ?? false
+                SELECT EXISTS (SELECT 1 FROM devices) OR EXISTS (SELECT 1 FROM slice_state)
+                    OR EXISTS (SELECT 1 FROM hub_meta WHERE key IN (?, ?))
+                """, arguments: [HubIdentity.enabledAtKey, HubIdentity.perHubZonesKey]) ?? false
         }
     }
 

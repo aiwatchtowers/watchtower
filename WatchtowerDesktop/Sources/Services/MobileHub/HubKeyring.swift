@@ -108,13 +108,18 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     /// The store's identity, created when none exists. A damaged one (`KeyStoreError.corrupt`: a crash between the
     /// three Keychain adds, or an item that does not parse) can never open the sealed keys or match what phones
     /// pinned, and would otherwise fail every launch: it is deleted and recreated, logged once (the next launch
-    /// loads it whole), and the caller treats it as created. One hub process owns the identity (one keyring per
-    /// sidecar, the store serializes creation), so the concurrent-creation `.corrupt` cannot be another live creator.
+    /// loads it whole), and the caller treats it as created. The store serializes creation only within one process,
+    /// so a `.corrupt` read may be another creator mid-creation: the read is retried once first, and only a second
+    /// `.corrupt` counts as damage.
     private static func loadIdentity(
         hubID: String, store: any HubKeyStore, hadPairing: Bool
     ) throws -> (keys: HubIdentityKeys, created: Bool) {
         do {
-            return try store.hubIdentity(hubID: hubID)
+            do {
+                return try store.hubIdentity(hubID: hubID)
+            } catch KeyStoreError.corrupt {
+                return try store.hubIdentity(hubID: hubID)
+            }
         } catch KeyStoreError.corrupt(let reason) {
             if hadPairing {
                 logger.error("hub identity damaged (\(reason, privacy: .public)): recreated, phones must re-pair")

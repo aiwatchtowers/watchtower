@@ -510,6 +510,20 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertEqual(again.signingPublicKey.rawRepresentation, ring.signingPublicKey.rawRepresentation)
     }
 
+    /// Review fix 1: a `.corrupt` read can be another creator mid-creation; the read is retried once, and an
+    /// identity whole on the retry is kept (nothing deleted).
+    func testACorruptReadThatIsWholeOnTheRetryDeletesNothing() throws {
+        let store = FlakyHubKeyStore()
+        let sidecar = try HubSyncState.inMemory()
+        try linkPhone(sidecar, identity: newIdentity())
+
+        let ring = try keyring(sidecar, store: store)
+
+        XCTAssertEqual(store.deletes, 0, "an identity whole on the retry is never deleted")
+        XCTAssertEqual(store.reads, 2)
+        XCTAssertFalse(ring.identityWasRecreated)
+    }
+
     func testAnUnparseableIdentityWithoutAPairingIsRecreatedQuietly() throws {
         let backend = InMemoryKeychainBackend()
         for (suffix, size) in [("sig", 32), ("kx", 32), ("wrap", 5)] {
@@ -696,5 +710,31 @@ final class HubKeyringTests: XCTestCase {
         let index: any WireNameIndex = sidecar
         XCTAssertEqual(index.plainName(forWire: "wirename7"), "workbench-7")
         XCTAssertNil(index.plainName(forWire: "unknown"))
+    }
+}
+
+/// Throws `.corrupt` on its first read (another creator mid-creation), then loads an existing identity.
+private final class FlakyHubKeyStore: HubKeyStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var readCount = 0
+    private var deleteCount = 0
+    private let keys = HubIdentityKeys(
+        signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey(),
+        wrapKey: SymmetricKey(size: .bits256))
+
+    var reads: Int { lock.withLock { readCount } }
+    var deletes: Int { lock.withLock { deleteCount } }
+
+    func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool) {
+        let first = lock.withLock {
+            readCount += 1
+            return readCount == 1
+        }
+        if first { throw KeyStoreError.corrupt("hub identity is partially present") }
+        return (keys, false)
+    }
+
+    func deleteHubIdentity(hubID: String) throws {
+        lock.withLock { deleteCount += 1 }
     }
 }

@@ -608,12 +608,14 @@ final class MobileHubService {
         try sidecar.markE2ECutPending()
     }
 
-    /// After the cut's zone delete settled: the pre-E2E staged files (plaintext, no `.desc`) go, the group keys are
-    /// fresh even without a link center, and only then is the marker `1`. A crash before it reruns the cut.
+    /// After the cut's zone delete settled: the pre-E2E staged files (plaintext, no `.desc`) go, the phones and the
+    /// group keys are forgotten even without a link center, and only then is the marker `1` (never beside a pre-E2E
+    /// device row). A crash before it reruns the cut.
     private func finishE2ECut() throws {
         guard let keyring,
               try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) == HubIdentity.e2eCutPending else { return }
         publisher.removeStagedAssets()
+        try sidecar.clearLinkState()
         try keyring.resetGroupKeys()
         try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
         logger.notice("E2E cut done: this Mac's zones start empty on fresh keys")
