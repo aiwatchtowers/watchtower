@@ -20,9 +20,9 @@ import (
 )
 
 // writeWorkbenchFile creates rel (and its directories) inside project id's folder.
-func writeWorkbenchFile(t *testing.T, d *db.DB, projectID int64, rel, body string) {
+func writeWorkbenchFile(t *testing.T, d *db.DB, workbenchID int64, rel, body string) {
 	t.Helper()
-	p, err := d.GetWorkbench(projectID)
+	p, err := d.GetWorkbench(workbenchID)
 	require.NoError(t, err)
 	path := filepath.Join(p.FolderPath, rel)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -222,12 +222,12 @@ func TestResolveComment_FailedResolveLeavesNoReply(t *testing.T) {
 }
 
 // seedAgentSession inserts a terminal session of kind for workbench
-// projectID; a codex row has no agent session id before its first
+// workbenchID; a codex row has no agent session id before its first
 // SessionStart.
-func seedAgentSession(t *testing.T, d *db.DB, projectID int64, kind string) int64 {
+func seedAgentSession(t *testing.T, d *db.DB, workbenchID int64, kind string) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, ?, 'Session', '/tmp/acme', CASE WHEN ? = 'claude' THEN 'uuid' END)`, projectID, kind, kind)
+		VALUES (?, ?, 'Session', '/tmp/acme', CASE WHEN ? = 'claude' THEN 'uuid' END)`, workbenchID, kind, kind)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)

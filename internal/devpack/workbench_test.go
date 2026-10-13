@@ -32,7 +32,7 @@ func TestProjectSkillShipsWithMarkerAndName(t *testing.T) {
 	}
 	s := workbenchSkill()
 	if s.Name != name || s.Content != content || len(s.SHA256) != 64 {
-		t.Fatalf("projectSkill() must wrap ProjectSkill() with a hex sha256, got %+v", s)
+		t.Fatalf("workbenchSkill() must wrap WorkbenchSkill() with a hex sha256, got %+v", s)
 	}
 }
 

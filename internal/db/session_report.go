@@ -105,12 +105,12 @@ func (db *DB) UpsertPRState(s PRState) error {
 	return nil
 }
 
-// PRStates is workbench projectID's cached PR states by ref.
-func (db *DB) PRStates(projectID int64) (map[string]PRState, error) {
+// PRStates is workbench workbenchID's cached PR states by ref.
+func (db *DB) PRStates(workbenchID int64) (map[string]PRState, error) {
 	rows, err := db.Query(`SELECT project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at
-		FROM workbench_pr_states WHERE project_id = ?`, projectID)
+		FROM workbench_pr_states WHERE project_id = ?`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("reading PR states of workbench %d: %w", projectID, err)
+		return nil, fmt.Errorf("reading PR states of workbench %d: %w", workbenchID, err)
 	}
 	defer rows.Close()
 	out := map[string]PRState{}
@@ -118,12 +118,12 @@ func (db *DB) PRStates(projectID int64) (map[string]PRState, error) {
 		var s PRState
 		if err := rows.Scan(&s.WorkbenchID, &s.Ref, &s.State, &s.PRNumber, &s.Title, &s.Additions, &s.Deletions,
 			&s.MergedAt, &s.CheckedAt); err != nil {
-			return nil, fmt.Errorf("reading PR states of workbench %d: %w", projectID, err)
+			return nil, fmt.Errorf("reading PR states of workbench %d: %w", workbenchID, err)
 		}
 		out[s.Ref] = s
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading PR states of workbench %d: %w", projectID, err)
+		return nil, fmt.Errorf("reading PR states of workbench %d: %w", workbenchID, err)
 	}
 	return out, nil
 }

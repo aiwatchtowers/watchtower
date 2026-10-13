@@ -23,13 +23,13 @@ func seedWorkbench(t *testing.T, d *db.DB, name string) int64 {
 	return id
 }
 
-func seedWorkbenchTarget(t *testing.T, d *db.DB, projectID int64, parent int64, title, status, updatedAt string) int64 {
+func seedWorkbenchTarget(t *testing.T, d *db.DB, workbenchID int64, parent int64, title, status, updatedAt string) int64 {
 	t.Helper()
 	p := sql.NullInt64{}
 	if parent != 0 {
 		p = sql.NullInt64{Int64: parent, Valid: true}
 	}
-	id := db.SeedTestWorkbenchTarget(t, d, projectID, p, title)
+	id := db.SeedTestWorkbenchTarget(t, d, workbenchID, p, title)
 	_, err := d.Exec(`UPDATE targets SET status = ?, updated_at = ? WHERE id = ?`, status, updatedAt, id)
 	require.NoError(t, err)
 	return id

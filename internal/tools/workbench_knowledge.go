@@ -24,8 +24,8 @@ type scopeSource struct{ Kind, Ref string }
 // WorkbenchKnowledgeScope turns the project's slack_channel, jira_project and
 // confluence_space sources into the kb.Scope its search and brief prefer
 // (resolution rules: knowledgeScope).
-func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (kb.Scope, []string, error) {
-	sources, err := d.ListWorkbenchSources(projectID)
+func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, workbenchID int64) (kb.Scope, []string, error) {
+	sources, err := d.ListWorkbenchSources(workbenchID)
 	if err != nil {
 		return kb.Scope{}, nil, fmt.Errorf("listing workbench sources: %w", err)
 	}

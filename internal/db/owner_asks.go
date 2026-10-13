@@ -150,16 +150,16 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	return id, superseded, nil
 }
 
-// CountOpenOwnerAsks returns how many asks of workbench projectID are open —
+// CountOpenOwnerAsks returns how many asks of workbench workbenchID are open —
 // for a refusal before anything is recorded; InsertOwnerAsk enforces the cap.
-func (db *DB) CountOpenOwnerAsks(projectID int64) (int, error) {
-	return countOpenOwnerAsks(db, projectID)
+func (db *DB) CountOpenOwnerAsks(workbenchID int64) (int, error) {
+	return countOpenOwnerAsks(db, workbenchID)
 }
 
-func countOpenOwnerAsks(q targetsQuerier, projectID int64) (int, error) {
+func countOpenOwnerAsks(q targetsQuerier, workbenchID int64) (int, error) {
 	var open int
 	if err := q.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE project_id = ? AND status = 'open'`,
-		projectID).Scan(&open); err != nil {
+		workbenchID).Scan(&open); err != nil {
 		return 0, fmt.Errorf("counting open asks: %w", err)
 	}
 	return open, nil
@@ -192,16 +192,16 @@ const askCreatedAtLayout = "2006-01-02T15:04:05Z"
 // askNowSQL is the current time in askCreatedAtLayout, as created_at's default.
 const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 
-// LastWithdrawnByTitle returns workbench projectID's ask of kind the agent
+// LastWithdrawnByTitle returns workbench workbenchID's ask of kind the agent
 // withdrew (withdrawn_reason agent) most recently, at or after since, whose
 // asks.NormalizeTitle equals normTitle; nil when there is none. Another kind
 // never matches: a revision must keep the kind. An ask
 // withdrawn before migration 00107 has no withdrawn_at and never matches.
 // DocSnapshot is left empty.
-func (db *DB) LastWithdrawnByTitle(projectID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
+func (db *DB) LastWithdrawnByTitle(workbenchID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
 		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
-		ORDER BY a.withdrawn_at DESC, a.id DESC`, projectID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
+		ORDER BY a.withdrawn_at DESC, a.id DESC`, workbenchID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
 	if err != nil {
 		return nil, err
 	}
@@ -228,14 +228,14 @@ func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID 
 	return &list[0], nil
 }
 
-// GetOwnerAsk returns ask id of workbench projectID, snapshot included;
+// GetOwnerAsk returns ask id of workbench workbenchID, snapshot included;
 // another workbench's ask is ErrAskNotFound.
-func (db *DB) GetOwnerAsk(projectID, id int64) (*OwnerAsk, error) {
-	return getOwnerAsk(db, ownerAskCols, projectID, id)
+func (db *DB) GetOwnerAsk(workbenchID, id int64) (*OwnerAsk, error) {
+	return getOwnerAsk(db, ownerAskCols, workbenchID, id)
 }
 
-func getOwnerAsk(q targetsQuerier, cols string, projectID, id int64) (*OwnerAsk, error) {
-	a, err := scanOwnerAsk(q.QueryRow(`SELECT `+cols+` FROM owner_asks a WHERE a.id = ? AND a.project_id = ?`, id, projectID))
+func getOwnerAsk(q targetsQuerier, cols string, workbenchID, id int64) (*OwnerAsk, error) {
+	a, err := scanOwnerAsk(q.QueryRow(`SELECT `+cols+` FROM owner_asks a WHERE a.id = ? AND a.project_id = ?`, id, workbenchID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("ask %d: %w", id, ErrAskNotFound)
 	}
@@ -245,16 +245,16 @@ func getOwnerAsk(q targetsQuerier, cols string, projectID, id int64) (*OwnerAsk,
 	return a, nil
 }
 
-// ListOwnerAsks returns workbench projectID's asks matching f, answered first,
+// ListOwnerAsks returns workbench workbenchID's asks matching f, answered first,
 // then open, then the rest, newest first within each; DocSnapshot is left empty.
-func (db *DB) ListOwnerAsks(projectID int64, f OwnerAskFilter) ([]OwnerAsk, error) {
+func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, error) {
 	statuses := f.Statuses
 	if len(statuses) == 0 {
 		statuses = []string{"answered", "open"}
 	}
 	q := `SELECT ` + ownerAskListCols + ` FROM owner_asks a WHERE a.project_id = ?
 		AND a.status IN (?` + strings.Repeat(", ?", len(statuses)-1) + `)`
-	args := []any{projectID}
+	args := []any{workbenchID}
 	for _, s := range statuses {
 		args = append(args, s)
 	}
@@ -287,17 +287,17 @@ func (db *DB) queryOwnerAsks(q string, args ...any) ([]OwnerAsk, error) {
 	return out, rows.Err()
 }
 
-// WithdrawOwnerAsk withdraws open ask id of workbench projectID for reason
+// WithdrawOwnerAsk withdraws open ask id of workbench workbenchID for reason
 // (WithdrawnByAgent or WithdrawnSuperseded). An ask in any other status fails
 // with ErrAskNotOpen ("ask N is <status>"), another workbench's with
 // ErrAskNotFound.
-func (db *DB) WithdrawOwnerAsk(projectID, id int64, reason string) error {
+func (db *DB) WithdrawOwnerAsk(workbenchID, id int64, reason string) error {
 	if reason != WithdrawnByAgent && reason != WithdrawnSuperseded {
 		return fmt.Errorf("invalid withdrawn reason %q", reason)
 	}
 	return db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
-			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, projectID)
+			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, workbenchID)
 		if err != nil {
 			return fmt.Errorf("withdrawing ask %d: %w", id, err)
 		}
@@ -308,7 +308,7 @@ func (db *DB) WithdrawOwnerAsk(projectID, id int64, reason string) error {
 		if n == 1 {
 			return nil
 		}
-		a, err := getOwnerAsk(tx, ownerAskListCols, projectID, id)
+		a, err := getOwnerAsk(tx, ownerAskListCols, workbenchID, id)
 		if err != nil {
 			return err
 		}
@@ -316,13 +316,13 @@ func (db *DB) WithdrawOwnerAsk(projectID, id int64, reason string) error {
 	})
 }
 
-// MarkOwnerAskDelivered moves answered ask id of workbench projectID to
+// MarkOwnerAskDelivered moves answered ask id of workbench workbenchID to
 // delivered (get_ask has read the answer) and reports whether it did; an ask
 // in any other status, or of another workbench, is left alone (false).
-func (db *DB) MarkOwnerAskDelivered(projectID, id int64) (bool, error) {
+func (db *DB) MarkOwnerAskDelivered(workbenchID, id int64) (bool, error) {
 	res, err := db.Exec(`UPDATE owner_asks SET status = 'delivered',
 		delivered_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ? AND project_id = ? AND status = 'answered'`, id, projectID)
+		WHERE id = ? AND project_id = ? AND status = 'answered'`, id, workbenchID)
 	if err != nil {
 		return false, fmt.Errorf("delivering ask %d: %w", id, err)
 	}
@@ -333,20 +333,20 @@ func (db *DB) MarkOwnerAskDelivered(projectID, id int64) (bool, error) {
 	return n == 1, nil
 }
 
-// AnsweredAsksForBrief returns workbench projectID's answered asks for the
+// AnsweredAsksForBrief returns workbench workbenchID's answered asks for the
 // brief of session sessionID (0 = no session): those of that session, of no
 // session or of a session row that is gone, oldest answer first; others counts
 // the answered asks of the workbench's other sessions. DocSnapshot is left empty.
-func (db *DB) AnsweredAsksForBrief(projectID, sessionID int64) (list []OwnerAsk, others int, err error) {
+func (db *DB) AnsweredAsksForBrief(workbenchID, sessionID int64) (list []OwnerAsk, others int, err error) {
 	const from = ` FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status = 'answered' AND `
 	list, err = db.queryOwnerAsks(`SELECT `+ownerAskListCols+from+answeredForSessionPredicate+
-		` ORDER BY a.answered_at, a.id`, projectID, sessionID)
+		` ORDER BY a.answered_at, a.id`, workbenchID, sessionID)
 	if err != nil {
 		return nil, 0, err
 	}
 	if err := db.QueryRow(`SELECT COUNT(*)`+from+`NOT `+answeredForSessionPredicate,
-		projectID, sessionID).Scan(&others); err != nil {
+		workbenchID, sessionID).Scan(&others); err != nil {
 		return nil, 0, fmt.Errorf("counting other sessions' answered asks: %w", err)
 	}
 	return list, others, nil

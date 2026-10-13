@@ -58,15 +58,15 @@ func workbenchRegistry(t *testing.T, d *db.DB) *Registry {
 }
 
 // proposeIn runs a write tool the way `mcp --project` does: DirectApply,
-// bound to projectID.
-func proposeIn(t *testing.T, reg *Registry, projectID int64, name, args string) (Receipt, error) {
+// bound to workbenchID.
+func proposeIn(t *testing.T, reg *Registry, workbenchID int64, name, args string) (Receipt, error) {
 	t.Helper()
-	return reg.Propose(context.Background(), name, json.RawMessage(args), directBinding(projectID))
+	return reg.Propose(context.Background(), name, json.RawMessage(args), directBinding(workbenchID))
 }
 
-func mustApply(t *testing.T, reg *Registry, projectID int64, name, args string) map[string]any {
+func mustApply(t *testing.T, reg *Registry, workbenchID int64, name, args string) map[string]any {
 	t.Helper()
-	rc, err := proposeIn(t, reg, projectID, name, args)
+	rc, err := proposeIn(t, reg, workbenchID, name, args)
 	require.NoError(t, err)
 	require.Equal(t, "applied", rc.Status, "receipt: %+v", rc)
 	out, ok := rc.Result.(map[string]any)
@@ -74,10 +74,10 @@ func mustApply(t *testing.T, reg *Registry, projectID int64, name, args string) 
 	return out
 }
 
-func countWorkbenchTargets(t *testing.T, d *db.DB, projectID int64) int {
+func countWorkbenchTargets(t *testing.T, d *db.DB, workbenchID int64) int {
 	t.Helper()
 	var n int
-	require.NoError(t, d.QueryRow(`SELECT count(*) FROM targets WHERE project_id = ?`, projectID).Scan(&n))
+	require.NoError(t, d.QueryRow(`SELECT count(*) FROM targets WHERE project_id = ?`, workbenchID).Scan(&n))
 	return n
 }
 
@@ -140,9 +140,9 @@ func TestUpdateProject_RefusesBadInputWithoutWriting(t *testing.T) {
 	assert.Empty(t, p.Description)
 }
 
-func callReadIn(t *testing.T, reg *Registry, projectID int64, name, args string) string {
+func callReadIn(t *testing.T, reg *Registry, workbenchID int64, name, args string) string {
 	t.Helper()
-	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args), directBinding(projectID))
+	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args), directBinding(workbenchID))
 	require.NoError(t, err)
 	b, err := json.Marshal(data)
 	require.NoError(t, err)
@@ -424,7 +424,7 @@ func TestDev06_WriteOutsideTheBoundProjectIsRefused(t *testing.T) {
 
 // snapshotWorkbench dumps every row of one project across the project tables
 // and its targets, for a byte-identical before/after comparison.
-func snapshotWorkbench(t *testing.T, d *db.DB, projectID int64) []string {
+func snapshotWorkbench(t *testing.T, d *db.DB, workbenchID int64) []string {
 	t.Helper()
 	queries := []string{
 		`SELECT id || '|' || name || '|' || description || '|' || updated_at FROM projects WHERE id = ?`,
@@ -435,7 +435,7 @@ func snapshotWorkbench(t *testing.T, d *db.DB, projectID int64) []string {
 	}
 	var out []string
 	for _, q := range queries {
-		out = append(out, queryStrings(t, d, q, projectID)...)
+		out = append(out, queryStrings(t, d, q, workbenchID)...)
 	}
 	return out
 }

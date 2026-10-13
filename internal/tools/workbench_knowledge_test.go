@@ -14,9 +14,9 @@ import (
 	"watchtower/internal/kb"
 )
 
-func addSource(t *testing.T, d *db.DB, projectID int64, kind, ref string) {
+func addSource(t *testing.T, d *db.DB, workbenchID int64, kind, ref string) {
 	t.Helper()
-	_, err := d.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: projectID, Kind: kind, Ref: ref})
+	_, err := d.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: workbenchID, Kind: kind, Ref: ref})
 	require.NoError(t, err)
 }
 
@@ -81,9 +81,9 @@ func seedScopedKnowledge(t *testing.T, d *db.DB) int64 {
 	return p
 }
 
-func searchIn(t *testing.T, reg *Registry, projectID int64, args string) (kb.Result, error) {
+func searchIn(t *testing.T, reg *Registry, workbenchID int64, args string) (kb.Result, error) {
 	t.Helper()
-	out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(args), Binding{WorkbenchID: projectID})
+	out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(args), Binding{WorkbenchID: workbenchID})
 	if err != nil {
 		return kb.Result{}, err
 	}
