@@ -60,9 +60,10 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   key (F5); a valid one waits in `pendingLinks` with its four-digit code
 ///   (SAS v2: the hub draws a fresh `confirm_nonce` only after it accepted
 ///   the hello, keeps it with the request and sends it in the waiting keybox;
-///   the code hashes it, so keys ground offline cannot aim at a code; at most
-///   `maxPendingPerCode` phones wait on one code, a further one reads
-///   `too_many_requests`; names are cleaned for display) until the owner clicks Link (`confirmLink`, which links it and
+///   the code hashes it, so keys ground offline cannot aim at a code; one
+///   code draws at most `maxNoncesPerCode` nonces, a further hello reads
+///   `too_many_requests`; names are cleaned for display) until the owner
+///   clicks Link (`confirmLink`, which links it and
 ///   publishes its keys) or Refuse (`refuseLink`, `not_confirmed`). Closing
 ///   the link refuses every request still waiting: `used_code` after a link
 ///   (F17), `expired_code` at expiry, `not_confirmed` otherwise. A linked
@@ -103,9 +104,10 @@ final class MobileLinkCenter {
     nonisolated static let sweepPendingKey = "share_sweep_pending"
     /// Bound on the iCloud user lookup.
     nonisolated static let ownerLookupTimeout: Duration = .seconds(30)
-    /// Pairing code v2: at most this many phones wait on one code; every further attempt is refused, so guessing a
-    /// code online is bounded and shows on the Mac.
-    nonisolated static let maxPendingPerCode = 3
+    /// Pairing code v2: one code hands out at most this many confirm nonces in total, across all devices, a known
+    /// device's key change included; every later hello for it is refused `too_many_requests` and the owner shows a
+    /// new code. So guessing the owner's code online costs at most this many tries per code.
+    nonisolated static let maxNoncesPerCode = 3
 
     /// The hub's confirm nonce for one accepted hello: fresh random bytes.
     nonisolated static func randomConfirmNonce() -> Data {
@@ -535,12 +537,12 @@ final class MobileLinkCenter {
             scope: payload.scope, userRecordName: payload.userRecordName,
             signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
             linkNonce: opened.code.nonce, sas: sas, confirmNonce: nonce, receivedAt: current,
-            typingRequested: payload.typingRequested), maxPerCode: Self.maxPendingPerCode)
+            typingRequested: payload.typingRequested), maxNoncesPerCode: Self.maxNoncesPerCode)
         switch saved {
         case .unchanged:
             return
         case .capped:
-            logger.notice("link request from phone \(deviceID, privacy: .public): \(Self.maxPendingPerCode) already wait on its code, refused")
+            logger.notice("link request from phone \(deviceID, privacy: .public): its code's \(Self.maxNoncesPerCode) tries are spent, refused")
             try refuse(opened, .tooManyRequests, at: current)
             return
         case .saved:

@@ -442,26 +442,23 @@ final class LinkingViewModel {
         linkCode = nil
         phase = .waiting(macName: pending.link.macName)
         while true {
+            // Only a keybox that differs from the baseline answers this scan: one the baseline already held was
+            // left by an earlier scan and shows neither "Mac sees this iPhone" nor a code.
             if let deviceID = identity.deviceID,
                let keybox = await host?.fetchKeybox(deviceID: deviceID),
-               keybox.grant.hubID == pending.link.hubID {
+               keybox.grant != pending.baseline, keybox.grant.hubID == pending.link.hubID {
                 let grant = keybox.grant
-                // Only a keybox that differs from the baseline answers this scan. A waiting one the baseline already
-                // held still gives the code: the same code scanned again re-sends an unchanged hello, and the Mac
-                // keeps that request with its nonce and code (one from an earlier scan of another code gives a code
-                // the Mac's row does not show, until the Mac replaces the request).
-                let fresh = grant != pending.baseline
-                if fresh, grant.linkRefused != nil {
+                if grant.linkRefused != nil {
                     endPendingLink(pending, failure: .refused)
                     return
                 }
-                if fresh, grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
+                if grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
                     if let boxKeys = keybox.keys {
                         await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
                         return
                     }
                     Self.logger.warning("a linked keybox without keys: still waiting")
-                } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
+                } else if grant.awaitingConfirmation == true {
                     macSeesPhone = true
                     linkCode = code.code(confirmNonce: grant.confirmNonce)
                 }

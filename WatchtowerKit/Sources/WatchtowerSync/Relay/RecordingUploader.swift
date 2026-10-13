@@ -611,6 +611,9 @@ public actor RecordingUploader: RecordingUploadAcking {
                 continue
             }
             try store.setPhoneRecordingState(id: row.id, state: .uploading)
+            // The save above replaced any queued save of this record (by name), so an older seal's file is no
+            // longer pointed at.
+            removeSealedLeftovers(id: row.id, plain: fileURL(row), keeping: sealed)
             sent += 1
         }
         return sent
@@ -714,8 +717,6 @@ public actor RecordingUploader: RecordingUploadAcking {
         else { return false }
         sealingIDs.insert(row.id)
         defer { sealingIDs.remove(row.id) }
-        // A re-seal's predecessor: kept until this seal is stored (an older queued save may still point at it).
-        let superseded = row.sealedFileURL(in: directory)
         let plain = fileURL(row)
         guard let size = try? FileManager.default.attributesOfItem(atPath: plain.path)[.size] as? Int64 else {
             try failLocally(row.id, .missingFile)
@@ -777,9 +778,8 @@ public actor RecordingUploader: RecordingUploadAcking {
             removeSealedLeftover(sealedFile)
             return false
         }
-        if let superseded, superseded.standardizedFileURL != sealedFile.standardizedFileURL {
-            removeSealedLeftover(superseded)
-        }
+        // The superseded file stays: the transport's queued save may still point at it until this seal's save
+        // replaces it (`send`), or the launch sweep finds it unknown.
         return true
     }
 
@@ -806,13 +806,14 @@ public actor RecordingUploader: RecordingUploadAcking {
         return generation
     }
 
-    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file.
-    private func removeSealedLeftovers(id: String, plain: URL) {
+    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file, but `keeping`.
+    private func removeSealedLeftovers(id: String, plain: URL, keeping: URL? = nil) {
         let first = sealTarget(id: id, plain: plain)
         let folder = first.deletingLastPathComponent()
+        let kept = keeping?.standardizedFileURL.path
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.lastPathComponent == first.lastPathComponent
-            || (file.pathExtension == "enc" && Self.sealGeneration(of: file, id: id) > 0) {
+        for file in files where file.standardizedFileURL.path != kept && (file.lastPathComponent == first.lastPathComponent
+            || (file.pathExtension == "enc" && Self.sealGeneration(of: file, id: id) > 0)) {
             removeSealedLeftover(file)
         }
     }

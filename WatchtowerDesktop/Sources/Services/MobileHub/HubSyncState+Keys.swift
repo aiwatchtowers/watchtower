@@ -61,6 +61,8 @@ extension HubSyncState {
         try addMissingColumns(
             "devices", [("signing_key", "BLOB"), ("agreement_key", "BLOB"), ("link_nonce", "TEXT"), ("last_seq", "INTEGER")], db)
         try addMissingColumns("link_refusals", [("agreement_key", "BLOB")], db)
+        // Pairing code v2: how many confirm nonces each code has handed out (`savePendingDevice`'s cap).
+        try addMissingColumns("link_codes", [("confirm_nonces_drawn", "INTEGER NOT NULL DEFAULT 0")], db)
         try addMissingColumns(
             "pending_devices", [("typing_requested", "INTEGER NOT NULL DEFAULT 0"), ("confirm_nonce", "BLOB")], db)
         try addMissingColumns("revoked_devices", [("name", "TEXT"), ("scope", "TEXT")], db)
@@ -342,14 +344,18 @@ extension HubSyncState {
         case saved
         /// The same device already waits with the same code and keys: nothing written (its nonce and code stay).
         case unchanged
-        /// `maxPerCode` other devices already wait on this code: nothing written (pairing code v2 attempt cap).
+        /// The code has handed out `maxNoncesPerCode` confirm nonces already: nothing written (pairing code v2
+        /// attempt cap).
         case capped
     }
 
-    /// Stores a pending request. The same device with the same code and keys is `unchanged`; the same device with
-    /// another code or keys replaces its request; a new device on a code `maxPerCode` others already wait on is
-    /// `capped`. One transaction: the count and the insert never race another hello.
-    func savePendingDevice(_ pending: PendingDevice, maxPerCode: Int) throws -> PendingSave {
+    /// Stores a pending request, drawing one of the code's confirm nonces. The same device with the same code and
+    /// keys is `unchanged` and draws none (a changed name or typing request on such a re-sent hello is ignored: the
+    /// request keeps what it stored). Any other hello for the code — a new device, or a known device under new keys
+    /// (`dev_kx` is not part of the device id, so a re-roll would otherwise buy a fresh nonce) — draws one, replacing
+    /// that device's request; once the code has drawn `maxNoncesPerCode` it is `capped` and only a new code helps.
+    /// One transaction: the count and the insert never race another hello.
+    func savePendingDevice(_ pending: PendingDevice, maxNoncesPerCode: Int) throws -> PendingSave {
         try queue.write { db in
             if let stored = try Row.fetchOne(
                 db, sql: """
@@ -361,14 +367,11 @@ extension HubSyncState {
                stored["agreement_key"] as Data? == pending.agreementKey {
                 return .unchanged
             }
-            // A request stored before pairing code v2 (no confirm nonce) is never offered, so it takes no place.
-            let others = try Int.fetchOne(
-                db, sql: """
-                    SELECT COUNT(*) FROM pending_devices
-                    WHERE link_nonce = ? AND device_id != ? COLLATE NOCASE AND confirm_nonce IS NOT NULL
-                    """,
-                arguments: [pending.linkNonce, pending.deviceID]) ?? 0
-            guard others < maxPerCode else { return .capped }
+            try db.execute(
+                sql: "UPDATE link_codes SET confirm_nonces_drawn = confirm_nonces_drawn + 1 WHERE nonce = ? AND confirm_nonces_drawn < ?",
+                arguments: [pending.linkNonce, maxNoncesPerCode])
+            // No row updated: the code's nonces are spent (or the code is gone).
+            guard db.changesCount > 0 else { return .capped }
             try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
             try db.execute(
                 sql: """

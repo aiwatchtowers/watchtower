@@ -1281,24 +1281,27 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(ScannedHubKeys.confirmNonce(from: WireBytes.base64URL(Data(count: 16))), "32 bytes only")
     }
 
-    /// The same code scanned again: the hello is unchanged, so the Mac keeps the request and its nonce, and the
-    /// waiting keybox equals the scan's baseline. It still gives the code (never a refusal or a link, though).
-    func testAWaitingKeyboxAlreadyInTheBaselineStillGivesTheCode() async throws {
+    /// Review: a waiting keybox the scan's baseline already held is left from an earlier scan (another code, or
+    /// this one re-scanned): it shows neither "Mac sees this iPhone" nor a code.
+    func testAWaitingKeyboxAlreadyInTheBaselineShowsNoCode() async throws {
         clock.parked = true
         let model = makeModel()
         let payload = code()
+        let fetches = LinkEventLog()
         host.mac = { [start] _ in
-            DeviceGrant(
+            fetches.append("fetch")
+            return DeviceGrant(
                 deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
                 typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
                 confirmNonce: TestPhone.confirmNonceText)
         }
         let flow = Task { await model.open(payload.url()) }
-        try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
+        try await poll { model.phase == .waiting(macName: "Acme Mac") && fetches.events.count >= 2 }
+        // The wait's first fetch answered; it is parked on the clock now.
+        try await Task.sleep(for: .milliseconds(100))
 
-        let sealed = await host.transport(for: .private).sealed
-        let hello = try XCTUnwrap(sealed.first)
-        XCTAssertEqual(model.linkCode, try TestPhone.openHello(hello, code: payload).sas)
+        XCTAssertNil(model.linkCode)
+        XCTAssertFalse(model.macSeesPhone)
         XCTAssertNil(model.link)
         flow.cancel()
         await flow.value

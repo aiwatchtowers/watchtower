@@ -144,11 +144,11 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         XCTAssertEqual(center.pendingLinks.first?.sas, replacedCode)
     }
 
-    /// The attempt cap: at most `maxPendingPerCode` phones wait on one code. A further hello for it is refused
-    /// (`too_many_requests`, sealed to its key) and never shown; a waiting phone re-sending its hello is not a new
-    /// attempt.
+    /// The attempt cap: one code hands out at most `maxNoncesPerCode` confirm nonces. A further hello for it is
+    /// refused (`too_many_requests`, sealed to its key) and never shown; a waiting phone re-sending its hello is not
+    /// a new attempt; the owner's Refuse gives no try back (only a new code does).
     func testAFourthHelloForOneCodeIsRefusedAndNotShown() async throws {
-        XCTAssertEqual(MobileLinkCenter.maxPendingPerCode, 3)
+        XCTAssertEqual(MobileLinkCenter.maxNoncesPerCode, 3)
         let code = try await center.issueCode()
         for phone in [identityA, identityB, identityC] {
             try await handle(try hello(phone, nonce: code.nonce))
@@ -168,11 +168,49 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         let stillWaiting = try await openedKeybox(identityA)
         XCTAssertEqual(stillWaiting.grant.awaitingConfirmation, true)
 
-        // The owner's Refuse frees a place.
+        // The owner's Refuse gives no try back; a new code does.
         try await center.refuseLink(deviceID: phoneB)
         let identityE = TestHello.newPhone()
         try await handle(try hello(identityE, nonce: code.nonce))
-        XCTAssertEqual(Set(center.pendingLinks.map(\.id)), [phoneA, phoneC, identityE.deviceID.uuidString])
+        XCTAssertEqual(Set(center.pendingLinks.map(\.id)), [phoneA, phoneC])
+        let spent = try await openedKeybox(identityE)
+        XCTAssertEqual(spent.grant.linkRefused, .tooManyRequests)
+
+        let next = try await center.issueCode()
+        try await handle(try hello(identityD, nonce: next.nonce))
+        XCTAssertTrue(center.pendingLinks.contains { $0.id == identityD.deviceID.uuidString }, "a new code, new tries")
+    }
+
+    /// Review I-1: the device id hashes only the signing key, so one device can re-roll its agreement key under one
+    /// code. Each re-roll draws one of the code's nonces; the 4th gets none: the request stays the 3rd one, the
+    /// keybox stays sealed to the 3rd key (the 4th cannot open it), and no fresh code is shown.
+    func testReRollingTheAgreementKeyUnderOneCodeSpendsTheCodesNonces() async throws {
+        let draws = NonceDraws()
+        center = try makeCenter { draws.next() }
+        let code = try await center.issueCode()
+        let signing = Curve25519.Signing.PrivateKey()
+        let rolls = (0 ..< 4).map { _ in DeviceIdentityKeys(signing: signing, agreement: Curve25519.KeyAgreement.PrivateKey()) }
+        let deviceID = rolls[0].deviceID.uuidString
+        var codes: [String] = []
+        for roll in rolls.prefix(3) {
+            try await handle(try hello(roll, nonce: code.nonce))
+            let keybox = try await openedKeybox(roll)
+            XCTAssertNotNil(keybox.grant.confirmNonce)
+            codes.append(try XCTUnwrap(center.pendingLinks.first { $0.id == deviceID }?.sas))
+        }
+        XCTAssertEqual(draws.count, 3, "three re-rolls, three nonces")
+
+        try await handle(try hello(rolls[3], nonce: code.nonce))
+
+        XCTAssertEqual(draws.count, 4, "drawn before the save; the spent code throws it away")
+        XCTAssertEqual(center.pendingLinks.map(\.id), [deviceID])
+        XCTAssertEqual(center.pendingLinks.first?.sas, codes[2], "still the third request")
+        XCTAssertEqual(
+            try sidecar.pendingDevices().first?.agreementKey, rolls[2].agreement.publicKey.rawRepresentation)
+        do {
+            _ = try await openedKeybox(rolls[3])
+            XCTFail("the 4th key must not open the keybox: it gets no nonce")
+        } catch {}
     }
 
     /// Display names: control and format characters (newlines, bidi overrides, zero-width marks) never reach the

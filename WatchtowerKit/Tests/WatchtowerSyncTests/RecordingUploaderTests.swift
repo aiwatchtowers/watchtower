@@ -1272,10 +1272,13 @@ final class RecordingUploaderTests: XCTestCase {
 
     /// A re-seal never rewrites the file an older queued save still points at: each seal gets its own name
     /// (`<id>.enc`, then `<id>-1.enc`, …). While the row waits for its new seal the sweep keeps the old file; once
-    /// the new envelope is stored the superseded file goes.
+    /// the new seal's save has replaced the queued one the superseded file goes.
     func testAReSealWritesANewFileAndRemovesTheSupersededOneOnceStored() async throws {
         let spy = SpyTransport()
-        let (uploader, store, _) = try makeStack(transport: spy)
+        let store = try makeStore()
+        let clock = TestClock()
+        let uploader = RecordingUploader(
+            transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID) { clock.now }
         let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 6, count: 512))
         _ = try await uploader.uploadPending()
         try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
@@ -1290,16 +1293,26 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: first), firstBytes)
 
         try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [1, 2]).hubLink(TestE2E.hubID.uuidString)))
+        // Review: the new envelope is stored but its save fails: the queued save still points at the old file.
+        await spy.setFailing(true)
         try await uploader.retryFailed(id: recording.id)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.sealedPath, "\(recording.id)-1.enc")
+        XCTAssertEqual(try Data(contentsOf: first), firstBytes, "kept while no save replaced the queued one")
+        await spy.setFailing(false)
+        let waiting = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        let due = try XCTUnwrap(RecordingUploader.nextAttemptAt(attempts: waiting.uploadAttempts, last: waiting.lastAttemptAt))
+        clock.advance(due.timeIntervalSince(clock.now) + 1)
+        _ = try await uploader.uploadPending()
 
-        let saves = await spy.saves
-        guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
-        XCTAssertEqual(saves[0].file, "\(recording.id).enc")
+        let saves = await spy.saves.filter { $0.file != nil }
+        guard saves.count == 3 else { return XCTFail("expected three saves, got \(saves.count)") }
+        XCTAssertEqual(saves[1], saves[2], "the retry re-sends the stored re-seal")
         XCTAssertEqual(saves[1].file, "\(recording.id)-1.enc", "a new file per seal")
+        XCTAssertEqual(saves[0].file, "\(recording.id).enc")
         XCTAssertEqual(saves[1].name, saves[0].name)
         let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.sealedPath, "\(recording.id)-1.enc")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "the superseded file goes once the new seal is stored")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "the superseded file goes once the new save replaced the queued one")
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(recording.id)-1.enc").path))
         let afterReseal = try await uploader.sweepOrphanFiles()
         XCTAssertTrue(afterReseal.isEmpty, "\(afterReseal.map(\.lastPathComponent))")
