@@ -72,12 +72,23 @@ struct MobileHubStorage {
     /// sidecar (it owns the envelope seq allocator). nil only in a live storage without the CloudKit entitlement
     /// (an unsigned dev build has no data protection keychain and reaches no CloudKit).
     var keyring: HubKeyring?
+    /// The hub's record I/O (Task 11): `transport` behind the keyring, sealing what the hub publishes; the
+    /// sidecar is its persisted wire → plain name map (F19). Lifecycle calls stay on `transport`. nil exactly when
+    /// `keyring` is: then nothing is published, never in the clear.
+    var secure: SecureTransport?
 
     /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
     static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
         var storage = Self(transport: transport, sidecar: sidecar)
-        storage.keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        storage.keyring = keyring
+        storage.secure = sealing(transport, keyring: keyring, sidecar: sidecar)
         return storage
+    }
+
+    /// The hub's sealing transport over `transport`: the keyring provides the keys and the relay rollback guard.
+    static func sealing(_ transport: any HubTransport, keyring: HubKeyring, sidecar: HubSyncState) -> SecureTransport {
+        SecureTransport(inner: transport, keys: keyring, rollback: keyring, names: sidecar)
     }
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
@@ -99,13 +110,15 @@ struct MobileHubStorage {
         let keyring = CloudKitTransport.entitlementPresent()
             ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
             : nil
+        let transport = CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub)
         return Self(
-            transport: CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub),
+            transport: transport,
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
             shares: CloudKitShareService(hubID: hubID),
             registerForPushes: registerForCloudKitPushes,
-            keyring: keyring
+            keyring: keyring,
+            secure: keyring.map { sealing(transport, keyring: $0, sidecar: sidecar) }
         )
     }
 
@@ -171,6 +184,9 @@ final class MobileHubService {
     @ObservationIgnored private let companions: [any HubCompanion]
     @ObservationIgnored private let processor: RelayProcessor
     @ObservationIgnored private let sidecar: HubSyncState
+    /// The hub's E2E keys; `start()` creates `K_meta` and the first epoch when none exist. nil in tests that seal
+    /// with fixed test keys, and without the CloudKit entitlement.
+    @ObservationIgnored private let keyring: HubKeyring?
     @ObservationIgnored private let identity: HubIdentity
     @ObservationIgnored private let hostInfo: HubHostInfo
     @ObservationIgnored private let heartbeatEvery: Duration
@@ -216,6 +232,7 @@ final class MobileHubService {
         processor: RelayProcessor,
         sidecar: HubSyncState,
         hostInfo: HubHostInfo,
+        keyring: HubKeyring? = nil,
         companions: [any HubCompanion] = [],
         relayIdleInterval: Duration = MobileHubService.defaultRelayIdleInterval,
         relayActiveInterval: Duration = MobileHubService.defaultRelayActiveInterval,
@@ -230,6 +247,7 @@ final class MobileHubService {
         self.companions = companions
         self.processor = processor
         self.sidecar = sidecar
+        self.keyring = keyring
         self.identity = HubIdentity(sidecar: sidecar)
         self.hostInfo = hostInfo
         self.heartbeatEvery = heartbeatInterval
@@ -291,6 +309,15 @@ final class MobileHubService {
         } catch {
             logger.error("per-hub zone adoption failed: \(error.localizedDescription, privacy: .public)")
             status = .unavailable("Couldn't prepare this Mac's iCloud zones: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
+        do {
+            // Before anything seals: K_meta and the first epoch (idempotent; Task 15 handles a recreated identity).
+            try keyring?.ensureGroupKeys()
+        } catch {
+            logger.error("hub group keys unavailable: \(String(describing: error), privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
             startReprobeLoop()
             return
         }
@@ -359,9 +386,10 @@ final class MobileHubService {
             // The recreated zone gets every record again, restaged.
             publisher.removeStagedAssets()
         }
-        await transport.setRecordRejectedHandler { recordName, zone in
+        // CloudKit names the rejected record by its wire name; the publisher maps it back (F19).
+        await transport.setRecordRejectedHandler { wireName, zone in
             guard zone == .data else { return }
-            publisher.recordRejected(recordName)
+            Task { await publisher.recordRejected(wireName: wireName) }
         }
     }
 
@@ -707,7 +735,8 @@ final class MobileHubService {
             sharing: sharing
         )
         let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
-        try await transport.save([record])
+        // Sealed like every DataZone record (spec §2.7: the fixed name `heartbeat` stays).
+        try await publisher.saveHeartbeat(record)
     }
 
     /// Looks the iCloud user up once (bounded); retried at the next write

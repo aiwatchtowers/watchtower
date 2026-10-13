@@ -11,6 +11,12 @@ import WatchtowerSync
 /// attempt (`link_refusals`) reads `linked: false` with `link_refused` for
 /// `refusalLifetime`. A removed phone has no record, so the publisher
 /// deletes it. At most 20, the latest linked first, then the latest refused.
+///
+/// Mobile E2E (spec §2.3, D7): the payload is a `Keybox` carrying the grant,
+/// which the hub's `SecureTransport` seals to the phone's agreement key under
+/// the key-free name `keybox-<device id>`. `keys` stays nil here: Tasks 13/14
+/// fill the epoch keys and revocations. The plain name uses the uppercase
+/// `uuidString` form (F30), the form the transport and the phone use.
 struct DeviceGrantSlice: SliceSource {
     let kind = SliceKind.deviceGrant
 
@@ -55,7 +61,10 @@ struct DeviceGrantSlice: SliceSource {
         }
         let encoder = RelayCoder.makeEncoder()
         return try (linked + refused).prefix(Self.maxRecords).map { modifiedAt, grant in
-            SliceRecord(kind: kind, id: grant.deviceID, modifiedAt: modifiedAt, payload: try encoder.encode(grant))
+            SliceRecord(
+                kind: kind, id: UUID(uuidString: grant.deviceID)?.uuidString ?? grant.deviceID, modifiedAt: modifiedAt,
+                payload: try encoder.encode(Keybox(grant: grant, keys: nil))
+            )
         }
     }
 }

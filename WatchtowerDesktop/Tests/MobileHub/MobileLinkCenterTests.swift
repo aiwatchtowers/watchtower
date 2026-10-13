@@ -212,7 +212,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
     private func grants() throws -> [String: DeviceGrant] {
         try Dictionary(uniqueKeysWithValues: grantRecords().map {
-            ($0.id, try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: $0.payload))
+            ($0.id, try RelayCoder.makeDecoder().decode(Keybox.self, from: $0.payload).grant)
         })
     }
 
@@ -961,7 +961,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let second = try XCTUnwrap(try grantRecords().first { $0.id == "phone-b" })
 
         XCTAssertNotEqual(first.payload, second.payload)
-        let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: second.payload)
+        let grant = try RelayCoder.makeDecoder().decode(Keybox.self, from: second.payload).grant
         XCTAssertEqual(grant.linkRefused, .usedCode)
         XCTAssertEqual(grant.decidedAt, Date(timeIntervalSince1970: clock.now.timeIntervalSince1970.rounded(.down)))
     }

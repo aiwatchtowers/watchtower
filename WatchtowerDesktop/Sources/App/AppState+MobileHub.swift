@@ -91,8 +91,9 @@ extension AppState {
             DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
+        // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
@@ -139,7 +140,7 @@ extension AppState {
         )
         let hub = MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, companions: companions
+            hostInfo: hostInfo, keyring: storage.keyring, companions: companions
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
         linkCenter?.attach(to: hub)
         return hub

@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 
 /// HubTransport stub: InMemoryCloudTransport record I/O plus steerable
@@ -434,5 +435,67 @@ extension HubSyncState {
         try addLinkCode(nonce: nonce, issuedAt: date, exp: date.addingTimeInterval(600), keeping: MobileLinkCenter.keptCodes)
         let device = LinkedDevice(deviceID: deviceID, name: "iPhone", scope: scope, userRecordName: userRecordName, linkedAt: date)
         _ = try linkDevice(device, nonce: nonce, now: date)
+    }
+}
+
+// MARK: - E2E (F25: the Kit's test pairing, never a copy)
+
+/// The test hub's sealing transport over `inner`: `TestE2E`'s fixed keys, so `TestE2E.opener()` (the paired phone)
+/// opens what it seals. `names` is the persisted wire → plain map (the sidecar, F19).
+func testSecureTransport(
+    _ inner: any CloudSyncTransport & Sendable,
+    names: (any WireNameIndex)? = nil,
+    keys: TestHubKeyProvider = TestE2E.hub()
+) -> SecureTransport {
+    SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard(), names: names)
+}
+
+/// What the hub publishes, read the way the paired phone reads it.
+enum TestOpening {
+    /// A DataZone wire record opened by the paired phone (signature verified): plain name, kind, payload, notify
+    /// level and asset descriptor; the wire record's `modifiedAt` and asset file. A signal passes as it is.
+    static func open(_ record: CloudRecord) throws -> CloudRecord {
+        if record.kind == WireKind.signal { return record }
+        guard record.kind == WireKind.envelope else {
+            throw TestOpeningError.notAnEnvelope(record.recordName)
+        }
+        let frame = try TestE2E.opener().open(wireName: record.recordName, envelope: record.payload)
+        return CloudRecord(
+            recordName: frame.id, zone: record.zone, kind: frame.kind, modifiedAt: record.modifiedAt,
+            payload: frame.payload, notifyLevel: frame.notifyLevel, assetFileURL: record.assetFileURL,
+            asset: frame.asset
+        )
+    }
+
+    /// The asset file of an opened record, decrypted with its descriptor.
+    static func assetPlaintext(_ opened: CloudRecord) throws -> Data {
+        let file = try XCTUnwrap(opened.assetFileURL, "no asset file")
+        let descriptor = try XCTUnwrap(opened.asset, "no asset descriptor in the frame")
+        return try ChunkedAssetCipher.decrypt(try Data(contentsOf: file), descriptor: descriptor)
+    }
+}
+
+enum TestOpeningError: Error {
+    case notAnEnvelope(String)
+}
+
+/// The DataZone records `transport` currently holds, opened as the paired phone opens them (signals included as
+/// they are).
+func openedRecords(in transport: any CloudSyncTransport) async throws -> [CloudRecord] {
+    try await transport.changes(in: .data, since: nil).changed.map(TestOpening.open)
+}
+
+extension StubHubTransport {
+    /// The saved log with every DataZone envelope opened (relay records and signals as saved).
+    func openedSaves() throws -> [Saved] {
+        try saved.map { entry in
+            guard entry.record.zone == .data else { return entry }
+            return Saved(record: try TestOpening.open(entry.record), at: entry.at)
+        }
+    }
+
+    /// The hub's sealing transport over this stub (`TestE2E` keys).
+    func sealing(names: (any WireNameIndex)? = nil) -> SecureTransport {
+        testSecureTransport(self, names: names)
     }
 }

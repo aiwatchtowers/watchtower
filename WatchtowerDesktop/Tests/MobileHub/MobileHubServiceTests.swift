@@ -45,7 +45,7 @@ final class MobileHubServiceTests: XCTestCase {
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: [],
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)),
             assets: assets
         )
@@ -295,6 +295,31 @@ final class MobileHubServiceTests: XCTestCase {
         )
     }
 
+    /// The staged files are ciphertext with a `.desc` descriptor (holding `K_asset`) beside each: an account reset
+    /// and turning the hub off remove both, never leaving a key behind.
+    func testAccountResetAndDisableStillRemoveStagedFilesAndDescriptors() async throws {
+        let store = try stagedAssetStore()
+        let file = store.fileURL(recordName: "meeting_transcript-1", fileName: "segments.json")
+        let descriptor = file.appendingPathExtension("desc")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, assets: store)
+        await service.start()
+
+        transport.fireAccountReset()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path), "the descriptor goes with its file")
+
+        _ = try store.stage(Data("[]".utf8), fileName: "segments.json", recordName: "meeting_transcript-1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
+        XCTAssertNil(store.stagedDescriptor(recordName: "meeting_transcript-1", fileName: "segments.json"))
+    }
+
     func testStopStopsTheTransport() async {
         let transport = StubHubTransport()
         let service = makeService(transport: transport)
@@ -351,17 +376,24 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(transport.starts, 0, "a start() queued before the hub was replaced does nothing")
     }
 
+    /// CloudKit names the rejected record by its opaque wire name; the hub maps it back through
+    /// `slice_state.wire_name` (F19) and clears that plain name's hash only.
     func testRejectedDataRecordClearsItsHash() async throws {
-        try sidecar.setHash("hash", for: "workbench-1")
-        try sidecar.setHash("hash", for: "workbench-2")
+        let wire = try testSecureTransport(InMemoryCloudTransport()).wireName(plain: "workbench-1", zone: .data)
+        XCTAssertTrue(try sidecar.setHashes(
+            ["workbench-1": "hash", "workbench-2": "hash"], wireNames: ["workbench-1": wire],
+            ifGeneration: try sidecar.generation()
+        ))
         let transport = StubHubTransport()
         let service = makeService(transport: transport)
         await service.start()
         defer { service.stop() }
 
-        transport.fireRecordRejected("workbench-1", zone: .data)
+        transport.fireRecordRejected(wire, zone: .data)
 
-        XCTAssertEqual(Set(try sidecar.hashes(forKind: .workbench).keys), ["workbench-2"])
+        await awaitHubCondition("the rejected record's hash is cleared") {
+            (try? Set(self.sidecar.hashes(forKind: .workbench).keys)) == ["workbench-2"]
+        }
     }
 
     // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)

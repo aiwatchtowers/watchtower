@@ -2,11 +2,14 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
 /// The DataZone side of the hub: the hash diff over `SliceSource`s, the
-/// 900 KB payload guard and the fast lane (mobile POC spec §3, §9).
+/// sealed-size guard, sealing (mobile E2E spec §2.4, §2.7) and the fast lane
+/// (mobile POC spec §3, §9). Every record is read back through the paired
+/// test phone (`TestOpening`).
 final class SlicePublisherTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
@@ -30,11 +33,23 @@ final class SlicePublisherTests: XCTestCase {
         _ sources: [any SliceSource],
         timing: SlicePublisher.Timing = .standard
     ) -> SlicePublisher {
-        SlicePublisher(dbPool: dbPool, state: state, transport: transport, sources: sources, timing: timing)
+        SlicePublisher(
+            dbPool: dbPool, state: state, transport: transport.sealing(names: state), sources: sources, timing: timing
+        )
     }
 
-    private func dataSaves() -> [StubHubTransport.Saved] {
-        transport.saved.filter { $0.record.zone == .data }
+    /// The DataZone saves, opened by the paired phone.
+    private func dataSaves() throws -> [StubHubTransport.Saved] {
+        try transport.openedSaves().filter { $0.record.zone == .data }
+    }
+
+    /// The sealed DataZone saves as they went to the transport.
+    private func wireSaves() -> [CloudRecord] {
+        transport.saved.map(\.record).filter { $0.zone == .data }
+    }
+
+    private func wireName(_ plain: String) throws -> String {
+        try testSecureTransport(InMemoryCloudTransport()).wireName(plain: plain, zone: .data)
     }
 
     // MARK: - Pinned values
@@ -62,7 +77,7 @@ final class SlicePublisherTests: XCTestCase {
 
         XCTAssertEqual(first.pushed, 2)
         XCTAssertEqual(second.pushed, 0, "an unchanged record is not re-sent")
-        XCTAssertEqual(Set(dataSaves().map(\.record.recordName)), ["workbench-1", "workbench-2"])
+        XCTAssertEqual(Set(try dataSaves().map(\.record.recordName)), ["workbench-1", "workbench-2"])
         XCTAssertEqual(try state.hashes(forKind: .workbench).count, 2)
     }
 
@@ -78,10 +93,11 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(result.deleted, 1)
         XCTAssertTrue(try state.hashes(forKind: .workbench).isEmpty)
         let batch = try await transport.changes(in: .data, since: nil)
-        XCTAssertEqual(batch.deletedRecordNames, ["workbench-1"])
+        XCTAssertEqual(batch.deletedRecordNames, [try wireName("workbench-1")], "deleted under its opaque name")
     }
 
-    func testRejectedRecordClearsOnlyItsHash() async throws {
+    /// The transport hands the rejection over by wire name; the hash of the plain name it maps to is cleared.
+    func testARejectedRecordClearsThePlainNamesHash() async throws {
         let source = StubSliceSource(kind: .workbench)
         source.setRecords([
             SliceRecord(kind: .workbench, id: "1", modifiedAt: Date(), payload: Data("{}".utf8)),
@@ -89,34 +105,172 @@ final class SlicePublisherTests: XCTestCase {
         ])
         let publisher = makePublisher([source])
         try await publisher.publishOnce()
+        let wire = try wireName("workbench-1")
+        XCTAssertEqual(state.plainName(forWire: wire), "workbench-1", "slice_state keeps the opaque name (F19)")
 
-        publisher.recordRejected("workbench-1")
+        await publisher.recordRejected(wireName: wire)
 
         XCTAssertEqual(Set(try state.hashes(forKind: .workbench).keys), ["workbench-2"])
         let republished = try await publisher.publishOnce()
         XCTAssertEqual(republished.pushed, 1, "the rejected record is offered again")
     }
 
-    // MARK: - Payload guard
+    /// F19: CKSyncEngine may reject a record it queued in an earlier launch. A new transport (nothing sealed in
+    /// this process) still maps the wire name through `slice_state.wire_name`.
+    func testARejectionAfterARelaunchStillMapsToThePlainName() async throws {
+        let source = StubSliceSource(kind: .workbench)
+        source.setPayload(Data("{}".utf8), id: "1")
+        try await makePublisher([source]).publishOnce()
+        let wire = try wireName("workbench-1")
 
-    func testPayloadGuardBoundaries() async throws {
-        let empty = StubSliceSource(kind: .workbench)
-        empty.setPayload(Data(), id: "empty")
-        let exact = StubSliceSource(kind: .workbenchTarget)
-        exact.setPayload(Data(repeating: 0x61, count: 900_000), id: "exact")
-        let over = StubSliceSource(kind: .workbenchComment)
-        over.setPayload(Data(repeating: 0x61, count: 900_001), id: "over")
-        let publisher = makePublisher([empty, exact, over])
+        let forgetful = SlicePublisher(dbPool: dbPool, state: state, transport: transport.sealing(), sources: [source])
+        await forgetful.recordRejected(wireName: wire)
+        XCTAssertEqual(
+            Set(try state.hashes(forKind: .workbench).keys), ["workbench-1"],
+            "control: without the persisted index a fresh transport cannot map the name"
+        )
+
+        let relaunched = SlicePublisher(
+            dbPool: dbPool, state: state, transport: transport.sealing(names: state), sources: [source]
+        )
+        await relaunched.recordRejected(wireName: wire)
+
+        XCTAssertTrue(try state.hashes(forKind: .workbench).isEmpty, "the relaunched hub cleared the plain name's hash")
+        let republished = try await relaunched.publishOnce()
+        XCTAssertEqual(republished.pushed, 1)
+    }
+
+    // MARK: - Sealing
+
+    func testEveryPublishedRecordIsASignedEnvelopeUnderAnOpaqueName() async throws {
+        let source = StubSliceSource(kind: .workbench)
+        source.setRecords([
+            SliceRecord(kind: .workbench, id: "1", modifiedAt: Date(), payload: Data(#"{"name":"acme"}"#.utf8)),
+            SliceRecord(
+                kind: .workbench, id: "2", modifiedAt: Date(), payload: Data(#"{"name":"beta"}"#.utf8), notifyLevel: "high"
+            )
+        ])
+
+        let result = try await makePublisher([source]).publishOnce()
+
+        XCTAssertEqual(result.pushed, 2)
+        let wire = wireSaves()
+        XCTAssertEqual(wire.count, 2)
+        for record in wire {
+            XCTAssertEqual(record.kind, WireKind.envelope, "the wire kind is the constant")
+            XCTAssertNil(record.notifyLevel, "no notify level in the clear")
+            XCTAssertFalse(record.recordName.hasPrefix("workbench"), "an opaque name: \(record.recordName)")
+            XCTAssertNil(record.payload.range(of: Data("acme".utf8)), "no plaintext on the wire")
+            XCTAssertNil(record.payload.range(of: Data("beta".utf8)), "no plaintext on the wire")
+            let header = try Envelope.parse(record.payload).header
+            XCTAssertTrue(header.flags.contains(.signed), "every DataZone envelope is signed by hub_sig")
+            XCTAssertEqual(header.envelopeClass, .data)
+        }
+        XCTAssertEqual(Set(wire.map(\.recordName)), [try wireName("workbench-1"), try wireName("workbench-2")])
+        let opened = try dataSaves().map(\.record)
+        XCTAssertEqual(Set(opened.map(\.recordName)), ["workbench-1", "workbench-2"])
+        XCTAssertEqual(opened.first { $0.recordName == "workbench-2" }?.notifyLevel, "high", "the level rides inside")
+    }
+
+    func testAnUnchangedTickSendsNothingDespiteRandomNonces() async throws {
+        let source = StubSliceSource(kind: .workbench)
+        let payload = Data(#"{"name":"acme"}"#.utf8)
+        source.setPayload(payload, id: "1")
+        let publisher = makePublisher([source])
+
+        try await publisher.publishOnce()
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(second.pushed, 0, "the hash is of the plaintext, not of the envelope")
+        XCTAssertEqual(wireSaves().count, 1)
+        XCTAssertEqual(try state.hashes(forKind: .workbench), ["workbench-1": SliceDiff.hashHex(payload)])
+
+        // The same plaintext sealed again is a different envelope (fresh nonce): a hash of the wire would never match.
+        try state.wipeSyncState(now: Date())
+        try await publisher.publishOnce()
+        let envelopes = wireSaves().map(\.payload)
+        XCTAssertEqual(envelopes.count, 2)
+        XCTAssertNotEqual(envelopes[0], envelopes[1])
+    }
+
+    func testARecordThatCannotBeSealedIsSkippedAloneAndUnhashed() async throws {
+        let source = StubSliceSource(kind: .deviceGrant)
+        let grant = Data(#"{"linked":true}"#.utf8)
+        let unknown = UUID().uuidString
+        source.setRecords([
+            // No agreement key for this device: no keybox recipient.
+            SliceRecord(kind: .deviceGrant, id: unknown, modifiedAt: Date(), payload: grant),
+            SliceRecord(kind: .deviceGrant, id: TestE2E.deviceID.uuidString, modifiedAt: Date(), payload: grant)
+        ])
+        let publisher = makePublisher([source])
+
+        let result = try await publisher.publishOnce()
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(result.pushed, 1, "one bad record never blocks the others")
+        XCTAssertEqual(result.skipped, [SliceKind.deviceGrant.recordName(id: unknown)])
+        XCTAssertEqual(wireSaves().map(\.recordName), [Keybox.recordName(deviceID: TestE2E.deviceID.uuidString)])
+        XCTAssertEqual(
+            Array(try state.hashes(forKind: .deviceGrant).keys),
+            [SliceKind.deviceGrant.recordName(id: TestE2E.deviceID.uuidString)],
+            "the unsealable record is not hashed, so it is retried"
+        )
+        XCTAssertEqual(publisher.sealWarnings, 1, "an unchanged unsealable record warns once")
+    }
+
+    func testWithoutHubKeysNothingIsPublished() async throws {
+        let source = StubSliceSource(kind: .workbench)
+        source.setPayload(Data("{}".utf8))
+        let publisher = SlicePublisher(dbPool: dbPool, state: state, transport: nil, sources: [source])
 
         let result = try await publisher.publishOnce()
 
+        XCTAssertEqual(result, SlicePublisher.Outcome())
+        XCTAssertTrue(transport.saved.isEmpty, "never a plaintext fallback")
+        XCTAssertEqual(source.reads, 0)
+        XCTAssertNil(publisher.lastPublishAt)
+        let heartbeat = CloudRecordFactory.record(for: SliceRecord(kind: .heartbeat, id: "x", modifiedAt: Date(), payload: Data()))
+        do {
+            try await publisher.saveHeartbeat(heartbeat)
+            XCTFail("the heartbeat needs the hub keys too")
+        } catch SlicePublisher.KeysError.unavailable {}
+    }
+
+    // MARK: - Sealed-size guard (D12, Review Focus 3)
+
+    /// The cap is on the sealed envelope (header, padded frame, tag, signature), never on the payload alone: a
+    /// frame exactly at `frameCap` pads to nothing and seals to exactly `Envelope.maxBytes`; one byte more does
+    /// not fit even unpadded and is skipped, unhashed, warned once.
+    func testARecordThatFitsOnlyUnpaddedStillPublishesAndOneThatDoesNotIsSkipped() async throws {
+        let cap = EnvelopeSealer.frameCap(signed: true)
+        let fitting = cap - InnerFrame(kind: "workbench", id: "workbench-fits", payload: Data()).encodedLength
+        let fits = StubSliceSource(kind: .workbench)
+        fits.setPayload(Data(repeating: 0x61, count: fitting), id: "fits")
+        let over = StubSliceSource(kind: .workbenchTarget)
+        let overOverhead = InnerFrame(kind: "workbench_target", id: "workbench_target-over", payload: Data()).encodedLength
+        over.setPayload(Data(repeating: 0x61, count: cap - overOverhead + 1), id: "over")
+        let empty = StubSliceSource(kind: .workbenchComment)
+        empty.setPayload(Data(), id: "empty")
+        let publisher = makePublisher([fits, over, empty])
+
+        let result = try await publisher.publishOnce()
+        try await publisher.publishOnce()
+
         XCTAssertEqual(result.pushed, 2)
-        XCTAssertEqual(result.skipped, ["workbench_comment-over"])
-        XCTAssertEqual(
-            Set(dataSaves().map(\.record.recordName)), ["workbench-empty", "workbench_target-exact"],
-            "an empty payload and one of exactly 900_000 bytes publish"
-        )
-        XCTAssertTrue(try state.hashes(forKind: .workbenchComment).isEmpty, "an oversized record is not hashed")
+        XCTAssertEqual(result.skipped, ["workbench_target-over"])
+        let fitsWire = try wireName("workbench-fits")
+        let sealed = try XCTUnwrap(wireSaves().first { $0.recordName == fitsWire })
+        XCTAssertEqual(sealed.payload.count, Envelope.maxBytes, "the padding was clipped to the cap")
+        XCTAssertLessThanOrEqual(wireSaves().map(\.payload.count).max() ?? 0, SlicePublisher.maxPayloadBytes)
+        XCTAssertEqual(Set(try dataSaves().map(\.record.recordName)), ["workbench-fits", "workbench_comment-empty"])
+        XCTAssertTrue(try state.hashes(forKind: .workbenchTarget).isEmpty, "an oversized record is not hashed")
+        XCTAssertEqual(publisher.oversizedWarnings, 1, "warned once")
+        let atCap = SliceRecord(kind: .workbench, id: "fits", modifiedAt: Date(), payload: Data(count: fitting))
+        let overCap = SliceRecord(kind: .workbench, id: "fits", modifiedAt: Date(), payload: Data(count: fitting + 1))
+        XCTAssertFalse(SlicePublisher.isOversized(atCap, signed: true))
+        XCTAssertTrue(SlicePublisher.isOversized(overCap, signed: true))
+        XCTAssertFalse(SlicePublisher.isOversized(overCap, signed: false), "an unsigned envelope has 64 bytes more room")
+        XCTAssertTrue(SlicePublisher.isOversized(atCap, signed: true, hasAsset: true), "a descriptor takes 101 bytes")
     }
 
     func testOversizedWarningIsThrottledPerRecordAndPayloadHash() async throws {
@@ -190,7 +344,7 @@ final class SlicePublisherTests: XCTestCase {
 
     private func makeLanePublisher(_ clock: FakeClock) -> SlicePublisher {
         SlicePublisher(
-            dbPool: dbPool, state: state, transport: transport, sources: [], timing: .standard
+            dbPool: dbPool, state: state, transport: transport.sealing(), sources: [], timing: .standard
         ) { clock.now }
     }
 
@@ -316,13 +470,15 @@ final class SlicePublisherTests: XCTestCase {
         source.setPayload(Data(#"{"v":1}"#.utf8))
         let transport = try XCTUnwrap(self.transport)
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: state, transport: transport, sources: [source],
+            dbPool: dbPool, state: state, transport: transport.sealing(), sources: [source],
             timing: .init(tick: .seconds(60), fastWindow: .milliseconds(50), fastSpacing: .milliseconds(100)),
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
         )
         publisher.start()
         defer { publisher.stop() }
-        await awaitHubCondition("the start cycle (the tick) publishes") { self.dataSaves().count == 1 && publisher.lastPublishAt != nil }
+        await awaitHubCondition("the start cycle (the tick) publishes") {
+            ((try? self.dataSaves().count) ?? 0) == 1 && publisher.lastPublishAt != nil
+        }
         XCTAssertEqual(transport.sendNowCalls, 0, "the tick leaves the send to CKSyncEngine")
 
         publisher.nudge(kinds: [.workbench])
@@ -333,7 +489,7 @@ final class SlicePublisherTests: XCTestCase {
         source.setPayload(Data(#"{"v":2}"#.utf8))
         publisher.nudge(kinds: [.workbench])
         await awaitHubCondition("the changed record is sent at once") { transport.sendNowCalls == 1 }
-        XCTAssertEqual(dataSaves().count, 2)
+        XCTAssertEqual(try dataSaves().count, 2)
         XCTAssertEqual(transport.sendNowCalls, 1, "exactly one immediate send")
     }
 
@@ -361,7 +517,7 @@ final class SlicePublisherTests: XCTestCase {
     }
 
     private func assetPublisher(_ source: StubAssetSliceSource, store: SliceAssetStore?) -> SlicePublisher {
-        SlicePublisher(dbPool: dbPool, state: state, transport: transport, sources: [source], assets: store)
+        SlicePublisher(dbPool: dbPool, state: state, transport: transport.sealing(names: state), sources: [source], assets: store)
     }
 
     func testAnAssetRecordIsStagedAndSavedWithItsFile() async throws {
@@ -371,11 +527,14 @@ final class SlicePublisherTests: XCTestCase {
             let result = try await assetPublisher(source, store: store).publishOnce()
 
             XCTAssertEqual(result.pushed, 1)
-            let saved = try XCTUnwrap(dataSaves().last?.record)
+            let saved = try XCTUnwrap(try dataSaves().last?.record)
             let file = try XCTUnwrap(saved.assetFileURL, "the asset rides as the record's CKAsset")
             XCTAssertEqual(file, store.fileURL(recordName: "meeting_transcript-7", fileName: "segments.json"))
-            XCTAssertEqual(try Data(contentsOf: file), Data("[1]".utf8))
+            XCTAssertNotEqual(try Data(contentsOf: file), Data("[1]".utf8), "the staged file is ciphertext")
+            XCTAssertEqual(try TestOpening.assetPlaintext(saved), Data("[1]".utf8), "it opens with the frame's descriptor")
             XCTAssertEqual(saved.payload, Data(#"{"id":7}"#.utf8), "the asset is not in the payload")
+            let wire = try XCTUnwrap(wireSaves().last)
+            XCTAssertTrue(try Envelope.parse(wire.payload).header.flags.contains(.hasAsset))
         }
     }
 
@@ -393,10 +552,11 @@ final class SlicePublisherTests: XCTestCase {
 
             XCTAssertEqual(changed.pushed, 1, "the hash covers the asset's content")
             let file = store.fileURL(recordName: "meeting_transcript-7", fileName: "segments.json")
-            XCTAssertEqual(try Data(contentsOf: file), Data("[2]".utf8))
+            XCTAssertEqual(try TestOpening.assetPlaintext(try XCTUnwrap(try dataSaves().last?.record)), Data("[2]".utf8))
             XCTAssertEqual(
-                try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path), ["segments.json"],
-                "replaced in place, no second file"
+                try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path).sorted(),
+                ["segments.json", "segments.json.desc"],
+                "replaced in place: the sealed file and its descriptor, nothing else"
             )
         }
     }
@@ -449,7 +609,7 @@ final class SlicePublisherTests: XCTestCase {
 
             publisher.start()
             await awaitHubCondition("start reopens the store and the cycle restages the file") {
-                self.dataSaves().count == 2 && store.isStaged(recordName: "meeting_transcript-7", fileName: "segments.json")
+                ((try? self.dataSaves().count) ?? 0) == 2 && store.isStaged(recordName: "meeting_transcript-7", fileName: "segments.json")
             }
             publisher.stop()
         }

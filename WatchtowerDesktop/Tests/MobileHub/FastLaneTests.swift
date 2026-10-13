@@ -117,7 +117,7 @@ final class FastLaneTests: XCTestCase {
 
     private func latestPayloads(_ transport: StubHubTransport, kind: SliceKind) throws -> [String: [String: Any]] {
         var latest: [String: [String: Any]] = [:]
-        for saved in transport.saved where saved.record.kind == kind.rawValue {
+        for saved in try transport.openedSaves() where saved.record.kind == kind.rawValue {
             latest[saved.record.recordName] = try SliceJSON.object(saved.record.payload)
         }
         return latest
@@ -157,7 +157,7 @@ final class FastLaneTests: XCTestCase {
         let clock = FakeClock()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(),
             sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })]
         ) { clock.now }
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
@@ -199,7 +199,7 @@ final class FastLaneTests: XCTestCase {
         _ = try HubIdentity(sidecar: sidecar).ensureEnabledAt(started)
         let sliceNow = started.addingTimeInterval(60)
         let publisher = SlicePublisher(
-            dbPool: pool, state: sidecar, transport: transport,
+            dbPool: pool, state: sidecar, transport: transport.sealing(names: sidecar),
             sources: [
                 TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil }, now: { sliceNow }),
                 AskAlertSlice(sidecar: sidecar) { sliceNow }
@@ -242,7 +242,7 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(published["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(published["state_glyph"] as? String, "person.2.fill")
         XCTAssertEqual(published["state_tone"] as? String, "green")
-        XCTAssertFalse(transport.saved.contains { $0.record.kind == SliceKind.askAlert.rawValue }, "no ask_alert")
+        XCTAssertFalse(try transport.openedSaves().contains { $0.record.kind == SliceKind.askAlert.rawValue }, "no ask_alert")
     }
 
     func testAStateChangeAsksForTheWorkbenchsGitAndSummaryRefresh() async throws {
@@ -395,7 +395,7 @@ final class FastLaneTests: XCTestCase {
         let clock = FakeClock()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(),
             sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })]
         ) { clock.now }
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }

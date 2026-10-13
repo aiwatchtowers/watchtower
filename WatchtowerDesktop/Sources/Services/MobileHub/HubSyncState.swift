@@ -180,27 +180,32 @@ final class HubSyncState: Sendable {
     /// Records `hashes` (record name → hash) only while the sync generation
     /// is still `generation`, checked in the same transaction, so a reset
     /// cannot land between the check and the writes. False (nothing
-    /// written) when a reset bumped it.
-    func setHashes(_ hashes: [String: String], ifGeneration generation: Int) throws -> Bool {
+    /// written) when a reset bumped it. `wireNames` (record name → the
+    /// opaque name it was sent under) fills `slice_state.wire_name` (F19), so
+    /// a rejection of a record queued in an earlier launch still maps back.
+    func setHashes(
+        _ hashes: [String: String], wireNames: [String: String] = [:], ifGeneration generation: Int
+    ) throws -> Bool {
         try queue.write { db in
             guard try Self.generation(db) == generation else { return false }
             for (name, hash) in hashes {
-                try Self.upsertHash(hash, for: name, db)
+                try Self.upsertHash(hash, for: name, wireName: wireNames[name], db)
             }
             return true
         }
     }
 
-    private static func upsertHash(_ hash: String, for recordName: String, _ db: Database) throws {
+    private static func upsertHash(_ hash: String, for recordName: String, wireName: String? = nil, _ db: Database) throws {
         try db.execute(
             sql: """
-                INSERT INTO slice_state (record_name, payload_hash, pushed_at)
-                VALUES (?, ?, ?)
+                INSERT INTO slice_state (record_name, payload_hash, pushed_at, wire_name)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(record_name) DO UPDATE SET
                     payload_hash = excluded.payload_hash,
-                    pushed_at = excluded.pushed_at
+                    pushed_at = excluded.pushed_at,
+                    wire_name = COALESCE(excluded.wire_name, slice_state.wire_name)
                 """,
-            arguments: [recordName, hash, Date().timeIntervalSince1970]
+            arguments: [recordName, hash, Date().timeIntervalSince1970, wireName]
         )
     }
 

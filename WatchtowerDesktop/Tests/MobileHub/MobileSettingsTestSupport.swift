@@ -57,7 +57,7 @@ final class MobileSettingsFixture {
         let host = FakeMobileSettingsHost(enabled: enabled)
         self.host = host
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: [],
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10))
         )
         let processor = RelayProcessor(

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
@@ -42,7 +43,7 @@ final class HubHeartbeatTests: XCTestCase {
     ) throws -> MobileHubService {
         let instant = now ?? self.now
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: [],
             timing: .init(tick: .seconds(3600), fastWindow: .seconds(3600), fastSpacing: .seconds(3600))
         )
         let processor = RelayProcessor(
@@ -73,9 +74,9 @@ final class HubHeartbeatTests: XCTestCase {
         try await cloud.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: heartbeat.updatedAt)])
     }
 
-    /// Every heartbeat this transport saved, decoded, in order.
+    /// Every heartbeat this transport saved, opened by the paired phone and decoded, in order.
     private func savedHeartbeats(_ transport: StubHubTransport) throws -> [HeartbeatPayload] {
-        try transport.saved
+        try transport.openedSaves()
             .filter { $0.record.recordName == HeartbeatPayload.recordName }
             .map { try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: $0.record.payload) }
     }
@@ -210,7 +211,7 @@ final class HubHeartbeatTests: XCTestCase {
         let instant = now
         let clock: @Sendable () -> Date = { instant }
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: [], now: clock
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(), sources: [], now: clock
         )
         XCTAssertNil(publisher.lastPublishAt)
 
@@ -222,7 +223,7 @@ final class HubHeartbeatTests: XCTestCase {
     func testTheHeartbeatLoopRewritesTheRecord() async throws {
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
-        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport, sources: [])
+        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport.sealing(), sources: [])
         let processor = RelayProcessor(
             transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
@@ -293,6 +294,46 @@ final class HubHeartbeatTests: XCTestCase {
         XCTAssertEqual(record.record.zone, .data, "the heartbeat lives in DataZone")
     }
 
+    /// Spec §2.7: the heartbeat keeps its fixed, key-free name, but its body is a signed DataZone envelope.
+    func testTheHeartbeatIsASignedEnvelopeNamedHeartbeat() async throws {
+        let transport = StubHubTransport()
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac acme"))
+
+        await hub.enable()
+
+        let wire = try XCTUnwrap(transport.saved.first { $0.record.recordName == HeartbeatPayload.recordName }?.record)
+        XCTAssertEqual(wire.kind, WireKind.envelope)
+        XCTAssertNil(wire.payload.range(of: Data("Mac acme".utf8)), "no Mac name in the clear")
+        let header = try Envelope.parse(wire.payload).header
+        XCTAssertTrue(header.flags.contains(.signed))
+        XCTAssertEqual(header.envelopeClass, .data)
+        XCTAssertNoThrow(try TestE2E.opener().verify(wireName: wire.recordName, envelope: wire.payload), "hub_sig verifies")
+        XCTAssertEqual(try savedHeartbeats(transport).first?.macName, "Mac acme")
+    }
+
+    /// No hub keys (the keyring is nil without the CloudKit entitlement): no heartbeat in the clear, the hub stays
+    /// unavailable.
+    func testWithoutHubKeysTheHubDoesNotStartAndWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: nil, sources: [])
+        let processor = RelayProcessor(
+            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+        )
+        let hub = MobileHubService(
+            transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
+            hostInfo: testHostInfo(), relayIdleInterval: .seconds(3600), relayActiveInterval: .seconds(3600),
+            availabilityReprobeInterval: .seconds(3600)
+        ) { true }
+        hubs.append(hub)
+
+        let status = await hub.enable()
+
+        guard case .unavailable(let message) = status else { return XCTFail("\(status)") }
+        XCTAssertTrue(message.hasPrefix("Couldn't write the heartbeat"), message)
+        XCTAssertTrue(transport.saved.isEmpty, "never a plaintext heartbeat")
+    }
+
     func testBuildFlavorMapsToTheWireFlavor() {
         XCTAssertEqual(HubIdentity.flavor(buildFlavor: ""), .default)
         XCTAssertEqual(HubIdentity.flavor(buildFlavor: "dev"), .default)
@@ -317,7 +358,7 @@ final class HubHeartbeatTests: XCTestCase {
 
         await hub.enable()
 
-        let record = try XCTUnwrap(transport.saved.first { $0.record.recordName == HeartbeatPayload.recordName })
+        let record = try XCTUnwrap(try transport.openedSaves().first { $0.record.recordName == HeartbeatPayload.recordName })
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.record.payload) as? [String: Any])
         let accounts = try XCTUnwrap(json["accounts"] as? [[String: Any]])
         XCTAssertEqual(accounts.count, 3, "the removed Slack account is left out")
