@@ -372,6 +372,22 @@ final class MultiHubEnvironmentTests: XCTestCase {
         }
     }
 
+    /// Ruling 6: removing the active session leaves no active hub behind
+    /// (the root activates the next one first; with none, onboarding).
+    func testRemovingTheActiveSessionLeavesNoDanglingActiveHub() throws {
+        let base = try makeBase()
+        let hubA = try makeSession("hub-a", base: base)
+        let hubB = try makeSession("hub-b", base: base)
+        let env = try makeEnvironment([hubA, hubB])
+
+        env.remove("hub-b")
+        XCTAssertEqual(env.activeHubID, "hub-a", "an inactive removal leaves the active hub")
+        env.remove("hub-a")
+
+        XCTAssertNil(env.activeHubID)
+        XCTAssertNil(env.active)
+    }
+
     // MARK: - The badge
 
     func testTheBadgeIsTheSumOfOpenAsksAcrossSessions() async throws {
@@ -393,7 +409,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         _ = await env.refreshAll(.pull)
 
         try await poll({ badges.last == 2 }, "the answered ask still counts: \(badges)")
-        XCTAssertEqual(badges.first, 0, "set once at launch, before any hub has hydrated")
+        XCTAssertFalse(badges.contains(0), "ruling 7: never written as 0 before any hub has hydrated: \(badges)")
         XCTAssertEqual(zip(badges, badges.dropFirst()).filter { $0 == $1 }.count, 0, "never set to the same total twice: \(badges)")
     }
 

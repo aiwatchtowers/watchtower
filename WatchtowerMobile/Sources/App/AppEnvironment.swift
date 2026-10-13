@@ -50,7 +50,8 @@ final class AppEnvironment {
     /// Persists the active hub; nil persists nothing (tests, the demo).
     @ObservationIgnored private let registry: HubRegistry?
     @ObservationIgnored private let setBadge: @MainActor (Int) -> Void
-    /// The total the badge was last set to.
+    /// The total the badge was last set to, or seeded with at init (the
+    /// badge is not written for it: a launch never flashes 0).
     @ObservationIgnored private var badgeTotal: Int?
     /// The scene phase as `setActive` last had it: a session added later
     /// takes it too. nil before the first.
@@ -102,10 +103,15 @@ final class AppEnvironment {
         applyRoles()
     }
 
-    /// Drops a session the caller has already shut down.
+    /// Drops a session the caller has already shut down. The caller
+    /// activates another hub first when this one is on screen; otherwise
+    /// no hub is active afterwards (never a dangling id).
     func remove(_ hubID: String) {
         sessions[hubID] = nil
         order.removeAll { $0 == hubID }
+        if activeHubID == hubID {
+            activeHubID = nil
+        }
     }
 
     /// Puts `hubID`'s session on screen and keeps it as the active hub.
@@ -196,15 +202,20 @@ final class AppEnvironment {
         sessions.values.reduce(0) { $0 + $1.workbenchReplica.openAskCount }
     }
 
-    /// Sets the badge to `openAskTotal` when it changed, and observes it
-    /// again for the next change.
+    /// Sets the badge to `openAskTotal` when it changed from the last known
+    /// total, and observes it again for the next change. The first call
+    /// (the init's, before any session reports) only seeds the total.
     private func observeBadge() {
         let total = withObservationTracking {
             openAskTotal
         } onChange: { [weak self] in
             Task { @MainActor in self?.observeBadge() }
         }
-        guard total != badgeTotal else { return }
+        guard let known = badgeTotal else {
+            badgeTotal = total
+            return
+        }
+        guard total != known else { return }
         badgeTotal = total
         setBadge(total)
     }
@@ -275,27 +286,31 @@ final class AppEnvironment {
     /// The live app on a signed build: one session per registry row, in
     /// the registry's order, each on its own files (`factory`). A row the
     /// Mac removed (`unlinked_by_mac`) is built frozen: stopped before its
-    /// boot runs (no engine, no fetch, no device to send as), then frozen,
-    /// its replica still readable. The registry's active hub goes on
-    /// screen, else the first row; no rows build no session.
+    /// boot runs (no engine, no fetch, and no device until the freeze sets
+    /// it with writes off), then frozen as a live removal freezes it
+    /// (`HubSession.freeze(as:)`), its replica still readable. The
+    /// registry's active hub goes on screen, else the first row; no rows
+    /// build no session.
     static func live(
         registry: HubRegistry,
         paths _: HubPaths,
         factory: HubSessionFactory,
         identity: DeviceIdentity,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
     ) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry)
+        let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry, setBadge: setBadge)
         let rows = try registry.rows()
         for row in rows {
-            let frozen = row.state == .unlinkedByMac
-            let device = frozen ? nil : identity.linkedDevice(for: row.link)
-            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
-            if frozen {
+            let device = identity.linkedDevice(for: row.link)
+            if row.state == .unlinkedByMac {
+                let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
                 session.stop()
-                Task { await session.freeze() }
+                Task { await session.freeze(as: device) }
+                env.add(session)
+            } else {
+                env.add(try factory.make(row, row.hubID, row.link.databaseScope, device))
             }
-            env.add(session)
         }
         let saved = try registry.activeHubID
         if let active = rows.first(where: { $0.hubID == saved }) ?? rows.first {

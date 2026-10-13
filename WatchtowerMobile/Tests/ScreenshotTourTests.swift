@@ -68,7 +68,7 @@ final class ScreenshotTourTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory()
         )
         addTeardownBlock { @MainActor in session.stop() }
-        let root = AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
+        let root = try AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
         return root
     }
 
@@ -254,8 +254,8 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "31b", slug: "waiting-hint", source: source + "LinkSteps.swift", reached: .leaf, make: leaf { _ in
                 LinkStepsView(model: LinkStepsModel(waitingFor: mac, startedAt: Date().addingTimeInterval(-25), now: Date()))
             }),
-            Shot(number: "32", slug: "switch-mac", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
-                SwitchMacView(old: mac, new: "Acme Studio")
+            Shot(number: "32", slug: "too-many-macs", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
+                LinkFailureView(failure: .tooManyMacs)
             }),
             Shot(number: "33", slug: "failure", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
                 LinkFailureView(failure: .expired)

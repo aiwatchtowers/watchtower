@@ -97,11 +97,6 @@ struct PushArrival {
 @MainActor
 @Observable
 final class HubSession {
-    /// The hub a live phone syncs while it has no link (F1 bridge, replaced
-    /// by F2's `HubRegistry`): no Mac has zones of this name, so it syncs
-    /// nothing.
-    nonisolated static let unlinkedHubID = "unlinked"
-
     let store: ReplicaStore
     let transportKind: TransportKind
     let outbox: ActionOutbox
@@ -129,8 +124,8 @@ final class HubSession {
     let recorder: PhoneRecorderController
     /// The phone's recordings and their way to the Mac.
     let phoneRecordings = PhoneRecordingsModel()
-    /// The hub whose zones this session syncs (`unlinkedHubID` while
-    /// unlinked): held recordings of this hub are adopted here.
+    /// The hub whose zones this session syncs: held recordings of this hub
+    /// are adopted here.
     let hubID: String
     /// The database this session's link lives in, which a silent push
     /// names (`AppEnvironment.handlePush`); nil for the demo.
@@ -145,8 +140,9 @@ final class HubSession {
     /// This phone's link, nil until the link flow sets one. The demo
     /// transport is linked to `DemoSeed.device`.
     private(set) var linkedDevice: LinkedDevice?
-    /// false while the link stands but nothing may be sent (the hub moved,
-    /// spec §9): the outbox and the uploader refuse as if unlinked.
+    /// false while the link stands but nothing may be sent (a hub the Mac
+    /// removed, frozen: multi-hub spec §6.1): the outbox and the uploader
+    /// refuse as if unlinked.
     private(set) var writesAllowed = true
 
     /// The link flow's hooks (`AppRoot`): the transport's link signals, and
@@ -266,7 +262,7 @@ final class HubSession {
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
-        hubID: String = HubSession.unlinkedHubID,
+        hubID: String = DemoSeed.hubID,
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
@@ -803,22 +799,12 @@ final class HubSession {
     /// `writesAllowed: false` the link stands (Settings still shows it) but
     /// the outbox, the uploader and the Settings toggles get no device, so
     /// nothing is sent: a toggle meanwhile is only kept, like one made
-    /// before linking.
-    /// When writes come back for the same link (the moved hub returned),
-    /// the current device record is written once, so a toggle kept
-    /// meanwhile reaches the Mac.
+    /// before linking. A frozen hub never gets its writes back (a rescan
+    /// builds a new session).
     func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
-        let writesReturn = writesAllowed && !self.writesAllowed && device != nil && device == linkedDevice
         linkedDevice = device
         self.writesAllowed = writesAllowed
         deviceSettings.linkedDevice = writesAllowed ? device : nil
-        if writesReturn, let payload = deviceSettings.devicePayload() {
-            do {
-                try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
-            } catch {
-                Self.logger.error("device record not rewritten: \(error.localizedDescription, privacy: .public)")
-            }
-        }
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)
         await uploader.setDeviceID(sendingID)
@@ -860,8 +846,15 @@ final class HubSession {
     /// writes off, keeping the replica open for reading: later pushes fetch
     /// nothing (`handlePush`), and the screens still show what it holds.
     func freeze() async {
+        await freeze(as: linkedDevice)
+    }
+
+    /// `freeze()` with `device` as the link that stands: the one path a hub
+    /// the Mac removed takes, live (its own device) or booted from its
+    /// registry row (built with none, so nothing can send before this).
+    func freeze(as device: LinkedDevice?) async {
         await shutDown()
-        await setLinkedDevice(linkedDevice, writesAllowed: false)
+        await setLinkedDevice(device, writesAllowed: false)
     }
 
     /// The safety poll's next wait for this session's role and work.

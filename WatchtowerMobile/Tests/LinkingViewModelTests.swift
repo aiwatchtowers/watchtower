@@ -97,7 +97,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(payload.url())
         XCTAssertEqual(model.phase, .linked(macName: payload.macName))
         await model.finish()
-        XCTAssertNotNil(model.link)
+        XCTAssertTrue(model.hasLinks)
         return model
     }
 
@@ -121,8 +121,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(writes.first?.scope, .private)
         XCTAssertEqual(writes.first?.userRecordName, owner)
         XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
-        XCTAssertEqual(model.link?.databaseScope, .private)
-        XCTAssertEqual(host.links.last?.device?.scope, .private)
+        XCTAssertEqual(model.links.first?.link.databaseScope, .private)
+        XCTAssertEqual(host.linkedCalls.last?.device.scope, .private)
     }
 
     /// Another Apple ID: both shares accepted, then the shared database,
@@ -144,9 +144,9 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(shared.first?.userRecordName, "_colleague-a")
         let privateWrites = try await host.deviceWrites(in: .private)
         XCTAssertTrue(privateWrites.isEmpty)
-        XCTAssertEqual(model.link?.databaseScope, .shared(ownerName: owner))
-        XCTAssertEqual(model.link?.dataShareURL, dataShare)
-        XCTAssertEqual(model.link?.relayShareURL, relayShare)
+        XCTAssertEqual(model.links.first?.link.databaseScope, .shared(ownerName: owner))
+        XCTAssertEqual(model.links.first?.link.dataShareURL, dataShare)
+        XCTAssertEqual(model.links.first?.link.relayShareURL, relayShare)
     }
 
     func testDifferentAppleIDWithoutShareURLsCannotShare() async throws {
@@ -256,8 +256,8 @@ final class LinkingViewModelTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(clock.slept, 60)
         XCTAssertLessThan(clock.slept, 62, "the wait ends at 60 s")
-        XCTAssertNil(model.link)
-        XCTAssertTrue(host.links.isEmpty, "never shown as linked")
+        XCTAssertTrue(model.links.isEmpty)
+        XCTAssertTrue(host.linkedCalls.isEmpty, "never shown as linked")
         XCTAssertNil(LinkStore(defaults: defaults).pending, "a finished wait leaves nothing to resume")
     }
 
@@ -272,8 +272,8 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertEqual(model.phase, .failed(.refused))
         XCTAssertEqual(LinkFailure.refused.message, "This code can't be used — Show a new code on the Mac")
-        XCTAssertNil(model.link)
-        XCTAssertTrue(host.links.isEmpty)
+        XCTAssertTrue(model.links.isEmpty)
+        XCTAssertTrue(host.linkedCalls.isEmpty)
     }
 
     /// A refusal still in the replica from an earlier scan is not this
@@ -318,9 +318,9 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(host.permissionRequests, 1)
         XCTAssertEqual(host.openedNow, 1)
         XCTAssertEqual(model.phase, .idle)
-        XCTAssertEqual(host.links.last?.device?.deviceID, identity.deviceID)
-        XCTAssertEqual(host.links.last?.writesAllowed, true)
-        XCTAssertEqual(LinkStore(defaults: defaults).link?.hubID, "hub-acme", "the link is saved")
+        XCTAssertEqual(host.linkedCalls.last?.device.deviceID, identity.deviceID)
+        XCTAssertEqual(host.activeHubID, "hub-acme", "the new Mac is on screen")
+        XCTAssertEqual(host.rows.map(\.hubID), ["hub-acme"], "the link is saved")
     }
 
     func testScanningTheSameCodeTwiceStaysLinkedWithoutASecondWrite() async throws {
@@ -330,11 +330,11 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(payload.url())
 
         XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
-        XCTAssertEqual(model.link?.hubID, "hub-acme")
+        XCTAssertEqual(model.links.map(\.hubID), ["hub-acme"])
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1, "no second device-record write")
-        XCTAssertEqual(host.wipes, 0)
-        XCTAssertTrue(host.links.allSatisfy { $0.device != nil }, "never unlinked meanwhile")
+        XCTAssertTrue(host.removals.isEmpty)
+        XCTAssertEqual(host.linkedCalls.count, 1, "never unlinked meanwhile, linked once")
     }
 
     // MARK: - Killed mid-link (review focus 2)
@@ -359,7 +359,7 @@ final class LinkingViewModelTests: XCTestCase {
         clock.parked = false
         clock.advance(by: 20)
         let relaunched = makeModel()
-        XCTAssertNil(relaunched.link, "a pending link is not a link")
+        XCTAssertTrue(relaunched.links.isEmpty, "a pending link is not a link")
 
         await relaunched.resumePendingLink()
 
@@ -368,8 +368,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(relaunched.phase, .failed(.noAnswer))
         XCTAssertGreaterThanOrEqual(clock.slept, 40)
         XCTAssertLessThan(clock.slept, 42, "only the remaining part of the 60 s")
-        XCTAssertTrue(host.links.isEmpty, "never shown as linked")
-        XCTAssertNil(relaunched.link)
+        XCTAssertTrue(host.linkedCalls.isEmpty, "never shown as linked")
+        XCTAssertTrue(relaunched.links.isEmpty)
         XCTAssertNil(LinkStore(defaults: defaults).pending)
         XCTAssertEqual(container.accepted.count, 1, "the relaunch does not accept again")
     }
@@ -388,8 +388,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(container.accepted.count, 1)
         let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "the accept is followed by a resumable wait")
         XCTAssertEqual(pending.link.databaseScope, .shared(ownerName: owner))
-        XCTAssertEqual(LinkStore(defaults: defaults).bootScope, .shared(ownerName: owner), "the relaunch boots the scan's database")
-        XCTAssertEqual(LinkStore(defaults: defaults).bootHubID, "hub-acme", "and the scan's hub")
+        XCTAssertEqual(pending.link.hubID, "hub-acme", "the relaunch resumes the scan's hub")
 
         XCTAssertFalse(pending.baselineCaptured, "nothing is written before the baseline")
 
@@ -401,7 +400,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(relaunched.phase, .failed(.noAnswer), "nothing reached the Mac: scan again at once")
         XCTAssertEqual(host.prepared.count, preparedBefore, "no wait to resume")
         XCTAssertEqual(clock.slept, 0)
-        XCTAssertTrue(host.links.isEmpty, "never shown as linked")
+        XCTAssertTrue(host.linkedCalls.isEmpty, "never shown as linked")
         XCTAssertNil(LinkStore(defaults: defaults).pending)
     }
 
@@ -432,7 +431,7 @@ final class LinkingViewModelTests: XCTestCase {
         guard case .failed(.local) = model.phase else {
             return XCTFail("expected a local failure, got \(model.phase)")
         }
-                XCTAssertNil(LinkStore(defaults: defaults).pending)
+        XCTAssertNil(LinkStore(defaults: defaults).pending)
     }
 
     /// A pending link an older build saved has no `baselineCaptured`: it
@@ -481,7 +480,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
         var saved = record
         saved.linkedAt = start
-        XCTAssertEqual(model.link, saved, "the pending link, with its grant's linked_at")
+        XCTAssertEqual(model.links.first?.link, saved, "the pending link, with its grant's linked_at")
         XCTAssertNil(LinkStore(defaults: defaults).pending)
     }
 
@@ -506,11 +505,11 @@ final class LinkingViewModelTests: XCTestCase {
         container.userRecordNameValue = "_colleague-b"
         await model.accountChanged()
 
-        XCTAssertEqual(host.wipes, 1, "the replica is wiped")
-        XCTAssertEqual(host.wipesKeptRecordings, [false], "review F6: nothing is carried to another account")
-        XCTAssertNil(model.link, "Welcome is shown")
-        XCTAssertNil(LinkStore(defaults: defaults).link)
-        XCTAssertNil(host.links.last?.device)
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "the hub and its replica are removed")
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [false], "review F6: nothing is carried to another account")
+        XCTAssertTrue(model.links.isEmpty, "Welcome is shown")
+        XCTAssertFalse(model.hasLinks)
+        XCTAssertTrue(host.rows.isEmpty)
         XCTAssertEqual(model.phase, .idle)
     }
 
@@ -519,8 +518,8 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.accountChanged()
 
-        XCTAssertEqual(host.wipes, 0)
-        XCTAssertNotNil(model.link)
+        XCTAssertTrue(host.removals.isEmpty)
+        XCTAssertTrue(model.hasLinks)
     }
 
     func testSignedOutOfICloudKeepsTheReplica() async throws {
@@ -529,8 +528,34 @@ final class LinkingViewModelTests: XCTestCase {
         container.status = .noAccount
         await model.accountChanged()
 
-        XCTAssertEqual(host.wipes, 0, "kept until the same account returns or another one signs in")
-        XCTAssertNotNil(model.link)
+        XCTAssertTrue(host.removals.isEmpty, "kept until the same account returns or another one signs in")
+        XCTAssertTrue(model.hasLinks)
+    }
+
+    /// Multi-hub spec §6.2: another Apple ID wipes every session and the
+    /// registry; the recordings were made for the old account's Macs.
+    func testAccountChangeRemovesEveryHubWithoutKeepingRecordings() async throws {
+        let model = try await linkedModel(code())
+        let home = code(hubID: "hub-home", macName: "Home Mac")
+        macLinks(home)
+        await model.open(home.url())
+        await model.finish()
+        XCTAssertEqual(model.links.map(\.hubID), ["hub-acme", "hub-home"])
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: linkRecord(hubID: "hub-studio"), deadline: start.addingTimeInterval(600), baseline: nil, baselineCaptured: false
+        )
+        host.notSentCount = 2
+
+        container.userRecordNameValue = "_colleague-b"
+        await model.accountChanged()
+
+        XCTAssertEqual(Set(host.removedHubIDs), ["hub-acme", "hub-home"], "every hub goes")
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [false, false], "no recording is kept for another account")
+        XCTAssertTrue(model.links.isEmpty, "onboarding")
+        XCTAssertNil(LinkStore(defaults: defaults).pending, "a pending link of the old account goes too")
+        XCTAssertEqual(model.notice, .notSent(2), "what the removals lost, summed")
+        XCTAssertTrue(container.left.isEmpty, "no farewell, no share leave: the old account's zones")
+        XCTAssertTrue(host.farewells.isEmpty)
     }
 
     // MARK: - Unlink
@@ -539,23 +564,18 @@ final class LinkingViewModelTests: XCTestCase {
         let model = try await linkedModel(code())
         host.notSentCount = 3
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
-            Array(log.events.suffix(3)), ["wipe private", "prepare private", "wipe private"],
-            "the queue is wiped first, so the flush sends only the unlinked record; then the phone restarts unlinked"
+            Array(log.events.suffix(2)), ["remove hub-acme", "farewell private"],
+            "the hub goes first, so the farewell's transport sends only the unlinked record"
         )
-        XCTAssertEqual(host.flushes, 1)
-        XCTAssertEqual(host.wipes, 2)
-        XCTAssertEqual(
-            host.wipedHubIDs, ["hub-acme", HubSession.unlinkedHubID],
-            "final review m3: a private unlink ends on the unlinked hub id too"
-        )
-        XCTAssertNil(model.link)
-        XCTAssertNil(LinkStore(defaults: defaults).link)
-        XCTAssertNil(host.links.last?.device)
+        XCTAssertEqual(host.farewells.map(\.hubID), ["hub-acme"])
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "one removal, no second wipe")
+        XCTAssertTrue(model.links.isEmpty)
+        XCTAssertTrue(host.rows.isEmpty)
         XCTAssertEqual(model.phase, .idle)
         XCTAssertEqual(model.notice, .notSent(3))
         XCTAssertEqual(LinkNotice.notSent(3).message, "Not sent: 3 items were still waiting for your Mac")
@@ -570,7 +590,7 @@ final class LinkingViewModelTests: XCTestCase {
         host.notSentCount = 2
         host.stopsRecording = true
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
         XCTAssertEqual(model.notice, .recordingKept(notSent: 2))
         XCTAssertEqual(
@@ -586,23 +606,28 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(model.notice, "read by the next scan")
     }
 
+    /// Multi-hub spec §6.1: the Mac's removal freezes the hub and wipes
+    /// nothing, so a capture is not stopped by it; an account switch removes
+    /// the hub, and its stopped capture is counted, not kept.
     func testRemovedOrAnAccountSwitchDuringACaptureSaysTheRecordingWasKept() async throws {
         container.userRecordNameValue = "_colleague-a"
         let removed = try await linkedModel(code())
         host.stopsRecording = true
 
-        await removed.removedByMac()
+        await removed.removedByMac("hub-acme")
 
-        XCTAssertEqual(removed.notice, .recordingKept(notSent: 0), "the kept recording also says the link ended")
+        XCTAssertEqual(removed.notice, .removed(macName: "Acme Mac"), "nothing was wiped: the hub is frozen, not removed")
+        XCTAssertTrue(host.removals.isEmpty)
+        host.stopsRecording = false
 
-        let switched = try await linkedModel(code())
+        let switched = try await linkedModel(code(hubID: "hub-home", macName: "Home Mac"))
         host.stopsRecording = true
         host.notSentCount = 1
         container.userRecordNameValue = "_colleague-b"
 
         await switched.accountChanged()
 
-        XCTAssertNil(switched.link)
+        XCTAssertTrue(switched.links.isEmpty)
         XCTAssertEqual(switched.notice, .notSent(1), "another account: the stopped capture is not kept, it is counted")
     }
 
@@ -613,7 +638,7 @@ final class LinkingViewModelTests: XCTestCase {
         host.recordingProblem = "Some recordings couldn't be read (disk full)"
         host.notSentCount = 2
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
         XCTAssertEqual(model.notice, .recordingsProblem("Some recordings couldn't be read (disk full)", notSent: 2))
         XCTAssertEqual(
@@ -628,37 +653,47 @@ final class LinkingViewModelTests: XCTestCase {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
         XCTAssertEqual(container.left, [owner])
         XCTAssertEqual(container.leftHubIDs, ["hub-acme"], "the linked hub's shares are left")
-        XCTAssertEqual(host.preparedHubIDs.last, "hub-acme", "unlinked is written to the linked hub's zones")
-        XCTAssertEqual(host.wipedHubIDs, ["hub-acme"], "board #70: one restart, on the linked hub, empties the queue")
+        XCTAssertEqual(host.farewells.map(\.hubID), ["hub-acme"], "unlinked is written to the linked hub's zones")
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "board #70: one removal empties the queue")
         let writes = try await host.deviceWrites(in: .shared(ownerName: owner))
         XCTAssertEqual(writes.last?.unlinked, true)
-        XCTAssertEqual(
-            Array(log.events.suffix(4)),
-            ["wipe shared(\(owner))", "prepare shared(\(owner))", "leave \(owner)", "retire"],
-            "wipe the queue in the shared database, write unlinked there, leave; the left shares sync nothing, so no second restart"
-        )
-        XCTAssertEqual(host.flushes, 1)
-        XCTAssertEqual(host.retirements, 1, "the next link restarts even on the same database")
+        XCTAssertEqual(host.farewells.count, 1)
         XCTAssertNil(model.notice, "nothing was waiting")
     }
 
-    /// Shares that could not be left still reach the Mac's zones: the
-    /// phone restarts on its own database, unlinked, as a private link does.
-    func testUnlinkInSharedScopeWhoseSharesStayRestartsPrivate() async throws {
+    /// Multi-hub F2: the hub's files go first, then the farewell through a
+    /// transport of its own, then the shares; no second wipe follows.
+    func testUnlinkRemovesFirstThenSendsTheFarewellThenLeavesShares() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+
+        await model.unlink("hub-acme")
+
+        XCTAssertEqual(
+            Array(log.events.suffix(3)),
+            ["remove hub-acme", "farewell shared(\(owner))", "leave \(owner)"],
+            "remove, write unlinked in the shared database, leave"
+        )
+        XCTAssertEqual(host.farewells.first?.scope, .shared(ownerName: owner))
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [true], "an unlink holds the hub's recordings")
+    }
+
+    /// Shares that could not be left: the hub is gone all the same (its
+    /// files and its row), and the phone does nothing more for it.
+    func testUnlinkInSharedScopeWhoseSharesStayStillRemovesTheHub() async throws {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())
         container.leaveError = CKError(.networkUnavailable)
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
-        XCTAssertEqual(host.wipedHubIDs, ["hub-acme", HubSession.unlinkedHubID])
-        XCTAssertEqual(Array(log.events.suffix(2)), ["leave \(owner)", "wipe private"])
-        XCTAssertEqual(host.retirements, 0)
-        XCTAssertNil(model.link)
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"])
+        XCTAssertEqual(Array(log.events.suffix(2)), ["farewell shared(\(owner))", "leave \(owner)"])
+        XCTAssertTrue(model.links.isEmpty)
         XCTAssertEqual(model.phase, .idle)
     }
 
@@ -667,14 +702,14 @@ final class LinkingViewModelTests: XCTestCase {
     func testRemovedArrivingDuringAnUnlinkIsIgnored() async throws {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())
-        container.onLeave = { await model.removedByMac() }
+        container.onLeave = { await model.removedByMac("hub-acme") }
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
-        XCTAssertEqual(host.wipes, 1, "only the unlink's own wipe")
-        XCTAssertEqual(host.links.filter { $0.device == nil }.count, 1, "one teardown")
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "only the unlink's own removal")
+        XCTAssertTrue(host.markedRemoved.isEmpty, "not frozen: it is gone")
         XCTAssertNil(model.notice, "the owner unlinked; the Mac did not remove the phone")
-        XCTAssertNil(model.link)
+        XCTAssertTrue(model.links.isEmpty)
         XCTAssertEqual(model.phase, .idle)
     }
 
@@ -686,29 +721,183 @@ final class LinkingViewModelTests: XCTestCase {
             await model.accountChanged()
         }
 
-        await model.unlink()
+        await model.unlink("hub-acme")
 
-        XCTAssertEqual(host.wipes, 1, "only the unlink's own wipe")
-        XCTAssertEqual(host.links.filter { $0.device == nil }.count, 1, "one teardown")
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "only the unlink's own removal")
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [true], "one teardown")
         XCTAssertEqual(model.phase, .idle)
+    }
+
+    /// Forget on a hub the Mac removed: its files and row go, with no
+    /// farewell and no share leave (its zones are gone).
+    func testForgettingAFrozenHubRemovesItWithoutAFarewell() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+        await model.removedByMac("hub-acme")
+
+        await model.forget("hub-acme")
+
+        XCTAssertEqual(host.removals.map(\.hubID), ["hub-acme"])
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [true])
+        XCTAssertTrue(host.farewells.isEmpty)
+        XCTAssertTrue(container.left.isEmpty)
+        XCTAssertTrue(model.links.isEmpty)
+    }
+
+    /// Forget on a long-offline linked hub is an unlink.
+    func testForgettingALinkedHubIsAnUnlink() async throws {
+        let model = try await linkedModel(code())
+
+        await model.forget("hub-acme")
+
+        XCTAssertEqual(Array(log.events.suffix(2)), ["remove hub-acme", "farewell private"])
+        XCTAssertTrue(model.links.isEmpty)
+    }
+
+    // MARK: - Several Macs (multi-hub spec §5.7)
+
+    func testLinkingASecondMacAddsItAndMakesItActive() async throws {
+        let model = try await linkedModel(code())
+        let home = code(hubID: "hub-home", macName: "Home Mac")
+        macLinks(home)
+
+        await model.open(home.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Home Mac"), "no switch prompt")
+        XCTAssertEqual(model.links.map(\.hubID), ["hub-acme", "hub-home"])
+        XCTAssertEqual(host.linkedCalls.map(\.record.hubID), ["hub-acme", "hub-home"])
+        XCTAssertEqual(host.activeHubID, "hub-home", "the new Mac becomes active")
+        XCTAssertTrue(host.removals.isEmpty, "the first Mac stays linked")
+        XCTAssertEqual(model.linkedDevice(for: "hub-acme")?.deviceID, identity.deviceID)
+        XCTAssertEqual(model.linkedDevice(for: "hub-home")?.deviceID, identity.deviceID)
+        XCTAssertNil(model.linkedDevice(for: "hub-studio"))
+    }
+
+    func testAFifthMacIsRefusedBeforeAnyShareIsAccepted() async throws {
+        for index in 1...HubRegistry.limit {
+            host.seed(linkRecord(hubID: "hub-\(index)", macName: "Mac \(index)"))
+        }
+        container.userRecordNameValue = "_colleague-a"
+        let model = makeModel()
+
+        await model.open(code(hubID: "hub-fifth", macName: "Fifth Mac").url())
+
+        XCTAssertEqual(model.phase, .failed(.tooManyMacs))
+        XCTAssertTrue(container.accepted.isEmpty, "no share accepted")
+        XCTAssertTrue(host.prepared.isEmpty, "nothing written")
+        XCTAssertEqual(host.rows.count, HubRegistry.limit)
+        XCTAssertEqual(LinkFailure.tooManyMacs.title, "You can link up to 4 Macs")
+        XCTAssertEqual(LinkFailure.tooManyMacs.hint, "Unlink one in Settings → Macs, then scan again")
+        XCTAssertFalse(LinkFailure.tooManyMacs.offersScan)
+    }
+
+    func testRescanningALinkedMacRelinksWithoutAFifthSlot() async throws {
+        for index in 1..<HubRegistry.limit {
+            host.seed(linkRecord(hubID: "hub-\(index)", macName: "Mac \(index)"))
+        }
+        host.seed(linkRecord())
+        let payload = code()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(host.rows.count, HubRegistry.limit)
+        XCTAssertEqual(host.row("hub-acme")?.link.nonce, payload.nonce, "the row takes the new link")
+        XCTAssertTrue(host.removals.isEmpty)
+    }
+
+    func testAFailedFirstLinkRemovesItsCandidate() async throws {
+        let model = makeModel()
+
+        await model.open(code().url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertEqual(host.removals.map(\.hubID), ["hub-acme"], "the candidate session and its files go")
+        XCTAssertEqual(host.removals.map(\.keepRecordings), [true])
+        XCTAssertTrue(host.rows.isEmpty)
+    }
+
+    /// A failed rescan of a linked Mac keeps it.
+    func testAFailedRescanOfALinkedMacKeepsIt() async throws {
+        let model = try await linkedModel(code())
+        host.mac = { _ in nil }
+
+        await model.open(code().url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertTrue(host.removals.isEmpty, "a linked hub is never dropped by a failed scan")
+        XCTAssertEqual(model.links.map(\.hubID), ["hub-acme"])
+    }
+
+    /// A refusal and a failed write drop the candidate as well.
+    func testARefusedOrUnwritableFirstLinkRemovesItsCandidate() async throws {
+        host.mac = { [grant = grantMaker] writes in writes.isEmpty ? nil : grant("hub-acme", false, .usedCode) }
+        let refused = makeModel()
+        await refused.open(code().url())
+        XCTAssertEqual(refused.phase, .failed(.refused))
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme"])
+
+        host.prepareError = CocoaError(.fileWriteNoPermission)
+        let unwritable = makeModel()
+        await unwritable.open(code(hubID: "hub-home", macName: "Home Mac").url())
+        XCTAssertEqual(host.removedHubIDs, ["hub-acme", "hub-home"])
+    }
+
+    /// Ruling 1: the hub id becomes a path component of the hub's files
+    /// (deleted recursively on removal): one that is not a plain name is
+    /// refused before anything touches disk.
+    func testAHubIDThatIsNotAPlainNameIsRefused() async throws {
+        for hubID in ["", "../hub-acme", "hub/acme", "hub\\acme", ".", "..", ".hidden", "hub\u{0}acme"] {
+            let model = makeModel()
+
+            await model.open(code(hubID: hubID).url())
+
+            XCTAssertEqual(model.phase, .failed(.refused), "hub id \(hubID.debugDescription)")
+        }
+        XCTAssertTrue(host.prepared.isEmpty, "nothing reached the host")
+        XCTAssertTrue(container.accepted.isEmpty)
     }
 
     // MARK: - Unlinked events
 
-    func testRemovedWhileOfflineShowsRemovedAndWipes() async throws {
+    /// Multi-hub spec §6.1: the Mac's removal freezes the hub (no sync, no
+    /// writes, its data readable until Forget); nothing is wiped and no
+    /// farewell goes out.
+    func testRemovedByMacFreezesThatHubAndKeepsItsRow() async throws {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())
         host.notSentCount = 2
 
-        await model.removedByMac()
+        await model.removedByMac("hub-acme")
 
-        XCTAssertEqual(model.notice, .removed(notSent: 2), "what the wipe dropped is reported")
-        XCTAssertEqual(LinkNotice.removed().message, "This Mac removed this phone")
-        XCTAssertEqual(host.wipes, 1)
-        XCTAssertNil(model.link)
-        XCTAssertNil(host.links.last?.device)
+        XCTAssertEqual(host.markedRemoved, ["hub-acme"])
+        XCTAssertEqual(host.row("hub-acme")?.state, .unlinkedByMac)
+        XCTAssertEqual(model.links.first?.state, .unlinkedByMac)
+        XCTAssertTrue(host.removals.isEmpty, "nothing is wiped")
+        XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"))
+        XCTAssertEqual(LinkNotice.removed(macName: "Acme Mac").message, "Acme Mac removed this phone")
         let writes = try await host.deviceWrites()
         XCTAssertNil(writes.last?.unlinked, "the Mac's zones are gone: nothing to write")
+
+        await model.removedByMac("hub-acme")
+        XCTAssertEqual(host.markedRemoved, ["hub-acme"], "a frozen hub is frozen once")
+    }
+
+    func testRemovedWhileOfflineNamesTheMacAndLeavesTheOtherHub() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+        let home = code(hubID: "hub-home", macName: "Home Mac")
+        macLinks(home)
+        await model.open(home.url())
+        await model.finish()
+
+        await model.removedByMac("hub-acme")
+
+        XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"), "the removed Mac is named")
+        XCTAssertEqual(host.row("hub-home")?.state, .linked, "the other hub is untouched")
+        XCTAssertTrue(host.removals.isEmpty)
     }
 
     // MARK: - The Mac's Remove read from the grant (#64)
@@ -722,76 +911,76 @@ final class LinkingViewModelTests: XCTestCase {
     /// guard holds.
     private func modelOneLookFromRemoval() async throws -> LinkingViewModel {
         let model = try await linkedModel(code())
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
-        XCTAssertNotNil(model.link, "one look is not enough")
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
+        XCTAssertEqual(model.links.first?.state, .linked, "one look is not enough")
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
         return model
     }
 
     private func assertStillLinked(_ model: LinkingViewModel, _ why: String, line: UInt = #line) {
-        XCTAssertNotNil(model.link, why, line: line)
-        XCTAssertEqual(host.wipes, 0, why, line: line)
+        XCTAssertEqual(host.row("hub-acme")?.state, .linked, why, line: line)
+        XCTAssertTrue(host.markedRemoved.isEmpty, why, line: line)
+        XCTAssertTrue(host.removals.isEmpty, why, line: line)
         XCTAssertNil(model.notice, why, line: line)
     }
 
     /// #64: a same-Apple-ID phone gets no `unlinked` event (its zones are the
     /// Mac's own and never vanish); the Mac's Remove deletes its grant. Two
     /// looks 30 s apart at the linked hub without it read as the same
-    /// removal, and what the wipe dropped is reported.
+    /// removal: the hub freezes.
     func testAGrantGoneOnTwoLooksThirtySecondsApartIsTheMacsRemove() async throws {
         let model = try await linkedModel(code())
-        XCTAssertEqual(model.link?.deviceID, identity.deviceID, "the link keeps the id it linked with")
-        XCTAssertEqual(model.link?.linkedAt, start, "and the grant's linked_at")
-        host.notSentCount = 2
+        XCTAssertEqual(model.links.first?.link.deviceID, identity.deviceID, "the link keeps the id it linked with")
+        XCTAssertEqual(model.links.first?.link.linkedAt, start, "and the grant's linked_at")
 
-        await model.evaluate(grant: grant(linked: true), heartbeat: laterHeartbeat)
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
-        XCTAssertNotNil(LinkStore(defaults: defaults).grantMissingSince)
+        await model.evaluate(hubID: "hub-acme", grant: grant(linked: true), heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
+        XCTAssertEqual(host.row("hub-acme")?.grantMissingSince, start, "the first look is kept on the hub's row")
         clock.advance(by: LinkingViewModel.removalConfirmAfter - 1)
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, "under 30 s since the first look")
 
         clock.advance(by: 1)
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
 
-        XCTAssertEqual(model.notice, .removed(notSent: 2))
+        XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"))
         XCTAssertEqual(
-            LinkNotice.removed(notSent: 2).message,
-            "This Mac removed this phone — Not sent: 2 items were still waiting for your Mac"
+            LinkNotice.removed(macName: "Acme Mac", notSent: 2).message,
+            "Acme Mac removed this phone — Not sent: 2 items were still waiting for your Mac"
         )
-        XCTAssertNil(model.link)
-        XCTAssertEqual(host.wipes, 1)
-        XCTAssertNil(LinkStore(defaults: defaults).grantMissingSince)
+        XCTAssertEqual(host.markedRemoved, ["hub-acme"])
+        XCTAssertEqual(host.row("hub-acme")?.state, .unlinkedByMac)
+        XCTAssertTrue(host.removals.isEmpty, "frozen, not wiped")
         let writes = try await host.deviceWrites()
         XCTAssertNil(writes.last?.unlinked, "removed, not unlinking itself: nothing to write")
     }
 
     func testAnUnlinkedGrantOfTheLinkedHubCountsAsGone() async throws {
         let model = try await modelOneLookFromRemoval()
-        await model.evaluate(grant: grant(linked: false, refused: .usedCode), heartbeat: laterHeartbeat)
-        XCTAssertEqual(model.notice, .removed())
+        await model.evaluate(hubID: "hub-acme", grant: grant(linked: false, refused: .usedCode), heartbeat: laterHeartbeat)
+        XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"))
     }
 
     func testTheFirstLookSurvivesARelaunch() async throws {
         _ = try await modelOneLookFromRemoval()
         let relaunched = makeModel()
-        await relaunched.evaluate(grant: nil, heartbeat: laterHeartbeat)
-        XCTAssertEqual(relaunched.notice, .removed())
+        await relaunched.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
+        XCTAssertEqual(relaunched.notice, .removed(macName: "Acme Mac"))
     }
 
     func testAGrantSeenAgainClearsTheFirstLook() async throws {
         let model = try await modelOneLookFromRemoval()
-        await model.evaluate(grant: grant(linked: true), heartbeat: laterHeartbeat)
-        XCTAssertNil(LinkStore(defaults: defaults).grantMissingSince)
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: grant(linked: true), heartbeat: laterHeartbeat)
+        XCTAssertNil(host.row("hub-acme")?.grantMissingSince)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, "a new first look, not the second")
     }
 
     func testNoRemovalWithoutAHeartbeatNewerThanTheLink() async throws {
         let model = try await modelOneLookFromRemoval()
-        await model.evaluate(grant: nil, heartbeat: nil)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: nil)
         assertStillLinked(model, "no heartbeat: the replica may not hold the hub's zone")
-        await model.evaluate(grant: nil, heartbeat: heartbeat(updatedAt: start))
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: heartbeat(updatedAt: start))
         assertStillLinked(model, "a heartbeat from before the link")
     }
 
@@ -806,27 +995,27 @@ final class LinkingViewModelTests: XCTestCase {
     ) async throws {
         let model = try await modelOneLookFromRemoval()
         try await between(model)
-        XCTAssertNil(LinkStore(defaults: defaults).grantMissingSince, why, line: line)
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        XCTAssertNil(host.row("hub-acme")?.grantMissingSince, why, line: line)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, why, line: line)
     }
 
     func testALinkedGrantWithoutAHeartbeatClearsTheFirstLook() async throws {
         try await assertALinkedGrantClearsTheFirstLook("no heartbeat in that fetch") { model in
-            await model.evaluate(grant: self.grant(linked: true), heartbeat: nil)
+            await model.evaluate(hubID: "hub-acme", grant: self.grant(linked: true), heartbeat: nil)
         }
     }
 
     func testALinkedGrantWithAnotherHubsHeartbeatClearsTheFirstLook() async throws {
         try await assertALinkedGrantClearsTheFirstLook("another hub's heartbeat in that fetch") { model in
             let other = self.heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: self.start.addingTimeInterval(60))
-            await model.evaluate(grant: self.grant(linked: true), heartbeat: other)
+            await model.evaluate(hubID: "hub-acme", grant: self.grant(linked: true), heartbeat: other)
         }
     }
 
     func testALinkedGrantWithAnOlderHeartbeatClearsTheFirstLook() async throws {
         try await assertALinkedGrantClearsTheFirstLook("a heartbeat from before the link") { model in
-            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.heartbeat(updatedAt: self.start))
+            await model.evaluate(hubID: "hub-acme", grant: self.grant(linked: true), heartbeat: self.heartbeat(updatedAt: self.start))
         }
     }
 
@@ -834,7 +1023,7 @@ final class LinkingViewModelTests: XCTestCase {
         try await assertALinkedGrantClearsTheFirstLook("a pending link") { model in
             let store = LinkStore(defaults: self.defaults)
             store.pending = PendingLink(link: self.linkRecord(), deadline: self.start.addingTimeInterval(600), baseline: nil, baselineCaptured: false)
-            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
+            await model.evaluate(hubID: "hub-acme", grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
             store.pending = nil
         }
     }
@@ -843,9 +1032,9 @@ final class LinkingViewModelTests: XCTestCase {
         try await assertALinkedGrantClearsTheFirstLook("a scan running") { model in
             self.host.mac = { _ in nil }
             self.host.parksFetchGrant = true
-            let scan = Task { await model.open(self.code().url()) }
+            let scan = Task { await model.open(self.code(hubID: "hub-home", macName: "Home Mac").url()) }
             try await self.poll({ model.isBusy }, "the scan is checking")
-            await model.evaluate(grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
+            await model.evaluate(hubID: "hub-acme", grant: self.grant(linked: true), heartbeat: self.laterHeartbeat)
             scan.cancel()
             self.host.parksFetchGrant = false
             _ = await scan.value
@@ -854,9 +1043,11 @@ final class LinkingViewModelTests: XCTestCase {
 
     func testNoRemovalFromAnotherHubsHeartbeatOrGrant() async throws {
         let model = try await modelOneLookFromRemoval()
-        await model.evaluate(grant: nil, heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start.addingTimeInterval(60)))
+        await model.evaluate(
+            hubID: "hub-acme", grant: nil, heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start.addingTimeInterval(60))
+        )
         assertStillLinked(model, "another hub's heartbeat")
-        await model.evaluate(grant: grant(hubID: "hub-studio", linked: false), heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: grant(hubID: "hub-studio", linked: false), heartbeat: laterHeartbeat)
         assertStillLinked(model, "another hub's grant")
     }
 
@@ -866,7 +1057,7 @@ final class LinkingViewModelTests: XCTestCase {
             deviceID: "device-other", hubID: "hub-acme", name: "Other", scope: .private, linked: false,
             typingAllowed: false, startSessionsAllowed: true
         )
-        await model.evaluate(grant: other, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: other, heartbeat: laterHeartbeat)
         assertStillLinked(model, "not the grant of the id this phone linked with")
     }
 
@@ -875,20 +1066,21 @@ final class LinkingViewModelTests: XCTestCase {
     func testALinkWithoutItsDeviceIDOrLinkTimeNeverReadsARemoval() async throws {
         var old = linkRecord()
         old.linkedAt = start
-        LinkStore(defaults: defaults).link = old
+        host.seed(old)
         let noID = makeModel()
-        await noID.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await noID.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
-        await noID.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await noID.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(noID, "no device id")
 
+        host = FakeLinkHost(log: log)
         old.linkedAt = nil
         old.deviceID = identity.deviceID
-        LinkStore(defaults: defaults).link = old
+        host.seed(old)
         let noTime = makeModel()
-        await noTime.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await noTime.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
-        await noTime.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await noTime.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(noTime, "no link time")
     }
 
@@ -897,7 +1089,7 @@ final class LinkingViewModelTests: XCTestCase {
         LinkStore(defaults: defaults).pending = PendingLink(
             link: linkRecord(), deadline: start.addingTimeInterval(600), baseline: nil, baselineCaptured: false
         )
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, "a pending link")
     }
 
@@ -905,50 +1097,63 @@ final class LinkingViewModelTests: XCTestCase {
         let model = try await modelOneLookFromRemoval()
         host.mac = { _ in nil }
         host.parksFetchGrant = true
-        let scan = Task { await model.open(self.code().url()) }
+        let scan = Task { await model.open(self.code(hubID: "hub-home", macName: "Home Mac").url()) }
         try await poll({ model.isBusy }, "the scan is checking")
-        await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, "a scan running")
         scan.cancel()
         host.parksFetchGrant = false
         _ = await scan.value
     }
 
-    func testHubChangedShowsMovedAndStopsWrites() async throws {
+    /// Review Focus 4 at the flow: the removal check of one hub reads that
+    /// hub's row and freezes only it.
+    func testTheRemovalCheckOfOneHubLeavesTheOtherAlone() async throws {
         let model = try await linkedModel(code())
+        let home = code(hubID: "hub-home", macName: "Home Mac")
+        macLinks(home)
+        await model.open(home.url())
+        await model.finish()
+        let homeLater = heartbeat(hubID: "hub-home", macName: "Home Mac", updatedAt: start.addingTimeInterval(60))
 
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start))
+        await model.evaluate(hubID: "hub-home", grant: nil, heartbeat: homeLater)
+        clock.advance(by: LinkingViewModel.removalConfirmAfter)
+        await model.evaluate(hubID: "hub-acme", grant: nil, heartbeat: laterHeartbeat)
+        XCTAssertTrue(host.markedRemoved.isEmpty, "hub-acme's first look is its own")
+        await model.evaluate(hubID: "hub-home", grant: nil, heartbeat: homeLater)
 
-        XCTAssertEqual(model.notice, .moved(macName: "Acme Studio"))
-        XCTAssertEqual(LinkNotice.moved(macName: "Acme Studio").message, "Watchtower moved to Acme Studio — scan the code on that Mac")
-        XCTAssertEqual(host.links.last?.writesAllowed, false, "its writes are not sent")
-        XCTAssertNotNil(host.links.last?.device, "still linked, so Settings still shows the Mac")
-        XCTAssertEqual(host.wipes, 0)
-        let callsAfterMove = host.links.count
-
-        // The same heartbeat again changes nothing.
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start))
-        XCTAssertEqual(host.links.count, callsAfterMove)
-
-        // The linked hub takes back over: writes flow again.
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-acme", macName: "Acme Mac", updatedAt: start))
-        XCTAssertNil(model.notice)
-        XCTAssertEqual(host.links.last?.writesAllowed, true)
+        XCTAssertEqual(host.markedRemoved, ["hub-home"])
+        XCTAssertEqual(host.row("hub-acme")?.state, .linked)
+        XCTAssertEqual(model.notice, .removed(macName: "Home Mac"))
     }
 
     func testHeartbeatStaleForADayShowsTheStaleNotice() async throws {
         let model = try await linkedModel(code())
 
-        await model.evaluate(heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_399)))
+        await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_399)), isActive: true)
         XCTAssertNil(model.notice, "under a day is only offline")
 
-        await model.evaluate(heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_400)))
+        await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_400)), isActive: true)
         XCTAssertEqual(model.notice, .stale)
         XCTAssertEqual(LinkNotice.stale.message, "Your Mac hasn't synced for a day — if it changed iCloud account, link again")
-        XCTAssertEqual(host.links.last?.writesAllowed, true, "a stale Mac still gets the queue")
+        XCTAssertTrue(host.markedRemoved.isEmpty && host.removals.isEmpty, "a stale Mac keeps its link and its queue")
 
-        await model.evaluate(heartbeat: heartbeat(updatedAt: start))
+        await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start), isActive: true)
         XCTAssertNil(model.notice)
+    }
+
+    func testStaleNoticeOnlyForTheActiveHub() async throws {
+        let model = try await linkedModel(code())
+        let stale = heartbeat(updatedAt: start.addingTimeInterval(-86_400))
+
+        await model.evaluate(hubID: "hub-acme", heartbeat: stale, isActive: false)
+        XCTAssertNil(model.notice, "an inactive hub's heartbeat says nothing about the hub on screen")
+
+        await model.evaluate(hubID: "hub-acme", heartbeat: stale, isActive: true)
+        XCTAssertEqual(model.notice, .stale)
+
+        await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start), isActive: false)
+        XCTAssertEqual(model.notice, .stale, "only the active hub's fetch clears it")
     }
 
     private func heartbeat(hubID: String = "hub-acme", macName: String = "Acme Mac", updatedAt: Date) -> HeartbeatPayload {
@@ -966,43 +1171,6 @@ final class LinkingViewModelTests: XCTestCase {
             ownerUser: owner,
             sharing: .available
         )
-    }
-
-    // MARK: - Switch Mac
-
-    func testScanningAnotherMacAsksToSwitchAndNoKeepsTheOldLink() async throws {
-        let model = try await linkedModel(code())
-        let other = code(hubID: "hub-studio", macName: "Acme Studio")
-        macLinks(other)
-
-        await model.open(other.url())
-
-        XCTAssertEqual(model.phase, .confirmSwitch(from: "Acme Mac", to: "Acme Studio"))
-        XCTAssertEqual(LinkingViewModel.switchPrompt(from: "Acme Mac", to: "Acme Studio"), "Switch from Acme Mac to Acme Studio?")
-
-        await model.confirmSwitch(false)
-
-        XCTAssertEqual(model.phase, .idle)
-        XCTAssertEqual(model.link?.hubID, "hub-acme")
-        let writes = try await host.deviceWrites()
-        XCTAssertEqual(writes.count, 1, "nothing written for the other Mac")
-        XCTAssertEqual(host.wipes, 0)
-    }
-
-    func testSwitchYesUnlinksTheOldMacThenLinksTheNewOne() async throws {
-        let model = try await linkedModel(code())
-        let other = code(hubID: "hub-studio", macName: "Acme Studio")
-        macLinks(other)
-
-        await model.open(other.url())
-        await model.confirmSwitch(true)
-
-        let writes = try await host.deviceWrites(in: .private)
-        XCTAssertEqual(writes.map(\.unlinked), [nil, true, nil], "link, unlink the old Mac, link the new one")
-        XCTAssertEqual(writes.last?.linkNonce, other.nonce)
-        XCTAssertEqual(host.wipes, 2, "the unlink wipes the old Mac's queue, then restarts unlinked")
-        XCTAssertEqual(model.phase, .linked(macName: "Acme Studio"))
-        XCTAssertEqual(model.link?.hubID, "hub-studio")
     }
 
     // MARK: - Other payloads
@@ -1056,7 +1224,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(scannedModel.phase, .linked(macName: "Acme Mac"))
         XCTAssertEqual(openedModel.phase, scannedModel.phase)
         XCTAssertEqual(openedWrites.map(\.linkNonce), scannedWrites.map(\.linkNonce))
-        XCTAssertEqual(openedModel.link?.hubID, scannedModel.link?.hubID)
+        XCTAssertEqual(openedModel.links.map(\.hubID), scannedModel.links.map(\.hubID))
     }
 
     /// A second code arriving while a link is running is ignored.
@@ -1089,7 +1257,8 @@ final class LinkingViewModelTests: XCTestCase {
             (.updateApp, "Update Watchtower on this iPhone", nil),
             (.updateMac, "Update Watchtower on this Mac", nil),
             (.iCloud("The network is offline"), "Couldn't reach iCloud", "The network is offline"),
-            (.local("disk I/O error"), "Couldn't set up sync on this iPhone", "disk I/O error")
+            (.local("disk I/O error"), "Couldn't set up sync on this iPhone", "disk I/O error"),
+            (.tooManyMacs, "You can link up to 4 Macs", "Unlink one in Settings → Macs, then scan again")
         ]
         for (failure, title, hint) in expected {
             XCTAssertEqual(failure.title, title, "\(failure)")

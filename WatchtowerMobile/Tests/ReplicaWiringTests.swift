@@ -245,7 +245,7 @@ final class ReplicaWiringTests: XCTestCase {
                 built += 1
                 let defaults = try self.makeDefaults()
                 let session = try self.demoEnvironment(at: try self.makeReplicaPath())
-                return AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
+                return try AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
             }
         ) else {
             return XCTFail("a test host must not build an environment")
@@ -258,7 +258,7 @@ final class ReplicaWiringTests: XCTestCase {
             processEnvironment: [:],
             makeRoot: {
                 let defaults = try self.makeDefaults()
-                return AppRoot.demo(AppEnvironment.single(try self.demoEnvironment(at: path), defaults: defaults), defaults: defaults)
+                return try AppRoot.demo(AppEnvironment.single(try self.demoEnvironment(at: path), defaults: defaults), defaults: defaults)
             }
         ) else {
             return XCTFail("a normal launch must boot")

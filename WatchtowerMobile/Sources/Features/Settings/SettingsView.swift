@@ -146,8 +146,13 @@ struct SettingsView: View {
         transportKind == .cloudKit && link != nil
     }
 
+    /// The saved link of the hub on screen.
+    private var activeLink: LinkRecord? {
+        linking.links.first { $0.hubID == env.activeHubID }?.link
+    }
+
     @ViewBuilder private var unlinkSection: some View {
-        if Self.offersUnlink(transportKind: env.transportKind, link: linking.link) {
+        if let link = activeLink, Self.offersUnlink(transportKind: env.transportKind, link: link) {
             Section {
                 Button("Unlink this Mac", role: .destructive) {
                     confirmingUnlink = true
@@ -156,7 +161,7 @@ struct SettingsView: View {
                 .disabled(linking.isBusy)
                 .confirmationDialog("Unlink this Mac?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
                     Button("Unlink", role: .destructive) {
-                        Task { await linking.unlink() }
+                        Task { await linking.unlink(link.hubID) }
                     }
                 } message: {
                     Text("This phone forgets the Mac's data. Changes still waiting for the Mac are not sent.")

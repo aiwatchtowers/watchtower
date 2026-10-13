@@ -4,102 +4,88 @@ import os
 import UserNotifications
 import WatchtowerSync
 
-/// The app's root for its lifetime: the current `AppEnvironment` and the
-/// link flow, which restarts the environment when the link needs another
-/// database or an empty replica (spec §2.3, §9). A transport serves one
-/// database for its lifetime, and the replica has no wipe of its own, so a
-/// scope change or a wipe builds a new environment on the same files (the
-/// replica's removed first).
+/// The app's root for its lifetime: one `AppEnvironment` (a session per
+/// linked hub, kept for good), the hub registry, and the link flow, which
+/// adds, removes and freezes hubs through it (multi-hub spec §5.7, §6). A
+/// scan builds the scanned hub's session in its own directories; a link
+/// adds its row and puts it on screen; an unlink removes one hub; the
+/// Mac's removal freezes that hub read-only until Forget; an iCloud
+/// account change removes every hub.
 ///
-/// The demo (unsigned builds) keeps one environment, linked as
+/// The demo (unsigned builds) keeps its one environment, linked as
 /// `DemoSeed.device`, and never shows onboarding.
 @MainActor
 @Observable
 final class AppRoot {
-    /// How a live root builds its next environment.
-    struct Restarter {
-        /// Empties one hub's files before a session opens them again: the
-        /// replica removed, the transport's store emptied.
-        let wipe: @MainActor (_ hubID: String) throws -> Void
-        let make: @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment
-        /// Keeps a restart running, and the replica usable, when it runs in
-        /// the background (a removal or an account change a push fetch
-        /// found): the hand-over reads the old replica (`BackgroundWork`).
-        /// nil holds nothing (tests).
-        var startWork: BackgroundWork.Starter?
+    /// Sends one `unlinked` record to a hub whose files are gone.
+    typealias Farewell = @MainActor (_ record: CloudRecord, _ scope: CloudDatabaseScope, _ hubID: String) async -> Void
 
-        init(
-            wipe: @escaping @MainActor (_ hubID: String) throws -> Void,
-            make: @escaping @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment,
-            startWork: BackgroundWork.Starter? = nil
-        ) {
-            self.wipe = wipe
-            self.make = make
-            self.startWork = startWork
-        }
-
-        /// Every hub on one replica and one transport store (nil: a
-        /// transport that keeps none): the tests.
-        init(
-            replicaPath: String,
-            transportStorePath: String?,
-            make: @escaping @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment,
-            startWork: BackgroundWork.Starter? = nil
-        ) {
-            self.init(
-                wipe: { _ in try AppRoot.wipeFiles(replicaPath: replicaPath, transportStorePath: transportStorePath) },
-                make: make,
-                startWork: startWork
-            )
-        }
-    }
-
-    private(set) var env: AppEnvironment
+    let env: AppEnvironment
     let linking: LinkingViewModel
-    /// Set when a restarted environment could not open (`BootFailureView`).
-    private(set) var failure: String?
 
-    @ObservationIgnored private var scope: CloudDatabaseScope
-    /// The hub whose zones the running environment syncs.
-    @ObservationIgnored private var hubID: String
-    @ObservationIgnored private let restarter: Restarter?
-    /// The running environment served a link that has ended without a
-    /// restart (`retireEnvironment`): the next `prepare` restarts even on
-    /// the same database and hub.
-    @ObservationIgnored private var retired = false
-    /// The restart running or queued last: restarts run one at a time.
-    @ObservationIgnored private var restartTask: Task<LocalWipe, Error>?
-    /// The link check of the last fetch (`checkHeartbeat`); a test awaits it.
-    @ObservationIgnored private(set) var linkCheck: Task<Void, Never>?
-    /// The last undecodable grant payload, logged once.
-    @ObservationIgnored private var unreadableGrant: Data?
+    @ObservationIgnored private let registry: HubRegistry
+    @ObservationIgnored private let paths: HubPaths
+    @ObservationIgnored private let factory: HubSessionFactory
+    @ObservationIgnored private let identity: DeviceIdentity
+    /// Where the hubs' Settings choices are kept (a removal deletes them).
+    @ObservationIgnored private let defaults: UserDefaults
+    /// Keeps a removal, a freeze or the account-change wipe running, and
+    /// the replica usable, when it runs in the background (a push fetch
+    /// found it): the hand-over reads the old replica (`BackgroundWork`).
+    /// nil holds nothing (tests).
+    @ObservationIgnored private let startWork: BackgroundWork.Starter?
+    @ObservationIgnored private let farewell: Farewell
+    /// The removal running per hub: a second one for the same hub waits
+    /// for it and counts nothing.
+    @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
+    /// The link check of each hub's last fetch (`checkLink`); a test awaits
+    /// it.
+    @ObservationIgnored private(set) var linkChecks: [String: Task<Void, Never>] = [:]
+    /// The last undecodable grant payload per hub, logged once.
+    @ObservationIgnored private var unreadableGrants: [String: Data] = [:]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
-    /// `restarter` nil keeps `env` for good (the demo, tests).
-    init(env: AppEnvironment, scope: CloudDatabaseScope, hubID: String, linking: LinkingViewModel, restarter: Restarter?) {
+    init(
+        env: AppEnvironment,
+        registry: HubRegistry,
+        paths: HubPaths,
+        factory: HubSessionFactory,
+        identity: DeviceIdentity,
+        defaults: UserDefaults,
+        linking: LinkingViewModel,
+        startWork: BackgroundWork.Starter?,
+        sendFarewell: @escaping Farewell
+    ) {
         self.env = env
-        self.scope = scope
-        self.hubID = hubID
+        self.registry = registry
+        self.paths = paths
+        self.factory = factory
+        self.identity = identity
+        self.defaults = defaults
         self.linking = linking
-        self.restarter = restarter
+        self.startWork = startWork
+        farewell = sendFarewell
+        for hubID in env.order {
+            if let session = env.session(hubID) {
+                wire(session)
+            }
+        }
         linking.host = self
-        wire(env)
     }
 
     var isDemo: Bool { env.transportKind == .inMemoryDemo }
 
-    /// Welcome and the scan instead of the tabs: a live build with no link.
-    var showsOnboarding: Bool { !isDemo && linking.link == nil }
+    /// Welcome and the scan instead of the tabs: a live build with no saved
+    /// link, or none on screen (the last one was just removed).
+    var showsOnboarding: Bool { !isDemo && (linking.links.isEmpty || env.active == nil) }
 
     /// The app's root: the demo on an unsigned build, else every linked
-    /// hub from the registry (an F1 phone's link moved into it first),
-    /// resuming a link a kill interrupted. Until the link flow runs over
-    /// the registry (F2 Task 4) it still restarts one environment per link
-    /// (`Restarter`), on the hub's own files.
+    /// hub from the registry (an F1 phone's link moved into it first), then
+    /// the orphans' clean-up and a link a kill interrupted.
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return demo(try AppEnvironment.demoSingle(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
+            return try demo(try AppEnvironment.demoSingle(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
@@ -123,30 +109,21 @@ final class AppRoot {
             defaults: defaults,
             now: Date()
         )
-        try bridgeSingleLink(store: store, registry: registry)
         let factory = HubSessionFactory.live(paths: paths)
-        var env = try AppEnvironment.live(registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults)
-        if env.active == nil {
-            // No link yet: one session on the pending link's hub, else on
-            // no hub at all, as before (F2 Task 4 boots none).
-            env = .single(try factory.make(nil, store.bootHubID, store.bootScope, nil), defaults: defaults)
-        }
-        let active = env.activeSession
-        let unrowed = try registry.row(active.hubID) == nil ? active.hubID : nil
+        let env = try AppEnvironment.live(registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults)
         let root = AppRoot(
             env: env,
-            scope: active.databaseScope ?? .private,
-            hubID: active.hubID,
+            registry: registry,
+            paths: paths,
+            factory: factory,
+            identity: identity,
+            defaults: defaults,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
-            restarter: Restarter(
-                wipe: { hubID in try wipeHub(hubID, paths: paths, registry: registry) },
-                make: { scope, hubID, device in
-                    .single(try factory.make(nil, hubID, scope, device), defaults: defaults)
-                },
-                startWork: BackgroundWork.starter()
-            )
-        )
-        let pendingHubID = store.pending?.link.hubID ?? unrowed
+            startWork: BackgroundWork.starter()
+        ) { record, scope, hubID in
+            await sendLiveFarewell(record, scope: scope, hubID: hubID, paths: paths)
+        }
+        let pendingHubID = store.pending?.link.hubID
         Task {
             do {
                 try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
@@ -158,51 +135,29 @@ final class AppRoot {
         return root
     }
 
-    /// F2 Task 3 bridge until the link flow runs over the registry (Task
-    /// 4), which reads and writes `LinkStore.link`: a link that flow saved
-    /// joins the registry and goes on screen; with none, the registry's
-    /// active link is the one the flow sees.
-    /// A live wipe of one hub (F2 Task 3 bridge): the hub's link is gone
-    /// (unlink, account change, a new scan), so its row goes first, before
-    /// any file: a kill or a failed file removal never leaves a row the
-    /// bridge would turn back into a link.
-    static func wipeHub(_ hubID: String, paths: HubPaths, registry: HubRegistry) throws {
-        try registry.remove(hubID)
-        try wipeFiles(replicaPath: paths.replicaPath(hubID), transportStorePath: paths.transportStorePath(hubID))
-    }
-
-    static func bridgeSingleLink(store: LinkStore, registry: HubRegistry) throws {
-        if let link = store.link {
-            if try registry.row(link.hubID) == nil {
-                try registry.upsert(link, now: Date())
-            }
-            try registry.setActive(link.hubID)
-            return
-        }
-        let rows = try registry.rows()
-        let active = try registry.activeHubID
-        store.link = (rows.first { $0.hubID == active } ?? rows.first)?.link
-    }
-
-    /// A root that keeps `env` for good: the demo, linked as
-    /// `DemoSeed.device`.
-    static func demo(_ env: AppEnvironment, defaults: UserDefaults) -> AppRoot {
+    /// A root that keeps the demo's one environment, linked as
+    /// `DemoSeed.device`: no registry on disk, no link to make or end.
+    static func demo(_ env: AppEnvironment, defaults: UserDefaults) throws -> AppRoot {
         let device = DemoSeed.device
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("demo-hubs", isDirectory: true)
         return AppRoot(
             env: env,
-            scope: .private,
-            hubID: HubSession.unlinkedHubID,
+            registry: try HubRegistry.inMemory(),
+            paths: HubPaths(groupDirectory: base, localDirectory: base, recordingsBase: base),
+            factory: HubSessionFactory { _, _, _, _ in throw CocoaError(.featureUnsupported) },
+            identity: identity,
+            defaults: defaults,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
-            restarter: nil
-        )
+            startWork: nil
+        ) { _, _, _ in }
     }
 
     /// At launch: a link a kill left waiting, then the account check (the
     /// account may have changed while the app was not running).
     func resumeLink() async {
         await linking.resumePendingLink()
-        await linking.accountChanged()
+        await accountCheck()
     }
 
     /// A `watchtower://link` URL from the system Camera app. The demo has no
@@ -215,35 +170,51 @@ final class AppRoot {
         await linking.open(url)
     }
 
-    // MARK: - Environment
+    // MARK: - Sessions
 
-    /// The link flow's hooks on the environment's one session (F2 Task 4
-    /// wires every session).
-    private func wire(_ env: AppEnvironment) {
-        let session = env.activeSession
-        session.onLinkSignal = { [weak self] signal in self?.handle(signal) }
-        session.onFetched = { [weak self] in self?.checkHeartbeat() }
+    /// The link flow's hooks on one hub's session.
+    private func wire(_ session: HubSession) {
+        let hubID = session.hubID
+        session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
+        session.onFetched = { [weak self] in self?.checkLink(hubID: hubID) }
     }
 
-    private func handle(_ signal: LinkSignal) {
-        let linking = linking
-        Task {
+    private func handle(_ signal: LinkSignal, hubID: String) {
+        Task { [weak self] in
             switch signal {
-            case .unlinked: await linking.removedByMac()
-            case .accountChanged: await linking.accountChanged()
+            case .unlinked: await self?.linking.removedByMac(hubID)
+            case .accountChanged: await self?.accountCheck()
             }
         }
     }
 
-    /// The heartbeat and the linked device's grant after each fetch: the
-    /// moved and stale checks, and the Mac's Remove (#64). The grant is the
-    /// one of the device id the link was made with (`LinkRecord.deviceID`),
-    /// never the Keychain's current id; a link without it is judged on the
-    /// heartbeat only.
-    private func checkHeartbeat() {
-        guard !isDemo, let link = linking.link else { return }
-        let store = env.store
-        let grantName = link.deviceID.map { SliceKind.deviceGrant.recordName(id: $0) }
+    /// The account check, inside one piece of background work: a change
+    /// removes every hub, and the hand-overs read the old replicas.
+    private func accountCheck() async {
+        let endWork = startWork?("hub-remove")
+        defer { endWork?() }
+        await linking.accountChanged()
+    }
+
+    /// After each fetch of `hubID`: its heartbeat noted on its row (flavor,
+    /// time), the stale check for the hub on screen, and the Mac's Remove
+    /// read from this phone's grant there (#64). The grant is the one of
+    /// the device id the link was made with (`LinkRecord.deviceID`), never
+    /// the Keychain's current id; a link without it is judged on the
+    /// heartbeat only. A hub with no `linked` row (a candidate, a frozen
+    /// hub) is not judged.
+    private func checkLink(hubID: String) {
+        guard !isDemo, let session = env.session(hubID) else { return }
+        if let heartbeat = session.heartbeat {
+            do {
+                try registry.noteHeartbeat(flavor: heartbeat.flavor.rawValue, at: heartbeat.updatedAt, for: hubID)
+            } catch {
+                Self.logger.error("heartbeat not noted: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        guard let row = linking.links.first(where: { $0.hubID == hubID }), row.state == .linked else { return }
+        let store = session.store
+        let grantName = row.link.deviceID.map { SliceKind.deviceGrant.recordName(id: $0) }
         let heartbeat: HeartbeatPayload?
         let grantPayload: Data?
         do {
@@ -257,13 +228,14 @@ final class AppRoot {
             Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        let grant = grantName == nil ? .unreadable : readGrant(grantPayload)
+        let grant = grantName == nil ? .unreadable : readGrant(grantPayload, hubID: hubID)
+        let isActive = env.activeHubID == hubID
         let linking = linking
-        linkCheck = Task {
-            await linking.evaluate(heartbeat: heartbeat)
+        linkChecks[hubID] = Task {
+            await linking.evaluate(hubID: hubID, heartbeat: heartbeat, isActive: isActive)
             switch grant {
-            case .absent: await linking.evaluate(grant: nil, heartbeat: heartbeat)
-            case let .decoded(value): await linking.evaluate(grant: value, heartbeat: heartbeat)
+            case .absent: await linking.evaluate(hubID: hubID, grant: nil, heartbeat: heartbeat)
+            case let .decoded(value): await linking.evaluate(hubID: hubID, grant: value, heartbeat: heartbeat)
             case .unreadable: break
             }
         }
@@ -279,136 +251,121 @@ final class AppRoot {
     }
 
     /// Reads the grant's payload. An undecodable one is logged once per
-    /// payload, not on every fetch.
-    private func readGrant(_ payload: Data?) -> GrantReading {
+    /// payload and hub, not on every fetch.
+    private func readGrant(_ payload: Data?, hubID: String) -> GrantReading {
         guard let payload else { return .absent }
         do {
             let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: payload)
-            unreadableGrant = nil
+            unreadableGrants[hubID] = nil
             return .decoded(grant)
         } catch {
-            if unreadableGrant != payload {
-                unreadableGrant = payload
+            if unreadableGrants[hubID] != payload {
+                unreadableGrants[hubID] = payload
                 Self.logger.warning("undecodable device grant kept, not judged: \(error.localizedDescription, privacy: .public)")
             }
             return .unreadable
         }
     }
 
-    /// Shuts the current environment down and builds the next one on
-    /// `hubID`'s zones in `scope`'s database; `wipe` first removes the replica and empties the
-    /// transport's store (buffered events, send queue, engine state: a
-    /// transport reopened on the same scope would otherwise resume from its
-    /// saved change token past the compacted prefix and still send the old
-    /// queue). Restarts queue behind each other, so two teardowns never
-    /// share an environment. No-op for a root without a restarter.
-    ///
-    /// A wipe never takes the owner's audio silently: a running capture
-    /// is stopped and saved first, and every recording still on its way to
-    /// the Mac is held for the hub it was recorded for
-    /// (`HubSession.handOverRecordings`), unless `keepRecordings` is
-    /// false (an iCloud account change), when it is reported "Not sent".
-    /// Returns what the wipe lost, counted after the next environment
-    /// adopted its hub's held recordings.
-    @discardableResult
-    private func restart(
-        scope: CloudDatabaseScope,
-        hubID: String,
-        device: LinkedDevice?,
-        wipe: Bool,
-        keepRecordings: Bool = true
-    ) async throws -> LocalWipe {
-        guard let restarter else { return LocalWipe() }
-        let previous = restartTask
-        let task = Task {
-            _ = await previous?.result
-            return try await self.performRestart(
-                scope: scope, hubID: hubID, device: device, wipe: wipe, keepRecordings: keepRecordings, restarter: restarter
-            )
-        }
-        restartTask = task
-        return try await task.value
+    /// The hub that takes the screen when `hubID` goes: the next linked
+    /// row in order, else the one before it; nil when none is left.
+    private func successor(of hubID: String, in rows: [HubRow]) -> String? {
+        guard let index = rows.firstIndex(where: { $0.hubID == hubID }) else { return rows.first?.hubID }
+        let rest = rows.filter { $0.hubID != hubID && env.session($0.hubID) != nil }
+        return rest.first { $0.sortOrder > rows[index].sortOrder }?.hubID ?? rest.last?.hubID
     }
 
-    private func performRestart(
-        scope: CloudDatabaseScope,
-        hubID: String,
-        device: LinkedDevice?,
-        wipe: Bool,
-        keepRecordings: Bool,
-        restarter: Restarter
-    ) async throws -> LocalWipe {
-        let endWork = restarter.startWork?("app-restart")
+    /// One removal of `hubID` (see `removeHub`). The row goes first, with
+    /// no wait before it: a kill anywhere after leaves no row that would
+    /// bring the hub back at the next launch (its files, if any are left,
+    /// are an orphan the next launch hands over and deletes).
+    private func performRemoval(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+        let endWork = startWork?("hub-remove")
         defer { endWork?() }
-        // The one session the restart replaces (F2 Task 4 restarts per hub).
-        let old = env.activeSession
-        old.onLinkSignal = nil
-        old.onFetched = nil
-        let stoppedCapture = wipe ? await old.recorder.stopForWipe() : nil
-        // After the shutdown the old boot (and its launch recovery) has
-        // ended: the hand-over never races it.
-        await old.shutDown()
+        let rows: [HubRow]
+        do {
+            rows = try registry.rows()
+            try registry.remove(hubID)
+        } catch {
+            Self.logger.error("hub row not removed: \(error.localizedDescription, privacy: .public)")
+            return LocalWipe()
+        }
+        if env.activeHubID == hubID {
+            if let next = successor(of: hubID, in: rows) {
+                env.activate(next)
+            }
+        }
         var outcome = LocalWipe()
-        if wipe {
-            let handover = await old.handOverRecordings(stoppedCapture: stoppedCapture, keep: keepRecordings)
+        var filesFree = true
+        if let session = env.session(hubID) {
+            session.onLinkSignal = nil
+            session.onFetched = nil
+            let stoppedCapture = await session.recorder.stopForWipe()
+            // After the shutdown the boot (and its launch recovery) has
+            // ended: the hand-over never races it.
+            await session.shutDown()
+            let handover = await session.handOverRecordings(stoppedCapture: stoppedCapture, keep: keepRecordings)
             outcome = LocalWipe(
-                notSent: Self.pendingActionCount(old) + handover.lost,
+                notSent: Self.pendingActionCount(session) + handover.lost,
                 stoppedRecording: handover.stoppedCaptureKept,
                 problem: handover.problem
             )
+            env.remove(hubID)
+            // Audio the hold could not take may still be in the hub's
+            // folder: its files stay for the next launch's orphan pass.
+            filesFree = handover.problem == nil
         }
-        do {
-            if wipe {
-                // The outgoing hub's files and the next one's: the next
-                // session starts empty.
-                for wiped in Set([old.hubID, hubID]) {
-                    try restarter.wipe(wiped)
-                }
+        linkChecks[hubID] = nil
+        unreadableGrants[hubID] = nil
+        DeviceSettings.removeChoices(of: hubID, defaults: defaults)
+        if filesFree {
+            do {
+                try paths.removeHubFiles(hubID)
+            } catch {
+                // The row is gone: the next launch removes them as an orphan.
+                Self.logger.error("hub files not removed: \(error.localizedDescription, privacy: .public)")
             }
-            let next = try restarter.make(scope, hubID, device)
-            wire(next)
-            env = next
-            self.scope = scope
-            self.hubID = hubID
-            retired = false
-            if let adoption = await next.activeSession.adoption?.value {
-                outcome.notSent += adoption.lost
-                outcome.problem = outcome.problem ?? adoption.problem
-            }
-        } catch {
-            // The held recordings stay in the hold: the next boot adopts them.
-            Self.logger.critical("environment restart failed: \(error.localizedDescription, privacy: .public)")
-            failure = error.localizedDescription
-            throw error
+        } else {
+            Self.logger.error("hub files kept for the next launch: recordings not handed over")
+        }
+        for remaining in env.sessions.values {
+            remaining.reloadHeldRecordings()
         }
         return outcome
     }
 
-    /// A wipe's files: the replica removed (`removeReplica`), the
-    /// transport's store, when it has one on disk, emptied.
-    static func wipeFiles(replicaPath: String, transportStorePath: String?) throws {
-        try removeReplica(at: replicaPath)
-        if let transportStorePath, FileManager.default.fileExists(atPath: transportStorePath) {
-            try TransportStore(path: transportStorePath).wipe()
+    /// The live farewell: a `CloudKitTransport` of its own on a throwaway
+    /// store in the hub's local directory (outside the app group, #232),
+    /// which sends the record (best effort: the stop ends what has not gone
+    /// out) and is deleted after, with the directory when nothing else is
+    /// in it. A kill before that leaves an orphan the next launch removes.
+    private static func sendLiveFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String, paths: HubPaths) async {
+        let directory = paths.localHubDirectory(hubID)
+        let path = directory.appendingPathComponent("farewell.sqlite").path
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let transport = CloudKitTransport(store: try TransportStore(path: path), scope: scope, hubID: hubID, role: .phone)
+            await transport.start()
+            try await transport.save([record])
+            await transport.sendNow()
+            await transport.stop()
+        } catch {
+            logger.warning("unlinked record not sent: \(error.localizedDescription, privacy: .public)")
         }
-    }
-
-    /// The replica and its WAL files. The stopped environment's pool may
-    /// still hold them open; it reads its unlinked files until it goes. A
-    /// file that stays fails the restart (`failure`): a new environment on
-    /// it would show the old link's data.
-    private static func removeReplica(at path: String) throws {
-        for file in [path, path + "-wal", path + "-shm"] where FileManager.default.fileExists(atPath: file) {
-            do {
-                try FileManager.default.removeItem(atPath: file)
-            } catch {
-                logger.error("replica wipe failed for \(file, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                throw error
+        let fileManager = FileManager.default
+        do {
+            for file in [path, path + "-wal", path + "-shm", path + "-journal"] where fileManager.fileExists(atPath: file) {
+                try fileManager.removeItem(atPath: file)
             }
+            if try fileManager.contentsOfDirectory(atPath: directory.path).isEmpty {
+                try fileManager.removeItem(at: directory)
+            }
+        } catch {
+            logger.error("farewell store not removed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    /// Outbox items still waiting for the Mac: what a wipe loses besides
+    /// Outbox items still waiting for the Mac: what a removal loses besides
     /// recordings it could not keep ("Not sent").
     private static func pendingActionCount(_ session: HubSession) -> Int {
         do {
@@ -423,23 +380,41 @@ final class AppRoot {
 // MARK: - LinkHost
 
 extension AppRoot: LinkHost {
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
-        // A queued restart decides the running scope and hub.
-        _ = await restartTask?.result
-        if retired || scope != self.scope || hubID != self.hubID {
-            // The environment replaced here is an unlinked or retired one:
-            // a recording problem is only logged (a scan shows no notice).
-            let wipe = try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
-            if let problem = wipe.problem {
-                Self.logger.error("recordings at the link restart: \(problem, privacy: .public)")
-            }
+    func linkedHubs() -> [HubRow] {
+        do {
+            return try registry.rows()
+        } catch {
+            Self.logger.error("hub registry unreadable: \(error.localizedDescription, privacy: .public)")
+            return []
         }
-        return env.activeSession.linkTransport
     }
 
-    func fetchGrant(deviceID: String) async -> DeviceGrant? {
-        await env.refresh(.link)
-        let store = env.store
+    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
+        guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
+        // A removal of this hub still running decides what is left.
+        _ = await removals[hubID]?.value
+        let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
+        if let session = env.session(hubID) {
+            if session.databaseScope == scope, !frozen {
+                return session.linkTransport
+            }
+            // Another database's zones, or a hub the Mac removed: it starts
+            // again from empty files, its recordings held.
+            let wipe = await removeHub(hubID, keepRecordings: true)
+            if let problem = wipe.problem {
+                Self.logger.error("recordings at a rescan: \(problem, privacy: .public)")
+            }
+        }
+        let session = try factory.make(nil, hubID, scope, nil)
+        wire(session)
+        env.add(session)
+        return session.linkTransport
+    }
+
+    func fetchGrant(hubID: String, deviceID: String) async -> DeviceGrant? {
+        guard let session = env.session(hubID) else { return nil }
+        await session.refresh(.link)
+        let store = session.store
         do {
             return try await store.reader.read { db in
                 try SettingsSnapshot.decode(
@@ -455,28 +430,65 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {
-        await env.activeSession.setLinkedDevice(device, writesAllowed: writesAllowed)
+    func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
+        guard let session = env.session(record.hubID) else { throw CancellationError() }
+        try registry.upsert(record, now: Date())
+        session.deviceSettings.adoptUnlinkedChoices()
+        // The held recordings of this hub are in its replica before the
+        // device goes on: the upload of the waiting ones starts at once.
+        _ = await session.adoption?.value
+        await session.setLinkedDevice(device, writesAllowed: true)
+        env.activate(record.hubID)
     }
 
-    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
-        env.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
+    func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
+        guard let session = env.session(hubID) else {
+            Self.logger.warning("device record of a hub with no session: the default choices")
+            return DevicePayload(
+                deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion,
+                scope: device.scope, userRecordName: device.userRecordName, linkNonce: linkNonce,
+                unlinked: unlinked ? true : nil, typingRequested: false, startSessions: true, updatedAt: now
+            )
+        }
+        return session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
     }
 
-    func flushSends() async {
-        await env.sendNow()
+    func sendFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) async {
+        await farewell(record, scope, hubID)
     }
 
-    func retireEnvironment() {
-        retired = true
-    }
-
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe {
-        do {
-            return try await restart(scope: scope, hubID: hubID, device: nil, wipe: true, keepRecordings: keepRecordings)
-        } catch {
-            // `failure` is set: the app shows BootFailureView.
+    func removeHub(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+        if let running = removals[hubID] {
+            _ = await running.value
             return LocalWipe()
+        }
+        let task = Task { await self.performRemoval(hubID, keepRecordings: keepRecordings) }
+        removals[hubID] = task
+        let outcome = await task.value
+        removals[hubID] = nil
+        return outcome
+    }
+
+    func markRemovedByMac(_ hubID: String) async {
+        let endWork = startWork?("hub-remove")
+        defer { endWork?() }
+        let row: HubRow?
+        do {
+            row = try registry.row(hubID)
+            try registry.setState(.unlinkedByMac, for: hubID)
+        } catch {
+            Self.logger.error("hub not marked removed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        guard let row, let session = env.session(hubID) else { return }
+        await session.freeze(as: identity.linkedDevice(for: row.link))
+    }
+
+    func setGrantMissingSince(_ date: Date?, hubID: String) {
+        do {
+            try registry.setGrantMissingSince(date, for: hubID)
+        } catch {
+            Self.logger.error("removal check's look not saved: \(error.localizedDescription, privacy: .public)")
         }
     }
 

@@ -119,4 +119,15 @@ final class HubRegistryTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), directory.lastPathComponent)
         }
     }
+
+    /// Ruling 1: a hub id is a path component of the hub's files, which a
+    /// removal deletes recursively: only a plain name is one.
+    func testOnlyAPlainNameIsAHubID() {
+        for valid in ["hub-acme", "hub-1234", "hub_home.2"] {
+            XCTAssertTrue(HubPaths.isValidHubID(valid), valid)
+        }
+        for invalid in ["", ".", "..", ".hidden", "../hub-acme", "hub/acme", "hub\\acme", "hub\u{0}acme", "/"] {
+            XCTAssertFalse(HubPaths.isValidHubID(invalid), invalid.debugDescription)
+        }
+    }
 }

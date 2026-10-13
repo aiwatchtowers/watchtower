@@ -77,10 +77,18 @@ enum HubBoot {
         now: Date,
         fileManager: FileManager = .default
     ) throws {
-        guard try registry.rows().isEmpty else { return }
+        guard try registry.rows().isEmpty else {
+            // A kill between an earlier run's registry write and its key
+            // removal left the keys: the registry has the link.
+            if store.legacyLink != nil || store.holdsUnreadableLink || store.legacyGrantMissingSince != nil {
+                store.clearLegacyLink()
+                logger.notice("legacy link keys left next to the registry: cleared")
+            }
+            return
+        }
         let legacyReplica = legacyGroupDirectory.appendingPathComponent("replica.sqlite")
         let legacyTransport = URL(fileURLWithPath: legacyTransportStorePath)
-        guard let link = store.link else {
+        guard let link = store.legacyLink else {
             // A link saved but unreadable (a newer build's) is not "no link":
             // its replica may hold unsent recordings. Nothing is touched; a
             // build that reads it migrates it.
@@ -94,6 +102,11 @@ enum HubBoot {
             return
         }
         let hubID = link.hubID
+        guard HubPaths.isValidHubID(hubID) else {
+            // Never a Mac's: no path is built from it, nothing is touched.
+            logger.fault("saved link's hub id is not a plain name: nothing migrated")
+            return
+        }
         try paths.prepare(hubID)
         try moveDatabase(legacyReplica, to: URL(fileURLWithPath: paths.replicaPath(hubID)), fileManager: fileManager)
         try moveDatabase(legacyTransport, to: URL(fileURLWithPath: paths.transportStorePath(hubID)), fileManager: fileManager)
@@ -108,9 +121,8 @@ enum HubBoot {
         }
         try registry.upsert(link, now: now)
         try registry.setActive(hubID)
-        try registry.setGrantMissingSince(store.grantMissingSince, for: hubID)
-        store.link = nil
-        store.grantMissingSince = nil
+        try registry.setGrantMissingSince(store.legacyGrantMissingSince, for: hubID)
+        store.clearLegacyLink()
         logger.notice("F1 link moved into the hub registry")
     }
 

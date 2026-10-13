@@ -141,8 +141,8 @@ final class HubBootTests: XCTestCase {
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
         let missingSince = Date(timeIntervalSince1970: 500)
-        store.link = link("hub-acme")
-        store.grantMissingSince = missingSince
+        store.legacyLink = link("hub-acme")
+        store.legacyGrantMissingSince = missingSince
         defaults.set(true, forKey: "device.typingRequested")
         defaults.set(false, forKey: "device.startSessions")
         let recordingID = try await seedRecording(replicaPath: legacyReplica(paths).path, recordings: paths.recordingsBase)
@@ -205,7 +205,7 @@ final class HubBootTests: XCTestCase {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
-        store.link = link("hub-acme")
+        store.legacyLink = link("hub-acme")
         let inGroup = paths.groupDirectory.appendingPathComponent(AppEnvironment.transportStoreFileName)
         try makeTransportStore(at: inGroup)
         try Data("side".utf8).write(to: URL(fileURLWithPath: inGroup.path + "-journal"))
@@ -225,7 +225,7 @@ final class HubBootTests: XCTestCase {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
-        store.link = link("hub-acme")
+        store.legacyLink = link("hub-acme")
         let recordingID = try await seedRecording(replicaPath: legacyReplica(paths).path, recordings: paths.recordingsBase)
         try makeTransportStore(at: legacyLocalTransport(paths))
         let registry = try HubRegistry.inMemory()
@@ -234,14 +234,14 @@ final class HubBootTests: XCTestCase {
             store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults, fileManager: FailingMoveFileManager()
         ))
         XCTAssertEqual(try registry.rows(), [], "nothing reaches the registry")
-        XCTAssertEqual(store.link, link("hub-acme"), "the legacy link stays for the next launch")
+        XCTAssertEqual(store.legacyLink, link("hub-acme"), "the legacy link stays for the next launch")
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacyLocalTransport(paths).path), "the store did not move")
 
         try migrate(store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults)
         XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-acme"], "the next launch moves it")
         XCTAssertEqual(try ReplicaStore(path: paths.replicaPath("hub-acme")).phoneRecordings().map(\.id), [recordingID])
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath("hub-acme")))
-        XCTAssertNil(store.link)
+        XCTAssertNil(store.legacyLink)
     }
 
     func testAnUnreadableLegacyLinkTouchesNothing() async throws {
@@ -365,32 +365,41 @@ final class HubBootTests: XCTestCase {
 
         XCTAssertEqual(env.activeHubID, "hub-acme", "with no saved active hub, the first row")
         XCTAssertFalse(frozen.isLooping)
-        XCTAssertNil(frozen.linkedDevice, "a removed hub sends as no device")
+        XCTAssertEqual(frozen.linkedDevice, device, "ruling 4: the link stands, as a live freeze keeps it")
+        XCTAssertNil(frozen.deviceSettings.linkedDevice, "a toggle writes no device record")
+        do {
+            try await frozen.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+            XCTFail("a removed hub sends nothing")
+        } catch {
+            XCTAssertEqual(error as? ActionOutboxError, .notLinked)
+        }
         try await poll({ env.session("hub-acme")?.isLooping == true }, "the linked hub runs")
     }
 }
 
 extension HubBootTests {
-    // MARK: - The single-link bridge (until F2 Task 4)
+    // MARK: - Leftover legacy keys (ruling 3)
 
-    func testAFailedWipeNeverLeavesARowTheBridgeTurnsBackIntoALink() throws {
+    /// A kill between the migration's registry write and its removal of the
+    /// legacy keys leaves both: the next launch, finding rows, clears the
+    /// keys and touches nothing else.
+    func testLegacyLinkKeysLeftNextToRowsAreCleared() throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
         let registry = try HubRegistry.inMemory()
         try registry.upsert(link("hub-acme"), now: Date())
         try registry.setActive("hub-acme")
-        try paths.prepare("hub-acme")
-        // Not a database: emptying the transport store throws.
-        try Data("not a database".utf8).write(to: URL(fileURLWithPath: paths.transportStorePath("hub-acme")))
-        // The unlink cleared the saved link before the wipe.
-        store.link = nil
+        store.legacyLink = link("hub-acme")
+        store.legacyGrantMissingSince = Date(timeIntervalSince1970: 500)
+        let rowsBefore = try registry.rows()
 
-        XCTAssertThrowsError(try AppRoot.wipeHub("hub-acme", paths: paths, registry: registry))
+        try migrate(store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults)
 
-        XCTAssertNil(try registry.row("hub-acme"), "the row went before the files")
-        try AppRoot.bridgeSingleLink(store: store, registry: registry)
-        XCTAssertNil(store.link, "the next launch does not bring the unlinked hub back")
+        XCTAssertNil(defaults.object(forKey: "link.record"))
+        XCTAssertNil(defaults.object(forKey: "link.grantMissingSince"))
+        XCTAssertEqual(try registry.rows(), rowsBefore, "the rows are left as they are")
+        XCTAssertEqual(try registry.activeHubID, "hub-acme")
     }
 }
 

@@ -130,9 +130,9 @@ actor SaveLogTransport: CloudSyncTransport {
     }
 }
 
-/// The app side of the link flow: one save-log transport per database
-/// scope, a scripted Mac answering the device records written so far, and
-/// counters for the link, the wipe and the permission prompt.
+/// The app side of the link flow over an in-memory list of hub rows: one
+/// save-log transport per database scope, a scripted Mac answering the
+/// device records written so far, and a record of every hub-addressed call.
 @MainActor
 final class FakeLinkHost: LinkHost {
     let log: LinkEventLog
@@ -141,13 +141,21 @@ final class FakeLinkHost: LinkHost {
     private(set) var prepared: [CloudDatabaseScope] = []
     /// The hub of each `prepare`, in call order.
     private(set) var preparedHubIDs: [String] = []
-    /// Every `setLink` call: the device and whether writes were allowed.
-    private(set) var links: [(device: LinkedDevice?, writesAllowed: Bool)] = []
-    private(set) var wipes = 0
-    private(set) var flushes = 0
+    /// The saved links, in order.
+    private(set) var rows: [HubRow] = []
+    /// The hub `linked` made active last.
+    private(set) var activeHubID: String?
+    /// Every `linked` call: the record and the device.
+    private(set) var linkedCalls: [(record: LinkRecord, device: LinkedDevice)] = []
+    /// Every `removeHub` call: the hub and whether its recordings were kept.
+    private(set) var removals: [(hubID: String, keepRecordings: Bool)] = []
+    /// Every `markRemovedByMac` call.
+    private(set) var markedRemoved: [String] = []
+    /// Every farewell sent: the record's scope and hub.
+    private(set) var farewells: [(scope: CloudDatabaseScope, hubID: String)] = []
     private(set) var permissionRequests = 0
     private(set) var openedNow = 0
-    /// What the next wipe reports as not sent (once).
+    /// What the next removal reports as not sent (once).
     var notSentCount = 0
     /// The Mac: answers from every device record written so far, both
     /// databases, in write order. nil = no grant in the replica.
@@ -155,6 +163,25 @@ final class FakeLinkHost: LinkHost {
 
     init(log: LinkEventLog) {
         self.log = log
+    }
+
+    /// The hubs `removeHub` was called for, in call order.
+    var removedHubIDs: [String] { removals.map(\.hubID) }
+
+    /// Adds a saved link as an earlier launch left it.
+    func seed(_ link: LinkRecord, state: HubRow.State = .linked, grantMissingSince: Date? = nil) {
+        rows.append(HubRow(
+            link: link, flavor: nil, sortOrder: rows.count, state: state,
+            grantMissingSince: grantMissingSince, lastHeartbeatAt: nil, linkedOn: Date(timeIntervalSince1970: 0)
+        ))
+    }
+
+    func row(_ hubID: String) -> HubRow? {
+        rows.first { $0.hubID == hubID }
+    }
+
+    func linkedHubs() -> [HubRow] {
+        rows
     }
 
     /// When true, `prepare` waits until its task is cancelled (the app
@@ -177,19 +204,31 @@ final class FakeLinkHost: LinkHost {
     /// When true, `fetchGrant` waits until it is set false again (a link
     /// flow held mid-check).
     var parksFetchGrant = false
+    /// The hub of each `fetchGrant`, in call order.
+    private(set) var grantHubIDs: [String] = []
 
-    func fetchGrant(deviceID: String) async -> DeviceGrant? {
+    func fetchGrant(hubID: String, deviceID: String) async -> DeviceGrant? {
+        grantHubIDs.append(hubID)
         while parksFetchGrant {
             try? await Task.sleep(for: .milliseconds(5))
         }
         return mac((try? await deviceWrites()) ?? [])
     }
 
-    func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {
-        links.append((device, writesAllowed))
+    func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
+        if let index = rows.firstIndex(where: { $0.hubID == record.hubID }) {
+            rows[index].link = record
+            rows[index].state = .linked
+            rows[index].grantMissingSince = nil
+        } else {
+            guard rows.count < HubRegistry.limit else { throw HubRegistryError.full }
+            seed(record)
+        }
+        linkedCalls.append((record, device))
+        activeHubID = record.hubID
     }
 
-    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
+    func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
         DevicePayload(
             deviceID: device.deviceID,
             name: device.name,
@@ -205,41 +244,46 @@ final class FakeLinkHost: LinkHost {
         )
     }
 
-    func flushSends() async {
-        flushes += 1
+    func sendFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) async {
+        log.append("farewell \(Self.describe(scope))")
+        farewells.append((scope, hubID))
+        try? await transport(for: scope).save([record])
     }
 
-    private(set) var retirements = 0
-
-    func retireEnvironment() {
-        log.append("retire")
-        retirements += 1
-    }
-
-    /// The hub of each wipe's restart, in call order.
-    private(set) var wipedHubIDs: [String] = []
-
-    /// The next wipe reports a capture it stopped and kept (once; as the
+    /// The next removal reports a capture it stopped and kept (once; as the
     /// real host, never when the recordings are not kept).
     var stopsRecording = false
-    /// The next wipe reports a recording problem (once).
+    /// The next removal reports a recording problem (once).
     var recordingProblem: String?
 
-    /// `keepRecordings` of each wipe, in call order.
-    private(set) var wipesKeptRecordings: [Bool] = []
-
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe {
-        wipedHubIDs.append(hubID)
-        wipesKeptRecordings.append(keepRecordings)
-        log.append("wipe \(Self.describe(scope))")
-        wipes += 1
-        // A second wipe finds nothing left: what the first lost was counted.
+    func removeHub(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+        log.append("remove \(hubID)")
+        removals.append((hubID, keepRecordings))
+        rows.removeAll { $0.hubID == hubID }
+        if activeHubID == hubID {
+            activeHubID = rows.first?.hubID
+        }
+        // A second removal finds nothing left: what the first lost was counted.
         defer {
             stopsRecording = false
             recordingProblem = nil
             notSentCount = 0
         }
         return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem)
+    }
+
+    func markRemovedByMac(_ hubID: String) async {
+        log.append("frozen \(hubID)")
+        markedRemoved.append(hubID)
+        if let index = rows.firstIndex(where: { $0.hubID == hubID }) {
+            rows[index].state = .unlinkedByMac
+        }
+    }
+
+    func setGrantMissingSince(_ date: Date?, hubID: String) {
+        if let index = rows.firstIndex(where: { $0.hubID == hubID }) {
+            rows[index].grantMissingSince = date
+        }
     }
 
     func requestNotificationPermission() async {

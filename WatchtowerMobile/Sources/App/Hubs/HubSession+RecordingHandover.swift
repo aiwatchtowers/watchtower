@@ -141,6 +141,18 @@ extension HubSession {
         return heartbeat.macName
     }
 
+    /// Reads the hold's list again (another hub's removal held its
+    /// recordings): Recordings shows them as waiting for their Mac. Adopts
+    /// nothing; that stays the boot's.
+    func reloadHeldRecordings() {
+        guard let hold else { return }
+        do {
+            heldRecordings = try hold.load()
+        } catch {
+            Self.handoverLogger.error("held recordings not listed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// At boot, before the launch sweep: the held recordings of this
     /// session's hub become `waiting` rows again (sent once a device id
     /// is set); a recording whose row is already here only leaves the hold.
