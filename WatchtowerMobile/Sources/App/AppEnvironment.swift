@@ -262,8 +262,11 @@ final class AppEnvironment {
     /// (`AppRoot` reads all three from the `LinkStore`). `energy` counts
     /// the fetches, the CloudKit requests and the upload attempts (the app
     /// passes `BatteryDiagnostics.shared.counter`; nil counts nothing).
+    /// `transportStorePath` is the live store's path `AppRoot` resolved
+    /// once for the process (nil resolves it: `liveTransportStorePath()`).
     convenience init(
         recordingsDirectory: URL? = nil,
+        transportStorePath: String? = nil,
         scope: CloudDatabaseScope = .private,
         hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil,
@@ -271,7 +274,7 @@ final class AppEnvironment {
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: try Self.liveTransportStorePath())
+            let transportStore = try TransportStore(path: try transportStorePath ?? Self.liveTransportStorePath())
             let active = UIApplication.shared.applicationState == .active
             try self.init(
                 transport: CloudKitTransport(
@@ -910,8 +913,14 @@ final class AppEnvironment {
     /// because CKSyncEngine writes it from its own callbacks at any moment —
     /// a lock on a file in the shared container when iOS suspends the app
     /// gets it killed (0xdead10cc). A store an earlier build kept in the
-    /// app group moves over once (`moveTransportStore`).
+    /// app group moves over once (`moveTransportStore`), on the process's
+    /// first call: every later call returns the same path without moving,
+    /// so no move ever runs under a store this process has opened.
     nonisolated static func liveTransportStorePath() throws -> String {
+        try liveTransportStore.path()
+    }
+
+    nonisolated private static let liveTransportStore = TransportStorePathResolver {
         try moveTransportStore(from: appGroupDirectory(), to: applicationSupportDirectory())
     }
 
@@ -984,6 +993,27 @@ final class AppEnvironment {
             appropriateFor: nil,
             create: true
         )
+    }
+}
+
+/// Resolves a path once per instance: the first successful `path()` runs
+/// `resolve` (the transport store's move), every later call returns its
+/// result. A throwing resolve caches nothing.
+final class TransportStorePathResolver: Sendable {
+    private let resolved = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let resolve: @Sendable () throws -> String
+
+    init(_ resolve: @escaping @Sendable () throws -> String) {
+        self.resolve = resolve
+    }
+
+    func path() throws -> String {
+        try resolved.withLock { cached in
+            if let cached { return cached }
+            let path = try resolve()
+            cached = path
+            return path
+        }
     }
 }
 

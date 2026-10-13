@@ -77,8 +77,14 @@ final class AppRoot {
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
+        // Resolved (and an earlier build's store moved) once, before any
+        // environment opens it; every environment and the wipe share it.
+        let transportStorePath = try AppEnvironment.liveTransportStorePath()
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device, energy: BatteryDiagnostics.shared.counter)
+            try AppEnvironment(
+                transportStorePath: transportStorePath, scope: scope, hubID: hubID, linkedDevice: device,
+                energy: BatteryDiagnostics.shared.counter
+            )
         }
         let scope = store.bootScope
         let hubID = store.bootHubID
@@ -90,7 +96,7 @@ final class AppRoot {
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
-                transportStorePath: try AppEnvironment.liveTransportStorePath(),
+                transportStorePath: transportStorePath,
                 make: make,
                 startWork: BackgroundWork.starter()
             )

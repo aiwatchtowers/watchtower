@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -221,6 +222,25 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), ownPath)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: ownPath)), Data("own".utf8))
         XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+    }
+
+    /// The live path resolves once per process: a move that failed keeps
+    /// the app-group store open there, and a later resolution (a restart's
+    /// environment, the wipe) returns that same path instead of moving the
+    /// store from under the open database.
+    func testTheTransportStorePathResolvesOncePerProcess() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldMain = group.appendingPathComponent(name)
+        try Data("main".utf8).write(to: oldMain)
+        let target = OSAllocatedUnfairLock(initialState: own.appendingPathComponent("gone", isDirectory: true))
+        let resolver = TransportStorePathResolver { AppEnvironment.moveTransportStore(from: group, to: target.withLock { $0 }) }
+
+        XCTAssertEqual(try resolver.path(), oldMain.path, "the failed move keeps the old store")
+        target.withLock { $0 = own }
+        XCTAssertEqual(try resolver.path(), oldMain.path, "the same path, no second move")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldMain.path), "the open store stays where it is")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: own.appendingPathComponent(name).path))
     }
 
     /// A move that fails keeps the app-group store, side files included,
