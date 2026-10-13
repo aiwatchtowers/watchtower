@@ -56,6 +56,7 @@
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
+		4CF6B8088DE86AE15CD85609 /* HubListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */; };
 		4D6748338C1E07858C8D01CE /* AppNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */; };
 		505F74FA09855E7BDA56ADB0 /* SessionInputSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A806A63CB29EB2AAA0A4132 /* SessionInputSender.swift */; };
 		50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */; };
@@ -111,6 +112,8 @@
 		A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */; };
 		AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */; };
 		AABE1CB3835D3B2E87CD6EEB /* AskDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */; };
+		B13D19119CF5FEBCB8801027 /* HubSwitcherChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */; };
+		B33391FF27E63A55A489DA03 /* HubSwitcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1751079508437F093108AD4 /* HubSwitcherTests.swift */; };
 		B3EC881E10827862686ACBB0 /* SettingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */; };
 		B4A66F05DE7C4B0EDB09BC6A /* HubRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39F534AB8FCE553B8BC57C4D /* HubRegistry.swift */; };
 		B4FA44EE0DD4DE0608F96849 /* LinkFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004FC7832564F980605115E3 /* LinkFailure.swift */; };
@@ -135,6 +138,7 @@
 		D68714F514B300CCA34A008D /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08D768F21290828AFDF991CD /* Metrics.swift */; };
 		D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */; };
 		D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */; };
+		D773F002639B0E0A3B028B8E /* HubListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE3DBFF44464842CBDA8890 /* HubListModel.swift */; };
 		D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */; };
 		DC20254FEA64E44647E9EB4C /* HubSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CE5870D1C2DF528494FD4A0 /* HubSession.swift */; };
 		DC5BBB91476A0A63F73787C6 /* LinkNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5874A63A0C325EAE95BA10DE /* LinkNotice.swift */; };
@@ -214,11 +218,13 @@
 		1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewBoardTargetSheet.swift; sourceTree = "<group>"; };
 		1DD07929D977D2F7FEA3B461 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailView.swift; sourceTree = "<group>"; };
+		1EE3DBFF44464842CBDA8890 /* HubListModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubListModel.swift; sourceTree = "<group>"; };
 		213E158A5D0210D86957A491 /* SessionRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRowTests.swift; sourceTree = "<group>"; };
 		21796AC66F21FE6C6873DF84 /* BatteryDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryDiagnosticsTests.swift; sourceTree = "<group>"; };
 		2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Calendar.swift"; sourceTree = "<group>"; };
 		2323398F35DB7A152A2A4FEE /* BackgroundWorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundWorkTests.swift; sourceTree = "<group>"; };
 		232CD623FB978407C3F5E7DE /* ResilientObservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResilientObservationTests.swift; sourceTree = "<group>"; };
+		23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubListSheet.swift; sourceTree = "<group>"; };
 		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
 		2854C4C1E98D92A27FE3ACA8 /* DeviceIDKeychainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIDKeychainTests.swift; sourceTree = "<group>"; };
 		2C7BE965E32256F4C81D29A0 /* HubSession+RecordingHandover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubSession+RecordingHandover.swift"; sourceTree = "<group>"; };
@@ -339,10 +345,12 @@
 		E1BEF5D37AF70BBF7FB6C533 /* HubPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubPaths.swift; sourceTree = "<group>"; };
 		E87EB2750CF04CA690B2E098 /* HubBootTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubBootTests.swift; sourceTree = "<group>"; };
 		EA88CC67A10A74097B033DF8 /* ObservationHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationHealth.swift; sourceTree = "<group>"; };
+		EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSwitcherChip.swift; sourceTree = "<group>"; };
 		EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapView.swift; sourceTree = "<group>"; };
 		EBF496EC3CD5D473675267EB /* AskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskView.swift; sourceTree = "<group>"; };
 		ED010731D72C66201D5B0A4C /* DeviceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceSettings.swift; sourceTree = "<group>"; };
 		EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootView.swift; sourceTree = "<group>"; };
+		F1751079508437F093108AD4 /* HubSwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSwitcherTests.swift; sourceTree = "<group>"; };
 		F2D287A1BE3B31FA6D711C52 /* NowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowModel.swift; sourceTree = "<group>"; };
 		F34E795FC1F8D741120567AA /* ReplicaDecodeCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaDecodeCache.swift; sourceTree = "<group>"; };
 		F3734E9D1BDF9ADC4CC57B2F /* AppRootWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootWiringTests.swift; sourceTree = "<group>"; };
@@ -432,6 +440,7 @@
 				70E45893536CCF049E743DFC /* FetchCadenceWiringTests.swift */,
 				E87EB2750CF04CA690B2E098 /* HubBootTests.swift */,
 				7FEBD186F3494D8757690A20 /* HubRegistryTests.swift */,
+				F1751079508437F093108AD4 /* HubSwitcherTests.swift */,
 				B07F0B15A0983525BEC4E560 /* LinkingViewModelTests.swift */,
 				8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */,
 				694B304F0EF2BBFFFC674C03 /* MultiHubRecordingTests.swift */,
@@ -668,6 +677,16 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		BB7BCC60800FF295F19BA5ED /* Hubs */ = {
+			isa = PBXGroup;
+			children = (
+				1EE3DBFF44464842CBDA8890 /* HubListModel.swift */,
+				23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */,
+				EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */,
+			);
+			path = Hubs;
+			sourceTree = "<group>";
+		};
 		C30C4CB858ACD71234F6329E /* Recordings */ = {
 			isa = PBXGroup;
 			children = (
@@ -684,6 +703,7 @@
 			children = (
 				78C70DD91E29327931E45088 /* Asks */,
 				67798704F2F6E8DB0C679F38 /* Calendar */,
+				BB7BCC60800FF295F19BA5ED /* Hubs */,
 				10B92AF1A2ADDFE713651E9B /* Now */,
 				1D7CD1367D6AF926132BDF7A /* Onboarding */,
 				38BDD6032E24504C9A3721D0 /* Recording */,
@@ -897,10 +917,13 @@
 				F2A5A0FA080EB5E3C2F67345 /* FlatRow.swift in Sources */,
 				779DC62D556AE023C5D5A1D5 /* HubBoot.swift in Sources */,
 				905BE097FAAB91211DD5F909 /* HubDisplayName.swift in Sources */,
+				D773F002639B0E0A3B028B8E /* HubListModel.swift in Sources */,
+				4CF6B8088DE86AE15CD85609 /* HubListSheet.swift in Sources */,
 				FB663831976B7F90B3275229 /* HubPaths.swift in Sources */,
 				B4A66F05DE7C4B0EDB09BC6A /* HubRegistry.swift in Sources */,
 				ED65ED4CF15623705631BC86 /* HubSession+RecordingHandover.swift in Sources */,
 				DC20254FEA64E44647E9EB4C /* HubSession.swift in Sources */,
+				B13D19119CF5FEBCB8801027 /* HubSwitcherChip.swift in Sources */,
 				B4FA44EE0DD4DE0608F96849 /* LinkFailure.swift in Sources */,
 				DC5BBB91476A0A63F73787C6 /* LinkNotice.swift in Sources */,
 				8FECCC9474F30F5548A93588 /* LinkSeams.swift in Sources */,
@@ -976,6 +999,7 @@
 				F4D349E6D62C941C637E5556 /* FetchCadenceWiringTests.swift in Sources */,
 				6AE59E68E188FE8BEADD6C7A /* HubBootTests.swift in Sources */,
 				1F38440DD3D2D0764A3C34FF /* HubRegistryTests.swift in Sources */,
+				B33391FF27E63A55A489DA03 /* HubSwitcherTests.swift in Sources */,
 				06EE5CC835773038323C08F9 /* LinkingFakes.swift in Sources */,
 				BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */,
 				46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */,

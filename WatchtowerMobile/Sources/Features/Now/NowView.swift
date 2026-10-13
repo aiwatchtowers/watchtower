@@ -30,6 +30,7 @@ struct NowView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            .hubSwitcher()
             .navigationDestination(for: NowRoute.self) { _ in SettingsView() }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             // An event detail pushed here opens its recap here (Open recap).

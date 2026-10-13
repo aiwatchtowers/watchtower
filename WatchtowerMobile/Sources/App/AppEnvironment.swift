@@ -123,8 +123,13 @@ final class AppEnvironment {
         }
     }
 
-    /// Puts `hubID`'s session on screen and keeps it as the active hub.
+    /// Puts `hubID`'s session on screen and keeps it as the active hub. A
+    /// switch to another hub resets navigation to the root (multi-hub spec
+    /// §5.6): no screen of the old hub stays pushed over the new one.
     func activate(_ hubID: String) {
+        if activeHubID != hubID {
+            navigation.resetStacks()
+        }
         activeHubID = hubID
         if let registry {
             do {
