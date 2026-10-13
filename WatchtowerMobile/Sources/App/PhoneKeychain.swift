@@ -7,10 +7,12 @@ import WatchtowerSync
 enum PhoneKeychainError: LocalizedError, Equatable {
     /// The build's Info.plist has no `WTKeychainPrivateGroup` (or an empty one).
     case privateGroupMissing
+    /// The build's Info.plist has no `WTKeychainAlertGroup` (or an empty one).
+    case alertGroupMissing
 
     var errorDescription: String? {
         switch self {
-        case .privateGroupMissing:
+        case .privateGroupMissing, .alertGroupMissing:
             "This build of Watchtower has no Keychain group. Reinstall Watchtower."
         }
     }
@@ -20,23 +22,33 @@ enum PhoneKeychainError: LocalizedError, Equatable {
 /// device id and the hub's public signing key `AfterFirstUnlockThisDeviceOnly`, never synchronizable
 /// (`SecItemKeychainBackend`). Every item goes to the app's private access group explicitly (F20): the group
 /// comes from Info.plist's `WTKeychainPrivateGroup` (`$(AppIdentifierPrefix)…`, expanded at build time), never a
-/// hardcoded team prefix; it is the first entry of the entitlements' `keychain-access-groups`. The alerts group
-/// is Task 18's: until then the alert material lands in the private group too. The app reads it through one
+/// hardcoded team prefix; it is the first entry of the entitlements' `keychain-access-groups`. The alert material
+/// (`K_alert`, the hub's public signing key) goes to the shared alerts group from `WTKeychainAlertGroup`, the
+/// second entry, which the NotifyService extension reads (spec §2.6, F21). The app reads it through one
 /// `CachingPhoneKeyStore`: no Keychain query per replica row, nothing served from memory once the phone locks.
 enum PhoneKeychain {
     static let privateGroupKey = "WTKeychainPrivateGroup"
+    static let alertGroupKey = "WTKeychainAlertGroup"
 
     static func store(bundle: Bundle = .main) throws -> CachingPhoneKeyStore {
-        CachingPhoneKeyStore(wrapping: KeychainPhoneKeyStore(
+        let info = bundle.infoDictionary ?? [:]
+        return CachingPhoneKeyStore(wrapping: KeychainPhoneKeyStore(
             backend: SecItemKeychainBackend(),
-            privateGroup: try privateGroup(in: bundle.infoDictionary ?? [:]),
-            alertGroup: nil
+            privateGroup: try privateGroup(in: info),
+            alertGroup: try alertGroup(in: info)
         ))
     }
 
     static func privateGroup(in info: [String: Any]) throws -> String {
         guard let group = info[privateGroupKey] as? String, !group.isEmpty else {
             throw PhoneKeychainError.privateGroupMissing
+        }
+        return group
+    }
+
+    static func alertGroup(in info: [String: Any]) throws -> String {
+        guard let group = info[alertGroupKey] as? String, !group.isEmpty else {
+            throw PhoneKeychainError.alertGroupMissing
         }
         return group
     }

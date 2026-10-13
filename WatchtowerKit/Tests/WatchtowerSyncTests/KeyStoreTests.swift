@@ -249,6 +249,14 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertNil(try store.alertMaterial("hub-1"))
     }
 
+    /// A build before the alerts group (Task 18) kept the alert material in the private group: removal clears it too.
+    func testRemoveHubLinkAlsoDeletesAnAlertCopyInThePrivateGroup() throws {
+        let backend = FakeKeychainBackend()
+        backend.plant("alert.hub-1", Data("{}".utf8), group: privateGroup)
+        try makeStore(backend).removeHubLink("hub-1")
+        XCTAssertNil(try backend.read(account: "alert.hub-1", group: privateGroup))
+    }
+
     func testHubIdentityIsCreatedAfterFirstUnlockWithDataProtectionAndReportsCreatedOnce() throws {
         let backend = FakeKeychainBackend()
         let store = KeychainHubKeyStore(backend: backend)

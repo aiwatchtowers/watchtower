@@ -21,10 +21,12 @@
 		<string>group.com.aiwatchtowers.watchtower.mobile</string>
 	</array>
 	<!-- E2E keys (mobile E2E spec §2.6, F20): the app's private Keychain group FIRST, so it is also the
-	     default group; Task 18 appends the alerts group second. Never a hardcoded team prefix. -->
+	     default group; the alerts group (K_alert and the hub's public signing key, shared with the
+	     NotifyService extension) SECOND, never first. Never a hardcoded team prefix. -->
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile</string>
+		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
 	</array>
 </dict>
 </plist>

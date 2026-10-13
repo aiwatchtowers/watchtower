@@ -89,6 +89,7 @@
 		8EE51E7A85C5FE1C582B4761 /* Pill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8273B56D197DE1234DF9D87B /* Pill.swift */; };
 		8FECCC9474F30F5548A93588 /* LinkSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4AE5C921A6AC94DFAB6997 /* LinkSeams.swift */; };
 		926ADD6EE6A569AE60930F1A /* AVAudioCaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2FF6957297A743DA4709CA /* AVAudioCaptureEngine.swift */; };
+		94A67D2EB260A531583D3E0E /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 0DCA74F6DB95FEC03BFD7AF5 /* WatchtowerSync */; };
 		95993A2ACA777AC4F7B95FBB /* WelcomeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABA83461C8013610E3BDCB4 /* WelcomeTests.swift */; };
 		967B04AA367ACC272253AA96 /* AskAnswerer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */; };
 		978C1CA6E8DCA5FE898C5859 /* CloudKitLinkContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38C7EBA4D04A06A86EBD634C /* CloudKitLinkContainer.swift */; };
@@ -355,6 +356,14 @@
 				0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */,
 				6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */,
 				435FFB8059956A11F8DAE21B /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D295E1E15F89C3E7B66E388 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				94A67D2EB260A531583D3E0E /* WatchtowerSync in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -723,6 +732,7 @@
 			buildConfigurationList = C11809C6A2493C0395F7CB55 /* Build configuration list for PBXNativeTarget "NotifyService" */;
 			buildPhases = (
 				DE30D88005DCFE47382396D3 /* Sources */,
+				9D295E1E15F89C3E7B66E388 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -730,6 +740,7 @@
 			);
 			name = NotifyService;
 			packageProductDependencies = (
+				0DCA74F6DB95FEC03BFD7AF5 /* WatchtowerSync */,
 			);
 			productName = NotifyService;
 			productReference = CE1581266064A628CA86BA7B /* NotifyService.appex */;
@@ -1347,6 +1358,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0DCA74F6DB95FEC03BFD7AF5 /* WatchtowerSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerSync;
+		};
 		507F22E0F36461C091AD6154 /* WatchtowerKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerKit;

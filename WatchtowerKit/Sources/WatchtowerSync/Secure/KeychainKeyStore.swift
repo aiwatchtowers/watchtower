@@ -111,6 +111,8 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
             try backend.delete(account: "hub.\(hubID)", group: privateGroup)
             try backend.delete(account: "hubpub.\(hubID)", group: privateGroup)
             try backend.delete(account: "alert.\(hubID)", group: alertGroup)
+            // A build before the alerts group wrote the alert material to the private group: no K_alert stays behind.
+            if alertGroup != privateGroup { try backend.delete(account: "alert.\(hubID)", group: privateGroup) }
         }
     }
 
@@ -122,6 +124,12 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func alertMaterial(_ hubID: String) throws -> AlertMaterial? {
+        try Self.alertMaterial(hubID, backend: backend, alertGroup: alertGroup)
+    }
+
+    /// The notification extension's read (F21): the alert group only, no store, so nothing else is in reach. Same
+    /// contract as the instance method: nil when absent, `.locked`/`.corrupt` otherwise.
+    public static func alertMaterial(_ hubID: String, backend: any KeychainBackend, alertGroup: String?) throws -> AlertMaterial? {
         guard let data = try backend.read(account: "alert.\(hubID)", group: alertGroup) else { return nil }
         do { return try JSONDecoder().decode(AlertMaterial.self, from: data) } catch {
             throw KeyStoreError.corrupt("alert material does not decode")

@@ -58,6 +58,44 @@ final class KeychainKeyStoreDeviceTests: XCTestCase {
         XCTAssertNotNil(Bundle(for: AppRoot.self).object(forInfoDictionaryKey: PhoneKeychain.privateGroupKey), "the app's Info.plist has it")
     }
 
+    /// The alert material goes to the shared group from Info.plist (spec §2.6), never a hardcoded one.
+    func testTheAlertGroupComesFromInfoPlist() throws {
+        XCTAssertEqual(try PhoneKeychain.alertGroup(in: ["WTKeychainAlertGroup": "TEAM.com.example.alerts"]), "TEAM.com.example.alerts")
+        XCTAssertThrowsError(try PhoneKeychain.alertGroup(in: [:])) { error in
+            XCTAssertEqual(error as? PhoneKeychainError, .alertGroupMissing)
+        }
+        XCTAssertThrowsError(try PhoneKeychain.alertGroup(in: ["WTKeychainAlertGroup": ""]))
+        let bundle = Bundle(for: AppRoot.self)
+        let alerts = try XCTUnwrap(bundle.object(forInfoDictionaryKey: PhoneKeychain.alertGroupKey) as? String)
+        let privateGroup = try XCTUnwrap(bundle.object(forInfoDictionaryKey: PhoneKeychain.privateGroupKey) as? String)
+        XCTAssertNotEqual(alerts, privateGroup, "the alert material never shares the private group")
+        XCTAssertTrue(alerts.hasSuffix("com.aiwatchtowers.watchtower.mobile.alerts"))
+    }
+
+    /// F20: the private group is the app's FIRST (default) keychain group and the alerts group the second; the
+    /// extension holds the alerts group only (F21). Read from the source tree: an unsigned build embeds none.
+    func testTheKeychainGroupsAreOrderedPrivateFirstAndTheExtensionHoldsOnlyAlerts() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let app = try keychainGroups(root.appendingPathComponent("WatchtowerMobile.entitlements"))
+        XCTAssertEqual(app, [
+            "$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile",
+            "$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts"
+        ])
+        let service = try keychainGroups(root.appendingPathComponent("NotifyService/NotifyService.entitlements"))
+        XCTAssertEqual(service, ["$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts"])
+        let serviceInfo = try plist(root.appendingPathComponent("NotifyService/Info.plist"))
+        XCTAssertEqual(serviceInfo[PhoneKeychain.alertGroupKey] as? String, app.last)
+    }
+
+    private func plist(_ url: URL) throws -> [String: Any] {
+        let object = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil)
+        return try XCTUnwrap(object as? [String: Any])
+    }
+
+    private func keychainGroups(_ url: URL) throws -> [String] {
+        try XCTUnwrap(plist(url)["keychain-access-groups"] as? [String])
+    }
+
     /// M-1: the #62 device id (its Keychain item and the defaults fallback) is removed after the move to the
     /// key-derived id; "no such item" is not a failure.
     @MainActor
