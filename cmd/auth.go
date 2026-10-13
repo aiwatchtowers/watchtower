@@ -39,13 +39,6 @@ var authPrepareCmd = &cobra.Command{
 	RunE:  runAuthPrepare,
 }
 
-var authCompleteCmd = &cobra.Command{
-	Use:   "complete",
-	Short: "Exchange OAuth authorization code for token",
-	Long:  `Exchanges an OAuth code (obtained from the in-app WKWebView callback) for a Slack user token and saves it to config.`,
-	RunE:  runAuthComplete,
-}
-
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Disconnect account #1's Slack workspace (non-destructive: keeps synced data)",
@@ -77,14 +70,8 @@ func init() {
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
 	authCmd.AddCommand(authPrepareCmd)
-	authCmd.AddCommand(authCompleteCmd)
 	authCmd.AddCommand(authTrustCertCmd)
 	authCmd.AddCommand(authCheckCertCmd)
-
-	authCompleteCmd.Flags().String("code", "", "OAuth authorization code from Slack callback")
-	authCompleteCmd.Flags().String("redirect-uri", "", "Redirect URI used in the authorize request")
-	_ = authCompleteCmd.MarkFlagRequired("code")
-	_ = authCompleteCmd.MarkFlagRequired("redirect-uri")
 
 	authPrepareCmd.Flags().String("redirect-uri", "", "Custom redirect URI (e.g. watchtower-auth://callback for desktop app)")
 
@@ -161,27 +148,6 @@ func runAuthCheckCert(_ *cobra.Command, _ []string) error {
 		fmt.Println("untrusted")
 	}
 	return nil
-}
-
-func runAuthComplete(cmd *cobra.Command, _ []string) error {
-	cfg, err := resolveOAuthConfig()
-	if err != nil {
-		return err
-	}
-
-	code, _ := cmd.Flags().GetString("code")
-	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
-	result, err := auth.Complete(cmd.Context(), cfg, code, redirectURI)
-	if err != nil {
-		return fmt.Errorf("auth complete: %w", err)
-	}
-
-	// H1: auth complete outputs JSON for the desktop app to parse
-	info, err := saveAuthResult(cmd, result)
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(info)
 }
 
 // runAuthLogout is the legacy single-account alias for `slack remove 1`: it

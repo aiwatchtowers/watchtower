@@ -63,8 +63,8 @@ var UserScopes = []string{
 }
 
 // slackHTTPClient makes the code exchange. Its timeout bounds the call on its
-// own: `auth complete` hands Complete a context with no deadline, and a
-// stalled oauth.v2.access must not hang the CLI the Desktop is waiting on.
+// own: a stalled oauth.v2.access must not hang the CLI the Desktop is waiting
+// on, whatever deadline the caller's context carries.
 var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // exchangeToken is the function used to exchange an OAuth code for a token.
@@ -143,34 +143,6 @@ func Prepare(cfg OAuthConfig, customRedirectURI string) (*PrepareResult, error) 
 		RedirectURI:  redirectURI,
 		State:        state,
 	}, nil
-}
-
-// Complete exchanges an OAuth authorization code for a user token.
-// Used by the desktop app after intercepting the redirect callback.
-func Complete(ctx context.Context, cfg OAuthConfig, code, redirectURI string) (*OAuthResult, error) {
-	if code == "" {
-		return nil, fmt.Errorf("no authorization code provided")
-	}
-
-	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, code, redirectURI)
-	if err != nil {
-		return nil, fmt.Errorf("exchanging code for token: %w", err)
-	}
-
-	result := &OAuthResult{
-		AccessToken: resp.AuthedUser.AccessToken,
-		TeamID:      resp.Team.ID,
-		TeamName:    resp.Team.Name,
-		UserID:      resp.AuthedUser.ID,
-		ExpiresIn:   resp.AuthedUser.ExpiresIn,
-		Scope:       resp.AuthedUser.Scope,
-	}
-
-	if result.AccessToken == "" {
-		return nil, fmt.Errorf("no user access token in response (did you configure user_scope in your Slack app?)")
-	}
-
-	return result, nil
 }
 
 // LoginOptions configures the Login flow behaviour.
