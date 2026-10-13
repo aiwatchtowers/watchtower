@@ -61,6 +61,24 @@ func TestProj04_CleanupPermissionKeepsOwnerPermissions(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("install: changed=%v err=%v", changed, err)
 	}
+	assertOwnerSettingsPlusOurRule(t, dir, want)
+
+	if changed, err := RemoveCleanupPermission(dir); err != nil || !changed {
+		t.Fatalf("remove: changed=%v err=%v", changed, err)
+	}
+	if got := decodeSettings(t, dir); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PROJ-04: the removal must give back exactly the owner's settings, got %#v", got)
+	}
+	if has, err := HasCleanupPermission(dir); err != nil || has {
+		t.Fatalf("after the removal: has=%v err=%v", has, err)
+	}
+}
+
+// assertOwnerSettingsPlusOurRule checks the installed file against the
+// owner's decoded settings: their values kept verbatim, permissions.allow is
+// theirs in order plus exactly our rule, every other key unchanged.
+func assertOwnerSettingsPlusOurRule(t *testing.T, dir string, want map[string]any) {
+	t.Helper()
 	raw := readTestFile(t, settingsFile(dir))
 	for _, verbatim := range []string{`1.50`, `<b>&</b> ünïcode`} {
 		if !strings.Contains(raw, verbatim) {
@@ -83,16 +101,6 @@ func TestProj04_CleanupPermissionKeepsOwnerPermissions(t *testing.T) {
 		if !reflect.DeepEqual(got[key], want[key]) {
 			t.Fatalf("PROJ-04: owner key %q changed: %#v", key, got[key])
 		}
-	}
-
-	if changed, err := RemoveCleanupPermission(dir); err != nil || !changed {
-		t.Fatalf("remove: changed=%v err=%v", changed, err)
-	}
-	if got := decodeSettings(t, dir); !reflect.DeepEqual(got, want) {
-		t.Fatalf("PROJ-04: the removal must give back exactly the owner's settings, got %#v", got)
-	}
-	if has, err := HasCleanupPermission(dir); err != nil || has {
-		t.Fatalf("after the removal: has=%v err=%v", has, err)
 	}
 }
 

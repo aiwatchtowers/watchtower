@@ -316,6 +316,28 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if !isDir(o.Folder) {
 		return folderGone(o)
 	}
+	errs := removeWorkbenchSettings(o)
+	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
+		if _, err := removeSkill(o.skillsDir(), s); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
+		errs = append(errs, err)
+	}
+	removeIfEmpty(o.skillsDir())
+	removeIfEmpty(filepath.Join(o.Folder, ".claude"))
+	lines := append(append([]string{}, workbenchExcludeLines...), legacySkillExcludeLine)
+	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, lines)); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// removeWorkbenchSettings removes our hooks and the cleanup allow rule from
+// the folder's settings file. A malformed file is reported once, by the
+// SessionStart step, not again by every later step reading the same file.
+func removeWorkbenchSettings(o WorkbenchInstallOptions) []error {
 	var errs []error
 	// The hook recognizer matches the pre-rename commands too.
 	_, startErr := RemoveSessionStartHook(o.Folder, o.WorkbenchID)
@@ -334,21 +356,7 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if _, err := RemoveCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
-	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
-		if _, err := removeSkill(o.skillsDir(), s); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
-		errs = append(errs, err)
-	}
-	removeIfEmpty(o.skillsDir())
-	removeIfEmpty(filepath.Join(o.Folder, ".claude"))
-	lines := append(append([]string{}, workbenchExcludeLines...), legacySkillExcludeLine)
-	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, lines)); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+	return errs
 }
 
 // StatusWorkbench reports skill, hook and MCP state, writing nothing. A
