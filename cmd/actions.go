@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"time"
 
@@ -23,6 +24,7 @@ var (
 	actionsFlagSurface      string
 	actionsFlagForce        bool
 	actionsFlagPatch        string
+	actionsFlagArgsSHA256   string
 )
 
 // externalRetryWarning is what the card shows on a failed external row, said
@@ -62,6 +64,8 @@ func init() {
 		"reclaim a row stranded in 'executing' by an interrupted apply")
 	actionsApproveCmd.Flags().StringVar(&actionsFlagPatch, "patch", "",
 		"the owner's edits as a JSON object, merged into the pending row before it is approved (e.g. a Slack message's text)")
+	actionsApproveCmd.Flags().StringVar(&actionsFlagArgsSHA256, "args-sha256", "",
+		"sha256 (hex) of the args_json the owner was shown; the approve is refused if the stored args differ")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
 	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target)")
@@ -325,6 +329,28 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	return nil
 }
 
+// agentEnvMarkers are the variables an AI coding agent's shell carries:
+// Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
+// it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
+// workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
+// terminal does not get it).
+var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv}
+
+// refuseUnderAgent keeps the owner's decision the owner's (AGENT-07): an
+// agent that can run `watchtower` could otherwise approve or apply its own
+// proposal (a prompt-injected send_slack_message, then `actions approve` on
+// the id its receipt names). The approve, the apply and an execute trust
+// grant are refused when any marker is set; the Desktop's Approve/Retry
+// buttons are the path. Reject and the read verbs stay open.
+func refuseUnderAgent(verb string) error {
+	for _, name := range agentEnvMarkers {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner decides in Watchtower Desktop", verb, name)
+		}
+	}
+	return nil
+}
+
 // decide records the owner's decision. An approval goes through the
 // registry, which merges --patch and checks the tool is ready to run; a
 // rejection is the plain conditional transition.
@@ -332,7 +358,7 @@ func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to st
 	if to != "approved" {
 		return database.TransitionAgentAction(id, from, to, "", "")
 	}
-	ok, err := reg.Approve(context.Background(), id, json.RawMessage(actionsFlagPatch))
+	ok, err := reg.ApproveSeen(context.Background(), id, json.RawMessage(actionsFlagPatch), actionsFlagArgsSHA256)
 	if errors.Is(err, tools.ErrNotFound) {
 		return false, nil // reported below as "no action #N", like any other miss
 	}
@@ -340,6 +366,9 @@ func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to st
 }
 
 func runActionsApprove(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent("approve an action"); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
 }
 
@@ -348,10 +377,18 @@ func runActionsReject(cmd *cobra.Command, args []string) error {
 }
 
 func runActionsApply(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent("apply an action"); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], nil, "", true)
 }
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
+	if tools.Trust(args[1]) == tools.TrustExecute {
+		if err := refuseUnderAgent("grant execute trust"); err != nil {
+			return err
+		}
+	}
 	_, database, reg, err := openActionsCmd()
 	if err != nil {
 		return err

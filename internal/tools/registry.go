@@ -383,6 +383,16 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 // error) means the row was not pending; a Revise/Ready refusal is a
 // *ValidationError and leaves the row pending.
 func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage) (bool, error) {
+	return r.ApproveSeen(ctx, id, patch, "")
+}
+
+// ApproveSeen is Approve bound to what the approver was shown (AGENT-07):
+// seenArgsSHA256, when given, must equal ArgsSHA256 of the row's stored args,
+// else the approve is refused with ErrBadTransition and the row stays
+// pending. With or without it, the approval lands only while the row still
+// holds the args this call read — a no-patch approve never approves args
+// rewritten in between.
+func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMessage, seenArgsSHA256 string) (bool, error) {
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
 		return false, err
@@ -392,6 +402,9 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 	}
 	if row.Status != "pending" {
 		return false, nil
+	}
+	if seenArgsSHA256 != "" && !strings.EqualFold(seenArgsSHA256, ArgsSHA256(row.ArgsJSON)) {
+		return false, fmt.Errorf("%w: #%d changed since it was shown; reload it and approve again", ErrBadTransition, id)
 	}
 	t, known := r.Get(row.Tool)
 	hasPatch := len(bytes.TrimSpace(patch)) > 0
@@ -403,9 +416,6 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 		if err := t.Ready(args); err != nil {
 			return false, err
 		}
-	}
-	if !hasPatch {
-		return r.db.TransitionAgentAction(id, []string{"pending"}, "approved", "", "")
 	}
 	return r.approveEdited(row, args)
 }
@@ -430,10 +440,11 @@ func (r *Registry) revisedArgs(ctx context.Context, row *db.AgentAction, t *Tool
 	return args, nil
 }
 
-// approveEdited lands the edited args and the approval in one conditional
-// update; a lost race on a still-pending row means another edit landed after
-// this one read the row — refused rather than approving what the owner did
-// not see.
+// approveEdited lands the (possibly edited) args and the approval in one
+// conditional update; a lost race on a still-pending row means another edit
+// landed after this one read the row — refused rather than approving what the
+// owner did not see. Without a patch args are the row's own, so the update
+// only pins them.
 func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (bool, error) {
 	ok, err := r.db.ApproveAgentActionWithArgs(row.ID, row.ArgsJSON, string(args))
 	if err != nil || ok {

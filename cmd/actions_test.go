@@ -12,12 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // writeActionsConfig points flagConfig at a temp workspace whose DB path
 // lives under a temp HOME (the writeFeaturesConfig precedent).
 func writeActionsConfig(t *testing.T) *db.DB {
 	t.Helper()
+	// The suite may itself run under an agent; approve/apply refuse there (AGENT-07).
+	for _, name := range agentEnvMarkers {
+		t.Setenv(name, "")
+	}
 	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -45,6 +50,7 @@ func runActions(t *testing.T, args ...string) (string, error) {
 	actionsFlagSurface = ""
 	actionsFlagForce = false
 	actionsFlagPatch = ""
+	actionsFlagArgsSHA256 = ""
 	return out.String(), err
 }
 
@@ -298,4 +304,65 @@ func TestActions_ApprovePatchSavesTheEditWithTheDecision(t *testing.T) {
 	assert.Contains(t, out, "already reached Slack")
 	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"text":"late"}`, "--json")
 	require.Error(t, err, "a decided row takes no edits")
+}
+
+// AGENT-07 (owner decision 2026-10-14, ask #106): under an AI agent's shell
+// the CLI never approves, applies or grants execute trust — an agent must not
+// approve its own proposal. Reject and the read verbs stay open.
+func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database := writeActionsConfig(t)
+			pending, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+				ArgsJSON: `{"text":"x","reason":"r"}`, Reason: "r", Surface: "main"})
+			require.NoError(t, err)
+			approved, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+				ArgsJSON: `{"text":"y","reason":"r"}`, Reason: "r", Surface: "main", Status: "approved"})
+			require.NoError(t, err)
+			t.Setenv(marker, "1")
+
+			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), marker)
+			_, err = runActions(t, "apply", strconv.FormatInt(approved, 10), "--json")
+			require.Error(t, err)
+			_, err = runActions(t, "trust", "create_target", "execute")
+			require.Error(t, err)
+
+			for id, want := range map[int64]string{pending: "pending", approved: "approved"} {
+				row, err := database.GetAgentAction(id)
+				require.NoError(t, err)
+				assert.Equal(t, want, row.Status)
+			}
+			targets, err := database.GetTargets(db.TargetFilter{})
+			require.NoError(t, err)
+			assert.Empty(t, targets, "nothing executed")
+			trust, err := database.GetToolTrust("create_target")
+			require.NoError(t, err)
+			assert.Equal(t, "ask", trust)
+
+			_, err = runActions(t, "trust", "create_target", "ask")
+			require.NoError(t, err, "lowering trust stays open")
+			_, err = runActions(t, "reject", strconv.FormatInt(pending, 10), "--json")
+			require.NoError(t, err, "a reject is harmless and stays open")
+		})
+	}
+}
+
+// --args-sha256 binds the approve to the args the card showed.
+func TestActions_ApproveArgsSHA256MustMatchTheStoredArgs(t *testing.T) {
+	database := writeActionsConfig(t)
+	args := `{"text":"Call Vasya","reason":"r"}`
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: args, Reason: "r", Surface: "main"})
+	require.NoError(t, err)
+
+	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--args-sha256", tools.ArgsSHA256(`{"text":"other","reason":"r"}`), "--json")
+	require.Error(t, err)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", row.Status)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--args-sha256", tools.ArgsSHA256(args), "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"status": "applied"`)
 }
