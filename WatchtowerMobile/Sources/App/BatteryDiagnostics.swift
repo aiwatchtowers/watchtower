@@ -38,3 +38,47 @@ final class BatteryDiagnostics: Sendable {
         )
     }
 }
+
+/// Decides, once per process, whether its cold launch was a background one
+/// (iOS launched it for a silent push) or a foreground one (the owner
+/// opened it). `UIApplication.applicationState` at launch cannot tell: a
+/// scene-based app reads `.background` there even on a tap, and iOS
+/// prewarming runs a process up to `didFinishLaunching` without any
+/// launch by the owner. So the launch itself decides only when it carries
+/// a remote notification; otherwise the first of a push (background) or
+/// the scene's first activation (foreground) decides. A prewarmed process
+/// was not launched for a push, so a push before its activation decides
+/// nothing; its first activation is the owner's launch.
+struct ColdLaunchClassifier {
+    private var decided = false
+    private var prewarmed = false
+
+    /// `didFinishLaunching`: `forRemoteNotification` when the launch
+    /// options carry `.remoteNotification`; `prewarmed` when the process
+    /// environment has `ActivePrewarm=1`.
+    mutating func launched(forRemoteNotification: Bool, prewarmed: Bool) -> EnergyEvent? {
+        self.prewarmed = prewarmed
+        return forRemoteNotification && !prewarmed ? decide(.coldLaunchBackground) : nil
+    }
+
+    /// A silent push reached the app.
+    mutating func receivedPush() -> EnergyEvent? {
+        prewarmed ? nil : decide(.coldLaunchBackground)
+    }
+
+    /// The scene became active.
+    mutating func becameActive() -> EnergyEvent? {
+        decide(.coldLaunchForeground)
+    }
+
+    private mutating func decide(_ event: EnergyEvent) -> EnergyEvent? {
+        guard !decided else { return nil }
+        decided = true
+        return event
+    }
+
+    /// `ActivePrewarm=1` marks a process iOS prewarmed.
+    static func isPrewarmed(_ environment: [String: String]) -> Bool {
+        environment["ActivePrewarm"] == "1"
+    }
+}

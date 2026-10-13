@@ -1,6 +1,7 @@
 import os
 import SwiftUI
 import UIKit
+import WatchtowerSync
 
 /// The silent-push wake path: CKSyncEngine owns subscriptions and push
 /// registration (and fetches on a push by itself); the app turns a
@@ -18,20 +19,40 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// process's lifetime.
     private var metricSubscriber: MetricSubscriber?
 
-    /// Counts the cold launch, background (a push or fetch woke the app)
-    /// or foreground, and subscribes to MetricKit. Nothing while the app
-    /// only hosts XCTest.
+    /// Whether this process counts its cold launch: not while it only
+    /// hosts XCTest.
+    private var countsLaunch = false
+    private var coldLaunch = ColdLaunchClassifier()
+
+    /// Starts classifying the cold launch (`ColdLaunchClassifier`) and
+    /// subscribes to MetricKit. Nothing while the app only hosts XCTest.
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        guard !WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment) else { return true }
+        let environment = ProcessInfo.processInfo.environment
+        guard !WatchtowerMobileApp.Boot.isHostingTests(environment) else { return true }
+        countsLaunch = true
         let diagnostics = BatteryDiagnostics.shared
-        diagnostics.counter.record(application.applicationState == .background ? .coldLaunchBackground : .coldLaunchForeground)
+        recordColdLaunch(coldLaunch.launched(
+            forRemoteNotification: launchOptions?[.remoteNotification] != nil,
+            prewarmed: ColdLaunchClassifier.isPrewarmed(environment)
+        ))
         let subscriber = MetricSubscriber(history: diagnostics.metrics)
         subscriber.register()
         metricSubscriber = subscriber
         return true
+    }
+
+    /// The scene became active: the first activation of a process not yet
+    /// classified is a foreground cold launch.
+    func sceneBecameActive() {
+        recordColdLaunch(coldLaunch.becameActive())
+    }
+
+    private func recordColdLaunch(_ event: EnergyEvent?) {
+        guard countsLaunch, let event else { return }
+        BatteryDiagnostics.shared.counter.record(event)
     }
 
     func application(
@@ -40,6 +61,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         BatteryDiagnostics.shared.counter.record(.silentPush)
+        recordColdLaunch(coldLaunch.receivedPush())
         // Foreground: fetched at once. Inactive or background: coalesced
         // with the pushes of the next few seconds (`AppEnvironment.handlePush`);
         // each push still gets its completion when its shared fetch ends.
@@ -113,16 +135,24 @@ struct WatchtowerMobileApp: App {
     }
 
     @State private var boot = Boot.make()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            switch boot {
-            case let .ready(root):
-                AppRootView(root: root)
-            case let .failed(message):
-                BootFailureView(message: message)
-            case .hostingTests:
-                Color.clear
+            Group {
+                switch boot {
+                case let .ready(root):
+                    AppRootView(root: root)
+                case let .failed(message):
+                    BootFailureView(message: message)
+                case .hostingTests:
+                    Color.clear
+                }
+            }
+            // The first activation classifies a cold launch not yet
+            // classified as a foreground one (`ColdLaunchClassifier`).
+            .onChange(of: scenePhase, initial: true) {
+                if scenePhase == .active { appDelegate.sceneBecameActive() }
             }
         }
     }

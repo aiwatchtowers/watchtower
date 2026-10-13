@@ -32,6 +32,55 @@ final class BatteryDiagnosticsTests: XCTestCase {
         )
     }
 
+    // MARK: - Cold launch
+
+    func testATapLaunchIsForegroundAtTheFirstActivationOnly() {
+        var classifier = ColdLaunchClassifier()
+
+        XCTAssertNil(classifier.launched(forRemoteNotification: false, prewarmed: false), "the launch alone cannot tell")
+        XCTAssertEqual(classifier.becameActive(), .coldLaunchForeground)
+        XCTAssertNil(classifier.becameActive(), "one classification per process")
+        XCTAssertNil(classifier.receivedPush(), "a push after the activation is no launch")
+    }
+
+    func testALaunchForAPushIsBackgroundAndALaterActivationIsNoLaunch() {
+        var classifier = ColdLaunchClassifier()
+
+        XCTAssertEqual(classifier.launched(forRemoteNotification: true, prewarmed: false), .coldLaunchBackground)
+        XCTAssertNil(classifier.receivedPush())
+        XCTAssertNil(classifier.becameActive())
+    }
+
+    func testAPushBeforeAnyActivationIsABackgroundLaunch() {
+        var classifier = ColdLaunchClassifier()
+
+        XCTAssertNil(classifier.launched(forRemoteNotification: false, prewarmed: false))
+        XCTAssertEqual(classifier.receivedPush(), .coldLaunchBackground)
+        XCTAssertNil(classifier.receivedPush())
+        XCTAssertNil(classifier.becameActive())
+    }
+
+    func testAPrewarmedProcessCountsOnlyTheOwnersActivation() {
+        var classifier = ColdLaunchClassifier()
+
+        XCTAssertNil(classifier.launched(forRemoteNotification: false, prewarmed: true))
+        XCTAssertNil(classifier.receivedPush(), "a prewarmed process was not launched for the push")
+        XCTAssertEqual(classifier.becameActive(), .coldLaunchForeground)
+    }
+
+    func testAPrewarmedProcessNeverActivatedCountsNothing() {
+        var classifier = ColdLaunchClassifier()
+
+        XCTAssertNil(classifier.launched(forRemoteNotification: false, prewarmed: true))
+        XCTAssertNil(classifier.receivedPush())
+    }
+
+    func testPrewarmIsReadFromTheEnvironment() {
+        XCTAssertTrue(ColdLaunchClassifier.isPrewarmed(["ActivePrewarm": "1"]))
+        XCTAssertFalse(ColdLaunchClassifier.isPrewarmed(["ActivePrewarm": "0"]))
+        XCTAssertFalse(ColdLaunchClassifier.isPrewarmed([:]))
+    }
+
     // MARK: - MetricHistory
 
     func testTheHistoryPersistsAcrossInstances() throws {
