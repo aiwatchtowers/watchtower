@@ -97,9 +97,12 @@ final class FakeBackgroundTasks: BackgroundTaskRunning {
     private(set) var begun: [String] = []
     private(set) var ended: [UIBackgroundTaskIdentifier] = []
     private var expiration: (@MainActor () -> Void)?
+    /// False: iOS grants no time and `begin` returns `.invalid`.
+    var grantsTime = true
 
     func begin(name: String, expiration: @escaping @MainActor () -> Void) -> UIBackgroundTaskIdentifier {
         begun.append(name)
+        guard grantsTime else { return .invalid }
         self.expiration = expiration
         return UIBackgroundTaskIdentifier(rawValue: begun.count)
     }

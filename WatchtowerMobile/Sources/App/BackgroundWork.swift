@@ -104,6 +104,10 @@ final class BackgroundWork {
     private let isInBackground: @MainActor () -> Bool
     private var task: UIBackgroundTaskIdentifier = .invalid
     private var release: (@MainActor () -> Void)?
+    /// Begun and not yet ended or expired — tracked apart from `task`, which
+    /// stays `.invalid` when iOS grants no extra time but the hold is taken.
+    private var isRunning = false
+    private let logger = Logger(subsystem: "WatchtowerMobile", category: "BackgroundWork")
 
     /// The app's work goes through `starter()`; tests build one directly.
     init(
@@ -134,35 +138,51 @@ final class BackgroundWork {
         }
     }
 
-    /// Begins the task and holds the replica.
+    /// Begins the task and holds the replica. When iOS grants no extra time
+    /// (`.invalid`) the hold is still taken, so the work can finish while
+    /// the app runs, and released at the end like any other.
     func begin() {
-        guard task == .invalid else { return }
+        guard !isRunning else { return }
+        isRunning = true
         task = runner.begin(name: name) { [weak self] in self?.expire() }
+        if task == .invalid {
+            logger.notice("\(self.name, privacy: .public): iOS granted no background time")
+        }
         release = suspension.hold()
     }
 
     /// The work is done: releases the replica (suspended again when the
     /// app is in the background) and ends the task. Once only.
     func end() {
-        guard task != .invalid else { return }
-        release?()
-        release = nil
+        guard finish() else { return }
         if isInBackground() {
             suspension.setBackground(true)
         }
-        runner.end(task)
-        task = .invalid
+        endTask()
     }
 
     /// iOS ends the extra time: the work's own hold goes and the replica
     /// rests in the background — suspended unless other work (a running
     /// capture) still holds it — before the task ends.
     private func expire() {
-        guard task != .invalid else { return }
+        guard finish() else { return }
+        suspension.setBackground(true)
+        endTask()
+    }
+
+    /// Releases the hold once; false when the work already finished.
+    private func finish() -> Bool {
+        guard isRunning else { return false }
+        isRunning = false
         release?()
         release = nil
-        suspension.setBackground(true)
-        runner.end(task)
+        return true
+    }
+
+    private func endTask() {
+        if task != .invalid {
+            runner.end(task)
+        }
         task = .invalid
     }
 }

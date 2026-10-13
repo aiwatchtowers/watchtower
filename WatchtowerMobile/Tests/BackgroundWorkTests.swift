@@ -188,6 +188,31 @@ final class BackgroundWorkTests: XCTestCase {
         XCTAssertEqual(tasks.ended.count, 1, "no second end")
     }
 
+    /// iOS grants no extra time (`.invalid`): the hold is still taken and
+    /// released exactly once at the end, so the replica rests again; no
+    /// task is ended for the invalid id.
+    func testAnUngrantedTaskStillReleasesItsHold() {
+        let tasks = FakeBackgroundTasks()
+        tasks.grantsTime = false
+        let (suspension, posts) = makeSuspension()
+        suspension.setBackground(true)
+        let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { true }
+        work.begin()
+        XCTAssertEqual(tasks.begun, ["silent-push-fetch"])
+        XCTAssertFalse(suspension.isSuspended, "the work holds the replica")
+
+        work.end()
+        XCTAssertTrue(suspension.isSuspended, "the hold is released: back to rest")
+        XCTAssertEqual(posts.names.last, Database.suspendNotification)
+        XCTAssertTrue(tasks.ended.isEmpty, "no end for an invalid task")
+
+        let other = suspension.hold()
+        work.end()
+        XCTAssertFalse(suspension.isSuspended, "a second end takes nothing from another hold")
+        other()
+        XCTAssertTrue(suspension.isSuspended)
+    }
+
     /// In the foreground the end of the push leaves the replica as it was.
     func testAForegroundPushNeverSuspends() {
         let tasks = FakeBackgroundTasks()
