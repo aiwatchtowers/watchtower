@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -89,6 +90,29 @@ final class FakeAudioEngine: AudioCaptureEngine {
     }
 }
 
+/// Records the background tasks begun and ended; `expire()` runs the
+/// latest expiration handler the way iOS does.
+@MainActor
+final class FakeBackgroundTasks: BackgroundTaskRunning {
+    private(set) var begun: [String] = []
+    private(set) var ended: [UIBackgroundTaskIdentifier] = []
+    private var expiration: (@MainActor () -> Void)?
+
+    func begin(name: String, expiration: @escaping @MainActor () -> Void) -> UIBackgroundTaskIdentifier {
+        begun.append(name)
+        self.expiration = expiration
+        return UIBackgroundTaskIdentifier(rawValue: begun.count)
+    }
+
+    func end(_ task: UIBackgroundTaskIdentifier) {
+        ended.append(task)
+    }
+
+    func expire() {
+        expiration?()
+    }
+}
+
 /// One recorder over fakes: no audio, no ticker, a hand-moved clock.
 @MainActor
 struct RecorderRig {
@@ -114,17 +138,19 @@ extension XCTestCase {
     /// A recorder over fakes. Pass `sharing:` to build the "relaunched" app
     /// over an earlier rig's replica, transport and directory. `uploadClock`
     /// is the uploader's clock (its retry backoff), `sleep` the wait behind
-    /// the long-pause auto-finish (by default it never ends).
+    /// the long-pause auto-finish (by default it never ends), `store` a
+    /// replica of the test's own (an in-memory one by default).
     @MainActor
     func makeRecorderRig(
         deviceID: String? = "device-a",
         sharing earlier: RecorderRig? = nil,
+        store givenStore: ReplicaStore? = nil,
         directory movedDirectory: URL? = nil,
         tickInterval: Duration? = nil,
         uploadClock: MutableClock? = nil,
         sleep: (@Sendable (Duration) async throws -> Void)? = nil
     ) throws -> RecorderRig {
-        let store = try earlier?.store ?? ReplicaStore.inMemory()
+        let store = try givenStore ?? earlier?.store ?? ReplicaStore.inMemory()
         let transport = earlier?.transport ?? InMemoryCloudTransport()
         let engine = FakeAudioEngine()
         let clock = FakeClock()

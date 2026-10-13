@@ -151,6 +151,12 @@ final class PhoneRecorderController {
     /// pauses or the capture is saved: the app holds the replica usable in
     /// the background meanwhile (`DatabaseSuspension`).
     @ObservationIgnored var onAudioRunning: @MainActor (Bool) -> Void = { _ in }
+    /// Called as a save begins (Stop, the 3-hour cap, a long pause, a dead
+    /// engine); the returned end runs once the save is done. The app keeps
+    /// itself running and the replica usable for the save
+    /// (`BackgroundWork`): after a pause no audio holds either, and a save
+    /// in the background would otherwise fail on a suspended replica.
+    @ObservationIgnored var beginSave: @MainActor () -> @MainActor () -> Void = { {} }
 
     @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private let engine: any AudioCaptureEngine
@@ -466,8 +472,14 @@ final class PhoneRecorderController {
     /// pause ended.
     private func finish(autoFinished: Bool) async {
         guard isCapturing, let captureID, let fileURL, let startedAt else { return }
-        // The save below still writes the ledger: released once it is done.
-        defer { onAudioRunning(false) }
+        // The save below writes the ledger and hands the file to the
+        // transport, in the background too: both are released once it is
+        // done.
+        let endSave = beginSave()
+        defer {
+            onAudioRunning(false)
+            endSave()
+        }
         phase = .saving
         closeSpan()
         stopTicker()

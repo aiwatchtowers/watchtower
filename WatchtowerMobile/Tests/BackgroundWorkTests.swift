@@ -9,28 +9,6 @@ import XCTest
 /// holding it, and at once when iOS expires the task (0xdead10cc).
 @MainActor
 final class BackgroundWorkTests: XCTestCase {
-    /// Records the background tasks begun and ended; `expire()` runs the
-    /// expiration handler the way iOS does.
-    private final class FakeTasks: BackgroundTaskRunning {
-        private(set) var begun: [String] = []
-        private(set) var ended: [UIBackgroundTaskIdentifier] = []
-        private var expiration: (@MainActor () -> Void)?
-
-        func begin(name: String, expiration: @escaping @MainActor () -> Void) -> UIBackgroundTaskIdentifier {
-            begun.append(name)
-            self.expiration = expiration
-            return UIBackgroundTaskIdentifier(rawValue: begun.count)
-        }
-
-        func end(_ task: UIBackgroundTaskIdentifier) {
-            ended.append(task)
-        }
-
-        func expire() {
-            expiration?()
-        }
-    }
-
     private final class Posts {
         private(set) var names: [Notification.Name] = []
         func record(_ name: Notification.Name) { names.append(name) }
@@ -62,10 +40,10 @@ final class BackgroundWorkTests: XCTestCase {
     /// (after a deadline completion too), once; the replica is suspended
     /// again when the app is still in the background.
     func testAPushTaskEndsWhenTheFetchReturns() async throws {
-        let tasks = FakeTasks()
+        let tasks = FakeBackgroundTasks()
         let (suspension, posts) = makeSuspension()
         suspension.setBackground(true)
-        let work = PushWork(runner: tasks, suspension: suspension) { true }
+        let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { true }
 
         let sleeper = TickSleeper()
         var completed: [FetchOutcome] = []
@@ -104,9 +82,9 @@ final class BackgroundWorkTests: XCTestCase {
     /// in the background before the task ends — suspended when nothing else
     /// holds it; the fetch's own end later is a no-op.
     func testAnExpiredTaskSuspendsTheReplicaFirst() {
-        let tasks = FakeTasks()
+        let tasks = FakeBackgroundTasks()
         let (suspension, posts) = makeSuspension()
-        let work = PushWork(runner: tasks, suspension: suspension) { true }
+        let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { true }
         work.begin()
         XCTAssertFalse(suspension.isSuspended)
 
@@ -123,11 +101,11 @@ final class BackgroundWorkTests: XCTestCase {
     /// A running capture's hold survives the push's expiration: the replica
     /// stays usable for the rest of the capture, and rests once it releases.
     func testAnExpiredTaskKeepsACaptureHold() {
-        let tasks = FakeTasks()
+        let tasks = FakeBackgroundTasks()
         let (suspension, posts) = makeSuspension()
         suspension.setBackground(true)
         let capture = suspension.hold()
-        let work = PushWork(runner: tasks, suspension: suspension) { true }
+        let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { true }
         work.begin()
 
         tasks.expire()
@@ -143,9 +121,9 @@ final class BackgroundWorkTests: XCTestCase {
 
     /// In the foreground the end of the push leaves the replica as it was.
     func testAForegroundPushNeverSuspends() {
-        let tasks = FakeTasks()
+        let tasks = FakeBackgroundTasks()
         let (suspension, posts) = makeSuspension()
-        let work = PushWork(runner: tasks, suspension: suspension) { false }
+        let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { false }
         work.begin()
         work.end()
         XCTAssertTrue(posts.names.isEmpty)

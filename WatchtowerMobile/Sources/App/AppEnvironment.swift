@@ -457,18 +457,30 @@ final class AppEnvironment {
         let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
         recorder.onCapNotice = { RecorderNotices.postCapNotice() }
         recorder.onAutoFinish = { RecorderNotices.postAutoFinishNotice() }
-        // A running capture keeps the app alive in the background and
-        // writes the ledger: the replica stays usable while its audio runs.
+        holdReplica(for: recorder)
+        return recorder
+    }
+
+    /// The recorder's holds on the replica: a running capture keeps the app
+    /// alive in the background and writes the ledger, so the replica stays
+    /// usable while its audio runs; every save runs as background work of
+    /// its own (`recording-save`), since a paused capture holds nothing.
+    static func holdReplica(
+        for recorder: PhoneRecorderController,
+        suspension: DatabaseSuspension = .shared,
+        startWork: BackgroundWork.Starter? = nil
+    ) {
+        let startWork = startWork ?? BackgroundWork.starter(suspension: suspension)
         var release: (@MainActor () -> Void)?
         recorder.onAudioRunning = { running in
             if running {
-                if release == nil { release = DatabaseSuspension.shared.hold() }
+                if release == nil { release = suspension.hold() }
             } else {
                 release?()
                 release = nil
             }
         }
-        return recorder
+        recorder.beginSave = { startWork("recording-save") }
     }
 
     /// One fetch: CloudKit once (`RemoteFetchDepth.full`), then DataZone

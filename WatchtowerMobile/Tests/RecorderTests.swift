@@ -1,4 +1,5 @@
 import AVFoundation
+import GRDB
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -185,6 +186,51 @@ final class RecorderTests: XCTestCase {
         await rig.controller.stop()
         XCTAssertEqual(rig.engine.finishCount, 1)
         XCTAssertEqual(notifications, 1)
+    }
+
+    /// A long pause ends while the app rests in the background: the paused
+    /// capture released its hold and the replica is suspended, so the save
+    /// runs as background work of its own that holds it — the row is saved,
+    /// marked and handed to the transport, and the notification goes out.
+    func testAnAutoFinishInTheBackgroundHoldsTheReplicaForTheSave() async throws {
+        let dir = try makeRecordingsDirectory()
+        addTeardownBlock { NotificationCenter.default.post(name: Database.resumeNotification, object: nil) }
+        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path, observesSuspension: true)
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig(store: store) { try await sleeper.sleep($0) }
+        let suspension = DatabaseSuspension { NotificationCenter.default.post(name: $0, object: nil) }
+        let tasks = FakeBackgroundTasks()
+        AppEnvironment.holdReplica(
+            for: rig.controller,
+            suspension: suspension,
+            startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true }
+        )
+        var notifications = 0
+        rig.controller.onAutoFinish = { notifications += 1 }
+
+        await rig.controller.recordVoiceNote()
+        suspension.setBackground(true)
+        XCTAssertFalse(suspension.isSuspended, "the running capture holds the replica")
+        rig.clock.advance(30)
+        rig.controller.pause()
+        XCTAssertTrue(suspension.isSuspended, "a paused capture holds nothing")
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ !rig.controller.isCapturing && rig.controller.phase != .saving }, "the long pause did not finish the capture")
+
+        let saved = try XCTUnwrap(rig.controller.savedRecording, "the save failed: \(rig.controller.phase)")
+        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(tasks.begun, ["recording-save"])
+        XCTAssertEqual(tasks.ended.count, 1, "the save's work ends once")
+        XCTAssertTrue(suspension.isSuspended, "the replica rests again after the save")
+        suspension.setBackground(false)
+        let row = try XCTUnwrap(try store.phoneRecording(id: saved.id))
+        XCTAssertTrue(row.autoFinished)
+        XCTAssertEqual(row.state, .uploading)
+        let uploads = try await relayUploads(in: rig.transport)
+        XCTAssertEqual(uploads.map(\.id), [saved.id])
     }
 
     /// A resume before the limit cancels the auto-finish; the capture then

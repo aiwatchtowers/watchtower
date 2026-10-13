@@ -84,8 +84,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             }
             // A background task keeps the app running until the fetch
             // returns, past a completion sent at the deadline, and the
-            // replica is held usable meanwhile (`PushWork`).
-            let work = PushWork()
+            // replica is held usable meanwhile (`BackgroundWork`).
+            let work = BackgroundWork(name: "silent-push-fetch")
             work.begin()
             PushCompletion.race(
                 fetch: {
@@ -103,7 +103,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 /// A silent push's completion within iOS's budget (~30 s of background
 /// time): the fetch serving the push races `deadline`, and whichever ends
 /// first completes, exactly once. A fetch past the deadline keeps going —
-/// inside the push's background task (`PushWork`), so iOS does not suspend
+/// inside the push's background task (`BackgroundWork`), so iOS does not suspend
 /// the app mid-transaction — and only its report is dropped.
 @MainActor
 enum PushCompletion {

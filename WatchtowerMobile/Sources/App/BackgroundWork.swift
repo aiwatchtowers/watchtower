@@ -81,17 +81,24 @@ final class UIKitBackgroundTasks: BackgroundTaskRunning {
     }
 }
 
-/// One silent push's work, bracketed: a background task keeps the app
-/// running until the fetch serving the push returns — even after the push's
-/// completion went out at the deadline (`PushCompletion`) — and the replica
-/// stays usable meanwhile. When the fetch returns the task ends and the
+/// One piece of work that must finish even if the app leaves the
+/// foreground — a silent push's fetch (`silent-push-fetch`), a recording's
+/// save (`recording-save`), the boot (`app-boot`) — bracketed: a background
+/// task keeps the app running until the work ends — for a push, even after
+/// its completion went out at the deadline (`PushCompletion`) — and the
+/// replica stays usable meanwhile. When the work ends the task ends and the
 /// replica is suspended again if the app is still in the background; if
-/// iOS expires the task first, the push's hold is released and the replica
+/// iOS expires the task first, the work's hold is released and the replica
 /// rests in the background before the task ends: suspended (its open
 /// transaction rolled back) unless other work holds it — a running capture
 /// keeps the app alive on its own and keeps its hold.
 @MainActor
-final class PushWork {
+final class BackgroundWork {
+    /// Begins one piece of work named `name` and returns its end, which
+    /// runs once (later calls do nothing).
+    typealias Starter = @MainActor (_ name: String) -> @MainActor () -> Void
+
+    private let name: String
     private let runner: any BackgroundTaskRunning
     private let suspension: DatabaseSuspension
     private let isInBackground: @MainActor () -> Bool
@@ -99,23 +106,38 @@ final class PushWork {
     private var release: (@MainActor () -> Void)?
 
     init(
+        name: String,
         runner: any BackgroundTaskRunning = UIKitBackgroundTasks.shared,
         suspension: DatabaseSuspension = .shared,
         isInBackground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .background }
     ) {
+        self.name = name
         self.runner = runner
         self.suspension = suspension
         self.isInBackground = isInBackground
     }
 
+    /// A starter over these seams: each call begins a new piece of work.
+    static func starter(
+        runner: any BackgroundTaskRunning = UIKitBackgroundTasks.shared,
+        suspension: DatabaseSuspension = .shared,
+        isInBackground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .background }
+    ) -> Starter {
+        { name in
+            let work = BackgroundWork(name: name, runner: runner, suspension: suspension, isInBackground: isInBackground)
+            work.begin()
+            return { work.end() }
+        }
+    }
+
     /// Begins the task and holds the replica.
     func begin() {
         guard task == .invalid else { return }
-        task = runner.begin(name: "silent-push-fetch") { [weak self] in self?.expire() }
+        task = runner.begin(name: name) { [weak self] in self?.expire() }
         release = suspension.hold()
     }
 
-    /// The fetch returned: releases the replica (suspended again when the
+    /// The work is done: releases the replica (suspended again when the
     /// app is in the background) and ends the task. Once only.
     func end() {
         guard task != .invalid else { return }
@@ -128,7 +150,7 @@ final class PushWork {
         task = .invalid
     }
 
-    /// iOS ends the extra time: the push's own hold goes and the replica
+    /// iOS ends the extra time: the work's own hold goes and the replica
     /// rests in the background — suspended unless other work (a running
     /// capture) still holds it — before the task ends.
     private func expire() {
