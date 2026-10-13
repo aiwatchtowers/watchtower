@@ -463,6 +463,30 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
 
 	printGoogleConnectionResult(out, wantCalendar, wantGmail, calEnabled, gmEnabled, accountID)
+	if err := enableGoogleSyncSwitches(flagConfig, cfg, calEnabled, gmEnabled); err != nil {
+		return fmt.Errorf("account connected, but turning its sync on failed: %w", err)
+	}
+	return nil
+}
+
+// enableGoogleSyncSwitches turns on the global `calendar.enabled` /
+// `gmail.enabled` daemon-phase switches for each service this connect
+// granted. `wireGoogleSyncers` wires a syncer only when both the switch and
+// the account's flag are on, and both switches default to off — so without
+// this a connected account never syncs. Doing it here covers every surface
+// that connects Google (onboarding, Settings, the Calendar tab, the CLI). A
+// switch already on is left alone; turning one off stays a Settings choice.
+func enableGoogleSyncSwitches(configPath string, cfg *config.Config, calGranted, gmGranted bool) error {
+	if calGranted && !cfg.Calendar.Enabled {
+		if err := setConfigKey(configPath, "calendar.enabled", true); err != nil {
+			return err
+		}
+	}
+	if gmGranted && !cfg.Gmail.Enabled {
+		if err := setConfigKey(configPath, "gmail.enabled", true); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
