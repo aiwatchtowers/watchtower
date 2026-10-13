@@ -53,6 +53,14 @@ public enum KeyDerivation {
         return WireBytes.uuid(Data(digest)) ?? UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     }
 
+    /// Which link code a waiting keybox answers (SAS v2): base64url of SHA-256("wt/link-code/v1" ‖ link_nonce)[0..<16].
+    /// The phone shows a code only from a waiting keybox whose tag is its own scan's.
+    public static func linkCodeTag(linkNonce: Data) -> String {
+        var input = Data("wt/link-code/v1".utf8)
+        input.append(linkNonce)
+        return WireBytes.base64URL(Data(SHA256.hash(data: input)).prefix(16))
+    }
+
     /// Bytes of the hub's confirm nonce (SAS v2).
     public static let confirmNonceLength = 32
 

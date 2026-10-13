@@ -123,6 +123,9 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings being sealed now (the actor suspends inside `sealRow`): a
     /// second seal of one recording would write the same next seal file.
     private var sealingIDs: Set<String> = []
+    /// Recordings whose save is in flight (the actor suspends inside `send`): a seal pass that runs meanwhile
+    /// leaves them alone, so the send never resumes onto a seal it did not save.
+    private var sendingIDs: Set<String> = []
     private var ledgerPrepared = false
     /// Whether the next foreground pass re-saves `uploading` rows: true
     /// for the first pass of a process (the relaunch retry) and after a
@@ -596,6 +599,8 @@ public actor RecordingUploader: RecordingUploadAcking {
             let record = CloudRecord(
                 recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: attemptAt, payload: envelope,
                 assetFileURL: sealed)
+            sendingIDs.insert(row.id)
+            defer { sendingIDs.remove(row.id) }
             do {
                 energy?.record(.uploadAttempt)
                 try await transport.saveSealed([record])
@@ -612,8 +617,9 @@ public actor RecordingUploader: RecordingUploadAcking {
             }
             try store.setPhoneRecordingState(id: row.id, state: .uploading)
             // The save above replaced any queued save of this record (by name), so an older seal's file is no
-            // longer pointed at.
-            removeSealedLeftovers(id: row.id, plain: fileURL(row), keeping: sealed)
+            // longer pointed at. The row's seal is read again: whatever it stores now is kept too.
+            let current = try store.phoneRecording(id: row.id)?.sealedFileURL(in: directory)
+            removeSealedLeftovers(id: row.id, plain: fileURL(row), keeping: [sealed, current].compactMap { $0 })
             sent += 1
         }
         return sent
@@ -690,6 +696,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         }
         let rows = try store.phoneRecordings().filter {
             ($0.state == .waiting || $0.state == .uploading) && $0.envelope != nil && !sealingIDs.contains($0.id)
+                && !sendingIDs.contains($0.id)
         }
         for row in rows {
             guard let envelope = row.envelope else { continue }
@@ -712,7 +719,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         // Re-read and claim in one actor turn: the list was read before
         // earlier rows' suspensions, so an overlapping call may have sealed
         // this one meanwhile.
-        guard !sealingIDs.contains(snapshot.id), let row = try store.phoneRecording(id: snapshot.id),
+        guard !sealingIDs.contains(snapshot.id), !sendingIDs.contains(snapshot.id),
+              let row = try store.phoneRecording(id: snapshot.id),
               row.envelope == nil, row.state == .waiting || row.state == .uploading
         else { return false }
         sealingIDs.insert(row.id)
@@ -806,13 +814,13 @@ public actor RecordingUploader: RecordingUploadAcking {
         return generation
     }
 
-    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file, but `keeping`.
-    private func removeSealedLeftovers(id: String, plain: URL, keeping: URL? = nil) {
+    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file, but those in `keeping`.
+    private func removeSealedLeftovers(id: String, plain: URL, keeping: [URL] = []) {
         let first = sealTarget(id: id, plain: plain)
         let folder = first.deletingLastPathComponent()
-        let kept = keeping?.standardizedFileURL.path
+        let kept = Set(keeping.map(\.standardizedFileURL.path))
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.standardizedFileURL.path != kept && (file.lastPathComponent == first.lastPathComponent
+        for file in files where !kept.contains(file.standardizedFileURL.path) && (file.lastPathComponent == first.lastPathComponent
             || (file.pathExtension == "enc" && Self.sealGeneration(of: file, id: id) > 0)) {
             removeSealedLeftover(file)
         }

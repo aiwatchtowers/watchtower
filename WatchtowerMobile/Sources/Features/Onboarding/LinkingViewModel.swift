@@ -342,6 +342,9 @@ final class LinkingViewModel {
         let hubKeys: ScannedHubKeys
         let deviceKeys: DeviceIdentityKeys
 
+        /// The tag a waiting keybox for this scan's link code carries.
+        var linkCodeTag: String { KeyDerivation.linkCodeTag(linkNonce: hubKeys.linkNonce) }
+
         /// nil while the keybox carries no well-formed nonce.
         func code(confirmNonce text: String?) -> String? {
             ScannedHubKeys.confirmNonce(from: text).map { hubKeys.code(for: deviceKeys, confirmNonce: $0) }
@@ -434,7 +437,8 @@ final class LinkingViewModel {
     /// `link_refused` (any code, `not_confirmed` included, even one this
     /// build does not know) refuses; `awaiting_confirmation` shows that the
     /// Mac sees this iPhone and, with its `confirm_nonce`, gives the code
-    /// (SAS v2; a waiting keybox without a well-formed one shows none);
+    /// (SAS v2; a waiting keybox without a well-formed nonce, or naming
+    /// another link code by its `link_code_tag`, shows none);
     /// `linked` with keys stores them and links. A cancelled wait (the app
     /// killed) leaves the pending link to resume.
     private func waitForGrant(_ pending: PendingLink, code: PairingCode) async {
@@ -442,25 +446,28 @@ final class LinkingViewModel {
         linkCode = nil
         phase = .waiting(macName: pending.link.macName)
         while true {
-            // Only a keybox that differs from the baseline answers this scan: one the baseline already held was
-            // left by an earlier scan and shows neither "Mac sees this iPhone" nor a code.
             if let deviceID = identity.deviceID,
                let keybox = await host?.fetchKeybox(deviceID: deviceID),
-               keybox.grant != pending.baseline, keybox.grant.hubID == pending.link.hubID {
+               keybox.grant.hubID == pending.link.hubID {
                 let grant = keybox.grant
-                if grant.linkRefused != nil {
+                // A refusal or a link answers this scan only when it differs from the baseline. A waiting keybox
+                // counts by the link code it names instead: an unchanged re-send of this QR keeps the Mac's request
+                // (equal to the baseline) and still gives the code; one left from an earlier code never does.
+                let fresh = grant != pending.baseline
+                if fresh, grant.linkRefused != nil {
                     endPendingLink(pending, failure: .refused)
                     return
                 }
-                if grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
+                if fresh, grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
                     if let boxKeys = keybox.keys {
                         await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
                         return
                     }
                     Self.logger.warning("a linked keybox without keys: still waiting")
-                } else if grant.awaitingConfirmation == true {
-                    macSeesPhone = true
-                    linkCode = code.code(confirmNonce: grant.confirmNonce)
+                } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
+                    let ours = grant.linkCodeTag == code.linkCodeTag
+                    macSeesPhone = ours
+                    linkCode = ours ? code.code(confirmNonce: grant.confirmNonce) : nil
                 }
             }
             let remaining = pending.deadline.timeIntervalSince(clock.now())

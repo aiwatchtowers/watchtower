@@ -254,6 +254,11 @@ enum TestPhone {
     static let confirmNonce = Data(repeating: 0x5A, count: KeyDerivation.confirmNonceLength)
     static var confirmNonceText: String { WireBytes.base64URL(confirmNonce) }
 
+    /// The `link_code_tag` the hub puts into a waiting keybox for a request made with `code`.
+    static func linkCodeTag(_ code: LinkPayload) throws -> String {
+        KeyDerivation.linkCodeTag(linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(code.nonce)))
+    }
+
     /// A v3 code of the test hub (its keys and link nonce), issued at `iat`.
     static func linkCode(iat: Int64, macName: String = "Acme Mac") -> LinkPayload {
         LinkPayload(

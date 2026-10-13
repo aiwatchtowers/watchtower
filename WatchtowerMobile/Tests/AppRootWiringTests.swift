@@ -945,7 +945,7 @@ final class AppRootWiringTests: XCTestCase {
         let waiting = DeviceGrant(
             deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private, linked: false,
             typingAllowed: false, startSessionsAllowed: true, awaitingConfirmation: true,
-            confirmNonce: TestPhone.confirmNonceText)
+            confirmNonce: TestPhone.confirmNonceText, linkCodeTag: try TestPhone.linkCodeTag(code))
         try await TestPhone.hub(over: macSide).save([try TestPhone.grantRecord(waiting, keys: nil, modifiedAt: Date())])
         linkClock.release()
         try await poll { root.linking.linkCode != nil && linkClock.waiting == 1 }

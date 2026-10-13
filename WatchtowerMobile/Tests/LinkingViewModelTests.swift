@@ -1208,12 +1208,13 @@ final class LinkingViewModelTests: XCTestCase {
         clock.parked = true
         let model = makeModel()
         let payload = code()
+        let tag = try TestPhone.linkCodeTag(payload)
         host.mac = { [start] writes in
             guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
             return DeviceGrant(
                 deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
                 typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
-                confirmNonce: TestPhone.confirmNonceText)
+                confirmNonce: TestPhone.confirmNonceText, linkCodeTag: tag)
         }
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
@@ -1247,6 +1248,7 @@ final class LinkingViewModelTests: XCTestCase {
         let model = makeModel()
         let payload = code()
         let seen = LinkEventLog()
+        let tag = try TestPhone.linkCodeTag(payload)
         let other = WireBytes.base64URL(Data(repeating: 0x33, count: KeyDerivation.confirmNonceLength))
         host.mac = { [weak model, start] writes in
             guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
@@ -1263,7 +1265,8 @@ final class LinkingViewModelTests: XCTestCase {
             return DeviceGrant(
                 deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
                 linkRefused: fetch >= 7 ? .notConfirmed : nil, typingAllowed: false, startSessionsAllowed: true,
-                decidedAt: start, awaitingConfirmation: fetch >= 7 ? nil : true, confirmNonce: fetch >= 7 ? nil : nonce)
+                decidedAt: start, awaitingConfirmation: fetch >= 7 ? nil : true, confirmNonce: fetch >= 7 ? nil : nonce,
+                linkCodeTag: fetch >= 7 ? nil : tag)
         }
 
         await model.open(payload.url())
@@ -1281,19 +1284,46 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(ScannedHubKeys.confirmNonce(from: WireBytes.base64URL(Data(count: 16))), "32 bytes only")
     }
 
-    /// Review: a waiting keybox the scan's baseline already held is left from an earlier scan (another code, or
-    /// this one re-scanned): it shows neither "Mac sees this iPhone" nor a code.
-    func testAWaitingKeyboxAlreadyInTheBaselineShowsNoCode() async throws {
+    /// Re-review: the same QR scanned again re-sends an unchanged hello, so the Mac keeps the request, its nonce
+    /// and its code, and the waiting keybox equals the scan's baseline. It names this scan's link code, so the
+    /// phone still shows the code the Mac shows.
+    func testTheSameQRScannedAgainShowsTheMacsCode() async throws {
         clock.parked = true
         let model = makeModel()
         let payload = code()
-        let fetches = LinkEventLog()
+        let tag = try TestPhone.linkCodeTag(payload)
         host.mac = { [start] _ in
-            fetches.append("fetch")
-            return DeviceGrant(
+            DeviceGrant(
                 deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
                 typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
-                confirmNonce: TestPhone.confirmNonceText)
+                confirmNonce: TestPhone.confirmNonceText, linkCodeTag: tag)
+        }
+        let flow = Task { await model.open(payload.url()) }
+        try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
+
+        let sealed = await host.transport(for: .private).sealed
+        XCTAssertEqual(model.linkCode, try TestPhone.openHello(try XCTUnwrap(sealed.first), code: payload).sas)
+        XCTAssertTrue(model.macSeesPhone)
+        XCTAssertNil(model.link)
+        flow.cancel()
+        await flow.value
+    }
+
+    /// Re-review: a waiting keybox of an earlier code (left in the baseline, or changed since) never gives this scan
+    /// a code, nor "Mac sees this iPhone".
+    func testAWaitingKeyboxOfAnotherCodeShowsNoCode() async throws {
+        clock.parked = true
+        let model = makeModel()
+        let payload = code()
+        let older = try TestPhone.linkCodeTag(code())
+        let fetches = LinkEventLog()
+        host.mac = { [start] writes in
+            fetches.append("fetch")
+            // Differs from the baseline once the hello is written: a fresh answer, still for the older code.
+            return DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone \(writes.count)", scope: .private,
+                linked: false, typingAllowed: false, startSessionsAllowed: true, decidedAt: start,
+                awaitingConfirmation: true, confirmNonce: TestPhone.confirmNonceText, linkCodeTag: older)
         }
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && fetches.events.count >= 2 }
@@ -1314,12 +1344,14 @@ final class LinkingViewModelTests: XCTestCase {
         let model = makeModel()
         let seen = LinkEventLog()
         let deviceID = TestE2E.deviceID.uuidString
+        let tag = try TestPhone.linkCodeTag(payload)
         host.mac = { [weak model, start] writes in
             seen.append("\(model?.macSeesPhone ?? false)")
             guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
             return DeviceGrant(
                 deviceID: deviceID, hubID: acme, name: "Colleague A's iPhone", scope: .private, linked: false,
-                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
+                linkCodeTag: tag
             )
         }
 

@@ -20,8 +20,9 @@ import WatchtowerSync
 /// the key-free name `keybox-<device id>` and signs with `hub_sig`. A phone
 /// linked with keys (its hello confirmed on the Mac) gets the current epoch's
 /// keys and `K_meta`; a pending request (`pending_devices`) reads
-/// `awaitingConfirmation: true` with no keys and the hub's `confirmNonce`
-/// (SAS v2, sealed to that phone only); a refusal has no keys. Keys are
+/// `awaitingConfirmation: true` with no keys, the hub's `confirmNonce` and
+/// the `linkCodeTag` of the code it was made with (SAS v2, sealed to that
+/// phone only); a refusal has no keys. Keys are
 /// never wrapped for a device that is not linked. A phone removed on the Mac
 /// or unlinked by itself (`revoked_devices`, D9) reads `linked: false,
 /// revoked: true` without keys for `revokedLifetime`, sealed to its own key,
@@ -82,7 +83,8 @@ struct DeviceGrantSlice: SliceSource {
             (request.receivedAt, Keybox(grant: DeviceGrant(
                 deviceID: request.deviceID, hubID: hubID, name: request.name, scope: request.scope, linked: false,
                 typingAllowed: false, startSessionsAllowed: true, awaitingConfirmation: true,
-                confirmNonce: WireBytes.base64URL(request.confirmNonce)
+                confirmNonce: WireBytes.base64URL(request.confirmNonce),
+                linkCodeTag: WireBytes.fromBase64URL(request.linkNonce).map { KeyDerivation.linkCodeTag(linkNonce: $0) }
             ), keys: nil))
         }
         answered.formUnion(pending.map { $0.1.grant.deviceID.uppercased() })

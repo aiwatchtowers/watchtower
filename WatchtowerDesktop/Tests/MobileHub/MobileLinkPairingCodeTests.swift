@@ -127,6 +127,8 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         try await handle(scan)
         let firstBox = try await openedKeybox(identityA)
         let first = try XCTUnwrap(firstBox.grant.confirmNonce)
+        let codeNonce = try XCTUnwrap(WireBytes.fromBase64URL(code.nonce))
+        XCTAssertEqual(firstBox.grant.linkCodeTag, KeyDerivation.linkCodeTag(linkNonce: codeNonce), "names its link code")
         XCTAssertEqual(WireBytes.fromBase64URL(first)?.count, KeyDerivation.confirmNonceLength)
         let shown = try XCTUnwrap(center.pendingLinks.first?.sas)
 
@@ -140,6 +142,8 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         try await handle(try hello(identityA, nonce: next.nonce))
         let replaced = try await openedKeybox(identityA)
         XCTAssertNotEqual(replaced.grant.confirmNonce, first)
+        XCTAssertEqual(
+            replaced.grant.linkCodeTag, KeyDerivation.linkCodeTag(linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(next.nonce))))
         let replacedCode = try await phoneSAS(identityA, scanned: next)
         XCTAssertEqual(center.pendingLinks.first?.sas, replacedCode)
     }

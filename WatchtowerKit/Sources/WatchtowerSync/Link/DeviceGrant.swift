@@ -47,6 +47,9 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     /// SAS v2: with `awaitingConfirmation`, base64url of the hub's confirm nonce (`KeyDerivation.sas`), drawn after
     /// the hub accepted this phone's hello; the phone shows its code only once it has it. Absent otherwise.
     public let confirmNonce: String?
+    /// With `confirmNonce`: `KeyDerivation.linkCodeTag` of the link code the waiting request was made with, so a
+    /// keybox left from an earlier code never gives this scan a code. Absent otherwise.
+    public let linkCodeTag: String?
     /// Removed on the Mac (D9); absent otherwise.
     public let revoked: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
@@ -67,6 +70,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case decidedAt
         case awaitingConfirmation
         case confirmNonce
+        case linkCodeTag
         case revoked
     }
 
@@ -83,6 +87,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         decidedAt: Date? = nil,
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
+        linkCodeTag: String? = nil,
         revoked: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) {
         self.deviceID = deviceID
@@ -97,6 +102,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.decidedAt = decidedAt
         self.awaitingConfirmation = awaitingConfirmation
         self.confirmNonce = confirmNonce
+        self.linkCodeTag = linkCodeTag
         self.revoked = revoked
     }
 }

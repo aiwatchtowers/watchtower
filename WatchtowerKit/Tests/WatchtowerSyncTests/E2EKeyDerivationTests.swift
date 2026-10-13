@@ -85,6 +85,15 @@ final class E2EKeyDerivationTests: XCTestCase {
         XCTAssertGreaterThan(codes.count, 56, "fixed device keys must not fix the code")
     }
 
+    /// The waiting keybox names the link code it answers: base64url of SHA-256("wt/link-code/v1" ‖ nonce)[0..<16].
+    func testTheLinkCodeTagBindsTheNonce() throws {
+        let k = try E2EFixtureKeys()
+        let tag = KeyDerivation.linkCodeTag(linkNonce: k.linkNonce)
+        XCTAssertEqual(WireBytes.fromBase64URL(tag)?.count, 16)
+        XCTAssertEqual(tag, KeyDerivation.linkCodeTag(linkNonce: k.linkNonce))
+        XCTAssertNotEqual(tag, KeyDerivation.linkCodeTag(linkNonce: Data(repeating: 0xEE, count: 32)))
+    }
+
     func testDeviceIDIsDerivedFromTheSigningKey() throws {
         let k = try E2EFixtureKeys()
         XCTAssertEqual(KeyDerivation.deviceID(signingPublicKey: k.devSig.publicKey), k.deviceID)

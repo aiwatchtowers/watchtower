@@ -1326,6 +1326,36 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(recording.id)-1.enc").path))
     }
 
+    /// Re-review: a seal pass that runs while a save of the same row is in flight (the actor is suspended in the
+    /// save) neither re-seals that row nor lets the send delete the seal the row stores when it resumes.
+    func testASealPassDuringAnInFlightSaveNeverLosesTheStoredSeal() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 512))
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [1, 2]).hubLink(TestE2E.hubID.uuidString)))
+
+        await spy.holdSaves()
+        let retry = Task { try await uploader.retryFailed(id: recording.id) }
+        for _ in 0 ..< 500 {
+            if await spy.heldCount > 0 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        let held = await spy.heldCount
+        XCTAssertEqual(held, 1, "the re-seal's save is in flight")
+        // The Mac rotated again meanwhile: the in-flight envelope (epoch 2) is now stale.
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [2, 3]).hubLink(TestE2E.hubID.uuidString)))
+        _ = try await uploader.sealPending()
+        await spy.release()
+        try await retry.value
+
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        let sealed = try XCTUnwrap(row.sealedFileURL(in: dir))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "the stored seal \(sealed.lastPathComponent) survives")
+        XCTAssertNil(row.failure)
+    }
+
     /// A pass (not only Retry) re-seals a stale-epoch row before it re-sends it: the relaunch retry of an
     /// in-flight upload after a rotation.
     func testARelaunchPassReSealsAnInFlightEnvelopeOfAnOlderEpoch() async throws {
