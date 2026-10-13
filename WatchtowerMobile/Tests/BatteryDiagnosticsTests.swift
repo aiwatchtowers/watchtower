@@ -150,32 +150,35 @@ final class BatteryDiagnosticsTests: XCTestCase {
     func testFetchesAreCountedByTrigger() async throws {
         let counter = EnergyCounter(defaults: try makeDefaults())
         let sleeper = TickSleeper()
+        let clock = MutableClock()
         let env = try AppEnvironment(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
+            now: { clock.now },
             sleep: { try await sleeper.sleep($0) },
             energy: counter
         )
         addTeardownBlock { @MainActor in env.stop() }
         try await poll { env.isLooping && sleeper.waitingCount == 1 }
         XCTAssertEqual(counter.counts(daysAgo: 0)[.fetchLaunch], 1)
-        XCTAssertEqual(counter.counts(daysAgo: 0)[.fetchLoop], 1, "the loop's first cycle after the boot")
+        XCTAssertEqual(counter.counts(daysAgo: 0)[.fetchLoop], 0, "the safety poll waits a full interval after the launch fetch")
 
         sleeper.tick()
-        try await poll({ counter.counts(daysAgo: 0)[.fetchLoop] == 2 && sleeper.waitingCount == 1 }, "a tick is a timed fetch")
+        try await poll({ counter.counts(daysAgo: 0)[.fetchLoop] == 1 && sleeper.waitingCount == 1 }, "a tick is a timed fetch")
 
         env.setActive(false)
+        clock.advance(AppEnvironment.foregroundRefetchAfter + 1)
         env.setActive(true)
         try await poll({ counter.counts(daysAgo: 0)[.fetchForeground] == 1 }, "the return to the foreground")
 
         await env.refresh(.pull)
-        await env.refresh(.push)
+        _ = await env.handlePush(inForeground: true)
         let today = counter.counts(daysAgo: 0)
         XCTAssertEqual(today[.fetchPull], 1)
         XCTAssertEqual(today[.fetchPush], 1)
-        XCTAssertEqual(today[.fetchLoop], 2, "the foreground cycle is not counted as timed")
+        XCTAssertEqual(today[.fetchLoop], 1, "the foreground cycle is not counted as timed")
     }
 }

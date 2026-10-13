@@ -138,3 +138,15 @@ extension XCTestCase {
         XCTAssertTrue(condition(), message(), file: file, line: line)
     }
 }
+
+/// A clock the test moves by hand (seeded from now).
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date()
+
+    var now: Date { lock.withLock { current } }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current += seconds }
+    }
+}

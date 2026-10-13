@@ -3,7 +3,8 @@ import SwiftUI
 import UIKit
 
 /// The silent-push wake path: CKSyncEngine owns subscriptions and push
-/// registration; the app turns a `content-available` push into a fetch.
+/// registration (and fetches on a push by itself); the app turns a
+/// `content-available` push into a light fetch that rides the engine's.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Set once the root exists. Static because a background push launch
     /// reaches the delegate before any view appears; weak because the
@@ -39,13 +40,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         BatteryDiagnostics.shared.counter.record(.silentPush)
+        // Foreground: fetched at once. Inactive or background: coalesced
+        // with the pushes of the next few seconds (`AppEnvironment.handlePush`);
+        // each push still gets its completion when its shared fetch ends.
+        let inForeground = application.applicationState == .active
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
                 completionHandler(.noData)
                 return
             }
-            completionHandler(await env.refresh(.push) ? .newData : .failed)
+            completionHandler(await env.handlePush(inForeground: inForeground).backgroundFetchResult)
+        }
+    }
+}
+
+extension FetchOutcome {
+    /// What a silent push's completion reports to iOS.
+    var backgroundFetchResult: UIBackgroundFetchResult {
+        switch self {
+        case .newData: .newData
+        case .noData: .noData
+        case .failed: .failed
         }
     }
 }

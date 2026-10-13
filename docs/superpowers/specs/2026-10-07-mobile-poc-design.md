@@ -200,7 +200,7 @@ The payload stays under 700 bytes, which fits a QR at error-correction level M. 
 | Fast lane coalescing window | 1 s; at least 2 s between two fast sends *(default)* |
 | Relay poll on the Mac | 3 s while a phone action was seen in the last 300 s, otherwise 30 s (branch values), plus CKSyncEngine pushes |
 | Heartbeat | written every 300 s. Phone shows the Mac "online" while `heartbeat.updated_at` is less than 720 s old (branch values) |
-| Phone foreground fetch | every 5 s while Now or Workbench is on screen, 30 s otherwise; silent push plus `BGAppRefreshTask` in the background *(default)* |
+| Phone foreground fetch | silent pushes (fetched at once in the foreground, coalesced over 10 s in the background) plus a 60 s safety poll on every tab, paused while the app is not active *(amended by board #724, owner decision Q1; was every 5 s while Now or Workbench is on screen, 30 s otherwise)*; silent push plus `BGAppRefreshTask` in the background |
 | Latency target | 2–15 s from a Mac DB write to the phone screen; measured in A3 |
 | Relay action max age | 7 days, then `failed`/`expired` (branch) |
 | Session input and finish request expiry | 24 h after `created_at` *(default — owner may change)* |
