@@ -73,6 +73,7 @@ var reasonPhrases = map[string]string{
 	ReasonNotABranch:           "not a branch",
 	ReasonSessionRecent:        "its session was active recently",
 	ReasonCheckFailed:          "could not be checked",
+	ReasonContainsWorktree:     "another worktree is inside",
 	ReasonNotThisSession:       "not this session's",
 	ReasonExistedBeforeSession: "existed before the session",
 	ReasonCreatedUnknown:       "creation time unknown",

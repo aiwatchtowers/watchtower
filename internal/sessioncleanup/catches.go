@@ -34,6 +34,9 @@ const (
 	// ReasonCheckFailed: a catch could not be evaluated (git or a file read
 	// failed); the item is kept with the error in detail.
 	ReasonCheckFailed = "check_failed"
+	// ReasonContainsWorktree: another worktree or repository lies inside;
+	// its path is in detail.
+	ReasonContainsWorktree = "contains_worktree"
 )
 
 // Windows of the in-use catches: another session counts as in a worktree
@@ -44,10 +47,14 @@ const (
 	recentOwnerWindow = 7 * 24 * time.Hour
 )
 
+// nestedScanBudget bounds W9's walk of one worktree; over it the worktree
+// is kept (check_failed).
+const nestedScanBudget = 20 * time.Second
+
 // worktreeCatch returns the reason a worktree is kept, "" to let it pass.
 type worktreeCatch func(ctx context.Context, b *builder, w worktree) (reason, detail string, err error)
 
-// worktreeCatches is W1–W8 in order (spec §5); the sweep swaps W2 for the
+// worktreeCatches is W1–W9 in order (spec §5); the sweep swaps W2 for the
 // recent-owner rule, and a prunable worktree (its directory is gone) meets
 // the folder, ownership and unpushed catches: pruning drops its HEAD, which
 // may be the only ref to its commits.
@@ -60,7 +67,7 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
 	}
 	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
-		catchSessionInIt, catchUnpushed, catchOperation}
+		catchSessionInIt, catchUnpushed, catchOperation, catchNested}
 }
 
 // catchClaudeHome keeps anything under the owner's ~/.claude, and every
@@ -211,6 +218,24 @@ func catchOperation(_ context.Context, b *builder, w worktree) (string, string, 
 		return "", "", err
 	}
 	return ReasonOperationInProgress, marker, nil
+}
+
+// catchNested is W9: another listed worktree, or any `.git` file or
+// directory but the worktree's own, inside it. `git worktree remove`
+// deletes the whole directory, ignored files included, so a worktree or
+// repository nested under an ignored directory would go with its own
+// uncommitted work.
+func catchNested(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	for _, o := range b.repo.worktrees {
+		if o.Root != w.Root && pathWithin(o.Root, w.Root) {
+			return ReasonContainsWorktree, o.Root, nil
+		}
+	}
+	nested, err := findNestedRepository(ctx, w.Root, nestedScanBudget)
+	if err != nil || nested == "" {
+		return "", "", err
+	}
+	return ReasonContainsWorktree, nested, nil
 }
 
 // branchCatch returns the reason a branch is kept, "" to let it pass.

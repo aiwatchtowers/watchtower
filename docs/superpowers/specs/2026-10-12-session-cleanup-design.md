@@ -156,6 +156,7 @@ arbitrary path, never `rm -rf`):
 | W6 | Another session is in it: its `agent_cwd` (#565) is inside and it is in `--live-session` or reported within 24 h and is not finished; or the calling session's own `agent_cwd` is inside (caller = `$WATCHTOWER_TERMINAL_SESSION_ID`) | `session_in_it` / `you_are_in_it` |
 | W7 | HEAD (detached or branch tip) not contained in the default branch nor in any `refs/remotes/*` | `unpushed_commits` |
 | W8 | A merge/rebase/cherry-pick/revert/bisect in progress | `operation_in_progress` |
+| W9 | Another listed worktree, or any `.git` file or directory other than its own, lies inside it — `git worktree remove` without `--force` still deletes the whole directory, ignored files included, so a worktree or repository nested under an ignored directory (`.claude/worktrees/<agent>`) would go with its uncommitted work. Found by a walk that does not follow symlinks, 20 s budget; an unreadable entry or a walk over budget keeps it `check_failed` | `contains_worktree` (detail: the nested path) |
 
 A worktree whose directory is already gone (`prunable`) is removed from git's metadata (`git worktree prune`,
 which only drops entries whose directory is gone) and reported `removed`, 0 bytes.
@@ -182,7 +183,7 @@ path that is not a linked worktree is reported `keep / not_a_worktree`.
 ## 7. Removal order and the re-check
 
 Per worktree, in `--apply`:
-1. re-run W3–W8 (fresh `git status`, fresh process scan);
+1. re-run W1–W9 (fresh `git status`, fresh process scan);
 2. terminate its orphans (S5) and re-scan — a survivor → keep `process_running`;
 3. `lsregister -u` each `.app` bundle found under it (depth ≤ 6, skipping `node_modules` and `.git`) — best effort,
    a failure is an item `error`, never blocks the removal;
@@ -280,8 +281,8 @@ re-install fixtures (`internal/devpack/testdata/watchtower-workbench-v6.md`).
 > `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 > repository and local branches, and only after every catch passes, checked again immediately before the removal:
 > a worktree with uncommitted or untracked changes, a HEAD not in the default branch nor on a remote, a locked
-> worktree, an operation in progress, a live process in it that is not an orphan of the session, or a session working
-> in it is kept and reported with its reason; a branch whose tip is in neither the default branch nor a remote ref,
+> worktree, an operation in progress, a live process in it that is not an orphan of the session, a session working
+> in it, or another worktree or repository nested inside it is kept and reported with its reason; a branch whose tip is in neither the default branch nor a remote ref,
 > the default branch, or a branch checked out anywhere is kept. Outside the owner's sweep it removes only what the
 > session observed and what was created after the session started. It never removes the main worktree, a workbench
 > folder, anything under `~/.claude`, a path that is not a linked worktree, or a remote ref; never fetches; never
@@ -297,7 +298,8 @@ Guards (Go): `TestProj16_UncommittedWorktreeIsKept`, `TestProj16_UntrackedFileKe
 `TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates`, `TestProj16_ClaudeHistoryAndMainBuildUntouched`,
 `TestProj16_PlanWritesNothing`, `TestProj16_ApplyRechecksAndActsOnlyOnNamedItems`,
 `TestProj16_BranchThatMovedAfterThePlanIsKept`, `TestProj16_OnlyOrphansAreSignalled`,
-`TestProj16_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1).
+`TestProj16_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1),
+`TestProj16_WorktreeHoldingANestedWorktreeIsKept` (W9, review of PR #227).
 Swift: `testProj16_DeleteAppliesOnlyThePlannedItems`, `testProj16_FailedCleanupKeepsTheSessionRow`.
 
 **PROJ-11 amendment** (on top of #565's): add to Observable —
