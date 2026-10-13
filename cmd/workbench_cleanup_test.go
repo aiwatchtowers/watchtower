@@ -70,10 +70,10 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 		"GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com",
 		"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "maintenance.auto", "GIT_CONFIG_VALUE_0": "false",
 		"GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
-		terminalSessionEnv: "",
 	} {
 		t.Setenv(k, v)
 	}
+	unsetTerminalSessionEnv(t)
 	f := &cleanupFixture{t: t, database: writeActionsConfig(t), git: bin}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
@@ -140,6 +140,15 @@ func (f *cleanupFixture) pushedWorktree(name, branch string) string {
 		db.AgentStateStamp(time.Now()))
 	require.NoError(f.t, err)
 	return root
+}
+
+// unsetTerminalSessionEnv removes $WATCHTOWER_TERMINAL_SESSION_ID for the
+// test: only an absent variable means "no caller" (an empty one is refused).
+// t.Setenv registers the restore of the original value.
+func unsetTerminalSessionEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(terminalSessionEnv, "")
+	require.NoError(t, os.Unsetenv(terminalSessionEnv))
 }
 
 func (f *cleanupFixture) sessionArg() string { return strconv.FormatInt(f.session, 10) }
@@ -247,6 +256,7 @@ func TestCleanupCmd_NoSessionIsUsageError(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")
 	wb := strconv.FormatInt(f.wb, 10)
+	// env "" = the variable is absent.
 	cases := []struct {
 		name string
 		env  string
@@ -254,6 +264,7 @@ func TestCleanupCmd_NoSessionIsUsageError(t *testing.T) {
 	}{
 		{"no session", "", []string{"--apply"}},
 		{"env not an id", "abc", []string{"--apply"}},
+		{"env whitespace", "  ", []string{"--session", f.sessionArg(), "--apply"}},
 		{"sweep without workbench", "", []string{"--sweep"}},
 		{"sweep with session", "", []string{"--sweep", "--workbench", wb, "--session", f.sessionArg()}},
 		{"sweep apply without items", "", []string{"--sweep", "--workbench", wb, "--apply"}},
@@ -264,7 +275,11 @@ func TestCleanupCmd_NoSessionIsUsageError(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv(terminalSessionEnv, c.env)
+			if c.env == "" {
+				unsetTerminalSessionEnv(t)
+			} else {
+				t.Setenv(terminalSessionEnv, c.env)
+			}
 			out, err := runCleanupCmd(t, c.args...)
 			requireExitCode(t, err, 2)
 			assert.Empty(t, out)
@@ -418,6 +433,50 @@ func TestProj16_CallerSessionCannotNameAnotherWorkbench(t *testing.T) {
 	assert.False(t, f.storedResult().Valid)
 }
 
+// A caller session variable that is present but empty or blank fails
+// closed: it is never read as "no caller", so the guards above cannot be
+// lifted by clearing it. Exit 2, nothing done.
+func TestProj16_CallerSessionEmptyVariableIsRefused(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	wb := strconv.FormatInt(f.wb, 10)
+
+	for _, env := range []string{"", " ", "\t"} {
+		t.Setenv(terminalSessionEnv, env)
+		for _, args := range [][]string{
+			{"--session", f.sessionArg(), "--apply"},
+			{"--sweep", "--workbench", wb, "--apply", "--item", "worktree:" + root},
+		} {
+			out, err := runCleanupCmd(t, args...)
+			requireExitCode(t, err, 2)
+			assert.Empty(t, out)
+			assert.Contains(t, err.Error(), "is set but is not a terminal session id")
+		}
+	}
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
+// A database without the 00111 cleanup schema is refused before any git
+// work: exit 1, nothing removed or saved.
+func TestCleanupCmd_DatabaseWithoutCleanupSchemaIsExit1(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	_, err := f.database.Exec(`DROP TABLE terminal_session_worktrees`)
+	require.NoError(t, err)
+
+	for _, args := range [][]string{{"--session", f.sessionArg()}, {"--session", f.sessionArg(), "--apply", "--json"}} {
+		out, err := runCleanupCmd(t, args...)
+		requireNotUsage(t, err)
+		assert.Contains(t, err.Error(), "predates session cleanup")
+		assert.Empty(t, out)
+	}
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
 func (f *cleanupFixture) requireBranch(name string) {
 	f.t.Helper()
 	f.gitIn(f.repo, "rev-parse", "--verify", "-q", "refs/heads/"+name)
@@ -436,7 +495,7 @@ func TestCleanupCmd_UnknownSessionMessageNamesItOnce(t *testing.T) {
 // leaves no file behind, for a plan and for --apply alike.
 func TestCleanupCmd_MissingDatabaseIsExit1AndCreatesNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv(terminalSessionEnv, "")
+	unsetTerminalSessionEnv(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
 	original := flagConfig

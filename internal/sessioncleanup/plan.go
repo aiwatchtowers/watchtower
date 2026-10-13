@@ -62,18 +62,10 @@ type builder struct {
 	checkedOutStaying map[string]string
 }
 
-// Build evaluates the request and returns the plan. It writes nothing: no
-// ref, worktree, file, database row or signal (PROJ-16).
-func Build(ctx context.Context, d Deps, r Request) (Plan, error) {
-	b, err := newBuilder(ctx, d, r)
-	if err != nil {
-		return Plan{Items: []Item{}}, err
-	}
-	return b.evaluate(ctx), nil
-}
-
-// PlanResult is Build as the command prints it: a plan-mode Result naming
-// the workbench the session belongs to. It writes nothing.
+// PlanResult evaluates the request and returns the plan as the command
+// prints it: a plan-mode Result naming the workbench the session belongs
+// to. It writes nothing: no ref, worktree, file, database row or signal
+// (PROJ-16).
 func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
 	b, err := newBuilder(ctx, d, r)
 	if err != nil {

@@ -78,7 +78,7 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 		return usageError("%v", err)
 	}
 	f := workbenchCleanupFlags
-	req, err := cleanupRequest(f, cmd.Flags().Changed("session"), os.Getenv)
+	req, err := cleanupRequest(f, cmd.Flags().Changed("session"), os.LookupEnv)
 	if err != nil {
 		return err
 	}
@@ -140,9 +140,10 @@ func openCleanupDB(apply bool) (*db.DB, error) {
 
 // cleanupRequest checks the flags and builds the request. The calling
 // agent's session comes from the environment; a value there that is not a
-// session id is a usage error, never read as "no caller".
-func cleanupRequest(f cleanupFlags, sessionGiven bool, getenv func(string) string) (sessioncleanup.Request, error) {
-	caller, err := envTerminalSession(getenv)
+// session id (empty and whitespace included) is a usage error, never read as
+// "no caller".
+func cleanupRequest(f cleanupFlags, sessionGiven bool, lookupEnv func(string) (string, bool)) (sessioncleanup.Request, error) {
+	caller, err := envTerminalSession(lookupEnv)
 	if err != nil {
 		return sessioncleanup.Request{}, err
 	}
@@ -169,15 +170,18 @@ func cleanupRequest(f cleanupFlags, sessionGiven bool, getenv func(string) strin
 	return req, nil
 }
 
-// envTerminalSession is $WATCHTOWER_TERMINAL_SESSION_ID; 0 when unset.
-func envTerminalSession(getenv func(string) string) (int64, error) {
-	raw := strings.TrimSpace(getenv(terminalSessionEnv))
-	if raw == "" {
+// envTerminalSession is $WATCHTOWER_TERMINAL_SESSION_ID; 0 only when the
+// variable is absent. Present but empty, whitespace or not a positive id, it
+// fails closed (a usage error): a caller session is set but unreadable, and
+// reading it as "no caller" would lift the caller-scope guard (PROJ-16).
+func envTerminalSession(lookupEnv func(string) (string, bool)) (int64, error) {
+	raw, present := lookupEnv(terminalSessionEnv)
+	if !present {
 		return 0, nil
 	}
-	id, err := strconv.ParseInt(raw, 10, 64)
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || id <= 0 {
-		return 0, usageError("%s=%q is not a terminal session id", terminalSessionEnv, raw)
+		return 0, usageError("%s=%q is set but is not a terminal session id", terminalSessionEnv, raw)
 	}
 	return id, nil
 }
