@@ -20,7 +20,10 @@ import WatchtowerSync
 /// (`onWaitingForKeys`), and the observation starts again at the unlock
 /// signal (`protectedDataDidBecomeAvailable` on `unlocks`) without waiting
 /// out its backoff; the backoff still retries, for keys that arrive with a
-/// keybox instead.
+/// keybox instead. EVERY live observation starts again at the unlock signal,
+/// not only one whose read threw: a list read (`ReplicaStore.payloads(of:)`)
+/// skips the rows it cannot open while locked and delivers what is left
+/// (often nothing), so only a fresh read after unlock fills it again.
 @MainActor
 final class ResilientObservation {
     private static let firstDelay = Duration.seconds(1)
@@ -109,9 +112,10 @@ final class ResilientObservation {
         health.recordValue(name)
     }
 
-    /// The unlock signal: an observation waiting for the keys starts again now.
+    /// The unlock signal: the observation starts again now (a waiting one, or a
+    /// live one whose last value may have left out rows locked at the time).
     private func unlocked() {
-        guard waitsForKeys, !isCancelled else { return }
+        guard !isCancelled else { return }
         waitsForKeys = false
         retry?.cancel()
         retry = nil

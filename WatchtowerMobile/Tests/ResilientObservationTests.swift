@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -19,9 +20,16 @@ final class ResilientObservationTests: XCTestCase {
         private let lock = NSLock()
         private var on = false
         private var locked = false
+        private var hiding = false
         var isOn: Bool {
             get { lock.withLock { on } }
             set { lock.withLock { on = newValue } }
+        }
+
+        /// The read leaves out the rows without throwing, as a list read (`payloads(of:)`) does while locked.
+        var hidesRows: Bool {
+            get { lock.withLock { hiding } }
+            set { lock.withLock { hiding = newValue } }
         }
 
         /// The read throws `KeyStoreError.locked`, as a replica read does while the keychain is locked.
@@ -70,6 +78,7 @@ final class ResilientObservationTests: XCTestCase {
                 ValueObservation.tracking { db in
                     if failing.isLocked { throw KeyStoreError.locked }
                     if failing.isOn { throw ProbeError() }
+                    if failing.hidesRows { return 0 }
                     return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM probe") ?? 0
                 }
             },
@@ -132,6 +141,55 @@ final class ResilientObservationTests: XCTestCase {
         try await poll({ fixture.received.values == [0, 1, 2] }, "the restarted observation stopped following writes")
         XCTAssertNil(fixture.health.failures["probe"])
         withExtendedLifetime(observation) {}
+    }
+
+    /// Review Focus 1 for lists: a list read skips the rows it cannot open while locked and delivers what is
+    /// left, without throwing. The unlock signal restarts it anyway, so the rows come back without a write.
+    func testTheUnlockRestartsALiveObservationThatLeftOutLockedRows() async throws {
+        let fixture = try makeFixture()
+        let observation = start(fixture)
+        try insertRow(fixture)
+        try await poll({ fixture.received.values.last == 1 }, "the initial value is missing")
+
+        fixture.failing.hidesRows = true
+        try insertRow(fixture)
+        try await poll({ fixture.received.values.last == 0 }, "the locked re-read did not deliver its partial value")
+        XCTAssertEqual(fixture.received.waitingForKeys, 0, "nothing threw")
+
+        fixture.failing.hidesRows = false
+        fixture.unlocks.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ fixture.received.values.last == 2 }, "the unlock did not re-read the list")
+        XCTAssertNil(fixture.health.failures["probe"])
+        withExtendedLifetime(observation) {}
+    }
+
+    /// The same on a real screen model and replica: the Calendar list goes empty when a write lands while the
+    /// keys are locked, and the unlock signal alone fills it again.
+    func testTheCalendarFillsAgainAtUnlockWithoutAnotherWrite() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mobile-unlock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore(
+            path: dir.appendingPathComponent("replica.sqlite").path,
+            opener: EnvelopeReplicaOpener(hubID: TestE2E.hubID.uuidString, deviceID: TestE2E.deviceID, keys: keys))
+        let transport = InMemoryCloudTransport()
+        try await TestPhone.hub(over: transport).save(try DemoSeed.calendarRecords(now: Date()))
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let model = CalendarReplicaModel()
+        model.start(store: store)
+        try await poll({ !model.snapshot.events.isEmpty }, "the model did not load the events")
+        let count = model.snapshot.events.count
+
+        keys.isLocked = true
+        // A write the observation tracks, with no new row to index.
+        let pool = try XCTUnwrap(store.reader as? DatabasePool)
+        try await pool.write { db in try db.execute(sql: "UPDATE slice_records SET payload = payload") }
+        try await poll({ model.snapshot.events.isEmpty }, "the locked re-read left the rows out")
+
+        keys.isLocked = false
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ model.snapshot.events.count == count }, "the unlock alone did not fill the list again")
     }
 
     func testRepeatedErrorsBackOffToThirtySeconds() async throws {

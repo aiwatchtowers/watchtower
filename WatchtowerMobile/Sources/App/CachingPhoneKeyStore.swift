@@ -6,9 +6,11 @@ import WatchtowerSync
 /// The live key store with an in-memory cache (mobile E2E Task 17). Every replica row an observation opens reads
 /// the hub link and the hub's signing key, and every observation refetches all its rows on each replica write: a
 /// Keychain query per row per refetch. The cache keeps what was read while the phone is unlocked:
-/// - `protectedDataWillBecomeUnavailable` (the lock) drops everything, so a locked keychain is never answered
-///   from memory (a read after the lock reaches the Keychain and throws `KeyStoreError.locked`); so does going to
-///   the background, since a suspended app is not told about a lock and may next run from a push while locked;
+/// - the cache serves only while the app is known to run unlocked: from `didBecomeActive` or
+///   `protectedDataDidBecomeAvailable` until `protectedDataWillBecomeUnavailable` (the lock), `willResignActive`
+///   or `didEnterBackground`, each of which also drops everything. A suspended app is not told about a lock and may
+///   next run from a push while locked: it then reads the Keychain, which throws `KeyStoreError.locked`, never
+///   memory. It starts not serving;
 /// - a failed read is never cached;
 /// - the link flow writes through this same store: saving or removing a hub's link replaces its cached keys, so a
 ///   re-pair's new signing key is honoured by the very next record. A read that was in flight across a drop is
@@ -23,17 +25,29 @@ final class CachingPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private var signingKeys: [String: Curve25519.Signing.PublicKey] = [:]
     /// Bumped by every drop: a read caches its value only when no drop ran while it read.
     private var generation = 0
+    /// Hits and stores only while true: the app is known to run unlocked.
+    private var serving = false
     private var observers: [any NSObjectProtocol] = []
     private let notifications: NotificationCenter
 
     init(wrapping wrapped: any PhoneKeyStore, notifications: NotificationCenter = .default) {
         self.wrapped = wrapped
         self.notifications = notifications
-        observers = [
-            UIApplication.protectedDataWillBecomeUnavailableNotification, UIApplication.didEnterBackgroundNotification
-        ].map { name in
+        let stops = [
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+            UIApplication.willResignActiveNotification,
+            UIApplication.didEnterBackgroundNotification
+        ]
+        let starts = [UIApplication.didBecomeActiveNotification, UIApplication.protectedDataDidBecomeAvailableNotification]
+        observers = stops.map { name in
             notifications.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in self?.dropAll() }
+        } + starts.map { name in
+            notifications.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in self?.startServing() }
         }
+    }
+
+    private func startServing() {
+        lock.withLock { serving = true }
     }
 
     deinit {
@@ -42,6 +56,7 @@ final class CachingPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
 
     private func dropAll() {
         lock.withLock {
+            serving = false
             generation += 1
             identityKeys = nil
             device = nil
@@ -54,21 +69,21 @@ final class CachingPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private func cached<Value>(
         _ read: (CachingPhoneKeyStore) -> Value?, store: (CachingPhoneKeyStore, Value) -> Void, load: () throws -> Value?
     ) rethrows -> Value? {
-        let (hit, started) = lock.withLock { (read(self), generation) }
+        let (hit, started) = lock.withLock { (serving ? read(self) : nil, generation) }
         if let hit { return hit }
         guard let value = try load() else { return nil }
         lock.withLock {
-            if generation == started { store(self, value) }
+            if serving, generation == started { store(self, value) }
         }
         return value
     }
 
     func identity() throws -> DeviceIdentityKeys {
-        let (hit, started) = lock.withLock { (identityKeys, generation) }
+        let (hit, started) = lock.withLock { (serving ? identityKeys : nil, generation) }
         if let hit { return hit }
         let keys = try wrapped.identity()
         lock.withLock {
-            if generation == started { identityKeys = keys }
+            if serving, generation == started { identityKeys = keys }
         }
         return keys
     }

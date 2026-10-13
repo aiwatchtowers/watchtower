@@ -1,16 +1,18 @@
 import Foundation
 
 /// The phone's file protection classes (mobile E2E D8):
-/// - ciphertext the background must reach after the first unlock (the replica and the CloudKit transport's
-///   store, their directory, the incoming asset stash, sealed recordings, the recordings folder and the hold) is
+/// - what the background must reach after the first unlock (the replica and the CloudKit transport's store,
+///   their directory, the incoming asset stash, sealed recordings, the recordings folder, the hold and its
+///   manifest) is
 ///   `completeUntilFirstUserAuthentication` (class C), set on the directory so every file created in it inherits
 ///   the class;
-/// - plaintext audio (the capture in progress, a finished recording waiting to be sealed, the hold's manifest) is
+/// - plaintext audio (the capture in progress, a finished recording waiting to be sealed) is
 ///   `completeUnlessOpen`: a capture keeps writing once the phone locks, and nothing new opens it while locked.
 ///
 /// The simulator's file system keeps no protection class (it reads back nil), so tests read back what was set
 /// through `observer`; on a device `protection(of:)` reads the real attribute.
 enum FileProtection {
+    /// Class C: ciphertext, and the hold's manifest (metadata a locked wipe must read).
     static let ciphertext = FileProtectionType.completeUntilFirstUserAuthentication
     static let plaintext = FileProtectionType.completeUnlessOpen
 

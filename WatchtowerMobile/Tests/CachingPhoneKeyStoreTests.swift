@@ -65,7 +65,9 @@ final class CachingPhoneKeyStoreTests: XCTestCase {
     private func makeStore() throws -> (cache: CachingPhoneKeyStore, counting: CountingStore, center: NotificationCenter) {
         let counting = CountingStore(try TestE2E.phoneStore())
         let center = NotificationCenter()
-        return (CachingPhoneKeyStore(wrapping: counting, notifications: center), counting, center)
+        let cache = CachingPhoneKeyStore(wrapping: counting, notifications: center)
+        center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        return (cache, counting, center)
     }
 
     func testRepeatedReadsReachTheKeychainOnce() throws {
@@ -86,7 +88,9 @@ final class CachingPhoneKeyStoreTests: XCTestCase {
     /// background does too (a suspended app is not told about a lock).
     func testTheLockAndTheBackgroundDropEveryCachedKey() throws {
         for signal in [
-            UIApplication.protectedDataWillBecomeUnavailableNotification, UIApplication.didEnterBackgroundNotification
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+            UIApplication.willResignActiveNotification,
+            UIApplication.didEnterBackgroundNotification
         ] {
             let (cache, counting, center) = try makeStore()
             _ = try cache.identity()
@@ -101,6 +105,36 @@ final class CachingPhoneKeyStoreTests: XCTestCase {
             _ = try cache.hubLink(hubID)
             XCTAssertEqual(counting.reads("hubLink"), 3, "read again after \(signal.rawValue)")
         }
+    }
+
+    /// The cache answers only while the app is known to run unlocked: it starts not serving, stops at a lock,
+    /// a resign or the background (every read then reaches the Keychain), and serves again once the app is
+    /// active or protected data is available.
+    func testTheCacheServesOnlyWhileTheAppIsKnownToRunUnlocked() throws {
+        let counting = CountingStore(try TestE2E.phoneStore())
+        let center = NotificationCenter()
+        let cache = CachingPhoneKeyStore(wrapping: counting, notifications: center)
+        _ = try cache.hubLink(hubID)
+        _ = try cache.hubLink(hubID)
+        XCTAssertEqual(counting.reads("hubLink"), 2, "a fresh cache serves nothing before it knows the app is unlocked")
+
+        center.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        _ = try cache.hubLink(hubID)
+        _ = try cache.hubLink(hubID)
+        XCTAssertEqual(counting.reads("hubLink"), 3, "served from memory once protected data is available")
+
+        center.post(name: UIApplication.willResignActiveNotification, object: nil)
+        _ = try cache.hubLink(hubID)
+        _ = try cache.hubLink(hubID)
+        XCTAssertEqual(counting.reads("hubLink"), 5, "after a resign every read reaches the Keychain")
+        counting.inner.isLocked = true
+        XCTAssertThrowsError(try cache.hubLink(hubID)) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+
+        counting.inner.isLocked = false
+        center.post(name: UIApplication.didBecomeActiveNotification, object: nil)
+        _ = try cache.hubLink(hubID)
+        _ = try cache.hubLink(hubID)
+        XCTAssertEqual(counting.reads("hubLink"), 7, "active again: one read, then memory")
     }
 
     /// A failed read (locked) is not remembered: the next read after unlock reaches the keychain.

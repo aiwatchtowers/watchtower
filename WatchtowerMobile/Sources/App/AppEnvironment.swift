@@ -492,8 +492,8 @@ final class AppEnvironment {
         }
     }
 
-    /// A boot while locked cannot read the hold's manifest (`completeUnlessOpen`, D8): the adoption that failed
-    /// runs again after unlock. Only after the boot, whose launch sweep must not race an adoption.
+    /// An adoption that failed at boot (a held file the locked phone could not move or read) runs again after
+    /// unlock. Only after the boot, whose launch sweep must not race an adoption.
     private func readoptHeldIfNeeded() async {
         guard isBootstrapped, let previous = adoption, await previous.value.problem != nil else { return }
         let next = Task { await adoptHeld() }

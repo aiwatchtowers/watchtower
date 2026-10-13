@@ -202,8 +202,8 @@ final class RecordingUploadWiringTests: XCTestCase {
     }
 
     /// D8: ciphertext (the replica's and the transport's directory, the incoming asset stash, the recordings
-    /// folder and the hold) is class C, readable by background hydration after the first unlock; plaintext audio
-    /// (the capture, a held recording's manifest) is `.completeUnlessOpen`. The simulator keeps no class, so the
+    /// folder) and the hold with its manifest are class C, readable in the background after the first unlock;
+    /// plaintext audio (the capture) is `.completeUnlessOpen`. The simulator keeps no class, so the
     /// classes are read back from what was set (`FileProtection.observer`), and from the file system where it
     /// keeps them (a device).
     func testFileProtectionClassesAreSetOnTheDirectoriesAndTheCapture() async throws {
@@ -231,8 +231,8 @@ final class RecordingUploadWiringTests: XCTestCase {
             try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)])
             try assertClass(of: hold.directory, classC, set, "the hold folder")
             try assertClass(
-                of: hold.directory.appendingPathComponent("manifest.json"), .completeUnlessOpen, set,
-                "the hold's manifest (plaintext titles)")
+                of: hold.directory.appendingPathComponent("manifest.json"), classC, set,
+                "the hold's manifest (a locked wipe reads it)")
         }
     }
 
