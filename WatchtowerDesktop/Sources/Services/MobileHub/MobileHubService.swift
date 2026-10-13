@@ -68,6 +68,17 @@ struct MobileHubStorage {
     /// CloudKit. No user prompt: silent pushes need no notification
     /// permission.
     var registerForPushes: (@MainActor () -> Void)?
+    /// The hub's E2E keys (Task 10): the Keychain identity and the sealed epoch keys in `hubstate.db`. One per
+    /// sidecar (it owns the envelope seq allocator). nil only in a live storage without the CloudKit entitlement
+    /// (an unsigned dev build has no data protection keychain and reaches no CloudKit).
+    var keyring: HubKeyring?
+
+    /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
+    static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
+        var storage = Self(transport: transport, sidecar: sidecar)
+        storage.keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        return storage
+    }
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -85,12 +96,16 @@ struct MobileHubStorage {
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
+        let keyring = CloudKitTransport.entitlementPresent()
+            ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
+            : nil
         return Self(
             transport: CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub),
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
             shares: CloudKitShareService(hubID: hubID),
-            registerForPushes: registerForCloudKitPushes
+            registerForPushes: registerForCloudKitPushes,
+            keyring: keyring
         )
     }
 

@@ -689,7 +689,7 @@ final class MobileHubServiceTests: XCTestCase {
         let sidecar = try XCTUnwrap(self.sidecar)
         appState.makeMobileHubStorage = {
             storageBuilds()
-            var storage = MobileHubStorage(transport: transport, sidecar: sidecar)
+            var storage = try MobileHubStorage.stub(transport: transport, sidecar: sidecar)
             storage.registerForPushes = pushRegistrations
             return storage
         }

@@ -261,7 +261,11 @@ extension HubSyncState {
         let path = dir.appendingPathComponent("hubstate.db").path
         let state = try HubSyncState(path: path)
         try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
-        return (state, try DatabaseQueue(path: path), dir)
+        // The raw handle waits for the running hub's locks like the sidecar does; without a busy timeout its
+        // COMMIT fails at once whenever a hub pass holds the file (a flake, seen 1 in 3 runs).
+        var config = Configuration()
+        config.busyMode = .timeout(5)
+        return (state, try DatabaseQueue(path: path, configuration: config), dir)
     }
 
     /// A sidecar the per-hub zone adoption already ran on (most tests seed

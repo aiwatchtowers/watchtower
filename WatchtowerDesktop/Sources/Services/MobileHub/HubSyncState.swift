@@ -14,7 +14,8 @@ import WatchtowerSync
 /// session state milestones (`session_milestones`, spec §4.9), and the
 /// linking state (spec §2.3): the issued QR codes (`link_codes`), the linked
 /// phones (`devices`, spec §10) and the refused link attempts
-/// (`link_refusals`, published as `device_grant` with `link_refused`).
+/// (`link_refusals`, published as `device_grant` with `link_refused`), and
+/// the E2E key tables (`HubSyncState+Keys.swift`).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -29,7 +30,9 @@ final class HubSyncState: Sendable {
     static let hubIDKey = "hub_id"
     private static let generationKey = "sync_generation"
 
-    private let queue: DatabaseQueue
+    /// Internal for the `HubSyncState+…` extensions (key tables) and tests that seed rows; everything else
+    /// goes through the typed methods.
+    let queue: DatabaseQueue
     /// One relay pass at a time over this ledger, whichever processor runs
     /// it (a rebuilt hub shares the sidecar with the one it replaces).
     let relayGate = RelayPassGate()
@@ -111,6 +114,7 @@ final class HubSyncState: Sendable {
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
                 """)
             try Self.createLinkTables(db)
+            try Self.createKeyTables(db)
             // A sidecar created before the ledger kept echoes and buffer
             // marks gains the columns; its old `done` rows hold neither (no
             // echo: skipped as before; no mark: the pre-mark behaviour).
@@ -396,13 +400,16 @@ final class HubSyncState: Sendable {
     /// Retention: drops ledger entries last touched before `date`. Safe
     /// because the cutoff lies past the relay max age: a re-delivered record
     /// that old fails the age check (`expired`) and is never applied, and an
-    /// already-echoed record is skipped on its echo status first.
+    /// already-echoed record is skipped on its echo status first. The relay
+    /// rollback guard (`relay_seen`, F3) goes by the same cutoff on its own
+    /// `at`: its keys are wire names, so it is never joined to the ledger.
     func pruneRelayProcessed(olderThan date: Date) throws {
         try queue.write { db in
             try db.execute(
                 sql: "DELETE FROM relay_processed WHERE updated_at < ?",
                 arguments: [date.timeIntervalSince1970]
             )
+            try db.execute(sql: "DELETE FROM relay_seen WHERE at < ?", arguments: [date.timeIntervalSince1970])
             try db.execute(
                 sql: "DELETE FROM ask_answer_deliveries WHERE at < ?",
                 arguments: [date.timeIntervalSince1970]
