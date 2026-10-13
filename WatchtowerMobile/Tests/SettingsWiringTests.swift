@@ -192,7 +192,7 @@ final class SettingsWiringTests: XCTestCase {
         health.recordFailure("recordings", error: ReadError(), at: now.addingTimeInterval(-300))
         health.recordValue("recordings")
 
-        let rows = SettingsViewModel(health: health).diagnostics(now: now)
+        let rows = SettingsViewModel(health: health).diagnostics(now: now, locale: Locale(identifier: "en_US"))
 
         XCTAssertEqual(rows.map(\.name), ["calendar", "recordings"])
         XCTAssertEqual(rows[0].text, "calendar updates: failed 2×, last 1 min. ago: database is locked")

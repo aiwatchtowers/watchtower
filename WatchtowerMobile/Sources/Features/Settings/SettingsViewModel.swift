@@ -123,15 +123,16 @@ final class SettingsViewModel {
 
     /// One row per replica observation that failed since launch, in name
     /// order; empty while none did. Reads `health`, so a view updates on a
-    /// new failure.
-    func diagnostics(now: Date) -> [ObservationDiagnostic] {
+    /// new failure. `locale` formats the relative times (tests pin it).
+    func diagnostics(now: Date, locale: Locale = .current) -> [ObservationDiagnostic] {
         health.failures.sorted { $0.key < $1.key }.map { name, failure in
-            ObservationDiagnostic(name: name, text: Self.text(name: name, failure: failure, now: now))
+            ObservationDiagnostic(name: name, text: Self.text(name: name, failure: failure, now: now, locale: locale))
         }
     }
 
-    private static func text(name: String, failure: ObservationHealth.Failure, now: Date) -> String {
+    private static func text(name: String, failure: ObservationHealth.Failure, now: Date, locale: Locale) -> String {
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
         formatter.unitsStyle = .short
         let when = formatter.localizedString(for: failure.lastAt, relativeTo: now)
         let text = "\(name) updates: failed \(failure.count)×, last \(when): \(failure.lastMessage)"
