@@ -65,6 +65,19 @@ final class OwnerAskAnswerTests: XCTestCase {
         }
     }
 
+    /// Board #223: a dismissal is written with `dismissed` and nothing else
+    /// filled; its note alone is trimmed on the way to the store.
+    func testADismissalEncodesItsFlagAndPassesEveryKind() throws {
+        XCTAssertEqual(try OwnerAskAnswer.dismissal.encoded(),
+                       #"{"answers":[],"checklist":[],"comments":[],"dismissed":true,"note":"","verdict":""}"#)
+        let check = OwnerAskPayload(checklist: [OwnerAskCheckItem(id: "1", text: "Launch")])
+        for kind in [OwnerAskKind.review, .check, .question] {
+            XCTAssertNil(OwnerAskAnswer.dismissal.problem(kind: kind, payload: check), kind.rawValue)
+        }
+        let withVerdict = OwnerAskAnswer(verdict: .approved, dismissed: true)
+        XCTAssertEqual(withVerdict.problem(kind: .review, payload: OwnerAskPayload()), .dismissalWithAnswer)
+    }
+
     func testProblemsGoAlsoRefuses() throws {
         let check = OwnerAskPayload(checklist: [OwnerAskCheckItem(id: "1", text: "Launch")])
         let broken = OwnerAskAnswer(checklist: [.init(id: "1", state: .broken, note: " ")])
