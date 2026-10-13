@@ -38,9 +38,9 @@ func finishState(t *testing.T, d *db.DB, sessionID int64) (finishedAt, summary s
 	return at.String, summary
 }
 
-func seedOwnerComment(t *testing.T, d *db.DB, projectID, targetID int64) int64 {
+func seedOwnerComment(t *testing.T, d *db.DB, workbenchID, targetID int64) int64 {
 	t.Helper()
-	id, err := d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: projectID,
+	id, err := d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: workbenchID,
 		TargetID: sql.NullInt64{Int64: targetID, Valid: true}, Author: "owner", Body: "why?"})
 	require.NoError(t, err)
 	return id

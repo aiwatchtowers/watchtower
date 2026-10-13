@@ -36,24 +36,24 @@ const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
 
-// GetWorkbenchBoard returns workbench projectID's whole target forest,
+// GetWorkbenchBoard returns workbench workbenchID's whole target forest,
 // archived targets included and marked (BoardNode.Archived); display callers
 // prune it with WithoutArchived. An unknown workbench yields an empty board;
 // callers check GetWorkbench first.
-func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
-	targets, err := db.listBoardTargets(projectID)
+func (db *DB) GetWorkbenchBoard(workbenchID int64) ([]BoardNode, error) {
+	targets, err := db.listBoardTargets(workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := db.boardCommentCounts(projectID)
+	counts, err := db.boardCommentCounts(workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	since, err := db.workbenchStatusSince(projectID)
+	since, err := db.workbenchStatusSince(workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	archived, err := db.workbenchArchivedTargets(projectID)
+	archived, err := db.workbenchArchivedTargets(workbenchID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +61,11 @@ func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
 	return ix.assemble(targets), nil
 }
 
-// workbenchArchivedTargets returns the ids of workbench projectID's archived
+// workbenchArchivedTargets returns the ids of workbench workbenchID's archived
 // targets (the workbench_target_archive view, PROJ-15).
-func (db *DB) workbenchArchivedTargets(projectID int64) (map[int64]bool, error) {
+func (db *DB) workbenchArchivedTargets(workbenchID int64) (map[int64]bool, error) {
 	rows, err := db.Query(`SELECT target_id FROM workbench_target_archive
-		WHERE project_id = ? AND archived = 1`, projectID)
+		WHERE project_id = ? AND archived = 1`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("reading archived board targets: %w", err)
 	}
@@ -101,8 +101,8 @@ func WithoutArchived(board []BoardNode) []BoardNode {
 	return out
 }
 
-func (db *DB) listBoardTargets(projectID int64) ([]Target, error) {
-	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets WHERE project_id = ? ORDER BY `+boardSiblingOrder, projectID)
+func (db *DB) listBoardTargets(workbenchID int64) ([]Target, error) {
+	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets WHERE project_id = ? ORDER BY `+boardSiblingOrder, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("listing board targets: %w", err)
 	}
@@ -118,13 +118,13 @@ func (db *DB) listBoardTargets(projectID int64) ([]Target, error) {
 	return out, rows.Err()
 }
 
-func (db *DB) boardCommentCounts(projectID int64) (map[int64]boardCounts, error) {
+func (db *DB) boardCommentCounts(workbenchID int64) (map[int64]boardCounts, error) {
 	rows, err := db.Query(`SELECT c.target_id,
 		SUM(CASE WHEN `+newForAgentPredicate+` THEN 1 ELSE 0 END),
 		SUM(CASE WHEN c.author = 'agent' AND c.read_at = '' THEN 1 ELSE 0 END)
 		FROM project_comments c
 		WHERE c.project_id = ? AND c.target_id IS NOT NULL
-		GROUP BY c.target_id`, projectID)
+		GROUP BY c.target_id`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("counting board comments: %w", err)
 	}
@@ -183,7 +183,7 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 	return nodes
 }
 
-// MoveWorkbenchTargetTx nests target id of workbench projectID under parent,
+// MoveWorkbenchTargetTx nests target id of workbench workbenchID under parent,
 // or moves it to the top level when parent is not Valid (board #186). Both
 // must be on that workbench (ErrNotInWorkbench otherwise, also for a missing
 // row), and parent must not be the target or one of its sub-targets
@@ -193,12 +193,12 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 //
 // Dual path: the Desktop board moves targets with
 // WorkbenchQueries.moveTarget (WatchtowerCore) — change the rules together.
-func (db *DB) MoveWorkbenchTargetTx(tx *sql.Tx, projectID, id int64, parent sql.NullInt64) error {
-	if err := checkTargetInWorkbench(tx, projectID, id); err != nil {
+func (db *DB) MoveWorkbenchTargetTx(tx *sql.Tx, workbenchID, id int64, parent sql.NullInt64) error {
+	if err := checkTargetInWorkbench(tx, workbenchID, id); err != nil {
 		return err
 	}
 	if parent.Valid {
-		if err := checkTargetInWorkbench(tx, projectID, parent.Int64); err != nil {
+		if err := checkTargetInWorkbench(tx, workbenchID, parent.Int64); err != nil {
 			return err
 		}
 		if err := checkParentCycle(tx, id, parent); err != nil {

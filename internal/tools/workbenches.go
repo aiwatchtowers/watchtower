@@ -44,13 +44,13 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string) []*Too
 	}
 }
 
-// targetInWorkbench loads a target and fails unless it belongs to projectID —
+// targetInWorkbench loads a target and fails unless it belongs to workbenchID —
 // a target of another workbench, of no workbench, or a missing one all read as
 // "not in this workbench" (wrapping db.ErrNotInWorkbench), never as a different
 // error that would confirm it exists.
-func targetInWorkbench(d *db.DB, projectID, targetID int64) (*db.Target, error) {
+func targetInWorkbench(d *db.DB, workbenchID, targetID int64) (*db.Target, error) {
 	notHere := notInWorkbench("target", targetID)
-	if projectID <= 0 || targetID <= 0 {
+	if workbenchID <= 0 || targetID <= 0 {
 		return nil, notHere
 	}
 	t, err := d.GetTargetByID(int(targetID))
@@ -60,7 +60,7 @@ func targetInWorkbench(d *db.DB, projectID, targetID int64) (*db.Target, error) 
 	if err != nil {
 		return nil, fmt.Errorf("loading target %d: %w", targetID, err)
 	}
-	if t.WorkbenchID.Int64 != projectID {
+	if t.WorkbenchID.Int64 != workbenchID {
 		return nil, notHere
 	}
 	return t, nil
@@ -301,8 +301,8 @@ func NewRemoveWorkbenchSource() *Tool {
 	}
 }
 
-func sourceInWorkbench(d *db.DB, projectID, sourceID int64) error {
-	sources, err := d.ListWorkbenchSources(projectID)
+func sourceInWorkbench(d *db.DB, workbenchID, sourceID int64) error {
+	sources, err := d.ListWorkbenchSources(workbenchID)
 	if err != nil {
 		return fmt.Errorf("listing sources: %w", err)
 	}

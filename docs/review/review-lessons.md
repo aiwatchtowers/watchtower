@@ -1435,3 +1435,12 @@ Entry format:
 - weak-dimension: 7. A pixel test whose expected value comes from the same API as the code under test is tautological for that API's own regressions.
 - rule-gap (candidate, dim 7): *a render or pixel test whose expected colour is computed by the code under test also asserts the visible relation the change is about (≠ neighbour, ≠ backdrop) for each appearance.*
 - outcome: TBD
+
+## 2026-10-13 — feature/376-workbench-rename-cleanup (board #376 Lane A / #228: mechanical Go rename `projectID` → `workbenchID` across 55 files, plus a deliberate extra that changed the empty WORKBENCHES placeholder "(no project activity)" → "(no workbench activity)" and bumped `briefing.daily` v11→v12; panel: prosecutor + codex + 3 specialists, all lanes up; judge verified by reading, merge-tree vs fresh origin/main clean; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, 2 lanes, specialists echo): a rename that also changes a literal the model reads is not mechanical. `Seed` never upgrades a `Customized` prompt row, and every shipped v8–v11 template keys on the old placeholder ("If the section reads \"(no project activity)\""), so a customized template silently loses its no-activity rule. That breaks spec A8 ("a customized stored template keeps working unchanged"). The fix is to revert the extra rather than add a fallback: A8 already chose to keep the old wording, and the code comment next to it says so. **When a rename touches a string that a stored prompt template matches on (placeholders, block headers, ids), check the prompt store's upgrade path for customized rows before accepting a version bump as the migration.** [6/8]
+- false-positive: none dismissed outright. The code-reviewer's "workbench workbenchID's" repetition was kept as a nit.
+- miss: none unique. Codex and the prosecutor found F1 independently. Only the prosecutor saw that the adjacent doc comment ("keeps its pre-rename wording", A8) contradicted the change.
+- weak-dimension: 9 (public repo hygiene) in plan docs: statements about which of the owner's workbenches are still legacy, and how many there are, are facts read off the owner's live install, and leak-check cannot catch them.
+- rule-gap (candidate, dim 6): *a rename PR's "deliberate extras" that change model-facing text name the customized-template path explicitly, or are split out of the rename.*
+- outcome: TBD
