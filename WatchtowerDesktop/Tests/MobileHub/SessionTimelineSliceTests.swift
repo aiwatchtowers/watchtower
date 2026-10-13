@@ -181,7 +181,7 @@ final class SessionTimelineSliceTests: XCTestCase {
             now: { hookTime.withLock { $0 } },
             window: {
                 [SessionReportSlice.Windowed(
-                    sessionID: session, workbenchID: project, live: true, createdAt: nil, lastActiveAt: Date(),
+                    sessionID: session, workbenchID: project, live: true, createdAt: nil, lastActiveAt: self.now,
                     state: state.withLock { $0 }, stateAt: self.now.addingTimeInterval(-30)
                 )]
             }

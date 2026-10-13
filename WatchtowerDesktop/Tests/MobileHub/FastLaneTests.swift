@@ -24,6 +24,11 @@ final class FastLaneTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suiteName = ""
     private let started = Date().addingTimeInterval(-600)
+    /// The one wall clock of a test: the center and every slice judge the
+    /// background agent count (#411) at it. `FakeClock` is the other clock
+    /// on purpose: the publisher schedules its fast lane on a monotonic
+    /// `ContinuousClock.Instant`, which no `Date` stands in for.
+    private var wall = WallClock(Date())
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
@@ -42,6 +47,7 @@ final class FastLaneTests: XCTestCase {
         terminals.shell = { "/bin/zsh" }
         terminals.transcriptExists = { _ in true }
         terminals.now = { [started] in started }
+        wall = WallClock(started.addingTimeInterval(60))
     }
 
     override func tearDown() {
@@ -55,10 +61,11 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeCenter() -> SessionAgentStateCenter {
+    private func makeCenter(probeRunner: (any CLIRunnerProtocol)? = nil) -> SessionAgentStateCenter {
+        let wall = self.wall
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, interval: .seconds(60), notifier: RecordingSessionNotifier(),
-            defaults: defaults, notificationCenter: NotificationCenter()
+            defaults: defaults, notificationCenter: NotificationCenter(), clock: { wall.now }, probeRunner: probeRunner
         )
         center.isAppActive = { true }
         centers.append(center)
@@ -117,6 +124,28 @@ final class FastLaneTests: XCTestCase {
         }
     }
 
+    /// The background agent count's write, from another connection (the
+    /// `Stop` hook): `waiting` one second into the run, `count` reported at
+    /// `reportOffset` seconds into it.
+    private func countWrites(_ id: Int64, count: Int, reportedAt reportOffset: TimeInterval = 2) throws {
+        let other = try DatabaseQueue(path: path)
+        try other.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+                        agent_background = ?, agent_background_at = ? WHERE id = ?
+                    """,
+                arguments: [stamp(1), count, stamp(reportOffset), id]
+            )
+        }
+    }
+
+    /// The `terminal_session` slice over `liveness`, judging at the wall clock.
+    private func terminalSlice(_ liveness: SessionLivenessBox) -> TerminalSessionSlice {
+        let wall = self.wall
+        return TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil }, now: { wall.now })
+    }
+
     private func latestPayloads(_ transport: StubHubTransport, kind: SliceKind) throws -> [String: [String: Any]] {
         var latest: [String: [String: Any]] = [:]
         for saved in transport.saved where saved.record.kind == kind.rawValue {
@@ -125,6 +154,20 @@ final class FastLaneTests: XCTestCase {
         return latest
     }
 
+    /// A `Date` clock the test moves by hand.
+    private final class WallClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+
+        init(_ value: Date) { self.value = value }
+
+        var now: Date {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+
+    /// The publisher's monotonic clock (the fast lane's deadlines).
     private final class FakeClock: @unchecked Sendable {
         private let lock = NSLock()
         private var current = ContinuousClock.now
@@ -160,7 +203,7 @@ final class FastLaneTests: XCTestCase {
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
-            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
+            sources: [terminalSlice(liveness)],
             clock: { clock.now },
             sendNow: { await transport.sendNow() }
         )
@@ -199,22 +242,23 @@ final class FastLaneTests: XCTestCase {
 
     /// #411 (PROJ-11: Agents working is never announced): a turn end with
     /// background agents running reaches the phone as `working` with the
-    /// Mac's caption and glyph, and raises no `ask_alert`.
+    /// Mac's caption and glyph, and raises no `ask_alert`: the open ask's
+    /// one alert went out before, and the state change adds none.
     func testAgentsWorkingPublishesAsWorkingAndRaisesNoAlert() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)
+        // A workbench ask (no session, so the session's state stays its
+        // own): the alert slice has a record to publish, once.
+        _ = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: bench.project) }
         let center = makeCenter()
         let liveness = SessionLivenessBox()
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
         _ = try HubIdentity(sidecar: sidecar).ensureEnabledAt(started)
-        let sliceNow = started.addingTimeInterval(60)
+        let wall = self.wall
         let publisher = SlicePublisher(
             dbPool: pool, state: sidecar, transport: transport,
-            sources: [
-                TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil }, now: { sliceNow }),
-                AskAlertSlice(sidecar: sidecar) { sliceNow }
-            ]
+            sources: [terminalSlice(liveness), AskAlertSlice(sidecar: sidecar) { wall.now }]
         )
         let log = NudgeLog()
         let lane = makeLane(center, liveness: liveness) { kinds in
@@ -226,6 +270,8 @@ final class FastLaneTests: XCTestCase {
         try hookWrites([row.id], "working", at: 1)
         await center.poll()
         try await publisher.publishOnce()
+        let alerts = { transport.saved.filter { $0.record.kind == SliceKind.askAlert.rawValue }.count }
+        XCTAssertEqual(alerts(), 1, "the open ask's alert")
 
         let turnEnd = stamp(2)
         let other = try DatabaseQueue(path: path)
@@ -253,7 +299,85 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(published["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(published["state_glyph"] as? String, "person.2.fill")
         XCTAssertEqual(published["state_tone"] as? String, "green")
-        XCTAssertFalse(transport.saved.contains { $0.record.kind == SliceKind.askAlert.rawValue }, "no ask_alert")
+        XCTAssertEqual(alerts(), 1, "no second ask_alert")
+    }
+
+    /// #411 §10 (board #73): two failed staleness probes show the count over
+    /// on the Mac with no write; the phone gets the same Stopped, through
+    /// the liveness the fast lane copies — the row alone still says Agents
+    /// working.
+    func testACountShownOverAfterFailedProbesReachesThePhoneAsStopped() async throws {
+        let bench = try await workbench()
+        let row = try await session(in: bench)
+        terminals.start(row, fresh: true)
+        try countWrites(row.id, count: 2)
+        wall.now = started.addingTimeInterval(2 + 31 * 60)
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
+        let center = makeCenter(probeRunner: runner)
+        let liveness = SessionLivenessBox()
+        let transport = StubHubTransport()
+        let publisher = SlicePublisher(
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport, sources: [terminalSlice(liveness)]
+        )
+        let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
+        lane.start()
+        await center.poll()
+        await awaitHubCondition("the first probe runs") { runner.invocations.count == 1 }
+        try await publisher.publishOnce(kinds: [.terminalSession])
+        let record = SliceKind.terminalSession.recordName(id: String(row.id))
+        XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_kind"] as? String, "working")
+
+        wall.now = wall.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await awaitHubCondition("two failed probes show the count over") {
+            center.statuses[row.id]?.state == .live(.stopped)
+        }
+        XCTAssertEqual(Set(liveness.current.displayOver.keys), [row.id], "the lane copied the center's over set")
+        try await publisher.publishOnce(kinds: [.terminalSession])
+        let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
+        XCTAssertEqual(published["state_kind"] as? String, "stopped")
+        XCTAssertEqual(published["state_caption"] as? String, "Stopped")
+
+        // Review F8: a stopped center forgets what it showed over.
+        lane.stop()
+        center.stop()
+        XCTAssertTrue(center.displayOver.isEmpty)
+    }
+
+    /// #411 (board #73): a count lowered to zero ages out on the clock alone,
+    /// with no write. The full tick reaches the phone with no nudge (the
+    /// slice judges at its own clock), and the center's poll nudges the
+    /// fast lane's ask kinds (board #724).
+    func testAZeroCountThatAgesOutReachesThePhoneOnTheTickAndTheFastLane() async throws {
+        let bench = try await workbench()
+        let row = try await session(in: bench)
+        terminals.start(row, fresh: true)
+        try countWrites(row.id, count: 0)
+        let center = makeCenter()
+        let liveness = SessionLivenessBox()
+        let clock = FakeClock()
+        let transport = StubHubTransport()
+        let publisher = SlicePublisher(
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport, sources: [terminalSlice(liveness)]
+        ) { clock.now }
+        let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
+        lane.start()
+        await center.poll()
+        try await publisher.publishOnce()
+        let record = SliceKind.terminalSession.recordName(id: String(row.id))
+        XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_caption"] as? String,
+                       "Agents working", "within the grace")
+        _ = publisher.takeDueCycle(now: clock.origin + .seconds(1))
+        XCTAssertNil(publisher.fastDeadline)
+
+        wall.now = started.addingTimeInterval(2 + SessionBackgroundPolicy.grace + 1)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_kind"] as? String,
+                       "stopped", "the full tick alone, before any read or nudge")
+
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertNotNil(publisher.fastDeadline, "the center's poll saw the same change and nudged the ask kinds")
     }
 
     func testAStateChangeAsksForTheWorkbenchsGitAndSummaryRefresh() async throws {
@@ -424,7 +548,7 @@ final class FastLaneTests: XCTestCase {
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
-            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
+            sources: [terminalSlice(liveness)],
             clock: { clock.now },
             sendNow: { await transport.sendNow() }
         )

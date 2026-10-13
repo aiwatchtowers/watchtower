@@ -15,7 +15,8 @@ struct RecordingsListView: View {
                 replica: env.calendarReplica.snapshot,
                 seen: env.recordingsSeen.value,
                 now: context.date,
-                calendar: .current
+                calendar: .current,
+                held: env.heldRecordings
             ))
         }
         .navigationTitle("Recordings")
@@ -102,6 +103,7 @@ private struct RecordingRow: View {
         case .recordingOnPhone: "record.circle"
         case .sending: "arrow.up.circle"
         case .waitingForMac: "clock"
+        case .heldForMac: "pause.circle"
         case .sendFailed, .macFailed: "exclamationmark.triangle"
         case .onMac: "waveform"
         case .ready: "checkmark"

@@ -84,6 +84,69 @@ final class HubHeartbeatTests: XCTestCase {
             .map { try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: $0.record.payload) }
     }
 
+    // MARK: - Account change (#65)
+
+    /// After the iCloud account signed out or switched, the heartbeat and
+    /// the attached link center's QR name the new user.
+    func testAnAccountResetLooksTheOwnerUpAgainForTheHeartbeatAndTheQR() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let host = HubHostInfo(
+            macName: "Mac acme", appVersion: "0.0.0-test", flavor: .default, accounts: { [] }, ownerUser: { owner.value }
+        )
+        let hub = try makeHub(transport: transport, sidecar: sidecar, host: host)
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { owner.value },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        center.attach(to: hub)
+        await hub.enable()
+        let issued1 = try await center.issueCode()
+        XCTAssertEqual(issued1.ownerUser, "_owner-acme")
+        await center.closeLink(reason: .sheetClosed)
+
+        owner.set("_owner-new")
+        transport.fireAccountReset()
+
+        try await awaitHubCondition("the heartbeat names the new user") {
+            await hub.heartbeatTick()
+            return try savedHeartbeats(transport).last?.ownerUser == "_owner-new"
+        }
+        let issued2 = try await center.issueCode()
+        XCTAssertEqual(issued2.ownerUser, "_owner-new")
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// A lookup still running when the account changes may answer with the
+    /// old user: the heartbeat never carries it.
+    func testAnOwnerLookupRunningAcrossAnAccountResetNeverReachesTheHeartbeat() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        let transport = StubHubTransport()
+        let host = HubHostInfo(
+            macName: "Mac acme", appVersion: "0.0.0-test", flavor: .default, accounts: { [] },
+            ownerUser: {
+                let answer = owner.value
+                await gate.park()
+                return answer
+            }
+        )
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), host: host)
+        let enabling = Task { await hub.enable() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        hub.accountChanged()
+        gate.release()
+        await enabling.value
+        await hub.heartbeatTick()
+
+        let owners = try savedHeartbeats(transport).map(\.ownerUser)
+        XCTAssertFalse(owners.contains("_owner-acme"), "\(owners)")
+        XCTAssertEqual(owners.last, "_owner-new")
+    }
+
     // MARK: - Enable
 
     /// Board #724, owner decision Q2: every 15 min, and three failed

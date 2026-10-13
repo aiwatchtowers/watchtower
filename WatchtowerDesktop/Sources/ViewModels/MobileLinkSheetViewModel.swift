@@ -34,9 +34,13 @@ final class MobileLinkSheetViewModel: Identifiable {
     /// The close at 0, outside the countdown task: a New code waits for it,
     /// so the old close never lands on the new code's link.
     @ObservationIgnored private var expiryClose: Task<Void, Never>?
-    /// The phones linked before the code was shown: a new one used it.
-    @ObservationIgnored private var knownDevices: Set<String> = []
+    /// The phones linked before the code was shown, with their link time:
+    /// a new one used the code, and so did a linked one whose link time
+    /// moved (a phone that scans again re-links, keeping its grants).
+    @ObservationIgnored private var knownDevices: [String: Date] = [:]
     @ObservationIgnored private var started = false
+    /// A code is being issued: a second New code click is dropped.
+    @ObservationIgnored private var issuing = false
     @ObservationIgnored private var closed = false
 
     init(
@@ -75,12 +79,15 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func issue() async {
+        guard !issuing else { return }
+        issuing = true
+        defer { issuing = false }
         countdownTask?.cancel()
         countdownTask = nil
         await expiryClose?.value
         guard !closed else { return }
         phase = .issuing
-        knownDevices = Set(center.devices.map(\.deviceID))
+        knownDevices = Dictionary(center.devices.map { ($0.deviceID, $0.linkedAt) }) { first, _ in first }
         do {
             let code = try await center.issueCode()
             // Closed while the code was being made: it must not stay open.
@@ -99,6 +106,7 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func startCountdown() {
+        countdownTask?.cancel()
         countdownTask = Task { [weak self, sleep] in
             while !Task.isCancelled {
                 guard let self, await self.tick() else { return }
@@ -113,13 +121,17 @@ final class MobileLinkSheetViewModel: Identifiable {
     func tick() async -> Bool {
         guard case .showing(let code) = phase else { return false }
         if center.openCode?.nonce != code.nonce {
-            if let linked = center.devices.first(where: { !knownDevices.contains($0.deviceID) }) {
+            if let linked = center.devices.first(where: { knownDevices[$0.deviceID] != $0.linkedAt }) {
                 phase = .linked(linked.name)
                 return false
             }
         }
         updateRemaining(code)
         guard remainingSeconds <= 0 || center.openCode?.nonce != code.nonce else { return true }
+        if center.openCode == nil, center.lastCloseReason == .accountChanged {
+            phase = .failed(MobileLinkError.accountChanged.localizedDescription)
+            return false
+        }
         phase = .expired
         let close = Task { [center] in await center.closeLink(reason: .expired) }
         expiryClose = close

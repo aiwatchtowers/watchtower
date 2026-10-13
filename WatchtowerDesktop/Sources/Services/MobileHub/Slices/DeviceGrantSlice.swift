@@ -10,7 +10,9 @@ import WatchtowerSync
 /// phone (`devices`) reads `linked: true` with its grants; a refused link
 /// attempt (`link_refusals`) reads `linked: false` with `link_refused` for
 /// `refusalLifetime`. A removed phone has no record, so the publisher
-/// deletes it. At most 20, the latest linked first, then the latest refused.
+/// deletes it — and the phone reads that deletion as its removal (#64), so
+/// every linked phone's grant is published, never capped: only the refusals
+/// fill the room left under 20, the latest first.
 struct DeviceGrantSlice: SliceSource {
     let kind = SliceKind.deviceGrant
 
@@ -54,7 +56,8 @@ struct DeviceGrantSlice: SliceSource {
             ))
         }
         let encoder = RelayCoder.makeEncoder()
-        return try (linked + refused).prefix(Self.maxRecords).map { modifiedAt, grant in
+        let room = max(0, Self.maxRecords - linked.count)
+        return try (linked + refused.prefix(room)).map { modifiedAt, grant in
             SliceRecord(kind: kind, id: grant.deviceID, modifiedAt: modifiedAt, payload: try encoder.encode(grant))
         }
     }

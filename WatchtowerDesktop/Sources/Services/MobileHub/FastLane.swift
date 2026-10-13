@@ -23,8 +23,12 @@ import WatchtowerSync
 ///   the phone in 1–2 s instead of the 10 s urgent tick. The published
 ///   session states themselves follow on the next full tick.
 ///
-/// It also copies `TerminalCenter`'s liveness into `SessionLivenessBox` for
-/// the `terminal_session` slice, which resolves states off the main actor.
+/// It also copies `TerminalCenter`'s liveness and the center's
+/// `displayOver` into `SessionLivenessBox` for the `terminal_session` slice,
+/// which resolves states off the main actor. A count that only ages out on
+/// the clock needs no copy: the slice judges it at its own clock on every
+/// full tick (30 s), and the center's 1 s poll sees the same change and
+/// nudges the ask kinds.
 ///
 /// Main-actor, because the center and the terminal center are. A hub
 /// companion: `MobileHubService` (main actor) starts it with the publisher
@@ -158,7 +162,11 @@ final class FastLane: HubCompanion {
     @discardableResult
     private func copyLiveness() -> Bool {
         guard let terminalCenter else { return false }
-        return liveness.update(SessionLiveness(liveIDs: terminalCenter.liveIDs, startedAt: terminalCenter.startedAt))
+        return liveness.update(SessionLiveness(
+            liveIDs: terminalCenter.liveIDs,
+            startedAt: terminalCenter.startedAt,
+            displayOver: agentStates?.displayOver ?? [:]
+        ))
     }
 
     // MARK: - Tables
