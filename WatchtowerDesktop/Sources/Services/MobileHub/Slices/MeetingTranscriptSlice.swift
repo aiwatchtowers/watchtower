@@ -103,21 +103,26 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     /// "an unchanged cycle reads only the light key").
     var fullReads: Int { cache.fullReads }
 
+    /// `recap_json` columns read so far (the test seam for "an unchanged
+    /// cycle reads no recap").
+    var recapReads: Int { cache.recapReads }
+
     /// A row whose `updated_at` is this recent may still change within the
     /// same stored second (the column has whole seconds), so its light key
     /// is not trusted: it takes the full read until it is older.
     static let settleTime: TimeInterval = 2
 
-    /// Inside the read: the window, the chosen recaps and each row's light
-    /// key (`lightKey`: the small columns, the big columns' lengths, the
-    /// chosen recap's id and `updated_at`, and the phone recording id). A
-    /// row whose light key matches the cached one (and settled), with its
-    /// staged file intact, reuses the cached record without reading its big
-    /// columns. Every other row is read in full and fingerprinted (SHA-256
-    /// of the raw columns): a matching fingerprint still reuses the record.
-    /// Outside the read (the returned build): the asset and payload of every
-    /// row whose fingerprint changed or whose staged file no longer holds
-    /// its asset.
+    /// Inside the read: the window, each row's candidate recaps (id and
+    /// `updated_at` only) and its light key (`lightKey`: the small columns,
+    /// the big columns' lengths, the candidate recaps and the phone
+    /// recording id). A row whose light key matches the cached one (and
+    /// settled), with its staged file intact, reuses the cached record
+    /// without reading its big columns. Every other row is read in full and
+    /// fingerprinted (SHA-256 of the raw columns): a matching fingerprint
+    /// still reuses the record. The `recap_json` of the rows left to build
+    /// is read last. Outside the read (the returned build): the recap
+    /// decode, the asset and the payload of every row whose fingerprint
+    /// changed or whose staged file no longer holds its asset.
     func assetRecords(
         _ db: Database,
         stagedDigest: @escaping (_ recordName: String, _ fileName: String) -> Data?
@@ -125,14 +130,11 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         let stamp = now()
         let window = try Self.window(db, now: stamp, calendar: calendar())
         let recaps = try Self.recaps(db, window: window)
-        let chosen: (Int64, String?) -> ChosenRecap? = { id, eventID in
-            recaps.byTranscript[id] ?? eventID.flatMap { recaps.byEvent[$0] }
-        }
         var planned: [Int64: Planned] = [:]
         var unread: [Int64] = []
         for key in try Self.lightKeys(db, ids: window.map(\.id)) {
             let phone = phoneRecordingID(key.id)
-            let light = Self.lightFingerprint(key, recap: chosen(key.id, key.eventID), phone: phone)
+            let light = Self.lightFingerprint(key, recaps: recaps.candidates(key.id, eventID: key.eventID), phone: phone)
             let settled = SliceDate.parse(key.updatedAt).map { stamp.timeIntervalSince($0) >= Self.settleTime } ?? false
             if let hit = cache.entry(key.id), settled, hit.light == light,
                let ready = reuse(hit, id: key.id, stamp: stamp, stagedDigest: stagedDigest) {
@@ -142,21 +144,28 @@ struct MeetingTranscriptSlice: AssetSliceSource {
             }
         }
         cache.countFullReads(unread.count)
+        var builds: [Build] = []
         for row in try Self.rows(db, ids: unread) {
-            let recap = chosen(row.id, row.eventID)
+            let candidates = recaps.candidates(row.id, eventID: row.eventID)
             let phone = phoneRecordingID(row.id)
-            let fingerprint = Self.fingerprint(row, recap: recap, phone: phone)
+            let fingerprint = Self.fingerprint(row, recaps: candidates, phone: phone)
             // A row still settling keeps no light key: the next cycle reads
             // it in full again.
             let settled = SliceDate.parse(row.updatedAt).map { stamp.timeIntervalSince($0) >= Self.settleTime } ?? false
-            let light = settled ? Self.lightFingerprint(LightKey(row), recap: recap, phone: phone) : nil
+            let light = settled ? Self.lightFingerprint(LightKey(row), recaps: candidates, phone: phone) : nil
             if let hit = cache.entry(row.id), hit.fingerprint == fingerprint,
                let ready = reuse(hit, id: row.id, stamp: stamp, stagedDigest: stagedDigest) {
                 cache.setLight(light, for: row.id)
                 planned[row.id] = .ready(ready)
             } else {
-                planned[row.id] = .build(Build(row: row, recap: recap?.content, phone: phone, fingerprint: fingerprint, light: light))
+                builds.append(Build(row: row, recaps: candidates, phone: phone, fingerprint: fingerprint, light: light))
             }
+        }
+        let recapJSON = try Self.recapJSON(db, ids: Set(builds.flatMap { $0.recaps.map(\.id) }))
+        cache.countRecapReads(recapJSON.count)
+        for var job in builds {
+            job.recapJSON = job.recaps.compactMap { ref in recapJSON[ref.id].map { (id: ref.id, json: $0) } }
+            planned[job.row.id] = .build(job)
         }
         let ordered = window.compactMap { planned[$0.id] }
         let ids = Set(window.map(\.id))
@@ -189,7 +198,10 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     /// A row to decode and encode in the build.
     private struct Build {
         let row: TranscriptRow
-        let recap: MeetingRecap.Content?
+        /// The candidate recaps, in precedence order.
+        let recaps: [RecapRef]
+        /// Their `recap_json`, same order (read after the light pass).
+        var recapJSON: [(id: Int64, json: String)] = []
         let phone: String?
         let fingerprint: Data
         /// The row's light key, nil while it settles.
@@ -205,9 +217,11 @@ struct MeetingTranscriptSlice: AssetSliceSource {
             let encoder = RelayCoder.makeEncoder()
             let segments = Self.segments(row)
             let asset = try Self.encodeAsset(segments, encoder: encoder)
-            let ownSummary = Self.decodeRecap(row.summaryJSON, what: "summary_json of transcript \(row.id)")
+            // The first readable candidate wins, else the transcript's own summary.
+            let recap = job.recapJSON.lazy.compactMap { Self.decodeRecap($0.json, what: "meeting recap \($0.id)") }.first
+                ?? Self.decodeRecap(row.summaryJSON, what: "summary_json of transcript \(row.id)")
             let payload = try encoder.encode(makePayload(
-                row, recap: job.recap ?? ownSummary, phone: job.phone, speakers: Self.speakers(segments), segmentsClipped: asset.clipped
+                row, recap: recap, phone: job.phone, speakers: Self.speakers(segments), segmentsClipped: asset.clipped
             ))
             let digest = SliceAsset.digest(of: asset.data)
             cache.store(row.id, BuildCache.Entry(fingerprint: job.fingerprint, light: job.light, payload: payload, digest: digest))
@@ -232,9 +246,11 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         private var entries: [Int64: Entry] = [:]
         private var buildCount = 0
         private var fullReadCount = 0
+        private var recapReadCount = 0
 
         var builds: Int { lock.withLock { buildCount } }
         var fullReads: Int { lock.withLock { fullReadCount } }
+        var recapReads: Int { lock.withLock { recapReadCount } }
 
         func entry(_ id: Int64) -> Entry? {
             lock.withLock { entries[id] }
@@ -246,6 +262,10 @@ struct MeetingTranscriptSlice: AssetSliceSource {
 
         func countFullReads(_ count: Int) {
             lock.withLock { fullReadCount += count }
+        }
+
+        func countRecapReads(_ count: Int) {
+            lock.withLock { recapReadCount += count }
         }
 
         func store(_ id: Int64, _ entry: Entry) {
@@ -355,10 +375,18 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         }
     }
 
-    private static func lightFingerprint(_ key: LightKey, recap: ChosenRecap?, phone: String?) -> Data {
+    private static func lightFingerprint(_ key: LightKey, recaps: [RecapRef], phone: String?) -> Data {
         digest([
             String(key.id), key.eventID, key.title, String(key.durationSec), key.createdAt, key.updatedAt
-        ] + key.lengths.map { $0.map(String.init) } + [recap.map { String($0.id) }, recap?.updatedAt, phone])
+        ] + key.lengths.map { $0.map(String.init) } + recapFields(recaps) + [phone])
+    }
+
+    /// The candidate recaps as fingerprint fields: their count, then each
+    /// one's id and `updated_at`. Any candidate's change (not only the
+    /// chosen one's: which one is readable is known only once decoded)
+    /// rebuilds the row.
+    private static func recapFields(_ recaps: [RecapRef]) -> [String?] {
+        [String(recaps.count)] + recaps.flatMap { [String($0.id), $0.updatedAt] }
     }
 
     /// The columns the projection reads, in the window's order.
@@ -391,12 +419,11 @@ struct MeetingTranscriptSlice: AssetSliceSource {
 
     /// SHA-256 over everything the record is derived from; each field is
     /// tagged (nil vs present) and length-prefixed, so no two inputs collide.
-    private static func fingerprint(_ row: TranscriptRow, recap: ChosenRecap?, phone: String?) -> Data {
+    private static func fingerprint(_ row: TranscriptRow, recaps: [RecapRef], phone: String?) -> Data {
         digest([
             String(row.id), row.eventID, row.title, String(row.durationSec), row.createdAt, row.updatedAt,
-            row.segmentsJSON, row.legacyText, row.summaryJSON, row.chaptersJSON,
-            recap.map { String($0.id) }, recap?.updatedAt, phone
-        ])
+            row.segmentsJSON, row.legacyText, row.summaryJSON, row.chaptersJSON
+        ] + recapFields(recaps) + [phone])
     }
 
     /// SHA-256 over `fields`, each tagged (nil vs present) and
@@ -418,41 +445,58 @@ struct MeetingTranscriptSlice: AssetSliceSource {
 
     // MARK: - Recap
 
-    private struct ChosenRecap {
+    /// A recap row without its content: the light pass reads no
+    /// `recap_json`.
+    private struct RecapRef {
         let id: Int64
         let updatedAt: String
-        let content: MeetingRecap.Content
     }
 
     private struct Recaps {
-        var byTranscript: [Int64: ChosenRecap] = [:]
-        var byEvent: [String: ChosenRecap] = [:]
+        /// Newest first.
+        var byTranscript: [Int64: [RecapRef]] = [:]
+        var byEvent: [String: [RecapRef]] = [:]
+
+        /// A transcript's recaps in precedence order: its own (by
+        /// `transcript_id`) first, then its event's; the first readable one
+        /// wins (decoded in the build).
+        func candidates(_ id: Int64, eventID: String?) -> [RecapRef] {
+            (byTranscript[id] ?? []) + (eventID.flatMap { byEvent[$0] } ?? [])
+        }
     }
 
-    /// The readable `meeting_recaps` rows of the window's transcripts, by
-    /// `transcript_id` and by `event_id` (the join `r.transcript_id = t.id
-    /// OR (r.event_id IS NOT NULL AND r.event_id = t.event_id)`).
+    /// The non-empty `meeting_recaps` rows of the window's transcripts (id
+    /// and `updated_at` only), by `transcript_id` and by `event_id` (the
+    /// join `r.transcript_id = t.id OR (r.event_id IS NOT NULL AND
+    /// r.event_id = t.event_id)`).
     private static func recaps(_ db: Database, window: [(id: Int64, eventID: String?)]) throws -> Recaps {
         guard !window.isEmpty else { return Recaps() }
         let ids = window.map(\.id)
         let eventIDs = Array(Set(window.compactMap(\.eventID)))
         let eventClause = eventIDs.isEmpty ? "" : " OR event_id IN (\(placeholders(eventIDs.count)))"
         var out = Recaps()
-        // Newest first; the first readable row seen per key wins.
         for row in try Row.fetchAll(db, sql: """
-            SELECT id, event_id, transcript_id, recap_json, updated_at FROM meeting_recaps
-            WHERE transcript_id IN (\(placeholders(ids.count)))\(eventClause)
+            SELECT id, event_id, transcript_id, updated_at FROM meeting_recaps
+            WHERE (transcript_id IN (\(placeholders(ids.count)))\(eventClause))
+              AND recap_json IS NOT NULL AND recap_json != ''
             ORDER BY updated_at DESC, id DESC
             """, arguments: StatementArguments(ids) + StatementArguments(eventIDs)) {
-            let recapID: Int64 = row["id"]
-            guard let content = decodeRecap(row["recap_json"], what: "meeting recap \(recapID)") else { continue }
-            let chosen = ChosenRecap(id: recapID, updatedAt: row["updated_at"], content: content)
-            if let transcriptID: Int64 = row["transcript_id"], out.byTranscript[transcriptID] == nil {
-                out.byTranscript[transcriptID] = chosen
-            }
-            if let eventID: String = row["event_id"], out.byEvent[eventID] == nil {
-                out.byEvent[eventID] = chosen
-            }
+            let ref = RecapRef(id: row["id"], updatedAt: row["updated_at"])
+            if let transcriptID: Int64 = row["transcript_id"] { out.byTranscript[transcriptID, default: []].append(ref) }
+            if let eventID: String = row["event_id"] { out.byEvent[eventID, default: []].append(ref) }
+        }
+        return out
+    }
+
+    /// `recap_json` by recap id, for the rows the build decodes.
+    private static func recapJSON(_ db: Database, ids: Set<Int64>) throws -> [Int64: String] {
+        guard !ids.isEmpty else { return [:] }
+        var out: [Int64: String] = [:]
+        for row in try Row.fetchAll(
+            db, sql: "SELECT id, recap_json FROM meeting_recaps WHERE id IN (\(placeholders(ids.count)))",
+            arguments: StatementArguments(Array(ids))
+        ) {
+            if let json: String = row["recap_json"] { out[row["id"]] = json }
         }
         return out
     }
