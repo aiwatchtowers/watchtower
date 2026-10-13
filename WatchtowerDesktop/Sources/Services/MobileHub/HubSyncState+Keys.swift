@@ -391,8 +391,9 @@ extension HubSyncState {
     /// Stores the refusal of a hello under the code `codeNonce` within the flood bounds (target 168): a phone that
     /// already has a refusal row is rewritten in place (no growth); a new one draws from the code's answer counter
     /// (`confirm_nonces_drawn`, shared with the confirm nonces: a refusing code draws no more nonces, it is spent,
-    /// used or expired) up to `maxAnswersPerCode`, and only while fewer than `maxRefusals` rows exist. false:
-    /// nothing written, the hello stays unanswered.
+    /// used or expired) up to `maxAnswersPerCode`, and only while fewer than `maxRefusals` rows exist. A code no
+    /// longer kept (pruned by a newer code while the hello was being checked) has no counter: only the total cap
+    /// applies, so its phone still hears why. false: nothing written, the hello stays unanswered.
     func saveBoundedLinkRefusal(
         _ refusal: LinkRefusalRecord, codeNonce: String, maxAnswersPerCode: Int, maxRefusals: Int
     ) throws -> Bool {
@@ -402,10 +403,17 @@ extension HubSyncState {
                 arguments: [refusal.deviceID]) ?? false
             if !known {
                 guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM link_refusals") ?? 0 < maxRefusals else { return false }
-                try db.execute(
-                    sql: "UPDATE link_codes SET confirm_nonces_drawn = confirm_nonces_drawn + 1 WHERE nonce = ? AND confirm_nonces_drawn < ?",
-                    arguments: [codeNonce, maxAnswersPerCode])
-                guard db.changesCount > 0 else { return false }
+                let kept = try Bool.fetchOne(
+                    db, sql: "SELECT EXISTS(SELECT 1 FROM link_codes WHERE nonce = ?)", arguments: [codeNonce]) ?? false
+                if kept {
+                    try db.execute(
+                        sql: """
+                            UPDATE link_codes SET confirm_nonces_drawn = confirm_nonces_drawn + 1
+                            WHERE nonce = ? AND confirm_nonces_drawn < ?
+                            """,
+                        arguments: [codeNonce, maxAnswersPerCode])
+                    guard db.changesCount > 0 else { return false }
+                }
             }
             try Self.saveLinkRefusal(refusal, db)
             return true

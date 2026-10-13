@@ -227,6 +227,21 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         XCTAssertEqual(try sidecar.linkRefusals().count, max)
     }
 
+    /// A code pruned while its hello was being checked has no counter: its phone is still refused (it hears why
+    /// instead of timing out), within the total cap.
+    func testARefusalForACodeNoLongerKeptStillAnswers() throws {
+        func refusal(_ id: String) -> HubSyncState.LinkRefusalRecord {
+            HubSyncState.LinkRefusalRecord(
+                deviceID: id, name: "iPhone", scope: .private, reason: .expiredCode, at: clock.now, agreementKey: nil)
+        }
+        XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-1"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2))
+        XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-2"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2))
+        XCTAssertFalse(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-3"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2), "the total cap holds")
+    }
+
     /// Review I-1: the device id hashes only the signing key, so one device can re-roll its agreement key under one
     /// code. Each re-roll draws one of the code's nonces; the 4th gets none: the request stays the 3rd one, the
     /// keybox stays sealed to the 3rd key (the 4th cannot open it), and no fresh code is shown.

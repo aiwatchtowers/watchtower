@@ -455,6 +455,7 @@ final class RelayProcessorTests: XCTestCase {
 
         XCTAssertEqual(calls, 0)
         XCTAssertEqual(try echoes(of: record.recordName).map(\.status), [.expired])
+        XCTAssertNil(try echoes(of: record.recordName).first?.errorMessage, "a plain expiry is not a clock problem")
     }
 
     /// A `created_at` more than `maxClockSkew` ahead of the Mac expires (target 168): a far-future date would
@@ -480,6 +481,7 @@ final class RelayProcessorTests: XCTestCase {
 
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(try echoes(of: future.recordName).map(\.status), [.expired])
+        XCTAssertEqual(try echoes(of: future.recordName).first?.errorMessage, RelayProcessor.clockAheadMessage)
         XCTAssertEqual(try echoes(of: skewed.recordName).map(\.status), [.applied])
     }
 

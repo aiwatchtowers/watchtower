@@ -386,8 +386,8 @@ final class RelayProcessor: Sendable {
             outcome = .failed(.wrongHub, message: Self.wrongHubMessage)
         } else if try !admitsDevice(action.deviceID, origin: origin) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
-        } else if isExpired(action) {
-            outcome = .expired
+        } else if let expired = expiry(action) {
+            outcome = expired
         } else {
             try noteSeq(origin)
             guard let applied = try await applyAction(action, origin: origin, transport: transport) else { return }
@@ -419,12 +419,17 @@ final class RelayProcessor: Sendable {
         try sidecar.raiseDeviceLastSeq(sealed.senderID.uuidString, to: sealed.seq)
     }
 
-    /// Past its window, or dated more than `maxClockSkew` ahead: a future `created_at` would otherwise stretch the
-    /// window at will.
-    private func isExpired(_ action: ActionRequestPayload) -> Bool {
+    static let clockAheadMessage = "Your iPhone's clock is ahead of your Mac's. Check the date and time on your iPhone."
+
+    /// The `expired` outcome of an action past its window, or dated more than `maxClockSkew` ahead (a future
+    /// `created_at` would otherwise stretch the window at will; the phone is told to check its clock). nil: in time.
+    private func expiry(_ action: ActionRequestPayload) -> ActionOutcome? {
         let maxAge = Self.sessionRequestKinds.contains(action.kind) ? Self.sessionRequestMaxAge : Self.actionMaxAge
         let age = now().timeIntervalSince(action.createdAt)
-        return age > maxAge || age < -Self.maxClockSkew
+        if age < -Self.maxClockSkew {
+            return ActionOutcome(status: .expired, reason: .expired, result: nil, errorMessage: Self.clockAheadMessage)
+        }
+        return age > maxAge ? .expired : nil
     }
 
     /// nil when another pass already claimed the record (it echoes it).

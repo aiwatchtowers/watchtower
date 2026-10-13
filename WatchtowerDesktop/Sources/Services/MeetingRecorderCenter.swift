@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import WatchtowerCore
 
@@ -1899,10 +1900,21 @@ final class MeetingRecorderCenter {
         var errorDescription: String? { "The file is not an audio recording." }
     }
 
-    /// An ISO base media file (the phone's `.m4a`): its first box is `ftyp`,
-    /// whose type sits at offset 4. A cheap content check — whatever else a
-    /// linked phone sends never reaches the recordings directory or the
-    /// decoder. `nonisolated`: a file read, kept off the main actor's work.
+    /// A phone recording: an ISO base media file (its first box is `ftyp`,
+    /// whose type sits at offset 4) that AVFoundation reads with at least one
+    /// audio track — so a video, a HEIF image or a bare header is refused, and
+    /// whatever else a linked phone sends never reaches the recordings
+    /// directory or the decoder.
+    nonisolated static func isAudioRecording(_ url: URL) async -> Bool {
+        guard isISOMediaFile(url) else { return false }
+        do {
+            return try await !AVURLAsset(url: url).loadTracks(withMediaType: .audio).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /// The cheap first gate of `isAudioRecording`: the `ftyp` box head.
     nonisolated static func isISOMediaFile(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
@@ -1924,7 +1936,7 @@ final class MeetingRecorderCenter {
     /// create also guards writers off this actor); only the copy runs off it.
     /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
     /// report under — without awaiting the job. Throws when the source is not
-    /// a media file (`PhoneIngestError.notAudio`), or the reservation or the
+    /// an audio recording (`PhoneIngestError.notAudio`), or the reservation or the
     /// copy fails (nothing is enqueued and nothing is left behind).
     @discardableResult
     func ingestPhoneRecording(
@@ -1933,8 +1945,8 @@ final class MeetingRecorderCenter {
         title: String?,
         config: TranscriptionConfig
     ) async throws -> URL {
-        let isMedia = await Task.detached { Self.isISOMediaFile(sourceURL) }.value
-        guard isMedia else { throw PhoneIngestError.notAudio }
+        let isAudio = await Task.detached { await Self.isAudioRecording(sourceURL) }.value
+        guard isAudio else { throw PhoneIngestError.notAudio }
         let audioURL = try Self.reservePhoneRecording(eventID: eventID, title: title,
                                                       in: recordingsDirectory, date: clock())
         try await Task.detached {

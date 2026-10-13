@@ -386,24 +386,30 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
-    func testTheMediaCheckReadsTheFtypBox() throws {
+    /// The phone's AAC `.m4a` passes; a bare `ftyp` header (an ISO file without an audio track), a non-ISO file
+    /// and a missing file do not.
+    func testTheMediaCheckRequiresAnAudioTrack() async throws {
         let real = try writePhoneAACFixture(durationSec: 1)
         defer { try? FileManager.default.removeItem(at: real) }
-        XCTAssertTrue(MeetingRecorderCenter.isISOMediaFile(real))
-        let dummy = try makeDummyPhoneAudioFile()
-        defer { try? FileManager.default.removeItem(at: dummy) }
-        XCTAssertTrue(MeetingRecorderCenter.isISOMediaFile(dummy))
+        let isAudio = await MeetingRecorderCenter.isAudioRecording(real)
+        XCTAssertTrue(isAudio)
+        let header = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).m4a")
+        try (Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypM4A ".utf8) + Data(count: 12)).write(to: header)
+        defer { try? FileManager.default.removeItem(at: header) }
+        XCTAssertTrue(MeetingRecorderCenter.isISOMediaFile(header))
+        let headerIsAudio = await MeetingRecorderCenter.isAudioRecording(header)
+        XCTAssertFalse(headerIsAudio, "an ftyp box alone is no audio")
         let short = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: short) }
-        XCTAssertFalse(MeetingRecorderCenter.isISOMediaFile(short))
-        XCTAssertFalse(MeetingRecorderCenter.isISOMediaFile(recordingsDir.appendingPathComponent("missing.m4a")))
+        let shortIsAudio = await MeetingRecorderCenter.isAudioRecording(short)
+        XCTAssertFalse(shortIsAudio)
+        let missingIsAudio = await MeetingRecorderCenter.isAudioRecording(recordingsDir.appendingPathComponent("missing.m4a"))
+        XCTAssertFalse(missingIsAudio)
     }
 
-    /// A stand-in phone `.m4a`: just the `ftyp` box head the ingest checks.
+    /// A short real phone `.m4a` (the ingest checks for an audio track).
     private func makeDummyPhoneAudioFile() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("phone-\(UUID().uuidString).m4a")
-        try (Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypM4A ".utf8)).write(to: url)
-        return url
+        try writePhoneAACFixture(durationSec: 0.2)
     }
 
     private func sidecarTitle(_ audio: URL) throws -> String? {
