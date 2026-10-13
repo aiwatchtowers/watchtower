@@ -657,6 +657,16 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Whether the hub ingested the phone recording `uploadID` (its job is remembered; kept 31 days,
+    /// `RecordingJobSlice.sidecarRetention`).
+    func hasPhoneRecording(uploadID: String) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT EXISTS (SELECT 1 FROM phone_recordings WHERE upload_id = ?)", arguments: [uploadID]
+            ) ?? false
+        }
+    }
+
     /// Forgets the phone recordings last updated before `date`.
     func prunePhoneRecordings(olderThan date: Date) throws {
         try queue.write { db in
@@ -945,7 +955,8 @@ final class HubSyncState: Sendable {
     /// Links `device` with `nonce` in one transaction: the decision is
     /// re-checked there, and only a `.valid` one marks the code used by the
     /// device, upserts its row (a re-link keeps the owner's grants) and
-    /// forgets its refusal. Returns the decision it found.
+    /// forgets its refusal, its revoked keybox, its relay rollback marks and
+    /// its `last_seq`. Returns the decision it found.
     func linkDevice(_ device: LinkedDevice, nonce: String, now: Date) throws -> LinkDecision {
         try queue.write { db in try Self.linkDevice(device, nonce: nonce, now: now, db) }
     }
@@ -981,6 +992,11 @@ final class HubSyncState: Sendable {
         try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
         // Linked again: its revoked keybox gives way to the linked one.
         try db.execute(sql: "DELETE FROM revoked_devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        // A re-link (a reinstall, a lost seq floor) restarts the phone's seqs under the same epoch: its old
+        // rollback marks would refuse its fixed-name records as `.older`. They protect nothing any more, because
+        // the re-link replaces the link nonce its relay keys derive from (final review Kit I2 / Desktop I-1).
+        try db.execute(sql: "DELETE FROM relay_seen WHERE sender_id = ? COLLATE NOCASE", arguments: [deviceID])
+        try db.execute(sql: "UPDATE devices SET last_seq = NULL WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
         return .valid
     }
 

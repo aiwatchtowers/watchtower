@@ -593,7 +593,14 @@ final class RelayProcessor: Sendable {
             // identical envelope (Task 9).
             try noteSeq(context.origin)
             guard try sidecar.claimRelayRetryingFailure(name, at: now()) else { return }
-            outcome = await ingestUpload(upload, asset: asset, uploads: context.uploads)
+            if try sidecar.hasPhoneRecording(uploadID: upload.id) {
+                // Ingested before its ledger row was pruned (a re-seal after a rotation's grace, final review
+                // Desktop M-1): answered `received` again, never a second recording.
+                logger.notice("recording upload \(name, privacy: .public) was ingested already: echoed received")
+                outcome = .applied()
+            } else {
+                outcome = await ingestUpload(upload, asset: asset, uploads: context.uploads)
+            }
         }
         var echoed = upload
         echoed.status = outcome.status == .applied ? .received : .failed

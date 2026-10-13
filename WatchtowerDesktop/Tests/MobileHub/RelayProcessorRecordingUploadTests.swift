@@ -341,6 +341,28 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(try echoes(of: record.recordName).last?.payload.status, .received, "re-echoed received")
     }
 
+    /// Final review Desktop M-1: the ledger row of an ingested upload is gone (pruned after a rotation's grace)
+    /// when the phone re-sends it, re-sealed after a wipe that lost the echo. The hub still remembers the
+    /// upload id (`phone_recordings`), so it echoes `received` and ingests nothing a second time.
+    func testAnUploadIngestedBeforeItsLedgerRowWasPrunedIsNotIngestedAgain() async throws {
+        let record = try await send(uploadPayload(), asset: try makeAsset())
+        let processor = try makeProcessor()
+        _ = try await processor.processOnce()
+        XCTAssertEqual(enqueued.count, 1)
+        XCTAssertEqual(try sidecar.phoneRecordings().map(\.uploadID), ["R1"])
+
+        // No `hub_epochs` row here: the prune goes by the cutoff alone.
+        try sidecar.pruneRelayProcessed(olderThan: now.addingTimeInterval(86_400), now: now)
+        XCTAssertNil(try sidecar.relayOutcome(record.plainName), "the ledger row is gone")
+        try await send(uploadPayload(), asset: try makeAsset("resealed.m4a"))
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(enqueued.count, 1, "the upload id was ingested already")
+        XCTAssertEqual(recordingFiles().count, 2, "one .m4a and its .meta")
+        XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.received, .received])
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
+    }
+
     /// The ingest is handed the decrypted audio in a temporary file beside the stash; once the pass ends no
     /// plaintext copy is left, and the sealed stash of a received upload is consumed.
     func testTheIngestReceivesThePlainAudioAndNoPlainCopyIsLeft() async throws {

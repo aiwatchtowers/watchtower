@@ -1127,6 +1127,95 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertNil(try sidecar.relayPhase(current.plain))
     }
 
+    /// Final review (Kit I2, Desktop I-1, Phone I-2): a phone re-linked through a new code without Remove (a
+    /// reinstall, or a seq floor lost across wipes) restarts its seqs at 1 under the same epoch. The re-link clears
+    /// its rollback marks and `last_seq`, so its fixed-name records (its `device` record, a held recording
+    /// re-sealed under the same upload id) are processed again, not refused as `.older`.
+    func testARelinkWithoutRemoveForgetsThePhonesRollbackMarks() async throws {
+        let firstCode = try await center.issueCode()
+        try await link(try hello(identityC, nonce: firstCode.nonce))
+        let hubID = try WireBytes.hubUUID(try sidecar.ensureHubID())
+        let secure = hubSecure()
+        let phone = identityC
+        let hubAgreement = keyring.agreementPublicKey
+        /// `plain` sealed by phone C under the link nonce `nonce` at epoch 1, `seq`.
+        func seal(_ plain: CloudRecord, nonce: String, seq: UInt64) throws -> CloudRecord {
+            let wire = try secure.wireName(plain: plain.recordName, zone: .relay)
+            let key = try KeyDerivation.relayKey(
+                agreementPrivate: phone.agreement, peerPublic: hubAgreement,
+                linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(nonce)),
+                hubID: hubID, deviceID: phone.deviceID, epoch: 1, direction: .phoneToHub)
+            let envelope = try EnvelopeSealer.sealSymmetric(
+                InnerFrame(kind: plain.kind, id: plain.recordName, asset: plain.asset, payload: plain.payload),
+                envelopeClass: .relayToHub, key: key, hubID: hubID, senderID: phone.deviceID, epoch: 1, seq: seq,
+                context: EnvelopeContext(zone: .relay, wireName: wire), signer: nil)
+            return CloudRecord(
+                recordName: wire, zone: .relay, kind: WireKind.envelope, modifiedAt: plain.modifiedAt, payload: envelope,
+                assetFileURL: plain.assetFileURL)
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("relink-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let upload = RecordingUploadPayload(
+            id: "R-relink", startedAt: clock.now.addingTimeInterval(-600), endedAt: clock.now.addingTimeInterval(-300),
+            durationSec: 300, titleHint: "Acme standup", sampleFormat: "aac-64k-mono", eventID: nil, deviceID: phoneC)
+        /// The held recording as the phone seals it: the same upload id, a freshly sealed asset.
+        func uploadRecord(nonce: String, seq: UInt64) throws -> CloudRecord {
+            let plainAudio = dir.appendingPathComponent("plain-\(UUID().uuidString)")
+            try Data(repeating: 0xCD, count: 128).write(to: plainAudio)
+            let sealedAudio = dir.appendingPathComponent("sealed-\(UUID().uuidString)")
+            let descriptor = try ChunkedAssetCipher.encryptFile(at: plainAudio, to: sealedAudio)
+            let plain = try CloudRecordFactory.record(for: upload, modifiedAt: clock.now, assetFileURL: sealedAudio)
+            return try seal(
+                CloudRecord(
+                    recordName: plain.recordName, zone: plain.zone, kind: plain.kind, modifiedAt: plain.modifiedAt,
+                    payload: plain.payload, assetFileURL: sealedAudio, asset: descriptor),
+                nonce: nonce, seq: seq)
+        }
+        let transport = StubHubTransport()
+        let center = try XCTUnwrap(self.center)
+        let uploads = RelayProcessor.RecordingUploads { _, _ in }
+        let processor = RelayProcessor(
+            transport: MobileHubStorage.sealing(transport, keyring: keyring, sidecar: sidecar), sidecar: sidecar,
+            dispatcher: MobileHubCommandDispatcher(), hubID: try sidecar.ensureHubID(),
+            recordingUploads: uploads,
+            deviceRecords: .init { try await center.handleDevice($0) })
+        let uploadName = upload.recordName
+        let uploadWire = try secure.wireName(plain: uploadName, zone: .relay)
+        func echoCount() -> Int { transport.saved.filter { $0.record.recordName == uploadWire }.count }
+
+        // The first install: high seqs, the recording ingested and echoed, start-sessions turned off.
+        try await transport.save([
+            try seal(try deviceRecord(phoneC, nonce: nil, startSessions: false), nonce: firstCode.nonce, seq: 5_000),
+            try uploadRecord(nonce: firstCode.nonce, seq: 5_001)
+        ])
+        _ = try await processor.processOnce()
+        await center.closeAfterLink?.value
+        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, false)
+        XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
+        XCTAssertEqual(try sidecar.deviceLastSeq(phoneC), 5_001)
+        let echoesBefore = echoCount()
+
+        // Reinstalled: the same identity scans a new code and the owner clicks Link again, with no Remove.
+        clock.advance(30)
+        let secondCode = try await center.issueCode()
+        try await link(try hello(identityC, nonce: secondCode.nonce))
+        XCTAssertNil(try sidecar.deviceLastSeq(phoneC), "the re-link resets the seq high-water mark")
+        XCTAssertNil(try sidecar.relaySeen(wireName: uploadWire, senderID: phoneC), "and forgets the rollback marks")
+
+        // Its seqs restart at 1, under the same epoch.
+        try await transport.save([
+            try seal(try deviceRecord(phoneC, nonce: nil, startSessions: true), nonce: secondCode.nonce, seq: 1),
+            try uploadRecord(nonce: secondCode.nonce, seq: 2)
+        ])
+        _ = try await processor.processOnce()
+        await center.closeAfterLink?.value
+
+        XCTAssertEqual(try grants()[phoneC]?.startSessionsAllowed, true, "the device record is applied")
+        XCTAssertGreaterThan(echoCount(), echoesBefore + 1, "the re-sealed recording is answered received again")
+        XCTAssertEqual(try sidecar.relayOutcome(uploadName), RecordingUploadStatus.received.rawValue)
+    }
+
     // MARK: - Closing the link
 
     func testTheLinkClosesAtUseRemovingAnUnboundParticipantAndKeepingTheBoundOne() async throws {
