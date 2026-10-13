@@ -1,6 +1,7 @@
 package sessioncleanup
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -208,4 +209,28 @@ func TestApply_BranchCheckedOutRightBeforeTheDeleteIsKept(t *testing.T) {
 	if it.Detail != late || !f.branchExists("feat/x") {
 		t.Fatalf("detail %q, or the branch is gone", it.Detail)
 	}
+}
+
+// TestApply_PrunableWorktreeGoesThroughWorktreeRemove: a worktree whose
+// directory is gone is dropped by `git worktree remove` (never prune) and
+// reported removed with 0 bytes.
+func TestApply_PrunableWorktreeGoesThroughWorktreeRemove(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	if err := os.RemoveAll(root); err != nil { // the fixture's own temp worktree
+		t.Fatal(err)
+	}
+	log := &opLog{}
+	f.git = &loggingGit{log: log}
+	res := f.apply(Request{}, nil, nil)
+	it := wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if it.Bytes != 0 || !it.BytesKnown || res.RemovedBytes != 0 || f.listsWorktree(root) {
+		t.Fatalf("prunable result = %+v / %+v", it, res)
+	}
+	if !slices.Contains(log.list(), "git worktree remove "+root) {
+		t.Fatalf("not removed through git worktree remove: %v", log.list())
+	}
+	wantResultItem(t, res, "branch:feat/x", ActionRemove, "", true)
 }

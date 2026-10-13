@@ -158,8 +158,10 @@ arbitrary path, never `rm -rf`):
 | W8 | A merge/rebase/cherry-pick/revert/bisect in progress | `operation_in_progress` |
 | W9 | Another listed worktree, or any `.git` file or directory other than its own, lies inside it — `git worktree remove` without `--force` still deletes the whole directory, ignored files included, so a worktree or repository nested under an ignored directory (`.claude/worktrees/<agent>`) would go with its uncommitted work. Found by a walk that does not follow symlinks, 20 s budget; an unreadable entry or a walk over budget keeps it `check_failed` | `contains_worktree` (detail: the nested path) |
 
-A worktree whose directory is already gone (`prunable`) is removed from git's metadata (`git worktree prune`,
-which only drops entries whose directory is gone) and reported `removed`, 0 bytes.
+A worktree whose directory is already gone (`prunable`) is dropped from git's metadata by the same
+`git worktree remove <root>` (no `--force`; never `git worktree prune`, which would drop every prunable entry, not
+only the named one) and reported `removed`, 0 bytes. It meets only the folder, ownership and unpushed catches: its
+directory is gone, so nothing in it can be dirty, locked, in use or nested.
 
 **Branches:**
 
