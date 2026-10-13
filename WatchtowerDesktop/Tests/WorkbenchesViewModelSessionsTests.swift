@@ -1163,7 +1163,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.showSession(id: first.id)
         await vm.showSession(id: second.id)
 
-        XCTAssertNotNil(vm.drilledSessions.first { $0.id == second.id }, "a legacy closed session is listed")
+        XCTAssertNotNil(vm.panelSections(projectID: p).searchRows.first { $0.id == second.id }, "a legacy closed session is listed")
         XCTAssertEqual(vm.panelSelection, .session(second.id))
         XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
         XCTAssertEqual(launches.last?.args.last, "exec claude --resume \(try XCTUnwrap(second.claudeSessionID))")
@@ -1178,7 +1178,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         await vm.newSessionOnPage()
 
-        let row = try XCTUnwrap(vm.drilledSessions.first)
+        let row = try XCTUnwrap(vm.panelSections(projectID: p).main.first)
         XCTAssertEqual(vm.panelSelection, .session(row.id))
         XCTAssertEqual(launches.count, 1)
     }
@@ -1728,21 +1728,21 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
         await vm.loadSessions(projectID: p)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id])
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [second.id, first.id])
 
         clock = clock.addingTimeInterval(60)
         await vm.showSession(id: first.id)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [second.id, first.id], "opening does not raise it")
 
-        vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [first.id, second.id])
+        vm.moveSessions(vm.panelSections(projectID: p).main.map(\.session), projectID: p, from: [1], to: 0)
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [first.id, second.id])
 
         let third = try await liveSession(p, "third")
         let relaunched = makeVM()
         await relaunched.reload()
         relaunched.drill(into: p)
         await relaunched.loadSessions(projectID: p)
-        XCTAssertEqual(relaunched.drilledSessions.map(\.id), [third.id, first.id, second.id])
+        XCTAssertEqual(relaunched.panelSections(projectID: p).visibleOrder, [third.id, first.id, second.id])
     }
 
     func testStandaloneAndProjectOrdersAreSavedApart() async throws {

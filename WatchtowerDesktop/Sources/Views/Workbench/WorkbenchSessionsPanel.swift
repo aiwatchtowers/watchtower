@@ -18,11 +18,8 @@ struct WorkbenchSessionsPanel: View {
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
-        let sessions = vm.drilledSessions
-        let stack = vm.asks.stack(projectID: project.id)
-        let closed = vm.asks.closedCounts[project.id] ?? [:]
-        let rows = vm.sessionRows(sessions)
-        let rowIDs = rows.map(\.id)
+        let sections = vm.panelSections(projectID: project.id)
+        let scrollIDs = sections.panelScrollIDs
         VStack(alignment: .leading, spacing: 0) {
             header
             OwnerAskStackSection(vm: vm, project: project)
@@ -39,40 +36,70 @@ struct WorkbenchSessionsPanel: View {
             // (VoiceOver has the row's action).
             // The list follows the session on screen, never the asks stack
             // above it (board #561): a new session is selected before its row
-            // loads, so the policy keeps it pending until the row appears.
+            // loads, so the policy keeps it pending until the row appears. A
+            // row under the finished group's header brings the header in too.
             ScrollViewReader { proxy in
                 List {
-                    ForEach(rows) { row in
-                        TerminalSessionRow(
-                            row: row,
-                            actions: actions,
-                            openAsks: stack.count(session: row.id),
-                            reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: project.id) : nil,
-                            reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: project.id) : nil,
-                            closedAsks: (closed[row.id] ?? 0) > 0
-                                ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
-                                : nil
-                        )
-                        .panelTab(isSelected: vm.panelSelection == .session(row.id))
-                    }
-                    .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
+                    sessionList(sections)
                 }
                 .clearPlainList()
                 .onChange(of: selectedSessionID, initial: true) { _, id in
-                    proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: rowIDs))
+                    let target = scroll.panelScrollTarget(selecting: id, rows: scrollIDs)
+                    proxy.followSelection(along: sections.panelScrollPath(to: target))
                 }
-                .onChange(of: rowIDs) { _, ids in
-                    proxy.followSelection(scroll.panelScrollTarget(rows: ids))
+                .onChange(of: scrollIDs) { _, ids in
+                    proxy.followSelection(along: sections.panelScrollPath(to: scroll.panelScrollTarget(rows: ids)))
+                }
+                // The selected row moved between the group and the main list
+                // with no new selection (a pinned row resumed): follow it.
+                .onChange(of: sections.panelScrollPath(to: selectedSessionID)) { old, new in
+                    guard PanelSelectionScrollPolicy<Int64>.movedSelection(from: old, to: new) != nil else { return }
+                    proxy.followSelection(along: new)
+                }
+                // An opened group shows from its header down, as far as it fits.
+                .onChange(of: sections.expanded) { _, expanded in
+                    guard expanded, let last = sections.finished.last else { return }
+                    proxy.followSelection(along: [last.id, SessionPanelSections.groupHeaderScrollID])
                 }
                 // Same view, another workbench: start the policy afresh.
                 .onChange(of: project.id) {
                     scroll = PanelSelectionScrollPolicy()
-                    proxy.followSelection(scroll.panelScrollTarget(selecting: selectedSessionID, rows: rowIDs))
+                    let target = scroll.panelScrollTarget(selecting: selectedSessionID, rows: scrollIDs)
+                    proxy.followSelection(along: sections.panelScrollPath(to: target))
                 }
             }
             WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
+    }
+
+    /// The main list (drag to reorder), then the "▸ N finished" header and
+    /// the open group's rows or the on-screen row pinned under a folded
+    /// header (board #480). Rows drag within the main list only.
+    @ViewBuilder
+    private func sessionList(_ sections: SessionPanelSections) -> some View {
+        let stack = vm.asks.stack(projectID: project.id)
+        let closed = vm.asks.closedCounts[project.id] ?? [:]
+        let mainSessions = sections.main.map(\.session)
+        ForEach(sections.main) { row in
+            SessionsPanelSessionRow(
+                vm: vm, projectID: project.id, row: row, actions: actions,
+                openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0
+            )
+        }
+        .onMove { vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1) }
+        if sections.finishedCount > 0 {
+            SessionsPanelFinishedHeader(count: sections.finishedCount, expanded: sections.expanded) {
+                vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
+            }
+            .id(SessionPanelSections.groupHeaderScrollID)
+            ForEach(sections.finished + (sections.pinned.map { [$0] } ?? [])) { row in
+                SessionsPanelSessionRow(
+                    vm: vm, projectID: project.id, row: row, actions: actions,
+                    openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0
+                )
+            }
+        }
     }
 
     /// The session on screen, if the panel lists it (`.session` only).

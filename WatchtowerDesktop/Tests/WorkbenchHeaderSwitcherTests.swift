@@ -121,7 +121,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         await vm.reload()
         vm.drill(into: a)
         await vm.loadSessions(projectID: a)
-        let loaded = vm.drilledSessions
+        let loaded = vm.panelSections(projectID: a).main.map(\.session)
         vm.moveSessions(loaded, projectID: a, from: [2], to: 0)
         let ordered = vm.orderedSessions(projectID: a)
         XCTAssertEqual(ordered.map(\.id), [loaded[2], loaded[0], loaded[1]].map(\.id))

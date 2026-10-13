@@ -46,6 +46,7 @@ final class WorkbenchesViewModel {
             } else {
                 drilledWorkbenchID = nil
             }
+            refreshStickySection()
         }
     }
     private(set) var isCreating = false
@@ -169,6 +170,14 @@ final class WorkbenchesViewModel {
     /// The panel's dragged session orders touched this run (key nil = the
     /// standalone terminals); the rest are read from `defaults`.
     var sessionOrders: [Int64?: [Int64]] = [:]
+    /// The sessions panel's "▸ N finished" folds touched this run (board
+    /// #480); the rest are read from `defaults`.
+    var finishedGroupFolds: [Int64: Bool] = [:]
+    /// The on-screen session's kept panel section (spec
+    /// 2026-10-12-sessions-panel-design §3.3): a session finishing in front
+    /// of the owner keeps its main-list slot until another one comes on
+    /// screen (`refreshStickySection`).
+    var stickySection: SessionPanelSections.Sticky?
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
     /// Consecutive "no owner message yet" title answers per session; at
@@ -404,8 +413,10 @@ final class WorkbenchesViewModel {
         }
         // A failed read (or no states at all) vouches for nothing: no Return.
         lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
-        agentStates?.onChange = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
+        agentStates?.onChange = { [weak self, weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
             Task { await lineDelivery?.deliverHeld() }
+            // The session on screen keeps its panel section (#480).
+            self?.refreshStickySection()
             // A session started, stopped or began a run: whether its stored
             // cwd is trusted may have moved (board #565).
             sessionPlaces?.cwdsMayHaveChanged()
