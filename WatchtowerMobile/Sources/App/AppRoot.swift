@@ -45,6 +45,10 @@ final class AppRoot {
     @ObservationIgnored private var retired = false
     /// The restart running or queued last: restarts run one at a time.
     @ObservationIgnored private var restartTask: Task<LocalWipe, Error>?
+    /// The link check of the last fetch (`checkHeartbeat`); a test awaits it.
+    @ObservationIgnored private(set) var linkCheck: Task<Void, Never>?
+    /// An unreadable keybox was logged; reset by a readable one.
+    @ObservationIgnored private var loggedUnreadableGrant = false
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     /// `restarter` nil keeps `env` for good (the demo, tests).
@@ -161,21 +165,69 @@ final class AppRoot {
         }
     }
 
-    /// The heartbeat after each fetch: the moved and stale checks.
+    /// The heartbeat and the linked device's grant after each fetch: the
+    /// moved and stale checks, and the Mac's Remove (#64). The grant is the
+    /// one of the device id the link was made with (`LinkRecord.deviceID`),
+    /// never the Keychain's current id; a link without it is judged on the
+    /// heartbeat only. E2E: the grant rides in this phone's keybox
+    /// (`ReplicaStore.keybox(deviceID:from:)`, opened with the device's key);
+    /// a revoked keybox (D9) reads `linked: false` here too, though
+    /// `keyboxChanged` acts on it first.
     private func checkHeartbeat() {
-        guard !isDemo, linking.link != nil else { return }
+        guard !isDemo, let link = linking.link else { return }
         let store = env.store
+        let deviceID = link.deviceID.flatMap(UUID.init(uuidString:))
         let heartbeat: HeartbeatPayload?
+        let reading: Result<Keybox?, Error>?
         do {
-            heartbeat = try store.reader.read { db in
-                try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+            (heartbeat, reading) = try store.reader.read { db in
+                (
+                    try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db),
+                    deviceID.map { id in Result { try store.keybox(deviceID: id, from: db) } }
+                )
             }
         } catch {
-            Self.logger.error("heartbeat read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
             return
         }
+        let grant = reading.map(readGrant) ?? .unreadable
         let linking = linking
-        Task { await linking.evaluate(heartbeat: heartbeat) }
+        linkCheck = Task {
+            await linking.evaluate(heartbeat: heartbeat)
+            switch grant {
+            case .absent: await linking.evaluate(grant: nil, heartbeat: heartbeat)
+            case let .decoded(value): await linking.evaluate(grant: value, heartbeat: heartbeat)
+            case .unreadable: break
+            }
+        }
+    }
+
+    /// The linked device's stored grant as the removal check may judge it.
+    private enum GrantReading {
+        case absent
+        case decoded(DeviceGrant)
+        /// Stored but not readable (a newer Mac's format, an envelope that
+        /// does not open, keys locked), or no device id to read it by: never
+        /// judged — unreadable is not absent.
+        case unreadable
+    }
+
+    /// The keybox read as a grant reading. An unreadable one is logged once
+    /// until a readable one comes, not on every fetch.
+    private func readGrant(_ reading: Result<Keybox?, Error>) -> GrantReading {
+        switch reading {
+        case .success(nil):
+            return .absent
+        case .success(let keybox?):
+            loggedUnreadableGrant = false
+            return .decoded(keybox.grant)
+        case .failure(let error):
+            if !loggedUnreadableGrant {
+                loggedUnreadableGrant = true
+                Self.logger.warning("unreadable device keybox kept, not judged: \(String(describing: error), privacy: .public)")
+            }
+            return .unreadable
+        }
     }
 
     /// Shuts the current environment down and builds the next one on

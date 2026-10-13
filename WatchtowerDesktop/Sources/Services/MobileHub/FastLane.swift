@@ -19,8 +19,12 @@ import WatchtowerSync
 ///   writes: Go writes through another connection, and those reach the
 ///   phone through the center's 1 s poll or the 10 s tick.
 ///
-/// It also copies `TerminalCenter`'s liveness into `SessionLivenessBox` for
-/// the `terminal_session` slice, which resolves states off the main actor.
+/// It also copies `TerminalCenter`'s liveness and the center's
+/// `displayOver` into `SessionLivenessBox` for the `terminal_session` slice,
+/// which resolves states off the main actor. A count that only ages out on
+/// the clock needs no copy: the slice judges it at its own clock on every
+/// cycle, the 10 s tick included, and the center's 1 s poll sees the same
+/// change and nudges.
 ///
 /// Main-actor, because the center and the terminal center are. A hub
 /// companion: `MobileHubService` (main actor) starts it with the publisher
@@ -159,7 +163,11 @@ final class FastLane: HubCompanion {
     @discardableResult
     private func copyLiveness() -> Bool {
         guard let terminalCenter else { return false }
-        return liveness.update(SessionLiveness(liveIDs: terminalCenter.liveIDs, startedAt: terminalCenter.startedAt))
+        return liveness.update(SessionLiveness(
+            liveIDs: terminalCenter.liveIDs,
+            startedAt: terminalCenter.startedAt,
+            displayOver: agentStates?.displayOver ?? [:]
+        ))
     }
 
     // MARK: - Tables

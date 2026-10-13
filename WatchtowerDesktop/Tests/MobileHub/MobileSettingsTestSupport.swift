@@ -94,8 +94,7 @@ final class MobileSettingsFixture {
 
     /// A fresh phone's hello for the open code, handed to the center: it waits for the owner.
     @discardableResult
-    func pendingHello(name: String) async throws -> DeviceIdentityKeys {
-        let phone = TestHello.newPhone()
+    func pendingHello(name: String, phone: DeviceIdentityKeys = TestHello.newPhone()) async throws -> DeviceIdentityKeys {
         let nonce = try XCTUnwrap(center.openCode?.nonce, "no code open")
         let device = DevicePayload(
             deviceID: phone.deviceID.uuidString, name: name, model: "iPhone18,1", appVersion: "0.0.0-test",

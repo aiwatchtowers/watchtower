@@ -63,9 +63,16 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   the link refuses every request still waiting: `used_code` after a link
 ///   (F17), `expired_code` at expiry, `not_confirmed` otherwise. A linked
 ///   phone keeps its link whatever code it sends later; a removed one is
-///   never re-linked by an old nonce.
+///   never re-linked by an old nonce. The hello's typing request rides along
+///   in the waiting request; a link with it on while typing is not allowed
+///   asks the owner (`onTypingRequested`, spec §10).
 /// - `handleDevice(_:)`: a linked phone's own sealed rewrite without a nonce
-///   unlinks it (`unlinked: true`) or sets its start-sessions grant.
+///   unlinks it (`unlinked: true`) or sets its start-sessions grant and its
+///   typing request (spec §10: a request asks the owner —
+///   `onTypingRequested` — and never grants; the phone's toggle off revokes
+///   the grant).
+/// - Revoke, Remove and the phone's own revoke or unlink tell
+///   `onTypingRevoked`, which fails the phone's held lines (PROJ-16).
 ///
 /// The `device_grant` records are `DeviceGrantSlice`'s, from the sidecar;
 /// every change here nudges that kind.
@@ -115,6 +122,12 @@ final class MobileLinkCenter {
 
     /// The heartbeat's `sharing` (set to `MobileHubService.sharing`).
     @ObservationIgnored var onSharingChanged: (@MainActor (HubSharing) -> Void)?
+    /// A linked phone turned "Type into sessions" on while the Mac has not
+    /// allowed it: the Mac asks the owner (spec §10, OD-2).
+    @ObservationIgnored var onTypingRequested: (@MainActor (HubSyncState.LinkedDevice) -> Void)?
+    /// A phone lost its typing grant (Revoke, the phone's toggle off) or its
+    /// link (Remove, unlink): its held lines fail (spec §10, PROJ-16).
+    @ObservationIgnored var onTypingRevoked: (@MainActor (_ deviceID: String) -> Void)?
     /// The last `sharing` reported, re-applied to a rebuilt hub.
     @ObservationIgnored private var sharing: HubSharing?
 
@@ -354,8 +367,10 @@ final class MobileLinkCenter {
     /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
     /// revoke", §10): `unlinked: true` removes it as Remove does (in
     /// `shared` scope it has left the shares already); otherwise its
-    /// start-sessions choice becomes the grant. `typing_requested` is not
-    /// stored (the typing prompt is deferred). The record must be the
+    /// start-sessions choice becomes the grant, and its typing request is
+    /// stored: turned on while not allowed, the owner is asked
+    /// (`onTypingRequested`); turned off while allowed, the grant goes (a
+    /// revoke from the phone's side, spec §10). The record must be the
     /// linked phone's: its scope, and a creator both checks accept. An
     /// unlinked device's record changes nothing.
     private func handleLinkedRewrite(_ record: CloudRecord, _ payload: DevicePayload) async throws {
@@ -376,8 +391,28 @@ final class MobileLinkCenter {
             }
             return
         }
-        guard payload.startSessions != device.startSessionsAllowed else { return }
-        try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
+        if payload.startSessions != device.startSessionsAllowed {
+            try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
+        }
+        try applyTypingRequest(payload.typingRequested, of: device)
+    }
+
+    /// Stores the phone's typing request; asks the owner when it newly
+    /// asks, revokes the grant only when the stored request goes from on to
+    /// off (a rewrite for another toggle keeps it).
+    private func applyTypingRequest(_ requested: Bool, of device: HubSyncState.LinkedDevice) throws {
+        if try sidecar.setTypingRequested(requested, deviceID: device.deviceID) {
+            reloadDevices()
+        }
+        if requested, !device.typingAllowed, !device.typingRequested {
+            logger.info("phone \(device.deviceID, privacy: .public) asks to type into sessions")
+            var asking = device
+            asking.typingRequested = true
+            onTypingRequested?(asking)
+        } else if !requested, device.typingRequested, device.typingAllowed {
+            logger.info("phone \(device.deviceID, privacy: .public) turned typing off: grant revoked")
+            try setTypingAllowed(false, deviceID: device.deviceID)
+        }
     }
 
     /// `shared`: the record's creator is the phone's own user. `private`:
@@ -457,7 +492,7 @@ final class MobileLinkCenter {
             deviceID: deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)), model: payload.model,
             scope: payload.scope, userRecordName: payload.userRecordName,
             signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
-            linkNonce: opened.code.nonce, sas: sas, receivedAt: current))
+            linkNonce: opened.code.nonce, sas: sas, receivedAt: current, typingRequested: payload.typingRequested))
         guard saved else { return }
         logger.info("link request from phone \(deviceID, privacy: .public) waits for the owner")
         reloadPendingLinks()
@@ -488,6 +523,9 @@ final class MobileLinkCenter {
             if let id = UUID(uuidString: pending.deviceID) { keyring?.forgetRelayKeys(deviceID: id) }
             logger.info("linked phone \(pending.deviceID, privacy: .public) (\(pending.scope.rawValue, privacy: .public))")
             reloadDevices()
+            if let linked = try sidecar.linkedDevice(pending.deviceID), linked.typingRequested, !linked.typingAllowed {
+                onTypingRequested?(linked)
+            }
             // Outside the caller: the close's share calls never hold it.
             closeAfterLink = Task { await self.closeLink(reason: .used) }
         case .refused(let reason):
@@ -646,6 +684,7 @@ final class MobileLinkCenter {
         }
         reloadDevices()
         nudgeKinds([.deviceGrant])
+        onTypingRevoked?(deviceID)
         return removed
     }
 
@@ -686,6 +725,7 @@ final class MobileLinkCenter {
         guard try sidecar.setDeviceGrant(grant, allowed, deviceID: deviceID, at: Self.wholeSeconds(now())) else { return }
         reloadDevices()
         nudgeKinds([.deviceGrant])
+        if grant == .typing, !allowed { onTypingRevoked?(deviceID) }
     }
 
     /// The grants a session start or input from `deviceID` gets. The relay

@@ -10,7 +10,10 @@ import WatchtowerSync
 /// phone (`devices`) reads `linked: true` with its grants; a refused link
 /// attempt (`link_refusals`) reads `linked: false` with `link_refused` for
 /// `refusalLifetime`. A removed phone has no record, so the publisher
-/// deletes it. At most 20, the latest linked first, then the latest refused.
+/// deletes it — and the phone reads that deletion as its removal (#64), so
+/// every linked phone's keybox is published, never capped: the pending
+/// requests, refusals and revoked phones fill the room left under 20, in
+/// that order, the latest first.
 ///
 /// Mobile E2E (spec §2.3, D7): the payload is a `Keybox` carrying the grant,
 /// which the hub's `SecureTransport` seals to the phone's agreement key under
@@ -101,7 +104,8 @@ struct DeviceGrantSlice: SliceSource {
             ), keys: nil))
         }
         let encoder = RelayCoder.makeEncoder()
-        return try (linked + pending + refused + revoked).prefix(Self.maxRecords).map { modifiedAt, keybox in
+        let room = max(0, Self.maxRecords - linked.count)
+        return try (linked + (pending + refused + revoked).prefix(room)).map { modifiedAt, keybox in
             SliceRecord(
                 kind: kind, id: UUID(uuidString: keybox.grant.deviceID)?.uuidString ?? keybox.grant.deviceID,
                 modifiedAt: modifiedAt, payload: try encoder.encode(keybox)

@@ -14,8 +14,9 @@ import WatchtowerSync
 /// session state milestones (`session_milestones`, spec §4.9), and the
 /// linking state (spec §2.3): the issued QR codes (`link_codes`), the linked
 /// phones (`devices`, spec §10) and the refused link attempts
-/// (`link_refusals`, published as `device_grant` with `link_refused`), and
-/// the E2E key tables (`HubSyncState+Keys.swift`).
+/// (`link_refusals`, published as `device_grant` with `link_refused`), the
+/// phone lines held for an idle session (`held_session_lines`, spec §6.6,
+/// PROJ-16), and the E2E key tables (`HubSyncState+Keys.swift`).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -112,6 +113,16 @@ final class HubSyncState: Sendable {
                     ref INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
+                CREATE TABLE IF NOT EXISTS held_session_lines (
+                    record_name TEXT PRIMARY KEY,
+                    action BLOB NOT NULL,
+                    session_id INTEGER NOT NULL,
+                    line TEXT NOT NULL,
+                    run INTEGER,
+                    launch TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    typing INTEGER NOT NULL DEFAULT 0
+                );
                 """)
             try Self.createLinkTables(db)
             try Self.createKeyTables(db)
@@ -121,6 +132,11 @@ final class HubSyncState: Sendable {
             let columns = Set(try db.columns(in: "relay_processed").map(\.name))
             for (name, type) in [("echo", "BLOB"), ("done_seq", "INTEGER")] where !columns.contains(name) {
                 try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN \(name) \(type)")
+            }
+            // A sidecar created before the Mac kept the phone's typing
+            // request gains it, unrequested.
+            if try !db.columns(in: "devices").contains(where: { $0.name == "typing_requested" }) {
+                try db.execute(sql: "ALTER TABLE devices ADD COLUMN typing_requested INTEGER NOT NULL DEFAULT 0")
             }
             return .commit
         }
@@ -144,7 +160,8 @@ final class HubSyncState: Sendable {
                     linked_at REAL NOT NULL,
                     typing_allowed INTEGER NOT NULL DEFAULT 0,
                     start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
-                    decided_at REAL
+                    decided_at REAL,
+                    typing_requested INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS link_refusals (
                     device_id TEXT PRIMARY KEY,
@@ -400,6 +417,101 @@ final class HubSyncState: Sendable {
                 arguments: [recordName]
             )
         }
+    }
+
+    /// A `done` action's later outcome (a held phone line delivered,
+    /// cancelled, expired or failed, spec §6.6): its stored outcome and echo
+    /// change, its buffer mark stays. False when the record is not `done`.
+    @discardableResult
+    func replaceRelayEcho(_ recordName: String, outcome: String, echo: Data, at date: Date) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE relay_processed SET outcome = ?, echo = ?, updated_at = ?
+                    WHERE record_name = ? AND phase = 'done'
+                    """,
+                arguments: [outcome, echo, date.timeIntervalSince1970, recordName]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    // MARK: - Held phone lines (spec §6.6, PROJ-16)
+
+    /// A phone line (`session_input`, `session_finish_request`) waiting for
+    /// its session to be idle. In memory it is a `SessionLineDelivery` held
+    /// line; this row lets a hub restart queue it again and tells an
+    /// interrupted paste (`typing`) from a line never typed.
+    struct HeldSessionLine: Equatable, Sendable {
+        /// The action as the phone wrote it (its echoes rewrite it).
+        let action: Data
+        let recordName: String
+        let sessionID: Int64
+        let line: String
+        /// The session's process run when the line was held, and the app
+        /// launch that run number belongs to (`TerminalCenter.runs` restart
+        /// at every launch).
+        let run: Int?
+        let launch: String
+        var reason: String
+        /// Set right before a paste of it; a row found set at a hub start
+        /// was interrupted mid-paste.
+        var typing = false
+    }
+
+    func saveHeldLine(_ line: HeldSessionLine) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO held_session_lines (record_name, action, session_id, line, run, launch, reason, typing)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(record_name) DO UPDATE SET reason = excluded.reason, typing = excluded.typing
+                    """,
+                arguments: [
+                    line.recordName, line.action, line.sessionID, line.line, line.run, line.launch, line.reason, line.typing
+                ]
+            )
+        }
+    }
+
+    func heldLine(_ recordName: String) throws -> HeldSessionLine? {
+        try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM held_session_lines WHERE record_name = ?", arguments: [recordName])
+                .map(Self.heldLine)
+        }
+    }
+
+    /// Every held line, in the order they were held.
+    func heldLines() throws -> [HeldSessionLine] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM held_session_lines ORDER BY rowid").map(Self.heldLine)
+        }
+    }
+
+    /// Claims a held line for its paste: marks it being typed only when it
+    /// is still held and not claimed already. False: the line is gone
+    /// (cancelled, finished) or another try of it is typing it.
+    func claimHeldLineForTyping(_ recordName: String) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE held_session_lines SET typing = 1 WHERE record_name = ? AND typing = 0",
+                arguments: [recordName]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    func removeHeldLine(_ recordName: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM held_session_lines WHERE record_name = ?", arguments: [recordName])
+        }
+    }
+
+    private static func heldLine(_ row: Row) -> HeldSessionLine {
+        HeldSessionLine(
+            action: row["action"], recordName: row["record_name"], sessionID: row["session_id"], line: row["line"],
+            run: row["run"], launch: row["launch"], reason: row["reason"], typing: row["typing"]
+        )
     }
 
     /// Retention: drops ledger entries last touched before `date`. Safe for
@@ -744,6 +856,10 @@ final class HubSyncState: Sendable {
         var startSessionsAllowed = true
         /// When the owner last changed a grant; nil while undecided.
         var decidedAt: Date?
+        /// The phone's own "Type into sessions" toggle (its `device`
+        /// record's `typing_requested`): Settings → Mobile asks the owner to
+        /// Allow it. Never a grant by itself.
+        var typingRequested = false
 
         /// The device gate's creator check (spec §5.2 rule 4): in `shared`
         /// scope a record must be written by the phone's own iCloud user.
@@ -849,16 +965,17 @@ final class HubSyncState: Sendable {
         try db.execute(
             sql: """
                 INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
-                                     start_sessions_allowed, decided_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                     start_sessions_allowed, decided_at, typing_requested)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(device_id) DO UPDATE SET
                     name = excluded.name, scope = excluded.scope,
-                    user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
+                    user_record_name = excluded.user_record_name, linked_at = excluded.linked_at,
+                    typing_requested = excluded.typing_requested
                 """,
             arguments: [
                 deviceID, device.name, device.scope.rawValue, device.userRecordName,
                 device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
-                device.decidedAt?.timeIntervalSince1970
+                device.decidedAt?.timeIntervalSince1970, device.typingRequested
             ]
         )
         try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
@@ -914,6 +1031,18 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Stores the phone's typing request (not a grant, no `decided_at`).
+    /// False when the device is not linked or the value did not change.
+    func setTypingRequested(_ requested: Bool, deviceID: String) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE devices SET typing_requested = ? WHERE device_id = ? COLLATE NOCASE AND typing_requested != ?",
+                arguments: [requested, deviceID, requested]
+            )
+            return db.changesCount > 0
+        }
+    }
+
     func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
         try queue.write { db in try Self.saveLinkRefusal(refusal, db) }
     }
@@ -958,13 +1087,14 @@ final class HubSyncState: Sendable {
     }
 
     /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
-    /// code, linked phone, pending link request, refusal and revoked phone.
+    /// code, linked phone, pending link request, refusal and revoked phone,
+    /// and the lines held for those phones (their records went with the zones).
     func clearLinkState() throws {
         try queue.write { db in
             try db.execute(
                 sql: """
                     DELETE FROM link_codes; DELETE FROM devices; DELETE FROM pending_devices; DELETE FROM link_refusals;
-                    DELETE FROM revoked_devices
+                    DELETE FROM revoked_devices; DELETE FROM held_session_lines
                     """)
         }
     }
@@ -991,7 +1121,8 @@ final class HubSyncState: Sendable {
             linkedAt: Date(timeIntervalSince1970: row["linked_at"]),
             typingAllowed: row["typing_allowed"],
             startSessionsAllowed: row["start_sessions_allowed"],
-            decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:))
+            decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            typingRequested: row["typing_requested"]
         )
     }
 

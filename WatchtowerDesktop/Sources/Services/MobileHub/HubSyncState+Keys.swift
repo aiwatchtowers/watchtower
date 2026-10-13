@@ -36,7 +36,8 @@ extension HubSyncState {
                 agreement_key BLOB,
                 link_nonce TEXT,
                 sas TEXT,
-                received_at REAL
+                received_at REAL,
+                typing_requested INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS revoked_devices (
                 device_id TEXT PRIMARY KEY,
@@ -59,6 +60,7 @@ extension HubSyncState {
         try addMissingColumns(
             "devices", [("signing_key", "BLOB"), ("agreement_key", "BLOB"), ("link_nonce", "TEXT"), ("last_seq", "INTEGER")], db)
         try addMissingColumns("link_refusals", [("agreement_key", "BLOB")], db)
+        try addMissingColumns("pending_devices", [("typing_requested", "INTEGER NOT NULL DEFAULT 0")], db)
         try addMissingColumns("revoked_devices", [("name", "TEXT"), ("scope", "TEXT")], db)
         try addMissingColumns("slice_state", [("wire_name", "TEXT")], db)
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS slice_state_by_wire ON slice_state (wire_name)")
@@ -326,6 +328,8 @@ extension HubSyncState {
         let linkNonce: String
         let sas: String
         let receivedAt: Date
+        /// The hello's "Type into sessions" toggle (spec §10, PROJ-16): kept for the link, never a grant.
+        var typingRequested = false
     }
 
     /// Stores a pending request; false (nothing written) when the same device already waits with the same code. The
@@ -344,13 +348,13 @@ extension HubSyncState {
             try db.execute(
                 sql: """
                     INSERT INTO pending_devices (device_id, name, model, scope, user_record_name, signing_key, agreement_key,
-                                                 link_nonce, sas, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                 link_nonce, sas, received_at, typing_requested)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     pending.deviceID, pending.name, pending.model, pending.scope.rawValue, pending.userRecordName,
                     pending.signingKey, pending.agreementKey, pending.linkNonce, pending.sas,
-                    pending.receivedAt.timeIntervalSince1970
+                    pending.receivedAt.timeIntervalSince1970, pending.typingRequested
                 ])
             return true
         }
@@ -383,7 +387,7 @@ extension HubSyncState {
             guard pending.sas == sas else { return .codeChanged }
             let device = LinkedDevice(
                 deviceID: pending.deviceID, name: pending.name, scope: pending.scope,
-                userRecordName: pending.userRecordName, linkedAt: now)
+                userRecordName: pending.userRecordName, linkedAt: now, typingRequested: pending.typingRequested)
             let decision = try Self.linkDevice(device, nonce: pending.linkNonce, now: now, db)
             switch decision {
             case .valid:
@@ -447,7 +451,8 @@ extension HubSyncState {
             deviceID: row["device_id"], name: row["name"] ?? "", model: row["model"] ?? "",
             scope: DeviceScope(rawValue: row["scope"] ?? DeviceScope.private.rawValue),
             userRecordName: row["user_record_name"] ?? "", signingKey: signingKey, agreementKey: agreementKey,
-            linkNonce: nonce, sas: sas, receivedAt: Date(timeIntervalSince1970: receivedAt))
+            linkNonce: nonce, sas: sas, receivedAt: Date(timeIntervalSince1970: receivedAt),
+            typingRequested: row["typing_requested"] ?? false)
     }
 
     // MARK: - Relay seq high-water mark (D4)

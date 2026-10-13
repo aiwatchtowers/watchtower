@@ -278,12 +278,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertFalse(drawn.contains { $0.contains(secret) }, "transcript text reached the screen")
     }
 
-    // MARK: - The Tell bar waits for B-T18
-
-    func testTheTellBarIsHidden() {
-        XCTAssertFalse(SessionDetailView.showsTellBar)
-    }
-
     // MARK: - Helpers
 
     private func fieldNames(_ value: Any) -> [String] {

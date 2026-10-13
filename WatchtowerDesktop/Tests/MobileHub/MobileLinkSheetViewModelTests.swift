@@ -56,6 +56,7 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         XCTAssertEqual(sheet.phase, .expired)
         XCTAssertFalse(fixture.shares.isLinkOpen, "closeLink(.expired) closed the public link")
+        XCTAssertEqual(fixture.center.lastCloseReason, .expired)
         XCTAssertNil(fixture.center.openCode)
     }
 
@@ -69,6 +70,7 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         await awaitHubCondition("the countdown reached 0") { sheet.phase == .expired }
         XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .expired)
     }
 
     func testNewCodeReplacesTheCodeAndRestartsTheCountdown() async throws {
@@ -124,7 +126,8 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         await sheet.close()
 
-        XCTAssertFalse(fixture.shares.isLinkOpen, "closeLink(.sheetClosed)")
+        XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .sheetClosed)
         XCTAssertNil(fixture.center.openCode)
     }
 
@@ -182,6 +185,40 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         XCTAssertNil(sheet.decisionError)
         XCTAssertEqual(fixture.center.devices.map(\.deviceID), [linked.deviceID.uuidString])
         XCTAssertEqual(sheet.phase, .linked("Acme iPhone"))
+    }
+
+    /// Board #67: a phone already linked that scans the new code re-links
+    /// with it; the sheet says so instead of "This code expired." E2E: the
+    /// re-scan is a new hello from the same device keys, confirmed by the
+    /// owner; the re-link keeps one phone and moves its link time.
+    func testAnAlreadyLinkedPhoneScanningAgainShowsLinked() async throws {
+        let phone = TestHello.newPhone()
+        let sheet = makeSheet()
+        await sheet.start()
+        try await phoneLinks(phone, name: "iPhone of colleague A")
+        await sheet.tick()
+        XCTAssertEqual(sheet.phase, .linked("iPhone of colleague A"))
+        await sheet.close()
+
+        fixture.clock.advance(5)
+        let again = makeSheet()
+        await again.start()
+        try await phoneLinks(phone, name: "iPhone of colleague A")
+        await again.tick()
+
+        XCTAssertEqual(again.phase, .linked("iPhone of colleague A"))
+        XCTAssertEqual(fixture.center.lastCloseReason, .used)
+        XCTAssertEqual(fixture.center.devices.map(\.deviceID), [phone.deviceID.uuidString], "still one phone")
+        await again.close()
+    }
+
+    /// `phone` sends its hello with the open code, the owner clicks Link,
+    /// and the center's close after the link runs.
+    private func phoneLinks(_ phone: DeviceIdentityKeys, name: String) async throws {
+        _ = try await fixture.pendingHello(name: name, phone: phone)
+        let sas = try XCTUnwrap(fixture.center.pendingLinks.first { $0.id == phone.deviceID.uuidString }?.sas)
+        try await fixture.center.confirmLink(deviceID: phone.deviceID.uuidString, sas: sas)
+        await fixture.center.closeAfterLink?.value
     }
 
     func testAnAccountRefusalShowsItsSentence() async throws {

@@ -127,7 +127,8 @@ public actor ActionOutbox {
     /// `applied` removes the pending row (the authoritative slice change
     /// arrives via hydration); `failed`, `expired` and `cancelled` flip it
     /// with the desktop's message, reason and result; `received` and `held`
-    /// leave it pending, recorded as its `echoStatus`.
+    /// leave it pending, recorded as its `echoStatus` with the echo's reason
+    /// (why a line is held).
     /// Echoes for unknown action_ids are no-ops — redelivery after a sweep
     /// removed the row, or the phantom case documented on `enqueue`. A
     /// still-`pending` payload is our own enqueue reflecting back: inert.
@@ -139,7 +140,7 @@ public actor ActionOutbox {
         case .received, .held:
             // Still in flight on the Mac: the overlay stays pending and
             // remembers how far the Mac got.
-            try store.markPendingActionEcho(id: action.id, status: action.status)
+            try store.markPendingActionEcho(id: action.id, status: action.status, reason: action.reason)
         case .applied:
             if try store.removePendingAction(id: action.id) {
                 appliedObserver?(action)

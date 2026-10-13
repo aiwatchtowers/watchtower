@@ -624,6 +624,42 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try HubSyncState(path: path).relayEcho("action-new"), Data("{}".utf8))
     }
 
+    /// A sidecar from before B18 (no `typing_requested`, no held lines)
+    /// gains both in place: a linked phone keeps its grants, unrequested.
+    func testASidecarWithoutTheTypingRequestColumnGainsIt() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("RelayLedger-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("hubstate.db").path
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    user_record_name TEXT NOT NULL,
+                    linked_at REAL NOT NULL,
+                    typing_allowed INTEGER NOT NULL DEFAULT 0,
+                    start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
+                    decided_at REAL
+                );
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed)
+                VALUES ('phone-a', 'iPhone', 'private', '_owner-acme', 1, 1);
+                """)
+        }
+
+        let reopened = try HubSyncState(path: path)
+
+        let device = try XCTUnwrap(try reopened.linkedDevice("phone-a"))
+        XCTAssertTrue(device.typingAllowed)
+        XCTAssertFalse(device.typingRequested)
+        XCTAssertTrue(try reopened.setTypingRequested(true, deviceID: "phone-a"))
+        XCTAssertTrue(try XCTUnwrap(try reopened.linkedDevice("phone-a")).typingRequested)
+        XCTAssertTrue(try reopened.heldLines().isEmpty)
+        // A second open over the migrated file is a no-op.
+        XCTAssertTrue(try XCTUnwrap(try HubSyncState(path: path).linkedDevice("phone-a")).typingRequested)
+    }
+
     /// Two instances opening an old file at once (a relaunch overlap) both
     /// open: the upgrade runs in an IMMEDIATE transaction.
     func testConcurrentOpensOfAnOldSidecarAllSucceed() throws {

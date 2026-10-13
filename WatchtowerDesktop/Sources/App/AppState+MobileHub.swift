@@ -51,6 +51,8 @@ extension AppState {
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
+        let inputs = makeSessionInputs(storage: storage, dbPool: dbPool)
+        inputs?.register(on: dispatcher)
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
         let gitRefresher = workbenchesViewModel?.cli.map { cli in
@@ -111,12 +113,39 @@ extension AppState {
             },
             sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
         )
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports]
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, inputs]
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
-        return try assembleMobileHub(
+        let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
         )
+        wireTyping(hub.linkCenter, inputs: inputs)
+        return hub
+    }
+
+    /// A line from the phone goes through the asks' own delivery
+    /// (`SessionLineDelivery`, PROJ-12) under PROJ-16's gate; no workbench
+    /// state, no session input.
+    private func makeSessionInputs(storage: MobileHubStorage, dbPool: DatabasePool) -> SessionInputHandlers? {
+        workbenchesViewModel.map { vm in
+            SessionInputHandlers(
+                dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
+                status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
+                deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
+                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar)
+            )
+        }
+    }
+
+    /// The phones' typing grants (spec §10): a revoke fails the phone's held
+    /// lines; a request asks the owner — Settings → Mobile shows it, and a
+    /// macOS notice asks while the app is in the background (OD-2).
+    private func wireTyping(_ linkCenter: MobileLinkCenter?, inputs: SessionInputHandlers?) {
+        linkCenter?.onTypingRevoked = { [weak inputs] in inputs?.revoked(deviceID: $0) }
+        linkCenter?.onTypingRequested = { device in
+            guard NSApp?.isActive == false else { return }
+            NotificationService.shared.sendMobileTypingRequestNotification(deviceID: device.deviceID, name: device.name)
+        }
     }
 
     /// The last step of `buildMobileHub`: the run's link center (when the

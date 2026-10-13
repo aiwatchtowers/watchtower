@@ -20,6 +20,15 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// kept so the shares can be accepted again (spec §2.3 fallback F2).
     let dataShareURL: String?
     let relayShareURL: String?
+    /// The device id this phone linked with (its `device` record's): the
+    /// grant the removal check reads (#64), whatever the Keychain says
+    /// later. nil in a link saved before it was kept: no removal is ever
+    /// read from such a link.
+    var deviceID: String?
+    /// The linked grant's `linked_at` (the Mac's clock) when the link was
+    /// saved; nil in an older link. A removal is read only from a heartbeat
+    /// newer than it.
+    var linkedAt: Date?
 
     /// The database the phone's transport syncs for this link.
     var databaseScope: CloudDatabaseScope {
@@ -74,6 +83,7 @@ final class LinkStore {
     private enum Keys {
         static let link = "link.record"
         static let pending = "link.pending"
+        static let grantMissingSince = "link.grantMissingSince"
     }
 
     init(defaults: UserDefaults) {
@@ -88,6 +98,14 @@ final class LinkStore {
     var pending: PendingLink? {
         get { read(PendingLink.self, key: Keys.pending) }
         set { write(newValue, key: Keys.pending) }
+    }
+
+    /// When a fetch first found the linked hub without this phone's grant
+    /// (the phone's clock); nil while the grant is there. Kept across a
+    /// relaunch, so the second look of the removal check (#64) is not reset.
+    var grantMissingSince: Date? {
+        get { defaults.object(forKey: Keys.grantMissingSince) as? Date }
+        set { defaults.set(newValue, forKey: Keys.grantMissingSince) }
     }
 
     /// The database the app syncs at boot: the link's, else a pending

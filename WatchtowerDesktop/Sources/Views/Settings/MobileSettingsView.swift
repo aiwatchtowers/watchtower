@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WatchtowerSync
 
@@ -26,6 +27,8 @@ struct MobileSettingsTab: View {
 /// linked phones.
 struct MobileSettingsView: View {
     let model: MobileSettingsViewModel
+    /// Whether the Settings window is on screen; the polling runs only then.
+    @State private var windowVisible = true
 
     var body: some View {
         Form {
@@ -38,7 +41,8 @@ struct MobileSettingsView: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
-        .onAppear { model.appeared() }
+        .background(WindowVisibilityReader(isVisible: $windowVisible))
+        .task(id: windowVisible) { await model.windowVisibility(windowVisible) }
         .onDisappear { Task { await model.disappeared() } }
         .sheet(item: Binding(
             get: { model.linkSheet },
@@ -47,7 +51,7 @@ struct MobileSettingsView: View {
             MobileLinkSheet(model: sheet) { Task { await model.linkSheetDismissed() } }
         }
         .confirmationDialog(
-            "Allow \(model.pendingAllow?.name ?? "this phone") to type into your sessions?",
+            MobileSettingsViewModel.allowQuestion(name: model.pendingAllow?.name ?? "this phone"),
             isPresented: Binding(
                 get: { model.pendingAllow != nil },
                 set: { if !$0 { model.pendingAllow = nil } }
@@ -129,13 +133,25 @@ struct MobileSettingsView: View {
                     device: device,
                     onAllow: { model.requestAllow(device) },
                     onRevoke: { model.revoke(device) },
-                    onRemove: { Task { await model.remove(device) } }
+                    onRemove: { model.requestRemove(device) }
                 )
             }
             if let notice = model.notice {
                 Text(notice)
                     .foregroundStyle(.secondary)
             }
+        }
+        .confirmationDialog(
+            MobileSettingsViewModel.removeQuestion(name: model.removeSubject?.name ?? "this phone"),
+            isPresented: Binding(
+                get: { model.pendingRemove != nil },
+                set: { if !$0 { model.pendingRemove = nil } }
+            )
+        ) {
+            Button("Remove", role: .destructive) { Task { await model.confirmRemove() } }
+            Button("Cancel", role: .cancel) { model.pendingRemove = nil }
+        } message: {
+            Text(MobileSettingsViewModel.removeConsequence(model.removeSubject?.scope ?? .shared))
         }
     }
 }
@@ -155,7 +171,8 @@ private struct MobilePhoneRow: View {
                 HStack(spacing: 6) {
                     Text(MobileSettingsViewModel.scopeLabel(device.scope))
                     Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
-                    Text(device.typingAllowed ? "Typing allowed" : "Typing off")
+                    Text(MobileSettingsViewModel.typingLabel(device))
+                        .foregroundStyle(device.typingRequested && !device.typingAllowed ? Color.accentColor : Color.secondary)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -166,7 +183,64 @@ private struct MobilePhoneRow: View {
             } else {
                 Button("Allow…", action: onAllow)
             }
-            Button("Remove", role: .destructive, action: onRemove)
+            Button("Remove…", role: .destructive, action: onRemove)
         }
+    }
+}
+
+/// Reports whether the hosting window is on screen (shown and not fully
+/// covered): a closed Settings window is ordered out, which SwiftUI does
+/// not always answer with `onDisappear`.
+private struct WindowVisibilityReader: NSViewRepresentable {
+    @Binding var isVisible: Bool
+
+    func makeNSView(context: Context) -> WindowVisibilityView {
+        let view = WindowVisibilityView()
+        view.onChange = { visible in
+            // Off the view update in progress.
+            DispatchQueue.main.async { if isVisible != visible { isVisible = visible } }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowVisibilityView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: WindowVisibilityView, coordinator: ()) {
+        nsView.stopObserving()
+    }
+}
+
+private final class WindowVisibilityView: NSView {
+    var onChange: ((Bool) -> Void)?
+    /// Written on the main actor only; read by `deinit` after every other
+    /// reference is gone.
+    nonisolated(unsafe) private var observer: NSObjectProtocol?
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    func stopObserving() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Leaving the window (the view going away) ends the observation.
+        stopObserving()
+        guard let window else {
+            onChange?(false)
+            return
+        }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let window else { return }
+                self?.onChange?(window.occlusionState.contains(.visible))
+            }
+        }
+        onChange?(window.occlusionState.contains(.visible))
     }
 }

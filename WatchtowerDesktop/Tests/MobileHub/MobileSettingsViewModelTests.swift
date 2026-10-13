@@ -233,6 +233,112 @@ final class MobileSettingsViewModelTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).typingAllowed)
     }
 
+    /// Spec §10: a phone's typing request shows on its row, and the one-time
+    /// confirmation names it.
+    func testATypingRequestShowsOnTheRowAndTheConfirmationNamesThePhone() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Typing off")
+        phone.typingRequested = true
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Asks to type into sessions")
+        phone.typingAllowed = true
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Typing allowed")
+        XCTAssertEqual(
+            MobileSettingsViewModel.allowQuestion(name: "iPhone"), "Allow \"iPhone\" to type into Claude Code sessions?"
+        )
+    }
+
+    /// Board #67: Remove asks first (a shared phone's removal is at once and
+    /// cannot be undone); Cancel keeps the phone, the confirmation removes it.
+    func testRemoveAsksFirstAndCancelKeepsThePhone() async throws {
+        try await useSharedPhoneFixture()
+        let model = fixture.makeModel()
+        let phone = try XCTUnwrap(model.devices.first)
+
+        model.requestRemove(phone)
+        XCTAssertEqual(model.pendingRemove?.deviceID, "phone-b")
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-b"), "Remove… asks first")
+        XCTAssertEqual(MobileSettingsViewModel.removeQuestion(name: "iPhone"), "Remove \"iPhone\"?")
+        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.shared).contains("at once"))
+        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.private).contains("can no longer read anything new"))
+
+        model.pendingRemove = nil
+        await model.confirmRemove()
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-b"), "a cancelled dialog removes nothing")
+
+        model.requestRemove(phone)
+        await model.confirmRemove()
+        XCTAssertNil(model.pendingRemove)
+        XCTAssertEqual(model.removeSubject?.deviceID, "phone-b", "the dialog keeps its phone while it dismisses")
+        XCTAssertNil(try fixture.sidecar.linkedDevice("phone-b"))
+        XCTAssertEqual(model.notice, "Removed iPhone.")
+    }
+
+    // MARK: - Polling
+
+    /// Board #67: the polled parts refresh while the window is on screen,
+    /// and only while that task runs; its cancellation (the view's `.task`
+    /// ending with the tab or the window) stops it.
+    func testPollingRunsUntilItsTaskIsCancelled() async throws {
+        await fixture.startHub()
+        let sleeps = SleepLog()
+        let model = MobileSettingsViewModel(
+            host: fixture.host, entitlementPresent: true, flavor: .default, now: { Date() },
+            sleep: { duration in
+                sleeps.record(duration)
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        )
+        let poll = Task { await model.windowVisibility(true) }
+        await awaitHubCondition("the poll refreshed and slept a few times") { sleeps.count >= 3 }
+        XCTAssertEqual(model.account, .available, "a refresh ran")
+        poll.cancel()
+        await poll.value
+        let atCancel = sleeps.count
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sleeps.count, atCancel, "a cancelled poll stops")
+    }
+
+    /// Board #67 (review F10): 30 s normally; 5 s while the hub starts and
+    /// until its first publish, so turning Sync with iPhone on does not look
+    /// stalled; an unavailable or off hub waits the long one.
+    func testTheRefreshIsFastOnlyUntilTheHubsFirstPublish() {
+        let next = MobileSettingsViewModel.nextRefresh
+        XCTAssertEqual(MobileSettingsViewModel.refreshInterval, .seconds(30))
+        XCTAssertEqual(next(true, .starting, nil), .seconds(5))
+        XCTAssertEqual(next(true, .running, nil), .seconds(5))
+        XCTAssertEqual(next(true, .running, Date()), .seconds(30))
+        XCTAssertEqual(next(true, .unavailable("iCloud is off"), nil), .seconds(30))
+        XCTAssertEqual(next(false, .starting, nil), .seconds(30))
+        XCTAssertEqual(next(true, nil, nil), .seconds(30))
+    }
+
+    /// Board #67 (codex P2): a window that hides or closes closes an open QR
+    /// and its link, as leaving the tab does.
+    func testAHiddenWindowClosesAnOpenSheetsLink() async throws {
+        await fixture.startHub()
+        let model = fixture.makeModel()
+        await model.refresh()
+        model.showCode()
+        await model.linkSheet?.start()
+        XCTAssertTrue(fixture.shares.isLinkOpen)
+
+        await model.windowVisibility(false)
+
+        XCTAssertNil(model.linkSheet)
+        XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .sheetClosed)
+    }
+
+    private final class SleepLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Duration] = []
+        var all: [Duration] { lock.withLock { values } }
+        var count: Int { all.count }
+        func record(_ value: Duration) { lock.withLock { values.append(value) } }
+    }
+
     /// F18/D9: a removed same-Apple-ID phone gets no newer keys, so it can no longer read anything new.
     func testRemovingASameAppleIDPhoneShowsTheNewSentence() async throws {
         await fixture.tearDown()

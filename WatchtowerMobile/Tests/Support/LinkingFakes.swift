@@ -209,8 +209,15 @@ final class FakeLinkHost: LinkHost {
         return transport
     }
 
+    /// When true, `fetchKeybox` waits until it is set false again (a link
+    /// flow held mid-check).
+    var parksFetchGrant = false
+
     func fetchKeybox(deviceID: String) async -> Keybox? {
-        await storedKeybox(deviceID: deviceID)
+        while parksFetchGrant {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return await storedKeybox(deviceID: deviceID)
     }
 
     func storedKeybox(deviceID: String) async -> Keybox? {

@@ -670,7 +670,7 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(columns["slice_state"]).contains("wire_name"))
         XCTAssertEqual(columns["pending_devices"], [
             "device_id", "name", "model", "scope", "user_record_name", "signing_key", "agreement_key", "link_nonce", "sas",
-            "received_at"
+            "received_at", "typing_requested"
         ])
         XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at", "name", "scope"])
         XCTAssertEqual(columns["relay_seen"], ["wire_name", "sender_id", "epoch", "seq", "at"])
@@ -698,6 +698,24 @@ final class HubKeyringTests: XCTestCase {
         let deviceColumns = try sidecar.queue.read { Set(try $0.columns(in: "devices").map(\.name)) }
         XCTAssertTrue(deviceColumns.isSuperset(of: ["signing_key", "agreement_key", "link_nonce", "last_seq"]))
         // Opening again is a no-op.
+        XCTAssertNoThrow(try HubSyncState(path: path))
+    }
+
+    /// A sidecar from before B18 met E2E: its `pending_devices` gains `typing_requested` in place, unrequested.
+    func testAPendingDevicesTableWithoutTheTypingRequestGainsIt() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("hubstate-\(UUID().uuidString).db").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let old = try DatabaseQueue(path: path)
+        try old.write { db in
+            try db.execute(sql: """
+                CREATE TABLE pending_devices (device_id TEXT PRIMARY KEY, name TEXT, model TEXT, scope TEXT,
+                    user_record_name TEXT, signing_key BLOB, agreement_key BLOB, link_nonce TEXT, sas TEXT, received_at REAL);
+                INSERT INTO pending_devices VALUES ('d1', 'Phone', 'iPhone18,1', 'private', '_owner', x'01', x'02', 'n', '1234', 0);
+                """)
+        }
+        try old.close()
+        let sidecar = try HubSyncState(path: path)
+        XCTAssertEqual(try sidecar.pendingDevices().map(\.typingRequested), [false])
         XCTAssertNoThrow(try HubSyncState(path: path))
     }
 

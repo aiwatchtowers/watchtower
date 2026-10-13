@@ -91,6 +91,8 @@ final class AppEnvironment {
     let askAnswerer: AskAnswerer
     /// The phone's session starts (with their progress) and stops.
     let sessionStarts: SessionStarter
+    /// The phone's lines to sessions and Finish (PROJ-16).
+    let sessionInputs: SessionInputSender
     let deviceSettings: DeviceSettings
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
@@ -292,6 +294,7 @@ final class AppEnvironment {
         boardWriter = BoardWriter.sending(through: outbox, store: store)
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
+        sessionInputs = SessionInputSender.sending(through: outbox, store: store)
         // An `applied` echo clears the queued row; hydrating right behind it
         // lands the Mac's authoritative change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in
@@ -342,7 +345,9 @@ final class AppEnvironment {
     private func startTransport() async {
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
-        await outbox.setAppliedObserver(Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts))
+        await outbox.setAppliedObserver(
+            Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs)
+        )
         switch transportKind {
         case .inMemoryDemo:
             #if DEBUG
@@ -405,12 +410,14 @@ final class AppEnvironment {
     /// each keeps only its own kind.
     nonisolated static func appliedObserver(
         askAnswerer: AskAnswerer,
-        sessionStarts: SessionStarter
+        sessionStarts: SessionStarter,
+        sessionInputs: SessionInputSender? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs] action in
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
+                sessionInputs?.receiveApplied(action)
             }
         }
     }

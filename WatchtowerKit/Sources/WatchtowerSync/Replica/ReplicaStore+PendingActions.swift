@@ -70,12 +70,13 @@ extension ReplicaStore {
     }
 
     /// Records a non-terminal echo (`received`, `held`) on a still-pending
-    /// row. A failed row keeps its refusal, and unknown ids are a no-op.
-    func markPendingActionEcho(id: String, status: ActionStatus) throws {
+    /// row, with its reason (a held line's `agent_busy`, say; nil clears
+    /// it). A failed row keeps its refusal, and unknown ids are a no-op.
+    func markPendingActionEcho(id: String, status: ActionStatus, reason: ActionReason? = nil) throws {
         try writer.write { db in
             try db.execute(
-                sql: "UPDATE pending_actions SET echo_status = ? WHERE action_id = ? AND state = 'pending'",
-                arguments: [status.rawValue, id]
+                sql: "UPDATE pending_actions SET echo_status = ?, reason = ? WHERE action_id = ? AND state = 'pending'",
+                arguments: [status.rawValue, reason?.rawValue, id]
             )
         }
     }
@@ -207,9 +208,10 @@ public struct PendingAction: Equatable, Identifiable {
     /// The desktop echo's message, or the silent-pending sweep text; nil
     /// while `state == .pending`.
     public let errorMessage: String?
-    /// The echo's closed reason code (`conflict`, `not_found`, …); nil while
-    /// pending, after the silent-pending sweep, or for a code this build
-    /// does not know.
+    /// The echo's closed reason code (`conflict`, `not_found`, …, or a
+    /// `held` echo's `agent_busy`, `needs_approval`, …); nil while pending
+    /// without one, after the silent-pending sweep, or for a code this
+    /// build does not know.
     public let reason: ActionReason?
     /// The echo's result object (a conflict carries `current`); nil when the
     /// echo had none.

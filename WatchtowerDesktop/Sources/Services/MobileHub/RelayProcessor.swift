@@ -450,12 +450,16 @@ final class RelayProcessor: Sendable {
     private func writeEcho(
         _ action: ActionRequestPayload, _ outcome: ActionOutcome, origin: Origin, transport: SecureTransport
     ) async throws {
+        try await transport.save([Self.echo(try Self.echoRecord(action, outcome, at: now()), origin: origin)])
+    }
+
+    private static func echoRecord(_ action: ActionRequestPayload, _ outcome: ActionOutcome, at date: Date) throws -> CloudRecord {
         var echoed = action
         echoed.status = outcome.status
         echoed.reason = outcome.reason
         echoed.result = outcome.result
         echoed.errorMessage = outcome.errorMessage
-        try await transport.save([Self.echo(try CloudRecordFactory.record(for: echoed, modifiedAt: now()), origin: origin)])
+        return try CloudRecordFactory.record(for: echoed, modifiedAt: date)
     }
 
     /// The echo record carrying the opened record's `sealed` info: `SecureTransport` seals it `.relayToPhone` to
@@ -466,6 +470,39 @@ final class RelayProcessor: Sendable {
             recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
             payload: record.payload, notifyLevel: record.notifyLevel, assetFileURL: record.assetFileURL,
             sealed: origin.sealed)
+    }
+
+    /// A later outcome of an action already echoed and `done`: a held phone
+    /// line that went, failed, expired or was cancelled (spec §6.6).
+    typealias LateEcho = @Sendable (ActionRequestPayload, ActionOutcome) async throws -> Void
+
+    /// The late echo over `transport` and `sidecar`: it rewrites the
+    /// record and the ledger's stored echo (a lost ack re-echoes the final
+    /// outcome), inside the relay gate — so it lands after the pass that
+    /// echoed `held` for the same record. Never awaited from inside a
+    /// handler's dispatch (the gate is not re-entrant).
+    ///
+    /// E2E: sealed `.relayToPhone` like every echo, never written in the
+    /// clear. The held line kept no `sealed` info, so `SecureTransport` seals
+    /// it to the payload's `device_id` (F16 fallback) — the sender the device
+    /// gate admitted (`admitsDevice`: `device_id` == the authenticated sender).
+    /// A removed phone has no relay key any more: the seal throws and the
+    /// caller logs it (D9: a removed phone is never echoed). nil `transport`
+    /// (no hub keys): throws `keysUnavailable`, nothing is written.
+    static func lateEcho(
+        transport: SecureTransport?,
+        sidecar: HubSyncState,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) -> LateEcho {
+        { action, outcome in
+            guard let transport else { throw SecureTransportError.keysUnavailable }
+            try await sidecar.relayGate.exclusively {
+                try await transport.save([try echoRecord(action, outcome, at: now())])
+                try sidecar.replaceRelayEcho(
+                    action.recordName, outcome: ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome), at: now()
+                )
+            }
+        }
     }
 
     private static func ledgerOutcome(_ outcome: ActionOutcome) -> String {
