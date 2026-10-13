@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -40,12 +41,13 @@ final class MobileHubServiceTests: XCTestCase {
         relayActiveInterval: Duration? = nil,
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
+        sources: [any SliceSource] = [],
         assets: SliceAssetStore? = nil,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport, sources: sources,
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)),
             assets: assets
         )
@@ -135,6 +137,20 @@ final class MobileHubServiceTests: XCTestCase {
         service.stop()
         XCTAssertEqual(companion.stops, 1)
         offline.stop()
+    }
+
+    /// Board #724: the companions start before the publisher, so its first
+    /// full cycle already sees the fast lane's liveness copy (live
+    /// sessions are never published as not running).
+    func testCompanionsStartBeforeThePublishersFirstCycle() async throws {
+        let order = OSAllocatedUnfairLock(initialState: [String]())
+        let source = OrderedSliceSource(kind: .terminalSession) { order.withLock { $0.append("read") } }
+        let companion = OrderedCompanion { order.withLock { $0.append("companion") } }
+        let service = makeService(transport: StubHubTransport(), companions: [companion], sources: [source])
+        await service.start()
+        await awaitHubCondition("the publisher's first cycle reads") { order.withLock { $0.contains("read") } }
+        XCTAssertEqual(order.withLock { $0.first }, "companion")
+        service.stop()
     }
 
     func testRunningHubAnswersAProbe() async throws {
@@ -927,4 +943,32 @@ final class CountingCompanion: HubCompanion, @unchecked Sendable {
 
     func start() { lock.withLock { startCount += 1 } }
     func stop() { lock.withLock { stopCount += 1 } }
+}
+
+/// A companion that reports its start.
+final class OrderedCompanion: HubCompanion, @unchecked Sendable {
+    private let onStart: () -> Void
+
+    init(onStart: @escaping () -> Void) {
+        self.onStart = onStart
+    }
+
+    func start() { onStart() }
+    func stop() {}
+}
+
+/// A slice source with no records that reports each read.
+final class OrderedSliceSource: SliceSource, @unchecked Sendable {
+    let kind: SliceKind
+    private let onRead: () -> Void
+
+    init(kind: SliceKind, onRead: @escaping () -> Void) {
+        self.kind = kind
+        self.onRead = onRead
+    }
+
+    func records(_ db: Database) throws -> [SliceRecord] {
+        onRead()
+        return []
+    }
 }

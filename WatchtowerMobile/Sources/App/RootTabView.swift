@@ -31,28 +31,17 @@ struct RootTabView: View {
         func badge(openAskCount: Int) -> Int {
             self == .workbench ? openAskCount : 0
         }
-
-        /// Spec §3: 5 s while Now (Settings included) or Workbench is on
-        /// screen, 30 s on Calendar.
-        var fetchInterval: Duration {
-            switch self {
-            case .now, .workbench: .seconds(5)
-            case .calendar: .seconds(30)
-            }
-        }
     }
 
     @Environment(AppEnvironment.self) private var env
     @Environment(\.scenePhase) private var scenePhase
 
-    /// Whether the environment runs in `phase`: paused in the background,
-    /// running when active; nil (no change) while inactive.
-    static func isActive(in phase: ScenePhase) -> Bool? { // swiftlint:disable:this discouraged_optional_boolean
-        switch phase {
-        case .background: false
-        case .active: true
-        default: nil
-        }
+    /// Whether the environment's safety poll runs in `phase`: only while
+    /// active. Inactive (Control Center, the app switcher, a call banner)
+    /// pauses it like the background; the return fetches at once unless
+    /// the last fetch is only seconds old (`AppEnvironment.setActive`).
+    static func isActive(in phase: ScenePhase) -> Bool {
+        phase == .active
     }
 
     init() {
@@ -106,17 +95,12 @@ struct RootTabView: View {
         )) {
             RecordingView()
         }
-        .onChange(of: env.navigation.tab, initial: true) {
-            env.setFetchInterval(env.navigation.tab.fetchInterval)
-        }
-        // The fetch loop pauses in the background (a recording's audio
-        // background mode must not keep it running) and resumes on return.
-        // Read at launch too: a launch straight into the background (a
-        // silent push) never starts the loop.
+        // The safety poll pauses while the app is not active (a
+        // recording's audio background mode must not keep it running) and
+        // resumes on return. Read at launch too: a launch straight into the
+        // background (a silent push) never starts the poll.
         .onChange(of: scenePhase, initial: true) {
-            if let active = Self.isActive(in: scenePhase) {
-                env.setActive(active)
-            }
+            env.setActive(Self.isActive(in: scenePhase))
         }
     }
 

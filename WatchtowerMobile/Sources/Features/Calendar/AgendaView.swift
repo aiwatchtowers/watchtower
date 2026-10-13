@@ -30,7 +30,7 @@ struct AgendaView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { recordingsButton }
             }
-            .refreshable { await env.refresh() }
+            .refreshable { await env.refresh(.pull) }
         }
     }
 

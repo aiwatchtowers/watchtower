@@ -26,6 +26,83 @@ extension AppState {
     /// B registers its slice sources and dispatcher handlers here.
     func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
         let dispatcher = MobileHubCommandDispatcher()
+        registerWorkbenchHandlers(on: dispatcher, storage: storage, dbPool: dbPool)
+        // Without a linked phone only the link flow's answer is published,
+        // and the CLI companions run nothing (board #724).
+        let sidecar = storage.sidecar
+        let hasPhone: @Sendable () -> Bool = { MobileLinkCenter.hasLinkedPhone(sidecar) }
+        let inputs = makeSessionInputs(storage: storage, dbPool: dbPool)
+        inputs?.register(on: dispatcher)
+        // The folder's git status goes through the CLI (PROJ-10's git); no
+        // CLI, no refresher, and the workbench records carry no branch.
+        let gitRefresher = workbenchesViewModel?.cli.map { WorkbenchGitRefresher.live(cli: $0, dbPool: dbPool, isActive: hasPhone) }
+        // The terminals' liveness, copied by the fast lane for the session
+        // projection's off-main resolution.
+        let liveness = SessionLivenessBox()
+        let summaries = workbenchesViewModel?.cli.map {
+            SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness, isActive: hasPhone)
+        }
+        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
+        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let sessions = TerminalSessionSlice(
+            liveness: { liveness.current },
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+        )
+        // Each session's own report (`--session S --json`, scoped by the CLI,
+        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
+        let reports = workbenchesViewModel?.cli.map {
+            SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar, isActive: hasPhone)
+        }
+        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
+        let sources: [any SliceSource] = [
+            WorkbenchSlice(
+                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
+                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
+            ),
+            WorkbenchTargetSlice(),
+            WorkbenchCommentSlice(),
+            sessions,
+            OwnerAskSlice(),
+            AskAlertSlice(sidecar: storage.sidecar),
+            CalendarEventSlice(),
+            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
+            RecordingJobSlice(sidecar: storage.sidecar),
+            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
+        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
+        let transport = storage.transport
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            isLinked: hasPhone,
+            // Labelled: a trailing closure would bind to `clock`, the first
+            // closure parameter.
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
+        // The companions' changes (git status, summaries, reports, phone
+        // recording jobs) are normal kinds: the next full tick diffs them.
+        let fastLane = FastLane(
+            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
+            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
+                gitRefresher?.sessionStateChanged(workbenchID: workbench)
+                summaries?.sessionStateChanged(workbenchID: workbench)
+            },
+            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
+        )
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, inputs]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
+        let hub = try assembleMobileHub(
+            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
+            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
+        )
+        wireTyping(hub.linkCenter, inputs: inputs)
+        return hub
+    }
+
+    /// The asks', board writes' and session starts' handlers (spec §6).
+    private func registerWorkbenchHandlers(
+        on dispatcher: MobileHubCommandDispatcher, storage: MobileHubStorage, dbPool: DatabasePool
+    ) {
         if let asks = workbenchesViewModel?.asks {
             let askAnswers = AskAnswerHandler(dbPool: dbPool, sidecar: storage.sidecar) { [weak asks] ask, answer in
                 // A rebuilt workbench state rebuilds the hub too; until then
@@ -51,75 +128,6 @@ extension AppState {
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
-        let inputs = makeSessionInputs(storage: storage, dbPool: dbPool)
-        inputs?.register(on: dispatcher)
-        // The folder's git status goes through the CLI (PROJ-10's git); no
-        // CLI, no refresher, and the workbench records carry no branch.
-        let gitRefresher = workbenchesViewModel?.cli.map { cli in
-            WorkbenchGitRefresher(
-                fetch: { try await cli.gitStatus(projectID: $0) },
-                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
-            )
-        }
-        // The terminals' liveness, copied by the fast lane for the session
-        // projection's off-main resolution.
-        let liveness = SessionLivenessBox()
-        let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
-        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
-        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
-        let sessions = TerminalSessionSlice(
-            liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
-        )
-        // Each session's own report (`--session S --json`, scoped by the CLI,
-        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
-        let sidecar = storage.sidecar
-        let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
-        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
-        let sources: [any SliceSource] = [
-            WorkbenchSlice(
-                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
-                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
-            ),
-            WorkbenchTargetSlice(),
-            WorkbenchCommentSlice(),
-            sessions,
-            OwnerAskSlice(),
-            AskAlertSlice(sidecar: storage.sidecar),
-            CalendarEventSlice(),
-            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
-            RecordingJobSlice(sidecar: storage.sidecar),
-            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
-        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
-        let transport = storage.transport
-        let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
-            // Labelled: a trailing closure would bind to `clock`, the first
-            // closure parameter.
-            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
-        )
-        gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
-        summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
-        reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
-        recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
-        let fastLane = FastLane(
-            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
-            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
-            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
-                gitRefresher?.sessionStateChanged(workbenchID: workbench)
-                summaries?.sessionStateChanged(workbenchID: workbench)
-            },
-            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
-        )
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, inputs]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
-        let hub = try assembleMobileHub(
-            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
-            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
-        )
-        wireTyping(hub.linkCenter, inputs: inputs)
-        return hub
     }
 
     /// A line from the phone goes through the asks' own delivery

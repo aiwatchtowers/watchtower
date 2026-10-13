@@ -133,8 +133,18 @@ struct CalendarEventSlice: SliceSource {
     /// de-duplicated event included): `meeting_transcript` publishes the
     /// transcripts of these events whatever their age (spec §4.11).
     static func windowEventIDs(_ db: Database, now: Date, calendar: Calendar) throws -> Set<String> {
-        Set(try windowEvents(db, window: window(now: now, calendar: calendar), calendar: calendar).flatMap(\.members))
+        let groups = try windowEvents(db, window: window(now: now, calendar: calendar), calendar: calendar, columns: windowColumns)
+        return Set(groups.flatMap(\.members))
     }
+
+    /// The columns the window, the dedup and the order read (no text
+    /// column a payload needs): enough for `windowEventIDs`.
+    private static let windowColumns = "id, start_time, end_time, is_all_day, conference_url, ical_uid"
+
+    private static let payloadColumns = """
+        id, title, description, location, start_time, end_time, organizer_email, attendees,
+        is_recurring, is_all_day, event_status, html_link, conference_url, ical_uid
+        """
 
     // MARK: - Window and dedup
 
@@ -142,18 +152,21 @@ struct CalendarEventSlice: SliceSource {
         var event: CalendarEvent
         /// Every copy's id, the published one first.
         var members: [String]
+        /// `localStart(event)`, computed once: the sort compares it, and
+        /// `CalendarEvent.startDate` parses ISO 8601 on every call.
+        var start: Date
     }
 
     private static func windowEvents(
         _ db: Database,
         window: (start: Date, end: Date),
-        calendar: Calendar
+        calendar: Calendar,
+        columns: String = payloadColumns
     ) throws -> [Group] {
         // A day of slack on each side for all-day rows (stored as UTC
         // midnight); the exact test runs below on local dates.
         let rows = try Row.fetchAll(db, sql: """
-            SELECT id, title, description, location, start_time, end_time, organizer_email, attendees,
-                   is_recurring, is_all_day, event_status, html_link, conference_url, ical_uid
+            SELECT \(columns)
             FROM calendar_events
             WHERE event_status != 'cancelled' AND start_time <= ? AND end_time >= ?
             """, arguments: [
@@ -164,31 +177,34 @@ struct CalendarEventSlice: SliceSource {
         var byKey: [String: Int] = [:]
         // Lowest id first, so a later copy replaces the kept one only for a
         // conference link.
-        let sorted = rows.map { (event: CalendarEvent(row: $0), uid: $0["ical_uid"] as String? ?? "") }
-            .filter { inWindow($0.event, window: window, calendar: calendar) }
+        let sorted = rows.map { row in
+            let event = CalendarEvent(row: row)
+            return (event: event, uid: row["ical_uid"] as String? ?? "", start: localStart(event, calendar: calendar))
+        }
+            .filter { inWindow($0.event, start: $0.start, window: window, calendar: calendar) }
             .sorted { $0.event.id < $1.event.id }
-        for (event, uid) in sorted {
+        for (event, uid, start) in sorted {
+            let group = Group(event: event, members: [event.id], start: start)
             guard !uid.isEmpty else {
-                groups.append(Group(event: event, members: [event.id]))
+                groups.append(group)
                 continue
             }
             let key = uid + "\u{0}" + event.startTime
             guard let index = byKey[key] else {
                 byKey[key] = groups.count
-                groups.append(Group(event: event, members: [event.id]))
+                groups.append(group)
                 continue
             }
             if groups[index].event.conferenceURL.isEmpty, !event.conferenceURL.isEmpty {
                 groups[index].event = event
+                groups[index].start = group.start
                 groups[index].members.insert(event.id, at: 0)
             } else {
                 groups[index].members.append(event.id)
             }
         }
         groups.sort { lhs, rhs in
-            let left = localStart(lhs.event, calendar: calendar)
-            let right = localStart(rhs.event, calendar: calendar)
-            return left != right ? left < right : lhs.event.id < rhs.event.id
+            lhs.start != rhs.start ? lhs.start < rhs.start : lhs.event.id < rhs.event.id
         }
         return Array(groups.prefix(maxEvents))
     }
@@ -196,11 +212,16 @@ struct CalendarEventSlice: SliceSource {
     /// Overlap with the window: a timed event by its instants (end
     /// inclusive, as `fetchEvents`), an all-day event by its local days
     /// (end exclusive, as stored).
-    private static func inWindow(_ event: CalendarEvent, window: (start: Date, end: Date), calendar: Calendar) -> Bool {
+    /// `start` is `localStart(event)`, computed by the caller.
+    private static func inWindow(
+        _ event: CalendarEvent,
+        start: Date,
+        window: (start: Date, end: Date),
+        calendar: Calendar
+    ) -> Bool {
         guard event.isAllDay else {
-            return event.startDate <= window.end && event.endDate >= window.start
+            return start <= window.end && event.endDate >= window.start
         }
-        let start = localStart(event, calendar: calendar)
         let end = localMidnight(ofUTCDay: event.endDate, in: calendar)
         return start <= window.end && end > window.start
     }
@@ -367,7 +388,7 @@ struct CalendarEventSlice: SliceSource {
         case chapters = "chapters_json"
     }
 
-    /// Logs an unreadable source once per row and content: the 10 s tick
+    /// Logs an unreadable source once per row and content: the 30 s tick
     /// re-reads it, and a changed value warns again. `event` is the
     /// calendar event the row belongs to.
     private static func warnOnce(_ what: Unreadable, id: String, event: String, content: String, error: Error) {

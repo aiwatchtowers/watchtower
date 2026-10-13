@@ -36,16 +36,16 @@ final class SettingsWiringTests: XCTestCase {
 
     // MARK: - Your Mac: online / offline / never connected
 
-    func testHeartbeat719SecondsOldIsOnline() {
+    func testHeartbeat2099SecondsOldIsOnline() {
         let now = Date()
-        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-719)), now: now)
+        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-2099)), now: now)
         XCTAssertEqual(status, .online(macName: "Acme Mac"))
         XCTAssertEqual(status.title, "Online")
     }
 
-    func testHeartbeat720SecondsOldIsOffline() {
+    func testHeartbeat2100SecondsOldIsOffline() {
         let now = Date()
-        let stamp = now.addingTimeInterval(-720)
+        let stamp = now.addingTimeInterval(-2100)
         let status = MacStatus(heartbeat: heartbeat(updatedAt: stamp), now: now)
         XCTAssertEqual(status, .offline(macName: "Acme Mac", lastSeen: stamp))
         XCTAssertEqual(status.title, "Offline")
@@ -145,6 +145,29 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(snapshot.grant, "no linked device, so no grant to read")
     }
 
+    /// The link flow swaps the environment (a new replica) and may keep the
+    /// device id: the observation restarts on the new replica with an empty
+    /// decode cache, so the old Mac's heartbeat is never served.
+    func testANewReplicaForTheSameDeviceShowsItsOwnHeartbeat() async throws {
+        let now = Date()
+        func replica(_ macName: String) async throws -> ReplicaStore {
+            let store = try makePoolStore()
+            let transport = InMemoryCloudTransport()
+            try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now, macName: macName), modifiedAt: now)])
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+            return store
+        }
+        let old = try await replica("Old Mac")
+        let new = try await replica("New Mac")
+        let model = SettingsViewModel()
+        model.start(store: old, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "Old Mac" }, "the first replica never loaded")
+
+        model.start(store: new, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "New Mac" }, "the old replica's heartbeat is still shown")
+        XCTAssertEqual(model.decodeCache.decodes(HeartbeatPayload.recordName), 1, "decoded afresh from the new replica")
+    }
+
     // MARK: - Your Mac: queued
 
     func testQueuedCountEqualsPendingOutboxRows() async throws {
@@ -192,7 +215,7 @@ final class SettingsWiringTests: XCTestCase {
         health.recordFailure("recordings", error: ReadError(), at: now.addingTimeInterval(-300))
         health.recordValue("recordings")
 
-        let rows = SettingsViewModel(health: health).diagnostics(now: now)
+        let rows = SettingsViewModel(health: health).diagnostics(now: now, locale: Locale(identifier: "en_US"))
 
         XCTAssertEqual(rows.map(\.name), ["calendar", "recordings"])
         XCTAssertEqual(rows[0].text, "calendar updates: failed 2×, last 1 min. ago: database is locked")

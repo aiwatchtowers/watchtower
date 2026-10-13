@@ -16,6 +16,9 @@ struct SettingsView: View {
             accountsSection
             workbenchSection
             notificationsSection
+            if let battery = model.battery {
+                BatterySection(report: battery)
+            }
             Section {
                 Text("Chat without the Mac — later")
                     .foregroundStyle(.secondary)
@@ -26,8 +29,18 @@ struct SettingsView: View {
             unlinkSection
         }
         .navigationTitle("Settings")
-        .task(id: env.linkedDevice?.deviceID) {
+        // A new device id or a new environment (the link flow swaps it)
+        // restarts the observation.
+        .task(id: ObservationKey(store: ObjectIdentifier(env.store), deviceID: env.linkedDevice?.deviceID)) {
             model.start(store: env.store, deviceID: env.linkedDevice?.deviceID)
+        }
+        // The counters change on every fetch; re-read them while Settings
+        // is on screen.
+        .task {
+            while !Task.isCancelled {
+                model.refreshBattery()
+                try? await Task.sleep(for: .seconds(30))
+            }
         }
     }
 
@@ -181,4 +194,10 @@ private struct AccountStatusLabel: View {
             Text(style.text).foregroundStyle(style.textTone.color)
         }
     }
+}
+
+/// What Settings' observation follows.
+private struct ObservationKey: Equatable {
+    let store: ObjectIdentifier
+    let deviceID: String?
 }

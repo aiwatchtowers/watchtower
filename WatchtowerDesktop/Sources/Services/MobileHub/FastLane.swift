@@ -4,45 +4,45 @@ import os
 import WatchtowerCore
 import WatchtowerSync
 
-/// The trigger side of the hub's fast lane (mobile POC spec §4.5): what
-/// nudges `SlicePublisher`, whose one loop coalesces the nudges for 1 s and
-/// keeps two fast sends at least 2 s apart. Two sources:
+/// The hub's change triggers (mobile POC spec §4.5). The fast lane is for
+/// asks only (board #724, owner decision Q3): `SlicePublisher` keeps just
+/// the urgent kinds of a nudge, coalesces them for 1 s and keeps two fast
+/// sends at least 2 s apart; every other kind rides the 30 s full tick, so
+/// nothing here nudges it. Two sources:
+/// - GRDB `ValueObservation` over `owner_asks`, nudging `owner_ask` and
+///   `ask_alert`. It sees only the Desktop's own writes: Go writes through
+///   another connection, and those reach the phone on the 10 s urgent tick;
 /// - `SessionAgentStateCenter.onChange` and `onRead`, chained onto the
 ///   closures `initWorkbenches` set (the PROJ-12 held-answer wiring), never
-///   replacing them. A change nudges `terminal_session` and `workbench`
-///   (its `session_counts`), asks the changed sessions' workbenches for
-///   a git and a report-summary refresh, and tells the session report
-///   runner (which resolves the state milestones and the per-session report
-///   runs); a liveness change seen on an unchanged read tells it too;
-/// - GRDB `ValueObservation` over `owner_asks`, `terminal_sessions`,
-///   `project_comments` and `targets`. It sees only the Desktop's own
-///   writes: Go writes through another connection, and those reach the
-///   phone through the center's 1 s poll or the 10 s tick.
+///   replacing them. A change asks the changed sessions' workbenches for a
+///   git and a report-summary refresh and tells the session report runner
+///   (which resolves the state milestones and the per-session report
+///   runs); a liveness change seen on an unchanged read tells it too. It
+///   also nudges `owner_ask` and `ask_alert` (`stateChangeKinds`): an agent
+///   asking usually flips its session's state, so an ask Go wrote reaches
+///   the phone in 1–2 s instead of the 10 s urgent tick. The published
+///   session states themselves follow on the next full tick.
 ///
 /// It also copies `TerminalCenter`'s liveness and the center's
 /// `displayOver` into `SessionLivenessBox` for the `terminal_session` slice,
 /// which resolves states off the main actor. A count that only ages out on
 /// the clock needs no copy: the slice judges it at its own clock on every
-/// cycle, the 10 s tick included, and the center's 1 s poll sees the same
-/// change and nudges.
+/// full tick (30 s), and the center's 1 s poll sees the same change and
+/// nudges the ask kinds.
 ///
 /// Main-actor, because the center and the terminal center are. A hub
 /// companion: `MobileHubService` (main actor) starts it with the publisher
 /// and stops it with the hub.
 @MainActor
 final class FastLane: HubCompanion {
-    /// Each observed table and the kinds its writes nudge. `targets` is
-    /// observed as a whole: GRDB tracks tables, not `WHERE project_id IS NOT
-    /// NULL`, and a personal target's write only costs one empty diff.
+    /// Each observed table and the urgent kinds its writes nudge. Other
+    /// tables' writes publish on the full tick, which needs no trigger.
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
-        ("owner_asks", [.ownerAsk, .askAlert, .terminalSession, .workbench, .workbenchTarget, .sessionTimeline]),
-        ("terminal_sessions", [.terminalSession, .workbench, .workbenchTarget]),
-        ("project_comments", [.workbenchComment, .workbenchTarget]),
-        ("targets", [.workbenchTarget, .workbench, .sessionTimeline])
+        ("owner_asks", [.ownerAsk, .askAlert])
     ]
-
-    /// What a session state change nudges.
-    nonisolated static let sessionStateKinds: Set<SliceKind> = [.terminalSession, .workbench]
+    /// What a session state change nudges: the ask kinds, since Go's ask
+    /// writes are invisible to the observation above.
+    nonisolated static let stateChangeKinds: Set<SliceKind> = [.ownerAsk, .askAlert]
 
     private let dbPool: DatabasePool
     private weak var agentStates: SessionAgentStateCenter?
@@ -115,8 +115,6 @@ final class FastLane: HubCompanion {
             lastStatuses = center.statuses
         }
         copyLiveness()
-        // The publisher's first cycle may have run before the liveness copy.
-        nudge(Self.sessionStateKinds)
         observations = Self.observedTables.map { observe($0.table, kinds: $0.kinds) }
     }
 
@@ -141,6 +139,9 @@ final class FastLane: HubCompanion {
     private func statesChanged() {
         guard isRunning, let center = agentStates else { return }
         let next = center.statuses
+        if next != lastStatuses {
+            nudge(Self.stateChangeKinds)
+        }
         var workbenches: Set<Int64> = []
         for id in Set(next.keys).union(lastStatuses.keys) where next[id] != lastStatuses[id] {
             if let workbench = next[id]?.workbenchID ?? lastStatuses[id]?.workbenchID { workbenches.insert(workbench) }
@@ -149,7 +150,6 @@ final class FastLane: HubCompanion {
         copyLiveness()
         workbenches.sorted().forEach(sessionStateChanged)
         sessionStatesChanged()
-        nudge(Self.sessionStateKinds)
     }
 
     /// An unchanged read may still follow a liveness change the statuses do
@@ -157,7 +157,6 @@ final class FastLane: HubCompanion {
     private func statesRead() {
         guard isRunning, copyLiveness() else { return }
         sessionStatesChanged()
-        nudge(Self.sessionStateKinds)
     }
 
     @discardableResult

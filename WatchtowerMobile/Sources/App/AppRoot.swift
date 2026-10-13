@@ -24,6 +24,11 @@ final class AppRoot {
         /// transport that keeps none.
         let transportStorePath: String?
         let make: @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment
+        /// Keeps a restart running, and the replica usable, when it runs in
+        /// the background (a removal or an account change a push fetch
+        /// found): the hand-over reads the old replica (`BackgroundWork`).
+        /// nil holds nothing (tests).
+        var startWork: BackgroundWork.Starter?
     }
 
     private(set) var env: AppEnvironment
@@ -68,12 +73,18 @@ final class AppRoot {
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return demo(try AppEnvironment(), defaults: defaults)
+            return demo(try AppEnvironment(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
+        // Resolved (and an earlier build's store moved) once, before any
+        // environment opens it; every environment and the wipe share it.
+        let transportStorePath = try AppEnvironment.liveTransportStorePath()
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device)
+            try AppEnvironment(
+                transportStorePath: transportStorePath, scope: scope, hubID: hubID, linkedDevice: device,
+                energy: BatteryDiagnostics.shared.counter
+            )
         }
         let scope = store.bootScope
         let hubID = store.bootHubID
@@ -85,8 +96,9 @@ final class AppRoot {
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
-                transportStorePath: AppEnvironment.liveTransportStorePath(in: directory),
-                make: make
+                transportStorePath: transportStorePath,
+                make: make,
+                startWork: BackgroundWork.starter()
             )
         )
         Task { await root.resumeLink() }
@@ -244,6 +256,8 @@ final class AppRoot {
         keepRecordings: Bool,
         restarter: Restarter
     ) async throws -> LocalWipe {
+        let endWork = restarter.startWork?("app-restart")
+        defer { endWork?() }
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
@@ -331,7 +345,7 @@ extension AppRoot: LinkHost {
     }
 
     func fetchGrant(deviceID: String) async -> DeviceGrant? {
-        await env.refresh()
+        await env.refresh(.link)
         let store = env.store
         do {
             return try await store.reader.read { db in

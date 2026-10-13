@@ -155,14 +155,18 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertFalse(f.feed.isDesktopReachable(now: base))
     }
 
-    func testDesktopReachableWhileHeartbeatIsUnder720Seconds() async throws {
+    /// Board #724, owner decision Q2: the Mac writes its heartbeat every
+    /// 15 min, so one missed write (30 min) still reads online.
+    func testDesktopReachableWhileHeartbeatIsUnder35Minutes() async throws {
         let f = try makeFixtures()
         try hydrateHeartbeat(f.store, updatedAt: base)
 
+        XCTAssertEqual(RelayFeed.heartbeatStaleAfter, .seconds(2100))
         XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(5 * 60)))
-        // Boundary: online while UNDER 720 s old (spec §3).
-        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(719)))
-        XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(720)))
+        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(30 * 60)), "one missed 15 min write")
+        // Boundary: online while UNDER 2100 s old (spec §3).
+        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(2099)))
+        XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(2100)))
     }
 
     func testHeartbeatWithFutureValuesStillYieldsAnAge() throws {

@@ -90,6 +90,13 @@ final class TickSleeper {
     private func cancel(_ id: UUID) {
         waiting.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
+
+    /// Ends every sleep waiting now as cancelled (a test's teardown).
+    func cancelAll() {
+        let all = waiting
+        waiting = [:]
+        all.values.forEach { $0.resume(throwing: CancellationError()) }
+    }
 }
 
 extension XCTestCase {
@@ -136,5 +143,17 @@ extension XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertTrue(condition(), message(), file: file, line: line)
+    }
+}
+
+/// A clock the test moves by hand (seeded from now).
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date()
+
+    var now: Date { lock.withLock { current } }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current += seconds }
     }
 }

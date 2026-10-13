@@ -31,7 +31,7 @@ enum DemoSeed {
 
     static func records(now: Date) throws -> [CloudRecord] {
         // A fresh heartbeat every launch: Settings demos an online Mac, which
-        // turns offline if the app stays open past the 720 s threshold.
+        // turns offline if the app stays open past the 2100 s threshold.
         let heartbeat = HeartbeatPayload(
             updatedAt: now,
             appVersion: "demo",

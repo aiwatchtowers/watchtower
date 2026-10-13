@@ -150,6 +150,34 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(order, [later, earlier, none], "newest activity first, no session last")
     }
 
+    /// Board #724: the light listing the other slices, the git refresher
+    /// and the summary runner use publishes the same workbenches in the same
+    /// order as the switcher-based one: parsed activity, no session last,
+    /// ties in the switcher's name order (case-insensitive, then id), and
+    /// the 100 cap.
+    func testTheLightListingMatchesThePublishedWorkbenches() throws {
+        let now = Date()
+        try dbPool.write { db in
+            for index in 0..<104 {
+                let name = ["acme", "Beta", "beta", "Acme"][index % 4] + " \(index / 4)"
+                let id = try TestDatabase.insertWorkbench(db, name: name, folder: "/tmp/light-\(index)")
+                switch index % 3 {
+                case 0: continue
+                case 1: try SliceSeed.insertSession(db, projectID: id, lastActiveAt: now.addingTimeInterval(Double(-index)))
+                default: try SliceSeed.insertSession(db, projectID: id, lastActiveAt: now.addingTimeInterval(-3600))
+                }
+            }
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = 'not a date' WHERE id = 1")
+        }
+        let (full, light) = try dbPool.read { db in
+            (try WorkbenchSlice.publishedWorkbenches(db), try WorkbenchSlice.publishedWorkbenchRefs(db))
+        }
+
+        XCTAssertEqual(light.count, 100)
+        XCTAssertEqual(light.map(\.id), full.map(\.id))
+        XCTAssertEqual(light.map(\.name), full.map(\.project.name))
+    }
+
     func testAnUnparsableRequiredDateIsLoggedAndPublishedAs1970() {
         let record = "workbench_target-\(UUID().uuidString)"
         XCTAssertEqual(SliceDate.required("not a date", field: "created_at", record: record), Date(timeIntervalSince1970: 0))
@@ -173,7 +201,7 @@ final class WorkbenchSliceTests: XCTestCase {
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: sources
         )
         let outcome = try await publisher.publishOnce()
-        XCTAssertEqual(outcome, SlicePublisher.Outcome())
+        XCTAssertEqual(outcome, SlicePublisher.Outcome(completed: true))
     }
 
     // MARK: - Counts and progress
@@ -298,8 +326,6 @@ final class WorkbenchSliceTests: XCTestCase {
             },
             workbenchIDs: { [1, 2, 3] }
         )
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        refresher.setOnChange { changes.withLock { $0 += 1 } }
         let pass = Task { await refresher.refreshDue() }
         await awaitHubCondition("the first run is in flight") { gate.calls == [1] }
 
@@ -310,7 +336,6 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(attempted, [1])
         XCTAssertEqual(gate.calls, [1], "no CLI run after the stop")
         XCTAssertNil(refresher.status(for: 1), "the run in flight at the stop stores nothing")
-        XCTAssertEqual(changes.withLock { $0 }, 0, "and nudges nothing")
     }
 
     /// B2 deferred N1: a stop mid-pass must not leave the workbenches it cut
@@ -393,24 +418,58 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(calls.withLock { $0 }, 3, "a change on an unknown workbench runs nothing")
     }
 
-    func testAChangedStatusNotifiesAndAnUnchangedOneDoesNot() async throws {
+    /// A changed status replaces the stored one (the next full tick
+    /// publishes it); the same value again keeps it.
+    func testAChangedStatusReplacesTheStoredOne() async throws {
         let branch = OSAllocatedUnfairLock(initialState: "main")
-        let changes = OSAllocatedUnfairLock(initialState: 0)
         let clock = TestInstant()
         let refresher = makeRefresher(clock: clock) { _ in
             Self.gitStatus(branch: branch.withLock { $0 }, detached: false, changes: 0)
         }
-        refresher.setOnChange { changes.withLock { $0 += 1 } }
 
         await refresher.refreshDue()
         clock.advance(by: .seconds(120))
         await refresher.refreshDue()
-        XCTAssertEqual(changes.withLock { $0 }, 1, "the first value notifies; the same value again does not")
+        XCTAssertEqual(refresher.status(for: 7)?.branch, "main")
 
         branch.withLock { $0 = "feature/acme" }
         clock.advance(by: .seconds(120))
         await refresher.refreshDue()
-        XCTAssertEqual(changes.withLock { $0 }, 2)
+        XCTAssertEqual(refresher.status(for: 7)?.branch, "feature/acme")
+    }
+
+    /// Board #724: without a linked phone the loop neither lists the
+    /// workbenches nor runs the CLI; it starts once a phone is linked.
+    func testWithoutALinkedPhoneTheLoopListsAndRunsNothing() async throws {
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let listings = OSAllocatedUnfairLock(initialState: 0)
+        let runs = OSAllocatedUnfairLock(initialState: 0)
+        let isActive: @Sendable () -> Bool = {
+            checks.withLock { $0 += 1 }
+            return linked.withLock { $0 }
+        }
+        let refresher = WorkbenchGitRefresher(
+            fetch: { _ in
+                runs.withLock { $0 += 1 }
+                return Self.gitStatus(branch: "main", detached: false, changes: 0)
+            },
+            workbenchIDs: {
+                listings.withLock { $0 += 1 }
+                return [7]
+            },
+            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(5), wake: .milliseconds(10)),
+            isActive: isActive
+        )
+        refresher.start()
+        defer { refresher.stop() }
+        await awaitHubCondition("the loop woke three times") { checks.withLock { $0 } >= 3 }
+        XCTAssertEqual(listings.withLock { $0 }, 0)
+        XCTAssertEqual(runs.withLock { $0 }, 0)
+
+        linked.withLock { $0 = true }
+        await awaitHubCondition("a linked phone starts the runs") { refresher.status(for: 7) != nil }
+        XCTAssertEqual(runs.withLock { $0 }, 1)
     }
 
     func testADeletedWorkbenchIsForgotten() async throws {
