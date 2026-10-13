@@ -229,6 +229,12 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit is 
   - `protectedDataWillBecomeUnavailable` on a suspended app;
   - the ask-alert path on a signed phone.
 
+### Trust model decisions (security review, board #153, ask #106)
+
+- **`start_sessions_allowed` is the phone's own opt-out.** A linked phone's rewrite sets it either way, authenticated by that phone's key (`RelayProcessor.isFromItsOwnPhone`). The Mac does not have to confirm turning it back on. Owner decision 2026-10-14: «Оставить телефону».
+- **`typing_allowed` gates typed session input and the start brief only.** An ask answer from the phone (`AskAnswerHandler`) and a new target's `intent` from a board write are not gated by it. An answer is still delivered under PROJ-12's rules, which may type it into the asking session. Owner decision 2026-10-14: «Оставить как есть» — answering an ask is its own channel, separate from typing.
+- **One zone-wide share per zone.** Every QR code reuses it, so an old QR's share URL can join while a later code's public link is open, and the close sweep then removes it. With E2E this grants ciphertext only. A failed close is retried with backoff while `share_sweep_pending` is set.
+
 ### Open items
 
 - **The ask-alert subscription is not registered yet** (A13). Its pieces are built: `AskAlertSubscription.subscription(for:hubID:)` (private scope only, D14), `AlertOpener` and the extension's `NotificationService`. The subscription fires on record creation only, so a re-raised alert needs a new `sig-` record.
