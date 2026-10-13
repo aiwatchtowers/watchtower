@@ -36,18 +36,36 @@ final class AssistantToolsViewModelTests: XCTestCase {
         XCTAssertNil(vm.error)
     }
 
-    func testSetTrustRunsCLIThenReloads() async {
+    func testSetTrustRunsCLIForOneSurfaceThenReloads() async {
         let runner = FakeCLIRunner(stdout: listing)
         let vm = AssistantToolsViewModel(cliRunner: runner)
-        await vm.setTrust("create_target", execute: true)
-        XCTAssertEqual(runner.invocations.first, ["actions", "trust", "create_target", "execute"])
+        await vm.setTrust("create_target", surface: "reaction", execute: true)
+        XCTAssertEqual(runner.invocations.first,
+                       ["actions", "trust", "create_target", "execute", "--surface", "reaction"])
         XCTAssertEqual(runner.invocations.last, ["actions", "tools", "--json"])
+    }
+
+    /// trust_by_surface drives one switch per surface; a CLI older than the
+    /// field falls back to the single trust for every surface.
+    func testTrustBySurfaceDecodesPerSurfaceAndFallsBack() async {
+        let runner = FakeCLIRunner(stdout: Data("""
+        [{"name":"create_idea","description":"d","access":"write","external":false,"surfaces":["reaction","main"],
+          "trust":"mixed","trust_by_surface":{"reaction":"execute","main":"ask"}},
+         {"name":"create_target","description":"d1","access":"write","external":false,"surfaces":["main"],"trust":"execute"}]
+        """.utf8))
+        let vm = AssistantToolsViewModel(cliRunner: runner)
+        await vm.load()
+        XCTAssertNil(vm.error)
+        XCTAssertTrue(vm.rows[0].executes(on: "reaction"))
+        XCTAssertFalse(vm.rows[0].executes(on: "main"))
+        XCTAssertEqual(vm.rows[1].trustBySurface, [:])
+        XCTAssertTrue(vm.rows[1].executes(on: "main"))
     }
 
     func testSetTrustSurfacesCLIError() async {
         struct Boom: Error {}
         let vm = AssistantToolsViewModel(cliRunner: FakeCLIRunner(error: Boom()))
-        await vm.setTrust("create_jira_issue", execute: true)
+        await vm.setTrust("create_jira_issue", surface: "main", execute: true)
         XCTAssertNotNil(vm.error)
     }
 }

@@ -56,8 +56,8 @@ var actionsTrustCmd = &cobra.Command{
 	Short: "Set a tool's trust level, per chat surface",
 	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
 covers another. Without --surface the level is set on every surface the tool
-is offered on (the one switch Settings → Assistant tools flips); with
---surface it is set on that surface only.`,
+is offered on; with --surface it is set on that surface only (what
+Settings → Assistant tools passes, one switch per surface).`,
 	Args: cobra.ExactArgs(2),
 	RunE: runActionsTrust,
 }

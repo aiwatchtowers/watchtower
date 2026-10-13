@@ -74,4 +74,20 @@ final class ReactionDictionaryQueriesTests: XCTestCase {
         let missing = try queue.read { db in try ReactionDictionaryQueries.trustFor(db, tool: "create_target") }
         XCTAssertNil(missing, "no standing trust row yet — Go's default is 'ask' until the owner sets one")
     }
+
+    /// Trust is per (tool, surface): the dictionary shows the reaction row,
+    /// never the main chat's (target 167).
+    func testTrustForReadsTheReactionSurfaceOnly() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try TestDatabase.insertToolTrust(db, tool: "create_idea", trust: "ask", surface: "main")
+            try TestDatabase.insertToolTrust(db, tool: "create_idea", trust: "execute", surface: "reaction")
+            try TestDatabase.insertToolTrust(db, tool: "create_target", trust: "execute", surface: "main")
+        }
+
+        let trust = try queue.read { db in try ReactionDictionaryQueries.trustFor(db, tool: "create_idea") }
+        XCTAssertEqual(trust, "execute")
+        let mainOnly = try queue.read { db in try ReactionDictionaryQueries.trustFor(db, tool: "create_target") }
+        XCTAssertNil(mainOnly, "a main-chat execute says nothing about the reaction path")
+    }
 }
