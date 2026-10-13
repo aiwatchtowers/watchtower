@@ -85,8 +85,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             // A background task keeps the app running until the fetch
             // returns, past a completion sent at the deadline, and the
             // replica is held usable meanwhile (`BackgroundWork`).
-            let work = BackgroundWork(name: "silent-push-fetch")
-            work.begin()
+            let endWork = BackgroundWork.starter()("silent-push-fetch")
             PushCompletion.race(
                 fetch: {
                     let outcome = await env.handlePush(inForeground: inForeground)
@@ -95,7 +94,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                     // ends too, without holding back the completion.
                     Task { @MainActor in
                         await env.waitForBoot()
-                        work.end()
+                        endWork()
                     }
                     return outcome
                 },

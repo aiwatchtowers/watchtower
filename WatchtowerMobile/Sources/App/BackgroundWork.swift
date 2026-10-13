@@ -105,11 +105,12 @@ final class BackgroundWork {
     private var task: UIBackgroundTaskIdentifier = .invalid
     private var release: (@MainActor () -> Void)?
 
+    /// The app's work goes through `starter()`; tests build one directly.
     init(
         name: String,
-        runner: any BackgroundTaskRunning = UIKitBackgroundTasks.shared,
-        suspension: DatabaseSuspension = .shared,
-        isInBackground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .background }
+        runner: any BackgroundTaskRunning,
+        suspension: DatabaseSuspension,
+        isInBackground: @escaping @MainActor () -> Bool
     ) {
         self.name = name
         self.runner = runner
@@ -117,13 +118,16 @@ final class BackgroundWork {
         self.isInBackground = isInBackground
     }
 
-    /// A starter over these seams: each call begins a new piece of work.
+    /// A starter over these seams (nil: the app's own): each call begins a
+    /// new piece of work.
     static func starter(
-        runner: any BackgroundTaskRunning = UIKitBackgroundTasks.shared,
-        suspension: DatabaseSuspension = .shared,
+        runner: (any BackgroundTaskRunning)? = nil,
+        suspension: DatabaseSuspension? = nil,
         isInBackground: @escaping @MainActor () -> Bool = { UIApplication.shared.applicationState == .background }
     ) -> Starter {
-        { name in
+        let runner = runner ?? UIKitBackgroundTasks.shared
+        let suspension = suspension ?? .shared
+        return { name in
             let work = BackgroundWork(name: name, runner: runner, suspension: suspension, isInBackground: isInBackground)
             work.begin()
             return { work.end() }

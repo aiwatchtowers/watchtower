@@ -493,9 +493,10 @@ final class AppEnvironment {
     /// its own (`recording-save`), since a paused capture holds nothing.
     static func holdReplica(
         for recorder: PhoneRecorderController,
-        suspension: DatabaseSuspension = .shared,
+        suspension: DatabaseSuspension? = nil,
         startWork: BackgroundWork.Starter? = nil
     ) {
+        let suspension = suspension ?? .shared
         let startWork = startWork ?? BackgroundWork.starter(suspension: suspension)
         var release: (@MainActor () -> Void)?
         recorder.onAudioRunning = { running in
