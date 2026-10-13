@@ -681,10 +681,12 @@ final class MobileHubService {
     }
 
     /// The facts now; nil when the accounts read failed (a failure is not
-    /// an empty list, so it is never compared or written as one).
-    private func currentHeartbeatFacts() -> HeartbeatFacts? {
+    /// an empty list, so it is never compared or written as one). The
+    /// accounts are read off the main actor (`HubHostInfo.accounts`).
+    private func currentHeartbeatFacts() async -> HeartbeatFacts? {
         do {
-            return HeartbeatFacts(accounts: Array(try hostInfo.accounts().prefix(HeartbeatPayload.maxAccounts)), sharing: sharing)
+            let accounts = try await hostInfo.accounts()
+            return HeartbeatFacts(accounts: Array(accounts.prefix(HeartbeatPayload.maxAccounts)), sharing: sharing)
         } catch {
             logger.error("heartbeat accounts read failed: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -700,8 +702,9 @@ final class MobileHubService {
     /// when it wrote.
     @discardableResult
     func refreshHeartbeatIfFactsChanged() async -> Bool {
-        guard status == .running, let written = heartbeatFacts else { return false }
-        guard let current = currentHeartbeatFacts(), current != written else { return false }
+        guard status == .running, heartbeatFacts != nil else { return false }
+        guard let current = await currentHeartbeatFacts(), status == .running,
+              let written = heartbeatFacts, current != written else { return false }
         heartbeatFacts = current
         let checkEpoch = epoch
         do {
@@ -748,8 +751,11 @@ final class MobileHubService {
     /// carries the accounts the last write carried (none before the first).
     private func writeHeartbeat(hubID: String, facts: HeartbeatFacts? = nil) async throws {
         let at = now()
-        let facts = facts ?? currentHeartbeatFacts()
-            ?? HeartbeatFacts(accounts: heartbeatFacts?.accounts ?? [], sharing: sharing)
+        var read = facts
+        if read == nil {
+            read = await currentHeartbeatFacts()
+        }
+        let facts = read ?? HeartbeatFacts(accounts: heartbeatFacts?.accounts ?? [], sharing: sharing)
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,

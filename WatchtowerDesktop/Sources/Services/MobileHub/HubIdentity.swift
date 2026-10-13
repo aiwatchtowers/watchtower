@@ -84,8 +84,10 @@ struct HubHostInfo: Sendable {
     let appVersion: String
     let flavor: HubFlavor
     /// Label and status rows, never a token (spec §4.1). Throws when the
-    /// read fails, so a failure is never mistaken for "no accounts".
-    let accounts: @Sendable () throws -> [HeartbeatAccount]
+    /// read fails, so a failure is never mistaken for "no accounts". Async:
+    /// the live read runs on the pool, off the main actor (the hub checks
+    /// it every minute).
+    let accounts: @Sendable () async throws -> [HeartbeatAccount]
     /// The Mac's `userRecordID().recordName`; nil while unknown. Bounded by
     /// the caller's timeout.
     let ownerUser: @Sendable () async -> String?
@@ -94,7 +96,7 @@ struct HubHostInfo: Sendable {
         macName: String,
         appVersion: String,
         flavor: HubFlavor,
-        accounts: @escaping @Sendable () throws -> [HeartbeatAccount],
+        accounts: @escaping @Sendable () async throws -> [HeartbeatAccount],
         ownerUser: @escaping @Sendable () async -> String?
     ) {
         self.macName = HubIdentity.clipMacName(macName)
@@ -112,7 +114,7 @@ struct HubHostInfo: Sendable {
             macName: Host.current().localizedName ?? "Mac",
             appVersion: Constants.appVersion,
             flavor: HubIdentity.bundleFlavor(),
-            accounts: { try dbPool.read(HubAccountRows.fetch) },
+            accounts: { try await dbPool.read(HubAccountRows.fetch) },
             ownerUser: ownerUser
         )
     }
