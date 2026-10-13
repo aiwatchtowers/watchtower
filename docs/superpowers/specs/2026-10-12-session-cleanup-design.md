@@ -157,7 +157,7 @@ arbitrary path, never `rm -rf`):
 | W6 | Another session is in it: its `agent_cwd` (#565) is inside and it is in `--live-session` or reported within 24 h and is not finished; or the calling session's own `agent_cwd` is inside (caller = `$WATCHTOWER_TERMINAL_SESSION_ID`) | `session_in_it` / `you_are_in_it` |
 | W7 | HEAD (detached or branch tip) not contained in the default branch nor in any `refs/remotes/*` | `unpushed_commits` |
 | W8 | A merge/rebase/cherry-pick/revert/bisect in progress | `operation_in_progress` |
-| W9 | Another listed worktree, or any `.git` file or directory other than its own, lies inside it — `git worktree remove` without `--force` still deletes the whole directory, ignored files included, so a worktree or repository nested under an ignored directory (`.claude/worktrees/<agent>`) would go with its uncommitted work. Found by a walk that does not follow symlinks, 20 s budget; an unreadable entry or a walk over budget keeps it `check_failed` | `contains_worktree` (detail: the nested path) |
+| W9 | Another listed worktree, or any `.git` file or directory other than its own, lies inside it — `git worktree remove` without `--force` still deletes the whole directory, ignored files included, so a worktree or repository nested under an ignored directory (`.claude/worktrees/<agent>`) would go with its uncommitted work. Found by a walk that does not follow symlinks, 20 s budget; an unreadable entry or a walk over budget keeps it `check_failed`. The walk skips the regenerable dependency and build caches by directory name at any depth — `.build`, `node_modules`, `DerivedData`, `Pods`, `.swiftpm` (`regenerableCaches`) — whose `.git` entries are package-manager checkouts (`.build/checkouts/<pkg>/.git`, `node_modules/**/.git`), not work; a listed worktree inside one still keeps it (the listing check does not walk). In `--apply` the evaluation's walk is reused by the early re-checks and the tree is walked again only in the re-check right before `git worktree remove` (§7 step 4) | `contains_worktree` (detail: the nested path: a listed worktree anywhere, or a `.git` outside the caches) |
 
 A worktree whose directory is already gone (`prunable`) is dropped from git's metadata by the same
 `git worktree remove <root>` (no `--force`; never `git worktree prune`, which would drop every prunable entry, not
@@ -193,7 +193,7 @@ Per worktree, in `--apply`:
    one full re-check follows. An orphan of the plan that exited on its own is recorded done, never kept;
 3. `lsregister -u` each `.app` bundle found under it (depth ≤ 6, skipping `node_modules` and `.git`) — best effort,
    a failure is an item `error`, never blocks the removal;
-4. re-run every catch once more (no orphan may be left either), then `git worktree remove <root>` without
+4. re-run every catch once more, W9's walk included (steps 1–2 reuse the evaluation's walk; no orphan may be left either), then `git worktree remove <root>` without
    `--force` — git refuses on changes it sees, which ends as keep `git_refused` with git's message in `detail`.
    When the worktree stays (this re-check or git), its bundles unregistered in step 3 are registered again
    (`lsregister <bundle>`) and reported kept `worktree_kept`, not removed.
@@ -340,6 +340,8 @@ the report only reads it.
    `~/Desktop` or `~/Downloads`. Fallback in §7.
 3. A `permissions.allow` entry lets the command run in auto mode without a classifier block.
 4. `lsregister -u` on a bundle path that is about to be deleted / already deleted removes the duplicate entry.
+   Owner manual check (plan Task 14): plain `lsregister <bundle>` (no `-f` — the no-force guard forbids it)
+   registers a bundle unregistered with `-u` again, so a kept worktree's bundles come back.
 5. Worktree admin dir birth time is set at `git worktree add` (not touched later).
 
 ## 15. Open questions
