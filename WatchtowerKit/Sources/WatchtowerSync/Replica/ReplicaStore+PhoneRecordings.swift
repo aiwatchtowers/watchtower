@@ -50,12 +50,31 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
 
     /// Set with a `failed` state for a local failure; nil otherwise.
     public let failure: LocalFailure?
+    /// Saves handed to the transport for this recording since it was
+    /// finalized (or since the owner's last Retry), and when the latest
+    /// began: the upload backoff (`RecordingUploader.retryDelays`).
+    public let uploadAttempts: Int
+    public let lastAttemptAt: Date?
+    /// The recorder finished this capture itself after a long pause
+    /// (`PhoneRecorderController.pauseLimit`), not the owner's Stop.
+    public let autoFinished: Bool
 
-    /// Retry is offered for a failure the Mac or the network caused. A local
-    /// failure that a retry can only repeat (the file is gone, too large,
-    /// or not recoverable) offers none.
+    /// Upload attempts after which a recording no longer retries by itself:
+    /// it reads "Upload stuck" and waits for the owner's Retry.
+    public static let uploadAttemptCap = 6
+
+    /// Still on its way (`waiting`/`uploading`) but out of automatic
+    /// retries.
+    public var isUploadStuck: Bool {
+        (state == .waiting || state == .uploading) && uploadAttempts >= Self.uploadAttemptCap
+    }
+
+    /// Retry is offered for a failure the Mac or the network caused, and
+    /// for an upload stuck past the attempt cap. A local failure that a
+    /// retry can only repeat (the file is gone, too large, or not
+    /// recoverable) offers none.
     public var offersRetry: Bool {
-        state == .failed && failure == nil
+        (state == .failed && failure == nil) || isUploadStuck
     }
 
     /// The audio file, resolved against the CURRENT recordings folder.
@@ -94,7 +113,10 @@ extension ReplicaStore {
                 state: state,
                 errorMessage: row["error_message"],
                 eventID: row["event_id"],
-                failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:))
+                failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:)),
+                uploadAttempts: row["upload_attempts"],
+                lastAttemptAt: (row["last_attempt_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+                autoFinished: row["auto_finished"]
             )
         }
     }
@@ -107,8 +129,9 @@ extension ReplicaStore {
                 sql: """
                     INSERT INTO phone_recordings
                         (recording_id, file_path, started_at, ended_at, duration_sec,
-                         title_hint, sample_format, state, error_message, event_id, failure_kind)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         title_hint, sample_format, state, error_message, event_id, failure_kind,
+                         upload_attempts, last_attempt_at, auto_finished)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     recording.id, recording.storedPath,
@@ -116,7 +139,9 @@ extension ReplicaStore {
                     recording.endedAt.timeIntervalSince1970,
                     recording.durationSec, recording.titleHint,
                     recording.sampleFormat, recording.state.rawValue,
-                    recording.errorMessage, recording.eventID, recording.failure?.rawValue
+                    recording.errorMessage, recording.eventID, recording.failure?.rawValue,
+                    recording.uploadAttempts, recording.lastAttemptAt?.timeIntervalSince1970,
+                    recording.autoFinished
                 ]
             )
             for offset in marks where offset >= 0 {
@@ -163,17 +188,48 @@ extension ReplicaStore {
         endedAt: Date,
         durationSec: Int,
         titleHint: String?,
-        eventID: String?
+        eventID: String?,
+        autoFinished: Bool = false
     ) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
                     UPDATE phone_recordings
                     SET state = 'waiting', ended_at = ?, duration_sec = ?, title_hint = ?, event_id = ?,
-                        error_message = NULL, failure_kind = NULL
+                        error_message = NULL, failure_kind = NULL, auto_finished = ?
                     WHERE recording_id = ?
                     """,
-                arguments: [endedAt.timeIntervalSince1970, durationSec, titleHint, eventID, id]
+                arguments: [endedAt.timeIntervalSince1970, durationSec, titleHint, eventID, autoFinished, id]
+            )
+        }
+    }
+
+    /// Counts one upload attempt beginning at `at` (the backoff's clock).
+    func recordPhoneRecordingUploadAttempt(id: String, at: Date) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings
+                    SET upload_attempts = upload_attempts + 1, last_attempt_at = ?
+                    WHERE recording_id = ?
+                    """,
+                arguments: [at.timeIntervalSince1970, id]
+            )
+        }
+    }
+
+    /// The owner's Retry: back to `waiting` with no error and a fresh
+    /// backoff, in one write.
+    func resetPhoneRecordingForRetry(id: String) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings
+                    SET state = 'waiting', error_message = NULL, failure_kind = NULL,
+                        upload_attempts = 0, last_attempt_at = NULL
+                    WHERE recording_id = ?
+                    """,
+                arguments: [id]
             )
         }
     }

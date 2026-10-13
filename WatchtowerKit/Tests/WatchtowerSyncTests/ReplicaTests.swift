@@ -704,6 +704,10 @@ final class ReplicaTests: XCTestCase {
         let rows = try store.phoneRecordings()
         XCTAssertEqual(rows.map(\.id), ["old"])
         XCTAssertNil(rows.first?.eventID)
+        // The upload backoff and the auto-finish mark start empty.
+        XCTAssertEqual(rows.first?.uploadAttempts, 0)
+        XCTAssertNil(rows.first?.lastAttemptAt)
+        XCTAssertEqual(rows.first?.autoFinished, false)
 
         let audio = dir.appendingPathComponent("new.m4a")
         try Data(repeating: 1, count: 16).write(to: audio)

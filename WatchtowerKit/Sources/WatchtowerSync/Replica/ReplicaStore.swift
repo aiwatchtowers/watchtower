@@ -130,6 +130,16 @@ public final class ReplicaStore: Sendable {
             if !columns.contains("failure_kind") {
                 try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
             }
+            // The upload backoff and the auto-finish mark (board #724).
+            if !columns.contains("upload_attempts") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0")
+            }
+            if !columns.contains("last_attempt_at") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN last_attempt_at REAL")
+            }
+            if !columns.contains("auto_finished") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN auto_finished INTEGER NOT NULL DEFAULT 0")
+            }
             // The same for an overlay written before it kept an echo's
             // reason, result and last in-flight status.
             let pendingColumns = try db.columns(in: "pending_actions").map(\.name)
@@ -148,7 +158,9 @@ public final class ReplicaStore: Sendable {
 
     /// The `phone_recordings` ledger. `recording` is a capture still being
     /// written: its row exists from the first second, so a capture cut short
-    /// by a kill is finalized at the next launch.
+    /// by a kill is finalized at the next launch. `upload_attempts` and
+    /// `last_attempt_at` drive the upload backoff; `auto_finished` marks a
+    /// capture the recorder finished after a long pause.
     private static func phoneRecordingsTableSQL(name: String, ifNotExists: Bool) -> String {
         """
         CREATE TABLE \(ifNotExists ? "IF NOT EXISTS " : "")\(name) (
@@ -163,7 +175,10 @@ public final class ReplicaStore: Sendable {
                 CHECK(state IN ('recording','waiting','uploading','delivered','failed')),
             error_message TEXT,
             event_id TEXT,
-            failure_kind TEXT
+            failure_kind TEXT,
+            upload_attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at REAL,
+            auto_finished INTEGER NOT NULL DEFAULT 0
         )
         """
     }
@@ -186,7 +201,8 @@ public final class ReplicaStore: Sendable {
             try db.inTransaction {
                 let columns = """
                     recording_id, file_path, started_at, ended_at, duration_sec,
-                    title_hint, sample_format, state, error_message, event_id, failure_kind
+                    title_hint, sample_format, state, error_message, event_id, failure_kind,
+                    upload_attempts, last_attempt_at, auto_finished
                     """
                 try db.execute(sql: Self.phoneRecordingsTableSQL(name: "phone_recordings_upgrade", ifNotExists: false))
                 try db.execute(sql: "INSERT INTO phone_recordings_upgrade (\(columns)) SELECT \(columns) FROM phone_recordings")
