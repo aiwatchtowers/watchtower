@@ -212,10 +212,16 @@ public actor RelayFeed {
     /// false when none was ever seen. `now` is injectable for
     /// tests and for view models that batch-evaluate against one timestamp.
     nonisolated public func isDesktopReachable(now: Date = Date()) -> Bool {
+        Self.isDesktopReachable(store: store, now: now)
+    }
+
+    /// The same check over `store`, for a reader without a feed (the
+    /// recording uploader's relaunch re-save).
+    public static func isDesktopReachable(store: ReplicaStore, now: Date = Date()) -> Bool {
         // A read error means we cannot prove liveness — report unreachable
         // (try? flattens heartbeatAge's own nil into the same branch).
         guard let age = try? store.heartbeatAge(now: now) else { return false }
-        return age < Self.heartbeatStaleAfter
+        return age < heartbeatStaleAfter
     }
 
     // MARK: - Poll loop

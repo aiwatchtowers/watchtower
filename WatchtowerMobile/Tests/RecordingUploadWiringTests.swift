@@ -89,6 +89,63 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()), .waitingForMac)
     }
 
+    /// An app relaunched while the Mac sleeps leaves an upload in flight
+    /// alone (it waits in CloudKit's queue): no re-save and no attempt
+    /// counted, so it reads "Waiting for the Mac to wake", never "Upload
+    /// stuck". A relaunch that finds the Mac online re-saves it when due.
+    func testARelaunchWhileTheMacSleepsNeitherResavesNorCountsAnAttempt() async throws {
+        let transport = InMemoryCloudTransport()
+        let path = try makeReplicaPath()
+        let defaults = try makeDefaults()
+        let directory = try makeRecordingsDirectory()
+        let engine = FakeAudioEngine()
+        let clock = FakeClock()
+        let launch: (Date) throws -> AppEnvironment = { now in
+            let env = try AppEnvironment(
+                transport: transport,
+                replicaPath: path,
+                transportKind: .inMemoryDemo,
+                defaults: defaults,
+                recordingsDirectory: directory,
+                uploadRetriesAllowed: true,
+                makeRecorder: { uploader in
+                    PhoneRecorderController(
+                        uploader: uploader, engine: engine, notificationCenter: NotificationCenter(),
+                        now: { clock.now }, tickInterval: nil
+                    )
+                },
+                now: { now }
+            )
+            self.addTeardownBlock { @MainActor in env.stop() }
+            return env
+        }
+        let first = try launch(Date())
+        try await poll { first.isBootstrapped }
+        await first.recorder.recordVoiceNote()
+        clock.advance(30)
+        await first.recorder.stop()
+        let id = try XCTUnwrap(first.recorder.savedRecording?.id)
+        XCTAssertEqual(try first.store.phoneRecording(id: id)?.uploadAttempts, 1)
+        first.stop()
+
+        // Two hours on: the backoff is due, but the heartbeat the boot
+        // brings is two hours old.
+        let asleepAt = Date().addingTimeInterval(7_200)
+        let asleep = try launch(asleepAt)
+        try await poll { asleep.isBootstrapped }
+        let row = try XCTUnwrap(try asleep.store.phoneRecording(id: id))
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertEqual(row.uploadAttempts, 1, "no re-save while the Mac sleeps")
+        let model = asleep.phoneRecordings
+        try await poll { model.snapshot.heartbeat != nil }
+        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: model.snapshot.heartbeat, now: asleepAt), .waitingForMac)
+        asleep.stop()
+
+        let awake = try launch(Date().addingTimeInterval(RecordingUploader.retryDelays[0] + 1))
+        try await poll { awake.isBootstrapped }
+        XCTAssertEqual(try awake.store.phoneRecording(id: id)?.uploadAttempts, 2, "the Mac is online: re-saved")
+    }
+
     // MARK: - Ack
 
     func testReceivedEchoDeletesTheLocalFile() async throws {
@@ -169,6 +226,8 @@ final class RecordingUploadWiringTests: XCTestCase {
         clock.advance(3_600)
 
         let transport = InMemoryCloudTransport()
+        // The Mac is online: the relaunch retry does not wait for it.
+        try await transport.save(try DemoSeed.records(now: clock.now).filter { $0.recordName == HeartbeatPayload.recordName })
         let engine = FakeAudioEngine()
         let env = try AppEnvironment(
             transport: transport,

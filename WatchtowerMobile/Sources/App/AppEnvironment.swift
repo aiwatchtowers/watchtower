@@ -358,6 +358,9 @@ final class AppEnvironment {
             deviceID: device?.deviceID,
             now: now,
             retriesAllowed: { retries.isOpen },
+            // The relaunch re-save waits while the Mac sleeps: its upload
+            // already waits in CloudKit's queue (no "Upload stuck" for it).
+            macOnline: { [store] in RelayFeed.isDesktopReachable(store: store, now: now()) },
             energy: energy
         )
         self.uploader = uploader

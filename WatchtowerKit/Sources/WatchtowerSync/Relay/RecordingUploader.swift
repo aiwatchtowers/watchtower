@@ -32,8 +32,11 @@ public protocol RecordingUploadAcking: Sendable {
 /// - an `uploading` row already sits in the transport's durable send
 ///   queue, so it is re-saved (the relaunch retry: the same recordName
 ///   upserts, and the hub's processed-set absorbs true duplicates) only by
-///   the first foreground pass of a process, when due — or by the next
-///   foreground pass after `resendInFlightAfterWipe()`, due or not.
+///   the first foreground pass of a process that finds the Mac online
+///   (`macOnline`), when due — or by the next foreground pass after
+///   `resendInFlightAfterWipe()`, due or not and whatever the Mac. While
+///   the Mac sleeps the queue holds the row for it: a re-save would only
+///   spend attempts toward "Upload stuck", so none is made or counted.
 public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings shorter than this are degenerate (a tap on Record followed
     /// by an immediate stop) and are discarded without a ledger row.
@@ -86,6 +89,9 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// is in the foreground (the environment's scene phase). A pass where
     /// it is false sends new rows only and keeps the relaunch retry armed.
     private let retriesAllowed: @Sendable () -> Bool
+    /// Whether the Mac reads online (its heartbeat is fresh): the relaunch
+    /// re-save of `uploading` rows waits for it.
+    private let macOnline: @Sendable () -> Bool
     /// Counts each upload attempt (the phone's battery diagnostics).
     private let energy: EnergyCounter?
     /// The linked phone's device id, stamped on every upload. nil until
@@ -120,6 +126,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         maxAssetBytes: Int64 = RecordingUploader.maximumAssetBytes,
         now: @escaping @Sendable () -> Date = { Date() },
         retriesAllowed: @escaping @Sendable () -> Bool = { true },
+        macOnline: @escaping @Sendable () -> Bool = { true },
         energy: EnergyCounter? = nil
     ) {
         self.transport = transport
@@ -129,6 +136,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         self.maxAssetBytes = maxAssetBytes
         self.now = now
         self.retriesAllowed = retriesAllowed
+        self.macOnline = macOnline
         self.energy = energy
     }
 
@@ -425,7 +433,8 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// foreground pass of a process (and the first after
     /// `resendInFlightAfterWipe()`) re-sends due `uploading` rows too — the
     /// relaunch retry: the save upserts the same recordName and the hub's
-    /// processed-set absorbs duplicates. Each save counts an attempt. A
+    /// processed-set absorbs duplicates — once the Mac reads online (a
+    /// wipe's re-send does not wait). Each save counts an attempt. A
     /// transport throw leaves the row for its next due pass; a vanished
     /// local file, or one over the asset cap, fails the row locally (it can
     /// never be sent).
@@ -476,9 +485,10 @@ public actor RecordingUploader: RecordingUploadAcking {
         }
         try prepareLedger()
         // A background pass sends new rows only and leaves the relaunch
-        // retry armed for the first foreground one.
+        // retry armed for the first foreground one; so does a pass while
+        // the Mac is offline, unless a wipe emptied the queue.
         let retrying = retriesAllowed()
-        let includeInFlight = retrying && resendInFlight
+        let includeInFlight = retrying && resendInFlight && (resendIgnoresBackoff || macOnline())
         let ignoreBackoff = includeInFlight && resendIgnoresBackoff
         if includeInFlight {
             resendInFlight = false

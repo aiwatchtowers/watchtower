@@ -279,6 +279,65 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(saves, ["recupload-\(recording.id)"])
     }
 
+    /// While the Mac sleeps (its heartbeat is stale) the relaunch re-save of
+    /// an `uploading` row waits: the row is already in CloudKit's queue, so
+    /// nothing is saved and no attempt is counted toward "Upload stuck". The
+    /// first foreground pass that finds the Mac online re-saves it.
+    func testTheRelaunchResaveWaitsForTheMacOnline() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let before = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID
+        ) { clock.now }
+        let recording = try await register(before, file: try makeAudioFile())
+        _ = try await before.uploadPending()
+        let saved = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(saved.uploadAttempts, 1)
+
+        clock.advance(RecordingUploader.retryDelays[0])
+        let online = OnlineFlag()
+        let spy = SpyTransport()
+        let relaunched = RecordingUploader(
+            transport: spy, store: store, directory: dir, deviceID: Self.deviceID,
+            now: { clock.now }, macOnline: { online.value }
+        )
+        for _ in 0..<3 {
+            let sent = try await relaunched.uploadPending()
+            XCTAssertEqual(sent, 0, "no re-save while the Mac sleeps")
+        }
+        let waiting = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(waiting.state, .uploading)
+        XCTAssertEqual(waiting.uploadAttempts, 1, "no attempt is counted")
+        XCTAssertEqual(waiting.lastAttemptAt, saved.lastAttemptAt)
+        let none = await spy.savedNames
+        XCTAssertTrue(none.isEmpty)
+
+        online.value = true
+        let resent = try await relaunched.uploadPending()
+        let later = try await relaunched.uploadPending()
+        XCTAssertEqual(resent, 1, "the Mac is back: the relaunch re-save runs once")
+        XCTAssertEqual(later, 0)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.uploadAttempts, 2)
+    }
+
+    /// A wipe emptied the queue: its re-send does not wait for the Mac.
+    func testAWipeResendDoesNotWaitForTheMac() async throws {
+        let spy = SpyTransport()
+        let store = try ReplicaStore.inMemory()
+        let asleep: @Sendable () -> Bool = { false }
+        let uploader = RecordingUploader(
+            transport: spy, store: store, directory: dir, deviceID: Self.deviceID, macOnline: asleep
+        )
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+
+        await uploader.resendInFlightAfterWipe()
+        _ = try await uploader.uploadPending()
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+    }
+
     /// A wiped transport store lost its send queue: the next pass re-sends
     /// every `uploading` row once more.
     func testAfterAWipeTheNextPassResendsUploadingRows() async throws {
@@ -1093,5 +1152,15 @@ private actor SpyTransport: CloudSyncTransport {
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+    }
+}
+
+/// The Mac's online state a test flips by hand.
+private final class OnlineFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var online = false
+    var value: Bool {
+        get { lock.withLock { online } }
+        set { lock.withLock { online = newValue } }
     }
 }
