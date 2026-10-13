@@ -312,8 +312,11 @@ final class MobileHubService {
             return
         }
         tickFailures = 0
-        publisher.start()
+        // The companions first: the fast lane's liveness copy must be in
+        // place before the publisher's first full cycle, or that cycle
+        // would publish live sessions as not running.
         companions.forEach { $0.start() }
+        publisher.start()
         startRelayLoop()
         startHeartbeatLoop()
         hubOffProblem = nil
@@ -668,21 +671,28 @@ final class MobileHubService {
         let sharing: HubSharing
     }
 
-    private func currentHeartbeatFacts() -> HeartbeatFacts {
-        HeartbeatFacts(accounts: Array(hostInfo.accounts().prefix(HeartbeatPayload.maxAccounts)), sharing: sharing)
+    /// The facts now; nil when the accounts read failed (a failure is not
+    /// an empty list, so it is never compared or written as one).
+    private func currentHeartbeatFacts() -> HeartbeatFacts? {
+        do {
+            return HeartbeatFacts(accounts: Array(try hostInfo.accounts().prefix(HeartbeatPayload.maxAccounts)), sharing: sharing)
+        } catch {
+            logger.error("heartbeat accounts read failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     /// Rewrites the heartbeat at once when its facts differ from what the
     /// last write carried, so an account's status or `sharing` reaches the
     /// phone without waiting for the 15 min tick; unchanged facts write
     /// nothing. One attempt per change: a failure is logged and left to the
-    /// next tick (it does not count toward `maxTickFailures`). True when it
-    /// wrote.
+    /// next tick (it does not count toward `maxTickFailures`). A failed
+    /// accounts read skips the check (no change seen, nothing written). True
+    /// when it wrote.
     @discardableResult
     func refreshHeartbeatIfFactsChanged() async -> Bool {
         guard status == .running, let written = heartbeatFacts else { return false }
-        let current = currentHeartbeatFacts()
-        guard current != written else { return false }
+        guard let current = currentHeartbeatFacts(), current != written else { return false }
         heartbeatFacts = current
         let checkEpoch = epoch
         do {
@@ -725,10 +735,12 @@ final class MobileHubService {
     }
 
     /// Writes this hub's heartbeat into its own DataZone, stamped with this
-    /// Mac's clock (multi-hub spec §3.2).
+    /// Mac's clock (multi-hub spec §3.2). When the accounts read fails it
+    /// carries the accounts the last write carried (none before the first).
     private func writeHeartbeat(hubID: String, facts: HeartbeatFacts? = nil) async throws {
         let at = now()
         let facts = facts ?? currentHeartbeatFacts()
+            ?? HeartbeatFacts(accounts: heartbeatFacts?.accounts ?? [], sharing: sharing)
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,
