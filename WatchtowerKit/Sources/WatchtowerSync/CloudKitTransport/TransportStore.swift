@@ -409,9 +409,11 @@ public final class TransportStore: Sendable {
             return nil
         }
         do {
-            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-            guard size <= maxBytes else {
-                logger.warning("fetched asset for \(recordName, privacy: .public) is \(size) bytes, over the stash cap: not stashed")
+            // An unreadable size is refused like an oversized one (fail closed).
+            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            guard let size, size <= maxBytes else {
+                let shown = size.map { "\($0) bytes" } ?? "an unreadable size"
+                logger.warning("fetched asset for \(recordName, privacy: .public) has \(shown, privacy: .public): not stashed")
                 return nil
             }
             try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)

@@ -671,7 +671,11 @@ final class RelayProcessor: Sendable {
         }
         // The phone's own cap, sealed: anything larger is never decrypted (disk and time a linked phone could
         // otherwise spend at will).
-        let sealedSize = (try? FileManager.default.attributesOfItem(atPath: sealed.path)[.size] as? Int64) ?? 0
+        // An unreadable size is refused too (fail closed).
+        guard let sealedSize = (try? FileManager.default.attributesOfItem(atPath: sealed.path)[.size] as? NSNumber)?.int64Value
+        else {
+            return .failed(.notFound, message: Self.missingAudioMessage)
+        }
         guard sealedSize <= uploads.maxSealedBytes else {
             logger.warning("recording upload \(upload.recordName, privacy: .public) is \(sealedSize) sealed bytes: refused")
             return .failed(.invalidParams, message: Self.tooLargeMessage)
