@@ -1403,6 +1403,28 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(try keyStore.hubLink(acme))
     }
 
+    /// Final review Phone I-1: the owner's natural recovery, scanning the Mac's code again while linked, merges
+    /// the stored keybox's epoch keys the Keychain lacks (the signal that should have done it was lost) and has
+    /// the stored rows indexed. The reconcile is idempotent: nothing missing, nothing written.
+    func testAnAlreadyLinkedScanMergesKeyboxKeysTheKeychainLacks() async throws {
+        let model = try await linkedModel(code())
+        XCTAssertEqual(try keyStore.hubLink(acme)?.epochs.map(\.epoch), [1])
+        host.keyboxKeys = KeyboxKeys(
+            epoch: 2, dataKey: TestPhone.keyboxKeys(epoch: 2).dataKey, alertKey: TestPhone.keyboxKeys(epoch: 2).alertKey,
+            metaKey: TestPhone.keyboxKeys().metaKey, previousEpoch: 1,
+            previousDataKey: TestPhone.keyboxKeys(epoch: 1).dataKey, previousAlertKey: TestPhone.keyboxKeys(epoch: 1).alertKey
+        )
+
+        await model.open(code().url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(try keyStore.hubLink(acme)?.epochs.map(\.epoch), [1, 2])
+        XCTAssertEqual(host.keyMerges, 1, "the stored rows are indexed after the merge")
+
+        await model.reconcileKeyboxKeys()
+        XCTAssertEqual(host.keyMerges, 1, "nothing missing: nothing written, nothing re-indexed")
+    }
+
     /// A link saved before encryption has no hub keys: dropped at launch,
     /// with the re-scan notice; a link with keys stays.
     func testAV2LinkWithoutKeysIsDroppedWithTheReScanNotice() async throws {

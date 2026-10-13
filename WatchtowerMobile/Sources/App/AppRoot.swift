@@ -157,6 +157,15 @@ final class AppRoot {
         env.onLinkSignal = { [weak self] signal in self?.handle(signal) }
         env.onFetched = { [weak self] in self?.checkHeartbeat() }
         env.onKeyboxChanged = { [weak self] in self?.keyboxChanged() }
+        env.onKeysAvailable = { [weak self] in self?.reconcileKeyboxKeys() }
+    }
+
+    /// The unlock: the stored keybox's epoch keys the Keychain lacks are merged (a signal lost while locked or
+    /// suspended), final review Phone I-1.
+    private func reconcileKeyboxKeys() {
+        guard !isDemo else { return }
+        let linking = linking
+        Task { await linking.reconcileKeyboxKeys() }
     }
 
     /// A keybox indexed in the running environment (a rotation, a removal).
@@ -203,7 +212,10 @@ final class AppRoot {
         }
         let grant = reading.map(readGrant) ?? .unreadable
         let linking = linking
+        let keybox: Keybox? = if case let .success(stored)? = reading { stored } else { nil }
         linkCheck = Task {
+            // Final review Phone I-1: every fetch reconciles the keybox's epoch keys with the Keychain.
+            if let keybox { await linking.reconcileKeyboxKeys(keybox) }
             await linking.evaluate(heartbeat: heartbeat)
             switch grant {
             case .absent: await linking.evaluate(grant: nil, heartbeat: heartbeat)
@@ -383,6 +395,10 @@ extension AppRoot: LinkHost {
     func fetchKeybox(deviceID: String) async -> Keybox? {
         await env.refresh(.link)
         return await storedKeybox(deviceID: deviceID)
+    }
+
+    func keysMerged() {
+        env.indexStoredRows()
     }
 
     func storedKeybox(deviceID: String) async -> Keybox? {

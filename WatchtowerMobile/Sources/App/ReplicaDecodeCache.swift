@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WatchtowerSync
 
 /// One observation's decoded replica values, kept while their kind's change
@@ -24,6 +25,36 @@ final class ReplicaDecodeCache: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var decodeCounts: [String: Int] = [:]
+    /// Bumped by every drop, so a decode that began before one never stores its value.
+    private var generation = 0
+    private let notifications: NotificationCenter
+    private var observers: [any NSObjectProtocol] = []
+
+    /// Final review Protocol M-9: decoded plaintext does not outlive the unlocked foreground. Every entry is
+    /// dropped when protected data is about to become unavailable (the lock) and when the app goes to the
+    /// background; the next read decodes again.
+    init(notifications: NotificationCenter = .default) {
+        self.notifications = notifications
+        observers = [
+            UIApplication.protectedDataWillBecomeUnavailableNotification, UIApplication.didEnterBackgroundNotification
+        ].map { name in
+            notifications.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in self?.dropAll() }
+        }
+    }
+
+    deinit {
+        for observer in observers {
+            notifications.removeObserver(observer)
+        }
+    }
+
+    /// Forgets every decoded value (the decode counters stay).
+    func dropAll() {
+        lock.withLock {
+            entries = [:]
+            generation += 1
+        }
+    }
 
     /// The value stored under `key` for `version`, else `decode()`'s
     /// (stored for the next read unless it skipped a row for the keys).
@@ -34,10 +65,12 @@ final class ReplicaDecodeCache: @unchecked Sendable {
             return value
         }
         let refusals = ReplicaStore.keyRefusalCount
+        let started = lock.withLock { generation }
         let value = try decode()
         let complete = ReplicaStore.keyRefusalCount == refusals
         lock.withLock {
-            if complete {
+            // A drop during the decode (the lock arrived) wins: the value is returned, never kept.
+            if complete, generation == started {
                 entries[key] = Entry(version: version, value: value)
             } else {
                 entries[key] = nil

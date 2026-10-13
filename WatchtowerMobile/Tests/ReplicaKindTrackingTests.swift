@@ -1,4 +1,5 @@
 import GRDB
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -45,6 +46,32 @@ final class ReplicaKindTrackingTests: XCTestCase {
 
     private func decodes(_ cache: ReplicaDecodeCache, _ kinds: [SliceKind]) -> [Int] {
         kinds.map { cache.decodes($0.rawValue) }
+    }
+
+    /// Final review Protocol M-9: decoded plaintext does not outlive the unlocked foreground. The cache is
+    /// dropped when protected data is about to become unavailable (the lock) and when the app goes to the
+    /// background; the next read decodes again.
+    func testTheDecodeCacheIsDroppedAtTheLockAndInTheBackground() {
+        let notifications = NotificationCenter()
+        let cache = ReplicaDecodeCache(notifications: notifications)
+        var decoded = 0
+        func read() -> String {
+            cache.value("workbench", version: 1) {
+                decoded += 1
+                return "plain"
+            }
+        }
+        _ = read()
+        _ = read()
+        XCTAssertEqual(decoded, 1, "a hit while unlocked")
+
+        notifications.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        _ = read()
+        XCTAssertEqual(decoded, 2, "dropped at the lock")
+
+        notifications.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        _ = read()
+        XCTAssertEqual(decoded, 3, "dropped in the background")
     }
 
     func testAHeartbeatWriteDecodesOnlyTheHeartbeat() async throws {

@@ -643,6 +643,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// stops the loop; any other error is the row's, logged, and leaves that
     /// row unsealed for the next pass while the others go on.
     private func sealRows(deviceID: String) async throws -> (sealed: Int, sealedInFlight: Set<String>) {
+        try unsealStaleEpochs()
         let rows = try store.phoneRecordings().filter {
             ($0.state == .waiting || $0.state == .uploading) && $0.envelope == nil
         }
@@ -664,6 +665,38 @@ public actor RecordingUploader: RecordingUploadAcking {
             }
         }
         return (sealedCount, sealedInFlight)
+    }
+
+    /// Final review Kit I1: byte identity matters only within an epoch. A
+    /// `waiting` or `uploading` row whose stored envelope was sealed under an
+    /// epoch older than the phone's current one (rotations while it was
+    /// away; the hub accepts the previous epoch for 7 days only) loses its
+    /// seal here, so `sealRows` seals it again under the current epoch: the
+    /// same wire name (`K_meta` does not rotate, so the hub's ledger still
+    /// dedupes), a new envelope and a fresh asset key. Keys that cannot be
+    /// read now leave every row as it is.
+    private func unsealStaleEpochs() throws {
+        let current: UInt32
+        do {
+            current = try transport.currentEpoch()
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            return
+        }
+        let rows = try store.phoneRecordings().filter {
+            ($0.state == .waiting || $0.state == .uploading) && $0.envelope != nil && !sealingIDs.contains($0.id)
+        }
+        for row in rows {
+            guard let envelope = row.envelope else { continue }
+            let epoch: UInt32
+            do {
+                epoch = try Envelope.parse(envelope).header.epoch
+            } catch {
+                logger.error("stored recording envelope unreadable: \(row.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                continue
+            }
+            guard epoch < current, try store.clearPhoneRecordingSeal(id: row.id, envelope: envelope) else { continue }
+            logger.notice("recording \(row.id, privacy: .public) sealed under epoch \(epoch) is sealed again under \(current)")
+        }
     }
 
     /// true when this call sealed the row; false when another call sealed

@@ -198,6 +198,9 @@ final class AppEnvironment {
         set { keyboxSignal.handler = newValue }
     }
     @ObservationIgnored private let keyboxSignal: KeyboxSignal
+    /// The unlock signal reached the environment (after its own indexing): the link flow reconciles the
+    /// keybox's epoch keys with the Keychain (final review Phone I-1).
+    @ObservationIgnored var onKeysAvailable: (@MainActor () -> Void)?
     /// The environment seals and opens with this device's keys for its hub;
     /// false: the key-less wiring (no device keys yet, or no hub).
     @ObservationIgnored let hasDeviceKeys: Bool
@@ -934,6 +937,7 @@ final class AppEnvironment {
     func keysBecameAvailable() async {
         guard !stopped else { return }
         indexStoredRows()
+        onKeysAvailable?()
         do {
             try await uploader.sealPending()
         } catch {
@@ -944,8 +948,9 @@ final class AppEnvironment {
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
-    /// by a fetch does. Rows that still cannot open stay for the next pass.
-    private func indexStoredRows() {
+    /// by a fetch does. Rows that still cannot open stay for the next pass. Also the link flow's call once new
+    /// epoch keys joined the Keychain (`AppRoot.keysMerged`).
+    func indexStoredRows() {
         do {
             let indexed = try store.indexPending()
             if indexed.contains(where: { $0.kind == .deviceGrant }) {
@@ -1038,6 +1043,7 @@ final class AppEnvironment {
             opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store),
             observesSuspension: observesSuspension
         )
+        try persistSeqFloor(seqFloor, in: store)
         let seq = SeqAllocator(
             load: { max(try store.envelopeSeqCeiling(), seqFloor) },
             store: { try store.setEnvelopeSeqCeiling($0) }
@@ -1048,6 +1054,22 @@ final class AppEnvironment {
             rollback: store
         )
         return (store, secure, wired != nil)
+    }
+
+    /// Final review (Phone I-2, Desktop I-1): the floor a wipe carried over is stored in the new replica at
+    /// once, not at its first seal, so a second wipe before any seal (Unlink, then a scan) carries it on
+    /// instead of reading 0. An unreadable stored ceiling is replaced by the floor.
+    private static func persistSeqFloor(_ seqFloor: UInt64, in store: ReplicaStore) throws {
+        guard seqFloor > 0 else { return }
+        let stored: UInt64
+        do {
+            stored = try store.envelopeSeqCeiling()
+        } catch ReplicaStoreError.unreadableSeqCeiling {
+            stored = 0
+        }
+        if stored < seqFloor {
+            try store.setEnvelopeSeqCeiling(seqFloor)
+        }
     }
 
     /// `keys` when they can seal for their hub: the store holds a device id

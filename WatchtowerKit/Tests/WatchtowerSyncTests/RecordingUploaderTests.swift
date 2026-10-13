@@ -1241,6 +1241,59 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(saves[0], saves[1], "Retry re-sends the stored envelope and sealed file")
     }
 
+    /// Final review Kit I1: byte identity matters only within an epoch. A stored envelope sealed under an epoch
+    /// the phone has since moved past (two rotations while it was offline, or the hub's D10 grace over) would be
+    /// refused by the hub for good, so Retry re-seals it under the current epoch: the same wire name (the hub's
+    /// ledger still dedupes), a new envelope and a freshly sealed asset; the plain audio stays.
+    func testRetryReSealsAnEnvelopeOfAnOlderEpochUnderTheCurrentOne() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 9, count: 512))
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
+        let stale = try XCTUnwrap(try store.phoneRecording(id: recording.id)?.envelope)
+        XCTAssertEqual(try Envelope.parse(stale).header.epoch, 1)
+
+        // The Mac rotated twice while the phone was away: its keybox now carries epochs 2 and 3.
+        let rotated = try XCTUnwrap(try TestE2E.phoneStore(epochs: [2, 3]).hubLink(TestE2E.hubID.uuidString))
+        try phoneKeys.saveHubLink(rotated)
+        try await uploader.retryFailed(id: recording.id)
+
+        let saves = await spy.saves
+        guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
+        XCTAssertEqual(saves[1].name, saves[0].name, "the same wire name: the hub's ledger dedupes")
+        XCTAssertEqual(try Envelope.parse(saves[1].payload).header.epoch, 3, "re-sealed under the current epoch")
+        XCTAssertNotEqual(saves[1].asset, saves[0].asset, "the audio is sealed again under a fresh asset key")
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertEqual(row.envelope, saves[1].payload, "the new envelope is the stored one")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the plain audio waits for the Mac")
+    }
+
+    /// A pass (not only Retry) re-seals a stale-epoch row before it re-sends it: the relaunch retry of an
+    /// in-flight upload after a rotation.
+    func testARelaunchPassReSealsAnInFlightEnvelopeOfAnOlderEpoch() async throws {
+        let spy = SpyTransport()
+        let store = try makeStore()
+        let clock = TestClock()
+        let first = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID) { clock.now }
+        let (recording, _) = try await finishedCapture(first, bytes: Data(repeating: 3, count: 2_048))
+        _ = try await first.uploadPending()
+
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [1, 2]).hubLink(TestE2E.hubID.uuidString)))
+        clock.advance(RecordingUploader.retryDelays[0])
+        let relaunched = RecordingUploader(transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID) {
+            clock.now
+        }
+        let resent = try await relaunched.uploadPending()
+
+        XCTAssertEqual(resent, 1)
+        let saves = await spy.saves
+        guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
+        XCTAssertEqual(saves[1].name, try wire(recording.id))
+        XCTAssertEqual(try Envelope.parse(saves[1].payload).header.epoch, 2)
+    }
+
     /// The cap is the spec's 90 MB of audio: the plain size decides, before sealing adds its tags.
     func testTheNinetyMBCapIsCheckedOnThePlainSizeBeforeSealing() async throws {
         let store = try makeStore()

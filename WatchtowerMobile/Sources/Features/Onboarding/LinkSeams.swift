@@ -51,6 +51,8 @@ protocol LinkHost: AnyObject {
     func fetchKeybox(deviceID: String) async -> Keybox?
     /// The keybox as the replica holds it, without a fetch (after one).
     func storedKeybox(deviceID: String) async -> Keybox?
+    /// Epoch keys joined the Keychain: the rows the replica stored but could not open yet are opened now.
+    func keysMerged()
     /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
     /// keeps the link but sends nothing (the hub moved).
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async

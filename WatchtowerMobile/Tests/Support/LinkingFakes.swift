@@ -225,6 +225,13 @@ final class FakeLinkHost: LinkHost {
         return Keybox(grant: grant, keys: grant.linked && grant.revoked != true ? keyboxKeys : nil)
     }
 
+    /// How many times the flow reported merged epoch keys.
+    private(set) var keyMerges = 0
+
+    func keysMerged() {
+        keyMerges += 1
+    }
+
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {
         links.append((device, writesAllowed))
     }

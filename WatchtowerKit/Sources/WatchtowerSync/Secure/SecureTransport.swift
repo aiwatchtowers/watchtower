@@ -61,6 +61,11 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         record.kind == WireKind.signal ? record.recordName : try wireName(plain: record.recordName, zone: record.zone)
     }
 
+    /// The epoch this side seals under now (the phone: its newest keybox's).
+    nonisolated public func currentEpoch() throws -> UInt32 {
+        try keys.currentEpoch()
+    }
+
     nonisolated public func wireName(plain: String, zone: CloudZoneID) throws -> String {
         if plain.hasPrefix(Self.signalPrefix) { return plain }
         switch zone {

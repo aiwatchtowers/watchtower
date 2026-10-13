@@ -185,7 +185,11 @@ final class LinkingViewModel {
         }
         phase = .checking
         if let link, link.hubID == payload.hubID, await isGranted(link) {
-            // Already linked to this Mac: nothing to write.
+            // Already linked to this Mac: nothing to write, except epoch keys a lost keybox signal left out of
+            // the Keychain (final review Phone I-1: the owner's natural recovery is a re-scan).
+            if let deviceID = identity.deviceID, let keybox = await host?.storedKeybox(deviceID: deviceID) {
+                await mergeKeys(of: keybox, into: link)
+            }
             phase = .linked(macName: link.macName)
             return
         }
@@ -542,14 +546,46 @@ final class LinkingViewModel {
             await removedByMac()
             return
         }
-        guard let boxKeys = keybox.keys else { return }
+        await mergeKeys(of: keybox, into: link)
+    }
+
+    /// Final review Phone I-1: the keybox → Keychain merge is a reconcile, not only an edge. After every fetch
+    /// (`keybox`: the one the fetch's grant check read), at unlock and on a re-scan of the linked Mac, the stored
+    /// keybox's epoch keys the Keychain lacks are merged. A revoked keybox is left to `keyboxChanged` and the
+    /// grant check. Idempotent: nothing missing, nothing written.
+    func reconcileKeyboxKeys(_ keybox: Keybox? = nil) async {
+        guard let link, !isBusy else { return }
+        let stored: Keybox?
+        if let keybox {
+            stored = keybox
+        } else if let deviceID = identity.deviceID {
+            stored = await host?.storedKeybox(deviceID: deviceID)
+        } else {
+            stored = nil
+        }
+        guard let stored, self.link == link else { return }
+        await mergeKeys(of: stored, into: link)
+    }
+
+    /// Adds `keybox`'s epoch keys to `link`'s stored hub keys when that changes which epochs the Keychain holds
+    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock.
+    private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async {
+        guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
+              let boxKeys = keybox.keys else { return }
         do {
             guard let current = try keys.hubLink(link.hubID) else { return }
-            // Saved even when unchanged: key material is never compared outside CryptoKit.
-            try keys.saveHubLink(try current.adding(boxKeys))
+            let merged = try current.adding(boxKeys)
+            guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return }
+            try keys.saveHubLink(merged)
+        } catch KeyStoreError.locked {
+            Self.logger.notice("keybox keys wait for the unlock")
+            return
         } catch {
             Self.logger.error("keybox keys not stored: \(String(describing: error), privacy: .public)")
+            return
         }
+        Self.logger.notice("epoch keys merged from the keybox")
+        host?.keysMerged()
     }
 
     /// At launch: a link saved before encryption (no hub keys in the

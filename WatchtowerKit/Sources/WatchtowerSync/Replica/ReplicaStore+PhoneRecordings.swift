@@ -292,6 +292,22 @@ extension ReplicaStore {
         }
     }
 
+    /// Forgets a row's seal so the next pass seals it again (an envelope of an epoch the phone has moved
+    /// past, final review Kit I1). Only while the row still holds `envelope` (compare-and-clear); returns
+    /// whether this call cleared it. The sealed file stays until the re-seal replaces it.
+    func clearPhoneRecordingSeal(id: String, envelope: Data) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET envelope = NULL, wire_name = NULL, sealed_path = NULL
+                    WHERE recording_id = ? AND envelope = ?
+                    """,
+                arguments: [id, envelope]
+            )
+            return db.changesCount > 0
+        }
+    }
+
     /// Rewrites where a row's file is (the move to a relative name).
     func setPhoneRecordingPath(id: String, storedPath: String) throws {
         try writer.write { db in

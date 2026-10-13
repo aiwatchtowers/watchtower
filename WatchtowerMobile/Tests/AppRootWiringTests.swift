@@ -1130,6 +1130,56 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertGreaterThan(try root.env.envelopeSeqCeiling(), ceiling, "seqs continue above the wiped replica's")
     }
 
+    /// Final review (Phone I-2, Desktop I-1): two wipes with no seal between them (Unlink, then a scan) keep the
+    /// floor. The environment between them never allocates a seq, so the floor must be stored when its replica
+    /// is created, or the next wipe reads 0 and the phone restarts at seq 1 under the hub's old marks.
+    func testTwoWipesWithoutASealBetweenThemKeepTheSeqFloor() async throws {
+        let root = try makeRoot(linked: device)
+        try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+        let ceiling = try root.env.envelopeSeqCeiling()
+        XCTAssertGreaterThan(ceiling, 0)
+
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+        XCTAssertGreaterThanOrEqual(try root.env.envelopeSeqCeiling(), ceiling, "the new replica stores the floor at once")
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+
+        await root.setLink(device, writesAllowed: true)
+        try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-2")
+        XCTAssertGreaterThan(try root.env.envelopeSeqCeiling(), ceiling, "seqs continue above the first replica's")
+    }
+
+    /// Final review Phone I-1: a rotation's keybox reached the replica but its one-shot signal was lost (the app
+    /// suspended between the index and the signal, the scanner open, a restart). The next fetch reconciles: the
+    /// missing epoch's keys join the Keychain and the rows sealed under it open, without a re-scan.
+    func testAKeyboxWhoseSignalWasLostIsMergedAfterTheNextFetch() async throws {
+        var link = e2eLinkRecord()
+        link.deviceID = device.deviceID
+        let root = try makeRoot(linked: device, link: link)
+        try await poll { root.env.isBootstrapped }
+        let env = root.env
+        env.onKeyboxChanged = nil
+        XCTAssertEqual(try keyStore.hubLink(TestE2E.hubID.uuidString)?.epochs.map(\.epoch), [1])
+        let grant = DeviceGrant(
+            deviceID: device.deviceID, hubID: TestE2E.hubID.uuidString, name: device.name, scope: .private,
+            linked: true, typingAllowed: false, startSessionsAllowed: true
+        )
+        let now = Date()
+        let rotated = TestE2E.hubTransport(TestE2E.hub(epoch: 2, firstSeq: 900_000_000_000), inner: transports[0])
+        try await rotated.save([
+            try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(epoch: 2), modifiedAt: now),
+            CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "7", modifiedAt: now, payload: Data("{}".utf8)))
+        ])
+
+        _ = await env.refresh(.pull)
+        await root.linkCheck?.value
+
+        XCTAssertEqual(try keyStore.hubLink(TestE2E.hubID.uuidString)?.epochs.map(\.epoch), [1, 2], "merged on the fetch")
+        let opened = try await env.store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records WHERE kind = ?", arguments: [SliceKind.workbench.rawValue])
+        }
+        XCTAssertEqual(opened, 1, "the epoch-2 row opens without waiting for the next hydrate")
+    }
+
     /// M-5: a keybox signed by another hub key than the QR's (an attacker
     /// writing into the zone) is refused at apply through the real host: a
     /// forged "revoked" removes nothing, and the link flow reads no keybox.
