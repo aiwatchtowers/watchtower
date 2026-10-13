@@ -8,7 +8,9 @@ import WatchtowerSync
 /// Where one phone recording stands on its way to the Mac, as the
 /// recorder's Saved screen and the Recordings list (Task 8) show it. A
 /// pending upload reads "Waiting for the Mac to wake" while the heartbeat
-/// is stale or absent (spec §9): CloudKit holds the file until then.
+/// is stale or absent (spec §9): CloudKit holds the file until then. An
+/// upload out of automatic retries (board #724) reads "Upload stuck" and
+/// offers Retry, like a failure.
 enum PhoneUploadStage: Equatable {
     /// The capture is still being written on the phone.
     case recording
@@ -19,6 +21,9 @@ enum PhoneUploadStage: Equatable {
     /// (the file is gone, too large, or held no audio).
     case failed(String, retryable: Bool)
 
+    /// The label of an upload past its attempt cap.
+    static let stuckLabel = "Upload stuck"
+
     init(recording: PhoneRecording, heartbeat: HeartbeatPayload?, now: Date) {
         switch recording.state {
         case .recording:
@@ -28,7 +33,9 @@ enum PhoneUploadStage: Equatable {
         case .failed:
             self = .failed(recording.errorMessage ?? "Not sent to your Mac.", retryable: recording.offersRetry)
         case .waiting, .uploading:
-            if case .online = MacStatus(heartbeat: heartbeat, now: now) {
+            if recording.isUploadStuck {
+                self = .failed(Self.stuckLabel, retryable: true)
+            } else if case .online = MacStatus(heartbeat: heartbeat, now: now) {
                 self = .sending
             } else {
                 self = .waitingForMac

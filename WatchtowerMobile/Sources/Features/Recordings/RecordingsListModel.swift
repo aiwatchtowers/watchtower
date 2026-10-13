@@ -145,6 +145,10 @@ struct RecordingsListModel {
         transcripts.filter(seen.isNew).count
     }
 
+    /// The subtitle note of a capture the recorder finished after a long
+    /// pause (`PhoneRecorderController.pauseLimit`).
+    static let autoFinishedNote = "auto-finished after a 60 min pause"
+
     /// The Calendar's pill: "Recordings · 1 new", or "Recordings".
     static func pillText(newCount: Int) -> String {
         newCount > 0 ? "Recordings · \(newCount) new" : "Recordings"
@@ -193,7 +197,10 @@ struct RecordingsListModel {
         now: Date,
         format: RecordingsFormat
     ) -> RecordingEntry {
-        let origin = recording.eventID == nil ? "voice note" : "from this phone"
+        var origin = recording.eventID == nil ? "voice note" : "from this phone"
+        if recording.autoFinished {
+            origin += " · \(Self.autoFinishedNote)"
+        }
         if let transcript {
             return entry(transcript, origin: origin, seen: seen, format: format, phoneRecordingID: recording.id)
         }

@@ -138,6 +138,62 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(wired.env.isLooping)
     }
 
+    // MARK: - Bounded retry (board #724)
+
+    /// A launch into the background (a silent push) uploads nothing — not
+    /// the relaunch retry of a recording already sent, not a recording
+    /// waiting to go — until the app becomes active; then both go out.
+    func testALaunchIntoTheBackgroundUploadsNothingUntilTheAppIsActive() async throws {
+        let replicaPath = try makeReplicaPath()
+        let directory = try makeRecordingsDirectory()
+        let clock = MutableClock()
+        let device = LinkedDevice(
+            deviceID: "device-a", name: "Phone A", model: "iPhone", appVersion: "1.0",
+            scope: .private, userRecordName: "_user-a"
+        )
+        // The previous process sent one recording and finalized another
+        // without sending it.
+        let earlier = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: try ReplicaStore(path: replicaPath),
+            directory: directory, deviceID: device.deviceID
+        ) { clock.now }
+        var ids: [String] = []
+        for name in ["sent", "waiting"] {
+            let file = directory.appendingPathComponent("\(name).m4a")
+            try Data(repeating: 1, count: 64).write(to: file)
+            let ended = clock.now
+            let row = try await earlier.register(fileURL: file, startedAt: ended.addingTimeInterval(-60), endedAt: ended, titleHint: name)
+            ids.append(try XCTUnwrap(row).id)
+            if name == "sent" { _ = try await earlier.uploadPending() }
+        }
+        clock.advance(3_600)
+
+        let transport = InMemoryCloudTransport()
+        let engine = FakeAudioEngine()
+        let env = try AppEnvironment(
+            transport: transport,
+            replicaPath: replicaPath,
+            transportKind: .cloudKit,
+            linkedDevice: device,
+            defaults: try makeDefaults(),
+            recordingsDirectory: directory,
+            uploadRetriesAllowed: false,
+            makeRecorder: { uploader in
+                PhoneRecorderController(uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), tickInterval: nil)
+            },
+            now: { clock.now }
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        try await poll({ env.isBootstrapped }, "the boot did not finish")
+        var uploads = try await relayUploads(in: transport)
+        XCTAssertTrue(uploads.isEmpty, "a background launch uploads nothing")
+
+        env.setActive(true)
+        try await poll({ (try? env.store.phoneRecordings().allSatisfy { $0.state == .uploading }) == true }, "no pass on activation")
+        uploads = try await relayUploads(in: transport)
+        XCTAssertEqual(Set(uploads.map(\.id)), Set(ids))
+    }
+
     // MARK: - Link seam
 
     /// `setLinkedDevice` reaches Settings, the outbox and the uploader, and

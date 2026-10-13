@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import UIKit
 @_spi(DemoTransport) import WatchtowerSync
 
 /// Which transport an `AppEnvironment` runs on: probed in `init()`,
@@ -187,6 +188,10 @@ final class AppEnvironment {
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored private let uploader: RecordingUploader
+    /// Open while the app is active: only then may the uploader re-send a
+    /// recording it saved before (board #724) — never on a launch into the
+    /// background.
+    @ObservationIgnored private let uploadRetries: UploadRetryGate
     /// Counts fetches by trigger (the battery diagnostics); nil counts
     /// nothing.
     @ObservationIgnored private let energy: EnergyCounter?
@@ -271,6 +276,9 @@ final class AppEnvironment {
     /// `CloudKitTransport` (none for any other transport). `linkedDevice`
     /// is the saved link (the demo kind is always `DemoSeed.device`).
     /// `energy` counts the fetches and the upload attempts.
+    /// `uploadRetriesAllowed` is whether the app starts active (nil reads
+    /// `UIApplication`; a cold launch reads not active there, and the
+    /// scene's first active phase opens the gate through `setActive`).
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
@@ -278,6 +286,7 @@ final class AppEnvironment {
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
+        uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = nil,
@@ -329,11 +338,15 @@ final class AppEnvironment {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+        let retries = UploadRetryGate(uploadRetriesAllowed ?? (UIApplication.shared.applicationState == .active))
+        uploadRetries = retries
         let uploader = RecordingUploader(
             transport: transport,
             store: store,
             directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
             deviceID: device?.deviceID,
+            now: now,
+            retriesAllowed: { retries.isOpen },
             energy: energy
         )
         self.uploader = uploader
@@ -404,11 +417,15 @@ final class AppEnvironment {
             Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
         }
         // A capture cut short by a kill is finalized from its file, and
-        // files without a ledger row are deleted. Then the relaunch retry:
-        // recordings saved but not yet acknowledged go out again (the hub's
-        // processed set absorbs duplicates).
+        // files without a ledger row are deleted. Then, in the foreground
+        // only, the upload pass with the relaunch retry: recordings saved
+        // but not yet acknowledged go out again when their backoff is due
+        // (the hub's processed set absorbs duplicates). A launch into the
+        // background uploads nothing; the first activation runs the pass.
         await recorder.recoverOnLaunch()
-        await recorder.uploadPending()
+        if uploadRetries.isOpen {
+            await recorder.uploadPending()
+        }
         isBootstrapped = true
         // The launch fetch just ran: the safety poll waits a full interval.
         restartLoop(firstCycle: nil)
@@ -430,10 +447,12 @@ final class AppEnvironment {
     }
 
     /// The device recorder: the microphone, recordings in Application
-    /// Support, and a local notification for the 3-hour cap notice.
+    /// Support, and local notifications for the 3-hour cap notice and the
+    /// long-pause auto-finish.
     private static func liveRecorder(_ uploader: RecordingUploader) throws -> PhoneRecorderController {
         let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
         recorder.onCapNotice = { RecorderNotices.postCapNotice() }
+        recorder.onAutoFinish = { RecorderNotices.postAutoFinishNotice() }
         return recorder
     }
 
@@ -591,6 +610,7 @@ final class AppEnvironment {
     /// under `foregroundRefetchAfter` old (a Control Center peek): then it
     /// only applies what the engine buffered meanwhile (no network).
     func setActive(_ active: Bool) {
+        setUploadRetries(active)
         guard active != isActive else { return }
         isActive = active
         // A capture keeps going in the background, but its timer slows.
@@ -603,6 +623,20 @@ final class AppEnvironment {
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {
             Task { await applyBuffered() }
+        }
+    }
+
+    /// Opens or closes the uploader's retries with the scene phase. Each
+    /// opening runs an upload pass once the boot is done: due retries go
+    /// out on the return to the foreground (the boot's own pass covers a
+    /// gate already open when it runs).
+    private func setUploadRetries(_ open: Bool) {
+        guard uploadRetries.set(open), open else { return }
+        let boot = bootstrapTask
+        Task { [weak self] in
+            await boot?.value
+            guard let self, !self.stopped else { return }
+            await self.recorder.uploadPending()
         }
     }
 
@@ -716,5 +750,25 @@ final class AppEnvironment {
             appropriateFor: nil,
             create: true
         )
+    }
+}
+
+/// Whether the recording uploader may re-send (the app is active). Read by
+/// the uploader's actor, written on the main actor.
+final class UploadRetryGate: Sendable {
+    private let state: OSAllocatedUnfairLock<Bool>
+
+    init(_ open: Bool) {
+        state = OSAllocatedUnfairLock(initialState: open)
+    }
+
+    var isOpen: Bool { state.withLock { $0 } }
+
+    /// Sets the gate; true when that changed it.
+    func set(_ open: Bool) -> Bool {
+        state.withLock { current in
+            defer { current = open }
+            return current != open
+        }
     }
 }
