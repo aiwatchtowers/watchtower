@@ -441,6 +441,40 @@ final class FetchCadenceWiringTests: XCTestCase {
         env.setActive(true)
         try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 }, "the first activation did not fetch in full")
     }
+
+    /// A push launch whose scene turns active while the boot still runs:
+    /// the activation cannot start the loop yet, so the boot's end starts
+    /// it with the owed full fetch at once, not a poll interval later.
+    func testAnActivationDuringAPushLaunchBootFetchesInFullRightAfterTheBoot() async throws {
+        let tasks = FakeBackgroundTasks()
+        let suspension = DatabaseSuspension { _ in }
+        let launch = try makeBackgroundLaunch()
+        let (env, sleeper, clock, remote) = (launch.env, launch.sleeper, launch.clock, launch.remote)
+        let arrivedAt = clock.now
+        var completions: [FetchOutcome] = []
+        PushCompletion.serve(
+            env, arrivedAt: arrivedAt, inForeground: false,
+            startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
+            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            completion: { completions.append($0) }
+        )
+        try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
+        XCTAssertEqual(remote.depths, [.push(since: arrivedAt, pollOnFallback: false)])
+
+        // Activated during the boot, while the light launch fetch is held.
+        clock.advance(1)
+        env.setActive(true)
+        XCTAssertFalse(env.isBootstrapped)
+        XCTAssertEqual(remote.fullCount, 0, "nothing fetches before the boot ends")
+
+        remote.release()
+        await env.waitForBoot()
+        try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 },
+                        "the owed full fetch did not run right after the boot")
+        XCTAssertEqual(remote.depths.last, .full, "the owed fetch takes the full reach (with the zone poll)")
+        XCTAssertEqual(sleeper.requested.count, 1, "the full fetch did not wait on a poll interval")
+        try await poll({ completions == [.newData] }, "the push did not get the launch fetch's outcome")
+    }
 }
 
 /// Stands in for an environment's CloudKit reach (`remoteFetch`): records

@@ -542,7 +542,10 @@ final class AppEnvironment {
         }
         isBootstrapped = true
         // The launch fetch just ran: the safety poll waits a full interval.
-        restartLoop(firstCycle: nil)
+        // A light launch (a push launched the app) whose scene turned active
+        // during the boot still owes the full fetch: `setActive` could not
+        // start it before the boot ended, so it runs now.
+        restartLoop(firstCycle: fullFetchOwed ? .foreground : nil)
     }
 
     /// The outbox's one applied observer, shared by the app and the tests:
