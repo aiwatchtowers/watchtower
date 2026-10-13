@@ -24,6 +24,7 @@ final class MultiHubRecordingTests: XCTestCase {
     private struct Hub {
         let session: HubSession
         let transport: InMemoryCloudTransport
+        let engine: FakeAudioEngine
         let clock: FakeClock
     }
 
@@ -75,7 +76,7 @@ final class MultiHubRecordingTests: XCTestCase {
             sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
         )
         addTeardownBlock { @MainActor in session.stop() }
-        return Hub(session: session, transport: transport, clock: clock)
+        return Hub(session: session, transport: transport, engine: engine, clock: clock)
     }
 
     private func makeEnvironment(_ hubs: [Hub]) throws -> AppEnvironment {
@@ -96,7 +97,9 @@ final class MultiHubRecordingTests: XCTestCase {
         clock.advance(30)
         let recorder = env.recorder
         await recorder.stop()
-        return try XCTUnwrap(recorder.savedRecording?.id, "expected a saved recording")
+        let id = try XCTUnwrap(recorder.savedRecording?.id, "expected a saved recording")
+        recorder.close()
+        return id
     }
 
     /// A recording held for `hubID` (as a removal holds it): recorded by a
@@ -119,7 +122,8 @@ final class MultiHubRecordingTests: XCTestCase {
     // MARK: - Review Focus 5
 
     /// A capture started on hub A goes on under hub B, is stopped there,
-    /// and is sent by A's uploader through A's transport only.
+    /// and is sent by A's uploader through A's transport only. A's recorder
+    /// stays on screen through the save and its result until it is closed.
     func testARecordingStartedOnOneHubFinishesThereAfterASwitch() async throws {
         let base = try makeBase()
         let hubA = try makeHub("hub-a", base: base)
@@ -136,8 +140,12 @@ final class MultiHubRecordingTests: XCTestCase {
         hubA.clock.advance(30)
         await env.recorder.stop()
 
-        XCTAssertTrue(env.recorder === hubB.session.recorder, "the capture ended: the active hub's recorder")
+        XCTAssertTrue(env.recorder === hubA.session.recorder, "A's result stays on screen")
+        XCTAssertFalse(env.canStartCapture)
         let id = try XCTUnwrap(hubA.session.recorder.savedRecording?.id)
+        env.recorder.close()
+        XCTAssertTrue(env.recorder === hubB.session.recorder, "closed: the active hub's recorder")
+        XCTAssertTrue(env.canStartCapture)
         XCTAssertNotNil(try hubA.session.store.phoneRecording(id: id))
         XCTAssertNil(try hubB.session.store.phoneRecording(id: id))
         let uploadsA = try await relayUploads(in: hubA.transport)
@@ -172,8 +180,83 @@ final class MultiHubRecordingTests: XCTestCase {
         env.recorder.pause()
         XCTAssertFalse(env.canStartCapture, "a paused capture still holds the microphone")
         await hubA.session.recorder.stop()
+        XCTAssertFalse(env.canStartCapture, "A's result is on screen until closed")
+        hubA.session.recorder.close()
         XCTAssertTrue(env.canStartCapture)
         XCTAssertNil(env.captureHubName)
+    }
+
+    /// The microphone is A's until its save ends: the engine's finish turns
+    /// the shared audio session off, so nothing may start on B meanwhile.
+    func testNoCaptureStartsWhileAnotherHubSaves() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub("hub-a", base: base)
+        let hubB = try makeHub("hub-b", base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate("hub-b")
+        hubA.clock.advance(30)
+        hubA.engine.holdFinish = true
+
+        let stopping = Task { await env.recorder.stop() }
+        try await poll({ hubA.session.recorder.phase == .saving }, "the stop never began saving")
+        XCTAssertFalse(env.canStartCapture, "A is saving")
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        hubA.engine.releaseFinish()
+        await stopping.value
+        XCTAssertNotNil(hubA.session.recorder.savedRecording)
+        XCTAssertFalse(env.canStartCapture, "A's result is on screen")
+        env.recorder.close()
+        XCTAssertTrue(env.canStartCapture)
+    }
+
+    /// A start waiting on the microphone permission already owns the
+    /// recorder: a switch keeps it on screen and B's Record buttons off.
+    func testNoCaptureStartsWhileAnotherHubsStartWaits() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub("hub-a", base: base)
+        let hubB = try makeHub("hub-b", base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        hubA.engine.holdPermission = true
+        addTeardownBlock { @MainActor in hubA.engine.releasePermission() }
+
+        let starting = Task { await env.recorder.recordVoiceNote() }
+        try await poll({ hubA.session.recorder.isPresented }, "the start never opened the recorder")
+        env.activate("hub-b")
+        XCTAssertFalse(hubA.session.recorder.isCapturing, "still waiting on the permission")
+        XCTAssertFalse(env.canStartCapture)
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+
+        hubA.engine.releasePermission()
+        await starting.value
+        XCTAssertTrue(hubA.session.recorder.isCapturing)
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        XCTAssertFalse(hubB.session.recorder.isPresented)
+    }
+
+    /// A save that fails on hub A shows its error through the environment's
+    /// recorder while hub B is on screen.
+    func testAFailedSaveOnAnotherHubStaysOnScreen() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub("hub-a", base: base)
+        let hubB = try makeHub("hub-b", base: base)
+        hubA.session.hubName = "Acme Studio"
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate("hub-b")
+        hubA.clock.advance(30)
+        hubA.engine.fileDuration = nil
+
+        await env.recorder.stop()
+
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        XCTAssertEqual(env.recorder.phase, .failed(RecordingUploader.unrecoverableMessage))
+        XCTAssertTrue(env.recorder.isPresented)
+        XCTAssertEqual(env.captureHubName, "Acme Studio")
+        XCTAssertFalse(env.canStartCapture)
     }
 
     func testTheRecordingsListShowsTheActiveHubsRecordings() async throws {

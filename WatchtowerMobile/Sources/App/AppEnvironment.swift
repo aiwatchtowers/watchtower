@@ -272,19 +272,28 @@ final class AppEnvironment {
     var lastSyncAt: Date? { activeSession.lastSyncAt }
     var isLooping: Bool { activeSession.isLooping }
 
-    /// The session whose recorder is capturing or paused, if any: one
-    /// microphone, so at most one across hubs (multi-hub spec §5.4).
+    /// The session whose recorder owns the microphone or the recorder
+    /// screen (`PhoneRecorderController.holdsMicrophoneOrScreen`: starting,
+    /// capturing or paused, saving, or showing its result until closed),
+    /// if any: a capturing one first, then the active hub's, then any. One
+    /// microphone, so a second capture never starts beside it (multi-hub
+    /// spec §5.4).
     var capturingSession: HubSession? {
-        order.lazy.compactMap { self.sessions[$0] }.first { $0.recorder.isCapturing }
+        let all = order.compactMap { sessions[$0] }
+        if let capturing = all.first(where: { $0.recorder.isCapturing }) { return capturing }
+        if let active, active.recorder.holdsMicrophoneOrScreen { return active }
+        return all.first { $0.recorder.holdsMicrophoneOrScreen }
     }
 
-    /// The recorder on screen: a running capture's, whichever hub it is
-    /// for, else the active hub's. A capture started on one hub stays with
-    /// it after a switch: its session saves it and its uploader sends it to
-    /// that Mac, polling while the upload is pending (`SessionCadence`).
+    /// The recorder on screen: the owning one (`capturingSession`),
+    /// whichever hub it is for, else the active hub's. A capture started on
+    /// one hub stays with it after a switch, through its save and its
+    /// result until closed: its session saves it and its uploader sends it
+    /// to that Mac, polling while the upload is pending (`SessionCadence`).
     var recorder: PhoneRecorderController { capturingSession?.recorder ?? activeSession.recorder }
 
-    /// No capture runs on any hub: the Record buttons are on.
+    /// No recorder on any hub owns the microphone or the recorder screen:
+    /// the Record buttons are on.
     var canStartCapture: Bool { capturingSession == nil }
 
     /// The Mac a running capture is for when that is not the hub on screen
