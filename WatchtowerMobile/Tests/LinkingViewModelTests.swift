@@ -1,8 +1,15 @@
 import CloudKit
+import CryptoKit
 import Foundation
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
+
+/// Hub ids are UUIDs since E2E: the test hub's, and two other Macs.
+private let acme = TestE2E.hubID.uuidString
+private let studio = "5D0D1000-0000-4000-8000-000000000002"
+private let otherHub = "07E40000-0000-4000-8000-000000000003"
 
 /// The phone's link flow (mobile POC spec §2.3 steps 1–6, §9): a fake
 /// container (iCloud identity, share accept), a fake host (transports per
@@ -10,7 +17,10 @@ import XCTest
 @MainActor
 final class LinkingViewModelTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_800_000_000)
-    private let identity = DeviceIdentity(deviceID: "device-acme-1", name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
+    /// The test pairing's phone: the hello and the keyboxes name its key-derived id (D7).
+    private let identity = DeviceIdentity(
+        deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0"
+    )
     private let owner = "_owner-acme"
     private let dataShare = "https://www.icloud.com/share/acme-data"
     private let relayShare = "https://www.icloud.com/share/acme-relay"
@@ -20,25 +30,31 @@ final class LinkingViewModelTests: XCTestCase {
     private var host: FakeLinkHost!
     private var clock: FakeLinkClock!
     private var defaults: UserDefaults!
+    /// The phone's Keychain stand-in: the test pairing's identity, no hub linked yet.
+    private var keyStore: InMemoryPhoneKeyStore!
 
     override func setUp() async throws {
+        keyStore = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
         log = LinkEventLog()
         container = FakeLinkContainer(log: log)
         container.userRecordNameValue = owner
         host = FakeLinkHost(log: log)
+        host.keys = keyStore
         clock = FakeLinkClock(now: start)
         defaults = try makeDefaults()
     }
 
     private func makeModel() -> LinkingViewModel {
-        let model = LinkingViewModel(container: container, store: LinkStore(defaults: defaults), identity: identity, clock: clock)
+        let model = LinkingViewModel(
+            container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
+        )
         model.host = host
         return model
     }
 
-    /// A code issued `issuedAgo` seconds before the fake clock's now.
+    /// A code issued `issuedAgo` seconds before the fake clock's now, with the test hub's keys.
     private func code(
-        hubID: String = "hub-acme",
+        hubID: String = acme,
         macName: String = "Acme Mac",
         issuedAgo: TimeInterval = 10,
         shares: Bool = true,
@@ -55,12 +71,12 @@ final class LinkingViewModelTests: XCTestCase {
             exp: iat + LinkPayload.lifetime,
             dataShare: shares ? dataShare : nil,
             relayShare: shares ? relayShare : nil,
-            hubSigningKey: LinkPayload.makeNonce(),
-            hubAgreementKey: LinkPayload.makeNonce()
+            hubSigningKey: WireBytes.base64URL(TestE2E.hubSigningKey.publicKey.rawRepresentation),
+            hubAgreementKey: WireBytes.base64URL(TestE2E.hubAgreementKey.publicKey.rawRepresentation)
         )
     }
 
-    private func grant(hubID: String = "hub-acme", linked: Bool, refused: LinkRefusal? = nil) -> DeviceGrant {
+    private func grant(hubID: String = acme, linked: Bool, refused: LinkRefusal? = nil) -> DeviceGrant {
         grantMaker(hubID, linked, refused)
     }
 
@@ -70,7 +86,7 @@ final class LinkingViewModelTests: XCTestCase {
         let start = start
         return { hubID, linked, refused in
             DeviceGrant(
-                deviceID: identity.deviceID,
+                deviceID: identity.deviceID ?? "",
                 hubID: hubID,
                 name: identity.name,
                 scope: .private,
@@ -116,7 +132,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertTrue(container.accepted.isEmpty, "an owner's phone never accepts its own share")
         XCTAssertEqual(host.prepared, [.private])
-        XCTAssertEqual(host.preparedHubIDs, ["hub-acme"], "the scan syncs the code's hub")
+        XCTAssertEqual(host.preparedHubIDs, [acme], "the scan syncs the code's hub")
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.linkNonce, payload.nonce)
@@ -212,15 +228,16 @@ final class LinkingViewModelTests: XCTestCase {
         let iat = Int64(macNow.timeIntervalSince1970 - 60)
         clock = FakeLinkClock(now: macNow.addingTimeInterval(300))
         let payload = LinkPayload(
-            hubID: "hub-acme", macName: "Acme Mac", ownerUser: owner, nonce: LinkPayload.makeNonce(),
+            hubID: acme, macName: "Acme Mac", ownerUser: owner, nonce: LinkPayload.makeNonce(),
             iat: iat, exp: iat + LinkPayload.lifetime,
-            hubSigningKey: LinkPayload.makeNonce(), hubAgreementKey: LinkPayload.makeNonce()
+            hubSigningKey: WireBytes.base64URL(TestE2E.hubSigningKey.publicKey.rawRepresentation),
+            hubAgreementKey: WireBytes.base64URL(TestE2E.hubAgreementKey.publicKey.rawRepresentation)
         )
         // The Mac checks expiry on its own clock: still valid there.
         host.mac = { [grant = grantMaker] writes in
             guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
             let valid = payload.exp >= Int64(macNow.timeIntervalSince1970)
-            return valid ? grant("hub-acme", true, nil) : grant("hub-acme", false, .expiredCode)
+            return valid ? grant(acme, true, nil) : grant(acme, false, .expiredCode)
         }
         let model = makeModel()
 
@@ -246,7 +263,9 @@ final class LinkingViewModelTests: XCTestCase {
 
     // MARK: - Grant wait
 
-    func testNoGrantWithinSixtySecondsShowsDidNotAnswer() async throws {
+    /// The wait lasts until the code's expiry plus the clock grace, not a
+    /// fixed minute: the owner needs time to compare the code.
+    func testNoKeyboxBeforeTheCodeExpiresShowsDidNotAnswer() async throws {
         let model = makeModel()
 
         await model.open(code().url())
@@ -257,17 +276,20 @@ final class LinkingViewModelTests: XCTestCase {
             "Your Mac didn't answer — Keep Settings → Mobile open on the Mac and scan again",
             "title — hint (design pass O3)"
         )
-        XCTAssertGreaterThanOrEqual(clock.slept, 60)
-        XCTAssertLessThan(clock.slept, 62, "the wait ends at 60 s")
+        // Issued 10 s ago: exp is 590 s ahead, plus the 120 s grace.
+        XCTAssertGreaterThanOrEqual(clock.slept, 710)
+        XCTAssertLessThan(clock.slept, 712, "the wait ends at exp + 120 s")
         XCTAssertNil(model.link)
         XCTAssertTrue(host.links.isEmpty, "never shown as linked")
         XCTAssertNil(LinkStore(defaults: defaults).pending, "a finished wait leaves nothing to resume")
+        XCTAssertNil(try keyStore.hubLink(acme), "the scan's keys go with the wait")
+        XCTAssertNil(model.linkCode)
     }
 
     func testRefusedUsedCodeShowsCannotBeUsed() async throws {
         let payload = code()
         host.mac = { [grant = grantMaker] writes in
-            writes.isEmpty ? nil : grant("hub-acme", false, .usedCode)
+            writes.isEmpty ? nil : grant(acme, false, .usedCode)
         }
         let model = makeModel()
 
@@ -288,9 +310,9 @@ final class LinkingViewModelTests: XCTestCase {
         let answerAt = start.addingTimeInterval(4)
         host.mac = { [grant = grantMaker, clock] writes in
             guard writes.contains(where: { $0.linkNonce == payload.nonce }), let clock, clock.now() >= answerAt else {
-                return grant("hub-acme", false, .expiredCode)
+                return grant(acme, false, .expiredCode)
             }
-            return grant("hub-acme", true, nil)
+            return grant(acme, true, nil)
         }
         let model = makeModel()
 
@@ -303,7 +325,7 @@ final class LinkingViewModelTests: XCTestCase {
     func testAGrantForAnotherHubIsNotTheAnswer() async throws {
         let payload = code()
         host.mac = { [grant = grantMaker] writes in
-            writes.isEmpty ? nil : grant("hub-other", true, nil)
+            writes.isEmpty ? nil : grant(otherHub, true, nil)
         }
         let model = makeModel()
 
@@ -323,7 +345,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .idle)
         XCTAssertEqual(host.links.last?.device?.deviceID, identity.deviceID)
         XCTAssertEqual(host.links.last?.writesAllowed, true)
-        XCTAssertEqual(LinkStore(defaults: defaults).link?.hubID, "hub-acme", "the link is saved")
+        XCTAssertEqual(LinkStore(defaults: defaults).link?.hubID, acme, "the link is saved")
     }
 
     func testScanningTheSameCodeTwiceStaysLinkedWithoutASecondWrite() async throws {
@@ -333,7 +355,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(payload.url())
 
         XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
-        XCTAssertEqual(model.link?.hubID, "hub-acme")
+        XCTAssertEqual(model.link?.hubID, acme)
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1, "no second device-record write")
         XCTAssertEqual(host.wipes, 0)
@@ -356,9 +378,9 @@ final class LinkingViewModelTests: XCTestCase {
         await flow.value
         XCTAssertEqual(container.accepted.count, 1, "killed after the accept")
         let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "the wait survives a kill")
-        XCTAssertEqual(pending.deadline, start.addingTimeInterval(60))
+        XCTAssertEqual(pending.deadline, start.addingTimeInterval(710), "the code's exp + 120 s")
 
-        // Relaunch 20 s later: 40 s of the wait are left.
+        // Relaunch 20 s later: 690 s of the wait are left.
         clock.parked = false
         clock.advance(by: 20)
         let relaunched = makeModel()
@@ -367,10 +389,10 @@ final class LinkingViewModelTests: XCTestCase {
         await relaunched.resumePendingLink()
 
         XCTAssertEqual(host.prepared.last, .shared(ownerName: owner), "the wait reads the scan's database")
-        XCTAssertEqual(host.preparedHubIDs.last, "hub-acme", "and the scan's hub")
+        XCTAssertEqual(host.preparedHubIDs.last, acme, "and the scan's hub")
         XCTAssertEqual(relaunched.phase, .failed(.noAnswer))
-        XCTAssertGreaterThanOrEqual(clock.slept, 40)
-        XCTAssertLessThan(clock.slept, 42, "only the remaining part of the 60 s")
+        XCTAssertGreaterThanOrEqual(clock.slept, 690)
+        XCTAssertLessThan(clock.slept, 692, "only the remaining part of the wait")
         XCTAssertTrue(host.links.isEmpty, "never shown as linked")
         XCTAssertNil(relaunched.link)
         XCTAssertNil(LinkStore(defaults: defaults).pending)
@@ -392,7 +414,7 @@ final class LinkingViewModelTests: XCTestCase {
         let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "the accept is followed by a resumable wait")
         XCTAssertEqual(pending.link.databaseScope, .shared(ownerName: owner))
         XCTAssertEqual(LinkStore(defaults: defaults).bootScope, .shared(ownerName: owner), "the relaunch boots the scan's database")
-        XCTAssertEqual(LinkStore(defaults: defaults).bootHubID, "hub-acme", "and the scan's hub")
+        XCTAssertEqual(LinkStore(defaults: defaults).bootHubID, acme, "and the scan's hub")
 
         XCTAssertFalse(pending.baselineCaptured, "nothing is written before the baseline")
 
@@ -415,7 +437,7 @@ final class LinkingViewModelTests: XCTestCase {
         LinkStore(defaults: defaults).pending = PendingLink(
             link: linkRecord(), deadline: start.addingTimeInterval(50), baseline: nil, baselineCaptured: false
         )
-        host.mac = { [grant = grantMaker] _ in grant("hub-acme", false, .expiredCode) }
+        host.mac = { [grant = grantMaker] _ in grant(acme, false, .expiredCode) }
         let model = makeModel()
 
         await model.resumePendingLink()
@@ -469,13 +491,14 @@ final class LinkingViewModelTests: XCTestCase {
 
     func testRelaunchedWaitLinksWhenTheGrantArrives() async throws {
         let record = linkRecord()
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
         LinkStore(defaults: defaults).pending = PendingLink(
             link: record, deadline: start.addingTimeInterval(30), baseline: nil, baselineCaptured: true
         )
         let answerAt = start.addingTimeInterval(10)
         host.mac = { [grant = grantMaker, clock] _ in
             guard let clock, clock.now() >= answerAt else { return nil }
-            return grant("hub-acme", true, nil)
+            return grant(acme, true, nil)
         }
         let model = makeModel()
 
@@ -486,7 +509,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(LinkStore(defaults: defaults).pending)
     }
 
-    private func linkRecord(hubID: String = "hub-acme", macName: String = "Acme Mac", scope: DeviceScope = .private) -> LinkRecord {
+    private func linkRecord(hubID: String = acme, macName: String = "Acme Mac", scope: DeviceScope = .private) -> LinkRecord {
         LinkRecord(
             hubID: hubID,
             macName: macName,
@@ -551,7 +574,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(host.flushes, 1)
         XCTAssertEqual(host.wipes, 2)
         XCTAssertEqual(
-            host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID],
+            host.wipedHubIDs, [acme, AppEnvironment.unlinkedHubID],
             "final review m3: a private unlink ends on the unlinked hub id too"
         )
         XCTAssertNil(model.link)
@@ -632,9 +655,9 @@ final class LinkingViewModelTests: XCTestCase {
         await model.unlink()
 
         XCTAssertEqual(container.left, [owner])
-        XCTAssertEqual(container.leftHubIDs, ["hub-acme"], "the linked hub's shares are left")
-        XCTAssertEqual(host.preparedHubIDs.last, "hub-acme", "unlinked is written to the linked hub's zones")
-        XCTAssertEqual(host.wipedHubIDs, ["hub-acme"], "board #70: one restart, on the linked hub, empties the queue")
+        XCTAssertEqual(container.leftHubIDs, [acme], "the linked hub's shares are left")
+        XCTAssertEqual(host.preparedHubIDs.last, acme, "unlinked is written to the linked hub's zones")
+        XCTAssertEqual(host.wipedHubIDs, [acme], "board #70: one restart, on the linked hub, empties the queue")
         let writes = try await host.deviceWrites(in: .shared(ownerName: owner))
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
@@ -656,7 +679,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.unlink()
 
-        XCTAssertEqual(host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID])
+        XCTAssertEqual(host.wipedHubIDs, [acme, AppEnvironment.unlinkedHubID])
         XCTAssertEqual(Array(log.events.suffix(2)), ["leave \(owner)", "wipe private"])
         XCTAssertEqual(host.retirements, 0)
         XCTAssertNil(model.link)
@@ -715,7 +738,7 @@ final class LinkingViewModelTests: XCTestCase {
     func testHubChangedShowsMovedAndStopsWrites() async throws {
         let model = try await linkedModel(code())
 
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start))
+        await model.evaluate(heartbeat: heartbeat(hubID: studio, macName: "Acme Studio", updatedAt: start))
 
         XCTAssertEqual(model.notice, .moved(macName: "Acme Studio"))
         XCTAssertEqual(LinkNotice.moved(macName: "Acme Studio").message, "Watchtower moved to Acme Studio — scan the code on that Mac")
@@ -725,11 +748,11 @@ final class LinkingViewModelTests: XCTestCase {
         let callsAfterMove = host.links.count
 
         // The same heartbeat again changes nothing.
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start))
+        await model.evaluate(heartbeat: heartbeat(hubID: studio, macName: "Acme Studio", updatedAt: start))
         XCTAssertEqual(host.links.count, callsAfterMove)
 
         // The linked hub takes back over: writes flow again.
-        await model.evaluate(heartbeat: heartbeat(hubID: "hub-acme", macName: "Acme Mac", updatedAt: start))
+        await model.evaluate(heartbeat: heartbeat(hubID: acme, macName: "Acme Mac", updatedAt: start))
         XCTAssertNil(model.notice)
         XCTAssertEqual(host.links.last?.writesAllowed, true)
     }
@@ -749,7 +772,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(model.notice)
     }
 
-    private func heartbeat(hubID: String = "hub-acme", macName: String = "Acme Mac", updatedAt: Date) -> HeartbeatPayload {
+    private func heartbeat(hubID: String = acme, macName: String = "Acme Mac", updatedAt: Date) -> HeartbeatPayload {
         HeartbeatPayload(
             updatedAt: updatedAt,
             appVersion: "1.0",
@@ -770,7 +793,7 @@ final class LinkingViewModelTests: XCTestCase {
 
     func testScanningAnotherMacAsksToSwitchAndNoKeepsTheOldLink() async throws {
         let model = try await linkedModel(code())
-        let other = code(hubID: "hub-studio", macName: "Acme Studio")
+        let other = code(hubID: studio, macName: "Acme Studio")
         macLinks(other)
 
         await model.open(other.url())
@@ -781,7 +804,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.confirmSwitch(false)
 
         XCTAssertEqual(model.phase, .idle)
-        XCTAssertEqual(model.link?.hubID, "hub-acme")
+        XCTAssertEqual(model.link?.hubID, acme)
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1, "nothing written for the other Mac")
         XCTAssertEqual(host.wipes, 0)
@@ -789,7 +812,7 @@ final class LinkingViewModelTests: XCTestCase {
 
     func testSwitchYesUnlinksTheOldMacThenLinksTheNewOne() async throws {
         let model = try await linkedModel(code())
-        let other = code(hubID: "hub-studio", macName: "Acme Studio")
+        let other = code(hubID: studio, macName: "Acme Studio")
         macLinks(other)
 
         await model.open(other.url())
@@ -800,7 +823,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(writes.last?.linkNonce, other.nonce)
         XCTAssertEqual(host.wipes, 2, "the unlink wipes the old Mac's queue, then restarts unlinked")
         XCTAssertEqual(model.phase, .linked(macName: "Acme Studio"))
-        XCTAssertEqual(model.link?.hubID, "hub-studio")
+        XCTAssertEqual(model.link?.hubID, studio)
     }
 
     // MARK: - Other payloads
@@ -864,7 +887,7 @@ final class LinkingViewModelTests: XCTestCase {
         let flow = Task { await model.open(code().url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") }
 
-        await model.open(code(hubID: "hub-studio", macName: "Acme Studio").url())
+        await model.open(code(hubID: studio, macName: "Acme Studio").url())
 
         XCTAssertEqual(model.phase, .waiting(macName: "Acme Mac"))
         flow.cancel()
@@ -964,6 +987,237 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: start.addingTimeInterval(30), now: start).hint, "a future start")
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: nil, now: start).hint)
         XCTAssertEqual(LinkStepsModel(waitingFor: "", startedAt: nil, now: start).steps[1].text, "Waiting for your Mac to confirm")
+    }
+
+    // MARK: - E2E pairing (mobile E2E spec §2.3, Task 16)
+
+    /// A v3 scan stores the hub's keys from the code (no meta key, no epochs
+    /// yet), writes the hello sealed to the hub on a fresh replica, and shows
+    /// the four-digit code: the Mac opens the hello with its key and computes
+    /// the same code from it.
+    func testAV3ScanWritesASealedHelloAndShowsTheCode() async throws {
+        clock.parked = true
+        let model = makeModel()
+        let payload = code()
+        let flow = Task { await model.open(payload.url()) }
+        try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
+
+        let sealed = await host.transport(for: .private).sealed
+        XCTAssertEqual(sealed.map(\.recordName), ["hello-\(TestE2E.deviceID.uuidString)"], "D7: named by the key-derived id")
+        XCTAssertEqual(sealed.first?.kind, WireKind.envelope, "sealed, the kind inside")
+        let opened = try TestPhone.openHello(try XCTUnwrap(sealed.first), code: payload)
+        XCTAssertEqual(opened.hello.device.linkNonce, payload.nonce)
+        XCTAssertEqual(opened.hello.device.deviceID, TestE2E.deviceID.uuidString)
+        XCTAssertEqual(model.linkCode, opened.sas, "the phone shows the code the Mac computes")
+        let steps = LinkStepsModel(waitingFor: "Acme Mac", code: model.linkCode, waited: 0)
+        XCTAssertEqual(steps.codeInstruction, "Check that your Mac shows **\(opened.sas)**, then click Link on the Mac.")
+
+        let stored = try XCTUnwrap(try keyStore.hubLink(acme))
+        XCTAssertEqual(stored.hubSigningKey, TestE2E.hubSigningKey.publicKey.rawRepresentation)
+        XCTAssertEqual(stored.hubAgreementKey, TestE2E.hubAgreementKey.publicKey.rawRepresentation)
+        XCTAssertEqual(stored.linkNonce, WireBytes.fromBase64URL(payload.nonce), "the nonce bytes the hub decodes")
+        XCTAssertNil(stored.metaKey, "no keys before the keybox")
+        XCTAssertEqual(stored.epochs, [])
+        XCTAssertEqual(host.preparedFresh, [true], "a new pairing starts on an empty replica")
+        XCTAssertNil(model.link)
+        flow.cancel()
+        await flow.value
+    }
+
+    /// The wait lasts until the code's exp + 120 s, polling every 2 s; once
+    /// the keybox says the Mac waits for the owner, the phone says so.
+    func testTheWaitLastsUntilTheCodeExpiresAndShowsMacSeesThisIPhone() async throws {
+        let payload = code()
+        let model = makeModel()
+        let seen = LinkEventLog()
+        let deviceID = TestE2E.deviceID.uuidString
+        host.mac = { [weak model, start] writes in
+            seen.append("\(model?.macSeesPhone ?? false)")
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            return DeviceGrant(
+                deviceID: deviceID, hubID: acme, name: "Colleague A's iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true
+            )
+        }
+
+        await model.open(payload.url())
+
+        XCTAssertTrue(seen.events.contains("true"), "the waiting screen said the Mac sees this iPhone")
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertGreaterThanOrEqual(clock.slept, 710, "exp (590 s ahead) + 120 s, not 60 s")
+        XCTAssertLessThan(clock.slept, 712)
+        XCTAssertEqual(LinkingViewModel.grantPollInterval, 2)
+        XCTAssertGreaterThan(seen.events.count, 300, "a keybox fetch every 2 s")
+        let steps = LinkStepsModel(waitingFor: "Acme Mac", code: "7342", macSeesPhone: true, waited: 0)
+        XCTAssertEqual(steps.steps.map(\.text), ["Code read", "Your Mac sees this iPhone", "Linked"])
+        XCTAssertEqual(steps.steps.map(\.state), [.done, .current, .todo])
+    }
+
+    /// The owner's Link: the keybox carries the epoch keys, stored with the
+    /// code's hub keys; then the link is saved. A linked keybox without keys
+    /// is not an answer yet.
+    func testAConfirmedKeyboxStoresKeysAndLinks() async throws {
+        let withoutKeys = code()
+        macLinks(withoutKeys)
+        host.keyboxKeys = nil
+        let model = makeModel()
+        await model.open(withoutKeys.url())
+        XCTAssertEqual(model.phase, .failed(.noAnswer), "linked without keys: nothing to link with")
+        XCTAssertNil(model.link)
+
+        let payload = code()
+        macLinks(payload)
+        host.keyboxKeys = TestPhone.keyboxKeys(epoch: 1)
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(LinkStore(defaults: defaults).link?.hubID, acme, "the link is saved")
+        let stored = try XCTUnwrap(try keyStore.hubLink(acme))
+        XCTAssertEqual(stored.metaKey, TestE2E.metaKey.withUnsafeBytes { Data($0) })
+        XCTAssertEqual(stored.epochs, [EpochKeys(
+            epoch: 1,
+            dataKey: TestE2E.dataKey(epoch: 1).withUnsafeBytes { Data($0) },
+            alertKey: TestE2E.alertKey(epoch: 1).withUnsafeBytes { Data($0) }
+        )])
+        XCTAssertEqual(stored.hubSigningKey, TestE2E.hubSigningKey.publicKey.rawRepresentation, "the code's hub keys stay")
+        XCTAssertEqual(stored.linkNonce, WireBytes.fromBase64URL(payload.nonce), "this scan's nonce")
+        XCTAssertNil(model.linkCode)
+        XCTAssertEqual(host.links.last?.device?.deviceID, TestE2E.deviceID.uuidString)
+    }
+
+    /// The owner refused (or closed the sheet): `not_confirmed` is a refusal
+    /// like any other, and the scan's keys go.
+    func testANotConfirmedRefusalShowsTheRefusal() async throws {
+        let payload = code()
+        host.mac = { [grant = grantMaker] writes in
+            writes.contains { $0.linkNonce == payload.nonce } ? grant(acme, false, .notConfirmed) : nil
+        }
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .failed(.refused))
+        XCTAssertNil(model.link)
+        XCTAssertNil(try keyStore.hubLink(acme))
+        XCTAssertNil(LinkStore(defaults: defaults).pending)
+    }
+
+    /// A v2 code comes from a Mac without encryption.
+    func testAV2CodeReadsUpdateTheMac() async throws {
+        let model = makeModel()
+
+        await model.open(code(version: 2).url())
+
+        XCTAssertEqual(model.phase, .failed(.updateMac))
+        XCTAssertTrue(host.prepared.isEmpty)
+        XCTAssertNil(try keyStore.hubLink(acme), "nothing stored for an old code")
+    }
+
+    /// A code whose hub id is not a UUID cannot be sealed to: refused before anything is written.
+    func testACodeWithAHubIDThatIsNotAUUIDIsRefused() async throws {
+        let model = makeModel()
+
+        await model.open(code(hubID: "hub-acme").url())
+
+        XCTAssertEqual(model.phase, .failed(.refused))
+        XCTAssertTrue(host.prepared.isEmpty)
+    }
+
+    /// Cross-check with the hub: the phone maps the code to `KeyDerivation.sas` exactly as the hub does. The
+    /// Kit's frozen vector (`WatchtowerKit/Tests/Fixtures/e2e/kdf.json`, "sas") is the value the hub computes for
+    /// these synthetic keys (`MobileLinkCenter.handleHello`'s argument order).
+    func testThePhonesCodeMatchesTheFrozenHubValue() throws {
+        func sequence(_ from: UInt8, _ through: UInt8) -> Data { Data((Int(from)...Int(through)).map { UInt8($0) }) }
+        let hubAgreement = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: sequence(0x01, 0x20))
+        let deviceAgreement = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: sequence(0x21, 0x40))
+        let hubSigning = try Curve25519.Signing.PrivateKey(rawRepresentation: sequence(0x41, 0x60))
+        let deviceSigning = try Curve25519.Signing.PrivateKey(rawRepresentation: sequence(0x61, 0x80))
+        let payload = LinkPayload(
+            hubID: "00112233-4455-6677-8899-AABBCCDDEEFF", macName: "Acme Mac", ownerUser: owner,
+            nonce: WireBytes.base64URL(sequence(0xA0, 0xBF)), iat: 0, exp: LinkPayload.lifetime,
+            hubSigningKey: WireBytes.base64URL(hubSigning.publicKey.rawRepresentation),
+            hubAgreementKey: WireBytes.base64URL(hubAgreement.publicKey.rawRepresentation)
+        )
+
+        let code = try ScannedHubKeys(payload).code(for: DeviceIdentityKeys(signing: deviceSigning, agreement: deviceAgreement))
+
+        XCTAssertEqual(code, "7367")
+    }
+
+    /// Unlink and removal delete the hub's keys; the `unlinked` record was
+    /// sealed with them first.
+    func testUnlinkAndRemovalDeleteTheHubsKeys() async throws {
+        let unlinked = try await linkedModel(code())
+        XCTAssertNotNil(try keyStore.hubLink(acme))
+
+        await unlinked.unlink()
+
+        XCTAssertNil(try keyStore.hubLink(acme), "unlink deletes the hub's keys")
+        XCTAssertNil(try keyStore.hubSigningKey(acme))
+        let sealed = await host.transport(for: .private).sealed
+        XCTAssertEqual(sealed.count, 2, "the hello and the sealed unlinked record")
+        XCTAssertEqual(sealed.last?.kind, WireKind.envelope)
+
+        let removed = try await linkedModel(code())
+        XCTAssertNotNil(try keyStore.hubLink(acme))
+        await removed.removedByMac()
+        XCTAssertNil(try keyStore.hubLink(acme), "removal deletes them too")
+    }
+
+    /// After the link: a keybox with a new epoch adds its keys (the retired
+    /// one kept), and a revoked keybox is the Mac removing this phone.
+    func testALaterKeyboxAddsItsEpochAndARevokedOneRemovesThePhone() async throws {
+        let model = try await linkedModel(code())
+        host.keyboxKeys = KeyboxKeys(
+            epoch: 2, dataKey: TestPhone.keyboxKeys(epoch: 2).dataKey, alertKey: TestPhone.keyboxKeys(epoch: 2).alertKey,
+            metaKey: TestPhone.keyboxKeys().metaKey, previousEpoch: 1,
+            previousDataKey: TestPhone.keyboxKeys(epoch: 1).dataKey, previousAlertKey: TestPhone.keyboxKeys(epoch: 1).alertKey
+        )
+
+        await model.keyboxChanged()
+
+        XCTAssertEqual(try keyStore.hubLink(acme)?.epochs.map(\.epoch), [1, 2])
+        XCTAssertNotNil(model.link)
+
+        let deviceID = TestE2E.deviceID.uuidString
+        host.mac = { [start] _ in
+            DeviceGrant(
+                deviceID: deviceID, hubID: acme, name: "Colleague A's iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, revoked: true
+            )
+        }
+        await model.keyboxChanged()
+
+        XCTAssertNil(model.link, "D9: a revoked keybox ends the link")
+        XCTAssertEqual(model.notice, .removed)
+        XCTAssertEqual(host.wipes, 1)
+        XCTAssertNil(try keyStore.hubLink(acme))
+    }
+
+    /// A link saved before encryption has no hub keys: dropped at launch,
+    /// with the re-scan notice; a link with keys stays.
+    func testAV2LinkWithoutKeysIsDroppedWithTheReScanNotice() async throws {
+        LinkStore(defaults: defaults).link = linkRecord()
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: linkRecord(hubID: studio), deadline: start.addingTimeInterval(60), baseline: nil, baselineCaptured: true
+        )
+        let model = makeModel()
+
+        await model.dropUnencryptedLink()
+
+        XCTAssertNil(model.link)
+        XCTAssertNil(LinkStore(defaults: defaults).link)
+        XCTAssertNil(LinkStore(defaults: defaults).pending, "a pending link without keys goes too")
+        XCTAssertEqual(model.notice, .encryptionReScan)
+        XCTAssertEqual(LinkNotice.encryptionReScan.message, "Watchtower now encrypts your data. Scan the code on your Mac again.")
+        XCTAssertEqual(host.wipes, 1, "the old link's replica is wiped")
+
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
+        LinkStore(defaults: defaults).link = linkRecord()
+        let keyed = makeModel()
+        await keyed.dropUnencryptedLink()
+        XCTAssertNotNil(keyed.link, "a link with keys stays")
+        XCTAssertEqual(host.wipes, 1)
     }
 
     // MARK: - Live container

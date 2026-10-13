@@ -15,6 +15,9 @@ public protocol ReplicaOpening: Sendable {
     func fixedName(_ wireName: String) -> (kind: String, plainName: String)?
     /// The phone's own `.relayToHub` envelopes (the `pending_actions` overlay, Task 9), under its p2h key.
     func openOwnRelay(wireName: String, envelope: Data) throws -> InnerFrame
+    /// This phone's whole keybox, the epoch keys included (the link flow, Task 16). Read time: needs the device's
+    /// agreement key (`whenUnlocked`).
+    func openKeybox(wireName: String, envelope: Data) throws -> Keybox
 }
 
 /// The phone's `ReplicaOpening` over its `PhoneKeyStore`, for one linked hub. Every key is read from the store on
@@ -74,21 +77,32 @@ public final class EnvelopeReplicaOpener: ReplicaOpening {
                 return SymmetricKey(data: isAlert ? epochKeys.alertKey : epochKeys.dataKey)
             }.frame
         case .keybox:
-            let hubUUID = try WireBytes.hubUUID(hubID)
-            let frame = try SealedBox.open(
-                envelope, envelopeClass: .keybox, recipient: try keys.identity().agreement,
-                info: SealedBox.keyboxInfo(hubID: hubUUID, deviceID: deviceID), context: context,
-                verifier: try hubSigningKey()
-            ).frame
-            let keybox: Keybox
-            do { keybox = try RelayCoder.makeDecoder().decode(Keybox.self, from: frame.payload) } catch {
-                throw EnvelopeError.frameMalformed
-            }
+            let (frame, keybox) = try openKeyboxFrame(envelope, context: context)
             return InnerFrame(
                 kind: frame.kind, id: frame.id, notifyLevel: frame.notifyLevel, asset: frame.asset,
                 payload: try RelayCoder.makeEncoder().encode(keybox.grant))
         case .hello, .relayToHub, .relayToPhone:
             throw EnvelopeError.wrongClass(header.envelopeClass)
+        }
+    }
+
+    public func openKeybox(wireName: String, envelope: Data) throws -> Keybox {
+        let header = try Envelope.parse(envelope).header
+        try checkSender(header)
+        guard header.envelopeClass == .keybox else { throw EnvelopeError.wrongClass(header.envelopeClass) }
+        return try openKeyboxFrame(envelope, context: Self.context(wireName)).keybox
+    }
+
+    /// Sealed to this device's `dev_kx`, signed by `hub_sig`; the frame's payload is the RelayCoder `Keybox`.
+    private func openKeyboxFrame(_ envelope: Data, context: EnvelopeContext) throws -> (frame: InnerFrame, keybox: Keybox) {
+        let hubUUID = try WireBytes.hubUUID(hubID)
+        let frame = try SealedBox.open(
+            envelope, envelopeClass: .keybox, recipient: try keys.identity().agreement,
+            info: SealedBox.keyboxInfo(hubID: hubUUID, deviceID: deviceID), context: context,
+            verifier: try hubSigningKey()
+        ).frame
+        do { return (frame, try RelayCoder.makeDecoder().decode(Keybox.self, from: frame.payload)) } catch {
+            throw EnvelopeError.frameMalformed
         }
     }
 

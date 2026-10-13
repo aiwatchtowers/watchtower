@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 import WatchtowerE2ETesting
@@ -224,8 +225,53 @@ enum TestPhone {
         return descriptor
     }
 
-    /// `grant` as the hub publishes it since E2E: its `device_grant-<device_id>` record carrying the keybox.
-    static func grantRecord(_ grant: DeviceGrant, modifiedAt: Date) throws -> CloudRecord {
-        try DemoSeed.keyboxRecord(for: grant, modifiedAt: modifiedAt)
+    /// `grant` as the hub publishes it since E2E: its `device_grant-<device_id>` record carrying the keybox, with
+    /// `keys` when given.
+    static func grantRecord(_ grant: DeviceGrant, keys: KeyboxKeys? = nil, modifiedAt: Date) throws -> CloudRecord {
+        let plain = try CloudRecordFactory.record(for: grant, modifiedAt: modifiedAt)
+        return CloudRecord(
+            recordName: plain.recordName, zone: plain.zone, kind: plain.kind, modifiedAt: modifiedAt,
+            payload: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: keys)))
+    }
+
+    /// The test hub's epoch keys as its keybox carries them (base64url of 32 bytes each).
+    static func keyboxKeys(epoch: UInt32 = 1) -> KeyboxKeys {
+        func text(_ key: SymmetricKey) -> String { WireBytes.base64URL(key.withUnsafeBytes { Data($0) }) }
+        return KeyboxKeys(
+            epoch: epoch, dataKey: text(TestE2E.dataKey(epoch: epoch)), alertKey: text(TestE2E.alertKey(epoch: epoch)),
+            metaKey: text(TestE2E.metaKey))
+    }
+
+    /// A v3 code of the test hub (its keys and link nonce), issued at `iat`.
+    static func linkCode(iat: Int64, macName: String = "Acme Mac") -> LinkPayload {
+        LinkPayload(
+            hubID: TestE2E.hubID.uuidString, macName: macName, ownerUser: "_owner-acme",
+            nonce: WireBytes.base64URL(TestE2E.linkNonce), iat: iat, exp: iat + LinkPayload.lifetime,
+            hubSigningKey: WireBytes.base64URL(TestE2E.hubSigningKey.publicKey.rawRepresentation),
+            hubAgreementKey: WireBytes.base64URL(TestE2E.hubAgreementKey.publicKey.rawRepresentation))
+    }
+
+    /// The Mac's side of a sealed hello (`MobileLinkCenter.openHello`): opened with the test hub's agreement key
+    /// under the code's nonce, its signature checked with the enclosed device key, and the code the hub shows for
+    /// it, computed as the hub does (`MobileLinkCenter.handleHello`).
+    static func openHello(_ record: CloudRecord, code: LinkPayload) throws -> (hello: DeviceHello, sas: String) {
+        let hubUUID = try WireBytes.hubUUID(code.hubID)
+        let nonce = try XCTUnwrap(WireBytes.fromBase64URL(code.nonce))
+        let context = EnvelopeContext(zone: .relay, wireName: record.recordName)
+        let opened = try SealedBox.open(
+            record.payload, envelopeClass: .hello, recipient: TestE2E.hubAgreementKey,
+            info: SealedBox.helloInfo(hubID: hubUUID, linkNonce: nonce), context: context, verifier: nil)
+        let hello = try RelayCoder.makeDecoder().decode(DeviceHello.self, from: opened.frame.payload)
+        let signing = try Curve25519.Signing.PublicKey(
+            rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(hello.signingKey)))
+        let agreement = try Curve25519.KeyAgreement.PublicKey(
+            rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(hello.agreementKey)))
+        try EnvelopeSealer.verify(try Envelope.parse(record.payload), context: context, key: signing)
+        XCTAssertEqual(opened.header.senderID, KeyDerivation.deviceID(signingPublicKey: signing), "D7: the sender is the key's hash")
+        let sas = KeyDerivation.sas(
+            hubID: hubUUID, linkNonce: nonce,
+            hubSigning: TestE2E.hubSigningKey.publicKey, hubAgreement: TestE2E.hubAgreementKey.publicKey,
+            deviceSigning: signing, deviceAgreement: agreement)
+        return (hello, sas)
     }
 }

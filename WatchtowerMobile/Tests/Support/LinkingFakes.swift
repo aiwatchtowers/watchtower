@@ -109,10 +109,24 @@ final class FakeLinkContainer: LinkContainer {
 
 /// A transport that keeps every save in order (the in-memory transport
 /// coalesces rewrites of one record name), so tests count device writes.
+/// With a sealer (the phone's `SecureTransport` for the prepared hub) each
+/// record is also sealed as the app's link transport does, and kept in
+/// `sealed`: a record that cannot be sealed throws, as on a device.
 actor SaveLogTransport: CloudSyncTransport {
     private(set) var saved: [CloudRecord] = []
+    private(set) var sealed: [CloudRecord] = []
+    private var sealer: SecureTransport?
+
+    func setSealer(_ sealer: SecureTransport?) {
+        self.sealer = sealer
+    }
 
     func save(_ records: [CloudRecord]) async throws {
+        if let sealer {
+            var wire: [CloudRecord] = []
+            for record in records { wire.append(try await sealer.seal(record)) }
+            sealed += wire
+        }
         saved += records
     }
 
@@ -122,11 +136,19 @@ actor SaveLogTransport: CloudSyncTransport {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: token ?? CloudChangeToken(value: 0))
     }
 
-    /// Every `device` record saved, in write order.
+    /// Every device record saved (a hello's device record, or a plain
+    /// `device` record), in write order.
     func deviceWrites() throws -> [DevicePayload] {
-        try saved
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        try saved.compactMap { record in
+            switch record.kind {
+            case RelayRecordKind.device.rawValue:
+                try RelayCoder.makeDecoder().decode(DevicePayload.self, from: record.payload)
+            case RelayRecordKind.hello.rawValue:
+                try RelayCoder.makeDecoder().decode(DeviceHello.self, from: record.payload).device
+            default:
+                nil
+            }
+        }
     }
 }
 
@@ -152,6 +174,13 @@ final class FakeLinkHost: LinkHost {
     /// The Mac: answers from every device record written so far, both
     /// databases, in write order. nil = no grant in the replica.
     var mac: @MainActor (_ writes: [DevicePayload]) -> DeviceGrant? = { _ in nil }
+    /// The keys a linked (unrevoked) grant's keybox carries.
+    var keyboxKeys: KeyboxKeys? = TestPhone.keyboxKeys()
+    /// The phone's key store: what is saved through a prepared transport is
+    /// sealed with it for the prepared hub. nil: plain saves only.
+    var keys: (any PhoneKeyStore)?
+    /// `fresh` of each `prepare`, in call order.
+    private(set) var preparedFresh: [Bool] = []
 
     init(log: LinkEventLog) {
         self.log = log
@@ -163,19 +192,30 @@ final class FakeLinkHost: LinkHost {
     /// Thrown by `prepare` (the sync stack could not restart).
     var prepareError: (any Error)?
 
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
+    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         log.append("prepare \(Self.describe(scope))")
         prepared.append(scope)
         preparedHubIDs.append(hubID)
+        preparedFresh.append(fresh)
         while parksPrepare {
             try await Task.sleep(for: .milliseconds(5))
         }
         if let prepareError { throw prepareError }
-        return transport(for: scope)
+        let transport = transport(for: scope)
+        if let keys {
+            let provider = try PhoneKeyProvider(store: keys, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in }))
+            await transport.setSealer(SecureTransport(inner: InMemoryCloudTransport(), keys: provider, rollback: InMemoryRollbackGuard()))
+        }
+        return transport
     }
 
-    func fetchGrant(deviceID: String) async -> DeviceGrant? {
-        mac((try? await deviceWrites()) ?? [])
+    func fetchKeybox(deviceID: String) async -> Keybox? {
+        await storedKeybox(deviceID: deviceID)
+    }
+
+    func storedKeybox(deviceID: String) async -> Keybox? {
+        guard let grant = mac((try? await deviceWrites()) ?? []) else { return nil }
+        return Keybox(grant: grant, keys: grant.linked && grant.revoked != true ? keyboxKeys : nil)
     }
 
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {

@@ -40,11 +40,17 @@ struct SystemLinkClock: LinkClock {
 /// lands.
 @MainActor
 protocol LinkHost: AnyObject {
-    /// The transport of `scope`'s database for `hubID`'s zones. Another
-    /// scope or hub restarts the sync stack with an empty replica.
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
-    /// One fetch, then this phone's `device_grant` as the replica holds it.
-    func fetchGrant(deviceID: String) async -> DeviceGrant?
+    /// The transport of `scope`'s database for `hubID`'s zones; what is
+    /// saved through it is sealed with the phone's keys for that hub. Another
+    /// scope or hub, or `fresh` (a new pairing: the replica must not keep
+    /// the old link's rollback marks, outbox or sealed recordings), restarts
+    /// the sync stack with an empty replica.
+    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
+    /// One fetch, then this phone's keybox (`device_grant-<device_id>`, the
+    /// epoch keys included) as the replica holds it.
+    func fetchKeybox(deviceID: String) async -> Keybox?
+    /// The keybox as the replica holds it, without a fetch (after one).
+    func storedKeybox(deviceID: String) async -> Keybox?
     /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
     /// keeps the link but sends nothing (the hub moved).
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async

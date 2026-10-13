@@ -23,7 +23,11 @@ final class AppRoot {
         /// The CloudKit transport's store a wipe empties; nil for a
         /// transport that keeps none.
         let transportStorePath: String?
-        let make: @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment
+        /// `seqFloor`: the phone's seq ceiling the wiped replica held (F29),
+        /// so a new pairing never reuses a seq.
+        let make: @MainActor (
+            _ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?, _ seqFloor: UInt64
+        ) throws -> AppEnvironment
     }
 
     private(set) var env: AppEnvironment
@@ -60,25 +64,31 @@ final class AppRoot {
     var showsOnboarding: Bool { !isDemo && linking.link == nil }
 
     /// The app's root: the demo on an unsigned build, else the saved link's
-    /// database, resuming a link a kill interrupted.
+    /// database, resuming a link a kill interrupted. Throws
+    /// `KeyStoreError.locked` before the first unlock since a restart (the
+    /// boot waits for it).
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
             return demo(try AppEnvironment(), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
-        let identity = try DeviceIdentity.current(defaults: defaults)
-        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device)
+        let keys = try PhoneKeychain.store()
+        // F14: reads the device id (works while locked), never creates it.
+        let identity = try DeviceIdentity.current(keys: keys)
+        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?, UInt64) throws -> AppEnvironment = { scope, hubID, device, floor in
+            try AppEnvironment(
+                scope: scope, hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), seqFloor: floor
+            )
         }
         let scope = store.bootScope
         let hubID = store.bootHubID
         let directory = try AppEnvironment.appGroupDirectory()
         let root = AppRoot(
-            env: try make(scope, hubID, store.link.map(identity.linkedDevice(for:))),
+            env: try make(scope, hubID, store.link.flatMap(identity.linkedDevice(for:)), 0),
             scope: scope,
             hubID: hubID,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
+            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity, keys: keys),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
                 transportStorePath: AppEnvironment.liveTransportStorePath(in: directory),
@@ -98,14 +108,19 @@ final class AppRoot {
             env: env,
             scope: .private,
             hubID: AppEnvironment.unlinkedHubID,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
+            linking: LinkingViewModel(
+                container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity,
+                keys: InMemoryPhoneKeyStore()
+            ),
             restarter: nil
         )
     }
 
-    /// At launch: a link a kill left waiting, then the account check (the
+    /// At launch: a link saved before encryption is dropped (scan again),
+    /// a link a kill left waiting resumes, then the account check (the
     /// account may have changed while the app was not running).
     func resumeLink() async {
+        await linking.dropUnencryptedLink()
         await linking.resumePendingLink()
         await linking.accountChanged()
     }
@@ -125,6 +140,14 @@ final class AppRoot {
     private func wire(_ env: AppEnvironment) {
         env.onLinkSignal = { [weak self] signal in self?.handle(signal) }
         env.onFetched = { [weak self] in self?.checkHeartbeat() }
+        env.onKeyboxChanged = { [weak self] in self?.keyboxChanged() }
+    }
+
+    /// A keybox indexed in the running environment (a rotation, a removal).
+    private func keyboxChanged() {
+        guard !isDemo else { return }
+        let linking = linking
+        Task { await linking.keyboxChanged() }
     }
 
     private func handle(_ signal: LinkSignal) {
@@ -200,12 +223,20 @@ final class AppRoot {
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
+        old.onKeyboxChanged = nil
         let stoppedCapture = wipe ? await old.recorder.stopForWipe() : nil
         // After the shutdown the old boot (and its launch recovery) has
         // ended: the hand-over never races it.
         await old.shutDown()
         var outcome = LocalWipe()
+        var seqFloor: UInt64 = 0
         if wipe {
+            do {
+                seqFloor = try old.envelopeSeqCeiling()
+            } catch {
+                // Unreadable: the new replica restarts its own ceiling (logged; seqs of a new pairing).
+                Self.logger.error("seq ceiling unreadable at the wipe: \(error.localizedDescription, privacy: .public)")
+            }
             let handover = await old.handOverRecordings(stoppedCapture: stoppedCapture, keep: keepRecordings)
             outcome = LocalWipe(
                 notSent: Self.pendingActionCount(old) + handover.lost,
@@ -220,7 +251,7 @@ final class AppRoot {
                     try TransportStore(path: path).wipe()
                 }
             }
-            let next = try restarter.make(scope, hubID, device)
+            let next = try restarter.make(scope, hubID, device, seqFloor)
             wire(next)
             env = next
             self.scope = scope
@@ -269,10 +300,10 @@ final class AppRoot {
 // MARK: - LinkHost
 
 extension AppRoot: LinkHost {
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
+    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         // A queued restart decides the running scope and hub.
         _ = await restartTask?.result
-        if retired || scope != self.scope || hubID != self.hubID {
+        if fresh || retired || scope != self.scope || hubID != self.hubID {
             // The environment replaced here is an unlinked or retired one:
             // a recording problem is only logged (a scan shows no notice).
             let wipe = try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
@@ -283,20 +314,20 @@ extension AppRoot: LinkHost {
         return env.linkTransport
     }
 
-    func fetchGrant(deviceID: String) async -> DeviceGrant? {
+    func fetchKeybox(deviceID: String) async -> Keybox? {
         await env.refresh()
-        let store = env.store
+        return await storedKeybox(deviceID: deviceID)
+    }
+
+    func storedKeybox(deviceID: String) async -> Keybox? {
+        guard let id = UUID(uuidString: deviceID) else {
+            Self.logger.error("keybox read for a device id that is not a UUID")
+            return nil
+        }
         do {
-            return try await store.reader.read { db in
-                try SettingsSnapshot.decode(
-                    DeviceGrant.self,
-                    recordName: SliceKind.deviceGrant.recordName(id: deviceID),
-                    store: store,
-                    from: db
-                )
-            }
+            return try env.keybox(deviceID: id)
         } catch {
-            Self.logger.error("grant read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("keybox read failed: \(String(describing: error), privacy: .public)")
             return nil
         }
     }

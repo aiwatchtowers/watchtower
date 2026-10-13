@@ -305,6 +305,34 @@ final class ReplicaEnvelopeTests: XCTestCase {
         XCTAssertNotNil(try store.heartbeatAge(now: stamp))
     }
 
+    /// The link flow reads the whole keybox (Task 16): the grant and the epoch keys the hub sealed to this phone.
+    /// Absent, locked and unopenable stay apart.
+    func testTheWholeKeyboxOpensWithItsKeys() async throws {
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let deviceID = TestE2E.deviceID
+        XCTAssertNil(try read(store) { db in try store.keybox(deviceID: deviceID, from: db) }, "absent is nil")
+
+        let grantRecord = try TestE2E.keyboxRecord(modifiedAt: stamp)
+        let grant = try RelayCoder.makeDecoder().decode(Keybox.self, from: grantRecord.payload).grant
+        let boxKeys = KeyboxKeys(
+            epoch: 2, dataKey: WireBytes.base64URL(Data(repeating: 1, count: 32)),
+            alertKey: WireBytes.base64URL(Data(repeating: 2, count: 32)),
+            metaKey: WireBytes.base64URL(Data(repeating: 3, count: 32)))
+        let plain = CloudRecord(
+            recordName: grantRecord.recordName, zone: .data, kind: grantRecord.kind, modifiedAt: stamp,
+            payload: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: boxKeys)))
+        try store.apply(batch(try await seal([plain]), token: 1))
+
+        let opened = try XCTUnwrap(try read(store) { db in try store.keybox(deviceID: deviceID, from: db) })
+        XCTAssertEqual(opened, Keybox(grant: grant, keys: boxKeys))
+
+        keys.isLocked = true
+        XCTAssertThrowsError(try read(store) { db in try store.keybox(deviceID: deviceID, from: db) }) { error in
+            XCTAssertEqual(error as? KeyStoreError, .locked)
+        }
+    }
+
     func testAnotherPhonesKeyboxIsDroppedAtApply() async throws {
         let hub = TestE2E.hub()
         hub.link(TestE2E.strangerIdentity)

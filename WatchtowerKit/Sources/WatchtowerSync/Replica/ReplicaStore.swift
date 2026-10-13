@@ -779,6 +779,28 @@ public final class ReplicaStore: Sendable {
         return try openedPayload(wireName: row["record_name"], payload: row["payload"])
     }
 
+    /// This phone's whole keybox (`device_grant-<device_id>`, the epoch keys included), from an ALREADY-OPEN
+    /// database; nil when the record is absent. A locked keychain throws `KeyStoreError.locked`, and an envelope
+    /// that does not open throws its `EnvelopeError` (counted): absent, locked and unreadable stay apart.
+    public func keybox(deviceID: UUID, from db: Database) throws -> Keybox? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT record_name, payload FROM slice_records WHERE plain_name = ?",
+            arguments: [SliceKind.deviceGrant.recordName(id: deviceID.uuidString)]
+        ) else { return nil }
+        let wireName: String = row["record_name"]
+        do {
+            return try opener.openKeybox(wireName: wireName, envelope: row["payload"])
+        } catch let error as EnvelopeError {
+            if Self.isNewerFormat(error) {
+                noteNewerFormat(wireName)
+            } else {
+                noteCorrupt([wireName], what: "keybox (\(Self.code(error)))")
+            }
+            throw error
+        }
+    }
+
     /// Every opened payload of one data-zone kind (the WatchtowerKit slice
     /// mirrors decode them), from an ALREADY-OPEN database so it runs inside
     /// a ValueObservation tracking closure. Ordered by plain record name. A

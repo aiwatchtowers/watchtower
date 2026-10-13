@@ -34,16 +34,23 @@ enum AppEnvironmentError: LocalizedError {
     }
 }
 
-/// The phone's E2E key material for one hub (mobile E2E Task 16 Step 0, compile wiring): the key store and the hub
-/// id its link is stored under. Task 16 proper builds it from the Keychain and the saved link.
+/// The phone's E2E key material for one hub (mobile E2E spec §2.6): the key store and the hub id its link is
+/// stored under. The live app passes the Keychain store and the environment's hub.
 struct PhoneKeys {
     let store: any PhoneKeyStore
     let hubID: String
 
-    /// No link material: every seal throws `keysUnavailable` and the replica refuses every batch.
+    /// No link material: every seal throws `keysUnavailable` and the replica refuses every batch. Its throwaway
+    /// identity lives in memory only.
     static func unlinked() -> Self {
         Self(store: InMemoryPhoneKeyStore(), hubID: AppEnvironment.placeholderHubID)
     }
+}
+
+/// The handler of the keybox signal (`AppEnvironment.onKeyboxChanged`), set after the hydrator that fires it.
+@MainActor
+private final class KeyboxSignal {
+    var handler: (@MainActor () -> Void)?
 }
 
 /// Root object for the app: owns the on-device replica, the hydrator that
@@ -66,7 +73,7 @@ final class AppEnvironment {
     /// by F2's `HubRegistry`): no Mac has zones of this name, so it syncs
     /// nothing.
     nonisolated static let unlinkedHubID = "unlinked"
-    /// The compile-only SecureTransport's hub id until Task 16 wires the linked hub (it must be a UUID).
+    /// The hub id of the key-less wiring (`PhoneKeys.unlinked()`): no hub has it, and it parses as a UUID.
     nonisolated static let placeholderHubID = "00000000-0000-0000-0000-000000000000"
 
     let store: ReplicaStore
@@ -119,6 +126,17 @@ final class AppEnvironment {
     /// a call after every successful fetch (the heartbeat checks).
     @ObservationIgnored var onLinkSignal: (@MainActor (LinkSignal) -> Void)?
     @ObservationIgnored var onFetched: (@MainActor () -> Void)?
+    /// A keybox (this phone's `device_grant`) was indexed: a rotation's new
+    /// epoch keys, or Remove on the Mac. Fires after unlock, from the
+    /// hydrator's `onRecordsApplied`.
+    var onKeyboxChanged: (@MainActor () -> Void)? {
+        get { keyboxSignal.handler }
+        set { keyboxSignal.handler = newValue }
+    }
+    @ObservationIgnored private let keyboxSignal: KeyboxSignal
+    /// The environment seals and opens with this device's keys for its hub;
+    /// false: the key-less wiring (no device keys yet, or no hub).
+    @ObservationIgnored let hasDeviceKeys: Bool
 
     /// When the phone last fetched from the Mac successfully (Settings →
     /// Your Mac → Last sync); nil before the first successful fetch.
@@ -134,6 +152,9 @@ final class AppEnvironment {
     @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
+    /// `transport` sealing and opening with the phone's keys: every write of
+    /// the outbox, the uploader and the link flow goes through it.
+    @ObservationIgnored private let secure: SecureTransport
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -159,12 +180,16 @@ final class AppEnvironment {
     /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
     /// tests: nil keeps the phone's own recordings folder. A live build
     /// runs `hubID`'s zones in `scope`'s database, linked as `linkedDevice`
-    /// (`AppRoot` reads all three from the `LinkStore`).
+    /// (`AppRoot` reads all three from the `LinkStore`), with `keys` (the
+    /// Keychain store for `hubID`); `seqFloor` is the seq ceiling a wipe
+    /// carried over.
     convenience init(
         recordingsDirectory: URL? = nil,
         scope: CloudDatabaseScope = .private,
         hubID: String = AppEnvironment.unlinkedHubID,
-        linkedDevice: LinkedDevice? = nil
+        linkedDevice: LinkedDevice? = nil,
+        keys: PhoneKeys? = nil,
+        seqFloor: UInt64 = 0
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
@@ -177,6 +202,8 @@ final class AppEnvironment {
                 transportKind: .cloudKit,
                 hubID: hubID,
                 linkedDevice: linkedDevice,
+                keys: keys,
+                seqFloor: seqFloor,
                 recordingsDirectory: recordingsDirectory
             )
         } else {
@@ -197,7 +224,10 @@ final class AppEnvironment {
     /// fetch loop's wait between cycles. `linkedDevice` is the saved link
     /// (the demo kind is always `DemoSeed.device`). `keys` is the phone's
     /// E2E key material; nil: the demo pairing on the demo kind, none on
-    /// the CloudKit kind (Task 16 wires the Keychain).
+    /// the CloudKit kind. Keys whose store holds no device id yet, or whose
+    /// hub id is not a UUID, wire no keys either (F14: the identity is never
+    /// created here, only read; nothing is sealed or opened). `seqFloor`
+    /// raises the phone's seq allocator above a wiped replica's ceiling.
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
@@ -205,12 +235,14 @@ final class AppEnvironment {
         hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil,
         keys: PhoneKeys? = nil,
+        seqFloor: UInt64 = 0,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) throws {
-        assert(
+        // The demo kind picks the fixed demo keys: never over CloudKit.
+        precondition(
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
             "a CloudKitTransport must not run under the demo kind"
         )
@@ -220,31 +252,27 @@ final class AppEnvironment {
         self.hubID = hubID
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
-        // Compile wiring (mobile E2E Task 16 Step 0, F6): the replica keeps the hub's envelopes and opens them
-        // with the phone's key store; the outbox and the uploader seal, and the feed opens, through one
-        // SecureTransport. Without link material (the CloudKit kind until Task 16 wires the Keychain and the
-        // linked hub) every seal throws keysUnavailable and the replica refuses every batch. The seq allocator
-        // starts from zero until Task 17 persists its ceiling (F29).
-        let phoneKeys = try keys ?? (transportKind == .inMemoryDemo ? DemoSeed.phoneKeys() : PhoneKeys.unlinked())
-        let keyDeviceID = try phoneKeys.store.deviceID() ?? phoneKeys.store.identity().deviceID
-        store = try ReplicaStore(
-            path: replicaPath,
-            opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store)
+        let sealed = try Self.sealedStack(
+            transport: transport, replicaPath: replicaPath,
+            keys: try keys ?? (transportKind == .inMemoryDemo ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor
         )
-        let secure = SecureTransport(
-            inner: transport,
-            keys: try PhoneKeyProvider(
-                store: phoneKeys.store, hubID: phoneKeys.hubID,
-                seq: SeqAllocator(load: { 0 }, store: { _ in })),
-            rollback: InMemoryRollbackGuard()
-        )
+        let store = sealed.store
+        let secure = sealed.secure
+        self.store = store
+        self.secure = secure
+        hasDeviceKeys = sealed.hasDeviceKeys
 
         // On the live path the hydrator nudges the CKSyncEngine before each
         // cycle; the feed reads what that fetch buffered, so it gets no pull
         // of its own. An in-memory stand-in has no engine and gets nil.
         let pull: (@Sendable () async throws -> Void)? = (transport as? CloudKitTransport)
             .map { cloud in { @Sendable in try await cloud.pull() } }
-        let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull)
+        let keyboxSignal = KeyboxSignal()
+        self.keyboxSignal = keyboxSignal
+        let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull) { records in
+            guard records.contains(where: { $0.kind == .deviceGrant }) else { return }
+            Task { @MainActor in keyboxSignal.handler?() }
+        }
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: secure, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
@@ -451,9 +479,58 @@ final class AppEnvironment {
         await recorder.uploadPending()
     }
 
-    /// The transport the link flow writes this phone's `device` record
-    /// through.
-    var linkTransport: any CloudSyncTransport { transport }
+    /// The transport the link flow writes this phone's hello and `device`
+    /// record through: sealed with the phone's keys for this hub.
+    var linkTransport: any CloudSyncTransport { secure }
+
+    /// This phone's keybox as the replica holds it (the epoch keys
+    /// included); nil when absent. A locked keychain throws.
+    func keybox(deviceID: UUID) throws -> Keybox? {
+        let store = store
+        return try store.reader.read { db in try store.keybox(deviceID: deviceID, from: db) }
+    }
+
+    /// The phone's seq ceiling (F29), carried over a wipe.
+    func envelopeSeqCeiling() throws -> UInt64 {
+        try store.envelopeSeqCeiling()
+    }
+
+    /// The replica keeps the hub's envelopes and opens them with the phone's key store; the outbox, the uploader
+    /// and the link flow seal, and the feed opens, through one SecureTransport. Without device keys or a hub
+    /// every seal throws keysUnavailable and the replica refuses every batch. F29: the seq ceiling persists in
+    /// the replica; a wipe carries the old one over (`seqFloor`).
+    private static func sealedStack(
+        transport: any CloudSyncTransport & Sendable,
+        replicaPath: String,
+        keys: PhoneKeys?,
+        seqFloor: UInt64
+    ) throws -> (store: ReplicaStore, secure: SecureTransport, hasDeviceKeys: Bool) {
+        let wired = try deviceKeys(keys)
+        let phoneKeys = wired?.keys ?? PhoneKeys.unlinked()
+        // The key-less store is in memory: creating its throwaway identity touches no Keychain.
+        let keyDeviceID = try wired?.deviceID ?? phoneKeys.store.identity().deviceID
+        let store = try ReplicaStore(
+            path: replicaPath,
+            opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store)
+        )
+        let seq = SeqAllocator(
+            load: { max(try store.envelopeSeqCeiling(), seqFloor) },
+            store: { try store.setEnvelopeSeqCeiling($0) }
+        )
+        let secure = SecureTransport(
+            inner: transport,
+            keys: try PhoneKeyProvider(store: phoneKeys.store, hubID: phoneKeys.hubID, seq: seq),
+            rollback: store
+        )
+        return (store, secure, wired != nil)
+    }
+
+    /// `keys` when they can seal for their hub: the store holds a device id
+    /// (read, never created: F14) and the hub id is a UUID.
+    private static func deviceKeys(_ keys: PhoneKeys?) throws -> (keys: PhoneKeys, deviceID: UUID)? {
+        guard let keys, UUID(uuidString: keys.hubID) != nil, let deviceID = try keys.store.deviceID() else { return nil }
+        return (keys, deviceID)
+    }
 
     /// Asks a CloudKit transport to send its queue now (the unlinked record
     /// before a stop), once the boot has started its engine: it does not

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -29,6 +30,10 @@ final class AppRootWiringTests: XCTestCase {
     private var transports: [InMemoryCloudTransport] = []
     private var replicaPath = ""
     private var container: FakeLinkContainer!
+    /// The phone's Keychain stand-in, shared by every environment and the link flow (as the Keychain is).
+    private var keyStore: InMemoryPhoneKeyStore!
+    /// The root's `UserDefaults` (its `LinkStore`).
+    private var defaultsInUse: UserDefaults?
 
     /// A live-kind root on one replica path. Without `transportStorePath`
     /// each environment gets a fresh in-memory transport; with it, a
@@ -42,11 +47,15 @@ final class AppRootWiringTests: XCTestCase {
         hubID initialHub: String = AppEnvironment.unlinkedHubID,
         link: LinkRecord? = nil,
         linkClock: any LinkClock = SystemLinkClock(),
-        transportStorePath: String? = nil
+        transportStorePath: String? = nil,
+        keyStore given: InMemoryPhoneKeyStore? = nil
     ) throws -> AppRoot {
+        let keyStore = try given ?? TestE2E.phoneStore()
+        self.keyStore = keyStore
         let path = try makeReplicaPath()
         replicaPath = path
         let defaults = try makeDefaults()
+        defaultsInUse = defaults
         let store = LinkStore(defaults: defaults)
         store.link = link
         container = FakeLinkContainer(log: LinkEventLog())
@@ -54,7 +63,8 @@ final class AppRootWiringTests: XCTestCase {
         recordingsDirectory = recordings
         let engine = engine
         let clock = clock
-        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { [weak self] scope, hubID, device in
+        typealias Make = @MainActor (CloudDatabaseScope, String, LinkedDevice?, UInt64) throws -> AppEnvironment
+        let make: Make = { [weak self] scope, hubID, device, seqFloor in
             let transport: any CloudSyncTransport
             if let transportStorePath {
                 transport = CloudKitTransport(
@@ -71,7 +81,9 @@ final class AppRootWiringTests: XCTestCase {
                 transportKind: .cloudKit,
                 hubID: hubID,
                 linkedDevice: device,
-                keys: try TestPhone.keys(),
+                // The test hub's keys whatever zones the environment syncs: tests seal through the test hub.
+                keys: PhoneKeys(store: keyStore, hubID: TestE2E.hubID.uuidString),
+                seqFloor: seqFloor,
                 defaults: defaults,
                 recordingsDirectory: recordings
             ) { uploader in
@@ -83,12 +95,14 @@ final class AppRootWiringTests: XCTestCase {
             self?.built.append((env, scope, hubID))
             return env
         }
-        let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
+        let identity = DeviceIdentity(
+            deviceID: try keyStore.deviceID()?.uuidString, name: device.name, model: device.model, appVersion: device.appVersion
+        )
         return AppRoot(
-            env: try make(.private, initialHub, linked),
+            env: try make(.private, initialHub, linked, 0),
             scope: .private,
             hubID: initialHub,
-            linking: LinkingViewModel(container: container, store: store, identity: identity, clock: linkClock),
+            linking: LinkingViewModel(container: container, store: store, identity: identity, keys: keyStore, clock: linkClock),
             restarter: AppRoot.Restarter(replicaPath: path, transportStorePath: transportStorePath, make: make)
         )
     }
@@ -278,7 +292,7 @@ final class AppRootWiringTests: XCTestCase {
         )
         XCTAssertEqual(list.inProgress.map(\.state), [.heldForMac(nil)])
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
         await root.setLink(device, writesAllowed: true)
 
         let row = try XCTUnwrap(try root.env.store.phoneRecordings().first)
@@ -300,7 +314,7 @@ final class AppRootWiringTests: XCTestCase {
         await root.setLink(nil, writesAllowed: true)
         _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-studio")
+        _ = try await root.prepare(scope: .private, hubID: "hub-studio", fresh: false)
         await root.setLink(device, writesAllowed: true)
 
         let uploads = try await relayUploads(in: try XCTUnwrap(transports.last))
@@ -537,10 +551,10 @@ final class AppRootWiringTests: XCTestCase {
         let first = root.env
 
         root.retireEnvironment()
-        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
+        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: false)
 
         XCTAssertFalse(root.env === first)
-        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
+        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: false)
         XCTAssertEqual(built.count, 2, "a fresh environment is not retired")
     }
 
@@ -551,15 +565,15 @@ final class AppRootWiringTests: XCTestCase {
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
-        let samePrivate = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
+        let samePrivate = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: false)
         XCTAssertTrue(root.env === first, "the running scope needs no restart")
-        XCTAssertTrue((samePrivate as? InMemoryCloudTransport) === transports[0])
+        XCTAssertTrue((samePrivate as? SecureTransport) === (first.linkTransport as? SecureTransport), "the running sealed transport")
 
-        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: AppEnvironment.unlinkedHubID)
+        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: AppEnvironment.unlinkedHubID, fresh: false)
 
         XCTAssertFalse(root.env === first)
         XCTAssertEqual(built.last?.scope, .shared(ownerName: "_owner-acme"))
-        XCTAssertTrue((shared as? InMemoryCloudTransport) === transports.last)
+        XCTAssertTrue((shared as? SecureTransport) === (root.env.linkTransport as? SecureTransport), "the new one's")
         let rows = try await sliceCount(root.env)
         XCTAssertEqual(rows, 0, "another database's data is not kept")
     }
@@ -571,28 +585,48 @@ final class AppRootWiringTests: XCTestCase {
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
 
         XCTAssertFalse(root.env === first, "another hub is another pair of zones")
         XCTAssertEqual(built.last?.hubID, "hub-acme")
         let rows = try await sliceCount(root.env)
         XCTAssertEqual(rows, 0, "another hub's data is not kept")
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
         XCTAssertEqual(built.count, 2, "the running hub needs no restart")
     }
 
-    func testFetchGrantReadsThisPhonesHydratedGrant() async throws {
+    /// A new pairing (`fresh`) restarts on an empty replica even on the
+    /// running database and hub: the old link's rollback marks, outbox and
+    /// sealed recordings must not outlive it.
+    func testAFreshPrepareRestartsOnAnEmptyReplicaOnTheSameHub() async throws {
         let root = try makeRoot(linked: nil)
+        let first = root.env
+        let now = Date()
+        try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await poll { (try? self.sliceCountSync(first)) == 1 }
+
+        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: true)
+
+        XCTAssertFalse(root.env === first)
+        let rows = try await sliceCount(root.env)
+        XCTAssertEqual(rows, 0, "data_seen and the rows go with the replica")
+    }
+
+    func testFetchKeyboxReadsThisPhonesHydratedKeybox() async throws {
+        let root = try makeRoot(linked: nil)
+        // The boot's own first fetch done: a fetch coalesced into it would not see the save below.
+        try await poll { root.env.isBootstrapped }
         let grant = DeviceGrant(
             deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
             linked: true, typingAllowed: false, startSessionsAllowed: true
         )
-        try await TestPhone.hub(over: transports[0]).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
+        let keys = TestPhone.keyboxKeys(epoch: 1)
+        try await TestPhone.hub(over: transports[0]).save([try TestPhone.grantRecord(grant, keys: keys, modifiedAt: Date())])
 
-        let fetched = await root.fetchGrant(deviceID: device.deviceID)
+        let fetched = await root.fetchKeybox(deviceID: device.deviceID)
 
-        XCTAssertEqual(fetched, grant)
-        let other = await root.fetchGrant(deviceID: "device-other")
+        XCTAssertEqual(fetched, Keybox(grant: grant, keys: keys), "the grant and the epoch keys")
+        let other = await root.fetchKeybox(deviceID: UUID().uuidString)
         XCTAssertNil(other)
     }
 
@@ -647,8 +681,10 @@ final class AppRootWiringTests: XCTestCase {
         )
     }
 
+    /// The `device` records the phone sealed into `transport`, as the test hub opens them.
     private func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
-        try await transport.changes(in: .relay, since: nil).changed
+        let opened = try await TestPhone.hub(over: transport).changes(in: .relay, since: nil).changed
+        return try opened
             .filter { $0.kind == RelayRecordKind.device.rawValue }
             .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
     }
@@ -703,27 +739,29 @@ final class AppRootWiringTests: XCTestCase {
     func testALinkURLOnALiveRootLinksThroughTheRealHost() async throws {
         let linkClock = GateLinkClock()
         addTeardownBlock { linkClock.release() }
-        let root = try makeRoot(linked: nil, linkClock: linkClock)
-        let iat = Int64(linkClock.start.timeIntervalSince1970)
-        let code = LinkPayload(
-            hubID: "hub-acme", macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600,
-            hubSigningKey: LinkPayload.makeNonce(), hubAgreementKey: LinkPayload.makeNonce()
-        )
+        let root = try makeRoot(linked: nil, linkClock: linkClock, keyStore: try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity))
+        let code = TestPhone.linkCode(iat: Int64(linkClock.start.timeIntervalSince1970))
+        let hubID = TestE2E.hubID.uuidString
 
         let flow = Task { await root.open(code.url()) }
         try await poll { linkClock.waiting == 1 }
 
         XCTAssertEqual(root.linking.phase, .waiting(macName: "Acme Mac"))
-        XCTAssertEqual(built.last?.hubID, "hub-acme", "restarted onto the code's hub")
+        XCTAssertEqual(built.last?.hubID, hubID, "restarted onto the code's hub")
         XCTAssertEqual(built.last?.scope, .private, "same Apple ID: the private database")
         let macSide = try XCTUnwrap(transports.last)
-        let writes = try await deviceWrites(in: macSide)
-        XCTAssertEqual(writes.map(\.linkNonce), [code.nonce])
+        let hellos = try await macSide.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(hellos.map(\.recordName), ["hello-\(device.deviceID)"])
+        let opened = try TestPhone.openHello(try XCTUnwrap(hellos.first), code: code)
+        XCTAssertEqual(opened.hello.device.linkNonce, code.nonce)
+        XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's hello gives the Mac the phone's code")
         let grant = DeviceGrant(
-            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
+            deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private,
             linked: true, typingAllowed: false, startSessionsAllowed: true
         )
-        try await TestPhone.hub(over: macSide).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
+        try await TestPhone.hub(over: macSide).save([
+            try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date())
+        ])
         linkClock.release()
         // Bounded: a grant that never lands parks the flow on the clock
         // again, which must fail this test, not hang the suite.
@@ -737,6 +775,7 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
         XCTAssertEqual(root.env.linkedDevice?.deviceID, device.deviceID)
+        XCTAssertEqual(try keyStore.hubLink(hubID)?.epochs.map(\.epoch), [1], "the keybox's keys are stored")
         XCTAssertFalse(root.showsOnboarding)
     }
 
@@ -757,6 +796,150 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(writes.last?.unlinked, true, "the link's hub hears the unlink")
         XCTAssertEqual(root.linking.phase, .idle)
         XCTAssertTrue(root.showsOnboarding)
+    }
+
+    // MARK: - E2E keys (mobile E2E Task 16)
+
+    /// The test hub's link, as the phone saves it.
+    private func e2eLinkRecord() -> LinkRecord {
+        LinkRecord(
+            hubID: TestE2E.hubID.uuidString, macName: "Acme Mac", scope: .private, ownerName: "_owner-acme",
+            userRecordName: "_owner-acme", nonce: WireBytes.base64URL(TestE2E.linkNonce), dataShareURL: nil, relayShareURL: nil
+        )
+    }
+
+    /// D9: Remove on the Mac publishes this phone's keybox as revoked; the
+    /// phone reads it after the next fetch and runs the removal wipe.
+    func testARevokedKeyboxRemovesThePhoneInPrivateScope() async throws {
+        let root = try makeRoot(linked: device, link: e2eLinkRecord())
+        let first = root.env
+        let revoked = DeviceGrant(
+            deviceID: device.deviceID, hubID: TestE2E.hubID.uuidString, name: device.name, scope: .private,
+            linked: false, typingAllowed: false, startSessionsAllowed: true, decidedAt: Date(), revoked: true
+        )
+        try await TestPhone.hub(over: transports[0]).save([try TestPhone.grantRecord(revoked, modifiedAt: Date())])
+
+        let fetched = await first.refresh()
+
+        XCTAssertTrue(fetched)
+        try await poll { root.linking.notice == .removed }
+        XCTAssertNil(root.linking.link)
+        XCTAssertNil(LinkStore(defaults: try XCTUnwrap(defaultsInUse)).link)
+        XCTAssertFalse(root.env === first, "wiped onto a new environment")
+        XCTAssertEqual(built.last?.hubID, AppEnvironment.unlinkedHubID)
+        XCTAssertNil(try keyStore.hubLink(TestE2E.hubID.uuidString), "the hub's keys are deleted")
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// A link saved by a pre-E2E build has no hub keys: the launch drops it
+    /// and asks for a new scan.
+    func testAV2LinkIsDroppedAtLaunchWithTheReScanNotice() async throws {
+        let root = try makeRoot(
+            linked: device, hubID: "hub-acme", link: linkRecord(),
+            keyStore: try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        )
+        let first = root.env
+
+        await root.resumeLink()
+
+        XCTAssertNil(root.linking.link)
+        XCTAssertEqual(root.linking.notice, .encryptionReScan)
+        XCTAssertFalse(root.env === first, "the old link's replica is wiped")
+        XCTAssertEqual(built.last?.hubID, AppEnvironment.unlinkedHubID)
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// F14: a background launch while the phone is locked (after the first
+    /// unlock) reads the device id from its `afterFirstUnlock` item, builds
+    /// the environment and never creates an identity; before the first
+    /// unlock the boot waits (#62's guarantee: locked is never "no id").
+    func testABackgroundLaunchReadsTheDeviceIDWhileLocked() throws {
+        let linked = try TestE2E.phoneStore()
+        linked.isLocked = true
+        XCTAssertEqual(try DeviceIdentity.current(keys: linked).deviceID, TestE2E.deviceID.uuidString)
+        let env = try AppEnvironment(
+            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString, linkedDevice: device,
+            keys: PhoneKeys(store: linked, hubID: TestE2E.hubID.uuidString),
+            defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        XCTAssertTrue(env.hasDeviceKeys)
+
+        let fresh = InMemoryPhoneKeyStore()
+        XCTAssertNil(try DeviceIdentity.current(keys: fresh).deviceID)
+        let unlinked = try AppEnvironment(
+            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            keys: PhoneKeys(store: fresh, hubID: TestE2E.hubID.uuidString),
+            defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in unlinked.stop() }
+        XCTAssertFalse(unlinked.hasDeviceKeys)
+        XCTAssertNil(try fresh.deviceID(), "no identity is created outside the link flow")
+
+        linked.isBeforeFirstUnlock = true
+        XCTAssertThrowsError(try DeviceIdentity.current(keys: linked)) { error in
+            XCTAssertEqual(error as? KeyStoreError, .locked)
+        }
+    }
+
+    func testALockedKeychainAtBootWaitsForTheUnlockAndAnotherFailureShowsIt() {
+        let locked = WatchtowerMobileApp.Boot.make(processEnvironment: [:]) { throw KeyStoreError.locked }
+        guard case .waitingForUnlock = locked else {
+            return XCTFail("a locked Keychain waits for the unlock, got \(locked)")
+        }
+
+        let broken = WatchtowerMobileApp.Boot.make(processEnvironment: [:]) { throw KeyStoreError.unexpected(-25_300) }
+        guard case let .failed(message) = broken else {
+            return XCTFail("another Keychain failure is shown, got \(broken)")
+        }
+        XCTAssertTrue(message.contains("Keychain"))
+    }
+
+    /// The CloudKit kind without device keys seals nothing: no action, no
+    /// recording upload, no link record leaves in any form.
+    func testTheCloudKitKindWithNoKeysNeverSealsAnything() async throws {
+        let transport = InMemoryCloudTransport()
+        let env = try AppEnvironment(
+            transport: transport, replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString, linkedDevice: device,
+            defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        XCTAssertFalse(env.hasDeviceKeys)
+
+        do {
+            try await env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+            XCTFail("nothing can be sealed without keys")
+        } catch {
+            XCTAssertEqual(error as? SecureTransportError, .keysUnavailable)
+        }
+        do {
+            try await env.linkTransport.save([try CloudRecordFactory.record(
+                for: env.deviceSettings.devicePayload(for: device, linkNonce: nil, unlinked: true, now: Date()), modifiedAt: Date()
+            )])
+            XCTFail("the link transport seals too")
+        } catch {
+            XCTAssertEqual(error as? SecureTransportError, .keysUnavailable)
+        }
+        let relay = try await transport.changes(in: .relay, since: nil).changed
+        XCTAssertTrue(relay.isEmpty, "nothing reached the transport")
+    }
+
+    /// F29: a wipe carries the phone's seq ceiling over to the new replica.
+    func testAWipeCarriesTheSeqCeilingOver() async throws {
+        let root = try makeRoot(linked: device)
+        let first = root.env
+        try await first.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+        let ceiling = try first.envelopeSeqCeiling()
+        XCTAssertGreaterThan(ceiling, 0)
+
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+
+        XCTAssertFalse(root.env === first)
+        await root.setLink(device, writesAllowed: true)
+        try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-2")
+        XCTAssertGreaterThan(try root.env.envelopeSeqCeiling(), ceiling, "seqs continue above the wiped replica's")
     }
 
     private func heartbeat(updatedAt: Date, hubID: String = "hub-acme", macName: String = "Acme Mac") -> HeartbeatPayload {

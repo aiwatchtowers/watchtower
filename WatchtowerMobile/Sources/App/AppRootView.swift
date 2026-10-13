@@ -53,7 +53,7 @@ struct LinkNoticeBanner: View {
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             switch notice {
-            case .moved, .stale:
+            case .moved, .stale, .encryptionReScan:
                 // A large control: the bordered shape is the hit area, and
                 // a frame outside it would not grow it to 44 pt.
                 Button("Scan") { linking.startScan() }

@@ -37,7 +37,10 @@ private struct LinkStepsScreen: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            LinkStepsView(model: LinkStepsModel(waitingFor: macName, waited: linking.phaseElapsed()))
+            LinkStepsView(model: LinkStepsModel(
+                waitingFor: macName, code: linking.linkCode, macSeesPhone: linking.macSeesPhone,
+                waited: linking.phaseElapsed()
+            ))
         }
     }
 }

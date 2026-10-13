@@ -17,6 +17,10 @@ enum LinkNotice: Equatable {
     /// with the wipe's "Not sent" count.
     case recordingsProblem(String, notSent: Int)
 
+    /// The saved link predates encryption (mobile E2E spec §2.8): it was
+    /// dropped at launch, and the phone pairs again with a new code.
+    case encryptionReScan
+
     /// What a wipe reports: a recording problem first, then a capture it
     /// stopped and kept, else `otherwise` (by default the "Not sent" count,
     /// or nil when nothing was lost).
@@ -39,6 +43,8 @@ enum LinkNotice: Equatable {
                 + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case let .recordingsProblem(problem, notSent):
             problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
+        case .encryptionReScan:
+            "Watchtower now encrypts your data. Scan the code on your Mac again."
         }
     }
 
