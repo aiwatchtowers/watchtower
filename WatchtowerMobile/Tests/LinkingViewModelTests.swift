@@ -84,6 +84,7 @@ final class LinkingViewModelTests: XCTestCase {
     private var grantMaker: (_ hubID: String, _ linked: Bool, _ refused: LinkRefusal?) -> DeviceGrant {
         let identity = identity
         let start = start
+        let clock = clock
         return { hubID, linked, refused in
             DeviceGrant(
                 deviceID: identity.deviceID ?? "",
@@ -92,7 +93,8 @@ final class LinkingViewModelTests: XCTestCase {
                 scope: .private,
                 linked: linked,
                 linkRefused: refused,
-                linkedAt: linked ? start : nil,
+                // The Mac links at the owner's click: now, after the code's iat (review M-3).
+                linkedAt: linked ? clock?.now() : nil,
                 typingAllowed: false,
                 startSessionsAllowed: true,
                 decidedAt: start
@@ -1218,6 +1220,97 @@ final class LinkingViewModelTests: XCTestCase {
         await keyed.dropUnencryptedLink()
         XCTAssertNotNil(keyed.link, "a link with keys stays")
         XCTAssertEqual(host.wipes, 1)
+    }
+
+    // MARK: - Fix round 1 (Task 16 review)
+
+    /// I-1: a scan of the linked Mac whose keybox does not say "linked" is a
+    /// re-pair: the link ends first (its "Not sent" reported), and a refusal
+    /// leaves the phone unlinked with no keys, never on tabs it cannot sync.
+    func testARefusedRescanOfTheLinkedMacEndsTheLink() async throws {
+        let model = try await linkedModel(code())
+        let again = code()
+        host.notSentCount = 2
+        host.mac = { [grant = grantMaker] writes in
+            writes.last?.linkNonce == again.nonce ? grant(acme, false, .notConfirmed) : nil
+        }
+
+        await model.open(again.url())
+
+        XCTAssertEqual(model.phase, .failed(.refused))
+        XCTAssertNil(model.link, "Welcome, not dead tabs")
+        XCTAssertNil(LinkStore(defaults: defaults).link)
+        XCTAssertNil(try keyStore.hubLink(acme), "the keys go with the link")
+        XCTAssertEqual(model.notice, .notSent(2), "what the re-pair's wipe lost is reported")
+        XCTAssertNil(host.links.last?.device)
+    }
+
+    func testATimedOutRescanOfTheLinkedMacEndsTheLink() async throws {
+        let model = try await linkedModel(code())
+        host.mac = { _ in nil }
+
+        await model.open(code().url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertNil(model.link)
+        XCTAssertNil(LinkStore(defaults: defaults).link)
+        XCTAssertNil(try keyStore.hubLink(acme))
+        XCTAssertNil(try keyStore.hubSigningKey(acme))
+    }
+
+    /// M-3: a `linked` keybox decided before this code was issued (a stale
+    /// link on the Mac's clock) is not this scan's confirmation: the Mac
+    /// links at the owner's click, after the code's `iat`.
+    func testAStaleLinkedKeyboxIsNotThisScansConfirmation() async throws {
+        let payload = code()
+        let deviceID = TestE2E.deviceID.uuidString
+        let linkedAt = LinkEventLog()
+        linkedAt.append("stale")
+        host.mac = { [start] writes in
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            let at = linkedAt.events.last == "stale" ? start.addingTimeInterval(-3_600) : start
+            return DeviceGrant(
+                deviceID: deviceID, hubID: acme, name: "Colleague A's iPhone", scope: .private, linked: true,
+                linkedAt: at, typingAllowed: false, startSessionsAllowed: true, decidedAt: at
+            )
+        }
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer), "an older link is not the owner's Link on this code")
+        XCTAssertNil(model.link)
+
+        linkedAt.append("fresh")
+        let fresh = code()
+        let clickedAt = clock.now()
+        host.mac = { writes in
+            guard writes.contains(where: { $0.linkNonce == fresh.nonce }) else { return nil }
+            return DeviceGrant(
+                deviceID: deviceID, hubID: acme, name: "Colleague A's iPhone", scope: .private, linked: true,
+                linkedAt: clickedAt, typingAllowed: false, startSessionsAllowed: true, decidedAt: clickedAt
+            )
+        }
+        await model.open(fresh.url())
+        XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
+    }
+
+    /// M-2 (F14): a resumed wait never creates the device identity; without
+    /// one it ends.
+    func testAResumeWithoutTheDeviceIdentityEndsWithoutCreatingOne() async throws {
+        keyStore = InMemoryPhoneKeyStore()
+        host.keys = keyStore
+        try keyStore.saveHubLink(try ScannedHubKeys(code()).unconfirmedLink)
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: linkRecord(), deadline: start.addingTimeInterval(300), baseline: nil, baselineCaptured: true
+        )
+        let model = makeModel()
+
+        await model.resumePendingLink()
+
+        XCTAssertEqual(model.phase, .failed(.noAnswer))
+        XCTAssertNil(try keyStore.deviceID(), "no identity was created")
+        XCTAssertNil(LinkStore(defaults: defaults).pending)
     }
 
     // MARK: - Live container

@@ -76,6 +76,7 @@ final class AppRoot {
         let keys = try PhoneKeychain.store()
         // F14: reads the device id (works while locked), never creates it.
         let identity = try DeviceIdentity.current(keys: keys)
+        LegacyDeviceID.remove(defaults: defaults)
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?, UInt64) throws -> AppEnvironment = { scope, hubID, device, floor in
             try AppEnvironment(
                 scope: scope, hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), seqFloor: floor

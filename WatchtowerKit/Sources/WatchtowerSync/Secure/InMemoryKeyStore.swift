@@ -89,6 +89,7 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func identity() throws -> DeviceIdentityKeys { try store.identity() }
+    public func existingIdentity() throws -> DeviceIdentityKeys? { try store.existingIdentity() }
     public func hubLink(_ hubID: String) throws -> HubLinkKeys? { try store.hubLink(hubID) }
     public func saveHubLink(_ keys: HubLinkKeys) throws { try store.saveHubLink(keys) }
     public func removeHubLink(_ hubID: String) throws { try store.removeHubLink(hubID) }

@@ -1,4 +1,6 @@
 import Foundation
+import os
+import Security
 import WatchtowerSync
 
 /// Why the phone's Keychain store could not be set up.
@@ -36,5 +38,32 @@ enum PhoneKeychain {
             throw PhoneKeychainError.privateGroupMissing
         }
         return group
+    }
+}
+
+/// Main's #62 device id (a random UUID in the Keychain, with a `UserDefaults` fallback), retired by the
+/// key-derived id (D7, F30). Removed at launch; idempotent, and "no such item" is the usual case.
+enum LegacyDeviceID {
+    static let service = "com.aiwatchtowers.watchtower.mobile.device"
+    static let account = "device_id"
+    static let defaultsKey = "device.id"
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LegacyDeviceID")
+
+    /// `deleteKeychainItem` returns the `SecItemDelete` status; tests pass a stand-in.
+    static func remove(defaults: UserDefaults, deleteKeychainItem: () -> OSStatus = deleteLiveItem) {
+        defaults.removeObject(forKey: defaultsKey)
+        let status = deleteKeychainItem()
+        if status != errSecSuccess, status != errSecItemNotFound {
+            // Retried at the next launch; the item holds no key, only the retired id.
+            logger.warning("legacy device id not removed (\(status, privacy: .public))")
+        }
+    }
+
+    private static func deleteLiveItem() -> OSStatus {
+        SecItemDelete([
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ] as CFDictionary)
     }
 }

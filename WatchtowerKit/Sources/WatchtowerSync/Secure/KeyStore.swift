@@ -88,6 +88,9 @@ public struct AlertMaterial: Codable, Equatable, Sendable {
 public protocol PhoneKeyStore: Sendable {
     /// Created on first use (whenUnlocked). Throws `.locked` rather than creating a second identity.
     func identity() throws -> DeviceIdentityKeys
+    /// The identity when one exists, never created (F14: a launch that is not the link flow reads only).
+    /// nil when absent; throws `.locked` while locked and `.corrupt` for a half-present identity.
+    func existingIdentity() throws -> DeviceIdentityKeys?
     func hubLink(_ hubID: String) throws -> HubLinkKeys?
     /// Also refreshes the two afterFirstUnlock copies (public signing key, alert material).
     func saveHubLink(_ keys: HubLinkKeys) throws

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import WatchtowerE2ETesting
@@ -757,7 +758,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's hello gives the Mac the phone's code")
         let grant = DeviceGrant(
             deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private,
-            linked: true, typingAllowed: false, startSessionsAllowed: true
+            linked: true, linkedAt: linkClock.start, typingAllowed: false, startSessionsAllowed: true
         )
         try await TestPhone.hub(over: macSide).save([
             try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date())
@@ -942,6 +943,31 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertGreaterThan(try root.env.envelopeSeqCeiling(), ceiling, "seqs continue above the wiped replica's")
     }
 
+    /// M-5: a keybox signed by another hub key than the QR's (an attacker
+    /// writing into the zone) is refused at apply through the real host: a
+    /// forged "revoked" removes nothing, and the link flow reads no keybox.
+    func testAKeyboxSignedByAStrangerHubKeyIsRefused() async throws {
+        let root = try makeRoot(linked: device, link: e2eLinkRecord())
+        try await poll { root.env.isBootstrapped }
+        let first = root.env
+        let forged = DeviceGrant(
+            deviceID: device.deviceID, hubID: TestE2E.hubID.uuidString, name: device.name, scope: .private,
+            linked: false, typingAllowed: false, startSessionsAllowed: true, decidedAt: Date(), revoked: true
+        )
+        let stranger = SecureTransport(
+            inner: transports[0], keys: StrangerSignedHub(), rollback: InMemoryRollbackGuard()
+        )
+        try await stranger.save([try TestPhone.grantRecord(forged, modifiedAt: Date())])
+
+        let keybox = await root.fetchKeybox(deviceID: device.deviceID)
+
+        XCTAssertNil(keybox, "never stored, so never read")
+        XCTAssertGreaterThanOrEqual(first.store.rejectedCount(), 1, "refused at apply: bad signature")
+        XCTAssertTrue(root.env === first, "no removal wipe")
+        XCTAssertNotNil(root.linking.link)
+        XCTAssertEqual(try keyStore.hubLink(TestE2E.hubID.uuidString)?.epochs.map(\.epoch), [1])
+    }
+
     private func heartbeat(updatedAt: Date, hubID: String = "hub-acme", macName: String = "Acme Mac") -> HeartbeatPayload {
         HeartbeatPayload(
             updatedAt: updatedAt,
@@ -1015,4 +1041,28 @@ private final class GateLinkClock: LinkClock, @unchecked Sendable {
         }
         all.forEach { $0.resume() }
     }
+}
+
+/// The test hub with its signing key swapped for a stranger's: everything else (hub id, recipient) is right.
+private final class StrangerSignedHub: SecureKeyProvider, @unchecked Sendable {
+    private let hub = TestE2E.hub(firstSeq: 9_000_000_000)
+    private let stranger = Curve25519.Signing.PrivateKey()
+
+    var role: SecureRole { hub.role }
+    func metaKey() throws -> SymmetricKey { try hub.metaKey() }
+    func currentEpoch() throws -> UInt32 { try hub.currentEpoch() }
+    func dataKey(epoch: UInt32) throws -> SymmetricKey { try hub.dataKey(epoch: epoch) }
+    func alertKey(epoch: UInt32) throws -> SymmetricKey { try hub.alertKey(epoch: epoch) }
+    func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        try hub.relayKey(direction, deviceID: deviceID, epoch: epoch)
+    }
+    func acceptsRelayEpoch(_ epoch: UInt32, deviceID: UUID) throws -> Bool { try hub.acceptsRelayEpoch(epoch, deviceID: deviceID) }
+    func relayDeviceIDs() throws -> [UUID] { try hub.relayDeviceIDs() }
+    func nextSeq() throws -> UInt64 { try hub.nextSeq() }
+    func hubSigner() throws -> Curve25519.Signing.PrivateKey { stranger }
+    func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try hub.hubAgreement() }
+    func keyboxRecipient(deviceID: UUID) throws -> Curve25519.KeyAgreement.PublicKey? { try hub.keyboxRecipient(deviceID: deviceID) }
+    func deviceSigner() throws -> Curve25519.Signing.PrivateKey { try hub.deviceSigner() }
+    func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { try hub.hubAgreementPublicKey() }
+    func linkNonce() throws -> Data { try hub.linkNonce() }
 }

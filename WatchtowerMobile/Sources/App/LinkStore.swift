@@ -41,12 +41,17 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// stack restarts, before the device record is written; a value saved
     /// by an older build reads false.
     let baselineCaptured: Bool
+    /// The scanned code's `iat`, on the Mac's clock (mobile E2E review M-3):
+    /// a `linked` keybox decided before it is an older link, not this scan's
+    /// confirmation. nil in a value an older build saved.
+    let issuedAt: Date?
 
-    init(link: LinkRecord, deadline: Date, baseline: DeviceGrant?, baselineCaptured: Bool) {
+    init(link: LinkRecord, deadline: Date, baseline: DeviceGrant?, baselineCaptured: Bool, issuedAt: Date? = nil) {
         self.link = link
         self.deadline = deadline
         self.baseline = baseline
         self.baselineCaptured = baselineCaptured
+        self.issuedAt = issuedAt
     }
 
     init(from decoder: any Decoder) throws {
@@ -55,6 +60,7 @@ struct PendingLink: Codable, Equatable, Sendable {
         deadline = try container.decode(Date.self, forKey: .deadline)
         baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
         baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
     }
 }
 

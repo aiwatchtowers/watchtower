@@ -58,6 +58,25 @@ final class KeychainKeyStoreDeviceTests: XCTestCase {
         XCTAssertNotNil(Bundle(for: AppRoot.self).object(forInfoDictionaryKey: PhoneKeychain.privateGroupKey), "the app's Info.plist has it")
     }
 
+    /// M-1: the #62 device id (its Keychain item and the defaults fallback) is removed after the move to the
+    /// key-derived id; "no such item" is not a failure.
+    @MainActor
+    func testTheLegacyDeviceIDIsRemoved() throws {
+        let defaults = try makeDefaults()
+        defaults.set("legacy-id", forKey: LegacyDeviceID.defaultsKey)
+        var deletes = 0
+
+        LegacyDeviceID.remove(defaults: defaults) {
+            deletes += 1
+            return errSecItemNotFound
+        }
+
+        XCTAssertNil(defaults.string(forKey: LegacyDeviceID.defaultsKey))
+        XCTAssertEqual(deletes, 1)
+        XCTAssertEqual(LegacyDeviceID.service, "com.aiwatchtowers.watchtower.mobile.device")
+        XCTAssertEqual(LegacyDeviceID.account, "device_id")
+    }
+
     private func attributes(account: String) throws -> [String: Any]? {
         var result: CFTypeRef?
         let status = SecItemCopyMatching([

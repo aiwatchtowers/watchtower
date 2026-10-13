@@ -125,6 +125,18 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.deviceID()) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
     }
 
+    /// F14: the read-only accessor never creates an identity: absent is nil, and nothing is written.
+    func testTheExistingIdentityIsReadOnly() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        XCTAssertNil(try store.existingIdentity())
+        XCTAssertTrue(backend.writes.isEmpty, "absent stays absent")
+        let created = try store.identity()
+        XCTAssertEqual(try store.existingIdentity()?.deviceID, created.deviceID)
+        backend.failReads(.locked)
+        XCTAssertThrowsError(try store.existingIdentity()) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+    }
+
     func testALockedKeychainNeverCreatesANewIdentity() throws {
         let backend = FakeKeychainBackend()
         backend.failReads(.locked)

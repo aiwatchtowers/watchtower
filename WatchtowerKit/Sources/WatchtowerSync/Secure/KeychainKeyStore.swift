@@ -42,6 +42,18 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         }
     }
 
+    public func existingIdentity() throws -> DeviceIdentityKeys? {
+        try lock.withLock {
+            let sigData = try backend.read(account: "identity.sig", group: privateGroup)
+            let kxData = try backend.read(account: "identity.kx", group: privateGroup)
+            switch (sigData, kxData) {
+            case let (sig?, kx?): return try Self.parseIdentity(sig, kx)
+            case (nil, nil): return nil
+            default: throw KeyStoreError.corrupt("device identity is half present")
+            }
+        }
+    }
+
     /// Add-only creation. Losing the race on `identity.sig` (another creator) loads what that creator stored;
     /// losing it on `identity.kx` means two creators interleaved and is corrupt.
     private func createIdentity() throws -> DeviceIdentityKeys {

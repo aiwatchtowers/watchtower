@@ -207,6 +207,14 @@ final class LinkingViewModel {
             phase = .confirmSwitch(from: link.macName, to: payload.macName)
             return
         }
+        // The linked Mac, whose keybox does not say "linked" (a missed
+        // removal, an absent keybox): a re-pair. The dead link ends first,
+        // reporting what its wipe lost, so a refused or unanswered re-pair
+        // leaves the phone unlinked (Welcome), never on tabs whose keys open
+        // nothing.
+        if link != nil {
+            notice = LinkNotice.after(await unlinkCurrent(writeUnlinked: false))
+        }
         await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
     }
 
@@ -285,7 +293,10 @@ final class LinkingViewModel {
         // rest of the wait), never shown as linked. No baseline yet: a
         // relaunch before it is captured has written nothing to the Mac.
         let deadline = waitDeadline(expiresAt: payload.exp)
-        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil, baselineCaptured: false)
+        let issuedAt = Date(timeIntervalSince1970: TimeInterval(payload.iat))
+        store.pending = PendingLink(
+            link: record, deadline: deadline, baseline: nil, baselineCaptured: false, issuedAt: issuedAt
+        )
         // Step 4: the hello with the code's nonce, sealed to the hub's key, in
         // the scope's database, on a fresh replica (a re-pair must not keep the
         // old link's rollback marks: a reset hub's seqs start again).
@@ -302,7 +313,9 @@ final class LinkingViewModel {
             return
         }
         let baseline = await host.fetchKeybox(deviceID: device.deviceID)?.grant
-        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline, baselineCaptured: true)
+        let pending = PendingLink(
+            link: record, deadline: deadline, baseline: baseline, baselineCaptured: true, issuedAt: issuedAt
+        )
         store.pending = pending
         do {
             // The transport queues the record locally; CloudKit sends it
@@ -374,6 +387,21 @@ final class LinkingViewModel {
             endPendingLink(pending, failure: .noAnswer)
             return
         }
+        // F14: read, never created; the scan created it, so none means the wait cannot be this phone's.
+        let deviceKeys: DeviceIdentityKeys?
+        do {
+            deviceKeys = try keys.existingIdentity()
+        } catch KeyStoreError.locked {
+            Self.logger.notice("keys locked at launch: the pending link waits for the next launch")
+            return
+        } catch {
+            Self.logger.error("device keys unreadable: \(String(describing: error), privacy: .public)")
+            deviceKeys = nil
+        }
+        guard let deviceKeys else {
+            endPendingLink(pending, failure: .noAnswer)
+            return
+        }
         phase = .checking
         do {
             _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID, fresh: false)
@@ -381,12 +409,7 @@ final class LinkingViewModel {
             endPendingLink(pending, failure: .local(error.localizedDescription))
             return
         }
-        do {
-            linkCode = hubKeys.code(for: try keys.identity())
-        } catch {
-            Self.logger.error("device keys unreadable: the wait shows no code: \(String(describing: error), privacy: .public)")
-            linkCode = nil
-        }
+        linkCode = hubKeys.code(for: deviceKeys)
         await waitForGrant(pending)
     }
 
@@ -408,7 +431,7 @@ final class LinkingViewModel {
                     endPendingLink(pending, failure: .refused)
                     return
                 }
-                if grant.linked, grant.revoked != true {
+                if grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
                     if let boxKeys = keybox.keys {
                         await complete(pending, keys: boxKeys)
                         return
@@ -427,6 +450,16 @@ final class LinkingViewModel {
             }
         }
         endPendingLink(pending, failure: .noAnswer)
+    }
+
+    /// A link decided at `decidedAt` (the Mac's clock) answers a code issued
+    /// at `issuedAt` (the same clock) only when it came at or after it: the
+    /// Mac links at the owner's click, after the code was shown (review M-3).
+    /// A pending link an older build saved has no `issuedAt`: unbound.
+    static func isDecided(_ decidedAt: Date?, after issuedAt: Date?) -> Bool {
+        guard let issuedAt else { return true }
+        guard let decidedAt else { return false }
+        return decidedAt >= issuedAt
     }
 
     /// A wait that ended without a link: the scan's keys go (unless they are
