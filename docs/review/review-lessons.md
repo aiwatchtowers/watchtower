@@ -1444,3 +1444,12 @@ Entry format:
 - weak-dimension: 9 (public repo hygiene) in plan docs: statements about which of the owner's workbenches are still legacy, and how many there are, are facts read off the owner's live install, and leak-check cannot catch them.
 - rule-gap (candidate, dim 6): *a rename PR's "deliberate extras" that change model-facing text name the customized-template path explicitly, or are split out of the rename.*
 - outcome: TBD
+
+## 2026-10-14 — fix/741-oauth-success-pages (board #741: one shared `internal/oauthpage` callback page for Slack/Google/Gmail/Outlook/Jira/MCP, osascript tab-closer removed, CLI `ReturnAfterLogin` opens `watchtower-auth://` under `--app-return`, `auth login --app-return`; panel: prosecutor + codex + 3 specialists, all up; orchestrator fix commit 0ecf7d72d verified by reading + touched-package `go test`; judge synthesis, round 1) — verdict: approve
+
+- contested: the "skip when ctx is cancelled" guard could never fire. Cobra's ctx is `context.Background()`, the Desktop's Cancel is a SIGTERM that kills the CLI first, and the provider's 5-min timeout lives in a *derived* ctx. So the real case, an abandoned sign-in timing out, fell through and stole focus. The fix keys on the returned error (`ErrLoginTimedOut` sentinel) instead. **A post-flow side effect gated on the parent ctx misses timeouts that live in a derived ctx; gate on the flow's returned error.** [6]
+- false-positive: silent HIGH-1 ("connected" served before the state check and exchange) was raised as a regression but is pre-existing. main's pages already said "has been connected/linked". Deferred, not dismissed, because the auto-return makes the contradiction more visible. [6]
+- miss: codex returned clean. The focus steal (F3) and the dead-guard reasoning came from the prosecutor; three lanes agreed on the dead guard and only the prosecutor saw its timeout consequence.
+- weak-dimension: 7. A sentinel added for behaviour stays pinned only by message text (`Contains "timed out"`) when the text was deliberately kept identical, so dropping the `%w` wrap stays green.
+- rule-gap (candidate, dim 7): *when a fix introduces an error sentinel that changes downstream behaviour, each producer's test asserts `errors.Is(err, Sentinel)`, not the message text.*
+- outcome: TBD

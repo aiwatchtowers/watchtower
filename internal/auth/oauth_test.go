@@ -306,6 +306,7 @@ func TestLogin_Timeout(t *testing.T) {
 	_, err := Login(ctx, cfg, &out)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut, "a timeout must not pull the app forward")
 }
 
 func TestLogin_PortBusy(t *testing.T) {

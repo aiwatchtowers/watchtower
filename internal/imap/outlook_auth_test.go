@@ -482,3 +482,13 @@ func TestRefreshingXOAUTH2Auth_RefreshErrorPropagates(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refreshing outlook access token")
 }
+
+// A login nobody completes returns ErrLoginTimedOut, which keeps
+// oauthpage.ReturnAfterLogin from pulling the app forward (#741).
+func TestLoginOutlook_TimeoutIsErrLoginTimedOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := LoginOutlook(ctx, MicrosoftOAuthConfig{ClientID: "x"}, io.Discard, OutlookLoginOptions{SkipBrowserOpen: true})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut)
+}

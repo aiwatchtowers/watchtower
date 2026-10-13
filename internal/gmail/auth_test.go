@@ -570,3 +570,13 @@ func TestOAuthToken_JSONShape(t *testing.T) {
 		assert.True(t, strings.Contains(s, `"`+key+`"`), "missing key %s in %s", key, s)
 	}
 }
+
+// A login nobody completes returns ErrLoginTimedOut, which keeps
+// oauthpage.ReturnAfterLogin from pulling the app forward (#741).
+func TestLogin_TimeoutIsErrLoginTimedOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Login(ctx, GoogleOAuthConfig{ClientID: "x"}, io.Discard, LoginOptions{SkipBrowserOpen: true})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut)
+}
