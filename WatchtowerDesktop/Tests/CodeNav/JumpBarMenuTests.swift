@@ -224,7 +224,7 @@ final class JumpBarMenuTests: XCTestCase {
         // A pick goes through the navigation center: on Back, opened at the line.
         trigger(try XCTUnwrap(menu.menu.items.first { $0.title == "load" }))
         XCTAssertEqual(vm.codeFiles.reveals[root]?.line, 12)
-        XCTAssertTrue(navigation.canGoBack(workbenchID: project.id))
+        XCTAssertTrue(navigation.canGoBack(root: project.mainCodeRoot))
     }
 
     func testControlSixBeepsWithoutSymbols() {

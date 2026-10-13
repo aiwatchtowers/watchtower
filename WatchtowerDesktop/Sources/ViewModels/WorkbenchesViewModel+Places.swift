@@ -54,9 +54,7 @@ extension WorkbenchesViewModel {
     /// one; nil for the main folder, an unknown place or a page without a
     /// session.
     func headerPlace(projectID: Int64) -> (label: SessionPlacePresentation.PlaceLabel, folder: URL?)? {
-        let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
-        guard let sessionID = CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)
-        else { return nil }
+        guard let sessionID = pageSessionID(projectID: projectID) else { return nil }
         switch sessionPlaces.currentPlace(sessionID: sessionID) {
         case let .worktree(_, root, _):
             return (sessionPlaceLabel(sessionID: sessionID, projectID: projectID), root)
@@ -67,10 +65,93 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// The code root the page's FILES, Files pane, git marks and code
+    /// navigation work in (spec D6, §6.3): the root of the session the
+    /// layout holds (`codeRoot(sessionID:project:)`); the main folder for a
+    /// page without a session.
+    func activeCodeRoot(project: Workbench) -> CodeRoot {
+        codeRoot(sessionID: pageSessionID(projectID: project.id), project: project)
+    }
+
+    /// The root a session's agent works in: its worktree when its place is
+    /// a worktree that was read and still exists; the main folder for no
+    /// session, a main, unknown, stale or removed place (never a worktree
+    /// that cannot be proven). The worktree root is built only from Go's
+    /// `folder_root` spelling. Worked out again only when the place, the
+    /// workbench folder or the removed worktrees change.
+    func codeRoot(sessionID: Int64?, project: Workbench) -> CodeRoot {
+        let place = sessionID.map(sessionPlaces.currentPlace(sessionID:)) ?? .unknown
+        let inputs = CodeRootMemo.Inputs(
+            place: place,
+            stale: sessionID.map(sessionPlaces.isPlaceStale(sessionID:)) ?? false,
+            folderPath: project.folderPath,
+            removed: codeFiles.removedRoots,
+            worktreeExists: Self.worktreeFolderExists(place)
+        )
+        let key = CodeRootMemoKey(projectID: project.id, sessionID: sessionID)
+        if let memo = codeRootMemo[key], memo.inputs == inputs { return memo.root }
+        let root = provenCodeRoot(inputs, project: project)
+        codeRootMemo[key] = CodeRootMemo(inputs: inputs, root: root)
+        return root
+    }
+
+    private func provenCodeRoot(_ inputs: CodeRootMemo.Inputs, project: Workbench) -> CodeRoot {
+        guard !inputs.stale, case let .worktree(_, folder, _) = inputs.place else { return project.mainCodeRoot }
+        let root = CodeRootPolicy.root(workbench: project, worktreeFolder: folder)
+        if root.isMain {
+            // The worktree is gone (also while hidden): its buffers are
+            // locked now, not at their next save. Not while a view body
+            // reads this.
+            let files = codeFiles
+            Task { @MainActor in files.sweepRemovedWorktrees(workbenchID: project.id) }
+        }
+        if !root.isMain, codeFiles.removedRoots.contains(root) {
+            // The place resolves to a live worktree at a removed one's path:
+            // it was recreated there and shows again (not while a view body
+            // reads this).
+            let files = codeFiles
+            Task { @MainActor in files.worktreeCameBack(root) }
+        }
+        return root
+    }
+
+    /// A cheap stat of a worktree place's folder, so a worktree removed
+    /// while nothing held it stops being the page's root (false for any
+    /// other place).
+    private static func worktreeFolderExists(_ place: SessionPlace) -> Bool {
+        guard case let .worktree(_, folder, _) = place else { return false }
+        return CodeRootPolicy.directoryExists(folder)
+    }
+
+    /// The session whose place sets the page's root (D6), nil without one.
+    private func pageSessionID(projectID: Int64) -> Int64? {
+        let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
+        return CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)
+    }
+
     private func sessionPlaceLabel(sessionID: Int64, projectID: Int64) -> SessionPlacePresentation.PlaceLabel {
         SessionPlacePresentation.placeLabel(
             sessionPlaces.currentPlace(sessionID: sessionID), mainStatus: gitStatus[projectID],
             stale: sessionPlaces.isPlaceStale(sessionID: sessionID)
         )
     }
+}
+
+struct CodeRootMemoKey: Hashable {
+    let projectID: Int64
+    let sessionID: Int64?
+}
+
+/// `WorkbenchesViewModel.codeRoot(sessionID:project:)`'s last answer.
+struct CodeRootMemo {
+    struct Inputs: Equatable {
+        let place: SessionPlace
+        let stale: Bool
+        let folderPath: String
+        let removed: Set<CodeRoot>
+        let worktreeExists: Bool
+    }
+
+    let inputs: Inputs
+    let root: CodeRoot
 }

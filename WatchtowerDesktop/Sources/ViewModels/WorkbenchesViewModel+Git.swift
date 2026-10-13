@@ -7,7 +7,9 @@ import WatchtowerCore
 /// Desktop only supplies the one fact Go cannot know (a live Claude Code
 /// session it runs in the folder), saves the code viewer's edits before a
 /// switch, and resends what the owner confirmed.
-/// Never a force, a discard or an automatic stash pop.
+/// Never a force, a discard or an automatic stash pop. Since board #565 it
+/// works on the root the page shows (`activeCodeRoot`): a session's
+/// worktree goes through `--folder`, the main folder's argv is unchanged.
 extension WorkbenchesViewModel {
     /// How often the page on screen re-reads the status for the dirty dot
     /// (edits do not touch refs, so the watcher misses them).
@@ -22,121 +24,141 @@ extension WorkbenchesViewModel {
         case failed(String)
     }
 
+    /// Reads `workbench git status` of the main folder.
+    func refreshGitStatus(projectID: Int64) async {
+        await refreshGitStatus(key: .mainFolder(projectID))
+    }
+
+    /// Reads `workbench git status` of `root` — with `--folder` for a
+    /// worktree root (board #565), without for the main folder.
+    func refreshGitStatus(root: CodeRoot) async {
+        await refreshGitStatus(key: GitRootKey(root))
+    }
+
     /// Reads `workbench git status`. Coalesced: a call while one runs only
     /// asks for one more read after it, so a burst of FSEvents, the poll
     /// and an app activation cost at most two CLI calls. A cancelled read
     /// keeps the last status and reports nothing; a failed one (the call,
     /// or git inside the repository) keeps it too and says why.
-    func refreshGitStatus(projectID: Int64) async {
+    private func refreshGitStatus(key: GitRootKey) async {
         guard let cli else {
-            gitStatusErrors[projectID] = Self.cliMissingMessage
+            gitStatusErrors[key] = Self.cliMissingMessage
             return
         }
-        guard !gitRefreshing.contains(projectID) else {
-            gitRefreshQueued.insert(projectID)
+        guard !gitRefreshing.contains(key) else {
+            gitRefreshQueued.insert(key)
             return
         }
-        gitRefreshing.insert(projectID)
-        defer { gitRefreshing.remove(projectID) }
+        gitRefreshing.insert(key)
+        defer { gitRefreshing.remove(key) }
         repeat {
-            gitRefreshQueued.remove(projectID)
+            gitRefreshQueued.remove(key)
             do {
-                applyGitStatus(try await cli.gitStatus(projectID: projectID), projectID: projectID)
+                let status = try await cli.gitStatus(projectID: key.workbenchID, folder: key.worktreeFolder)
+                applyGitStatus(status, key: key)
             } catch {
                 if error is CancellationError || Task.isCancelled {
                     // Another caller's rerun is not this task's to drop: it
-                    // runs once this loop has let go of the id.
-                    if gitRefreshQueued.contains(projectID) {
-                        Task { await self.refreshGitStatus(projectID: projectID) }
+                    // runs once this loop has let go of the key.
+                    if gitRefreshQueued.contains(key) {
+                        Task { await self.refreshGitStatus(key: key) }
                     }
                     return
                 }
                 // The last known status stays, so the button does not vanish.
-                gitStatusErrors[projectID] = "Could not read the git status: "
-                    + gitFailureText(error, command: "status", projectID: projectID)
+                gitStatusErrors[key] = "Could not read the git status: "
+                    + gitFailureText(error, command: "status", workbenchID: key.workbenchID)
             }
-        } while gitRefreshQueued.contains(projectID)
+        } while gitRefreshQueued.contains(key)
     }
 
     /// The popover opened: the branch list (CLI) and the board's branch
     /// targets (DB) for the badges. Clears the previous popover's messages,
-    /// but not the stash note.
-    func loadBranches(project: Workbench) async {
-        gitErrors[project.id] = nil
-        gitNotices[project.id] = nil
-        await reloadBranchList(project: project)
+    /// but not the stash note. `root` defaults to the one the page shows.
+    func loadBranches(project: Workbench, root: CodeRoot? = nil) async {
+        let root = root ?? activeCodeRoot(project: project)
+        gitErrors[root] = nil
+        gitNotices[root] = nil
+        await reloadBranchList(project: project, root: root)
     }
 
     /// Starts a switch. The first call never carries a confirmation flag:
     /// Go answers `needs_confirmation` for a dirty tree or a live agent, and
     /// the switch waits in `pendingBranchConfirmation` for the owner.
-    func switchBranch(_ branch: String, project: Workbench) async {
-        guard switchingBranch[project.id] == nil else { return }
-        pendingBranchConfirmation[project.id] = nil
-        await runSwitch(branch, project: project, stash: false, confirmAgent: false)
+    func switchBranch(_ branch: String, project: Workbench, root: CodeRoot? = nil) async {
+        let root = root ?? activeCodeRoot(project: project)
+        guard switchingBranch[root] == nil else { return }
+        pendingBranchConfirmation[root] = nil
+        await runSwitch(branch, project: project, root: root, stash: false, confirmAgent: false)
     }
 
     /// The owner confirmed a switch: resend it with exactly the flags the
-    /// dialog named. The live-session fact is read again, so an agent
-    /// started since the first try is still asked about. The dialog passes
-    /// the confirmation it showed: dismissing it clears the pending one,
-    /// possibly before this runs.
-    func confirmPendingSwitch(project: Workbench, confirming confirmation: BranchSwitchConfirmation) async {
-        guard switchingBranch[project.id] == nil else { return }
-        pendingBranchConfirmation[project.id] = nil
-        await runSwitch(confirmation.branch, project: project, stash: confirmation.stash, confirmAgent: confirmation.confirmAgent)
+    /// dialog named, in the root it was asked in. The live-session fact is
+    /// read again, so an agent started since the first try is still asked
+    /// about. The dialog passes the confirmation it showed: dismissing it
+    /// clears the pending one, possibly before this runs.
+    func confirmPendingSwitch(
+        project: Workbench, confirming confirmation: BranchSwitchConfirmation, root: CodeRoot? = nil
+    ) async {
+        let root = root ?? activeCodeRoot(project: project)
+        guard switchingBranch[root] == nil else { return }
+        pendingBranchConfirmation[root] = nil
+        await runSwitch(confirmation.branch, project: project, root: root,
+                        stash: confirmation.stash, confirmAgent: confirmation.confirmAgent)
     }
 
-    func cancelPendingSwitch(projectID: Int64) {
-        pendingBranchConfirmation[projectID] = nil
+    func cancelPendingSwitch(key: GitRootKey) {
+        pendingBranchConfirmation[key] = nil
     }
 
     /// The owner read the stash note: the entry itself stays on the stack.
-    func dismissStashNote(projectID: Int64) {
-        gitStashNotes[projectID] = nil
+    func dismissStashNote(key: GitRootKey) {
+        gitStashNotes[key] = nil
     }
 
     /// "New branch from current…": `git switch -c` from HEAD (no files
     /// change, so no guard and no save of the code viewer's edits first).
     /// Returns whether the branch was created.
     @discardableResult
-    func createBranch(_ name: String, project: Workbench) async -> Bool {
-        let id = project.id
-        guard switchingBranch[id] == nil else { return false }
+    func createBranch(_ name: String, project: Workbench, root: CodeRoot? = nil) async -> Bool {
+        let root = root ?? activeCodeRoot(project: project)
+        let key = GitRootKey(root)
+        guard switchingBranch[key] == nil, gitRootIsPlaced(key) else { return false }
         guard let cli else {
-            gitErrors[id] = Self.cliMissingMessage
+            gitErrors[key] = Self.cliMissingMessage
             return false
         }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            gitErrors[id] = "Enter a name for the new branch."
+            gitErrors[key] = "Enter a name for the new branch."
             return false
         }
-        gitErrors[id] = nil
-        gitNotices[id] = nil
-        switchingBranch[id] = trimmed
-        defer { switchingBranch[id] = nil }
+        gitErrors[key] = nil
+        gitNotices[key] = nil
+        switchingBranch[key] = trimmed
+        defer { switchingBranch[key] = nil }
         let result: WorkbenchGitSwitchResult
         do {
-            result = try await cli.gitCreateBranch(projectID: id, name: trimmed)
+            result = try await cli.gitCreateBranch(projectID: project.id, name: trimmed, folder: key.worktreeFolder)
         } catch {
-            gitErrors[id] = "Could not create \(trimmed): \(gitFailureText(error, command: "create", projectID: id))"
+            gitErrors[key] = "Could not create \(trimmed): "
+                + gitFailureText(error, command: "create", workbenchID: project.id)
             // The call may have failed after git wrote.
-            await refreshGitStatus(projectID: id)
+            await refreshGitStatus(key: key)
             return false
         }
         let created = result.created || result.switched
         let outcome = WorkbenchBranchPresentation.outcome(result)
-        gitErrors[id] = outcome.error ?? (created ? nil : "The branch was not created.")
-        gitNotices[id] = outcome.notice
-        if let stash = outcome.stash { gitStashNotes[id] = stash }
-        await afterGitWrite(project: project)
+        gitErrors[key] = outcome.error ?? (created ? nil : "The branch was not created.")
+        gitNotices[key] = outcome.notice
+        if let stash = outcome.stash { gitStashNotes[key] = stash }
+        await afterGitWrite(project: project, root: root)
         return created
     }
 
     /// "Copy branch name": the branch, or the hash on a detached HEAD.
-    func copyBranchName(projectID: Int64) {
-        guard let status = gitStatus[projectID] else { return }
+    func copyBranchName(key: GitRootKey) {
+        guard let status = gitStatus[key] else { return }
         let text = WorkbenchBranchPresentation.label(status).text
         guard !text.isEmpty else { return }
         copyToPasteboard(text)
@@ -146,7 +168,8 @@ extension WorkbenchesViewModel {
     /// watcher, app activation and the dirty-dot poll (only while the tab is
     /// what the owner sees). The sessions' places follow the same page
     /// (board #565); their reads are not this task's, so leaving the page
-    /// does not cancel them.
+    /// does not cancel them. The worktree the page shows is followed too
+    /// (`followGitRoot`).
     func startGitWatching(project: Workbench) async {
         let id = project.id
         gitWatching.insert(id)
@@ -157,14 +180,31 @@ extension WorkbenchesViewModel {
                 while !Task.isCancelled {
                     await self?.gitPollSleep(Self.gitPollInterval)
                     guard !Task.isCancelled, let self else { return }
-                    if self.isTabOnScreen() { await self.refreshGitStatus(projectID: id) }
+                    if self.isTabOnScreen() { await self.refreshWatchedRoots(workbenchID: id) }
                 }
             }
         }
         await refreshGitStatus(projectID: id)
         // The read above arms the watcher; a status already known (a read
         // coalesced into one in flight) arms it now.
-        if let status = gitStatus[id] { armGitWatcher(status, projectID: id) }
+        if let status = gitStatus[id] { armGitWatcher(status, key: .mainFolder(id)) }
+        await followGitRoot(activeCodeRoot(project: project))
+    }
+
+    /// The page's branch menu moved to `root` (board #565): a worktree root
+    /// is read and watched beside the main folder — its status, its refs
+    /// watcher, the poll and app activation — until the page shows another
+    /// root or goes away. The main root is always watched by the page.
+    func followGitRoot(_ root: CodeRoot) async {
+        let id = root.workbenchID
+        guard gitWatching.contains(id) else { return }
+        let next: CodeRoot? = root.isMain ? nil : root
+        guard gitWatchedWorktree[id] != next else { return }
+        if let old = gitWatchedWorktree.removeValue(forKey: id) { stopGitWatcher(key: GitRootKey(old)) }
+        guard let next else { return }
+        gitWatchedWorktree[id] = next
+        await refreshGitStatus(root: next)
+        if let status = gitStatus[next] { armGitWatcher(status, key: GitRootKey(next)) }
     }
 
     /// The page went away: stop watching. The last status, a switch in
@@ -173,112 +213,157 @@ extension WorkbenchesViewModel {
         gitWatching.remove(projectID)
         sessionPlaces.unfollowWorkbench(projectID)
         gitTimers.removeValue(forKey: projectID)?.cancel()
-        gitWatchers.removeValue(forKey: projectID)?.stop()
-        gitWatchedDirs[projectID] = nil
+        stopGitWatcher(key: .mainFolder(projectID))
+        if let worktree = gitWatchedWorktree.removeValue(forKey: projectID) {
+            stopGitWatcher(key: GitRootKey(worktree))
+        }
         if gitWatching.isEmpty, let observer = gitActivationObserver {
             gitNotificationCenter.removeObserver(observer)
             gitActivationObserver = nil
         }
     }
 
+    /// Where a session's agent may work, for the branch switch's agent
+    /// check (spec §5.3): its place, but a stale one (a read pending or
+    /// failed) is unknown — maybe in the worktree being switched.
+    func agentPlace(sessionID: Int64) -> SessionPlace {
+        sessionPlaces.isPlaceStale(sessionID: sessionID) ? .unknown : sessionPlaces.currentPlace(sessionID: sessionID)
+    }
+
+    /// Whether the branch menu may write in `key` (board #565): the main
+    /// folder always; a worktree root only with a status Go read in that
+    /// very worktree (`folder_scope` `worktree`, `folder_root` the root).
+    func gitRootIsPlaced(_ key: GitRootKey) -> Bool {
+        guard let folder = key.worktreeFolder else { return true }
+        return gitStatus[key].map { Self.status($0, placesWorktree: folder) } ?? false
+    }
+
     // MARK: - Private
 
-    private func runSwitch(_ branch: String, project: Workbench, stash: Bool, confirmAgent: Bool) async {
+    private static func status(_ status: WorkbenchGitStatus, placesWorktree folder: String) -> Bool {
+        status.folderScope == .worktree && !status.folderRoot.isEmpty
+            && TerminalCenter.resolvedPath(status.folderRoot) == TerminalCenter.resolvedPath(folder)
+    }
+
+    private func runSwitch(_ branch: String, project: Workbench, root: CodeRoot, stash: Bool, confirmAgent: Bool) async {
         let id = project.id
+        let key = GitRootKey(root)
+        // A worktree root without its own status (Go answered with the main
+        // folder's, or nothing read yet) neither saves nor switches: a
+        // switch there must never touch the main folder's buffers.
+        guard gitRootIsPlaced(key) else { return }
         guard let cli else {
-            gitErrors[id] = Self.cliMissingMessage
+            gitErrors[key] = Self.cliMissingMessage
             return
         }
-        gitErrors[id] = nil
-        gitNotices[id] = nil
-        switchingBranch[id] = branch
-        defer { switchingBranch[id] = nil }
-        // The switch swaps the whole work tree, not just the workbench
+        gitErrors[key] = nil
+        gitNotices[key] = nil
+        switchingBranch[key] = branch
+        defer { switchingBranch[key] = nil }
+        // The switch swaps the whole work tree of that root, not just the
         // folder: a session at the repository root or in a sibling counts.
-        let topLevel = gitStatus[id]?.topLevel ?? ""
-        let workTree = topLevel.isEmpty ? project.folderPath : topLevel
-        // Edits typed in the code viewer are not on disk until their
-        // autosave: saved now, so Go's dirty check sees them (and a stash
-        // takes them). One that cannot be written, or a page that does not
-        // hand its edits over, would leave them under the other branch —
-        // nothing is sent.
-        switch await codeFiles.saveEdits(root: project.mainCodeRoot, workTree: workTree) {
-        case .saved:
-            break
-        case let .unsaved(path):
-            gitErrors[id] = "Save or discard the edits in \(path) first — they are not on disk yet."
-            return
-        case .editorSilent:
-            gitErrors[id] = "The editor did not hand over its latest edits — try again."
-            return
-        }
-        let agentRunning = terminalCenter?.hasLiveAgentSession(workbenchID: id, workTree: workTree) ?? false
+        let topLevel = gitStatus[key]?.topLevel ?? ""
+        let workTree = topLevel.isEmpty ? (key.worktreeFolder ?? project.folderPath) : topLevel
+        guard await saveBeforeSwitch(root: root, workTree: workTree) else { return }
+        let agentRunning = terminalCenter?.hasLiveAgentSession(workbenchID: id, workTree: workTree) { [weak self] in
+            self?.agentPlace(sessionID: $0) ?? .unknown
+        } ?? false
         let result: WorkbenchGitSwitchResult
         do {
-            result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash,
-                                             agentRunning: agentRunning, confirmAgent: confirmAgent && agentRunning)
+            result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash, agentRunning: agentRunning,
+                                             confirmAgent: confirmAgent && agentRunning, folder: key.worktreeFolder)
         } catch {
-            gitErrors[id] = "Could not switch to \(branch): \(gitFailureText(error, command: "switch", projectID: id))"
-            await refreshGitStatus(projectID: id)
+            gitErrors[key] = "Could not switch to \(branch): \(gitFailureText(error, command: "switch", workbenchID: id))"
+            await refreshGitStatus(key: key)
             return
         }
         // Go wrote nothing: wait for the owner, no further call. A stash
         // the owner already agreed to rides along with what Go asks now.
         if let confirmation = WorkbenchBranchPresentation.confirmation(for: result, stashing: stash) {
-            pendingBranchConfirmation[id] = confirmation
-            pendingBranchBase[id] = gitStatus[id].map { WorkbenchBranchPresentation.label($0).text }
+            pendingBranchConfirmation[key] = confirmation
+            pendingBranchBase[key] = gitStatus[key].map { WorkbenchBranchPresentation.label($0).text }
             return
         }
         let outcome = WorkbenchBranchPresentation.outcome(result)
         let moved = result.switched || result.already
-        gitErrors[id] = outcome.error ?? (moved ? nil : "Not switched to \(branch).")
-        gitNotices[id] = outcome.notice
-        if let stash = outcome.stash { gitStashNotes[id] = stash }
-        await afterGitWrite(project: project)
+        gitErrors[key] = outcome.error ?? (moved ? nil : "Not switched to \(branch).")
+        gitNotices[key] = outcome.notice
+        if let stash = outcome.stash { gitStashNotes[key] = stash }
+        await afterGitWrite(project: project, root: root)
+    }
+
+    /// Edits typed in the code viewer are not on disk until their autosave:
+    /// those of the switched root (and of any workbench root inside its work
+    /// tree) are saved now, so Go's dirty check sees them (and a stash takes
+    /// them). Another worktree's or the main folder's are not this switch's.
+    /// One that cannot be written, or a page that does not hand its edits
+    /// over, would leave them under the other branch — nothing is sent.
+    private func saveBeforeSwitch(root: CodeRoot, workTree: String) async -> Bool {
+        let key = GitRootKey(root)
+        switch await codeFiles.saveEdits(root: root, workTree: workTree) {
+        case .saved:
+            return true
+        case let .unsaved(path):
+            gitErrors[key] = "Save or discard the edits in \(path) first — they are not on disk yet."
+        case .editorSilent:
+            gitErrors[key] = "The editor did not hand over its latest edits — try again."
+        }
+        return false
     }
 
     /// After a switch or create, whatever its outcome (a failed switch may
     /// have restored a stash): a fresh status read — not the envelope's,
     /// which a refusal may leave empty — and the branch list again.
-    private func afterGitWrite(project: Workbench) async {
-        await refreshGitStatus(projectID: project.id)
-        await reloadBranchList(project: project)
+    private func afterGitWrite(project: Workbench, root: CodeRoot) async {
+        await refreshGitStatus(root: root)
+        await reloadBranchList(project: project, root: root)
     }
 
     /// The branch list, then the board's branch targets for the badges. A
     /// failed list keeps the last good one (shown as stale); a failed
     /// badge read drops the old badges rather than show them as current.
-    private func reloadBranchList(project: Workbench) async {
+    private func reloadBranchList(project: Workbench, root: CodeRoot) async {
         let id = project.id
+        let key = GitRootKey(root)
         guard let cli else {
-            branchListStates[id] = .failed(Self.cliMissingMessage)
+            branchListStates[key] = .failed(Self.cliMissingMessage)
             return
         }
-        branchListStates[id] = .loading
+        branchListStates[key] = .loading
         do {
-            let list = try await cli.gitBranches(projectID: id)
-            if list.branchesOK {
-                gitBranches[id] = list
-                branchListStates[id] = .loaded
+            let list = try await cli.gitBranches(projectID: id, folder: key.worktreeFolder)
+            if list.branchesOK, list.refused.isEmpty {
+                gitBranches[key] = list
+                branchListStates[key] = .loaded
             } else {
-                branchListStates[id] = .failed(Self.branchListFailure(list.branchesError.isEmpty ? list.note : list.branchesError))
+                branchListStates[key] = .failed(Self.branchListFailure(list))
             }
         } catch {
             if error is CancellationError || Task.isCancelled {
                 // The popover closed; the next one reads again.
-                branchListStates[id] = nil
+                branchListStates[key] = nil
                 return
             }
-            branchListStates[id] = .failed(Self.branchListFailure(gitFailureText(error, command: "branches", projectID: id)))
+            let detail = gitFailureText(error, command: "branches", workbenchID: id)
+            branchListStates[key] = .failed(Self.branchListFailure(detail))
         }
         do {
-            branchTargets[id] = try await dbPool.read { try WorkbenchQueries.branchTargets($0, projectID: id) }
+            branchTargets[key] = try await dbPool.read { try WorkbenchQueries.branchTargets($0, projectID: id) }
         } catch {
-            branchTargets[id] = nil
+            branchTargets[key] = nil
             print("[WorkbenchGit] board branch targets for workbench \(id) failed: \(error)")
             let problem = "Could not read the board's branches: \(error.localizedDescription)"
-            gitErrors[id] = [gitErrors[id], problem].compactMap { $0 }.joined(separator: "\n")
+            gitErrors[key] = [gitErrors[key], problem].compactMap { $0 }.joined(separator: "\n")
         }
+    }
+
+    /// A refused folder (board #565) says why in the owner's words; a failed
+    /// listing says git's error or the note.
+    private static func branchListFailure(_ list: WorkbenchGitBranches) -> String {
+        if !list.refused.isEmpty {
+            return WorkbenchBranchPresentation.refusalText(refused: list.refused, detail: list.refusedDetail)
+        }
+        return branchListFailure(list.branchesError.isEmpty ? list.note : list.branchesError)
     }
 
     private static func branchListFailure(_ detail: String) -> String {
@@ -286,50 +371,85 @@ extension WorkbenchesViewModel {
     }
 
     /// A status git could not read inside the repository is a failed read:
-    /// the last good status stays and the error says why.
-    private func applyGitStatus(_ status: WorkbenchGitStatus, projectID: Int64) {
+    /// the last good status stays and the error says why. A worktree root
+    /// Go does not place in that worktree got the main folder's envelope:
+    /// it is not stored as that root's status (any old one goes, with its
+    /// question and watcher) and a scope note says why the menu is off,
+    /// until the session's place falls back.
+    private func applyGitStatus(_ status: WorkbenchGitStatus, key: GitRootKey) {
         if status.git, !status.statusOK {
-            gitStatusErrors[projectID] = "Could not read the git status: \(status.statusError)"
+            gitStatusErrors[key] = "Could not read the git status: \(status.statusError)"
             return
         }
-        gitStatus[projectID] = status
-        gitStatusErrors[projectID] = nil
-        dropOutdatedConfirmation(status, projectID: projectID)
-        armGitWatcher(status, projectID: projectID)
+        if let folder = key.worktreeFolder, !Self.status(status, placesWorktree: folder) {
+            gitStatus[key] = nil
+            gitStatusErrors[key] = nil
+            gitScopeNotes[key] = WorkbenchBranchPresentation.worktreeScopeNote(status)
+            pendingBranchConfirmation[key] = nil
+            stopGitWatcher(key: key)
+            return
+        }
+        gitStatus[key] = status
+        gitStatusErrors[key] = nil
+        gitScopeNotes[key] = nil
+        dropOutdatedConfirmation(status, key: key)
+        armGitWatcher(status, key: key)
     }
 
     /// A pending question about a branch the folder is already on, or asked
     /// from a branch it has since left, no longer describes the switch.
-    private func dropOutdatedConfirmation(_ status: WorkbenchGitStatus, projectID: Int64) {
-        guard let pending = pendingBranchConfirmation[projectID] else { return }
+    private func dropOutdatedConfirmation(_ status: WorkbenchGitStatus, key: GitRootKey) {
+        guard let pending = pendingBranchConfirmation[key] else { return }
         let now = WorkbenchBranchPresentation.label(status).text
-        let moved = pendingBranchBase[projectID].map { $0 != now } ?? false
+        let moved = pendingBranchBase[key].map { $0 != now } ?? false
         if now == pending.branch || moved {
-            pendingBranchConfirmation[projectID] = nil
+            pendingBranchConfirmation[key] = nil
         }
     }
 
-    /// (Re)creates the refs watcher when the page is watching and the dirs
+    /// Whether a page watches `key`: its main folder, or the worktree its
+    /// branch menu works on.
+    private func isGitWatched(_ key: GitRootKey) -> Bool {
+        guard gitWatching.contains(key.workbenchID) else { return false }
+        guard key.worktreeFolder != nil else { return true }
+        return gitWatchedWorktree[key.workbenchID].map(GitRootKey.init) == key
+    }
+
+    /// (Re)creates the refs watcher when the root is watched and the dirs
     /// changed (a worktree moved, `.git` appeared); none outside a repository.
-    private func armGitWatcher(_ status: WorkbenchGitStatus, projectID: Int64) {
-        guard gitWatching.contains(projectID) else { return }
+    private func armGitWatcher(_ status: WorkbenchGitStatus, key: GitRootKey) {
+        guard isGitWatched(key) else { return }
         let dirs = status.git && !status.gitDir.isEmpty ? [status.gitDir, status.commonDir] : []
-        guard dirs != gitWatchedDirs[projectID] else { return }
-        gitWatchers.removeValue(forKey: projectID)?.stop()
-        gitWatchedDirs[projectID] = dirs
+        guard dirs != gitWatchedDirs[key] else { return }
+        gitWatchers.removeValue(forKey: key)?.stop()
+        gitWatchedDirs[key] = dirs
         guard !dirs.isEmpty else { return }
+        let id = key.workbenchID
+        let isMain = key.worktreeFolder == nil
         // The common dir holds every worktree's HEAD and the refs: a
         // worktree session's branch is read again too, unless only the
         // folder's own HEAD or index moved (board #565).
-        gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] change in
-            if change.mayMoveWorktrees { self?.sessionPlaces.refreshPlaces(workbenchID: projectID) }
-            Task { await self?.refreshGitStatus(projectID: projectID) }
+        gitWatchers[key] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] change in
+            if isMain, change.mayMoveWorktrees { self?.sessionPlaces.refreshPlaces(workbenchID: id) }
+            Task { await self?.refreshGitStatus(key: key) }
         }
     }
 
+    private func stopGitWatcher(key: GitRootKey) {
+        gitWatchers.removeValue(forKey: key)?.stop()
+        gitWatchedDirs[key] = nil
+    }
+
+    /// The poll and app activation: the main folder and the worktree the
+    /// page's branch menu works on.
+    private func refreshWatchedRoots(workbenchID id: Int64) async {
+        await refreshGitStatus(projectID: id)
+        if let worktree = gitWatchedWorktree[id] { await refreshGitStatus(root: worktree) }
+    }
+
     /// The owner's line for a failed call; the raw error goes to the log.
-    private func gitFailureText(_ error: Error, command: String, projectID: Int64) -> String {
-        print("[WorkbenchGit] workbench git \(command) for workbench \(projectID) failed: \(error)")
+    private func gitFailureText(_ error: Error, command: String, workbenchID: Int64) -> String {
+        print("[WorkbenchGit] workbench git \(command) for workbench \(workbenchID) failed: \(error)")
         return WorkbenchBranchPresentation.failureText(error, command: command)
     }
 
@@ -342,7 +462,7 @@ extension WorkbenchesViewModel {
                 guard let self else { return }
                 for id in self.gitWatching {
                     self.sessionPlaces.refreshPlaces(workbenchID: id)
-                    Task { await self.refreshGitStatus(projectID: id) }
+                    Task { await self.refreshWatchedRoots(workbenchID: id) }
                 }
             }
         }

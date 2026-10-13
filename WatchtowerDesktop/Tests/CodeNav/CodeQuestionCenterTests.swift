@@ -250,6 +250,23 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(page.presented.count, 2)
     }
 
+    /// #565: a question about a removed worktree's code closes; one about
+    /// another root stays.
+    func testARemovedWorktreeClosesItsQuestion() async throws {
+        let (center, vm, buffer) = makeCenter()
+        vm.codeFiles.questions = center
+        let worktree = CodeRoot(workbenchID: project.id, worktree: folder.appendingPathComponent(".claude/worktrees/mobile-a"))
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
+        vm.codeFiles.rootRemoved(worktree)
+        XCTAssertNotNil(center.sessions[project.id], "a question about the main folder stays")
+
+        center.closeQuestion(workbenchID: project.id)
+        await center.askAI(bufferID: buffer.id, project: project, root: worktree)
+        XCTAssertNotNil(center.sessions[project.id])
+        vm.codeFiles.rootRemoved(worktree)
+        XCTAssertNil(center.sessions[project.id])
+    }
+
     func testAnOpenPopoverIgnoresASecondAskAI() async throws {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)

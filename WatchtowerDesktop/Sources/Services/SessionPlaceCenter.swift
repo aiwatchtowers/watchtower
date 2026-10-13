@@ -82,6 +82,33 @@ final class SessionPlaceCenter {
         return cwdPlaces[key] == nil || staleCwds.contains(key)
     }
 
+    /// Whether the session's place is proven: its trusted cwd was read and
+    /// the latest read of it gave a verdict.
+    func isPlaceProven(sessionID: Int64) -> Bool {
+        guard let key = sessionKeys[sessionID] else { return false }
+        return cwdPlaces[key] != nil && !staleCwds.contains(key)
+    }
+
+    /// Reads the workbench's cwds (and a stale place of the session) again
+    /// until the session's place is proven or `timeout` passes — a session
+    /// just resumed has none until its hook reports the new run's cwd.
+    /// `folder` stands in for a workbench not on screen. True when proven.
+    func awaitProvenPlace(sessionID: Int64, workbenchID: Int64, folder: String, timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !isPlaceProven(sessionID: sessionID) {
+            guard ContinuousClock.now < deadline, !Task.isCancelled else { return false }
+            await rereadCwds(workbenchID: workbenchID, fallbackFolder: folder).value
+            if let key = sessionKeys[sessionID], staleCwds.contains(key) {
+                await readPlace(key, folder: followed[workbenchID] ?? folder).value
+            }
+            if isPlaceProven(sessionID: sessionID) { break }
+            try? await Task.sleep(for: Self.placeRetryInterval)
+        }
+        return true
+    }
+
+    private static let placeRetryInterval: Duration = .milliseconds(200)
+
     /// The workbench's page is on screen: its cwds are read now and kept up
     /// to date by `cwdsMayHaveChanged` and `refreshPlaces`. Coming back to it,
     /// the places already known are read again too — their branch may have
@@ -161,7 +188,8 @@ final class SessionPlaceCenter {
 
     /// Coalesced: a call while a read runs asks for one more after it and
     /// gets the running one, which ends after that rerun.
-    private func rereadCwds(workbenchID: Int64) -> Task<Void, Never> {
+    /// `fallbackFolder`: the workbench folder when it is not followed.
+    private func rereadCwds(workbenchID: Int64, fallbackFolder: String? = nil) -> Task<Void, Never> {
         if let running = cwdReads[workbenchID] {
             cwdQueued.insert(workbenchID)
             return running
@@ -169,7 +197,7 @@ final class SessionPlaceCenter {
         let read = Task {
             repeat {
                 self.cwdQueued.remove(workbenchID)
-                await self.readCwdsOnce(workbenchID: workbenchID)
+                await self.readCwdsOnce(workbenchID: workbenchID, fallbackFolder: fallbackFolder)
             } while self.cwdQueued.contains(workbenchID)
             self.cwdReads[workbenchID] = nil
         }
@@ -179,8 +207,8 @@ final class SessionPlaceCenter {
 
     /// A read started on screen lands even if the page goes away meanwhile,
     /// but not when the workbench was deleted meanwhile.
-    private func readCwdsOnce(workbenchID: Int64) async {
-        guard let folder = followed[workbenchID] else { return }
+    private func readCwdsOnce(workbenchID: Int64, fallbackFolder: String?) async {
+        guard let folder = followed[workbenchID] ?? fallbackFolder else { return }
         let forgets = forgetCounts[workbenchID, default: 0]
         let rows: [Int64: SessionAgentCwd]
         do {
