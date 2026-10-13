@@ -4,16 +4,15 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/oauthpage"
 )
 
 const (
@@ -40,7 +39,7 @@ type LoginConfig struct {
 // LoginOptions configures the Login flow's presentation.
 type LoginOptions struct {
 	SkipBrowserOpen bool // print the URL instead of opening the browser
-	AppReturn       bool // success page redirects to watchtower-auth://connected
+	AppReturn       bool // callback page links back to the app (oauthpage)
 }
 
 // loginResult is what the /callback handler hands back to Login: either the
@@ -104,17 +103,6 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 	resultCh := make(chan loginResult, 1)
 	var delivered atomic.Bool
 
-	// With app-return the success page sits briefly (so the confirmation is
-	// readable and the redirect doesn't race page load), then navigates to the
-	// app scheme; without it the tab just self-closes (the jira.Login precedent).
-	returnBlock, closeMS := "", "2000"
-	if opts.AppReturn {
-		returnBlock = appReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(callbackSuccessPage)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, callbackHandler(callbackParams{
 		loginCtx:     loginCtx,
@@ -125,7 +113,7 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		resource:     cfg.ServerURL,
 		state:        state,
 		verifier:     pkce.Verifier,
-		successPage:  successPage,
+		appReturn:    opts.AppReturn,
 		resultCh:     resultCh,
 		delivered:    &delivered,
 	}))
@@ -200,7 +188,7 @@ type callbackParams struct {
 	resource     string
 	state        string
 	verifier     string
-	successPage  string
+	appReturn    bool
 	resultCh     chan loginResult
 	delivered    *atomic.Bool
 }
@@ -230,8 +218,7 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			fmt.Fprint(w, page)
 		}
 		fail := func(userMsg, errText string) {
-			page := strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(userMsg), 1)
-			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, page)
+			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, oauthpage.Error(userMsg, p.appReturn))
 		}
 
 		q := r.URL.Query()
@@ -255,6 +242,6 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			return
 		}
 
-		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, p.successPage)
+		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, oauthpage.Success("This connection", p.appReturn))
 	}
 }

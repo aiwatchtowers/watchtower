@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/oauthpage"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -384,17 +386,17 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	return authorizeURL, string(body)
 }
 
-// With AppReturn set, the success page must send the browser back to the app
-// via the watchtower-auth:// scheme (the slack/gmail app-return precedent).
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+// With AppReturn set, the callback serves the shared oauthpage success page
+// with its "Back to Watchtower" link (the slack/gmail app-return precedent).
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	body := runLoginCaptureSuccessBody(t, LoginOptions{AppReturn: true})
-	assert.Contains(t, body, "watchtower-auth://connected")
+	assert.Equal(t, oauthpage.Success("Jira", true), body)
 }
 
-// Without it the page just self-closes and never touches the app scheme, so a
-// plain browser consent is byte-for-byte the pre-feature behaviour.
+// Without it the page never touches the app scheme — a plain CLI consent.
 func TestLogin_NoAppReturn_SuccessPageIsPlain(t *testing.T) {
 	body := runLoginCaptureSuccessBody(t, LoginOptions{})
+	assert.Equal(t, oauthpage.Success("Jira", false), body)
 	assert.NotContains(t, body, "watchtower-auth://")
 }
 

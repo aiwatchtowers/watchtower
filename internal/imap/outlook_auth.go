@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthpage"
 )
 
 const (
@@ -251,8 +251,9 @@ func getOutlookOpenBrowserFunc() func(string) {
 // gmail.LoginOptions.
 type OutlookLoginOptions struct {
 	SkipBrowserOpen bool
-	// AppReturn makes the success page redirect the browser to the
-	// watchtower-auth:// scheme — see gmail.LoginOptions.AppReturn.
+	// AppReturn adds the "Back to Watchtower" link to the callback page
+	// (oauthpage); the CLI command brings the app back itself
+	// (oauthpage.ReturnAfterLogin). Off for plain CLI logins.
 	AppReturn bool
 }
 
@@ -288,13 +289,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 
 	resultCh := make(chan outlookCallbackResult, 1)
 
-	returnBlock, closeMS := "", "2000"
-	if opt.AppReturn {
-		returnBlock = outlookAppReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(outlookCallbackSuccessPage)
+	successPage := oauthpage.Success("Outlook", opt.AppReturn)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(outlookCallbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -305,7 +300,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 			// #nosec G705 -- errMsg is html.EscapeString-encoded before
 			// interpolation, so this isn't an XSS sink despite the taint
 			// analysis (it doesn't track through html.EscapeString).
-			fmt.Fprint(w, strings.Replace(outlookCallbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1)) //nolint:gosec
+			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error escapes the reason
 			return
 		}
 		resultCh <- outlookCallbackResult{
@@ -379,31 +374,6 @@ func listenLocalOutlook() (net.Listener, error) {
 	}
 	return net.Listen("tcp", "127.0.0.1:0")
 }
-
-const outlookCallbackSuccessPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Outlook Connected</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-.logo{width:52px;height:52px;border-radius:13px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;font-weight:700;font-size:24px;line-height:52px;margin:0 auto 18px}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}
-.btn{display:inline-block;margin-top:22px;padding:13px 32px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;text-decoration:none;font-weight:600;font-size:15px;border-radius:10px;box-shadow:0 4px 14px rgba(63,91,224,.35)}
-.btn:hover{filter:brightness(1.12)}
-.hint{margin-top:12px;color:#666;font-size:12px}</style></head>
-<body><div class="card"><div class="logo">W</div><h1>Outlook Connected</h1><p>Outlook has been linked to Watchtower.</p><!--RETURN--></div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});</script></body></html>`
-
-// outlookAppReturnBlock is injected into the success page when
-// OutlookLoginOptions.AppReturn is set — mirrors gmail's appReturnBlock.
-const outlookAppReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
-<p class="hint">You can close this tab afterwards.</p>
-<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
-
-const outlookCallbackErrorPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Error</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}</style></head>
-<body><div class="card"><h1>Authorization Failed</h1><p>{{ERROR}}</p></div></body></html>`
 
 // RefreshingXOAUTH2Auth authenticates via SASL XOAUTH2, calling RefreshFunc
 // on every Authenticate() to obtain a fresh access token. Since Dial calls

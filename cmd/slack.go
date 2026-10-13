@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/oauthpage"
 
 	watchtowerslack "watchtower/internal/slack"
 
@@ -70,12 +71,12 @@ var slackRemoveCmd = &cobra.Command{
 
 func init() {
 	slackLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	slackLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	slackLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	slackLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
 
 	slackAddCmd.Flags().String("label", "", "display name for this workspace")
 	slackAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	slackAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	slackAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 
 	slackCmd.AddCommand(slackAddCmd)
 	slackCmd.AddCommand(slackLoginCmd)
@@ -430,6 +431,7 @@ func slackOAuthLogin(cmd *cobra.Command, noOpen, appReturn bool) (*auth.OAuthRes
 		return nil, err
 	}
 	result, err := auth.Login(cmd.Context(), oauthCfg, cmd.OutOrStdout(), auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	oauthpage.ReturnAfterLogin(cmd.Context(), appReturn, cmd.ErrOrStderr())
 	if err != nil {
 		return nil, fmt.Errorf("oauth login: %w", err)
 	}

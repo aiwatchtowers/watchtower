@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthpage"
 )
 
 // syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
@@ -482,7 +483,7 @@ func TestLogin_SkipBrowserOpen_Success(t *testing.T) {
 	}
 }
 
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","token_type":"Bearer"}`))
@@ -530,8 +531,7 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	// The success page must send the browser back to the app.
-	assert.Contains(t, string(body), "watchtower-auth://connected")
+	assert.Equal(t, oauthpage.Success("Gmail", true), string(body))
 
 	select {
 	case err := <-errCh:

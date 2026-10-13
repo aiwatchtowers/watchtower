@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/oauthpage"
+
 	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,11 +146,10 @@ func TestLogin_HappyPath(t *testing.T) {
 	assert.Contains(t, out.String(), "Opening browser")
 }
 
-// TestLogin_AppReturn_SuccessPageRedirects is gmail.TestLogin_AppReturn_SuccessPageRedirects'
-// Slack analog: with LoginOptions.AppReturn set, the success page served on
-// the OAuth callback must contain the watchtower-auth:// redirect, not just
-// the plain self-closing page.
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+// TestLogin_AppReturn_SuccessPageLinksBack is gmail.TestLogin_AppReturn_SuccessPageLinksBack'
+// Slack analog: with LoginOptions.AppReturn set, the callback serves the
+// shared oauthpage success page with its "Back to Watchtower" link.
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
 		return &slack.OAuthV2Response{
@@ -203,8 +204,7 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	// The success page must send the browser back to the app.
-	assert.Contains(t, string(body), "watchtower-auth://connected")
+	assert.Equal(t, oauthpage.Success("Slack", true), string(body))
 
 	select {
 	case err := <-resultCh:
@@ -581,10 +581,6 @@ func TestLogin_SkipBrowserOpen(t *testing.T) {
 	}
 	defer func() { exchangeToken = oldExchange }()
 
-	oldClose := getCloseBrowserFunc()
-	setCloseBrowserFunc(func() {}) // no-op
-	defer func() { setCloseBrowserFunc(oldClose) }()
-
 	cfg := OAuthConfig{ClientID: "id", ClientSecret: "secret"}
 	var out syncBuffer
 
@@ -638,10 +634,6 @@ func TestLogin_EmptyTokenFromExchange(t *testing.T) {
 	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
 	defer func() { setOpenBrowserFunc(oldOpen) }()
 
-	oldClose := getCloseBrowserFunc()
-	setCloseBrowserFunc(func() {}) // no-op
-	defer func() { setCloseBrowserFunc(oldClose) }()
-
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
 		return &slack.OAuthV2Response{
@@ -686,10 +678,6 @@ func TestLogin_ExchangeError(t *testing.T) {
 	oldOpen := getOpenBrowserFunc()
 	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
 	defer func() { setOpenBrowserFunc(oldOpen) }()
-
-	oldClose := getCloseBrowserFunc()
-	setCloseBrowserFunc(func() {})
-	defer func() { setCloseBrowserFunc(oldClose) }()
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -774,17 +762,6 @@ func TestLogin_EmptyCode(t *testing.T) {
 	}
 }
 
-func TestCloseBrowserFunc_NoOp(t *testing.T) {
-	// Verify closeBrowserFunc can be replaced without panicking
-	oldClose := getCloseBrowserFunc()
-	called := false
-	setCloseBrowserFunc(func() { called = true })
-	defer func() { setCloseBrowserFunc(oldClose) }()
-
-	getCloseBrowserFunc()()
-	assert.True(t, called)
-}
-
 func TestOpenBrowserFunc_NoOp(t *testing.T) {
 	// Verify openBrowserFunc can be replaced without panicking
 	oldOpen := getOpenBrowserFunc()
@@ -830,12 +807,6 @@ func TestComplete_WithExpiresIn(t *testing.T) {
 
 func TestDefaultRedirectPort(t *testing.T) {
 	assert.Equal(t, 18491, defaultRedirectPort)
-}
-
-func TestCallbackStyle(t *testing.T) {
-	// Verify the callback style CSS contains expected rules
-	assert.Contains(t, callbackStyle, "font-family")
-	assert.Contains(t, callbackStyle, "border-radius")
 }
 
 func TestLoginOptions_Defaults(t *testing.T) {
@@ -886,22 +857,6 @@ func TestOpenBrowser_Direct(t *testing.T) {
 	// so we use a URL that will fail silently.
 	OpenBrowser("watchtower-test://not-a-real-url")
 	// No assertion needed — just verifying it doesn't panic
-}
-
-func TestCloseBrowserWindow_Direct(t *testing.T) {
-	// Test the actual closeBrowserWindow function.
-	// It runs an osascript command that will likely fail (no browser with Slack tab)
-	// but shouldn't panic — it's fire-and-forget.
-	closeBrowserWindow()
-	// No assertion needed — just verifying it doesn't panic
-}
-
-func TestCallbackPages(t *testing.T) {
-	// Verify the callback HTML pages contain expected content
-	assert.Contains(t, callbackSuccessPage, "Authorization Successful")
-	assert.Contains(t, callbackSuccessPage, "Watchtower")
-	assert.Contains(t, callbackErrorPage, "Authorization Failed")
-	assert.Contains(t, callbackErrorPage, "{{ERROR}}")
 }
 
 func TestCallbackHandler_ErrorResponse(t *testing.T) {
@@ -962,10 +917,6 @@ func TestCallbackHandler_SuccessResponse(t *testing.T) {
 	oldOpen := getOpenBrowserFunc()
 	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
 	defer func() { setOpenBrowserFunc(oldOpen) }()
-
-	oldClose := getCloseBrowserFunc()
-	setCloseBrowserFunc(func() {})
-	defer func() { setCloseBrowserFunc(oldClose) }()
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
@@ -1029,10 +980,6 @@ func TestLogin_WithExpiresIn(t *testing.T) {
 	oldOpen := getOpenBrowserFunc()
 	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
 	defer func() { setOpenBrowserFunc(oldOpen) }()
-
-	oldClose := getCloseBrowserFunc()
-	setCloseBrowserFunc(func() {})
-	defer func() { setCloseBrowserFunc(oldClose) }()
 
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthpage"
 )
 
 func TestTokenStore_RoundTrip(t *testing.T) {
@@ -447,6 +449,10 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	resp, err := http.Get(cbURL.String())
 	require.NoError(t, err)
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, oauthpage.Success("Your Google account", false), string(body),
+		"the callback serves the shared success page")
 
 	select {
 	case tok := <-resCh:

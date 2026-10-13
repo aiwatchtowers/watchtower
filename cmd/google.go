@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
+	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
 )
@@ -62,7 +63,7 @@ func init() {
 	googleLoginCmd.Flags().Bool("calendar", false, "request Google Calendar access")
 	googleLoginCmd.Flags().Bool("gmail", false, "request Gmail access")
 	googleLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	googleLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	googleLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	googleLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
 
 	googleAddCmd.Flags().Bool("calendar", false, "request Google Calendar access")
@@ -71,7 +72,7 @@ func init() {
 	googleAddCmd.Flags().String("client-id", "", "bring your own Google OAuth client id (non-secret half)")
 	googleAddCmd.Flags().Bool("client-secret-stdin", false, "read the OAuth client secret from stdin (required with --client-id)")
 	googleAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	googleAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	googleAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 
 	googleCmd.AddCommand(googleLoginCmd)
 	googleCmd.AddCommand(googleAddCmd)
@@ -378,6 +379,7 @@ func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *d
 		Scopes:          scopes,
 		AppReturn:       appReturn,
 	})
+	oauthpage.ReturnAfterLogin(cmd.Context(), appReturn, cmd.ErrOrStderr())
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())

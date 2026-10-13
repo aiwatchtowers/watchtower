@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"watchtower/internal/oauthpage"
 
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/stretchr/testify/assert"
@@ -312,7 +315,7 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 
 	out := &syncBuffer{}
 	go func() {
-		tok, email, err := LoginOutlook(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, out, OutlookLoginOptions{SkipBrowserOpen: true})
+		tok, email, err := LoginOutlook(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, out, OutlookLoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		if err != nil {
 			errCh <- err
 			return
@@ -351,6 +354,10 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, oauthpage.Success("Outlook", true), string(body),
+		"the callback serves the shared success page with the app link")
 
 	select {
 	case r := <-resCh:

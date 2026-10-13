@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"fmt"
-	"html"
 	"io"
 	"math/big"
 	"net"
@@ -22,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"watchtower/internal/oauthpage"
 
 	"github.com/slack-go/slack"
 )
@@ -180,8 +181,9 @@ type callbackResult struct {
 type LoginOptions struct {
 	// SkipBrowserOpen disables automatic browser launch; the authorize URL is still printed.
 	SkipBrowserOpen bool
-	// AppReturn makes the success page redirect the browser to the
-	// watchtower-auth:// scheme — see gmail.LoginOptions.AppReturn.
+	// AppReturn adds the "Back to Watchtower" link to the callback page
+	// (oauthpage); the CLI command brings the app back itself
+	// (oauthpage.ReturnAfterLogin). Off for plain CLI logins.
 	AppReturn bool
 }
 
@@ -229,17 +231,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 
 	resultCh := make(chan callbackResult, 1)
 
-	// With app-return the page first sits for 3s (so the confirmation is
-	// readable and the redirect doesn't race page load), then navigates to
-	// the app scheme; the tab tries to close itself only after that. Without
-	// app-return it just self-closes (gmail.Login precedent).
-	returnBlock, closeMS := "", "2000"
-	if opt.AppReturn {
-		returnBlock = appReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(callbackSuccessPage)
+	successPage := oauthpage.Success("Slack", opt.AppReturn)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +239,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		if errMsg := q.Get("error"); errMsg != "" {
 			resultCh <- callbackResult{err: errMsg}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1))
+			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error escapes the reason
 			return
 		}
 		resultCh <- callbackResult{
@@ -299,13 +291,6 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		return nil, fmt.Errorf("no authorization code received")
 	}
 
-	// Authorization successful — close the browser window after a brief delay
-	// to let the success page display
-	go func() {
-		time.Sleep(2 * time.Second)
-		getCloseBrowserFunc()()
-	}()
-
 	// Exchange code for token
 	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, cb.code, redirectURI)
 	if err != nil {
@@ -327,61 +312,6 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 
 	return result, nil
 }
-
-const callbackStyle = `
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-background:#0f0f0f;color:#e5e5e5;display:flex;align-items:center;justify-content:center;
-min-height:100vh;padding:20px}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;
-max-width:440px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.4)}
-.icon{width:64px;height:64px;margin:0 auto 24px;border-radius:50%;display:flex;
-align-items:center;justify-content:center;font-size:32px}
-.icon-ok{background:#0d2818;border:2px solid #16a34a}
-.icon-err{background:#2d0f0f;border:2px solid #dc2626}
-h1{font-size:20px;font-weight:600;margin-bottom:8px}
-p{font-size:14px;color:#888;line-height:1.5;margin-bottom:24px}
-.btn{display:inline-block;background:#fff;color:#0f0f0f;font-size:14px;font-weight:600;
-padding:12px 32px;border-radius:10px;text-decoration:none;cursor:pointer;border:none;
-transition:opacity .15s}
-.btn:hover{opacity:.85}
-.hint{font-size:12px;color:#555;margin-top:16px}
-</style>`
-
-const callbackSuccessPage = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Watchtower — Authorized</title>` + callbackStyle + `</head><body>
-<div class="card">
-<div class="icon icon-ok">✓</div>
-<h1>Authorization Successful</h1>
-<p>Watchtower has been connected to your Slack workspace.</p>
-<div class="hint">You can close this tab and return to Watchtower.</div>
-<!--RETURN-->
-</div>
-<script>
-setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});
-</script>
-</body></html>`
-
-// appReturnBlock is injected into the success page when LoginOptions.AppReturn
-// is set — mirrors gmail.LoginOptions.AppReturn's appReturnBlock. The button
-// is the reliable path back to the app — browsers block scripted navigation
-// to custom schemes without a user gesture, so the delayed auto-redirect
-// below is best-effort only.
-const appReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
-<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
-
-const callbackErrorPage = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Watchtower — Error</title>` + callbackStyle + `</head><body>
-<div class="card">
-<div class="icon icon-err">✕</div>
-<h1>Authorization Failed</h1>
-<p>{{ERROR}}</p>
-<div class="hint">Close this tab and try again in Watchtower.</div>
-</div>
-</body></html>`
 
 // generateSelfSignedCert creates a short-lived self-signed TLS certificate for 127.0.0.1.
 func generateSelfSignedCert() (tls.Certificate, error) {
@@ -467,57 +397,4 @@ func OpenBrowser(rawURL string) {
 	if err := cmd.Start(); err == nil {
 		go cmd.Wait() // reap child process to avoid zombie
 	}
-}
-
-// closeBrowserWindow closes the currently active browser window via AppleScript.
-// This is called after successful OAuth callback to auto-close the auth window.
-func closeBrowserWindow() {
-	if runtime.GOOS != "darwin" {
-		return
-	}
-
-	// AppleScript to close the front window of the active browser
-	// Tries Safari first, then Chrome, then Firefox
-	script := `
-tell application "System Events"
-	set activeApp to name of first application process whose frontmost is true
-end tell
-
-if activeApp contains "Safari" then
-	tell application "Safari"
-		close (first window whose title contains "Slack")
-	end tell
-else if activeApp contains "Chrome" or activeApp contains "Chromium" then
-	tell application "Google Chrome"
-		close (first window whose title contains "Slack")
-	end tell
-else if activeApp contains "Firefox" then
-	tell application "Firefox"
-		close (first window whose title contains "Slack")
-	end tell
-end if
-`
-
-	cmd := exec.Command("osascript", "-e", script)
-	_ = cmd.Start() // fire-and-forget
-}
-
-var (
-	closeBrowserMu   sync.Mutex
-	closeBrowserFunc = closeBrowserWindow
-)
-
-// getCloseBrowserFunc returns the current closeBrowserFunc under a lock,
-// avoiding data races when tests replace it concurrently with Login's goroutine.
-func getCloseBrowserFunc() func() {
-	closeBrowserMu.Lock()
-	defer closeBrowserMu.Unlock()
-	return closeBrowserFunc
-}
-
-// setCloseBrowserFunc replaces closeBrowserFunc under a lock (for use in tests).
-func setCloseBrowserFunc(f func()) {
-	closeBrowserMu.Lock()
-	defer closeBrowserMu.Unlock()
-	closeBrowserFunc = f
 }

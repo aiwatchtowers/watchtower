@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"watchtower/internal/oauthpage"
 )
 
 // syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
@@ -211,7 +213,7 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200 (the error page still renders normally)", status)
 	}
-	if !strings.Contains(body, "Authorization Failed") {
+	if !strings.Contains(body, "Authorization failed") {
 		t.Errorf("callback body = %q, want the error page for a state mismatch", body)
 	}
 	if strings.Contains(body, "This connection has been signed in") {
@@ -244,11 +246,8 @@ func TestLogin_ErrorQueryParamServesErrorPage(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "Authorization Failed") {
-		t.Errorf("callback body = %q, want the error page", body)
-	}
-	if !strings.Contains(body, "access_denied") {
-		t.Errorf("callback body = %q, want it to include the provider's error", body)
+	if want := oauthpage.Error("access_denied", false); body != want {
+		t.Errorf("callback body = %q, want the shared error page with the provider's error %q", body, want)
 	}
 
 	res := <-resultCh
@@ -280,10 +279,10 @@ func TestLogin_ExchangeFailureServesErrorPage(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "Authorization Failed") {
+	if !strings.Contains(body, "Authorization failed") {
 		t.Errorf("callback body = %q, want the error page when the code exchange fails", body)
 	}
-	if strings.Contains(body, "This connection has been signed in") {
+	if strings.Contains(body, "is connected to Watchtower") {
 		t.Errorf("callback body = %q, want NOT the success page when the code exchange fails", body)
 	}
 
@@ -327,7 +326,7 @@ func TestLogin_BYOClientIDSkipsRegistration(t *testing.T) {
 	}
 }
 
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	as := newFakeAS(t)
 
 	urlCh := captureAuthorizeURL(t)
@@ -345,11 +344,8 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "watchtower-auth://connected") {
-		t.Errorf("callback body = %q, want the app-return redirect", body)
-	}
-	if !strings.Contains(body, "4500") {
-		t.Errorf("callback body = %q, want the app-return close delay (4500ms)", body)
+	if want := oauthpage.Success("This connection", true); body != want {
+		t.Errorf("callback body = %q, want the shared success page %q", body, want)
 	}
 
 	res := <-resultCh

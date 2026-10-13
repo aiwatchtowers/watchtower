@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/mcpoauth"
+	"watchtower/internal/oauthpage"
 )
 
 // connectionNamePattern constrains --name to characters that are safe to
@@ -118,7 +119,7 @@ func init() {
 	connectionsListCmd.Flags().BoolVar(&connectionsFlagJSON, "json", false, "output JSON")
 
 	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagAppReturn, "app-return", false,
-		"success page redirects to the Desktop app (watchtower-auth://connected)")
+		"bring the Watchtower app back to the front when done")
 	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagNoOpen, "no-open", false,
 		"don't open the browser automatically (print the authorize URL instead)")
 	connectionsOAuthCmd.Flags().StringVar(&connectionsOAuthFlagClientID, "client-id", "",
@@ -458,6 +459,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		SkipBrowserOpen: connectionsOAuthFlagNoOpen,
 		AppReturn:       connectionsOAuthFlagAppReturn,
 	})
+	oauthpage.ReturnAfterLogin(cmd.Context(), connectionsOAuthFlagAppReturn, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("oauth sign-in: %w", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/oauthpage"
 )
 
 const (
@@ -134,9 +134,9 @@ type LoginOptions struct {
 	// `google login` flow passes the user's in-app selection here so one
 	// consent screen covers exactly the chosen services.
 	Scopes []string
-	// AppReturn makes the success page redirect the browser to the
-	// watchtower-auth:// scheme, so macOS brings the desktop app back to the
-	// foreground after the consent flow. Off for plain CLI logins.
+	// AppReturn adds the "Back to Watchtower" link to the callback page
+	// (oauthpage); the CLI command brings the app back itself
+	// (oauthpage.ReturnAfterLogin). Off for plain CLI logins.
 	AppReturn bool
 }
 
@@ -368,17 +368,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 
 	resultCh := make(chan callbackResult, 1)
 
-	// With app-return the page first sits for 3s (so the confirmation is
-	// readable and the redirect doesn't race page load, which spawns a blank
-	// tab in some browsers), then navigates to the app scheme; the tab tries
-	// to close itself only after that. Without app-return it just self-closes.
-	returnBlock, closeMS := "", "2000"
-	if opt.AppReturn {
-		returnBlock = appReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(callbackSuccessPage)
+	successPage := oauthpage.Success("Your Google account", opt.AppReturn)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +376,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 		if errMsg := q.Get("error"); errMsg != "" {
 			resultCh <- callbackResult{err: errMsg}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1))
+			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error escapes the reason
 			return
 		}
 		resultCh <- callbackResult{
@@ -457,30 +447,3 @@ func listenLocal() (net.Listener, error) {
 	}
 	return net.Listen("tcp", "127.0.0.1:0")
 }
-
-const callbackSuccessPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Google Connected</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-.logo{width:52px;height:52px;border-radius:13px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;font-weight:700;font-size:24px;line-height:52px;margin:0 auto 18px}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}
-.btn{display:inline-block;margin-top:22px;padding:13px 32px;background:linear-gradient(135deg,#5b8cff,#3f5be0);color:#fff;text-decoration:none;font-weight:600;font-size:15px;border-radius:10px;box-shadow:0 4px 14px rgba(63,91,224,.35)}
-.btn:hover{filter:brightness(1.12)}
-.hint{margin-top:12px;color:#666;font-size:12px}</style></head>
-<body><div class="card"><div class="logo">W</div><h1>Google Connected</h1><p>Your Google account has been linked to Watchtower.</p><!--RETURN--></div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});</script></body></html>`
-
-// appReturnBlock is injected into the success page when LoginOptions.AppReturn
-// is set. The button is the reliable path back to the app — browsers block
-// scripted navigation to custom schemes without a user gesture, so the
-// delayed auto-redirect below is best-effort only.
-const appReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
-<p class="hint">You can close this tab afterwards.</p>
-<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
-
-const callbackErrorPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Error</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}</style></head>
-<body><div class="card"><h1>Authorization Failed</h1><p>{{ERROR}}</p></div></body></html>`
