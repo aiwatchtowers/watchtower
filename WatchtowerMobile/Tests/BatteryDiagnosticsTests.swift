@@ -134,6 +134,21 @@ final class BatteryDiagnosticsTests: XCTestCase {
         XCTAssertEqual(MetricHistory(fileURL: file).contents.days, [day(1)])
     }
 
+    /// Concurrent deliveries write outside the lock, yet the file always
+    /// ends with the newest merge: no older snapshot overwrites it.
+    func testConcurrentDeliveriesLeaveTheNewestMergeInTheFile() throws {
+        let file = try makeDirectory().appendingPathComponent("battery-metrics.json")
+        let history = MetricHistory(fileURL: file)
+        let days = (0 ..< MetricHistory.retainedDays).map { day($0) }
+
+        DispatchQueue.concurrentPerform(iterations: days.count) { index in
+            history.add(days: [days[index]])
+        }
+
+        XCTAssertEqual(history.contents.days.count, MetricHistory.retainedDays)
+        XCTAssertEqual(MetricHistory(fileURL: file).contents, history.contents)
+    }
+
     func testAddingNothingWritesNoFile() throws {
         let file = try makeDirectory().appendingPathComponent("battery-metrics.json")
 

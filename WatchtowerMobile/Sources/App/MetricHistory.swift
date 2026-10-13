@@ -53,32 +53,44 @@ final class MetricHistory: @unchecked Sendable {
     }
 
     private let fileURL: URL?
-    private let lock = OSAllocatedUnfairLock(initialState: Contents())
+    /// The contents and how many merges they carry.
+    private let lock = OSAllocatedUnfairLock(initialState: (contents: Contents(), generation: 0))
+    /// The generation last written to the file: writes run outside `lock`,
+    /// one at a time, and a snapshot older than the written one is dropped.
+    private let writeLock = OSAllocatedUnfairLock(initialState: 0)
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "MetricHistory")
 
     /// `fileURL` nil keeps the history in memory only.
     init(fileURL: URL?) {
         self.fileURL = fileURL
         let loaded = Self.load(fileURL)
-        lock.withLock { $0 = loaded }
+        lock.withLock { $0.contents = loaded }
     }
 
-    var contents: Contents { lock.withLock { $0 } }
+    var contents: Contents { lock.withLock { $0.contents } }
 
     /// The newest daily report, nil before the first one.
     var latestDay: MetricDaySummary? { contents.days.last }
 
     /// Merges new reports: one per period start (a redelivered report
     /// replaces its earlier copy), oldest first, the newest
-    /// `retainedDays` kept. Persists when anything was added, under the
-    /// lock, so two concurrent deliveries cannot write the file out of
-    /// order (an older merge overwriting a newer one).
+    /// `retainedDays` kept. Persists when anything was added: the merge
+    /// takes a numbered snapshot under the lock and the file is written
+    /// outside it (a reader never waits on the disk), and a snapshot older
+    /// than the one already written is dropped, so two concurrent
+    /// deliveries never leave an older merge in the file.
     func add(days: [MetricDaySummary], diagnostics: [MetricDiagnosticSummary] = []) {
         guard !days.isEmpty || !diagnostics.isEmpty else { return }
-        lock.withLock { contents in
-            contents.days = Self.merge(contents.days, days, begin: \.begin)
-            contents.diagnostics = Self.merge(contents.diagnostics, diagnostics, begin: \.begin)
-            save(contents)
+        let (snapshot, generation) = lock.withLock { state in
+            state.contents.days = Self.merge(state.contents.days, days, begin: \.begin)
+            state.contents.diagnostics = Self.merge(state.contents.diagnostics, diagnostics, begin: \.begin)
+            state.generation += 1
+            return (state.contents, state.generation)
+        }
+        writeLock.withLock { written in
+            guard generation > written else { return }
+            save(snapshot)
+            written = generation
         }
     }
 
