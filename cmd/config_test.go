@@ -81,6 +81,32 @@ func TestConfigSet(t *testing.T) {
 	assert.Contains(t, string(data), "claude-opus-4-6")
 }
 
+// workbench.default_agent takes claude or codex only (#399 n6).
+func TestConfigSet_DefaultAgentIsValidated(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+	configSetCmd.SetOut(new(bytes.Buffer))
+
+	for _, bad := range []string{"gemini", "Codex", "shell", ""} {
+		err := configSetCmd.RunE(configSetCmd, []string{"workbench.default_agent", bad})
+		require.Error(t, err, "%q", bad)
+		err = configSetCmd.RunE(configSetCmd, []string{"Workbench.Default_Agent", bad})
+		require.Error(t, err, "%q", bad)
+		assert.Contains(t, err.Error(), "must be claude or codex")
+	}
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "default_agent", "nothing was written")
+
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"workbench.default_agent", "codex"}))
+	data, err = os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "default_agent: codex")
+}
+
 func TestConfigSet_MemorySourcesGmail_NoUnknownWarning(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

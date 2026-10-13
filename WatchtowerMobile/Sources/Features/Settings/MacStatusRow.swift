@@ -65,12 +65,17 @@ struct MacStatusRowView: View {
     }
 }
 
-/// Settings' Last sync value (design pass SET2): "3 min. ago", or "Never".
+/// Settings' Last sync value (design pass SET2): "3 min. ago", "Just now"
+/// under a minute, or "Never".
 /// Relative to the moment it is drawn; the row's 30 s TimelineView redraws
 /// it.
 enum LastSyncText {
-    static func string(_ last: Date?, locale: Locale = .current) -> String {
+    static func string(_ last: Date?, now: Date = Date(), locale: Locale = .current) -> String {
         guard let last else { return "Never" }
-        return last.formatted(Date.RelativeFormatStyle(presentation: .named, unitsStyle: .abbreviated, locale: locale))
+        if now.timeIntervalSince(last) < 60 { return "Just now" }
+        // RelativeFormatStyle measures against the real clock (no anchor
+        // before iOS 18), so shift `last` by how far `now` is from it.
+        let shifted = last.addingTimeInterval(Date().timeIntervalSince(now))
+        return shifted.formatted(Date.RelativeFormatStyle(presentation: .named, unitsStyle: .abbreviated, locale: locale))
     }
 }

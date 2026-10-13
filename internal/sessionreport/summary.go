@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
-// Summary is one claude session's row line (`session-report --summary`).
+// Summary is one agent session's row line (`session-report --summary`).
 // FinishedAt is "" when the session is not finished.
 type Summary struct {
 	SessionID  int64  `json:"session_id"`
@@ -20,8 +21,9 @@ type Summary struct {
 	FinishedAt string `json:"finished_at"`
 }
 
-// Summaries is the row line of every claude session of workbench projectID,
-// in session id order, from the DB and the PR cache only.
+// Summaries is the row line of every agent session (Claude Code or Codex;
+// never a shell) of workbench projectID, in session id order, from the DB and
+// the PR cache only.
 func Summaries(ctx context.Context, d *db.DB, projectID int64) ([]Summary, error) {
 	b, err := loadBoard(d, projectID)
 	if err != nil {
@@ -36,7 +38,7 @@ func Summaries(ctx context.Context, d *db.DB, projectID int64) ([]Summary, error
 		return nil, err
 	}
 	rows, err := d.QueryContext(ctx, `SELECT id, target_id, finished_at FROM terminal_sessions
-		WHERE project_id = ? AND kind = 'claude' ORDER BY id`, projectID)
+		WHERE project_id = ? AND kind IN `+agentkind.SQLKinds()+` ORDER BY id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", projectID, err)
 	}

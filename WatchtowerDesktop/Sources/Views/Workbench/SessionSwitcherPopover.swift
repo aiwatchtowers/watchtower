@@ -3,13 +3,14 @@ import WatchtowerCore
 
 /// The session switcher's popover (board #251, variant H): find a session
 /// by title or `#id`, the workbench's sessions in the panel's order with
-/// their ⌘N, the current one highlighted; a new session; the panel back.
+/// their ⌘N, the current one highlighted; a new session of each agent; the
+/// panel back.
 struct SessionSwitcherPopover: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     let currentID: Int64?
     let onSelect: (Int64) -> Void
-    let onNewSession: () -> Void
+    let onNewSession: (AgentKind) -> Void
     let onShowPanel: () -> Void
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -27,10 +28,15 @@ struct SessionSwitcherPopover: View {
                 .accessibilityAddTraits(.isHeader)
             list
             Divider()
-            Button(action: onNewSession) {
-                shortcutLabel("New Session", systemImage: "plus", keys: "⌘T")
+            // One entry per agent; ⌘T is the default agent's.
+            ForEach(AgentChoicePresentation.newSession { vm.agentAvailable($0, projectID: project.id) }) { choice in
+                Button { onNewSession(choice.agent) } label: {
+                    shortcutLabel(choice.title, systemImage: "plus", keys: choice.agent == vm.defaultAgent ? "⌘T" : "")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!choice.isAvailable)
+                .help(choice.hint ?? "")
             }
-            .buttonStyle(.borderless)
             Button(action: onShowPanel) {
                 shortcutLabel("Show Sessions Panel", systemImage: "sidebar.leading", keys: "⌥⌘S")
             }
@@ -107,6 +113,7 @@ struct SessionSwitcherRow: View {
                 if let badge = row.badge {
                     WorkbenchCapsuleBadge(text: badge)
                 }
+                if let tag = row.agentTag { AgentTag(text: tag) }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
                     SessionStateLabel(state: row.state, caption: caption).fixedSize()

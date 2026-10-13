@@ -528,9 +528,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let row = try await session()
         terminals.start(row, fresh: true)
         XCTAssertEqual(terminals.startedAt[row.id], started)
-        XCTAssertEqual(terminals.liveClaudeIDs, [row.id])
+        XCTAssertEqual(terminals.liveAgentIDs, [row.id])
         processes.last?.exit(0)
-        XCTAssertEqual(terminals.liveClaudeIDs, [])
+        XCTAssertEqual(terminals.liveAgentIDs, [])
         terminals.now = { [started] in started.addingTimeInterval(60) }
         terminals.start(row, fresh: false)
         XCTAssertEqual(terminals.startedAt[row.id], started.addingTimeInterval(60))

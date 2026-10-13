@@ -1,0 +1,11 @@
+# Owner's own note: this comment must survive.
+model = "gpt-example"
+
+[hooks.state."/Users/example/other-project/.codex/config.toml:pre_tool_use:0:0"]
+trusted_hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+[hooks.state."/<session-flags>/config.toml:user_prompt_submit:7:0"]
+trusted_hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+[tui]
+notifications = false

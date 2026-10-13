@@ -51,7 +51,8 @@ struct CheckAskView: View {
                 } label: {
                     Image(systemName: choice.symbol)
                         .font(.title2)
-                        .foregroundStyle(choice.tone.color)
+                        // A step that cannot change (Sending…, applied) draws no colored mark.
+                        .foregroundStyle(isEditable ? choice.tone.color : PhoneTone.secondary.color)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }

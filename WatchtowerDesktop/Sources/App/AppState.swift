@@ -338,6 +338,9 @@ final class AppState {
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored private var mobileHubPool: DatabasePool?
+    /// Built with the first hub and kept across rebuilds, so a QR on screen
+    /// keeps its link when `initWorkbenches` replaces the hub.
+    @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -1765,6 +1768,8 @@ final class AppState {
             agentStates: agentStates, lineDelivery: lineDelivery
         )
         vm.codeFiles.codeIndex = codeIndexCenter
+        // Settings → Workbench → Default agent (board #399, D1), read at each launch.
+        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
         openQuicklyCenter.workbenches = vm
         codeNavigationCenter.workbenches = vm
         vm.codeFiles.navigation = codeNavigationCenter
@@ -1928,7 +1933,7 @@ final class AppState {
         let terminals = terminalCenter
         escalator.sessions = { [weak agentStates] in
             ChatQuestionEscalator.Sessions(
-                rows: agentStates?.rows ?? [], liveIDs: terminals.liveClaudeIDs, startedAt: terminals.startedAt
+                rows: agentStates?.rows ?? [], liveIDs: terminals.liveAgentIDs, startedAt: terminals.startedAt
             )
         }
         escalator.hasOwnerDraft = { terminals.promptDrafts.contains($0) }

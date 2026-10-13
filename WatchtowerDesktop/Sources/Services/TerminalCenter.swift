@@ -157,6 +157,22 @@ final class TerminalCenter {
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
+    /// Whether Codex has a rollout for a session id (`CodexRollout`), given
+    /// the path its SessionStart stored; throws when Codex's sessions folder
+    /// could not be listed. A seam for tests.
+    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?, _ codexHome: URL?) throws -> Bool = {
+        try CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: $2)
+    }
+    /// `watchtower workbench launch-args` for a Codex session of a workbench
+    /// (`WorkbenchCLI.launchArgs`); nil when there is no CLI to ask.
+    @ObservationIgnored var codexLaunchArgs: ((_ workbenchID: Int64) async throws -> CodexLaunchArgs)?
+    /// Codex launches waiting for their `launch-args`, by row; a close
+    /// meanwhile drops the entry, and the launch then starts nothing.
+    @ObservationIgnored private var pendingLaunches: [Int64: Int] = [:]
+    /// Sessions whose last launch found no binary for their agent
+    /// (`launch-args` exit 3): the typed cause behind their `.unavailable`
+    /// text. Gone with the next launch attempt or the session.
+    @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
     /// check). One subscriber.
     @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
@@ -188,11 +204,11 @@ final class TerminalCenter {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
     }
 
-    /// The live `claude` sessions — the ones whose workbench hooks report a
-    /// state.
-    var liveClaudeIDs: Set<Int64> {
+    /// The live agent sessions (`claude` or `codex`) — the ones whose
+    /// workbench hooks report a state.
+    var liveAgentIDs: Set<Int64> {
         let live = liveIDs
-        return Set(rows.values.filter { $0.kind == .claude && live.contains($0.id) }.map(\.id))
+        return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
     }
 
     func process(for sessionID: Int64) -> (any TerminalSessionProcess)? {
@@ -205,27 +221,27 @@ final class TerminalCenter {
     }
 
     /// The project's active session — the one the Terminal toggle shows
-    /// first: its most recently focused live `claude` session.
+    /// first: its most recently focused live agent session.
     func activeSession(projectID: Int64) -> TerminalSession? {
         TerminalSessionPolicy.activeSession(
             rows.values.filter { $0.projectID == projectID }, live: liveIDs, lastFocused: focusOrder
         )
     }
 
-    /// Whether a Claude Code session this app runs works in the files a
-    /// branch switch swaps: a live `claude` row of the workbench, or one (a
+    /// Whether an agent session (Claude Code or Codex) this app runs works in
+    /// the files a branch switch swaps: a live agent row of the workbench, or one (a
     /// standalone terminal, another workbench) whose folder is the
     /// repository's work tree or inside it — a workbench in a subfolder
     /// shares one checkout with the repository root and every sibling
     /// package. Symlinks are resolved on both sides (`/tmp` is
     /// `/private/tmp`). The branch switch's agent guard (#233); a `claude`
     /// in the owner's own terminal app is not seen (v1 limit).
-    func hasLiveClaudeSession(workbenchID: Int64, workTree: String) -> Bool {
+    func hasLiveAgentSession(workbenchID: Int64, workTree: String) -> Bool {
         let root = Self.resolvedPath(workTree)
         let prefix = root.hasSuffix("/") ? root : root + "/"
         let live = liveIDs
         return rows.values.contains { row in
-            guard row.kind == .claude, live.contains(row.id) else { return false }
+            guard row.kind.isAgent, live.contains(row.id) else { return false }
             if row.projectID == workbenchID { return true }
             let path = Self.resolvedPath(row.folderPath)
             return path == root || path.hasPrefix(prefix)
@@ -326,13 +342,48 @@ final class TerminalCenter {
         }
     }
 
-    /// The pause between a hand-off's paste and its Return, so the TUI has
-    /// taken the paste in before the key arrives.
-    nonisolated static let submitDelay: Duration = .milliseconds(150)
-    /// The same pause for an ask's answer (board #379): longer, since an
-    /// answer is not urgent and the re-read after it then also sees a
-    /// permission prompt whose async hook landed a little late.
-    nonisolated static let answerSubmitDelay: Duration = .milliseconds(500)
+    /// The pause between a hand-off's paste and its Return in a Claude Code
+    /// session (`AgentInputProfile.pasteSettle`).
+    nonisolated static let submitDelay: Duration = AgentInputProfile.claude.pasteSettle
+    /// The same pause for an ask's answer (`AgentInputProfile.submitSettle`).
+    nonisolated static let answerSubmitDelay: Duration = AgentInputProfile.claude.submitSettle
+
+    /// The agent a session runs, from its row; nil for a shell or a session
+    /// this center never started.
+    func agent(of sessionID: Int64) -> AgentKind? {
+        rows[sessionID]?.kind.agent
+    }
+
+    /// Whether the agent has a transcript for the row's stored session id:
+    /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
+    /// A Codex lookup that failed reads as none here: a relaunch from the
+    /// view model decides with `codexResumes` instead and passes the answer.
+    func hasTranscript(_ session: TerminalSession) -> Bool {
+        guard let id = session.claudeSessionID else { return false }
+        switch session.kind {
+        case .claude: return transcriptExists(id)
+        case .codex: return (try? codexRolloutExists(id, session.transcriptPath, CodexRollout.home())) ?? false
+        case .shell: return false
+        }
+    }
+
+    /// Whether relaunching the Codex row (not fresh) resumes its stored id:
+    /// a valid id whose rollout exists — at its stored path, or under
+    /// `codexHome` (the login shell's, resolved by the caller; nil checks the
+    /// stored path alone). Throws when Codex's sessions folder could not be
+    /// listed, so the caller does not drop the id on it.
+    func codexResumes(_ session: TerminalSession, codexHome: URL?) throws -> Bool {
+        guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
+            return false
+        }
+        return try codexRolloutExists(id, session.transcriptPath, codexHome)
+    }
+
+    /// How lines are typed into the session (spec 2026-10-12 §8): its
+    /// agent's profile; Claude Code's when it runs none.
+    func inputProfile(_ sessionID: Int64) -> AgentInputProfile {
+        agent(of: sessionID).map(AgentInputProfile.for) ?? .claude
+    }
 
     /// How a hand-off reached the session.
     enum HandoffDelivery: Equatable {
@@ -357,7 +408,9 @@ final class TerminalCenter {
     /// idle at its prompt; an answer only into a session whose hooks
     /// reported this run and show no permission prompt; a Return
     /// could answer a prompt that appeared meanwhile) — and only into the
-    /// same process run (`runs`), as a write of its own after `delay`: a CR read
+    /// same process run (`runs`), as a write of its own (the agent's
+    /// `AgentInputProfile.submit`) after `delay` (nil: the profile's
+    /// `pasteSettle`): a CR read
     /// in one chunk with the paste could be taken as part of it (a line
     /// break, not Enter). `refresh` runs after the pause, before the second
     /// check (the caller re-reads the agent state, which its poll may hold
@@ -375,7 +428,7 @@ final class TerminalCenter {
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
         keepingFormatCharacters: Bool = false,
-        delay: Duration = submitDelay,
+        delay: Duration? = nil,
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
@@ -400,7 +453,8 @@ final class TerminalCenter {
         } else if !canSubmit() {
             logWithheld(sessionID, "the session's state, before the pause")
         } else {
-            if let delivery = await returnAfterPause(process, sessionID: sessionID, run: run, delay: delay,
+            let pause = delay ?? inputProfile(sessionID).pasteSettle
+            if let delivery = await returnAfterPause(process, sessionID: sessionID, run: run, delay: pause,
                                                      refresh: refresh, canSubmit: canSubmit) {
                 return delivery
             }
@@ -458,7 +512,7 @@ final class TerminalCenter {
         }
         switch afterPause(sessionID, run: run, fresh: fresh, canSubmit: canSubmit) {
         case .pressReturn:
-            process.sendInput([0x0D])
+            process.sendInput(inputProfile(sessionID).submit)
             return .submitted
         case .ownerSent:
             logWithheld(sessionID, "the owner pressed Return during the pause")
@@ -560,7 +614,7 @@ final class TerminalCenter {
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
         let backslashBefore = ownerBackslashPending.contains(sessionID)
-        if Self.isSubmit(bytes, backslashBefore: backslashBefore) {
+        if Self.isSubmit(bytes, backslashBefore: backslashBefore, profile: inputProfile(sessionID)) {
             clearPromptDraft(sessionID)
             if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
         } else {
@@ -578,20 +632,28 @@ final class TerminalCenter {
         }
     }
 
-    /// Whether the owner's input submits Claude Code's prompt: it ends in a
-    /// plain Return (CR) that does not follow ESC (Option+Return) and whose
+    /// Whether the owner's input submits the agent's prompt: it ends in the
+    /// profile's `submit` (a plain Return, CR) that does not follow ESC
+    /// (Option+Return), does not end in the profile's `newline`, and whose
     /// last printable input before it — in this chunk or earlier ones
     /// (`backslashBefore`), escape sequences such as cursor keys and paste
     /// brackets skipped — is not `\` (`\` then Return is a line break).
     /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
     /// keyboard protocol (an escape sequence ending in `u` or `~`), any
     /// other key. When unsure the input counts as a draft, which costs the
-    /// owner a Return of their own, never a line submitted with theirs.
-    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool) -> Bool {
-        guard bytes.last == 0x0D else { return false }
-        let body = bytes.dropLast()
+    /// owner a Return of their own, never a line submitted with theirs —
+    /// so the `\` rule holds for every agent, Codex too.
+    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool, profile: AgentInputProfile = .claude) -> Bool {
+        if let newline = profile.newline, endsIn(bytes, newline) { return false }
+        guard endsIn(bytes, profile.submit) else { return false }
+        let body = bytes.dropLast(profile.submit.count)
         if body.last == 0x1B { return false }
         return !endsAfterBackslash(body, backslashBefore: backslashBefore)
+    }
+
+    /// Whether `bytes` ends in the non-empty key sequence `key`.
+    private static func endsIn(_ bytes: [UInt8], _ key: [UInt8]) -> Bool {
+        !key.isEmpty && bytes.suffix(key.count).elementsEqual(key)
     }
 
     /// Whether, after `bytes`, the last printable input is `\` with only
@@ -639,6 +701,51 @@ final class TerminalCenter {
         }
     }
 
+    /// `start`, first asking `launch-args` for a `codex` row (spec
+    /// 2026-10-12 §4.2, §7); any other row starts at once. A Codex launch
+    /// needs a workbench (its MCP server and hooks are the workbench's). No
+    /// `codex` found, or a failed call, launches nothing and says why in
+    /// the pane (`.unavailable`). A second call while one waits, or a close
+    /// meanwhile, launches nothing. Returns the mode it launched.
+    @discardableResult
+    func launch(
+        _ session: TerminalSession,
+        fresh: Bool,
+        prompt: String? = nil,
+        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+    ) async -> TerminalLaunch.Mode? {
+        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt) }
+        let id = session.id
+        guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
+        rows[id] = session
+        missingAgent[id] = nil
+        guard let workbenchID = session.projectID else {
+            states[id] = .unavailable("Codex sessions run in a workbench.")
+            return nil
+        }
+        guard let codexLaunchArgs else {
+            states[id] = .unavailable("Codex cannot be launched: the watchtower CLI is not available.")
+            return nil
+        }
+        lastRun += 1
+        let token = lastRun
+        pendingLaunches[id] = token
+        let args: CodexLaunchArgs
+        do {
+            args = try await codexLaunchArgs(workbenchID)
+        } catch {
+            guard pendingLaunches[id] == token else { return nil }
+            pendingLaunches[id] = nil
+            if case let .agentNotFound(agent)? = error as? WorkbenchCLIError { missingAgent[id] = agent }
+            states[id] = .unavailable(error is WorkbenchCLIError ? error.localizedDescription
+                : "Could not prepare the Codex launch: \(error.localizedDescription)")
+            return nil
+        }
+        guard pendingLaunches[id] == token else { return nil }
+        pendingLaunches[id] = nil
+        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume)
+    }
+
     /// Starts the row's process unless it is running. A `claude` row resumes
     /// its stored Claude session (`--resume`) when Claude Code has a
     /// transcript for it; without one (the owner never typed, or the first
@@ -648,13 +755,22 @@ final class TerminalCenter {
     /// — always uses `--session-id` with the optional fixed `prompt`; either
     /// way the process gets the row id (`TerminalLaunch.sessionRowEnv`), so
     /// the project hook can store the id `/clear` moves Claude Code to. A
+    /// `codex` row runs `codex` as `launch` resolved it (`codex`): it resumes
+    /// a stored id whose rollout exists, and otherwise starts a new Codex
+    /// session (`newAgent` with no id; the caller drops the stored id first). A
     /// `shell` row runs the login shell alone. After an exit it relaunches in
     /// the same process view (scrollback kept). A missing folder or a stored
-    /// id that is not a canonical UUID (it goes into a shell command)
+    /// Claude id that is not a canonical UUID (it goes into a shell command)
     /// launches nothing. Returns the mode it launched, nil when it launched
     /// nothing.
     @discardableResult
-    func start(_ session: TerminalSession, fresh: Bool, prompt: String? = nil) -> TerminalLaunch.Mode? {
+    func start(
+        _ session: TerminalSession,
+        fresh: Bool,
+        prompt: String? = nil,
+        codex: CodexLaunchArgs? = nil,
+        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+    ) -> TerminalLaunch.Mode? {
         let id = session.id
         if states[id] == .running { return nil }
         // Recorded before the guards, so an unavailable session is still
@@ -666,21 +782,43 @@ final class TerminalCenter {
             states[id] = .unavailable("The folder \(session.folderPath) no longer exists.")
             return nil
         }
-        let mode: TerminalLaunch.Mode
+        guard let mode = mode(for: session, fresh: fresh, prompt: prompt, codexResume: codexResume) else { return nil }
+        if mode.agent == .codex, codex == nil {
+            states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
+            return nil
+        }
+        run(session, mode: mode, codex: codex)
+        return mode
+    }
+
+    /// The launch `start` makes for the row; nil (the row `.unavailable`)
+    /// for a `claude` row without a valid id. A Codex row resumes as
+    /// `codexResume` says when the caller decided it (`codexResumes`, one
+    /// walk of the rollout tree); else it looks for the rollout here.
+    private func mode(
+        for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    ) -> TerminalLaunch.Mode? {
         switch session.kind {
         case .shell:
-            mode = .shell
+            return .shell
         case .claude:
             guard let uuid = session.claudeSessionID, TerminalLaunch.isValidSessionID(uuid) else {
-                states[id] = .unavailable("This session has no valid Claude Code session id.")
+                states[session.id] = .unavailable("This session has no valid Claude Code session id.")
                 return nil
             }
-            if fresh {
-                mode = .newClaude(uuid: uuid, prompt: prompt)
-            } else {
-                mode = transcriptExists(uuid) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
+            if fresh { return .newClaude(uuid: uuid, prompt: prompt) }
+            return hasTranscript(session) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
+        case .codex:
+            if !fresh, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id),
+               codexResume ?? hasTranscript(session) {
+                return .resumeAgent(.codex, sessionID: id)
             }
+            return .newAgent(.codex, sessionID: nil, prompt: fresh ? prompt : nil)
         }
+    }
+
+    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?) {
+        let id = session.id
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in
             self?.states[id] = .exited(code)
@@ -711,8 +849,7 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
-        return mode
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex))
     }
 
     func close(sessionID: Int64) async {
@@ -740,7 +877,7 @@ final class TerminalCenter {
     /// Closes every matching session at once, so the wait is one grace, not
     /// N — the quit path (all) and project delete (that project's ids).
     func closeAll(where predicate: (Int64) -> Bool = { _ in true }) async {
-        let ids = Set(processes.keys).union(states.keys).filter(predicate)
+        let ids = Set(processes.keys).union(states.keys).union(pendingLaunches.keys).filter(predicate)
         await withTaskGroup(of: Void.self) { group in
             for id in ids {
                 group.addTask { @MainActor in await self.close(sessionID: id) }
@@ -749,6 +886,8 @@ final class TerminalCenter {
     }
 
     private func forget(_ sessionID: Int64) {
+        pendingLaunches[sessionID] = nil
+        missingAgent[sessionID] = nil
         states[sessionID] = nil
         rows[sessionID] = nil
         startedAt[sessionID] = nil

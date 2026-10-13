@@ -267,7 +267,7 @@ struct OwnerAskDrawer: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: notice == .withdrawn ? "exclamationmark.triangle" : "checkmark.circle")
                 .foregroundStyle(notice == .withdrawn ? .orange : .green)
-            Text(notice.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Text(asks.noticeText(notice, ask: ask)).font(.callout).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button("Dismiss") { asks.dismissNotice(askID: ask.id) }
                 .controlSize(.small)

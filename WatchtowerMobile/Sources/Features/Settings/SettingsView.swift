@@ -129,8 +129,12 @@ struct SettingsView: View {
     // MARK: - Unlink
 
     /// A live link only: the demo has no link to end.
+    static func offersUnlink(transportKind: TransportKind, link: LinkRecord?) -> Bool {
+        transportKind == .cloudKit && link != nil
+    }
+
     @ViewBuilder private var unlinkSection: some View {
-        if env.transportKind == .cloudKit, linking.link != nil {
+        if Self.offersUnlink(transportKind: env.transportKind, link: linking.link) {
             Section {
                 Button("Unlink this Mac", role: .destructive) {
                     confirmingUnlink = true

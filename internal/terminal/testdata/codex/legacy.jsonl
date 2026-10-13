@@ -1,0 +1,18 @@
+{"timestamp": "2026-10-12T12:57:00.000Z", "type": "session_meta", "payload": {"id": "01a10000-0000-7000-8000-000000000101", "timestamp": "2026-10-12T12:57:00.000Z", "cwd": "/Users/example/projects/example", "originator": "codex-tui", "cli_version": "0.159.2", "source": "cli", "thread_source": "user", "model_provider": "openai"}}
+{"timestamp": "2026-10-12T12:57:10.000Z", "type": "turn_context", "payload": {"turn_id": "01a10000-0000-7000-8000-000000000111", "cwd": "/Users/example/projects/example", "model": "gpt-5.5", "approval_policy": "on-request", "sandbox_policy": {"type": "read-only"}, "effort": "low"}}
+{"timestamp": "2026-10-12T12:57:11.000Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "01a10000-0000-7000-8000-000000000111"}}
+{"timestamp": "2026-10-12T12:57:12.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>example injected</environment_context>"}]}}
+{"timestamp": "2026-10-12T12:57:13.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "example 1"}]}}
+{"timestamp": "2026-10-12T12:57:14.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "example 1", "images": []}}
+{"timestamp": "2026-10-12T12:57:15.000Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "example", "phase": "final_answer"}}
+{"timestamp": "2026-10-12T12:57:16.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "example"}]}}
+{"timestamp": "2026-10-12T12:57:17.000Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "01a10000-0000-7000-8000-000000000111", "last_agent_message": "example", "duration_ms": 4571}}
+{"timestamp": "2026-10-12T12:57:20.000Z", "type": "turn_context", "payload": {"turn_id": "01a10000-0000-7000-8000-000000000112", "cwd": "/Users/example/projects/example", "model": "gpt-5.5", "approval_policy": "on-request", "sandbox_policy": {"type": "read-only"}, "effort": "low"}}
+{"timestamp": "2026-10-12T12:57:21.000Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "01a10000-0000-7000-8000-000000000112"}}
+{"timestamp": "2026-10-12T12:57:22.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context>example injected</environment_context>"}]}}
+{"timestamp": "2026-10-12T12:57:23.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "example 2\nexample 2b"}]}}
+{"timestamp": "2026-10-12T12:57:24.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "example 2\nexample 2b", "images": []}}
+{"timestamp": "2026-10-12T12:57:25.000Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "example", "phase": "final_answer"}}
+{"timestamp": "2026-10-12T12:57:26.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "example"}]}}
+{"timestamp": "2026-10-12T12:57:27.000Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "01a10000-0000-7000-8000-000000000112", "last_agent_message": "example", "duration_ms": 4571}}
+{"timestamp": "2026-10-12T12:57:40.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "", "images": ["data:image/png;base64,AAAA"]}}

@@ -2,11 +2,11 @@ import Foundation
 import WatchtowerSync
 
 /// The `terminal_session` slice (mobile POC spec §4.5), record name
-/// `terminal_session-<terminal_sessions.id>`: one claude session of a
-/// workbench. The state fields are the Mac's resolved presentation
+/// `terminal_session-<terminal_sessions.id>`: one agent session (Claude Code
+/// or Codex) of a workbench. The state fields are the Mac's resolved presentation
 /// (`SessionSwitcherPresentation.State` through `SessionStatePresentation`);
 /// the phone draws them as given and has no state rules of its own (PROJ-11).
-/// The Claude session id, the folder and the raw hook columns are never
+/// The agent's own session id, the folder and the raw hook columns are never
 /// published.
 public struct TerminalSessionState: SliceMirror, Identifiable {
     public static let sliceKind = SliceKind.terminalSession
@@ -44,13 +44,15 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         public static let knownValues: [Self] = [.green, .orange, .blue, .red, .secondary]
     }
 
-    /// The agent running in the session; always `claude_code` in the POC.
+    /// The agent running in the session (the row's kind). An agent this
+    /// build does not know decodes as an open value outside `knownValues`.
     public struct Agent: OpenWireValue {
         public let rawValue: String
         public init(rawValue: String) { self.rawValue = rawValue }
 
         public static let claudeCode = Self(rawValue: "claude_code")
-        public static let knownValues: [Self] = [.claudeCode]
+        public static let codexCLI = Self(rawValue: "codex_cli")
+        public static let knownValues: [Self] = [.claudeCode, .codexCLI]
     }
 
     public let id: Int64

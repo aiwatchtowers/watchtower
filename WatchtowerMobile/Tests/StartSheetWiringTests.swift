@@ -401,6 +401,27 @@ final class StartSheetWiringTests: XCTestCase {
 
     // MARK: - Fields, defaults and the grant
 
+    /// Board #399, D6: the phone has no picker, the sheet names the Mac's
+    /// default agent; a hub older than Codex support sends none (Claude Code).
+    func testTheSheetNamesTheMacsDefaultAgent() async throws {
+        let fixture = try await makeFixture()
+        var replica = try snapshot(fixture.store)
+        XCTAssertEqual(try form(415, replica).agent, "Claude Code", "no default_agent: an older hub")
+        replica.workbenches = try replica.workbenches.map { workbench in
+            guard workbench.id == DemoSeed.acmeID else { return workbench }
+            return try mirror(Workbench.self, DemoSeed.JSON.workbench(workbench.id, ["default_agent": "codex_cli"]))
+        }
+        XCTAssertEqual(try form(415, replica).agent, "Codex")
+        XCTAssertEqual(
+            StartProgressModel(stage: .starting(sessionID: 1), macOnline: true, agentName: "Codex").current, "Starting Codex"
+        )
+        replica.workbenches = try replica.workbenches.map { workbench in
+            guard workbench.id == DemoSeed.acmeID else { return workbench }
+            return try mirror(Workbench.self, DemoSeed.JSON.workbench(workbench.id, ["default_agent": "claude_code"]))
+        }
+        XCTAssertEqual(try form(415, replica).agent, "Claude Code")
+    }
+
     /// Ruling 7 and the pinned wire: Bring forward off, Plan first on, the
     /// agent Claude Code, the brief from the work-on prompt; snake_case keys.
     func testTheDefaultsGoOnTheWireWithoutABrief() async throws {

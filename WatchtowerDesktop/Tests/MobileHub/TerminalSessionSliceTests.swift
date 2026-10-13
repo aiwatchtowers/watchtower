@@ -255,6 +255,47 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(Set(published.keys), [claude])
     }
 
+    /// The wire `agent` follows the row's kind (board #399).
+    func testSliceAgentPerKind() throws {
+        let (claude, codex) = try dbPool.write { db -> (Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            return (try SliceSeed.insertSession(db, projectID: project),
+                    try SliceSeed.insertSession(db, projectID: project, kind: "codex"))
+        }
+        let published = try payloads(slice(live: [claude]))
+        XCTAssertEqual(published[claude]?["agent"] as? String, "claude_code")
+        XCTAssertEqual(published[codex]?["agent"] as? String, "codex_cli")
+        XCTAssertEqual(TerminalSessionSlice.wireAgent(.claude), "claude_code")
+        XCTAssertEqual(TerminalSessionSlice.wireAgent(.codex), "codex_cli")
+    }
+
+    /// Codex rows count like Claude rows: published (a codex row with no
+    /// session id yet included), counted, in the report window, and a live
+    /// one puts its workbench on the 60 s summary cadence. Shells stay out.
+    func testCodexRowsIncludedInSlices() throws {
+        let now = Date()
+        let (project, codex, fresh, shell) = try dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let codex = try SliceSeed.insertSession(db, projectID: project, kind: "codex", lastActiveAt: now)
+            try self.setState(db, codex, state: "working")
+            let fresh = try SliceSeed.insertSession(db, projectID: project, kind: "codex", lastActiveAt: now)
+            return (project, codex, fresh, try SliceSeed.insertSession(db, projectID: project, kind: "shell"))
+        }
+        let source = slice(live: [codex, shell])
+        XCTAssertEqual(Set(try payloads(source).keys), [codex, fresh])
+        XCTAssertEqual(try payloads(source)[codex]?["state_kind"] as? String, "working")
+
+        let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
+        XCTAssertEqual(counts.working, 1)
+        XCTAssertEqual(counts.notRunning, 1)
+
+        let window = try dbPool.read { try SessionReportSlice.window($0, sessions: source, now: now) }
+        XCTAssertEqual(Set(window.map(\.sessionID)), [codex, fresh])
+        XCTAssertEqual(try dbPool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: [codex]) }, [project])
+        XCTAssertEqual(try dbPool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: [shell]) }, [],
+                       "a live shell is not an agent session")
+    }
+
     func testTheWindowIsTheFiftyNewestPlusEveryLiveSession() throws {
         let now = Date()
         let ids = try dbPool.write { db -> [Int64] in

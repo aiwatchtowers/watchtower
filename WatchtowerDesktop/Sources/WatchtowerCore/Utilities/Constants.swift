@@ -210,61 +210,126 @@ package enum Constants {
         Thread.detachNewThread { _ = resolvedEnvironment() }
     }
 
-    /// Returns a process environment with the user's full PATH resolved from their login shell.
-    /// Cached after first call. Useful for launching subprocesses from a macOS app (where PATH is minimal).
+    /// The login-shell probe `resolvedEnvironment` runs: each value on a
+    /// line of its own behind a marker, so anything the shell's startup
+    /// files print is ignored. Plain `"$VAR"` expansions, which zsh, bash and
+    /// fish all read the same way.
+    package nonisolated static let loginShellProbe =
+        #"printf '\#(probePathMarker)%s\n\#(probeCodexHomeMarker)%s\n' "$PATH" "$CODEX_HOME""#
+    nonisolated private static let probePathMarker = "WATCHTOWER_PROBE_PATH="
+    nonisolated private static let probeCodexHomeMarker = "WATCHTOWER_PROBE_CODEX_HOME="
+
+    /// The probe's output read back: PATH, and CODEX_HOME (spec 2026-10-12
+    /// §7: the Codex the login shell launches reads it, so the trust step,
+    /// the status check and the rollout lookup must too). An empty or
+    /// missing value is nil.
+    package nonisolated static func parseLoginShellProbe(_ output: String) -> (path: String?, codexHome: String?) {
+        var path: String?, codexHome: String?
+        for line in output.split(whereSeparator: \.isNewline) {
+            if let value = line.trimmedSuffix(after: probePathMarker) { path = value }
+            if let value = line.trimmedSuffix(after: probeCodexHomeMarker) { codexHome = value }
+        }
+        return (path, codexHome)
+    }
+
+    /// `resolvedEnvironment()` once it has been resolved (the launch-time
+    /// prewarm), else the app's own environment. Never runs the login
+    /// shell, so the MainActor can call it without blocking.
+    package nonisolated static func resolvedEnvironmentIfReady() -> [String: String] {
+        resolvedEnvironmentBox.get() ?? ProcessInfo.processInfo.environment
+    }
+
+    nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
+
+    /// Returns a process environment with the user's full PATH — and their
+    /// CODEX_HOME, when the login shell sets one — resolved from their login
+    /// shell. Cached after first call. Useful for launching subprocesses from
+    /// a macOS app (where PATH is minimal).
     package nonisolated static func resolvedEnvironment() -> [String: String] {
-        struct Cache {
-            static let env: [String: String] = {
-                var env = ProcessInfo.processInfo.environment
-                let shell = env["SHELL"] ?? "/bin/zsh"
-                let pathProc = Process()
-                pathProc.executableURL = URL(fileURLWithPath: shell)
-                let configDir = NSString("~/.config/watchtower").expandingTildeInPath
-                try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-                pathProc.currentDirectoryURL = URL(fileURLWithPath: configDir)
-                pathProc.arguments = ["-lc", "echo $PATH"]
-                let pathPipe = Pipe()
-                pathProc.standardOutput = pathPipe
-                pathProc.standardError = FileHandle.nullDevice
-                try? pathProc.run()
-                // Timeout: kill after 5s to avoid hanging on broken shell configs
-                let timer = DispatchSource.makeTimerSource()
-                timer.schedule(deadline: .now() + 5)
-                timer.setEventHandler { pathProc.terminate() }
-                timer.resume()
-                pathProc.waitUntilExit()
-                timer.cancel()
-                if let fullPath = String(data: pathPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines), !fullPath.isEmpty {
-                    env["PATH"] = fullPath
-                }
-                env.removeValue(forKey: "CLAUDECODE")
-                // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
-                // Inline search: can't call Constants methods from nested Cache struct.
-                let nvmDirs = [
-                    NSHomeDirectory() + "/.nvm/versions/node",
-                    NSHomeDirectory() + "/.local/share/fnm/node-versions",
-                    NSHomeDirectory() + "/.fnm/node-versions"
-                ]
-                outer: for nvmDir in nvmDirs {
-                    guard let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) else { continue }
-                    for ver in versions.sorted().reversed() {
-                        for sub in ["bin", "installation/bin"] {
-                            let candidate = "\(nvmDir)/\(ver)/\(sub)/claude"
-                            if FileManager.default.isExecutableFile(atPath: candidate) {
-                                let claudeDir = (candidate as NSString).deletingLastPathComponent
-                                if let path = env["PATH"], !path.contains(claudeDir) {
-                                    env["PATH"] = claudeDir + ":" + path
-                                }
-                                break outer
-                            }
+        enum Cache {
+            /// answered: the login shell printed the probe (it did not
+            /// time out or fail), so PATH and CODEX_HOME are its own.
+            static let resolved = Constants.probeLoginShell()
+        }
+        resolvedEnvironmentBox.set(Cache.resolved.env)
+        if Cache.resolved.answered { answeredEnvironmentBox.set(Cache.resolved.env) }
+        return Cache.resolved.env
+    }
+
+    /// One run of the login-shell probe (up to 5 s): the app's environment
+    /// with the shell's PATH and CODEX_HOME; answered is false when the shell
+    /// timed out or printed no probe line.
+    nonisolated private static func probeLoginShell() -> (env: [String: String], answered: Bool) {
+        var env = ProcessInfo.processInfo.environment
+        let shell = env["SHELL"] ?? "/bin/zsh"
+        let pathProc = Process()
+        pathProc.executableURL = URL(fileURLWithPath: shell)
+        let configDir = NSString("~/.config/watchtower").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        pathProc.currentDirectoryURL = URL(fileURLWithPath: configDir)
+        pathProc.arguments = ["-lc", Self.loginShellProbe]
+        let pathPipe = Pipe()
+        pathProc.standardOutput = pathPipe
+        pathProc.standardError = FileHandle.nullDevice
+        try? pathProc.run()
+        // Timeout: kill after 5s to avoid hanging on broken shell configs
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + 5)
+        timer.setEventHandler { pathProc.terminate() }
+        timer.resume()
+        pathProc.waitUntilExit()
+        timer.cancel()
+        let probed = Self.parseLoginShellProbe(
+            String(data: pathPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        )
+        if let fullPath = probed.path { env["PATH"] = fullPath }
+        if let codexHome = probed.codexHome { env["CODEX_HOME"] = codexHome }
+        env.removeValue(forKey: "CLAUDECODE")
+        // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
+        let nvmDirs = [
+            NSHomeDirectory() + "/.nvm/versions/node",
+            NSHomeDirectory() + "/.local/share/fnm/node-versions",
+            NSHomeDirectory() + "/.fnm/node-versions"
+        ]
+        outer: for nvmDir in nvmDirs {
+            guard let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) else { continue }
+            for ver in versions.sorted().reversed() {
+                for sub in ["bin", "installation/bin"] {
+                    let candidate = "\(nvmDir)/\(ver)/\(sub)/claude"
+                    if FileManager.default.isExecutableFile(atPath: candidate) {
+                        let claudeDir = (candidate as NSString).deletingLastPathComponent
+                        if let path = env["PATH"], !path.contains(claudeDir) {
+                            env["PATH"] = claudeDir + ":" + path
                         }
+                        break outer
                     }
                 }
-                return env
-            }()
+            }
         }
-        return Cache.env
+        return (env, probed.path != nil)
+    }
+
+    /// `resolvedEnvironment()`'s value when the login shell answered it.
+    nonisolated private static let answeredEnvironmentBox = ResolvedEnvironmentBox()
+
+    /// The login shell's environment for callers about to act on CODEX_HOME
+    /// (`resolvedLoginEnvironment`): the launch-time resolve when the shell
+    /// answered it, else a fresh probe — a failure is never cached, so a
+    /// later call probes again.
+    nonisolated private static let loginEnvironmentResolver = LoginEnvironmentResolver {
+        _ = resolvedEnvironment() // the launch-time resolve, cached
+        if let answered = answeredEnvironmentBox.get() { return answered }
+        let again = probeLoginShell()
+        return again.answered ? again.env : nil
+    }
+
+    /// The login shell's environment, resolved on a thread of its own (never
+    /// a pool or main thread, see `prewarmResolvedEnvironment`); nil when the
+    /// login shell did not answer the probe, so a caller about to act on
+    /// CODEX_HOME knows it does not have the shell's value. Retried on the
+    /// next call until it answers once.
+    package nonisolated static func resolvedLoginEnvironment() async -> [String: String]? {
+        await loginEnvironmentResolver.resolve()
     }
 
     /// The CLI binary shipped inside the app bundle. Live processes must not
@@ -302,5 +367,54 @@ package enum Constants {
         if let store = CLIBinaryStore.resolvedInstalledPath() { return store }
         if let bundled = bundledCLIPath() { return bundled }
         return findInPath("watchtower")
+    }
+}
+
+private extension Substring {
+    /// The rest of the line after `marker`, trimmed; nil when the line does
+    /// not start with it or nothing follows.
+    func trimmedSuffix(after marker: String) -> String? {
+        guard hasPrefix(marker) else { return nil }
+        let value = dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+}
+
+/// The resolved environment, once a `resolvedEnvironment()` call returned
+/// it; the first value set stays.
+package final class ResolvedEnvironmentBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var env: [String: String]?
+
+    package init() {}
+
+    package func get() -> [String: String]? {
+        lock.withLock { env }
+    }
+
+    package func set(_ value: [String: String]) {
+        lock.withLock { if env == nil { env = value } }
+    }
+}
+
+/// Resolves the login shell's environment with `probe` on a thread of its
+/// own; caches the first answer for good, never a failure (nil), so a
+/// later `resolve()` probes again.
+package final class LoginEnvironmentResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private var env: [String: String]?
+    private let probe: @Sendable () -> [String: String]?
+
+    package init(probe: @escaping @Sendable () -> [String: String]?) {
+        self.probe = probe
+    }
+
+    package func resolve() async -> [String: String]? {
+        if let env = lock.withLock({ env }) { return env }
+        let probed = await withCheckedContinuation { continuation in
+            Thread.detachNewThread { continuation.resume(returning: self.probe()) }
+        }
+        if let probed { lock.withLock { if env == nil { env = probed } } }
+        return probed
     }
 }

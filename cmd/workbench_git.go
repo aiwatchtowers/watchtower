@@ -50,10 +50,10 @@ var workbenchGitSwitchCmd = &cobra.Command{
 	Short: "Switch the folder to a local branch, behind the uncommitted-changes and agent guards",
 	Long: "Refused (exit 0, `refused`) for an unknown branch, a branch checked out in another\n" +
 		"worktree or an operation in progress. Uncommitted changes need --stash (they are\n" +
-		"stashed under a message naming the switch and never popped afterwards); a Claude\n" +
-		"Code session in the folder (--agent-running) needs --confirm-agent. Without them\n" +
-		"`needs_confirmation` lists what to confirm and nothing is written. Never forces,\n" +
-		"discards, resets or cleans.",
+		"stashed under a message naming the switch and never popped afterwards); an agent\n" +
+		"session (Claude Code or Codex) in the folder (--agent-running) needs --confirm-agent.\n" +
+		"Without them `needs_confirmation` lists what to confirm and nothing is written.\n" +
+		"Never forces, discards, resets or cleans.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchGitSwitch,
 }
@@ -84,8 +84,8 @@ func init() {
 	sw := workbenchGitSwitchCmd.Flags()
 	sw.StringVar(&workbenchGitFlagBranch, "branch", "", "the local branch to switch to")
 	sw.BoolVar(&workbenchGitFlagStash, "stash", false, "stash uncommitted changes (untracked files included) before switching")
-	sw.BoolVar(&workbenchGitFlagAgentRunning, "agent-running", false, "a Claude Code session is working in the folder")
-	sw.BoolVar(&workbenchGitFlagConfirmAgent, "confirm-agent", false, "switch even though a Claude Code session is working in the folder")
+	sw.BoolVar(&workbenchGitFlagAgentRunning, "agent-running", false, "an agent session (Claude Code or Codex) is working in the folder")
+	sw.BoolVar(&workbenchGitFlagConfirmAgent, "confirm-agent", false, "switch even though an agent session (Claude Code or Codex) is working in the folder")
 	workbenchGitCreateCmd.Flags().StringVar(&workbenchGitFlagName, "name", "", "the new branch's name")
 	workbenchCmd.AddCommand(workbenchGitCmd)
 }

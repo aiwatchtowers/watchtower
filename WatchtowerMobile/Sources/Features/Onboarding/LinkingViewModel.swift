@@ -3,150 +3,6 @@ import Observation
 import os
 import WatchtowerSync
 
-/// The phone's iCloud identity and the zone shares the link flow accepts
-/// (spec §2.3 steps 2–3). `CloudKitLinkContainer` is the live one.
-protocol LinkContainer: Sendable {
-    func accountStatus() async -> CloudAvailability
-    /// `CKContainer.userRecordID().recordName`.
-    func userRecordName() async throws -> String
-    /// Fetches every URL's share metadata, then accepts them all; throws if
-    /// any metadata fetch or accept fails.
-    func acceptShares(_ urls: [URL]) async throws
-    /// Leaves the Mac's shares: deletes the accepted zone-wide share records
-    /// of `hubID`'s two zones from this phone's shared database.
-    func leaveShares(ownerName: String, hubID: String) async throws
-}
-
-/// The link flow's clock: the grant wait and the expiry check run on it.
-protocol LinkClock: Sendable {
-    func now() -> Date
-    func sleep(for duration: Duration) async throws
-}
-
-struct SystemLinkClock: LinkClock {
-    func now() -> Date { Date() }
-
-    func sleep(for duration: Duration) async throws {
-        try await Task.sleep(for: duration)
-    }
-}
-
-/// The app side of the link flow (`AppRoot`): the sync stack per database,
-/// the replica's view of this phone's grant, and the one place the link
-/// lands.
-@MainActor
-protocol LinkHost: AnyObject {
-    /// The transport of `scope`'s database for `hubID`'s zones. Another
-    /// scope or hub restarts the sync stack with an empty replica.
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
-    /// One fetch, then this phone's `device_grant` as the replica holds it.
-    func fetchGrant(deviceID: String) async -> DeviceGrant?
-    /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
-    /// keeps the link but sends nothing (the hub moved).
-    func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async
-    /// This phone's `device` record with the current Settings choices.
-    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
-    /// Asks the transport to send what is queued now (before a stop).
-    func flushSends() async
-    /// Stops sync, wipes the replica, the outbox and the transport's store
-    /// (buffer, send queue, engine state), and restarts unlinked on
-    /// `hubID`'s zones in `scope`'s database. Returns how many outbox items
-    /// and recordings were still waiting for the Mac (reported "Not sent").
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int
-    func requestNotificationPermission() async
-    /// Selects the Now tab.
-    func openNow()
-}
-
-/// Why a scan did not link (spec §2.3), with the text the phone shows.
-enum LinkFailure: Equatable {
-    case expired
-    case signIn
-    case cannotShare
-    case noAnswer
-    /// The Mac refused the code, or it cannot be read.
-    case refused
-    case updateApp
-    /// The code is from an older Mac (a `LinkPayload` version below the
-    /// phone's): its zones are not the ones this phone syncs.
-    case updateMac
-    /// iCloud failed under the flow (a reason from CloudKit).
-    case iCloud(String)
-
-    /// What went wrong, as the failure screen's title (design pass O3).
-    var title: String {
-        switch self {
-        case .expired: "This code expired"
-        case .signIn: "Sign in to iCloud on this iPhone"
-        case .cannotShare: "This Mac can't share with another Apple ID right now"
-        case .noAnswer: "Your Mac didn't answer"
-        case .refused: "This code can't be used"
-        case .updateApp: "Update Watchtower on this iPhone"
-        case .updateMac: "Update Watchtower on this Mac"
-        case .iCloud: "Couldn't reach iCloud"
-        }
-    }
-
-    /// What to do about it, under the title; nil when the title says it all.
-    var hint: String? {
-        switch self {
-        case .expired, .cannotShare, .refused: "Show a new code on the Mac"
-        case .signIn: "Watchtower uses iCloud to reach your Mac"
-        case .noAnswer: "Keep Settings → Mobile open on the Mac and scan again"
-        case .updateApp, .updateMac: nil
-        case let .iCloud(reason): reason.isEmpty ? nil : reason
-        }
-    }
-
-    /// One line, "title — hint", for any reader other than the failure
-    /// screen; signIn, updateApp and updateMac keep their earlier text.
-    var message: String {
-        switch self {
-        case .signIn: "Sign in to iCloud on this iPhone to use Watchtower"
-        case .updateApp, .updateMac: title
-        default: hint.map { "\(title) — \($0)" } ?? title
-        }
-    }
-
-    /// Scanning another code can help (it cannot while iCloud is signed
-    /// out or the app is too old).
-    var offersScan: Bool {
-        switch self {
-        case .signIn, .updateApp: false
-        default: true
-        }
-    }
-}
-
-/// What the phone tells the owner about its link outside a scan (spec §9).
-enum LinkNotice: Equatable {
-    /// `TransportEvent.unlinked` or the Mac's deleted grant: the Mac
-    /// removed this phone. `notSent`: the outbox items and recordings the
-    /// wipe dropped before the Mac got them.
-    case removed(notSent: Int = 0)
-    /// The heartbeat's `hub_id` is another hub's.
-    case moved(macName: String)
-    /// No heartbeat for a day.
-    case stale
-    /// The unlink wiped outbox items and recordings the Mac never got.
-    case notSent(Int)
-
-    var message: String {
-        switch self {
-        case let .removed(notSent):
-            notSent == 0
-                ? "This Mac removed this phone"
-                : "This Mac removed this phone — " + Self.notSent(notSent).message
-        case let .moved(macName): "Watchtower moved to \(macName) — scan the code on that Mac"
-        case .stale: "Your Mac hasn't synced for a day — if it changed iCloud account, link again"
-        case let .notSent(count):
-            count == 1
-                ? "Not sent: 1 item was still waiting for your Mac"
-                : "Not sent: \(count) items were still waiting for your Mac"
-        }
-    }
-}
-
 /// The link flow (mobile POC spec §2.3 steps 1–6) and the link's life
 /// after it (§9: unlink, removed, moved, stale, iCloud account switch).
 /// Owned by `AppRoot` for the app's lifetime, so a wait survives any
@@ -176,8 +32,9 @@ final class LinkingViewModel {
     static let expiryGrace: TimeInterval = 120
     /// Step 5 (spec §3).
     static let grantWait: TimeInterval = 60
-    /// How often the wait fetches the grant.
-    static let grantPollInterval: TimeInterval = 2
+    /// How often the wait fetches the grant: each poll is a CloudKit fetch,
+    /// so 4 s keeps a full wait at 15 of them.
+    static let grantPollInterval: TimeInterval = 4
     /// No heartbeat for this long reads as the Mac gone (spec §9).
     static let staleAfter: TimeInterval = 86_400
 
@@ -187,12 +44,23 @@ final class LinkingViewModel {
 
     private(set) var phase: Phase = .idle {
         didSet {
-            if phase != oldValue { phaseStartedAt = clock.now() }
+            if phase != oldValue {
+                phaseStartedAt = clock.now()
+                phaseStartedUptime = clock.uptime()
+            }
         }
     }
     /// When `phase` last changed, on the flow's clock; nil before the first
     /// change. The waiting screen's hint reads it (design pass O2).
     private(set) var phaseStartedAt: Date?
+    @ObservationIgnored private var phaseStartedUptime: TimeInterval?
+
+    /// Seconds since `phase` last changed, on the monotonic source (a clock
+    /// jump neither brings the 20 s hint forward nor holds it back); nil
+    /// before the first phase change.
+    func phaseElapsed() -> TimeInterval? {
+        phaseStartedUptime.map { max(0, clock.uptime() - $0) }
+    }
     private(set) var notice: LinkNotice?
     /// The saved link; nil while unlinked (Welcome). A pending link is not
     /// a link.
@@ -239,7 +107,7 @@ final class LinkingViewModel {
         // A report about the last link is read by now; moved and stale stay
         // until the heartbeat clears them.
         switch notice {
-        case .removed, .notSent: notice = nil
+        case .removed, .notSent, .recordingKept, .recordingsProblem: notice = nil
         case .moved, .stale, nil: break
         }
         phase = .scanning
@@ -327,8 +195,7 @@ final class LinkingViewModel {
             return
         }
         phase = .checking
-        let notSent = await unlinkCurrent(writeUnlinked: true)
-        notice = notSent > 0 ? .notSent(notSent) : nil
+        notice = LinkNotice.after(await unlinkCurrent(writeUnlinked: true))
         await connect(request.payload, userRecordName: request.userRecordName)
     }
 
@@ -378,9 +245,10 @@ final class LinkingViewModel {
         )
         guard let host else { return }
         // From the accept on, a kill is resumed (the scope's database, the
-        // rest of the wait), never shown as linked.
+        // rest of the wait), never shown as linked. No baseline yet: a
+        // relaunch before it is captured has written nothing to the Mac.
         let deadline = clock.now().addingTimeInterval(Self.grantWait)
-        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil)
+        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil, baselineCaptured: false)
         // Step 4: the device record with the code's nonce, in the scope's
         // database.
         let transport: any CloudSyncTransport
@@ -391,17 +259,19 @@ final class LinkingViewModel {
             return
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         let baseline = await host.fetchGrant(deviceID: identity.deviceID)
-        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline)
+        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline, baselineCaptured: true)
         store.pending = pending
         do {
+            // The transport queues the record locally; CloudKit sends it
+            // later, so a throw here is this iPhone's store.
             try await transport.save([try deviceRecord(for: identity.linkedDevice(for: record), linkNonce: payload.nonce)])
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         await waitForGrant(pending)
@@ -410,10 +280,14 @@ final class LinkingViewModel {
     // MARK: - Grant wait (step 5)
 
     /// At launch: a link written before a kill and not answered yet waits
-    /// for what is left of its 60 s, then offers to scan again.
+    /// for what is left of its 60 s, then offers to scan again. A link
+    /// killed before its baseline was captured wrote nothing to the Mac
+    /// (the device record follows the baseline), and without the baseline
+    /// an earlier answer in the replica (a refusal of another code) would
+    /// read as this scan's: it offers to scan again at once.
     func resumePendingLink() async {
         guard let pending = store.pending, !isBusy else { return }
-        guard clock.now() < pending.deadline else {
+        guard clock.now() < pending.deadline, pending.baselineCaptured else {
             store.pending = nil
             phase = .failed(.noAnswer)
             return
@@ -423,7 +297,7 @@ final class LinkingViewModel {
             _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID)
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         await waitForGrant(pending)
@@ -468,9 +342,12 @@ final class LinkingViewModel {
         store.grantMissingSince = nil
         link = record
         writesBlocked = false
-        // A notice about an old link no longer applies; the "Not sent"
-        // report of a switch's unlink stays.
-        if case .notSent = notice {} else { notice = nil }
+        // A notice about an old link no longer applies; the report of a
+        // switch's unlink ("Not sent", a recording kept) stays.
+        switch notice {
+        case .notSent, .recordingKept, .recordingsProblem: break
+        default: notice = nil
+        }
         await host?.setLink(identity.linkedDevice(for: record), writesAllowed: true)
         phase = .linked(macName: record.macName)
     }
@@ -487,8 +364,7 @@ final class LinkingViewModel {
     func unlink() async {
         guard link != nil, !isBusy else { return }
         phase = .unlinking
-        let notSent = await unlinkCurrent(writeUnlinked: true)
-        notice = notSent > 0 ? .notSent(notSent) : nil
+        notice = LinkNotice.after(await unlinkCurrent(writeUnlinked: true))
         phase = .idle
     }
 
@@ -497,10 +373,12 @@ final class LinkingViewModel {
     /// (`evaluate(grant:heartbeat:)`).
     func removedByMac() async {
         guard link != nil else { return }
-        let notSent = await unlinkCurrent(writeUnlinked: false)
+        let wipe = await unlinkCurrent(writeUnlinked: false)
         pendingSwitch = nil
         if !isBusy { phase = .idle }
-        notice = .removed(notSent: notSent)
+        // A recording problem, or a capture the removal cut short, is the
+        // news that matters: it also says the link ended.
+        notice = LinkNotice.after(wipe, otherwise: .removed(notSent: wipe.notSent))
     }
 
     /// The transport saw an iCloud account change. Another account ends the
@@ -520,10 +398,12 @@ final class LinkingViewModel {
         guard current != link.userRecordName, self.link == link else { return }
         Self.logger.notice("iCloud account changed while linked: unlinking")
         store.pending = nil
-        _ = await unlinkCurrent(writeUnlinked: false)
+        // The recordings were made for the old account's Mac: not carried
+        // to whatever the new account links, reported "Not sent".
+        let wipe = await unlinkCurrent(writeUnlinked: false, keepRecordings: false)
         pendingSwitch = nil
         phase = .idle
-        notice = nil
+        notice = LinkNotice.after(wipe)
     }
 
     /// How long the linked hub must go on without this phone's grant,
@@ -592,23 +472,29 @@ final class LinkingViewModel {
         switch notice {
         case .moved, .stale, nil:
             notice = stale ? .stale : nil
-        case .removed, .notSent:
+        case .removed, .notSent, .recordingKept, .recordingsProblem:
             break
         }
     }
 
     /// Ends the current link: the `unlinked` record (best effort), leaving
-    /// the shares in `shared` scope, then the wipe. Returns what was not
-    /// sent.
+    /// the shares in `shared` scope, then the wipe. Returns what the wipe
+    /// lost, and whether it stopped a capture (kept for the next link).
     ///
     /// The link ends before the first await: a removal or an account signal
     /// arriving meanwhile (leaving the shares is what makes the Mac's zones
     /// vanish) finds no link and is ignored, so one unlink wipes once.
     /// The wipe runs first, in the link's own database: the restarted send
     /// queue then holds only the `unlinked` record, so the flush sends
-    /// nothing of what is reported "Not sent".
-    private func unlinkCurrent(writeUnlinked: Bool) async -> Int {
-        guard let current = link, let host else { return 0 }
+    /// nothing of what is reported "Not sent". A `private` link then
+    /// restarts on the unlinked hub, so the old hub's zones stop syncing. A
+    /// `shared` link whose shares were left needs no second restart: the
+    /// shared database holds none of the hub's zones any more, so its
+    /// environment is retired (replaced by the next launch or link) and the
+    /// `unlinked` record keeps its chance to go out until then (its
+    /// delivery guarantee is #143's).
+    private func unlinkCurrent(writeUnlinked: Bool, keepRecordings: Bool = true) async -> LocalWipe {
+        guard let current = link, let host else { return LocalWipe() }
         let device = linkedDevice
         store.link = nil
         store.grantMissingSince = nil
@@ -616,10 +502,10 @@ final class LinkingViewModel {
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)
         guard writeUnlinked, let device else {
-            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
         }
         let scope = current.databaseScope
-        let notSent = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID)
+        var wipe = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID, keepRecordings: keepRecordings)
         do {
             let transport = try await host.prepare(scope: scope, hubID: current.hubID)
             try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
@@ -630,14 +516,19 @@ final class LinkingViewModel {
         if case let .shared(ownerName) = scope {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: current.hubID)
+                host.retireEnvironment()
+                return wipe
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        // Both scopes end unlinked, on the phone's own database: the linked
-        // hub's zones are no longer synced. Nothing is left to count.
-        _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
-        return notSent
+        // The linked hub's zones are still reachable (a private link, or
+        // shares not left): end on the phone's own database, unlinked.
+        // Nothing is left to stop; what this wipe could not hand over adds.
+        let final = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
+        wipe.notSent += final.notSent
+        wipe.problem = wipe.problem ?? final.problem
+        return wipe
     }
 
     private func deviceRecord(for device: LinkedDevice, linkNonce: String?, unlinked: Bool = false) throws -> CloudRecord {

@@ -53,8 +53,7 @@ struct SessionDetailModel {
             TargetChip(id: id, label: targetRecord.map { "#\(id) \($0.text)" } ?? "#\(id)")
         }
         branch = Self.branch(target: targetRecord, workbench: snapshot.workbench(session.workbenchID))
-        let agent = session.agent == .claudeCode ? "Claude Code" : session.agent.rawValue
-        agentLine = "\(agent) · \(CompactAge.string(from: session.createdAt, now: now))"
+        agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
         approvalNotice = session.stateKind == .needsApproval ? "Needs approval on the Mac" : nil
 
         let openAsks = snapshot.asks
@@ -72,6 +71,16 @@ struct SessionDetailModel {
         }
         timelineEmptyText = milestones.isEmpty ? "No milestones yet" : nil
         timelineMoreText = (timeline?.milestonesMore).flatMap { $0 > 0 ? "\($0) earlier on your Mac" : nil }
+    }
+
+    /// The agent's product name; an agent this build does not know shows its
+    /// raw wire value.
+    static func agentName(_ agent: TerminalSessionState.Agent) -> String {
+        switch agent {
+        case .claudeCode: "Claude Code"
+        case .codexCLI: "Codex"
+        default: agent.rawValue
+        }
     }
 
     private static func branch(target: WorkbenchTarget?, workbench: Workbench?) -> String? {

@@ -138,7 +138,10 @@ final class PhoneRecorderController {
     @ObservationIgnored private let now: @MainActor () -> Date
     @ObservationIgnored private let tickInterval: Duration?
     /// The ledger id of the capture being written.
-    @ObservationIgnored private var captureID: String?
+    @ObservationIgnored private(set) var captureID: String?
+    /// The stop finalizing the capture now (`saving`): a second caller
+    /// waits for it instead of returning early.
+    @ObservationIgnored private var stopping: Task<Void, Never>?
     @ObservationIgnored private var fileURL: URL?
     @ObservationIgnored private var startedAt: Date?
     /// Audio recorded before the current span.
@@ -408,8 +411,13 @@ final class PhoneRecorderController {
     /// at once. The phase is `saving` from the first line, so the controls
     /// are off and no mark is dropped while the file closes. The saved
     /// duration is the recorded time, never more than the file holds. Safe
-    /// to call when nothing is capturing.
+    /// to call when nothing is capturing; a call while a stop is saving
+    /// returns once that stop has.
     func stop() async {
+        if let stopping {
+            await stopping.value
+            return
+        }
         guard isCapturing, let captureID, let fileURL, let startedAt else { return }
         phase = .saving
         closeSpan()
@@ -418,6 +426,24 @@ final class PhoneRecorderController {
         self.captureID = nil
         self.fileURL = nil
         self.startedAt = nil
+        let task = Task { await finishStop(captureID: captureID, fileURL: fileURL, startedAt: startedAt) }
+        stopping = task
+        await task.value
+        stopping = nil
+    }
+
+    /// Before a wipe of the replica: a stop already saving (the owner's,
+    /// or the 3-hour cap) is waited for, and a running capture is stopped
+    /// and saved. Returns the id of the capture this call stopped, nil when
+    /// none was running.
+    func stopForWipe() async -> String? {
+        await stopping?.value
+        guard isCapturing, let id = captureID else { return nil }
+        await stop()
+        return id
+    }
+
+    private func finishStop(captureID: String, fileURL: URL, startedAt: Date) async {
         await engine.finish()
         // The saved length is never more than the file holds; a file with
         // no readable audio is not uploaded at all.
@@ -470,17 +496,24 @@ final class PhoneRecorderController {
     /// files no row points at. A capture running right now is left alone.
     func recoverOnLaunch() async {
         do {
-            // Captures begun in this run are skipped by the uploader itself,
-            // so a Record tap during this recovery is never claimed.
-            let recovered = try await uploader.recoverInterruptedCaptures { [engine] url in
-                await engine.recordedDuration(of: url)
-            }
-            if !recovered.isEmpty {
-                Self.logger.notice("recovered \(recovered.count) recordings cut short")
-            }
+            try await recoverInterrupted()
             try await uploader.sweepOrphanFiles()
         } catch {
             Self.logger.error("recording recovery failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Finalizes captures cut short (rows still `recording` that this
+    /// process is not writing) from their files; deletes nothing else.
+    /// Also run before a wipe hands the recordings over.
+    func recoverInterrupted() async throws {
+        // Captures begun in this run are skipped by the uploader itself,
+        // so a Record tap during this recovery is never claimed.
+        let recovered = try await uploader.recoverInterruptedCaptures { [engine] url in
+            await engine.recordedDuration(of: url)
+        }
+        if !recovered.isEmpty {
+            Self.logger.notice("recovered \(recovered.count) recordings cut short")
         }
     }
 
