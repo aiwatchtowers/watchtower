@@ -57,9 +57,20 @@ enum RecapLoader {
     }
 
     /// Reads from an ALREADY-OPEN database, so it runs inside a
-    /// ValueObservation tracking closure.
-    static func read(recordName: String, phoneRecordingID: String?, store: ReplicaStore, from db: Database) throws -> Loaded {
-        let body = TranscriptBody.load(asset: try store.sliceAsset(forRecordName: recordName, from: db))
+    /// ValueObservation fetch. The body (an asset of a `meeting_transcript`
+    /// record, written with it) comes from `cache` undecoded while that
+    /// kind's change stamp holds; the marks are read every time.
+    static func read(
+        recordName: String,
+        phoneRecordingID: String?,
+        store: ReplicaStore,
+        from db: Database,
+        cache: ReplicaDecodeCache = ReplicaDecodeCache()
+    ) throws -> Loaded {
+        let version = try store.kindVersions([.meetingTranscript], from: db)[.meetingTranscript] ?? 0
+        let body = try cache.value(recordName, version: version) {
+            TranscriptBody.load(asset: try store.sliceAsset(forRecordName: recordName, from: db))
+        }
         let marks = try phoneRecordingID.map { try store.phoneRecordingMarks(id: $0, from: db) } ?? []
         return Loaded(body: body, marks: marks)
     }
@@ -71,18 +82,29 @@ enum RecapLoader {
 @Observable
 final class RecapBodyModel {
     private(set) var loaded: RecapLoader.Loaded?
+    /// The decoded body between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
 
-    func observe(transcript: MeetingTranscript, phoneRecordingID: String?, store: ReplicaStore) {
+    func observe(
+        transcript: MeetingTranscript,
+        phoneRecordingID: String?,
+        store: ReplicaStore,
+        gate: ReplicaObservationGate? = nil
+    ) {
         cancellable?.cancel()
         loaded = nil
         let recordName = transcript.recordName
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "recap",
             reader: store.reader,
+            gate: gate,
             observation: {
-                ValueObservation.tracking { db in
-                    try RecapLoader.read(recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db)
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion] + ReplicaStore.phoneRecordingsRegions) { db in
+                    try RecapLoader.read(
+                        recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db, cache: cache
+                    )
                 }
                 .removeDuplicates()
             },

@@ -92,29 +92,36 @@ struct PhoneRecordingsSnapshot: Equatable {
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "PhoneRecordingsSnapshot")
 
+    /// The slice kinds this snapshot decodes.
+    static let kinds: [SliceKind] = [.recordingJob, .heartbeat]
+
     /// Reads from an ALREADY-OPEN database, so it runs inside a
-    /// ValueObservation tracking closure.
-    static func read(from db: Database, store: ReplicaStore) throws -> Self {
+    /// ValueObservation fetch. A kind whose change stamp is unchanged comes
+    /// from `cache` undecoded; the default fresh cache decodes everything.
+    /// The ledger is the phone's own table, read every time.
+    static func read(from db: Database, store: ReplicaStore, cache: ReplicaDecodeCache = ReplicaDecodeCache()) throws -> Self {
+        let versions = try store.kindVersions(kinds, from: db)
         var snapshot = Self()
         snapshot.recordings = try store.phoneRecordings(from: db)
-        var skipped = 0
-        for payload in try store.payloads(of: .recordingJob, from: db) {
-            do {
-                let job = try RelayCoder.makeDecoder().decode(RecordingJob.self, from: payload)
-                snapshot.jobs[job.id] = job
-            } catch {
-                skipped += 1
+        snapshot.jobs = try cache.value(SliceKind.recordingJob.rawValue, version: versions[.recordingJob] ?? 0) {
+            var jobs: [String: RecordingJob] = [:]
+            var skipped = 0
+            for payload in try store.payloads(of: .recordingJob, from: db) {
+                do {
+                    let job = try RelayCoder.makeDecoder().decode(RecordingJob.self, from: payload)
+                    jobs[job.id] = job
+                } catch {
+                    skipped += 1
+                }
             }
+            if skipped > 0 {
+                logger.warning("\(skipped) undecodable recording_job records skipped")
+            }
+            return jobs
         }
-        if skipped > 0 {
-            logger.warning("\(skipped) undecodable recording_job records skipped")
+        snapshot.heartbeat = try cache.value(HeartbeatPayload.recordName, version: versions[.heartbeat] ?? 0) {
+            try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
         }
-        snapshot.heartbeat = try SettingsSnapshot.decode(
-            HeartbeatPayload.self,
-            recordName: HeartbeatPayload.recordName,
-            store: store,
-            from: db
-        )
         return snapshot
     }
 
@@ -123,31 +130,36 @@ struct PhoneRecordingsSnapshot: Equatable {
     }
 }
 
-/// Live phone-recordings state: one observation for the app's lifetime,
-/// re-read on every replica write.
+/// Live phone-recordings state: one observation for the app's lifetime
+/// over its kinds' change stamps and the recordings ledger.
 @MainActor
 @Observable
 final class PhoneRecordingsModel {
     private(set) var snapshot = PhoneRecordingsSnapshot()
+    /// The decoded kinds between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
 
-    /// The recordings slices re-read on every replica write; a write that
-    /// leaves them equal publishes nothing.
+    /// Re-read when a stamp or the ledger changes; only the changed kinds
+    /// decode again, and a read that leaves it equal publishes nothing.
     nonisolated static func observation(
-        store: ReplicaStore
+        store: ReplicaStore,
+        cache: ReplicaDecodeCache = ReplicaDecodeCache()
     ) -> ValueObservation<ValueReducers.RemoveDuplicates<ValueReducers.Fetch<PhoneRecordingsSnapshot>>> {
-        ValueObservation.tracking { db in
-            try PhoneRecordingsSnapshot.read(from: db, store: store)
+        ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion] + ReplicaStore.phoneRecordingsRegions) { db in
+            try PhoneRecordingsSnapshot.read(from: db, store: store, cache: cache)
         }
         .removeDuplicates()
     }
 
-    func start(store: ReplicaStore) {
+    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
         guard cancellable == nil else { return }
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "recordings",
             reader: store.reader,
-            observation: { Self.observation(store: store) },
+            gate: gate,
+            observation: { Self.observation(store: store, cache: cache) },
             onChange: { [weak self] value in self?.snapshot = value }
         )
     }

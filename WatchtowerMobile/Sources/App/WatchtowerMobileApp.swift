@@ -41,6 +41,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let subscriber = MetricSubscriber(history: diagnostics.metrics)
         subscriber.register()
         metricSubscriber = subscriber
+        // A launch into the background (a silent push, a prewarm) starts
+        // the replica observations suspended; the scene's first
+        // foreground phase resumes them (`WatchtowerMobileApp`).
+        if application.applicationState == .background {
+            MainActor.assumeIsolated { ReplicaObservationGate.shared.setSuspended(true) }
+        }
         return true
     }
 
@@ -90,7 +96,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 @MainActor
 enum PushCompletion {
     /// Under iOS's ~30 s, with room for the completion itself.
-    static let deadline: Duration = .seconds(25)
+    nonisolated static let deadline: Duration = .seconds(25)
 
     /// `outcomeAtDeadline` is what the deadline reports (`.noData`, or
     /// `.failed` after a failed fetch). `sleep` is the deadline's wait
@@ -207,9 +213,15 @@ struct WatchtowerMobileApp: App {
                 }
             }
             // The first activation classifies a cold launch not yet
-            // classified as a foreground one (`ColdLaunchClassifier`).
+            // classified as a foreground one (`ColdLaunchClassifier`). The
+            // replica observations rest while the app is in the background
+            // and each delivers its latest value on the return; not while
+            // the app only hosts XCTest (the tests drive their own gates).
             .onChange(of: scenePhase, initial: true) {
                 if scenePhase == .active { appDelegate.sceneBecameActive() }
+                if case .ready = boot {
+                    ReplicaObservationGate.shared.setSuspended(scenePhase == .background)
+                }
             }
         }
     }

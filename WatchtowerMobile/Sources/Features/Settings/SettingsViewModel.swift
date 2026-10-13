@@ -51,19 +51,29 @@ struct SettingsSnapshot: Equatable {
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SettingsSnapshot")
 
+    /// The slice kinds this snapshot decodes.
+    static let kinds: [SliceKind] = [.heartbeat, .deviceGrant]
+
     /// Reads from an ALREADY-OPEN database, so it runs inside a
-    /// ValueObservation tracking closure (a nested `DatabasePool.read`
-    /// there would trap on reentrancy).
-    static func read(from db: Database, store: ReplicaStore, deviceID: String?) throws -> Self {
+    /// ValueObservation fetch (a nested `DatabasePool.read` there would
+    /// trap on reentrancy). A record whose kind's change stamp is unchanged
+    /// comes from `cache` undecoded; the default fresh cache decodes both.
+    static func read(
+        from db: Database,
+        store: ReplicaStore,
+        deviceID: String?,
+        cache: ReplicaDecodeCache = ReplicaDecodeCache()
+    ) throws -> Self {
+        let versions = try store.kindVersions(kinds, from: db)
         var snapshot = Self()
-        snapshot.heartbeat = try decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+        snapshot.heartbeat = try cache.value(HeartbeatPayload.recordName, version: versions[.heartbeat] ?? 0) {
+            try decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+        }
         if let deviceID {
-            snapshot.grant = try decode(
-                DeviceGrant.self,
-                recordName: SliceKind.deviceGrant.recordName(id: deviceID),
-                store: store,
-                from: db
-            )
+            let recordName = SliceKind.deviceGrant.recordName(id: deviceID)
+            snapshot.grant = try cache.value(recordName, version: versions[.deviceGrant] ?? 0) {
+                try decode(DeviceGrant.self, recordName: recordName, store: store, from: db)
+            }
         }
         snapshot.queuedCount = try store.pendingActions(from: db).filter { $0.state == .pending }.count
         return snapshot
@@ -97,14 +107,16 @@ struct ObservationDiagnostic: Identifiable, Equatable {
 }
 
 /// Live Settings state: one observation over the heartbeat, this phone's
-/// grant and the outbox overlay, re-read on every replica write; and the
-/// Battery section, re-read by `refreshBattery()`.
+/// grant and the outbox overlay, re-read when their change stamps or the
+/// overlay change; and the Battery section, re-read by `refreshBattery()`.
 @MainActor
 @Observable
 final class SettingsViewModel {
     private(set) var snapshot = SettingsSnapshot()
     /// Settings → Battery; nil until the first `refreshBattery()`.
     private(set) var battery: BatteryReport?
+    /// The decoded records between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
     @ObservationIgnored private let health: ObservationHealth
@@ -140,16 +152,18 @@ final class SettingsViewModel {
     }
 
     /// Starts (or, for another device id, restarts) the observation.
-    func start(store: ReplicaStore, deviceID: String?) {
+    func start(store: ReplicaStore, deviceID: String?, gate: ReplicaObservationGate? = nil) {
         if cancellable != nil, observedDeviceID == deviceID { return }
         observedDeviceID = deviceID
         cancellable?.cancel()
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "settings",
             reader: store.reader,
+            gate: gate,
             observation: {
-                ValueObservation.tracking { db in
-                    try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID)
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion, ReplicaStore.pendingActionsRegion]) { db in
+                    try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID, cache: cache)
                 }
                 .removeDuplicates()
             },
