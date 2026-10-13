@@ -95,6 +95,7 @@ public final class ReplicaStore: Sendable {
                     modified_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_slice_records_kind ON slice_records(kind);
+                \(Self.kindVersionsTableSQL);
                 CREATE TABLE IF NOT EXISTS replica_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT
@@ -233,7 +234,9 @@ public final class ReplicaStore: Sendable {
             if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
                 return false
             }
+            var touchedKinds = Set<String>()
             for record in batch.changed where record.zone == .data {
+                touchedKinds.insert(record.kind)
                 try db.execute(
                     sql: """
                         INSERT INTO slice_records (record_name, kind, payload, modified_at)
@@ -251,9 +254,15 @@ public final class ReplicaStore: Sendable {
                 try storeAsset(assets[record.recordName].flatMap { $0 }, recordName: record.recordName, in: db)
             }
             for name in batch.deletedRecordNames {
+                if let kind = try String.fetchOne(
+                    db, sql: "SELECT kind FROM slice_records WHERE record_name = ?", arguments: [name]
+                ) {
+                    touchedKinds.insert(kind)
+                }
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
                 try db.execute(sql: "DELETE FROM slice_assets WHERE record_name = ?", arguments: [name])
             }
+            try Self.bumpKindVersions(touchedKinds, in: db)
             if let tokenJSON {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
