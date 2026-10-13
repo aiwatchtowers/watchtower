@@ -116,8 +116,11 @@ type WorkbenchStatus struct {
 	StateHooks   bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
 	AskGuard     bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
 	AskToolBlock bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
-	MCP          bool // CurrentMCP || LegacyMCP
-	ClaudeFound  bool
+	// CleanupPermission: the permissions.allow rule letting the agent run
+	// `watchtower workbench cleanup` (PROJ-04, session cleanup §10).
+	CleanupPermission bool
+	MCP               bool // CurrentMCP || LegacyMCP
+	ClaudeFound       bool
 
 	Legacy      bool
 	LegacySkill SkillStatus
@@ -297,8 +300,8 @@ func keptLegacySetup(regErr error) error {
 		regErr, LegacySkillName, WorkbenchMCPServerName)
 }
 
-// RemoveWorkbench undoes InstallWorkbench (PROJ-02): our hooks, our
-// un-edited skill, the MCP registration, and the exclude line of every path
+// RemoveWorkbench undoes InstallWorkbench (PROJ-02): our hooks and cleanup
+// allow rule, our un-edited skill, the MCP registration, and the exclude line of every path
 // that is gone — in both vocabularies, so a folder set up before the
 // Workbench rename and never resynced is cleaned up the same way. What the
 // owner owns stays (PROJ-04): an edited skill, other settings — and the
@@ -323,6 +326,9 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 		errs = append(errs, err)
 	}
 	if _, err := RemoveAskGuardHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if _, err := RemoveCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
@@ -396,6 +402,9 @@ func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
 	if ps.AskToolBlock, err = HasAskToolBlockHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
+	if ps.CleanupPermission, err = HasCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
 	// Its only possible failure is the malformed file already reported above.
 	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
 	return errs
@@ -437,7 +446,8 @@ func bothMalformed(first, second error) bool {
 }
 
 // installWorkbenchHooks installs the SessionStart, Stop, session state and
-// ask guard hooks; changed is true when any was added or repaired. A malformed
+// ask guard hooks and the cleanup allow rule (InstallCleanupPermission);
+// changed is true when any was added or repaired. A malformed
 // settings file is reported once, by the first install, and the others are
 // not attempted.
 func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
@@ -448,7 +458,8 @@ func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
 	stopped, stopErr := InstallStopHook(o.Folder, WorkbenchStopHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
 	stated, stateErr := InstallStateHooks(o.Folder, o.Bin, o.WorkbenchID)
 	guarded, guardErr := InstallAskGuardHooks(o.Folder, o.Bin, o.WorkbenchID)
-	return started || stopped || stated || guarded, errors.Join(err, stopErr, stateErr, guardErr)
+	allowed, allowErr := InstallCleanupPermission(o.Folder, o.Bin)
+	return started || stopped || stated || guarded || allowed, errors.Join(err, stopErr, stateErr, guardErr, allowErr)
 }
 
 func (o WorkbenchInstallOptions) mcpAddArgs() []string {

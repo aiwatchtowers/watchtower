@@ -283,19 +283,25 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 		return false, nil
 	}
 	pruneEmpty(settings, hooks, spec.event, kept)
-	// A symlinked file (dotfiles-managed) is never removed: that would drop
-	// the link and leave our hook in its target. Its target gets {} instead.
+	return true, writeOrDropSettings(file, settings, mode)
+}
+
+// writeOrDropSettings writes settings back after a removal of ours, or —
+// when nothing at all is left — removes the file. A symlinked file
+// (dotfiles-managed) is never removed: that would drop the link and leave
+// our entry in its target. Its target gets {} instead.
+func writeOrDropSettings(file string, settings map[string]any, mode os.FileMode) error {
 	target, err := resolveSymlink(file)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
-			return false, fmt.Errorf("removing %s: %w", file, err)
+			return fmt.Errorf("removing %s: %w", file, err)
 		}
-		return true, nil
+		return nil
 	}
-	return true, writeSettings(file, settings, mode)
+	return writeSettings(file, settings, mode)
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for

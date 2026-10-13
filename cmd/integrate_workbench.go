@@ -362,6 +362,10 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: ask guard hooks")
 		left = true
 	}
+	if st.CleanupPermission {
+		fmt.Fprintln(w, "  still present: cleanup permission")
+		left = true
+	}
 	if st.CurrentMCP {
 		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
 		left = true
@@ -413,6 +417,10 @@ type workbenchStatusJSON struct {
 	// workbench missing either is offered Repair.
 	AskGuard     bool `json:"ask_guard"`
 	AskToolBlock bool `json:"ask_tool_block"`
+	// CleanupPermission: the permissions.allow rule for `watchtower
+	// workbench cleanup` (session cleanup §10) is there. Additive; a
+	// Re-run Setup adds it to a folder set up before it.
+	CleanupPermission bool `json:"cleanup_permission"`
 	// Codex is the codex part (spec §4.5). hooks_trusted is null when codex
 	// could not be asked (not found, no answer, an unknown protocol);
 	// trust_error says why the trust could not be confirmed.
@@ -466,6 +474,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
+			CleanupPermission: st.CleanupPermission,
 			Codex: codexStatusJSON{
 				Found: cs.Found, Skill: cs.Skill, SkillState: string(cs.SkillState),
 				HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
@@ -479,6 +488,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	fmt.Fprintf(w, "  stop     %v\n", st.StopHook)
 	fmt.Fprintf(w, "  state    %v\n", st.StateHooks)
 	fmt.Fprintf(w, "  asks     guard %v, AskUserQuestion block %v\n", st.AskGuard, st.AskToolBlock)
+	fmt.Fprintf(w, "  cleanup  allowed %v\n", st.CleanupPermission)
 	switch {
 	case !st.ClaudeFound:
 		fmt.Fprintln(w, "  mcp      unknown — claude CLI not found")

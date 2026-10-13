@@ -473,6 +473,9 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.Hook || !st.StopHook || !st.StateHooks || !st.AskGuard || !st.AskToolBlock {
 		t.Fatalf("fixture: every hook must be installed before the removal: %+v err=%v", st, err)
 	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.CleanupPermission {
+		t.Fatalf("fixture: the cleanup permission must be installed before the removal: %+v err=%v", st, err)
+	}
 
 	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
