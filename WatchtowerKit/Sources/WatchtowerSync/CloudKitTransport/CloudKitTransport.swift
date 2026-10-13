@@ -129,6 +129,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// An expired-token zone check + re-fetch is running (two concurrent
     /// pulls, or a pull and the event path, must not both run one).
     private var refetchInFlight = false
+    /// That re-fetch's `fetchChanges(scope:)` is awaiting the engine: a
+    /// manual fetch, so its run events are not the engine's own (no
+    /// `.engineFetchRun`, no `engineFetchedHandler`). Its fetch errors are
+    /// not parked: the event path handles them as before.
+    private var refetchFetchInFlight = false
     /// The running pull, error handling included. A `pull()` arriving
     /// meanwhile joins it (awaits it, gets its outcome) instead of starting
     /// a second fetch, so the flag and parked events below belong to it.
@@ -254,15 +259,15 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         dataZoneResetHandler = handler
     }
 
-    /// Receives `TransportEvent`s (unlinked, quota exceeded).
     /// Phone role: fired after each of the engine's own fetch runs (the
     /// ones CKSyncEngine starts on a push) has buffered what it fetched, so
-    /// the owner can apply it at once. Not fired for `pull()` or
-    /// `fetchForPush`'s own fetches. The hub sets none.
+    /// the owner can apply it at once. Not fired for `pull()`,
+    /// `fetchForPush`'s or an expired token's re-fetch. The hub sets none.
     public func setEngineFetchedHandler(_ handler: (@Sendable () -> Void)?) {
         engineFetchedHandler = handler
     }
 
+    /// Receives `TransportEvent`s (unlinked, quota exceeded).
     public func setEventHandler(_ handler: (@Sendable (TransportEvent) -> Void)?) {
         eventHandler = handler
     }
@@ -738,6 +743,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         if !managesZones {
             let exists: Bool
             do {
+                energy?.record(.zoneCheck)
                 exists = try await ownersZonesExist(engine: engine)
             } catch let error as CKError {
                 if applyThrottle(from: Self.flatten(error, zoneID: nil).map(\.error)) { return }
@@ -749,6 +755,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             }
         }
         energy?.record(.engineFetch)
+        refetchFetchInFlight = true
+        defer { refetchFetchInFlight = false }
         try await engine.fetchChanges(scope: zones.allZoneIDs)
         clearThrottle()
     }
@@ -1505,10 +1513,11 @@ extension CloudKitTransport {
         ends.values.forEach { $0.resume(returning: false) }
     }
 
-    /// `willFetchChanges`. A manual fetch's own event is not a run of the
-    /// engine's (it is counted as `.engineFetch` where it starts).
+    /// `willFetchChanges`. A manual fetch's own event (a pull, a push's
+    /// fallback, an expired token's re-fetch) is not a run of the engine's
+    /// (it is counted as `.engineFetch` where it starts).
     func engineWillFetch() {
-        guard !manualFetchInFlight else { return }
+        guard !manualFetchInFlight, !refetchFetchInFlight else { return }
         energy?.record(.engineFetchRun)
         engineRunInFlight = true
         engineRunStartedAt = now()

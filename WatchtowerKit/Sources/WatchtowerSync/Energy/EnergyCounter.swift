@@ -18,9 +18,13 @@ public enum EnergyEvent: String, CaseIterable, Sendable {
     case fetchLink
     /// A manual CKSyncEngine `fetchChanges` the transport asked for.
     case engineFetch
-    /// A fetch the engine ran (its `willFetchChanges` event): the manual
-    /// ones plus the engine's own, push-driven ones.
+    /// A fetch the engine ran on its own (its `willFetchChanges` event
+    /// outside any manual fetch): the push-driven and scheduled ones. The
+    /// manual ones are `engineFetch`.
     case engineFetchRun
+    /// A zone-existence check (the phone's re-fetch after an expired change
+    /// token asks whether the hub's zones are still there).
+    case zoneCheck
     /// A forced `recordZoneChanges` poll of DataZone or RelayZone (one per
     /// page).
     case dataZonePoll

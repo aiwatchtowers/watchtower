@@ -306,6 +306,34 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         XCTAssertFalse(running)
     }
 
+    /// The event path's re-fetch after an expired token is a manual fetch:
+    /// its run events are no engine run (not counted, not reported), and
+    /// its zone check is counted.
+    func testAnExpiredTokenRefetchIsNotAnEngineRun() async throws {
+        let engine = FakeSyncEngine()
+        let counter = EnergyCounter(defaults: defaults)
+        let transport = try await phone(engine: engine, energy: counter)
+        let fired = Collector<Void>()
+        await transport.setEngineFetchedHandler { fired.append(()) }
+        engine.onNextFetch {
+            await transport.engineWillFetch()
+            await transport.engineDidFetch()
+        }
+
+        await transport.handleFetchEventError(
+            CKError(.changeTokenExpired), zoneID: HubZones.test(shared).zoneID(for: .relay)
+        )
+
+        XCTAssertEqual(engine.fetchCount, 1, "the re-fetch ran")
+        let today = counter.counts(daysAgo: 0)
+        XCTAssertEqual(today[.engineFetchRun], 0)
+        XCTAssertEqual(today[.engineFetch], 1)
+        XCTAssertEqual(today[.zoneCheck], 1)
+        XCTAssertEqual(fired.values.count, 0, "the re-fetch is not reported as an engine run")
+        let running = await transport.engineRunInFlight
+        XCTAssertFalse(running)
+    }
+
     func testTheEnginesOwnRunIsCountedAndReported() async throws {
         let engine = FakeSyncEngine()
         let counter = EnergyCounter(defaults: defaults)
