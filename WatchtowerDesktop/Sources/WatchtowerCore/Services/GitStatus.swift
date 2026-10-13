@@ -123,7 +123,8 @@ extension GitStatusSnapshot {
     private static func run(_ git: String, _ arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = arguments
+        // The bound folder is the agent's: its .git/config runs nothing here.
+        process.arguments = MemoryVaultGit.readArgs(arguments)
         // English messages: "not a git repository" is matched below.
         var environment = ProcessInfo.processInfo.environment
         environment["LC_ALL"] = "C"

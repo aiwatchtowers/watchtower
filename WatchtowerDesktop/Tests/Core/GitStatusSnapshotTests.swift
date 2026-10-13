@@ -84,6 +84,44 @@ final class GitStatusSnapshotReadTests: XCTestCase {
         XCTAssertEqual(snapshot.dirtyDirectories, ["d"])
     }
 
+    /// The folder's .git/config names an fsmonitor command: the background
+    /// status read must not run it (the -c overrides of `readArgs`).
+    func testReadRunsNoFsmonitorCommandFromTheRepository() async throws {
+        guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else {
+            throw XCTSkip("no git")
+        }
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("gitfsmon-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        let marker = repo.appendingPathComponent("ran")
+        let hook = repo.appendingPathComponent("fsmonitor.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        for args in [["init", "-q"], ["config", "core.fsmonitor", hook.path]] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: git)
+            process.arguments = ["-C", repo.path] + args
+            var environment = ProcessInfo.processInfo.environment
+            environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+            environment["GIT_CONFIG_NOSYSTEM"] = "1"
+            process.environment = environment
+            let result = await ProcessPipes.run(process)
+            XCTAssertEqual(result.exitCode, 0, result.stderr)
+        }
+
+        guard case .snapshot = await GitStatusSnapshot.read(folder: repo) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "git ran the repository's fsmonitor command")
+    }
+
+    func testReadArgsMirrorGitbin() {
+        XCTAssertEqual(
+            MemoryVaultGit.readArgs(["status"]),
+            ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false", "status"]
+        )
+    }
+
     func testOutsideARepositoryIsNoRepository() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nogit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
