@@ -50,6 +50,12 @@ struct WorkbenchSessionsPanel: View {
                 .onChange(of: scrollIDs) { _, ids in
                     proxy.followSelection(along: sections.panelScrollPath(to: scroll.panelScrollTarget(rows: ids)))
                 }
+                // The selected row moved between the group and the main list
+                // with no new selection (a pinned row resumed): follow it.
+                .onChange(of: sections.panelScrollPath(to: selectedSessionID)) { old, new in
+                    guard PanelSelectionScrollPolicy<Int64>.movedSelection(from: old, to: new) != nil else { return }
+                    proxy.followSelection(along: new)
+                }
                 // An opened group shows from its header down, as far as it fits.
                 .onChange(of: sections.expanded) { _, expanded in
                     guard expanded, let last = sections.finished.last else { return }
