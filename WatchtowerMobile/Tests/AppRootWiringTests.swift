@@ -132,6 +132,88 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(root.failure)
     }
 
+    // MARK: - Transport store location (0xdead10cc)
+
+    /// Two throwaway directories: the app group's and the app's own.
+    private func makeStoreDirectories() throws -> (group: URL, own: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("transport-move-\(UUID().uuidString)")
+        let group = root.appendingPathComponent("group", isDirectory: true)
+        let own = root.appendingPathComponent("own", isDirectory: true)
+        for dir in [group, own] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return (group, own)
+    }
+
+    /// An earlier build's store in the app group moves into the app's own
+    /// directory once, with its SQLite side files, and opens there with its
+    /// rows; a second launch finds it in place.
+    func testTheTransportStoreMovesOutOfTheAppGroupOnce() async throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldPath = group.appendingPathComponent(name).path
+        _ = try TransportStore(path: oldPath)
+        try await DatabaseQueue(path: oldPath).write { db in
+            try db.execute(sql: "INSERT INTO engine_state (id, data) VALUES (1, x'2a')")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            try Data(suffix.utf8).write(to: group.appendingPathComponent(name + suffix))
+        }
+
+        let path = AppEnvironment.moveTransportStore(from: group, to: own)
+
+        XCTAssertEqual(path, own.appendingPathComponent(name).path)
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: oldPath + suffix), "\(suffix) left in the app group")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path + suffix)), Data(suffix.utf8))
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            // The stand-in side files are not SQLite's: drop them before opening.
+            try FileManager.default.removeItem(atPath: path + suffix)
+        }
+        let engineState = try await DatabaseQueue(path: path).read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM engine_state") ?? 0
+        }
+        XCTAssertEqual(engineState, 1, "the rows came along")
+
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), path, "the next launch finds it in place")
+    }
+
+    /// A fresh install has nothing to move; a store already in the app's own
+    /// directory wins over a stray one in the app group, which is left alone.
+    func testTheTransportStoreMoveLeavesAnInstalledStoreAlone() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let ownPath = own.appendingPathComponent(name).path
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), ownPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ownPath), "nothing is created")
+
+        try Data("own".utf8).write(to: URL(fileURLWithPath: ownPath))
+        let stray = group.appendingPathComponent(name)
+        try Data("stray".utf8).write(to: stray)
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), ownPath)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: ownPath)), Data("own".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+    }
+
+    /// A move that fails keeps the app-group store, side files included,
+    /// and opens it there for this launch.
+    func testAFailedTransportStoreMoveKeepsTheOldStore() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldMain = group.appendingPathComponent(name)
+        try Data("main".utf8).write(to: oldMain)
+        try Data("wal".utf8).write(to: group.appendingPathComponent(name + "-wal"))
+        let missing = own.appendingPathComponent("gone", isDirectory: true)
+
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: missing), oldMain.path)
+        XCTAssertEqual(try Data(contentsOf: oldMain), Data("main".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldMain.path + "-wal"))
+    }
+
     private func transportCounts(_ raw: DatabaseQueue) async throws -> (pending: Int, events: Int, engineState: Int) {
         try await raw.read { db in
             (

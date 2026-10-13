@@ -246,7 +246,7 @@ final class AppEnvironment {
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
+            let transportStore = try TransportStore(path: try Self.liveTransportStorePath())
             try self.init(
                 transport: CloudKitTransport(
                     store: transportStore, scope: scope, hubID: hubID, role: .phone, energy: energy
@@ -782,9 +782,65 @@ final class AppEnvironment {
         directory.appendingPathComponent("replica.sqlite").path
     }
 
-    /// The live CloudKit transport's store in the app group directory.
-    static func liveTransportStorePath(in directory: URL) -> String {
-        directory.appendingPathComponent("cloudkit-transport.sqlite").path
+    /// The CloudKit transport's store file.
+    nonisolated static let transportStoreFileName = "cloudkit-transport.sqlite"
+
+    /// The live CloudKit transport's store, in the app's own Application
+    /// Support: outside the app group, which no extension reads it from,
+    /// because CKSyncEngine writes it from its own callbacks at any moment —
+    /// a lock on a file in the shared container when iOS suspends the app
+    /// gets it killed (0xdead10cc). A store an earlier build kept in the
+    /// app group moves over once (`moveTransportStore`).
+    nonisolated static func liveTransportStorePath() throws -> String {
+        try moveTransportStore(from: appGroupDirectory(), to: applicationSupportDirectory())
+    }
+
+    /// Moves the transport store (`transportStoreFileName` and its SQLite
+    /// `-wal`, `-shm` and `-journal` files) from `old` into `new` unless
+    /// `new` already has one, and returns the path to open. The side files
+    /// go first and the database last, so a database in `new` means the
+    /// move is complete. A failed move puts back what it moved and keeps
+    /// the old path for this launch (the next launch tries again). Stashed
+    /// asset files (`transport-assets`) stay where they are: the store
+    /// refers to them by absolute path, and none is a database.
+    nonisolated static func moveTransportStore(from old: URL, to new: URL) -> String {
+        let fileManager = FileManager.default
+        let name = transportStoreFileName
+        let oldMain = old.appendingPathComponent(name)
+        let newMain = new.appendingPathComponent(name)
+        guard fileManager.fileExists(atPath: oldMain.path) else { return newMain.path }
+        guard !fileManager.fileExists(atPath: newMain.path) else {
+            logger.warning("transport store in both places: the app's own copy is used")
+            return newMain.path
+        }
+        var moved: [(from: URL, to: URL)] = []
+        do {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let from = old.appendingPathComponent(name + suffix)
+                guard fileManager.fileExists(atPath: from.path) else { continue }
+                let target = new.appendingPathComponent(name + suffix)
+                // A side file left in `new` by an earlier attempt belongs to
+                // no database there: the old one's is the live one.
+                if fileManager.fileExists(atPath: target.path) {
+                    try fileManager.removeItem(at: target)
+                }
+                try fileManager.moveItem(at: from, to: target)
+                moved.append((from, target))
+            }
+            try fileManager.moveItem(at: oldMain, to: newMain)
+            logger.notice("transport store moved out of the app group")
+            return newMain.path
+        } catch {
+            logger.error("transport store not moved: \(error.localizedDescription, privacy: .public)")
+            for file in moved.reversed() {
+                do {
+                    try fileManager.moveItem(at: file.to, to: file.from)
+                } catch {
+                    logger.fault("transport store side file not put back: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            return oldMain.path
+        }
     }
 
     /// The app group container's Application Support directory. A signed

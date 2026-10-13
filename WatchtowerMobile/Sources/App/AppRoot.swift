@@ -77,7 +77,7 @@ final class AppRoot {
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
-                transportStorePath: AppEnvironment.liveTransportStorePath(in: directory),
+                transportStorePath: try AppEnvironment.liveTransportStorePath(),
                 make: make
             )
         )
