@@ -83,8 +83,9 @@ struct HubHostInfo: Sendable {
     let macName: String
     let appVersion: String
     let flavor: HubFlavor
-    /// Label and status rows, never a token (spec §4.1).
-    let accounts: @Sendable () -> [HeartbeatAccount]
+    /// Label and status rows, never a token (spec §4.1). Throws when the
+    /// read fails, so a failure is never mistaken for "no accounts".
+    let accounts: @Sendable () throws -> [HeartbeatAccount]
     /// The Mac's `userRecordID().recordName`; nil while unknown. Bounded by
     /// the caller's timeout.
     let ownerUser: @Sendable () async -> String?
@@ -93,7 +94,7 @@ struct HubHostInfo: Sendable {
         macName: String,
         appVersion: String,
         flavor: HubFlavor,
-        accounts: @escaping @Sendable () -> [HeartbeatAccount],
+        accounts: @escaping @Sendable () throws -> [HeartbeatAccount],
         ownerUser: @escaping @Sendable () async -> String?
     ) {
         self.macName = HubIdentity.clipMacName(macName)
@@ -107,19 +108,11 @@ struct HubHostInfo: Sendable {
     /// and account rows from the main DB. `ownerUser` comes with the hub
     /// storage (`MobileHubStorage.ownerUser`).
     static func live(dbPool: DatabasePool, ownerUser: @escaping @Sendable () async -> String?) -> Self {
-        let logger = Logger(subsystem: Constants.bundleID, category: "HubIdentity")
-        return Self(
+        Self(
             macName: Host.current().localizedName ?? "Mac",
             appVersion: Constants.appVersion,
             flavor: HubIdentity.bundleFlavor(),
-            accounts: {
-                do {
-                    return try dbPool.read(HubAccountRows.fetch)
-                } catch {
-                    logger.error("heartbeat accounts read failed: \(error.localizedDescription, privacy: .public)")
-                    return []
-                }
-            },
+            accounts: { try dbPool.read(HubAccountRows.fetch) },
             ownerUser: ownerUser
         )
     }

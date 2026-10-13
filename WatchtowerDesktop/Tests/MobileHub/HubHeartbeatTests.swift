@@ -215,6 +215,38 @@ final class HubHeartbeatTests: XCTestCase {
         XCTAssertEqual(try savedHeartbeats(transport).count, 3, "one write per change")
     }
 
+    /// A failed accounts read is not an empty list: the facts check sees no
+    /// change and writes nothing, and the next tick keeps the accounts the
+    /// last write carried (board #724).
+    func testAFailedAccountsReadIsNeitherAChangeNorAnEmptyList() async throws {
+        struct ReadFailed: Error {}
+        let transport = StubHubTransport()
+        let failing = OSAllocatedUnfairLock(initialState: false)
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo {
+                if failing.withLock({ $0 }) { throw ReadFailed() }
+                return [HeartbeatAccount(kind: .google, label: "acme", status: "ok")]
+            }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        failing.withLock { $0 = true }
+        let changed = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(changed, "a failed read is no change")
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "nothing written, no push")
+
+        await hub.heartbeatTick()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.accounts.map(\.label), ["acme"], "the tick keeps the last accounts")
+
+        failing.withLock { $0 = false }
+        let recovered = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(recovered, "the same accounts once the read works again")
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
+    }
+
     /// The loop runs the facts check between two heartbeat ticks.
     func testTheHeartbeatLoopWritesChangedAccountsBeforeTheTick() async throws {
         let transport = StubHubTransport()
