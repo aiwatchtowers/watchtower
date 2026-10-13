@@ -189,7 +189,7 @@ func TestProj16_MergedAndPushedWorkIsRemoved(t *testing.T) {
 			t.Fatalf("branch %s is still there", br)
 		}
 	}
-	if out := gitIn(t, f.repo, "config", "--get-regexp", "^branch\\.", "--default", ""); strings.Contains(out, "feat/pushed") {
+	if out := gitIn(t, f.repo, "config", "--list"); strings.Contains(out, "feat/pushed") {
 		t.Fatalf("the pushed branch's config section stays: %q", out)
 	}
 	if res.Mode != ModeApply || res.SessionID != testSession || res.WorkbenchID != testWorkbench {

@@ -48,7 +48,8 @@ const (
 	resultSaveTimeout     = 10 * time.Second
 )
 
-// ErrSweepNeedsItems: a sweep applies only the items the owner named.
+// ErrSweepNeedsItems is returned when a sweep names no items: a sweep
+// applies only the items the owner named.
 var ErrSweepNeedsItems = errors.New("session cleanup: a sweep applies only named items")
 
 // ResultStore saves a session's cleanup result (db.DB.SaveCleanupResult).
@@ -202,6 +203,10 @@ func (a *applier) act(ctx context.Context, i int) {
 		a.deleteBranch(ctx, it)
 	case KindLsreg:
 		a.unregisterStale(ctx, it)
+	case KindProcess:
+		// A process is stopped only by its worktree's removal
+		// (clearOrphans); on its own it is never signalled.
+		keepItem(it, ReasonNotAttempted, "a process is stopped only with its worktree")
 	}
 }
 
