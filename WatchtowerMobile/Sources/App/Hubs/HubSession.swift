@@ -177,6 +177,9 @@ final class HubSession {
     @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport
+    /// The CloudKit transport's own store (nil for any other transport):
+    /// read-only here, for what still waits in its send queue.
+    @ObservationIgnored let transportStore: TransportStore?
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -262,6 +265,7 @@ final class HubSession {
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
+        transportStore: TransportStore? = nil,
         hubID: String = DemoSeed.hubID,
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
@@ -288,6 +292,7 @@ final class HubSession {
         self.energy = energy
         isActive = startsActive
         self.transport = transport
+        self.transportStore = transportStore
         self.transportKind = transportKind
         self.hubID = hubID
         self.hold = hold

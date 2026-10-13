@@ -1,5 +1,4 @@
 import Foundation
-import GRDB
 import Observation
 import os
 import UserNotifications
@@ -29,22 +28,15 @@ final class AppRoot {
         var cap: Duration = .seconds(10)
         var pause: Duration = .milliseconds(500)
 
-        /// The live app: the hub's transport store's own queue, read on its
-        /// file (the transport offers no query of it). An unreadable queue
-        /// reads as settled: the removal does not wait on what it cannot see.
-        static func live(paths: HubPaths) -> Self {
+        /// The live app: the send queue of the hub's own transport store
+        /// (`TransportStore.isPending`). A session with no store, or a queue
+        /// that cannot be read, reads as settled: the removal does not wait
+        /// on what it cannot see.
+        static var live: Self {
             Self { session, record in
+                guard let store = session.transportStore else { return false }
                 do {
-                    var configuration = Configuration()
-                    configuration.readonly = true
-                    let queue = try DatabaseQueue(path: paths.transportStorePath(session.hubID), configuration: configuration)
-                    return try queue.read { db in
-                        try Bool.fetchOne(
-                            db,
-                            sql: "SELECT EXISTS(SELECT 1 FROM pending WHERE record_name = ? AND zone = ?)",
-                            arguments: [record.recordName, record.zone.rawValue]
-                        ) ?? false
-                    }
+                    return try store.isPending(recordName: record.recordName, zone: record.zone)
                 } catch {
                     AppRoot.logger.warning("send queue unreadable: \(error.localizedDescription, privacy: .public)")
                     return false
@@ -153,7 +145,7 @@ final class AppRoot {
             defaults: defaults,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             startWork: BackgroundWork.starter(),
-            farewellDelivery: .live(paths: paths)
+            farewellDelivery: .live
         )
         let pendingHubID = store.pending?.link.hubID
         Task {

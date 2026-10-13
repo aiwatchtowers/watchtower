@@ -17,8 +17,9 @@ struct HubSessionFactory {
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
+            let transportStore = try TransportStore(path: paths.transportStorePath(hubID))
             let transport = CloudKitTransport(
-                store: try TransportStore(path: paths.transportStorePath(hubID)),
+                store: transportStore,
                 scope: scope,
                 hubID: hubID,
                 role: .phone,
@@ -28,6 +29,7 @@ struct HubSessionFactory {
                 transport: transport,
                 replicaPath: paths.replicaPath(hubID),
                 transportKind: .cloudKit,
+                transportStore: transportStore,
                 hubID: hubID,
                 linkedDevice: device,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
