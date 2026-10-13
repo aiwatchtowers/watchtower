@@ -252,6 +252,7 @@ final class AppEnvironment {
                 transportKind: .cloudKit,
                 linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory,
+                replicaObservesSuspension: true,
                 energy: energy
             )
         } else {
@@ -279,6 +280,8 @@ final class AppEnvironment {
     /// `uploadRetriesAllowed` is whether the app starts active (nil reads
     /// `UIApplication`; a cold launch reads not active there, and the
     /// scene's first active phase opens the gate through `setActive`).
+    /// `replicaObservesSuspension` is for the live app-group replica, which
+    /// `DatabaseSuspension` suspends while the app rests in the background.
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
@@ -287,6 +290,7 @@ final class AppEnvironment {
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        replicaObservesSuspension: Bool = false,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = nil,
@@ -297,7 +301,7 @@ final class AppEnvironment {
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
             "a CloudKitTransport must not run under the demo kind"
         )
-        store = try ReplicaStore(path: replicaPath)
+        store = try ReplicaStore(path: replicaPath, observesSuspension: replicaObservesSuspension)
         self.sleep = sleep
         self.now = now
         self.energy = energy
@@ -453,6 +457,17 @@ final class AppEnvironment {
         let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
         recorder.onCapNotice = { RecorderNotices.postCapNotice() }
         recorder.onAutoFinish = { RecorderNotices.postAutoFinishNotice() }
+        // A running capture keeps the app alive in the background and
+        // writes the ledger: the replica stays usable while its audio runs.
+        var release: (@MainActor () -> Void)?
+        recorder.onAudioRunning = { running in
+            if running {
+                if release == nil { release = DatabaseSuspension.shared.hold() }
+            } else {
+                release?()
+                release = nil
+            }
+        }
         return recorder
     }
 

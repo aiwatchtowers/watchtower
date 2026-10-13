@@ -147,6 +147,10 @@ final class PhoneRecorderController {
     /// Raised once a long pause finished a capture; the app posts a local
     /// notification.
     @ObservationIgnored var onAutoFinish: @MainActor () -> Void = {}
+    /// true when the capture's audio starts or resumes, false when it
+    /// pauses or the capture is saved: the app holds the replica usable in
+    /// the background meanwhile (`DatabaseSuspension`).
+    @ObservationIgnored var onAudioRunning: @MainActor (Bool) -> Void = { _ in }
 
     @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private let engine: any AudioCaptureEngine
@@ -363,6 +367,7 @@ final class PhoneRecorderController {
             startedAt = start
             spanStart = start
             phase = .recording
+            onAudioRunning(true)
             startTicker()
         } catch {
             Self.logger.error("recording start failed: \(error.localizedDescription, privacy: .public)")
@@ -407,6 +412,7 @@ final class PhoneRecorderController {
     private func enterPause(_ reason: PauseReason) {
         closeSpan()
         engine.pause()
+        onAudioRunning(false)
         stopTicker()
         phase = .paused(reason)
         pausedAt = now()
@@ -420,6 +426,7 @@ final class PhoneRecorderController {
             disarmAutoFinish()
             spanStart = now()
             phase = .recording
+            onAudioRunning(true)
             startTicker()
         } catch {
             // The microphone cannot continue this file (for example, it
@@ -459,6 +466,8 @@ final class PhoneRecorderController {
     /// pause ended.
     private func finish(autoFinished: Bool) async {
         guard isCapturing, let captureID, let fileURL, let startedAt else { return }
+        // The save below still writes the ledger: released once it is done.
+        defer { onAudioRunning(false) }
         phase = .saving
         closeSpan()
         stopTicker()

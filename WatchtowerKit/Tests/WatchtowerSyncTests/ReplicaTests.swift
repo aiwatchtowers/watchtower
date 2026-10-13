@@ -681,6 +681,35 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
     }
 
+    // MARK: - Suspension (0xdead10cc)
+
+    /// A replica opened with `observesSuspension` refuses writes while GRDB's
+    /// suspension is posted and takes them again after the resume; one
+    /// opened without it ignores both.
+    func testASuspendedReplicaRefusesWritesUntilResumed() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-suspend-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let observing = try ReplicaStore(path: dir.appendingPathComponent("observing.sqlite").path, observesSuspension: true)
+        let plain = try ReplicaStore(path: dir.appendingPathComponent("plain.sqlite").path)
+
+        let write: (ReplicaStore) throws -> Void = { store in
+            try store.writer.write { db in
+                try db.execute(sql: "INSERT OR REPLACE INTO replica_meta (key, value) VALUES ('probe', '1')")
+            }
+        }
+
+        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+        XCTAssertThrowsError(try write(observing), "a suspended replica takes no write lock")
+        XCTAssertNoThrow(try write(plain), "only the observing replica is suspended")
+
+        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+        XCTAssertNoThrow(try write(observing))
+    }
+
     // MARK: - Phone recordings ledger upgrade
 
     /// A replica written before `event_id` existed opens with its ledger

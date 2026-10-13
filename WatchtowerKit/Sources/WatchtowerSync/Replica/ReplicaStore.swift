@@ -68,8 +68,16 @@ public final class ReplicaStore: Sendable {
     /// (or deliberately suppressed) about.
     private static let alertWatermarkKey = "notify_alert_watermark"
 
-    public init(path: String) throws {
-        writer = try DatabasePool(path: path)
+    /// `observesSuspension` turns on GRDB's `observesSuspensionNotifications`:
+    /// the app posts `Database.suspendNotification` before iOS may suspend
+    /// it, so a replica in a shared app-group container never holds a lock
+    /// across a suspension (0xdead10cc), and `Database.resumeNotification`
+    /// when it has work again. While suspended, a statement that needs a
+    /// lock fails with `SQLITE_INTERRUPT` instead of taking it.
+    public init(path: String, observesSuspension: Bool = false) throws {
+        var configuration = Configuration()
+        configuration.observesSuspensionNotifications = observesSuspension
+        writer = try DatabasePool(path: path, configuration: configuration)
         try createSchema()
     }
 

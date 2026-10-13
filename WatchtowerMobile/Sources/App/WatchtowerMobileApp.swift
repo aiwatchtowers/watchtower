@@ -82,8 +82,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completionHandler(.noData)
                 return
             }
+            // A background task keeps the app running until the fetch
+            // returns, past a completion sent at the deadline, and the
+            // replica is held usable meanwhile (`PushWork`).
+            let work = PushWork()
+            work.begin()
             PushCompletion.race(
-                fetch: { await env.handlePush(inForeground: inForeground) },
+                fetch: {
+                    let outcome = await env.handlePush(inForeground: inForeground)
+                    work.end()
+                    return outcome
+                },
                 outcomeAtDeadline: { env.lastFetchFailed ? .failed : .noData },
                 completion: { completionHandler($0.backgroundFetchResult) }
             )
@@ -93,8 +102,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 /// A silent push's completion within iOS's budget (~30 s of background
 /// time): the fetch serving the push races `deadline`, and whichever ends
-/// first completes, exactly once. A fetch past the deadline keeps going;
-/// only its report is dropped.
+/// first completes, exactly once. A fetch past the deadline keeps going —
+/// inside the push's background task (`PushWork`), so iOS does not suspend
+/// the app mid-transaction — and only its report is dropped.
 @MainActor
 enum PushCompletion {
     /// Under iOS's ~30 s, with room for the completion itself.
@@ -223,6 +233,8 @@ struct WatchtowerMobileApp: App {
                 if scenePhase == .active { appDelegate.sceneBecameActive() }
                 if case .ready = boot {
                     ReplicaObservationGate.shared.setSuspended(scenePhase == .background)
+                    // The replica's file locks rest too (0xdead10cc).
+                    DatabaseSuspension.shared.setBackground(scenePhase == .background)
                 }
             }
         }

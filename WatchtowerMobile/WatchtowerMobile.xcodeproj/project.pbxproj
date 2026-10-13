@@ -72,6 +72,7 @@
 		6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */; };
 		71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */; };
 		724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88CC35762ED750977196374 /* BoardView.swift */; };
+		75B1A08C76EC9686965D9CC4 /* BackgroundWorkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2323398F35DB7A152A2A4FEE /* BackgroundWorkTests.swift */; };
 		7735F8B89F2AF40CFCE440AA /* EventDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFD1B72C6372CD07A0ACE6A7 /* EventDetailModel.swift */; };
 		7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */; };
 		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
@@ -106,6 +107,7 @@
 		BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07F0B15A0983525BEC4E560 /* LinkingViewModelTests.swift */; };
 		C161807B04E6D17A004BB0E6 /* LinkSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAB325ABA1D19CB566809A7 /* LinkSteps.swift */; };
 		C24C943474F92F1DFEDE5164 /* LinkedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4C19BC528865AFEB075299 /* LinkedView.swift */; };
+		C2C5327B9A7FC502C4E2F9D6 /* BackgroundWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = E108465923F8BBC2C4312775 /* BackgroundWork.swift */; };
 		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
 		C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC12186E8FC140813F1BFDBF /* BoardWriter.swift */; };
 		C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
@@ -193,6 +195,7 @@
 		213E158A5D0210D86957A491 /* SessionRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRowTests.swift; sourceTree = "<group>"; };
 		21796AC66F21FE6C6873DF84 /* BatteryDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryDiagnosticsTests.swift; sourceTree = "<group>"; };
 		2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Calendar.swift"; sourceTree = "<group>"; };
+		2323398F35DB7A152A2A4FEE /* BackgroundWorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundWorkTests.swift; sourceTree = "<group>"; };
 		232CD623FB978407C3F5E7DE /* ResilientObservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResilientObservationTests.swift; sourceTree = "<group>"; };
 		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
 		30368F9308E6A9844739763B /* ConflictPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictPrompt.swift; sourceTree = "<group>"; };
@@ -293,6 +296,7 @@
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
 		DF8889CE92604290450CD690 /* NowWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowWiringTests.swift; sourceTree = "<group>"; };
+		E108465923F8BBC2C4312775 /* BackgroundWork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundWork.swift; sourceTree = "<group>"; };
 		EA88CC67A10A74097B033DF8 /* ObservationHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationHealth.swift; sourceTree = "<group>"; };
 		EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapView.swift; sourceTree = "<group>"; };
 		EBF496EC3CD5D473675267EB /* AskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskView.swift; sourceTree = "<group>"; };
@@ -376,6 +380,7 @@
 			children = (
 				F3734E9D1BDF9ADC4CC57B2F /* AppRootWiringTests.swift */,
 				B8929F28520AC73CF61CD217 /* AskFormTests.swift */,
+				2323398F35DB7A152A2A4FEE /* BackgroundWorkTests.swift */,
 				21796AC66F21FE6C6873DF84 /* BatteryDiagnosticsTests.swift */,
 				51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */,
 				A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */,
@@ -574,6 +579,7 @@
 				AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */,
 				4F002CAE331C61F2C2A8FB21 /* AppRoot.swift */,
 				EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */,
+				E108465923F8BBC2C4312775 /* BackgroundWork.swift */,
 				3B22EFD3B72B5CE043AA1EE1 /* BatteryDiagnostics.swift */,
 				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
 				2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */,
@@ -793,6 +799,7 @@
 				3F6C3F7E115726353BD8B005 /* AskKindStyle.swift in Sources */,
 				45583C3714F8D53FB5EE744C /* AskView.swift in Sources */,
 				E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */,
+				C2C5327B9A7FC502C4E2F9D6 /* BackgroundWork.swift in Sources */,
 				EA4C8909AA7F7D8EE8C3969A /* Bars.swift in Sources */,
 				14896A8CB486651EC0A4E117 /* BatteryDiagnostics.swift in Sources */,
 				1A00E98DEDC146CD6CC15041 /* BatteryReport.swift in Sources */,
@@ -874,6 +881,7 @@
 			files = (
 				EAC8764F94CE640D172AC883 /* AppRootWiringTests.swift in Sources */,
 				6B53905088D5CF5CBCC67FBA /* AskFormTests.swift in Sources */,
+				75B1A08C76EC9686965D9CC4 /* BackgroundWorkTests.swift in Sources */,
 				57993177CCF8DE7477D5DAFD /* BatteryDiagnosticsTests.swift in Sources */,
 				3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */,
 				D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */,
