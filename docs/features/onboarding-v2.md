@@ -76,7 +76,9 @@ Finish writes `onboarding_done` first, then brings the daemon up in the
 background (`OnboardingFinishPlan.bringUpDaemon`: start if none runs, else
 restart once), so Continue never waits on a slow restart. No one-shot
 `digest`/`tracks`/`people generate` runs: the daemon's first cycle does
-it; launch just ensures a daemon runs. A daemon that fails to come up
+it; launch just ensures a daemon runs. The daemon syncs calendars once
+before that first cycle, so a calendar connected here shows events within
+about a minute instead of after the first Slack sync (#740). A daemon that fails to come up
 shows a banner over the tab setup landed on.
 
 **Workspace without Slack.** Goals' Continue runs `watchtower workspace init

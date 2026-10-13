@@ -116,7 +116,9 @@ If nothing was actually said (silence), the field is simply left as it was — n
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
 
-**Connecting:** Go to Settings › Connections › Google and click "Connect". This opens the Google OAuth flow via the CLI (`watchtower calendar login`). Once connected, calendar events sync automatically after each Slack sync.
+**Connecting:** Go to Settings › Connections › Google and click "Connect" (or connect Google in onboarding's Connect step). This opens the Google OAuth flow via the CLI. Connecting turns calendar sync on by itself, and the daemon syncs your calendars first when it (re)starts, so events show within about a minute — before the first Slack sync finishes.
+
+**When events don't show** — a banner above the list says why and what to click: **Calendar sync is off** (a Google Calendar is connected, but the sync switch is off — **Turn On Calendar Sync** turns it on and restarts the sync), **Google Calendar for … needs reconnecting** with the reason (**Reconnect** opens Google's consent again), or **Syncing your calendar** while the first sync has not finished. When the only Google Calendar's access is broken and no other calendar is connected, the tab shows the same reason and **Reconnect** above the connect buttons.
 
 **Unified Meetings screen** — The Calendar screen is a single master-detail list, not a split between events and recordings: every calendar event and every recording (event-linked or ad-hoc) lives in one chronology. Shows past days (last `calendar.history_days` days, default 14) plus the next 7 days, scrolled to "Today" on open. **List merge rule:** an event with one or more recordings folded into it renders as ONE row (`CalendarEventRow`, with an "N rec" badge); an ad-hoc recording, or a recording whose linked event fell outside the window (pruned by sync retention or otherwise not loaded), renders as its own standalone row at its recording time. The list is fully chronological — past days on top, ascending into "Today" and the upcoming days — so scrolling up from "Today" goes back in time. Each event row displays: time range (or "All day"), duration, title, location, attendee count, and the recording badge when present. Events happening now have a green highlight; upcoming events (within 1 hour) have a blue highlight plus a live "in N min" countdown next to the time range, and show a "Join" button when they have a conference link and haven't ended yet. Past day sections are dimmed but fully browsable — past meetings keep their prep, recordings, and recaps reachable. Selecting any row (event or standalone recording) opens the right-hand detail pane; clicking the selected row again — or the pane's ✕ close button — closes it. Ad-hoc recordings are meetings without a calendar event, and are recorded via the "Record" button in the list header, which stays pinned above the list (always visible, no scrolling back to the top).
 
@@ -150,7 +152,7 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 
 **AI Chat integration** — Nothing is pre-loaded into the chat context. Ask about your schedule and the assistant looks it up: calendar events, meetings, transcripts and recaps are all indexed by knowledge search, so a question like "what's my next meeting with X" is answered on demand rather than from a standing calendar block.
 
-**Daemon** — Calendar sync runs after each Slack sync, before AI pipelines. It fetches events for the configured number of days ahead from selected Google Calendars.
+**Daemon** — Calendar sync runs after each Slack sync, before AI pipelines; when the daemon starts it also syncs calendars once before its first cycle. It fetches events for the configured number of days ahead from selected Google Calendars.
 
 **CLI commands:**
 - `watchtower calendar` — show upcoming events (flags: `--days N`, `--json`)
