@@ -515,6 +515,7 @@ final class SettingsWiringTests: XCTestCase {
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults
         ) { _ in }
         addTeardownBlock { @MainActor in for hubID in env.order { env.session(hubID)?.stop() } }
+        let noSend: @MainActor (HubSession) async -> Void = { _ in }
         return AppRoot(
             env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
             linking: LinkingViewModel(
@@ -526,8 +527,8 @@ final class SettingsWiringTests: XCTestCase {
                     self?.farewells.append(record.recordName)
                     return false
                 },
-                cap: .seconds(1), pause: .milliseconds(20)
-            ) { _ in }
+                cap: .seconds(1), pause: .milliseconds(20), send: noSend
+            )
         )
     }
 
