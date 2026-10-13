@@ -207,3 +207,34 @@ func TestStatusReportsMissingWithoutWriting(t *testing.T) {
 		t.Fatalf("status must not write anything, found %d entries", len(entries))
 	}
 }
+
+// A SKILL.md or sidecar that is a symlink — dangling ones read as absent — is
+// never written through: the install errors and the link and the place it
+// points to stay as they were (DEV-04).
+func TestInstallRefusesToWriteThroughASymlinkedSkillFile(t *testing.T) {
+	for _, name := range []string{"SKILL.md", shippedDigestFile} {
+		t.Run(name, func(t *testing.T) {
+			skillsDir := t.TempDir()
+			s := Skills()[0]
+			skillDir := filepath.Join(skillsDir, s.Name)
+			if err := os.MkdirAll(skillDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside")
+			link := filepath.Join(skillDir, name)
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+
+			if _, err := installSkill(skillsDir, s); err == nil {
+				t.Fatalf("expected an error installing through a symlinked %s", name)
+			}
+			if _, err := os.Lstat(outside); !os.IsNotExist(err) {
+				t.Fatalf("the link's target must not be created, lstat err=%v", err)
+			}
+			if got, err := os.Readlink(link); err != nil || got != outside {
+				t.Fatalf("the link must be left as it was: target=%q err=%v", got, err)
+			}
+		})
+	}
+}

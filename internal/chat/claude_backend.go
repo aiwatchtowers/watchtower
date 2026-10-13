@@ -449,10 +449,14 @@ func (b *claudeBackend) warn() io.Writer {
 
 func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	resume := b.resumeLocked() // before b.proc is replaced: the dead child's id counts
+	dir, err := b.workDir()
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)...)
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
-	cmd.Dir = b.workDir()
+	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH()), b.opts.Env...)
 	// Own process group, so Close can reap the MCP servers claude spawns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -898,13 +902,43 @@ func NeutralWorkDir() string {
 }
 
 // workDir (re)creates the child's working directory — macOS sweeps unused
-// temp entries — and falls back to the temp dir itself if it cannot.
-func (b *claudeBackend) workDir() string {
-	if err := os.MkdirAll(b.opts.WorkDir, 0o700); err != nil {
-		fmt.Fprintf(b.warn(), "chat work dir %s unavailable, using the temp dir: %v\n", b.opts.WorkDir, err)
-		return os.TempDir()
+// temp entries — and checks it is private before the child runs in it: the
+// child loads that directory's .claude settings (--setting-sources
+// project,local), and with TMPDIR unset the temp dir is the shared /tmp,
+// where another user could have planted it with hooks. Never falls back to
+// the temp dir itself, which is just as shared.
+func (b *claudeBackend) workDir() (string, error) {
+	dir := b.opts.WorkDir
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("chat work dir %s: %w", dir, err)
 	}
-	return b.opts.WorkDir
+	if err := checkPrivateDir(dir); err != nil {
+		return "", fmt.Errorf("chat work dir: %w", err)
+	}
+	return dir, nil
+}
+
+// checkPrivateDir accepts dir only as a real directory (not a symlink) owned
+// by this user that nobody else can write to.
+func checkPrivateDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspecting %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory (a symlink or a file); remove it", dir)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%s: owner unknown", dir)
+	}
+	if int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("%s is owned by another user (uid %d); remove it", dir, st.Uid)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by other users (mode %v); remove it", dir, info.Mode().Perm())
+	}
+	return nil
 }
 
 // Close ends the child (stdin EOF → SIGTERM → SIGKILL, CloseGrace apart),

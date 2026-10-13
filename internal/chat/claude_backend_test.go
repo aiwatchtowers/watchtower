@@ -530,6 +530,36 @@ func TestNeutralWorkDir_IsStableUnderTheTempDir(t *testing.T) {
 	assert.Equal(t, NeutralWorkDir(), b.opts.WorkDir, "an unset WorkDir defaults to the neutral dir")
 }
 
+// The child loads its cwd's .claude settings, so a work dir another user
+// could have planted (a symlink, or one others can write to — the shared /tmp
+// when TMPDIR is unset) is refused: no child is spawned there.
+func TestClaudeBackend_RefusesAWorkDirThatIsNotPrivate(t *testing.T) {
+	planted := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(planted, ".claude"), 0o755))
+	for name, setup := range map[string]func(string) error{
+		"symlink": func(p string) error { return os.Symlink(planted, p) },
+		"group-writable": func(p string) error {
+			if err := os.Mkdir(p, 0o700); err != nil {
+				return err
+			}
+			return os.Chmod(p, 0o770)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts, f := fakeClaude(t, "normal")
+			require.NoError(t, setup(f.workDir))
+			b, ok := NewClaudeBackend(opts).(*claudeBackend)
+			require.True(t, ok)
+			b.mu.Lock()
+			p, err := b.spawnLocked()
+			b.mu.Unlock()
+			require.Error(t, err)
+			assert.Nil(t, p)
+			assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
+		})
+	}
+}
+
 // BEHAVIOR CHAT-03 — see docs/inventory/chat.md
 // TestChat03_CloseReapsStubbornChild: CHAT-03 / Review Focus 2 — a child that
 // ignores stdin EOF and SIGTERM, and its own child, are both gone after Close.

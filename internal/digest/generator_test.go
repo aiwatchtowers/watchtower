@@ -365,3 +365,18 @@ fi
 		t.Errorf("system prompt file %q must be removed after Generate, stat err = %v", got, statErr)
 	}
 }
+
+// A message beginning with '-' never follows -p on argv, where claude would
+// parse it as a flag (-c is --continue): it travels on stdin.
+func TestGenerateArgs_DashLeadingMessageViaStdin(t *testing.T) {
+	msg := "-c resume the last session"
+	args, stdin := generateArgs("m", "sys", "", msg, false)
+	if stdin != msg {
+		t.Errorf("stdin = %q, want the message", stdin)
+	}
+	for _, a := range args {
+		if a == msg {
+			t.Fatalf("args = %v carry the dash-leading message", args)
+		}
+	}
+}
