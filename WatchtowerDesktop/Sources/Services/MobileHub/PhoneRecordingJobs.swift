@@ -20,8 +20,9 @@ extension MeetingRecorderCenter: PhoneRecordingJobEvents {}
 /// `phone_recordings(upload_id, audio_path, transcript_id, …)`, which the
 /// `recording_job` slice publishes and whose transcript ids feed the
 /// `meeting_transcript` slice's `phone_recording_id`. Each change nudges the
-/// publisher's fast lane (`recording_job`, plus `meeting_transcript` once a
-/// transcript is linked).
+/// publisher (`recording_job`, plus `meeting_transcript` once a transcript
+/// is linked); both are normal kinds, so they publish on the 30 s full
+/// tick (board #724).
 ///
 /// Main-actor, like the transcriber. A hub companion: `start()` chains onto
 /// the recorder's single-closure callbacks (the earlier closures still run)
@@ -84,7 +85,7 @@ final class PhoneRecordingJobs: HubCompanion {
         }
     }
 
-    /// Where the fast-lane nudges go (the publisher's `nudge(kinds:)`); set
+    /// Where the nudges go (the publisher's `nudge(kinds:)`); set
     /// once the publisher exists.
     func setOnChange(_ handler: (@Sendable (Set<SliceKind>) -> Void)?) {
         onChange = handler
@@ -165,7 +166,7 @@ final class PhoneRecordingJobs: HubCompanion {
         }
     }
 
-    /// Remembers `job` and nudges the fast lane. A sidecar write failure is
+    /// Remembers `job` and nudges the publisher. A sidecar write failure is
     /// logged: the in-memory job keeps following the callbacks, and the next
     /// change writes the row again.
     private func save(_ job: HubSyncState.PhoneRecordingJob) {

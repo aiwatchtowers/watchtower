@@ -243,7 +243,8 @@ final class MobileHubService {
     }
 
     /// Asks the publisher's fast lane for `kinds` (B and C call this on a
-    /// change they know of).
+    /// change they know of); only the urgent kinds are kept, the others
+    /// ride the 30 s full tick.
     func nudge(kinds: Set<SliceKind>) {
         publisher.nudge(kinds: kinds)
     }

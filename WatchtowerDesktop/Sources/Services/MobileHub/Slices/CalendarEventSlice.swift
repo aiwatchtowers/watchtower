@@ -388,7 +388,7 @@ struct CalendarEventSlice: SliceSource {
         case chapters = "chapters_json"
     }
 
-    /// Logs an unreadable source once per row and content: the 10 s tick
+    /// Logs an unreadable source once per row and content: the 30 s tick
     /// re-reads it, and a changed value warns again. `event` is the
     /// calendar event the row belongs to.
     private static func warnOnce(_ what: Unreadable, id: String, event: String, content: String, error: Error) {
