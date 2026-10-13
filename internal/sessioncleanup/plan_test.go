@@ -421,16 +421,16 @@ func repoSnapshot(t *testing.T, f *fixture) string {
 func TestPlan_NoGitIsAnError(t *testing.T) {
 	t.Parallel()
 	d := Deps{Git: noGit{t: t}, DB: &fakeStore{session: SessionInfo{ID: testSession}}, Procs: &fakeProcs{}}
-	_, err := Build(context.Background(), d, Request{SessionID: testSession})
+	_, err := PlanResult(context.Background(), d, Request{SessionID: testSession})
 	if !errors.Is(err, ErrNoGit) {
-		t.Fatalf("Build without git = %v, want ErrNoGit", err)
+		t.Fatalf("PlanResult without git = %v, want ErrNoGit", err)
 	}
 }
 
 func TestPlan_SessionOfAnotherWorkbenchIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	_, err := Build(context.Background(), f.deps(), Request{SessionID: testSession, WorkbenchID: testWorkbench + 1})
+	_, err := PlanResult(context.Background(), f.deps(), Request{SessionID: testSession, WorkbenchID: testWorkbench + 1})
 	if err == nil || !strings.Contains(err.Error(), "belongs to workbench") {
 		t.Fatalf("err = %v", err)
 	}
@@ -444,7 +444,7 @@ func TestPlan_FolderOutsideARepositoryRunsNoGit(t *testing.T) {
 		session: SessionInfo{ID: testSession, WorkbenchID: testWorkbench},
 		folders: map[int64]string{testWorkbench: plain},
 	}}
-	if _, err := Build(context.Background(), d, Request{SessionID: testSession}); err == nil {
+	if _, err := PlanResult(context.Background(), d, Request{SessionID: testSession}); err == nil {
 		t.Fatal("a folder outside any repository planned")
 	}
 	if rec.calls != 0 {

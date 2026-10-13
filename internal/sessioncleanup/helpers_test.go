@@ -141,11 +141,11 @@ func (f *fixture) plan(r Request) Plan {
 	if r.Sweep {
 		r.WorkbenchID = testWorkbench
 	}
-	p, err := Build(context.Background(), f.deps(), r)
+	res, err := PlanResult(context.Background(), f.deps(), r)
 	if err != nil {
-		f.t.Fatalf("Build: %v", err)
+		f.t.Fatalf("PlanResult: %v", err)
 	}
-	return p
+	return res.Plan
 }
 
 func findItem(t *testing.T, p Plan, key string) Item {
