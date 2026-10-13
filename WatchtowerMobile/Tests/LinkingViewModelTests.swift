@@ -894,7 +894,9 @@ final class LinkingViewModelTests: XCTestCase {
 
     func testNoRemovalWhileALinkIsPending() async throws {
         let model = try await modelOneLookFromRemoval()
-        LinkStore(defaults: defaults).pending = PendingLink(link: linkRecord(), deadline: start.addingTimeInterval(600), baseline: nil, baselineCaptured: false)
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: linkRecord(), deadline: start.addingTimeInterval(600), baseline: nil, baselineCaptured: false
+        )
         await model.evaluate(grant: nil, heartbeat: laterHeartbeat)
         assertStillLinked(model, "a pending link")
     }
