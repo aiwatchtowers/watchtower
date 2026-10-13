@@ -91,8 +91,16 @@ public final class ReplicaStore: Sendable {
     private static let formatKey = "replica_format"
     private static let format = "2"
 
-    public init(path: String, opener: any ReplicaOpening) throws {
-        writer = try DatabasePool(path: path)
+    /// `observesSuspension` turns on GRDB's `observesSuspensionNotifications`:
+    /// the app posts `Database.suspendNotification` before iOS may suspend
+    /// it, so a replica in a shared app-group container never holds a lock
+    /// across a suspension (0xdead10cc), and `Database.resumeNotification`
+    /// when it has work again. While suspended, a statement that needs a
+    /// lock fails with `SQLITE_INTERRUPT` instead of taking it.
+    public init(path: String, opener: any ReplicaOpening, observesSuspension: Bool = false) throws {
+        var configuration = Configuration()
+        configuration.observesSuspensionNotifications = observesSuspension
+        writer = try DatabasePool(path: path, configuration: configuration)
         self.opener = opener
         try createSchema()
     }
@@ -143,6 +151,7 @@ public final class ReplicaStore: Sendable {
                 CREATE INDEX IF NOT EXISTS idx_slice_records_kind ON slice_records(kind);
                 CREATE INDEX IF NOT EXISTS idx_slice_records_plain_name ON slice_records(plain_name);
                 CREATE INDEX IF NOT EXISTS idx_slice_records_needs_index ON slice_records(needs_index);
+                \(Self.kindVersionsTableSQL);
                 CREATE TABLE IF NOT EXISTS pending_actions (
                     action_id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -193,6 +202,16 @@ public final class ReplicaStore: Sendable {
         if !columns.contains("failure_kind") {
             try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
         }
+        // The upload backoff and the auto-finish mark (board #724).
+        if !columns.contains("upload_attempts") {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0")
+        }
+        if !columns.contains("last_attempt_at") {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN last_attempt_at REAL")
+        }
+        if !columns.contains("auto_finished") {
+            try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN auto_finished INTEGER NOT NULL DEFAULT 0")
+        }
         // Mobile E2E: the sealed upload record (kept for every re-send), its wire name, and the sealed file.
         for (name, type) in [("envelope", "BLOB"), ("wire_name", "TEXT"), ("sealed_path", "TEXT")]
         where !columns.contains(name) {
@@ -228,7 +247,9 @@ public final class ReplicaStore: Sendable {
 
     /// The `phone_recordings` ledger. `recording` is a capture still being
     /// written: its row exists from the first second, so a capture cut short
-    /// by a kill is finalized at the next launch.
+    /// by a kill is finalized at the next launch. `upload_attempts` and
+    /// `last_attempt_at` drive the upload backoff; `auto_finished` marks a
+    /// capture the recorder finished after a long pause.
     private static func phoneRecordingsTableSQL(name: String, ifNotExists: Bool) -> String {
         """
         CREATE TABLE \(ifNotExists ? "IF NOT EXISTS " : "")\(name) (
@@ -246,7 +267,10 @@ public final class ReplicaStore: Sendable {
             failure_kind TEXT,
             envelope BLOB,
             wire_name TEXT,
-            sealed_path TEXT
+            sealed_path TEXT,
+            upload_attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at REAL,
+            auto_finished INTEGER NOT NULL DEFAULT 0
         )
         """
     }
@@ -270,7 +294,8 @@ public final class ReplicaStore: Sendable {
                 let columns = """
                     recording_id, file_path, started_at, ended_at, duration_sec,
                     title_hint, sample_format, state, error_message, event_id, failure_kind,
-                    envelope, wire_name, sealed_path
+                    envelope, wire_name, sealed_path,
+                    upload_attempts, last_attempt_at, auto_finished
                     """
                 try db.execute(sql: Self.phoneRecordingsTableSQL(name: "phone_recordings_upgrade", ifNotExists: false))
                 try db.execute(sql: "INSERT INTO phone_recordings_upgrade (\(columns)) SELECT \(columns) FROM phone_recordings")
@@ -342,6 +367,13 @@ public final class ReplicaStore: Sendable {
             }
             var rolledBack: [String] = []
             var stored = 0
+            // Per-kind change stamps (board #724): a stored version is
+            // readable only once `indexPending` opens it, which bumps its
+            // kind then (the hydrator indexes right after this apply; a
+            // locked phone at the unlock), so one write bumps once. Here
+            // only a deletion bumps, and a newer-format version, which is
+            // never indexed, of a row whose kind is known.
+            var touchedKinds = Set<String>()
             for item in accepted {
                 let name = item.record.recordName
                 if let version = item.version {
@@ -358,12 +390,15 @@ public final class ReplicaStore: Sendable {
                 }
                 stored += 1
                 try upsert(item, in: db)
+                if item.version == nil, let kind = try Self.storedKind(of: name, in: db) { touchedKinds.insert(kind) }
                 try storeAsset(assets[name].flatMap { $0 }, recordName: name, in: db)
             }
             for name in batch.deletedRecordNames {
+                if let kind = try Self.storedKind(of: name, in: db) { touchedKinds.insert(kind) }
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
                 try db.execute(sql: "DELETE FROM slice_assets WHERE record_name = ?", arguments: [name])
             }
+            try Self.bumpKindVersions(touchedKinds, in: db)
             if let tokenJSON {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
@@ -426,6 +461,11 @@ public final class ReplicaStore: Sendable {
     }
 
     private static let keyboxPrefix = "keybox-"
+
+    /// The plain kind of a stored row, nil while it waits for its keys.
+    private static func storedKind(of wireName: String, in db: Database) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT kind FROM slice_records WHERE record_name = ?", arguments: [wireName])
+    }
 
     /// Every verified version this replica accepted, per wire name: the
     /// DataZone rollback guard. Kept across deletions; dropped only by the
@@ -518,6 +558,7 @@ public final class ReplicaStore: Sendable {
         guard !opened.isEmpty else { return [] }
         return try writer.write { db -> [AppliedSliceRecord] in
             var indexed: [AppliedSliceRecord] = []
+            var touchedKinds = Set<String>()
             for (row, frame) in opened {
                 try db.execute(
                     sql: """
@@ -526,12 +567,15 @@ public final class ReplicaStore: Sendable {
                         """,
                     arguments: [frame.id, frame.kind, row["record_name"] as String, row["epoch"] as Int64, row["seq"] as Int64]
                 )
-                guard db.changesCount > 0, let kind = SliceKind(rawValue: frame.kind) else { continue }
+                guard db.changesCount > 0 else { continue }
+                touchedKinds.insert(frame.kind)
+                guard let kind = SliceKind(rawValue: frame.kind) else { continue }
                 indexed.append(AppliedSliceRecord(
                     recordName: frame.id, kind: kind, notifyLevel: frame.notifyLevel,
                     modifiedAt: Date(timeIntervalSince1970: row["modified_at"])
                 ))
             }
+            try Self.bumpKindVersions(touchedKinds, in: db)
             return indexed
         }
     }
@@ -553,8 +597,10 @@ public final class ReplicaStore: Sendable {
             }
             return nil
         } catch KeyStoreError.locked {
+            Self.noteKeyRefusal()
             return nil
         } catch SecureTransportError.keysUnavailable {
+            Self.noteKeyRefusal()
             return nil
         } catch {
             // Not the row's fault (an unreadable keychain item, a bad hub id): skipped and logged once per cause.
@@ -564,6 +610,19 @@ public final class ReplicaStore: Sendable {
             }
             return nil
         }
+    }
+
+    /// Rows any replica of this process skipped because their keys could
+    /// not be read (locked, or an epoch's keys not here yet). A list read
+    /// leaves such rows out without throwing, so a reader that caches what
+    /// it read (the phone's decode cache, board #724) compares this count
+    /// before and after its read and keeps nothing from a read it moved
+    /// over: the read after the unlock decodes again (Review Focus 1).
+    public static var keyRefusalCount: Int { keyRefusals.withLock { $0 } }
+    private static let keyRefusals = OSAllocatedUnfairLock(initialState: 0)
+
+    private static func noteKeyRefusal() {
+        keyRefusals.withLock { $0 &+= 1 }
     }
 
     /// The opened payload of one row for a single-record read: a locked

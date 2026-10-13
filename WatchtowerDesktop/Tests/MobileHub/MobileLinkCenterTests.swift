@@ -1891,6 +1891,37 @@ final class MobileLinkCenterTests: XCTestCase {
         try await link(try hello(identityB, nonce: second.nonce))
         XCTAssertEqual(center.devices.map(\.deviceID), [phoneB])
     }
+
+    // MARK: - Linked-phone gate (board #724)
+
+    /// `hasLinkedDevice` reads the devices table: empty → false, a row →
+    /// true; `hasLinkedPhone` follows it, and fails open (true) once the
+    /// sidecar cannot be read, then follows it again once it can.
+    func testTheLinkedPhoneGateFollowsTheSidecarAndFailsOpen() throws {
+        let (state, raw, dir) = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertFalse(try state.hasLinkedDevice())
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state))
+
+        try raw.write { db in
+            try db.execute(sql: """
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at)
+                VALUES ('device-a', 'Phone A', 'private', '_user-a', 0)
+                """)
+        }
+        XCTAssertTrue(try state.hasLinkedDevice())
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state))
+
+        try raw.write { db in try db.execute(sql: "DELETE FROM devices") }
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state))
+        try raw.write { db in try db.execute(sql: "ALTER TABLE devices RENAME TO devices_gone") }
+        XCTAssertThrowsError(try state.hasLinkedDevice())
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state), "an unreadable sidecar counts as linked")
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state), "still failing open")
+
+        try raw.write { db in try db.execute(sql: "ALTER TABLE devices_gone RENAME TO devices") }
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state), "readable again: no phone")
+    }
 }
 
 /// The iCloud user the lookup returns; the test switches it.

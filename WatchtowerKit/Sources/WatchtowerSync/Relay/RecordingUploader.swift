@@ -32,12 +32,24 @@ public protocol RecordingUploadAcking: Sendable {
 ///   a re-seal, so the hub sees one record version (Review Focus 2);
 /// - the sealed file is deleted ONLY on a `received` echo from the hub
 ///   (ack-then-delete);
-/// - the first `uploadPending()` of a process with a linked device IS the
-///   relaunch retry: it re-saves `uploading` rows too (the same record
-///   upserts into the transport's pending queue, and the hub's ledger
-///   absorbs true duplicates). Later passes send `waiting` rows only — an
-///   `uploading` row already sits in the transport's durable send queue —
-///   until `resendInFlightAfterWipe()`.
+/// - a new `waiting` row goes out on the next pass once it is sealed (see
+///   Sealing). Every save counts an attempt (`upload_attempts`,
+///   `last_attempt_at`); a row saved before is saved again only when its
+///   backoff is due (`retryDelays` after its latest attempt), only while
+///   `retriesAllowed` holds (the app is in the foreground — never on a
+///   launch into the background), and at most
+///   `PhoneRecording.uploadAttemptCap` times: past it the row reads "Upload
+///   stuck" until the owner's Retry, which resets the backoff. Every save
+///   of a row sends its stored envelope byte for byte (mobile E2E);
+/// - an `uploading` row already sits in the transport's durable send
+///   queue, so it is re-saved (the relaunch retry: the same envelope
+///   upserts the same record, and the hub's ledger absorbs true
+///   duplicates) only by the first foreground pass of a process that finds
+///   the Mac online (`macOnline`), when due — or by the next foreground
+///   pass after `resendInFlightAfterWipe()`, due or not and whatever the
+///   Mac. While the Mac sleeps the queue holds the row for it: a re-save
+///   would only spend attempts toward "Upload stuck", so none is made or
+///   counted.
 public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings shorter than this are degenerate (a tap on Record followed
     /// by an immediate stop) and are discarded without a ledger row.
@@ -52,6 +64,20 @@ public actor RecordingUploader: RecordingUploadAcking {
     public static let missingFileMessage = "The local audio file is missing."
     /// The ledger message for a capture that holds no readable audio.
     public static let unrecoverableMessage = "The recording stopped before any audio was saved."
+    /// The wait after the Nth attempt before attempt N + 1 (board #724):
+    /// 1 min, 5 min, 30 min, 2 h, 6 h. With the cap of 6 attempts the
+    /// last delay is the one before the sixth.
+    public static let retryDelays: [TimeInterval] = [60, 300, 1_800, 7_200, 21_600]
+
+    /// When a row with `attempts` saves behind it, the latest at `last`, may
+    /// be saved again; nil once the cap is reached. A row never saved is
+    /// due at once.
+    public static func nextAttemptAt(attempts: Int, last: Date?) -> Date? {
+        guard attempts < PhoneRecording.uploadAttemptCap else { return nil }
+        guard attempts > 0, let last else { return .distantPast }
+        let delay = retryDelays[min(attempts, retryDelays.count) - 1]
+        return last.addingTimeInterval(delay)
+    }
 
     /// The message shown for a local failure.
     public static func message(for failure: PhoneRecording.LocalFailure) -> String {
@@ -72,6 +98,15 @@ public actor RecordingUploader: RecordingUploadAcking {
     private let store: ReplicaStore
     private let maxAssetBytes: Int64
     private let now: @Sendable () -> Date
+    /// Whether a pass may save a row saved before: true only while the app
+    /// is in the foreground (the environment's scene phase). A pass where
+    /// it is false sends new rows only and keeps the relaunch retry armed.
+    private let retriesAllowed: @Sendable () -> Bool
+    /// Whether the Mac reads online (its heartbeat is fresh): the relaunch
+    /// re-save of `uploading` rows waits for it.
+    private let macOnline: @Sendable () -> Bool
+    /// Counts each upload attempt (the phone's battery diagnostics).
+    private let energy: EnergyCounter?
     /// The linked phone's device id, stamped on every upload. nil until
     /// linking finishes (or after an unlink): uploads then wait, because the
     /// hub fails a record without one as `device_not_linked`. A blank id
@@ -85,9 +120,13 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// second seal of one recording would overwrite the same `<id>.enc`.
     private var sealingIDs: Set<String> = []
     private var ledgerPrepared = false
-    /// Whether the next pass re-saves `uploading` rows: true for the first
-    /// pass of a process (the relaunch retry) and after a transport wipe.
+    /// Whether the next foreground pass re-saves `uploading` rows: true
+    /// for the first pass of a process (the relaunch retry) and after a
+    /// transport wipe.
     private var resendInFlight = true
+    /// Set by a wipe: the queue that held the `uploading` rows is gone, so
+    /// they are re-saved without waiting for their backoff.
+    private var resendIgnoresBackoff = false
     /// The pass sending now, and the one queued behind it: callers that
     /// overlap a running pass join the queued one, so no two passes ever
     /// send at once.
@@ -101,7 +140,10 @@ public actor RecordingUploader: RecordingUploadAcking {
         directory: URL? = nil,
         deviceID: String? = nil,
         maxAssetBytes: Int64 = RecordingUploader.maximumAssetBytes,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        retriesAllowed: @escaping @Sendable () -> Bool = { true },
+        macOnline: @escaping @Sendable () -> Bool = { true },
+        energy: EnergyCounter? = nil
     ) {
         self.transport = transport
         self.store = store
@@ -109,6 +151,9 @@ public actor RecordingUploader: RecordingUploadAcking {
         self.deviceID = linkedDeviceID(deviceID)
         self.maxAssetBytes = maxAssetBytes
         self.now = now
+        self.retriesAllowed = retriesAllowed
+        self.macOnline = macOnline
+        self.energy = energy
     }
 
     /// Called by the link flow once the device is linked, and with nil on
@@ -205,7 +250,10 @@ public actor RecordingUploader: RecordingUploadAcking {
             state: .waiting,
             errorMessage: nil,
             eventID: Self.nonBlank(eventID),
-            failure: nil
+            failure: nil,
+            uploadAttempts: 0,
+            lastAttemptAt: nil,
+            autoFinished: false
         )
         try store.insertPhoneRecording(recording, marks: marks)
         return recording
@@ -246,7 +294,10 @@ public actor RecordingUploader: RecordingUploadAcking {
             state: .recording,
             errorMessage: nil,
             eventID: Self.nonBlank(eventID),
-            failure: nil
+            failure: nil,
+            uploadAttempts: 0,
+            lastAttemptAt: nil,
+            autoFinished: false
         )
         liveCaptureIDs.insert(recording.id)
         do {
@@ -267,6 +318,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// with the recorded length, the final title and event, and every mark
     /// (re-inserting a stored one is a no-op). Returns nil — removing the
     /// row and the file — for a capture under `minimumDurationSec`.
+    /// `autoFinished` marks a capture the recorder ended after a long pause.
     @discardableResult
     public func finishCapture(
         id: String,
@@ -274,7 +326,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         activeDuration: TimeInterval,
         titleHint: String?,
         eventID: String?,
-        marks: [Int] = []
+        marks: [Int] = [],
+        autoFinished: Bool = false
     ) throws -> PhoneRecording? {
         liveCaptureIDs.remove(id)
         guard let row = try store.phoneRecording(id: id), row.state == .recording else { return nil }
@@ -290,7 +343,8 @@ public actor RecordingUploader: RecordingUploadAcking {
             endedAt: endedAt,
             durationSec: Int(activeDuration.rounded()),
             titleHint: Self.nonBlank(titleHint),
-            eventID: Self.nonBlank(eventID)
+            eventID: Self.nonBlank(eventID),
+            autoFinished: autoFinished
         )
         return try store.phoneRecording(id: id)
     }
@@ -403,16 +457,19 @@ public actor RecordingUploader: RecordingUploadAcking {
 
     // MARK: - Upload
 
-    /// Seals what is not sealed yet (`sealPending`), then saves every sealed
-    /// `waiting` row into the relay zone as its stored envelope with the
-    /// sealed audio attached; a successful save flips the row to
-    /// `uploading`. The first pass of a process (and the first after
-    /// `resendInFlightAfterWipe()`) re-sends `uploading` rows too — the
-    /// relaunch retry: the same envelope upserts the same record and the
-    /// hub's ledger absorbs duplicates. A transport throw leaves the row
-    /// untouched for the next pass; a vanished local file, or audio over the
-    /// asset cap, fails the row locally (it can never be sent). Without a
-    /// linked device nothing is sealed or sent and every row keeps waiting.
+    /// Seals what is not sealed yet (`sealPending`, on every pass, the
+    /// background ones included), then saves every sealed row that is due
+    /// (see the type's rules) into the relay zone as its stored envelope
+    /// with the sealed audio attached; a successful save flips the row to
+    /// `uploading`. The first foreground pass of a process (and the first
+    /// after `resendInFlightAfterWipe()`) re-sends due `uploading` rows too
+    /// — the relaunch retry: the same envelope upserts the same record and
+    /// the hub's ledger absorbs duplicates — once the Mac reads online (a
+    /// wipe's re-send does not wait). Each save counts an attempt. A
+    /// transport throw leaves the row for its next due pass; a vanished
+    /// local file, or audio over the asset cap, fails the row locally (it
+    /// can never be sent). Without a linked device nothing is sealed or sent
+    /// and every row keeps waiting.
     /// A call while a pass is sending waits for it and runs one more pass,
     /// shared by every caller that arrived meanwhile.
     /// Returns how many rows were handed to the transport.
@@ -438,6 +495,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// send queue): the next pass re-sends every `uploading` row.
     public func resendInFlightAfterWipe() {
         resendInFlight = true
+        resendIgnoresBackoff = true
     }
 
     private func runQueuedPass() async throws -> Int {
@@ -457,31 +515,64 @@ public actor RecordingUploader: RecordingUploadAcking {
             return 0
         }
         try prepareLedger()
-        let includeInFlight = resendInFlight
-        resendInFlight = false
+        // A background pass sends new rows only and leaves the relaunch
+        // retry armed for the first foreground one; so does a pass while
+        // the Mac is offline, unless a wipe emptied the queue.
+        let retrying = retriesAllowed()
+        let includeInFlight = retrying && resendInFlight && (resendIgnoresBackoff || macOnline())
+        let ignoreBackoff = includeInFlight && resendIgnoresBackoff
+        if includeInFlight {
+            resendInFlight = false
+            resendIgnoresBackoff = false
+        }
         do {
             // A non-lock seal error is per row (logged in `sealRows`): rows
             // already sealed are still sent below.
             let justSealed = try await sealRows(deviceID: deviceID).sealedInFlight
-            return try await send(includeInFlight: includeInFlight, alsoSending: justSealed)
+            let rows = try store.phoneRecordings().filter {
+                guard $0.isSealed else { return false }
+                // A pre-E2E `uploading` row sealed by this pass was never
+                // sent sealed: it goes out like a new row.
+                if $0.state == .uploading, justSealed.contains($0.id) { return true }
+                return isDue($0, retrying: retrying, includeInFlight: includeInFlight, ignoreBackoff: ignoreBackoff)
+            }
+            return try await send(rows)
         } catch {
             // A pass that exits by throwing (a store read or write) has not
             // finished its re-send: keep it armed for the next pass instead
             // of stranding `uploading` rows until the next launch. At worst
             // a row it already re-saved goes out once more.
-            if includeInFlight { resendInFlight = true }
+            if includeInFlight {
+                resendInFlight = true
+                resendIgnoresBackoff = resendIgnoresBackoff || ignoreBackoff
+            }
             throw error
         }
     }
 
-    /// Saves each sealed row's stored envelope, unchanged: `waiting` rows,
-    /// `uploading` ones when `includeInFlight`, and the `uploading` rows in
-    /// `alsoSending` (sealed by this pass, never sent sealed before).
-    private func send(includeInFlight: Bool, alsoSending: Set<String>) async throws -> Int {
-        let rows = try store.phoneRecordings().filter {
-            let inFlight = $0.state == .uploading && (includeInFlight || alsoSending.contains($0.id))
-            return ($0.state == .waiting || inFlight) && $0.isSealed
+    /// Whether this pass saves `row`: a never-saved `waiting` row always; a
+    /// row saved before only while retrying, under the cap, and once its
+    /// backoff is due (a wipe's re-send skips the wait); an `uploading` row
+    /// only on the pass that re-sends in-flight rows.
+    private func isDue(_ row: PhoneRecording, retrying: Bool, includeInFlight: Bool, ignoreBackoff: Bool) -> Bool {
+        switch row.state {
+        case .waiting:
+            guard row.uploadAttempts > 0 else { return true }
+        case .uploading:
+            guard includeInFlight else { return false }
+        case .recording, .delivered, .failed:
+            return false
         }
+        guard retrying, let due = Self.nextAttemptAt(attempts: row.uploadAttempts, last: row.lastAttemptAt) else {
+            return false
+        }
+        // A millisecond of slack: the ledger keeps Unix seconds as a REAL,
+        // so a stored time reads back a hair off the clock's.
+        return ignoreBackoff || due.timeIntervalSince(now()) <= 0.001
+    }
+
+    /// Saves each sealed row's stored envelope, unchanged.
+    private func send(_ rows: [PhoneRecording]) async throws -> Int {
         var sent = 0
         for row in rows {
             guard let envelope = row.envelope, let wireName = row.wireName, let sealed = row.sealedFileURL(in: directory)
@@ -490,13 +581,18 @@ public actor RecordingUploader: RecordingUploadAcking {
                 try failLocally(row.id, .missingFile)
                 continue
             }
+            let attemptAt = now()
+            // Counted before the save, so an attempt the process dies in
+            // still spends its backoff step. A store failure ends the pass.
+            try store.recordPhoneRecordingUploadAttempt(id: row.id, at: attemptAt)
             let record = CloudRecord(
-                recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: now(), payload: envelope,
+                recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: attemptAt, payload: envelope,
                 assetFileURL: sealed)
             do {
+                energy?.record(.uploadAttempt)
                 try await transport.saveSealed([record])
             } catch {
-                // Transient failure: keep the row for the next uploadPending pass.
+                // Transient failure: keep the row for its next due pass.
                 logger.warning("""
                     recording upload save failed for \(row.id, privacy: .public): \
                     \(error.localizedDescription, privacy: .public)
@@ -694,11 +790,12 @@ public actor RecordingUploader: RecordingUploadAcking {
 
     // MARK: - User affordances
 
-    /// Flips a `failed` row back to `waiting` and reruns the upload pass.
-    /// A local failure (`offersRetry` false) is left as it is.
+    /// The owner's Retry on a `failed` row or one stuck past the attempt
+    /// cap: back to `waiting` with a fresh backoff, then an upload pass. A
+    /// local failure (`offersRetry` false) is left as it is.
     public func retryFailed(id: String) async throws {
         guard let row = try store.phoneRecording(id: id), row.offersRetry else { return }
-        try store.setPhoneRecordingState(id: id, state: .waiting)
+        try store.resetPhoneRecordingForRetry(id: id)
         _ = try await uploadPending()
     }
 

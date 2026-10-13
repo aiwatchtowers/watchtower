@@ -82,6 +82,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private let engineFactory: EngineFactory
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
+    /// Counts the CloudKit requests this transport issues (the phone's
+    /// battery diagnostics); nil counts nothing.
+    private let energy: EnergyCounter?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
 
     private var engine: (any SyncEngineDriving)?
@@ -133,6 +136,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// An expired-token zone check + re-fetch is running (two concurrent
     /// pulls, or a pull and the event path, must not both run one).
     private var refetchInFlight = false
+    /// That re-fetch's `fetchChanges(scope:)` is awaiting the engine: a
+    /// manual fetch, so its run events are not the engine's own (no
+    /// `.engineFetchRun`, no `engineFetchedHandler`). Its fetch errors are
+    /// not parked: the event path handles them as before.
+    private var refetchFetchInFlight = false
     /// The running pull, error handling included. A `pull()` arriving
     /// meanwhile joins it (awaits it, gets its outcome) instead of starting
     /// a second fetch, so the flag and parked events below belong to it.
@@ -152,12 +160,45 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// under an engine some other owner of this transport started.
     private var hubZoneDelete: Task<Void, Error>?
 
+    // The engine's own fetch runs (phone push path, board #724).
+    /// Between the engine's own `willFetchChanges` and `didFetchChanges`
+    /// (a run a manual fetch started is not tracked).
+    private(set) var engineRunInFlight = false
+    /// When the engine's current or last own fetch run began.
+    private(set) var engineRunStartedAt: Date?
+    /// `fetchForPush` callers waiting for an own run to begin: resumed with
+    /// true when one begins, with false when their grace ends first, a
+    /// `pull()` takes the push over or the engine goes.
+    private var engineRunStartWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// `fetchForPush` callers waiting for the running own run to end:
+    /// resumed with true when it ends, with false when the wait's bound
+    /// (`engineRunEndWait`) passes first, a `pull()` takes the push over or
+    /// the engine goes.
+    private var engineRunEndWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// Fired when an own fetch run of the engine ends (see
+    /// `setEngineFetchedHandler`).
+    private var engineFetchedHandler: (@Sendable () -> Void)?
+    /// The running `fetchForPush`; a second one joins it. A `pull()` waits
+    /// for it only while it runs its own fallback fetch (one manual fetch
+    /// at a time); while it still waits on the engine, the pull serves it.
+    private var pushFetchTask: Task<Void, Error>?
+    /// The running push fetch has stopped waiting and runs its own fetch.
+    private var pushFetchFetching = false
+    /// Push fetches that joined a running one (observable in tests).
+    private(set) var pushFetchJoins = 0
+    /// Push fetches an own engine run covered, so they sent no request of
+    /// their own (observable in tests).
+    private(set) var pushFetchesCoveredByEngine = 0
+    /// Push fetches waiting on an own engine run (observable in tests).
+    var engineRunWaiterCount: Int { engineRunStartWaiters.count + engineRunEndWaiters.count }
+
     public init(
         store: TransportStore,
         scope: CloudDatabaseScope,
         hubID: String,
         role: TransportRole,
-        containerID: String = WatchtowerCloud.containerID
+        containerID: String = WatchtowerCloud.containerID,
+        energy: EnergyCounter? = nil
     ) {
         precondition(role == .phone || scope == .private, "a hub syncs its own private database")
         let zones = HubZones(scope: scope, hubID: hubID)
@@ -173,7 +214,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 CKSyncEngineDriver(containerID: containerID, zones: zones, stateSerialization: state, delegate: delegate)
             },
             now: { Date() },
-            sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) },
+            energy: energy
         )
     }
 
@@ -188,7 +230,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         zoneAdmin: any CloudZoneAdministering,
         engineFactory: @escaping EngineFactory,
         now: @escaping @Sendable () -> Date,
-        sleep: @escaping @Sendable (TimeInterval) async -> Void
+        sleep: @escaping @Sendable (TimeInterval) async -> Void,
+        energy: EnergyCounter? = nil
     ) {
         self.store = store
         zones = HubZones(scope: scope, hubID: hubID)
@@ -199,6 +242,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         self.engineFactory = engineFactory
         self.now = now
         self.sleep = sleep
+        self.energy = energy
     }
 
     /// In the phone role an account switch does NOT emit `.unlinked`: the
@@ -220,6 +264,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// which only costs a second wipe-and-republish — never wrong state.
     public func setDataZoneResetHandler(_ handler: (@Sendable () -> Void)?) {
         dataZoneResetHandler = handler
+    }
+
+    /// Phone role: fired after each of the engine's own fetch runs (the
+    /// ones CKSyncEngine starts on a push) has buffered what it fetched, so
+    /// the owner can apply it at once. Not fired for `pull()`,
+    /// `fetchForPush`'s or an expired token's re-fetch. The hub sets none.
+    public func setEngineFetchedHandler(_ handler: (@Sendable () -> Void)?) {
+        engineFetchedHandler = handler
     }
 
     /// Receives `TransportEvent`s (unlinked, quota exceeded).
@@ -338,6 +390,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         nextBackoff = Self.initialBackoff
         // Actor re-entrancy: an engine built while cancelOperations() was
         // awaited is dropped too, unless a start() meanwhile un-stopped us.
+        releaseEngineRunWaiters()
         while isStopped, let live = engine {
             engine = nil
             delegateBox = nil
@@ -345,12 +398,22 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
     }
 
-    /// Manual fetch — poll loops call this; push wake calls it implicitly
-    /// when entitlements land. No-op while the engine is unavailable, the
+    /// Manual fetch with the forced zone poll — the poll loops call this
+    /// (a silent push takes the light `fetchForPush`). No-op while the engine is unavailable, the
     /// server asked us to wait, or the link is gone. Fetch errors the
     /// transport can act on (unlinked, an expired token, throttling) are
     /// handled, not thrown. A successful fetch ends a throttling stretch.
     public func pull() async throws {
+        // One manual fetch at a time: a push fetch running its own fetch
+        // ends first (its outcome is the push's), then this pull polls as
+        // usual. One still waiting on the engine's run stops waiting and
+        // takes this pull as its fetch, so a pull never waits on the engine.
+        while let pushFetchTask, pushFetchFetching {
+            _ = try? await pushFetchTask.value
+        }
+        if pushFetchTask != nil {
+            abandonEngineRunWaits()
+        }
         if let pullTask {
             pullJoins += 1
             return try await pullTask.value
@@ -361,17 +424,19 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         // `pullTask` is set before it can clear it.
         let task = Task {
             defer { self.pullTask = nil }
-            try await self.performPull(engine: engine)
+            try await self.performPull(engine: engine, poll: true)
         }
         pullTask = task
         try await task.value
     }
 
-    private func performPull(engine: any SyncEngineDriving) async throws {
+    /// `poll`: the forced zone poll after the engine fetch (`pull()`);
+    /// false for a push's light fetch.
+    private func performPull(engine: any SyncEngineDriving, poll: Bool) async throws {
         manualFetchInFlight = true
         parkedEventErrors = []
         do {
-            try await fetchAndHandle(engine: engine)
+            try await fetchAndHandle(engine: engine, poll: poll)
         } catch where isUnlinked {
             // The link ended while this pull ran (the event path or the
             // handling unlinked): `.unlinked` already told the owner, so a
@@ -380,8 +445,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
     }
 
-    private func fetchAndHandle(engine: any SyncEngineDriving) async throws {
+    private func fetchAndHandle(engine: any SyncEngineDriving, poll: Bool) async throws {
         var thrown: CKError?
+        energy?.record(.engineFetch)
         do {
             try await engine.fetchChanges(scope: zones.allZoneIDs)
         } catch let error as CKError {
@@ -407,7 +473,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         } else {
             clearThrottle()
         }
-        try await pollZones(engine: engine)
+        if poll {
+            try await pollZones(engine: engine)
+        }
     }
 
     /// The poll half of `pull()`: each zone's changes straight from the
@@ -426,6 +494,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 if let throttledUntil, now() < throttledUntil { return }
                 let zoneID = zones.zoneID(for: zone)
                 let page: PolledZoneChanges
+                energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
                 do {
                     page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
                 } catch let error as CKError {
@@ -567,6 +636,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             }
         case .accountChange(let change):
             handleAccountChange(change.changeType)
+        case .willFetchChanges:
+            engineWillFetch()
+        case .didFetchChanges:
+            engineDidFetch()
         default:
             break
         }
@@ -677,6 +750,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         if !managesZones {
             let exists: Bool
             do {
+                energy?.record(.zoneCheck)
                 exists = try await ownersZonesExist(engine: engine)
             } catch let error as CKError {
                 if applyThrottle(from: Self.flatten(error, zoneID: nil).map(\.error)) { return }
@@ -687,6 +761,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 return
             }
         }
+        energy?.record(.engineFetch)
+        refetchFetchInFlight = true
+        defer { refetchFetchInFlight = false }
         try await engine.fetchChanges(scope: zones.allZoneIDs)
         clearThrottle()
     }
@@ -734,10 +811,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             recordError(error)
             engine = nil
             delegateBox = nil
+            releaseEngineRunWaiters()
             return
         }
         engine = nil
         delegateBox = nil
+        releaseEngineRunWaiters()
         // The old account's throttle and quota say nothing about the new one.
         retryTask?.cancel()
         throttledSince = nil
@@ -783,6 +862,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             let recordIDsToDelete = pending.deletes.map {
                 CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone))
             }
+            energy?.record(.sendBatch)
             return CKSyncEngine.RecordZoneChangeBatch(
                 recordsToSave: recordsToSave,
                 recordIDsToDelete: recordIDsToDelete,
@@ -1136,6 +1216,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         guard !isUnlinked else { return }
         isUnlinked = true
         logger.notice("hub zones gone (\(reason, privacy: .public)); unlinked")
+        // Nothing is fetched any more: a push waiting on the engine's run
+        // returns now instead of at its grace's end.
+        releaseEngineRunWaiters()
         eventHandler?(.unlinked)
     }
 
@@ -1332,6 +1415,162 @@ private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Send
         var options = context.options
         options.scope = .zoneIDs(ownZoneIDs)
         return options
+    }
+}
+
+// MARK: - Push fetch (the phone's silent pushes, board #724)
+
+extension CloudKitTransport {
+    /// Phone role, after a silent push that arrived at `since`: the light
+    /// fetch. CKSyncEngine (`automaticallySync`, left on for both roles: it
+    /// also sends) fetches on the same push by itself, so this waits for
+    /// that own run instead of fetching twice: a run that began at or after
+    /// `since` covers the push (a running one is awaited). Only when none
+    /// begins within `grace` of `since` does it fetch through the engine
+    /// itself, without `pull()`'s forced zone poll (that stays in the
+    /// timed and pull-to-refresh paths, which keep its guarantee). Joins a
+    /// running push fetch or pull. No-op while the engine is unavailable,
+    /// unlinked or throttled; errors are handled as in `pull()`.
+    ///
+    /// `pollOnFallback`: the fallback fetch also runs the forced zone poll.
+    /// The engine fetches only the zones a delivered push told it about, so
+    /// without the poll the fallback may send no request at all; the
+    /// foreground asks for it (the owner is looking), the background keeps
+    /// the light fetch.
+    public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool = false) async throws {
+        if let pushFetchTask {
+            pushFetchJoins += 1
+            return try await pushFetchTask.value
+        }
+        if let pullTask {
+            pullJoins += 1
+            return try await pullTask.value
+        }
+        guard let engine, !isUnlinked else { return }
+        if let throttledUntil, now() < throttledUntil { return }
+        let task = Task {
+            defer {
+                self.pushFetchTask = nil
+                self.pushFetchFetching = false
+            }
+            try await self.performPushFetch(engine: engine, since: since, grace: grace, poll: pollOnFallback)
+        }
+        pushFetchTask = task
+        try await task.value
+    }
+
+    /// How long a push fetch waits for a running own engine run to end
+    /// before fetching itself: a run that never reports its end must not
+    /// stall the push (and the caller's completion) for good.
+    static func engineRunEndWait(grace: TimeInterval) -> TimeInterval {
+        max(grace, 30)
+    }
+
+    private func performPushFetch(
+        engine: any SyncEngineDriving, since: Date, grace: TimeInterval, poll: Bool
+    ) async throws {
+        if await engineRunCovers(since: since, grace: grace, engine: engine) {
+            pushFetchesCoveredByEngine += 1
+            return
+        }
+        // A pull that took the push over is its fetch.
+        if let pullTask {
+            pullJoins += 1
+            return try await pullTask.value
+        }
+        guard self.engine === engine, !isUnlinked, !isStopped else { return }
+        if let throttledUntil, now() < throttledUntil { return }
+        pushFetchFetching = true
+        try await performPull(engine: engine, poll: poll)
+    }
+
+    /// Whether an own engine fetch run that began at or after `since` has
+    /// run (awaiting it if it is running, up to `engineRunEndWait`),
+    /// waiting up to `since + grace` for one to begin. False once a wait
+    /// runs out, a `pull()` takes the push over, or the engine is stopped
+    /// or replaced.
+    private func engineRunCovers(since: Date, grace: TimeInterval, engine: any SyncEngineDriving) async -> Bool {
+        while self.engine === engine, !isStopped {
+            if engineRunInFlight {
+                let startedAt = engineRunStartedAt
+                guard await waitForEngineRun(end: true, timeout: Self.engineRunEndWait(grace: grace)) else { return false }
+                if let startedAt, startedAt >= since { return true }
+                continue
+            }
+            if let startedAt = engineRunStartedAt, startedAt >= since { return true }
+            let remaining = since.addingTimeInterval(grace).timeIntervalSince(now())
+            guard remaining > 0 else { return false }
+            guard await waitForEngineRun(end: false, timeout: remaining) else { return false }
+        }
+        return false
+    }
+
+    /// True when an own run begins (`end` false) or the running one ends
+    /// (`end` true) within `timeout`. The timer stops once the wait ends.
+    private func waitForEngineRun(end: Bool, timeout: TimeInterval) async -> Bool {
+        let id = UUID()
+        let sleep = sleep
+        // Actor-isolated: the timer's expiry runs after this job suspends
+        // below, so the waiter is registered before it can expire.
+        let timer = Task {
+            await sleep(timeout)
+            self.expireEngineRunWaiter(id)
+        }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { continuation in
+            if end {
+                engineRunEndWaiters[id] = continuation
+            } else {
+                engineRunStartWaiters[id] = continuation
+            }
+        }
+    }
+
+    private func expireEngineRunWaiter(_ id: UUID) {
+        (engineRunStartWaiters.removeValue(forKey: id) ?? engineRunEndWaiters.removeValue(forKey: id))?
+            .resume(returning: false)
+    }
+
+    /// A `pull()` serves the waiting push fetch: it stops waiting on the
+    /// engine (the run state stays as it is).
+    private func abandonEngineRunWaits() {
+        let starts = engineRunStartWaiters
+        let ends = engineRunEndWaiters
+        engineRunStartWaiters = [:]
+        engineRunEndWaiters = [:]
+        starts.values.forEach { $0.resume(returning: false) }
+        ends.values.forEach { $0.resume(returning: false) }
+    }
+
+    /// `willFetchChanges`. A manual fetch's own event (a pull, a push's
+    /// fallback, an expired token's re-fetch) is not a run of the engine's
+    /// (it is counted as `.engineFetch` where it starts).
+    func engineWillFetch() {
+        guard !manualFetchInFlight, !refetchFetchInFlight else { return }
+        energy?.record(.engineFetchRun)
+        engineRunInFlight = true
+        engineRunStartedAt = now()
+        let waiters = engineRunStartWaiters
+        engineRunStartWaiters = [:]
+        waiters.values.forEach { $0.resume(returning: true) }
+    }
+
+    /// `didFetchChanges`: the own run's fetched changes are buffered (the
+    /// engine delivers its events in order).
+    func engineDidFetch() {
+        guard engineRunInFlight else { return }
+        engineRunInFlight = false
+        let waiters = engineRunEndWaiters
+        engineRunEndWaiters = [:]
+        waiters.values.forEach { $0.resume(returning: true) }
+        engineFetchedHandler?()
+    }
+
+    /// The engine went (stop, account reset): nobody waits for its runs.
+    private func releaseEngineRunWaiters() {
+        engineRunInFlight = false
+        engineRunStartedAt = nil
+        abandonEngineRunWaits()
     }
 }
 

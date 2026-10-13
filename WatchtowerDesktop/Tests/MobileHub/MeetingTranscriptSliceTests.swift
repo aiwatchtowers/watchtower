@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import CryptoKit
@@ -202,6 +203,18 @@ final class MeetingTranscriptSliceTests: XCTestCase {
 
         XCTAssertEqual(try published(byEvent).payload["summary"] as? String, "Event recap")
         XCTAssertEqual(try published(both).payload["summary"] as? String, "Own recap", "the transcript link wins")
+    }
+
+    /// The transcript's own recap is unreadable: the event's readable one
+    /// is used, as before the light pass stopped decoding recaps.
+    func testAnUnreadableOwnRecapFallsBackToTheEventsRecap() throws {
+        try insertEvent("evt-1", start: now.addingTimeInterval(-7200))
+        let id = try insertTranscript(eventID: "evt-1")
+        try insertRecap(eventID: "evt-1", summary: "Event recap", updatedAt: now.addingTimeInterval(-600))
+        try dbPool.write { db in
+            try TestDatabase.insertMeetingRecap(db, transcriptID: id, recapJSON: "not json", createdAt: dbStamp(now))
+        }
+        XCTAssertEqual(try published(id).payload["summary"] as? String, "Event recap")
     }
 
     func testAnAdHocRecordingUsesSummaryJSON() throws {
@@ -459,10 +472,12 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         )
         try await publisher.publishOnce()
         XCTAssertEqual(slice.assetBuilds, 2)
+        XCTAssertEqual(slice.recapReads, 1, "the one recap is read for its transcript's build")
 
         let unchanged = try await publisher.publishOnce()
         XCTAssertEqual(unchanged.pushed, 0)
         XCTAssertEqual(slice.assetBuilds, 2, "an unchanged cycle decodes and encodes nothing")
+        XCTAssertEqual(slice.recapReads, 1, "and reads no recap content")
 
         let recapJSON = #"{"summary":"Second recap","key_decisions":[],"action_items":[],"open_questions":[]}"#
         let recapUpdatedAt = dbStamp(now)
@@ -475,6 +490,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let recapChanged = try await publisher.publishOnce()
         XCTAssertEqual(recapChanged.pushed, 1, "a new recap version rebuilds and republishes its transcript")
         XCTAssertEqual(slice.assetBuilds, 3)
+        XCTAssertEqual(slice.recapReads, 2)
         let saved = try SliceJSON.object(try XCTUnwrap(try transport.openedSaves().last?.record.payload))
         XCTAssertEqual(saved["id"] as? Int64, first)
         XCTAssertEqual(saved["summary"] as? String, "Second recap")
@@ -483,5 +499,57 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let restaged = try await publisher.publishOnce()
         XCTAssertEqual(restaged.pushed, 2, "a missing staged file is rebuilt and sent again")
         XCTAssertEqual(slice.assetBuilds, 5)
+    }
+
+    /// Board #724: a steady cycle reads only each transcript's light key
+    /// (small columns and lengths); the big columns are read and hashed
+    /// again only when that key changed, or while the row may still change
+    /// within its stored second (`settleTime`).
+    func testAnUnchangedTranscriptIsNotReadInFullAgain() async throws {
+        let clock = OSAllocatedUnfairLock(initialState: now)
+        let calendar = utc
+        let slice = MeetingTranscriptSlice(now: { clock.withLock { $0 } }, calendar: { calendar })
+        let old = try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Morning.", false)]))
+        try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Hello.", false)]))
+        let fresh = try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Hi.", false)]))
+        let justNow = dbStamp(now)
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE meeting_transcripts SET updated_at = ? WHERE id = ?", arguments: [justNow, fresh])
+        }
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(), sources: [slice],
+            assets: SliceAssetStore(directory: assetDir)
+        )
+        try await publisher.publishOnce()
+        XCTAssertEqual(slice.fullReads, 3)
+        XCTAssertEqual(slice.assetBuilds, 3)
+
+        let steady = try await publisher.publishOnce()
+        XCTAssertEqual(steady.pushed, 0)
+        XCTAssertEqual(slice.fullReads, 4, "only the row written this second is read in full again")
+        XCTAssertEqual(slice.assetBuilds, 3, "and its unchanged fingerprint rebuilds nothing")
+
+        // A same-length rewrite in the same stored second: the light key
+        // cannot tell, the full read that follows does.
+        let rewritten = segmentsJSON([("Speaker 1", "Yo.", false)])
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE meeting_transcripts SET segments_json = ? WHERE id = ?", arguments: [rewritten, fresh])
+        }
+        clock.withLock { $0 = $0.addingTimeInterval(30) }
+        let caught = try await publisher.publishOnce()
+        XCTAssertEqual(caught.pushed, 1, "the same-second rewrite is published")
+        XCTAssertEqual(slice.fullReads, 5)
+
+        let settled = try await publisher.publishOnce()
+        XCTAssertEqual(settled.pushed, 0)
+        XCTAssertEqual(slice.fullReads, 5, "a settled row is gated on its light key")
+
+        let relabelled = segmentsJSON([("Colleague A", "Morning.", false)])
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE meeting_transcripts SET segments_json = ? WHERE id = ?", arguments: [relabelled, old])
+        }
+        let renamed = try await publisher.publishOnce()
+        XCTAssertEqual(renamed.pushed, 1, "a changed length is read and republished")
+        XCTAssertEqual(slice.fullReads, 6)
     }
 }

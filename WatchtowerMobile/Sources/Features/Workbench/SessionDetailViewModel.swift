@@ -68,15 +68,38 @@ struct SessionDetailRecords: Equatable {
 
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionDetailRecords")
 
-    static func read(sessionID: Int64, from db: Database, store: ReplicaStore) throws -> Self {
-        Self(
-            report: try decode(SessionReport.self, sessionID: sessionID, from: db, store: store),
-            timeline: try decode(SessionTimeline.self, sessionID: sessionID, from: db, store: store)
+    /// Reads from an ALREADY-OPEN database, so it runs inside a
+    /// ValueObservation fetch. A record whose kind's change stamp is
+    /// unchanged comes from `cache` undecoded; the default fresh cache
+    /// decodes both.
+    static func read(
+        sessionID: Int64,
+        from db: Database,
+        store: ReplicaStore,
+        cache: ReplicaDecodeCache = ReplicaDecodeCache()
+    ) throws -> Self {
+        let versions = try store.kindVersions([SessionReport.sliceKind, SessionTimeline.sliceKind], from: db)
+        return Self(
+            report: try decode(SessionReport.self, sessionID: sessionID, from: db, store: store, cache: cache, versions: versions),
+            timeline: try decode(SessionTimeline.self, sessionID: sessionID, from: db, store: store, cache: cache, versions: versions)
         )
     }
 
-    private static func decode<T: SliceMirror>(_ type: T.Type, sessionID: Int64, from db: Database, store: ReplicaStore) throws -> T? {
+    private static func decode<T: SliceMirror>(
+        _ type: T.Type,
+        sessionID: Int64,
+        from db: Database,
+        store: ReplicaStore,
+        cache: ReplicaDecodeCache,
+        versions: [SliceKind: Int64]
+    ) throws -> T? {
         let recordName = T.sliceKind.recordName(id: String(sessionID))
+        return try cache.value(recordName, version: versions[T.sliceKind] ?? 0) {
+            try decodeRecord(T.self, recordName: recordName, from: db, store: store)
+        }
+    }
+
+    private static func decodeRecord<T: SliceMirror>(_ type: T.Type, recordName: String, from db: Database, store: ReplicaStore) throws -> T? {
         guard let payload = try store.payload(forRecordName: recordName, from: db) else { return nil }
         do {
             return try T.decode(payload: payload)
@@ -103,6 +126,8 @@ final class SessionDetailViewModel {
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionReportRequester
     @ObservationIgnored private var cancellable: ResilientObservation?
+    /// The decoded records between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
 
     init(sessionID: Int64, store: ReplicaStore, requester: SessionReportRequester) {
         self.sessionID = sessionID
@@ -115,12 +140,13 @@ final class SessionDetailViewModel {
         guard cancellable == nil else { return }
         let sessionID = sessionID
         let store = store
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "session detail",
             reader: store.reader,
             observation: {
-                ValueObservation.tracking { db in
-                    try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store)
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion]) { db in
+                    try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store, cache: cache)
                 }
                 .removeDuplicates()
             },

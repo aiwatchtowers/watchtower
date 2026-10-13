@@ -186,6 +186,71 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertTrue(entry.offersRetry)
     }
 
+    /// An upload past its attempt cap reads "Upload stuck" with Retry, on
+    /// the list and on the Saved screen's stage (board #724).
+    func testAStuckUploadSaysSoAndOffersRetry() async throws {
+        let store = try makePoolStore()
+        let directory = try makeRecordingsDirectory()
+        let clock = MutableClock()
+        let uploader = RecordingUploader(
+            transport: try TestPhone.transport(over: ThrowingTransport()), store: store, directory: directory, deviceID: "device-a"
+        ) { clock.now }
+        let file = directory.appendingPathComponent("rec_\(UUID().uuidString).m4a")
+        try Data([1, 2, 3]).write(to: file)
+        let registered = try await uploader.register(
+            fileURL: file, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-60), titleHint: "Acme sync"
+        )
+        let recording = try XCTUnwrap(registered)
+        _ = try await uploader.uploadPending()
+        for delay in RecordingUploader.retryDelays {
+            clock.advance(delay)
+            _ = try await uploader.uploadPending()
+        }
+
+        var recordings = try await snapshot(of: store)
+        recordings.heartbeat = heartbeat(updatedAt: now.addingTimeInterval(-30))
+        let entry = try XCTUnwrap(list(recordings).inProgress.first)
+        XCTAssertEqual(entry.statusText, "Upload stuck")
+        XCTAssertEqual(entry.tone, .red)
+        XCTAssertTrue(entry.offersRetry)
+        let row = try XCTUnwrap(recordings.recording(recording.id))
+        XCTAssertEqual(
+            PhoneUploadStage(recording: row, heartbeat: recordings.heartbeat, now: now),
+            .failed(PhoneUploadStage.stuckLabel, retryable: true)
+        )
+
+        // The same row while the Mac sleeps (or never connected) is waiting
+        // for it, not stuck: no red line, no Retry.
+        for beat in [heartbeat(updatedAt: now.addingTimeInterval(-3_600)), nil] {
+            recordings.heartbeat = beat
+            let waiting = try XCTUnwrap(list(recordings).inProgress.first)
+            XCTAssertEqual(waiting.statusText, "Waiting for the Mac to wake")
+            XCTAssertFalse(waiting.offersRetry)
+            XCTAssertNotEqual(waiting.tone, .red)
+            XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: beat, now: now), .waitingForMac)
+        }
+    }
+
+    /// A capture the recorder finished after a long pause says so in its
+    /// subtitle.
+    func testAnAutoFinishedRecordingSaysSo() async throws {
+        let store = try makePoolStore()
+        let directory = try makeRecordingsDirectory()
+        let uploader = RecordingUploader(transport: try TestPhone.transport(), store: store, directory: directory)
+        let file = directory.appendingPathComponent("rec_\(UUID().uuidString).m4a")
+        try Data([1, 2, 3]).write(to: file)
+        let begun = try await uploader.beginCapture(
+            fileURL: file, startedAt: now.addingTimeInterval(-600), titleHint: "Acme sync", eventID: nil
+        )
+        _ = try await uploader.finishCapture(
+            id: begun.id, endedAt: now, activeDuration: 120, titleHint: "Acme sync", eventID: nil, autoFinished: true
+        )
+
+        let recordings = try await snapshot(of: store)
+        let entry = try XCTUnwrap(list(recordings).inProgress.first)
+        XCTAssertTrue(entry.subtitle.contains(RecordingsListModel.autoFinishedNote), entry.subtitle)
+    }
+
     // MARK: - New recaps
 
     func testNewCountsReadyRecapsTheOwnerHasNotOpened() throws {
@@ -418,6 +483,28 @@ final class RecordingsWiringTests: XCTestCase {
         try await poll({ model.loaded?.marks == [10, 70] }, "a new mark must reload")
     }
 
+    /// Each `observe` starts an empty decode cache: an earlier transcript's
+    /// body is not kept for the view's lifetime.
+    func testObservingAgainStartsAnEmptyDecodeCache() async throws {
+        let store = try makePoolStore(.demo)
+        let transport = InMemoryCloudTransport()
+        try await DemoSeed.load(into: TestPhone.hub(over: transport, .demo), now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let replica = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
+        let demo = try XCTUnwrap(replica.transcripts.first)
+
+        let model = RecapBodyModel()
+        model.observe(transcript: demo, phoneRecordingID: nil, store: store)
+        try await poll({ model.loaded != nil }, "the recap never loaded")
+        let first = model.decodeCache
+        XCTAssertEqual(first.decodes(demo.recordName), 1)
+
+        model.observe(transcript: demo, phoneRecordingID: nil, store: store)
+        XCTAssertFalse(model.decodeCache === first, "a new cache per observation")
+        try await poll({ model.loaded != nil }, "the recap never reloaded")
+        XCTAssertEqual(model.decodeCache.decodes(demo.recordName), 1)
+    }
+
     func testTheDemoTranscriptCarriesItsSegments() async throws {
         let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
@@ -456,5 +543,16 @@ final class RecordingsWiringTests: XCTestCase {
         env.navigation.calendarPath.append(.recap(3))
         env.showRecordings()
         XCTAssertEqual(env.navigation.calendarPath, [.recordings], "one list, never a stack of them")
+    }
+}
+
+/// A transport whose saves always fail (a transient error).
+private actor ThrowingTransport: CloudSyncTransport {
+    struct SaveFailed: Error {}
+
+    func save(_ records: [CloudRecord]) async throws { throw SaveFailed() }
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
     }
 }

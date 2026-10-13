@@ -28,6 +28,11 @@ final class AppRoot {
         let make: @MainActor (
             _ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?, _ seqFloor: UInt64
         ) throws -> AppEnvironment
+        /// Keeps a restart running, and the replica usable, when it runs in
+        /// the background (a removal or an account change a push fetch
+        /// found): the hand-over reads the old replica (`BackgroundWork`).
+        /// nil holds nothing (tests).
+        var startWork: BackgroundWork.Starter?
     }
 
     private(set) var env: AppEnvironment
@@ -74,16 +79,21 @@ final class AppRoot {
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return demo(try AppEnvironment(), defaults: defaults)
+            return demo(try AppEnvironment(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let keys = try PhoneKeychain.store()
         // F14: reads the device id (works while locked), never creates it.
         let identity = try DeviceIdentity.current(keys: keys)
         LegacyDeviceID.remove(defaults: defaults)
+        // Resolved (and an earlier build's store moved) once, before any
+        // environment opens it; every environment and the wipe share it.
+        let transportStorePath = try AppEnvironment.liveTransportStorePath()
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?, UInt64) throws -> AppEnvironment = { scope, hubID, device, floor in
             try AppEnvironment(
-                scope: scope, hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), seqFloor: floor
+                transportStorePath: transportStorePath, scope: scope, hubID: hubID, linkedDevice: device,
+                keys: PhoneKeys(store: keys, hubID: hubID), seqFloor: floor,
+                energy: BatteryDiagnostics.shared.counter
             )
         }
         let scope = store.bootScope
@@ -96,8 +106,9 @@ final class AppRoot {
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity, keys: keys),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
-                transportStorePath: AppEnvironment.liveTransportStorePath(in: directory),
-                make: make
+                transportStorePath: transportStorePath,
+                make: make,
+                startWork: BackgroundWork.starter()
             )
         )
         Task { await root.resumeLink() }
@@ -273,6 +284,8 @@ final class AppRoot {
         keepRecordings: Bool,
         restarter: Restarter
     ) async throws -> LocalWipe {
+        let endWork = restarter.startWork?("app-restart")
+        defer { endWork?() }
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
@@ -368,7 +381,7 @@ extension AppRoot: LinkHost {
     }
 
     func fetchKeybox(deviceID: String) async -> Keybox? {
-        await env.refresh()
+        await env.refresh(.link)
         return await storedKeybox(deviceID: deviceID)
     }
 

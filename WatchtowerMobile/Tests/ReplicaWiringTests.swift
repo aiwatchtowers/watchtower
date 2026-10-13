@@ -57,19 +57,21 @@ final class ReplicaWiringTests: XCTestCase {
     /// An isolated demo environment on `path`; `sleeper` steps its fetch
     /// loop by hand (nil: real sleeps).
     private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> AppEnvironment {
-        managed(try AppEnvironment(
-            transport: InMemoryCloudTransport(),
-            replicaPath: path,
-            transportKind: .inMemoryDemo,
-            defaults: try makeDefaults(),
-            recordingsDirectory: try makeRecordingsDirectory()
-        ) { interval in
+        let sleep: @Sendable (Duration) async throws -> Void = { interval in
             if let sleeper {
                 try await sleeper.sleep(interval)
             } else {
                 try await Task.sleep(for: interval)
             }
-        })
+        }
+        return managed(try AppEnvironment(
+            transport: InMemoryCloudTransport(),
+            replicaPath: path,
+            transportKind: .inMemoryDemo,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            sleep: sleep
+        ))
     }
 
     // MARK: - Boot and demo seed
@@ -157,47 +159,16 @@ final class ReplicaWiringTests: XCTestCase {
 
     // MARK: - Fetch loop
 
-    /// "Last sync" follows every successful loop fetch, not only the first.
+    /// "Last sync" follows every successful safety-poll fetch, not only the
+    /// first. The sleeper is stepped by hand.
     func testALoopTickAdvancesLastSync() async throws {
-        let env = try demoEnvironment(at: try makeReplicaPath())
-        try await poll { env.isLooping }
-        let first = try XCTUnwrap(env.lastSyncAt)
-
-        env.setFetchInterval(.milliseconds(50))
-        try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
-    }
-
-    /// The tab sets the cadence the loop sleeps, and the loop pauses in the
-    /// background and resumes in the foreground. The sleeper is stepped by
-    /// hand: no wall-clock wait decides anything.
-    func testTheLoopFollowsTheTabCadenceAndPausesInTheBackground() async throws {
         let sleeper = TickSleeper()
         let env = try demoEnvironment(at: try makeReplicaPath(), sleeper: sleeper)
         try await poll { env.isLooping && sleeper.waitingCount == 1 }
-        XCTAssertEqual(sleeper.requested.last, .seconds(30))
+        let first = try XCTUnwrap(env.lastSyncAt)
 
-        env.setFetchInterval(RootTabView.Tab.now.fetchInterval)
-        XCTAssertEqual(env.fetchInterval, .seconds(5))
-        try await poll({ sleeper.requested.last == .seconds(5) && sleeper.waitingCount == 1 }, "the loop sleeps 5 s on Now")
-        env.setFetchInterval(RootTabView.Tab.calendar.fetchInterval)
-        XCTAssertEqual(env.fetchInterval, .seconds(30))
-        try await poll({ sleeper.requested.last == .seconds(30) && sleeper.waitingCount == 1 }, "the loop sleeps 30 s on Calendar")
-
-        let running = env.fetchCycles
         sleeper.tick()
-        try await poll({ env.fetchCycles == running + 1 && sleeper.waitingCount == 1 }, "a tick runs one more cycle")
-
-        env.setActive(false)
-        XCTAssertFalse(env.isLooping)
-        try await poll({ sleeper.waitingCount == 0 }, "the paused loop's sleep is cancelled")
-        let paused = env.fetchCycles
-        sleeper.tick()
-        await Task.yield()
-        XCTAssertEqual(env.fetchCycles, paused, "no cycle may begin while the app is in the background")
-
-        env.setActive(true)
-        XCTAssertTrue(env.isLooping)
-        try await poll({ env.fetchCycles == paused + 1 }, "the loop did not resume in the foreground")
+        try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
     }
 
     /// A-T11 N5: the scene phase is read at launch too (`initial: true`),
@@ -205,9 +176,9 @@ final class ReplicaWiringTests: XCTestCase {
     /// environment before its boot ends: the boot never starts the loop,
     /// and the first activation does.
     func testABackgroundLaunchStartsNoLoopUntilTheAppIsActive() async throws {
-        XCTAssertEqual(RootTabView.isActive(in: .background), false)
-        XCTAssertEqual(RootTabView.isActive(in: .active), true)
-        XCTAssertNil(RootTabView.isActive(in: .inactive), "inactive (a sheet, the app switcher) changes nothing")
+        XCTAssertFalse(RootTabView.isActive(in: .background))
+        XCTAssertTrue(RootTabView.isActive(in: .active))
+        XCTAssertFalse(RootTabView.isActive(in: .inactive), "inactive (Control Center, the app switcher) pauses too")
 
         let env = try demoEnvironment(at: try makeReplicaPath())
         env.setActive(false)
@@ -270,8 +241,10 @@ final class ReplicaWiringTests: XCTestCase {
             keys: keys,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            notifications: notifications
-        ) { try await sleeper.sleep($0) })
+            notifications: notifications,
+            // Labelled: a trailing closure would bind to `makeRecorder`.
+            sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+        ))
     }
 
     private func slice(_ kind: SliceKind, id: String, at date: Date) -> CloudRecord {
@@ -301,7 +274,7 @@ final class ReplicaWiringTests: XCTestCase {
         try await transport.save([slice(.workbench, id: "1", at: now)])
         try await TestPhone.hub(over: transport).save([slice(.workbench, id: "2", at: now)])
 
-        let fetched = await env.refresh()
+        let fetched = await env.refresh(.pull)
 
         XCTAssertTrue(fetched)
         XCTAssertEqual(try rowCount(in: env.store), 1, "only the sealed record is stored")
@@ -325,7 +298,7 @@ final class ReplicaWiringTests: XCTestCase {
 
         keychain.isLocked = true
         try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
-        let fetched = await env.refresh()
+        let fetched = await env.refresh(.pull)
         XCTAssertTrue(fetched, "a locked keychain still stores the batch")
         XCTAssertEqual(try rowCount(in: env.store), 1, "the ciphertext is stored")
         XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0, "and cannot be opened while locked")
@@ -350,7 +323,7 @@ final class ReplicaWiringTests: XCTestCase {
 
         keychain.isLocked = true
         try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
-        _ = await env.refresh()
+        _ = await env.refresh(.pull)
         XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0)
 
         keychain.isLocked = false
@@ -377,7 +350,7 @@ final class ReplicaWiringTests: XCTestCase {
             scope: .private, linked: true, typingAllowed: false, startSessionsAllowed: true
         )
         try await TestPhone.hub(over: transport).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
-        _ = await env.refresh()
+        _ = await env.refresh(.pull)
         XCTAssertEqual(signals, 0, "a keybox that cannot be read while locked signals nothing yet")
 
         keychain.isLocked = false

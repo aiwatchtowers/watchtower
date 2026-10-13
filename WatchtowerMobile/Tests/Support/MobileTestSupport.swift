@@ -93,6 +93,13 @@ final class TickSleeper {
     private func cancel(_ id: UUID) {
         waiting.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
+
+    /// Ends every sleep waiting now as cancelled (a test's teardown).
+    func cancelAll() {
+        let all = waiting
+        waiting = [:]
+        all.values.forEach { $0.resume(throwing: CancellationError()) }
+    }
 }
 
 extension XCTestCase {
@@ -188,8 +195,8 @@ enum TestPhone {
     }
 
     /// An on-disk replica at `path`, opened with the paired phone's keys.
-    static func replica(path: String, _ pairing: Pairing = .test) throws -> ReplicaStore {
-        try ReplicaStore(path: path, opener: opener(pairing))
+    static func replica(path: String, _ pairing: Pairing = .test, observesSuspension: Bool = false) throws -> ReplicaStore {
+        try ReplicaStore(path: path, opener: opener(pairing), observesSuspension: observesSuspension)
     }
 
     private static func opener(_ pairing: Pairing) throws -> EnvelopeReplicaOpener {
@@ -274,5 +281,17 @@ enum TestPhone {
             hubSigning: TestE2E.hubSigningKey.publicKey, hubAgreement: TestE2E.hubAgreementKey.publicKey,
             deviceSigning: signing, deviceAgreement: agreement)
         return (hello, sas)
+    }
+}
+
+/// A clock the test moves by hand (seeded from now).
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = Date()
+
+    var now: Date { lock.withLock { current } }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current += seconds }
     }
 }

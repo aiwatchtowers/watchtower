@@ -182,9 +182,10 @@ final class ResilientObservationTests: XCTestCase {
         let count = model.snapshot.events.count
 
         keys.isLocked = true
-        // A write the observation tracks, with no new row to index.
+        // A write the observation tracks (a change stamp, board #724), with no new row to index: its read skips
+        // the locked rows, and the decode cache keeps nothing from it.
         let pool = try XCTUnwrap(store.reader as? DatabasePool)
-        try await pool.write { db in try db.execute(sql: "UPDATE slice_records SET payload = payload") }
+        try await pool.write { db in try db.execute(sql: "UPDATE slice_kind_versions SET version = version + 1") }
         try await poll({ model.snapshot.events.isEmpty }, "the locked re-read left the rows out")
 
         keys.isLocked = false
@@ -285,12 +286,14 @@ final class ResilientObservationTests: XCTestCase {
         try await poll({ !model.snapshot.events.isEmpty }, "the model did not load the events")
         let failuresBefore = ObservationHealth.shared.failures["calendar"]?.count ?? 0
 
-        // A write the model observes, after which its read fails: the real
-        // table swapped for one without the payload column.
+        // A write the model observes (it bumps the calendar's change stamp,
+        // as every replica write does), after which its read fails: the
+        // real table swapped for one without the payload column.
         try await pool.write { db in
             try db.execute(sql: "ALTER TABLE slice_records RENAME TO slice_records_away")
             try db.execute(sql: "CREATE TABLE slice_records (record_name TEXT, kind TEXT)")
             try db.execute(sql: "INSERT INTO slice_records VALUES ('x', 'x')")
+            try db.execute(sql: "UPDATE slice_kind_versions SET version = version + 1 WHERE kind = 'calendar_event'")
         }
         try await poll({ (ObservationHealth.shared.failures["calendar"]?.count ?? 0) > failuresBefore }, "the failed read was not reported")
         try await pool.write { db in

@@ -221,14 +221,21 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(f.feed.desktopReachability(now: base), .unreachable)
     }
 
-    func testDesktopReachableWhileHeartbeatIsUnder720Seconds() async throws {
+    /// Board #724, owner decision Q2: the Mac writes its heartbeat every
+    /// 15 min, so one missed write (30 min) still reads online.
+    func testDesktopReachableWhileHeartbeatIsUnder35Minutes() async throws {
         let f = try makeFixtures()
         try hydrateHeartbeat(f.store, updatedAt: base)
 
+        XCTAssertEqual(RelayFeed.heartbeatStaleAfter, .seconds(2100))
         XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(5 * 60)), .reachable)
-        // Boundary: online while UNDER 720 s old (spec §3).
-        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(719)), .reachable)
-        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(720)), .unreachable)
+        XCTAssertEqual(
+            f.feed.desktopReachability(now: base.addingTimeInterval(30 * 60)), .reachable, "one missed 15 min write")
+        // Boundary: online while UNDER 2100 s old (spec §3).
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(2099)), .reachable)
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(2100)), .unreachable)
+        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(2099)))
+        XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(2100)))
     }
 
     /// The heartbeat is sealed: while the keychain is locked it cannot be read, and that is its own state,
@@ -239,9 +246,11 @@ final class RelayFeedTests: XCTestCase {
 
         f.keys.isLocked = true
         XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(60)), .keysUnavailable)
+        XCTAssertFalse(RelayFeed.isDesktopReachable(store: f.store, now: base.addingTimeInterval(60)))
 
         f.keys.isLocked = false
         XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(60)), .reachable)
+        XCTAssertTrue(RelayFeed.isDesktopReachable(store: f.store, now: base.addingTimeInterval(60)))
     }
 
     func testHeartbeatWithFutureValuesStillYieldsAnAge() throws {

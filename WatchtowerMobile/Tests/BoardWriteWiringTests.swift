@@ -184,7 +184,7 @@ final class BoardWriteWiringTests: XCTestCase {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
 
-        let stale = try detail(415, try snapshot(fixture.store, heartbeatAge: 800))
+        let stale = try detail(415, try snapshot(fixture.store, heartbeatAge: 3_600))
         XCTAssertEqual(stale.writes.first?.state, .sending("Waiting for your Mac"))
         let none = try detail(415, try snapshot(fixture.store))
         XCTAssertEqual(none.writes.first?.state, .sending("Waiting for your Mac"), "no heartbeat yet is not online")

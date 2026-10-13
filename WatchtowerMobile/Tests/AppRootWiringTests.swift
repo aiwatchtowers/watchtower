@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import GRDB
+import os
 import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
@@ -119,6 +120,9 @@ final class AppRootWiringTests: XCTestCase {
         let first = root.env
         let now = Date()
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // The safety poll waits a minute after the boot (board #724): fetch once the boot is done.
+        try await poll { first.isBootstrapped }
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCountSync(first)) == 1 }
         for id in 1...3 {
             try await first.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-\(id)")
@@ -174,6 +178,107 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(root.failure)
     }
 
+    // MARK: - Transport store location (0xdead10cc)
+
+    /// Two throwaway directories: the app group's and the app's own.
+    private func makeStoreDirectories() throws -> (group: URL, own: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("transport-move-\(UUID().uuidString)")
+        let group = root.appendingPathComponent("group", isDirectory: true)
+        let own = root.appendingPathComponent("own", isDirectory: true)
+        for dir in [group, own] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return (group, own)
+    }
+
+    /// An earlier build's store in the app group moves into the app's own
+    /// directory once, with its SQLite side files, and opens there with its
+    /// rows; a second launch finds it in place.
+    func testTheTransportStoreMovesOutOfTheAppGroupOnce() async throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldPath = group.appendingPathComponent(name).path
+        _ = try TransportStore(path: oldPath)
+        try await DatabaseQueue(path: oldPath).write { db in
+            try db.execute(sql: "INSERT INTO engine_state (id, data) VALUES (1, x'2a')")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            try Data(suffix.utf8).write(to: group.appendingPathComponent(name + suffix))
+        }
+
+        let path = AppEnvironment.moveTransportStore(from: group, to: own)
+
+        XCTAssertEqual(path, own.appendingPathComponent(name).path)
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: oldPath + suffix), "\(suffix) left in the app group")
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path + suffix)), Data(suffix.utf8))
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            // The stand-in side files are not SQLite's: drop them before opening.
+            try FileManager.default.removeItem(atPath: path + suffix)
+        }
+        let engineState = try await DatabaseQueue(path: path).read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM engine_state") ?? 0
+        }
+        XCTAssertEqual(engineState, 1, "the rows came along")
+
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), path, "the next launch finds it in place")
+    }
+
+    /// A fresh install has nothing to move; a store already in the app's own
+    /// directory wins over a stray one in the app group, which is left alone.
+    func testTheTransportStoreMoveLeavesAnInstalledStoreAlone() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let ownPath = own.appendingPathComponent(name).path
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), ownPath)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ownPath), "nothing is created")
+
+        try Data("own".utf8).write(to: URL(fileURLWithPath: ownPath))
+        let stray = group.appendingPathComponent(name)
+        try Data("stray".utf8).write(to: stray)
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: own), ownPath)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: ownPath)), Data("own".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stray.path))
+    }
+
+    /// The live path resolves once per process: a move that failed keeps
+    /// the app-group store open there, and a later resolution (a restart's
+    /// environment, the wipe) returns that same path instead of moving the
+    /// store from under the open database.
+    func testTheTransportStorePathResolvesOncePerProcess() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldMain = group.appendingPathComponent(name)
+        try Data("main".utf8).write(to: oldMain)
+        let target = OSAllocatedUnfairLock(initialState: own.appendingPathComponent("gone", isDirectory: true))
+        let resolver = TransportStorePathResolver { AppEnvironment.moveTransportStore(from: group, to: target.withLock { $0 }) }
+
+        XCTAssertEqual(try resolver.path(), oldMain.path, "the failed move keeps the old store")
+        target.withLock { $0 = own }
+        XCTAssertEqual(try resolver.path(), oldMain.path, "the same path, no second move")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldMain.path), "the open store stays where it is")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: own.appendingPathComponent(name).path))
+    }
+
+    /// A move that fails keeps the app-group store, side files included,
+    /// and opens it there for this launch.
+    func testAFailedTransportStoreMoveKeepsTheOldStore() throws {
+        let (group, own) = try makeStoreDirectories()
+        let name = AppEnvironment.transportStoreFileName
+        let oldMain = group.appendingPathComponent(name)
+        try Data("main".utf8).write(to: oldMain)
+        try Data("wal".utf8).write(to: group.appendingPathComponent(name + "-wal"))
+        let missing = own.appendingPathComponent("gone", isDirectory: true)
+
+        XCTAssertEqual(AppEnvironment.moveTransportStore(from: group, to: missing), oldMain.path)
+        XCTAssertEqual(try Data(contentsOf: oldMain), Data("main".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldMain.path + "-wal"))
+    }
+
     private func transportCounts(_ raw: DatabaseQueue) async throws -> (pending: Int, events: Int, engineState: Int) {
         try await raw.read { db in
             (
@@ -205,7 +310,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: replicaPath), "the live replica's file is in place")
         let now = Date()
         try await TestPhone.hub(over: transports[2]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
-        let fetched = await last.refresh()
+        let fetched = await last.refresh(.pull)
         XCTAssertTrue(fetched)
         XCTAssertEqual(try sliceCountSync(last), 1, "the live replica takes writes")
     }
@@ -367,7 +472,9 @@ final class AppRootWiringTests: XCTestCase {
 
     /// Verify round: killed after the hold and before the replica went (or
     /// a replica that could not be removed): the next boot finds the row
-    /// still in the replica, brings the audio back next to it, and sends it.
+    /// still in the replica, brings the audio back next to it, and sends it
+    /// — its `uploading` row as the relaunch retry (board #724): in the
+    /// foreground, with the Mac online and the backoff due.
     func testKilledAfterHoldingBeforeTheReplicaWentRestoresTheAudio() async throws {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
@@ -378,8 +485,12 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the audio is in the hold")
         root.env.stop()
 
-        // The relaunch: the same replica, the same hub.
+        // The relaunch: the same replica, the same hub, past the first
+        // backoff step, with the Mac's heartbeat fresh.
+        let relaunchAt = Date().addingTimeInterval(RecordingUploader.retryDelays[0] + 1)
         let transport = InMemoryCloudTransport()
+        try await TestPhone.hub(over: transport).save(
+            [try CloudRecordFactory.record(for: heartbeat(updatedAt: relaunchAt), modifiedAt: relaunchAt)])
         let relaunched = try AppEnvironment(
             transport: transport,
             replicaPath: replicaPath,
@@ -388,12 +499,15 @@ final class AppRootWiringTests: XCTestCase {
             linkedDevice: device,
             keys: try TestPhone.keys(),
             defaults: try makeDefaults(),
-            recordingsDirectory: recordingsDirectory
-        ) { [engine, clock] uploader in
-            PhoneRecorderController(
-                uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
-            )
-        }
+            recordingsDirectory: recordingsDirectory,
+            uploadRetriesAllowed: true,
+            makeRecorder: { [engine, clock] uploader in
+                PhoneRecorderController(
+                    uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
+                )
+            },
+            now: { relaunchAt }
+        )
         addTeardownBlock { @MainActor in relaunched.stop() }
         try await poll { relaunched.isBootstrapped }
 
@@ -562,6 +676,9 @@ final class AppRootWiringTests: XCTestCase {
         let first = root.env
         let now = Date()
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // The safety poll waits a minute after the boot (board #724): fetch once the boot is done.
+        try await poll { first.isBootstrapped }
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
         let samePrivate = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: false)
@@ -582,6 +699,9 @@ final class AppRootWiringTests: XCTestCase {
         let first = root.env
         let now = Date()
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // The safety poll waits a minute after the boot (board #724): fetch once the boot is done.
+        try await poll { first.isBootstrapped }
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
         _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
@@ -602,6 +722,9 @@ final class AppRootWiringTests: XCTestCase {
         let first = root.env
         let now = Date()
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        // The safety poll waits a minute after the boot (board #724): fetch once the boot is done.
+        try await poll { first.isBootstrapped }
+        _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
         _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID, fresh: true)
@@ -645,6 +768,8 @@ final class AppRootWiringTests: XCTestCase {
         link.deviceID = device.deviceID
         link.linkedAt = linkedAt
         let root = try makeRoot(linked: device, link: link, linkClock: clock)
+        // A refresh joins a hydration in flight: let the boot's launch fetch end first.
+        try await poll { root.env.isBootstrapped }
         let hub = TestPhone.hub(over: transports[0])
         let later = linkedAt.addingTimeInterval(60)
         let grant = DeviceGrant(
@@ -657,7 +782,7 @@ final class AppRootWiringTests: XCTestCase {
         ])
         // Each fetch's link check, awaited.
         let fetch = {
-            await root.env.refresh()
+            await root.env.refresh(.pull)
             await root.linkCheck?.value
         }
         await fetch()
@@ -773,11 +898,13 @@ final class AppRootWiringTests: XCTestCase {
     /// another hub's stops the writes.
     func testAFetchedHeartbeatOfAnotherHubShowsMovedAndStopsWrites() async throws {
         let root = try makeRoot(linked: device, link: linkRecord())
+        // A refresh joins a hydration in flight: let the boot's launch fetch end first.
+        try await poll { root.env.isBootstrapped }
         let now = Date()
         let moved = heartbeat(updatedAt: now, hubID: "hub-studio", macName: "Acme Studio")
         try await TestPhone.hub(over: transports[0]).save([try CloudRecordFactory.record(for: moved, modifiedAt: now)])
 
-        let fetched = await root.env.refresh()
+        let fetched = await root.env.refresh(.pull)
 
         XCTAssertTrue(fetched)
         try await poll { root.linking.notice == .moved(macName: "Acme Studio") }
@@ -865,13 +992,15 @@ final class AppRootWiringTests: XCTestCase {
     func testARevokedKeyboxRemovesThePhoneInPrivateScope() async throws {
         let root = try makeRoot(linked: device, link: e2eLinkRecord())
         let first = root.env
+        // A refresh joins a hydration in flight: let the boot's launch fetch end first.
+        try await poll { first.isBootstrapped }
         let revoked = DeviceGrant(
             deviceID: device.deviceID, hubID: TestE2E.hubID.uuidString, name: device.name, scope: .private,
             linked: false, typingAllowed: false, startSessionsAllowed: true, decidedAt: Date(), revoked: true
         )
         try await TestPhone.hub(over: transports[0]).save([try TestPhone.grantRecord(revoked, modifiedAt: Date())])
 
-        let fetched = await first.refresh()
+        let fetched = await first.refresh(.pull)
 
         XCTAssertTrue(fetched)
         try await poll { root.linking.notice == .removed() }

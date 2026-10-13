@@ -44,9 +44,11 @@ public enum DesktopReachability: Equatable, Sendable {
 /// untouched, so the same batch replays after unlock (Review Focus 1). An
 /// older version of an echo already seen is dropped by the rollback guard.
 public actor RelayFeed {
-    /// The desktop refreshes its heartbeat every 300 s; the phone shows the
-    /// Mac online while the heartbeat is UNDER 720 s old (mobile POC spec §3).
-    public static let heartbeatStaleAfter: Duration = .seconds(12 * 60)
+    /// The desktop refreshes its heartbeat every 15 min; the phone shows the
+    /// Mac online while the heartbeat is UNDER 35 min (2100 s) old — one
+    /// missed write still reads online (mobile POC spec §3, board #724
+    /// owner decision Q2; was 300 s / 720 s).
+    public static let heartbeatStaleAfter: Duration = .seconds(35 * 60)
 
     private let transport: SecureTransport
     private let store: ReplicaStore
@@ -79,6 +81,7 @@ public actor RelayFeed {
     /// instance (a newer desktop may ship kinds this build does not know).
     private(set) var loggedUnknownKinds: Set<String> = []
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
+    private static let staticLogger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
 
     public init(
         transport: SecureTransport,
@@ -224,12 +227,18 @@ public actor RelayFeed {
 
     // MARK: - Liveness
 
-    /// `.reachable` while the last desktop heartbeat is under 720 s old
+    /// `.reachable` while the last desktop heartbeat is under 2100 s old
     /// (spec §3); `.unreachable` when none was ever seen or it is older;
     /// `.keysUnavailable` while the sealed heartbeat cannot be opened (a
     /// locked keychain is not an offline Mac). `now` is injectable for tests
     /// and for view models that batch-evaluate against one timestamp.
     nonisolated public func desktopReachability(now: Date = Date()) -> DesktopReachability {
+        Self.desktopReachability(store: store, now: now)
+    }
+
+    /// The same check over `store`, for a reader without a feed (the
+    /// recording uploader's relaunch re-save).
+    public static func desktopReachability(store: ReplicaStore, now: Date = Date()) -> DesktopReachability {
         let age: Duration?
         do {
             age = try store.heartbeatAge(now: now)
@@ -237,11 +246,23 @@ public actor RelayFeed {
             return .keysUnavailable
         } catch {
             // Any other read error: liveness cannot be proven.
-            logger.warning("heartbeat unreadable, the Mac reads as offline: \(String(describing: error), privacy: .public)")
+            staticLogger.warning(
+                "heartbeat unreadable, the Mac reads as offline: \(String(describing: error), privacy: .public)")
             return .unreachable
         }
         guard let age else { return .unreachable }
-        return age < Self.heartbeatStaleAfter ? .reachable : .unreachable
+        return age < heartbeatStaleAfter ? .reachable : .unreachable
+    }
+
+    /// True only while `desktopReachability` is `.reachable` (a locked
+    /// keychain cannot prove the Mac online).
+    nonisolated public func isDesktopReachable(now: Date = Date()) -> Bool {
+        desktopReachability(now: now) == .reachable
+    }
+
+    /// `isDesktopReachable` over `store`.
+    public static func isDesktopReachable(store: ReplicaStore, now: Date = Date()) -> Bool {
+        desktopReachability(store: store, now: now) == .reachable
     }
 
     // MARK: - Poll loop

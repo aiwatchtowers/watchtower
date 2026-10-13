@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import WatchtowerCore
 
@@ -47,8 +48,10 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     private let workbenchIDs: @Sendable () async throws -> [Int64]
     private let timing: Timing
     private let clock: @Sendable () -> ContinuousClock.Instant
+    /// Whether a pass runs at all (the hub's linked-phone gate): with no
+    /// phone nothing reads the status, so no CLI runs.
+    private let isActive: @Sendable () -> Bool
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
-    private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -58,26 +61,35 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// - Parameters:
     ///   - workbenchIDs: the workbenches to keep a status for (the published
     ///     ones); a workbench that leaves the list is forgotten.
+    ///   - isActive: false skips the loop's passes (nothing is listed or run).
     init(
         fetch: @escaping Fetch,
         workbenchIDs: @escaping @Sendable () async throws -> [Int64],
         timing: Timing = .standard,
-        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        isActive: @escaping @Sendable () -> Bool = { true }
     ) {
         self.fetch = fetch
         self.workbenchIDs = workbenchIDs
         self.timing = timing
         self.clock = clock
+        self.isActive = isActive
+    }
+
+    /// The hub's refresher: the CLI's `gitStatus` over the published
+    /// workbenches (the light listing); no pass runs while `isActive` is
+    /// false.
+    static func live(cli: WorkbenchCLI, dbPool: DatabasePool, isActive: @escaping @Sendable () -> Bool) -> WorkbenchGitRefresher {
+        WorkbenchGitRefresher(
+            fetch: { try await cli.gitStatus(projectID: $0) },
+            workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenchRefs($0).map(\.id) } },
+            isActive: isActive
+        )
     }
 
     /// The last good status; nil before the first one.
     func status(for workbenchID: Int64) -> WorkbenchGitSnapshot? {
         entries.withLock { $0[workbenchID]?.snapshot }
-    }
-
-    /// Runs after a status changed (the hub nudges the `workbench` kind).
-    func setOnChange(_ handler: (@Sendable () -> Void)?) {
-        onChange.withLock { $0 = handler }
     }
 
     /// A session of `workbenchID` changed state: refresh at the next wake,
@@ -195,13 +207,11 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     private func store(_ snapshot: WorkbenchGitSnapshot, for id: Int64) {
-        let changed = entries.withLock { entries -> Bool in
+        entries.withLock { entries in
             // The workbench may have been forgotten while the run was out.
-            guard entries[id] != nil, entries[id]?.snapshot != snapshot else { return false }
+            guard entries[id] != nil else { return }
             entries[id]?.snapshot = snapshot
-            return true
         }
-        if changed { onChange.withLock { $0 }?() }
     }
 
     static func snapshot(_ status: WorkbenchGitStatus) -> WorkbenchGitSnapshot {
@@ -215,7 +225,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refreshDue()
+                if self.isActive() { await self.refreshDue() }
                 try? await Task.sleep(for: self.timing.wake)
             }
         }
