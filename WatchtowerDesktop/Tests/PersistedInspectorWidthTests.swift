@@ -59,7 +59,7 @@ final class PersistedInspectorWidthTests: XCTestCase {
     /// width probe wrapped around `.inspectorColumnWidth` SwiftUI dropped the
     /// range and pinned the column at its default width.
     @MainActor
-    func testTheHostedColumnTakesTheRangeAndCanBeDraggedWider() throws {
+    func testTheHostedColumnTakesTheRangeAndKeepsAWidthDraggedTo() throws {
         let key = "w"
         let root = Color.clear
             .inspector(isPresented: .constant(true)) {
@@ -73,18 +73,35 @@ final class PersistedInspectorWidthTests: XCTestCase {
         window.contentView = NSHostingView(rootView: root)
         window.orderFront(nil)
         defer { window.close() }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-
-        let split = try XCTUnwrap(Self.splitView(in: try XCTUnwrap(window.contentView)), "no inspector split")
-        let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
-        let column = try XCTUnwrap(controller.splitViewItems.last)
+        let hosted = window.contentView
+        let split = try XCTUnwrap(
+            Self.poll { hosted.flatMap(Self.splitView(in:)).flatMap { Self.column(of: $0)?.maximumThickness == 560 ? $0 : nil } },
+            "no inspector split with the column range"
+        )
+        let column = try XCTUnwrap(Self.column(of: split))
         XCTAssertEqual(column.minimumThickness, 220)
-        XCTAssertEqual(column.maximumThickness, 560)
-        XCTAssertEqual(split.arrangedSubviews.last?.frame.width, 300, "opens at the ideal")
+        XCTAssertEqual(split.arrangedSubviews.last?.frame.width ?? 0, 300, accuracy: 1, "opens at the ideal")
 
         split.setPosition(split.frame.width - 500, ofDividerAt: 0)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-        XCTAssertEqual(split.arrangedSubviews.last?.frame.width ?? 0, 500, accuracy: 1, "dragged wider")
+        let dragged = Self.poll { abs((split.arrangedSubviews.last?.frame.width ?? 0) - 500) <= 1 ? true : nil }
+        XCTAssertNotNil(dragged, "dragged wider, got \(split.arrangedSubviews.last?.frame.width ?? 0)")
+        let stored = Self.poll(timeout: 3) { (defaults.object(forKey: key) as? Double).flatMap { abs($0 - 500) <= 1 ? $0 : nil } }
+        XCTAssertNotNil(stored, "the settled width is stored, got \(String(describing: defaults.object(forKey: key)))")
+    }
+
+    /// Spins the main run loop until `probe` yields a value or `timeout` runs out.
+    @MainActor
+    private static func poll<T>(timeout: TimeInterval = 2, _ probe: () -> T?) -> T? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let value = probe() { return value }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        return probe()
+    }
+
+    private static func column(of split: NSSplitView) -> NSSplitViewItem? {
+        (split.delegate as? NSSplitViewController)?.splitViewItems.last
     }
 
     private static func splitView(in view: NSView) -> NSSplitView? {
