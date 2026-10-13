@@ -17,8 +17,11 @@ import WatchtowerSync
 ///   replacing them. A change asks the changed sessions' workbenches for a
 ///   git and a report-summary refresh and tells the session report runner
 ///   (which resolves the state milestones and the per-session report
-///   runs); a liveness change seen on an unchanged read tells it too. The
-///   published session states follow on the next full tick.
+///   runs); a liveness change seen on an unchanged read tells it too. It
+///   also nudges `owner_ask` and `ask_alert` (`stateChangeKinds`): an agent
+///   asking usually flips its session's state, so an ask Go wrote reaches
+///   the phone in 1–2 s instead of the 10 s urgent tick. The published
+///   session states themselves follow on the next full tick.
 ///
 /// It also copies `TerminalCenter`'s liveness into `SessionLivenessBox` for
 /// the `terminal_session` slice, which resolves states off the main actor.
@@ -33,6 +36,9 @@ final class FastLane: HubCompanion {
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
         ("owner_asks", [.ownerAsk, .askAlert])
     ]
+    /// What a session state change nudges: the ask kinds, since Go's ask
+    /// writes are invisible to the observation above.
+    nonisolated static let stateChangeKinds: Set<SliceKind> = [.ownerAsk, .askAlert]
 
     private let dbPool: DatabasePool
     private weak var agentStates: SessionAgentStateCenter?
@@ -129,6 +135,9 @@ final class FastLane: HubCompanion {
     private func statesChanged() {
         guard isRunning, let center = agentStates else { return }
         let next = center.statuses
+        if next != lastStatuses {
+            nudge(Self.stateChangeKinds)
+        }
         var workbenches: Set<Int64> = []
         for id in Set(next.keys).union(lastStatuses.keys) where next[id] != lastStatuses[id] {
             if let workbench = next[id]?.workbenchID ?? lastStatuses[id]?.workbenchID { workbenches.insert(workbench) }

@@ -177,7 +177,12 @@ final class FastLaneTests: XCTestCase {
         try hookWrites([row.id], "approval", at: 1)
         await center.poll()
 
-        XCTAssertNil(publisher.fastDeadline, "a session state is not sent at once")
+        // The change nudges only the ask kinds (board #724): their fast
+        // cycle leaves the session state for the full tick.
+        let fast = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(6)))
+        XCTAssertEqual(fast, .urgent(FastLane.stateChangeKinds))
+        await publisher.run(fast)
+        XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_kind"] as? String, "running")
         let urgent = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(10)))
         XCTAssertEqual(urgent, .urgent(SlicePublisher.urgentKinds))
         await publisher.run(urgent)
@@ -236,7 +241,11 @@ final class FastLaneTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state.kind, .background)
 
-        XCTAssertEqual(log.nudges, [], "a session state nudges nothing; it rides the full tick")
+        XCTAssertFalse(log.nudges.isEmpty)
+        XCTAssertTrue(
+            log.nudges.allSatisfy { $0 == FastLane.stateChangeKinds },
+            "a session state nudges only the ask kinds; it rides the full tick"
+        )
         try await publisher.publishOnce(kinds: [.terminalSession, .askAlert])
         let record = SliceKind.terminalSession.recordName(id: String(row.id))
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
@@ -263,6 +272,26 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(changed, [bench.project])
         await center.poll()
         XCTAssertEqual(changed, [bench.project], "an unchanged read asks for nothing")
+    }
+
+    /// Board #724: a state change nudges the ask kinds once (Go's ask
+    /// writes are not observed); an unchanged read nudges nothing.
+    func testAStateChangeNudgesTheAskKinds() async throws {
+        let bench = try await workbench()
+        let row = try await session(in: bench)
+        let center = makeCenter()
+        let log = NudgeLog()
+        let lane = makeLane(center) { log.record($0) }
+        terminals.start(row, fresh: true)
+        await center.poll()
+        lane.start()
+
+        try hookWrites([row.id], "approval", at: 1)
+        await center.poll()
+        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert]])
+        await center.poll()
+        XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert]], "an unchanged read nudges nothing")
+        XCTAssertTrue(FastLane.stateChangeKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps these nudges")
     }
 
     func testStartCopiesTheLivenessAndNudgesNothing() async throws {
