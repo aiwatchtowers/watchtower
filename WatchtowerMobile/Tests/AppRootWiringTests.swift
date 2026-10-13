@@ -38,6 +38,11 @@ final class AppRootWiringTests: XCTestCase {
     /// answers); `farewellCap` bounds the wait.
     private var farewellStuck = false
     private var farewellCap: Duration = .seconds(10)
+    /// The send step never returns (a network that hangs): only the cap
+    /// ends the wait.
+    private var farewellSendHangs = false
+    /// The hung sends, resumed at teardown so no task outlives the test.
+    private var hungSends: [CheckedContinuation<Void, Never>] = []
     /// Background work the root began and ended, by name.
     private var workBegun: [String] = []
     private var workEnded: [String] = []
@@ -141,6 +146,13 @@ final class AppRootWiringTests: XCTestCase {
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults
         ) { _ in }
+        let send: @MainActor (HubSession) async -> Void = { [weak self] session in
+            guard self?.farewellSendHangs == true else {
+                await session.sendNow()
+                return
+            }
+            await withCheckedContinuation { self?.hungSends.append($0) }
+        }
         let starter: BackgroundWork.Starter = { [weak self] name in
             self?.workBegun.append(name)
             return { self?.workEnded.append(name) }
@@ -160,7 +172,8 @@ final class AppRootWiringTests: XCTestCase {
                     return self?.farewellStuck ?? false
                 },
                 cap: farewellCap,
-                pause: .milliseconds(20)
+                pause: .milliseconds(20),
+                send: send
             )
         )
     }
@@ -360,6 +373,29 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the removal finished")
         XCTAssertNil(try registry.row("hub-acme"))
         XCTAssertTrue(root.showsOnboarding)
+        XCTAssertEqual(root.linking.phase, .idle)
+    }
+
+    /// Fix round 2: the cap bounds the whole wait, a send that never
+    /// returns included; the removal goes on at once.
+    func testAnUnlinkWhoseSendHangsStillRemovesTheHubWithinTheCap() async throws {
+        farewellSendHangs = true
+        farewellCap = .milliseconds(200)
+        addTeardownBlock { @MainActor in
+            self.hungSends.forEach { $0.resume() }
+            self.hungSends = []
+        }
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+        let started = ContinuousClock.now
+
+        await root.linking.unlink("hub-acme")
+
+        XCTAssertLessThan(started.duration(to: .now), .seconds(3), "the cap, not the hung send, ended the wait")
+        XCTAssertEqual(hungSends.count, 1, "the send was still hanging when the removal went on")
+        XCTAssertTrue(farewellChecks.isEmpty, "it never returned to look at the queue")
+        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the removal finished")
+        XCTAssertNil(try registry.row("hub-acme"))
         XCTAssertEqual(root.linking.phase, .idle)
     }
 

@@ -20,13 +20,16 @@ final class AppRoot {
     /// How an unlink's `unlinked` record is waited for: it goes through the
     /// removed hub's own transport (which holds the record's server state),
     /// and the removal waits until it has left the send queue, `sendNow()`
-    /// again every `pause`, `cap` at most; then it goes on whatever
-    /// happened (best effort).
+    /// again every `pause`; `cap` bounds the whole wait, a send that hangs
+    /// included; then it goes on whatever happened (best effort).
     struct FarewellDelivery {
         /// Whether `record` still waits in `session`'s send queue.
         let isPending: @MainActor (_ session: HubSession, _ record: CloudRecord) -> Bool
         var cap: Duration = .seconds(10)
         var pause: Duration = .milliseconds(500)
+        /// One push of the send queue (`HubSession.sendNow()`); tests
+        /// replace it.
+        var send: @MainActor (_ session: HubSession) async -> Void = { await $0.sendNow() }
 
         /// The live app: the send queue of the hub's own transport store
         /// (`TransportStore.isPending`). A session with no store, or a queue
@@ -370,9 +373,10 @@ final class AppRoot {
     }
 
     /// Saves `record` through `session`'s own transport and waits until it
-    /// has left the send queue (`FarewellDelivery`), `sendNow()` again while
-    /// it waits; a failed save or the cap reached is logged and the removal
-    /// goes on.
+    /// has left the send queue (`FarewellDelivery`), sending again while it
+    /// waits. The whole wait races the cap: when the cap wins the removal
+    /// goes on at once, and a send still running is left to the shutdown's
+    /// `transport.stop()` to cancel. A failed save or the cap is logged.
     private func deliver(_ record: CloudRecord, through session: HubSession) async {
         do {
             try await session.linkTransport.save([record])
@@ -380,21 +384,51 @@ final class AppRoot {
             Self.logger.warning("unlinked record not queued: \(error.localizedDescription, privacy: .public)")
             return
         }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: farewellDelivery.cap)
-        while true {
-            await session.sendNow()
-            guard farewellDelivery.isPending(session, record) else { return }
-            let left = clock.now.duration(to: deadline)
-            guard left > .zero else {
-                Self.logger.warning("unlinked record still queued when the hub went: not sent")
-                return
+        let delivery = farewellDelivery
+        let race = FirstOf()
+        let sending = Task { @MainActor in
+            while !Task.isCancelled {
+                await delivery.send(session)
+                guard delivery.isPending(session, record) else { break }
+                do {
+                    try await Task.sleep(for: delivery.pause)
+                } catch {
+                    break
+                }
             }
-            do {
-                try await Task.sleep(for: min(farewellDelivery.pause, left))
-            } catch {
-                return
-            }
+            race.finish(.send)
+        }
+        let timer = Task { @MainActor in
+            try? await Task.sleep(for: delivery.cap)
+            race.finish(.cap)
+        }
+        let winner = await race.wait()
+        sending.cancel()
+        timer.cancel()
+        if winner == .cap {
+            Self.logger.warning("unlinked record still queued when the hub went: not sent")
+        }
+    }
+
+    /// The first of two main-actor tasks to finish: the send loop or the
+    /// cap. Later finishes do nothing.
+    @MainActor
+    private final class FirstOf {
+        enum Winner { case send, cap }
+
+        private var winner: Winner?
+        private var waiter: CheckedContinuation<Winner, Never>?
+
+        func finish(_ first: Winner) {
+            guard winner == nil else { return }
+            winner = first
+            waiter?.resume(returning: first)
+            waiter = nil
+        }
+
+        func wait() async -> Winner {
+            if let winner { return winner }
+            return await withCheckedContinuation { waiter = $0 }
         }
     }
 
