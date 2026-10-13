@@ -82,7 +82,6 @@ final class SessionReportRunner: HubCompanion, Sendable {
     /// Whether a pass runs at all (the hub's linked-phone gate).
     private let isActive: @Sendable () -> Bool
     private let state = OSAllocatedUnfairLock(initialState: State())
-    private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -137,13 +136,6 @@ final class SessionReportRunner: HubCompanion, Sendable {
         }
     }
 
-    /// Runs after a stored report or milestone changed (the hub's nudge of
-    /// `session_report` and `session_timeline` is dropped: normal kinds
-    /// publish on the next 30 s full tick).
-    func setOnChange(_ handler: (@Sendable () -> Void)?) {
-        onChange.withLock { $0 = handler }
-    }
-
     /// The fast lane saw a session state change: the next pass resolves the
     /// window's states.
     func sessionStatesChanged() {
@@ -191,14 +183,13 @@ final class SessionReportRunner: HubCompanion, Sendable {
             restoreStatesChanged(changedAt)
             return []
         }
-        var changed = changedAt.map { observeStates(listed, changedAt: $0) } ?? false
-        changed = prune(keeping: Set(listed.map(\.sessionID))) || changed
+        if let changedAt { observeStates(listed, changedAt: changedAt) }
+        prune(keeping: Set(listed.map(\.sessionID)))
         let stored: Set<Int64>
         do {
             stored = Set(try sidecar.sessionReports().keys)
         } catch {
             logger.error("session report: reading the stored reports failed: \(error.localizedDescription, privacy: .public)")
-            if changed { notify() }
             return []
         }
         var attempted: [Int64] = []
@@ -206,12 +197,10 @@ final class SessionReportRunner: HubCompanion, Sendable {
         while let next = unfinished.first {
             guard !Task.isCancelled, isCurrent(passGeneration) else { break }
             attempted.append(next.sessionID)
-            guard case let .finished(stored) = await run(next, passGeneration: passGeneration) else { break }
-            changed = stored || changed
+            guard await run(next, passGeneration: passGeneration) == .finished else { break }
             unfinished.removeFirst()
         }
         restore(unfinished)
-        if changed { notify() }
         return attempted
     }
 
@@ -219,22 +208,16 @@ final class SessionReportRunner: HubCompanion, Sendable {
         generation.withLock { $0 == passGeneration }
     }
 
-    private func notify() {
-        onChange.withLock { $0 }?()
-    }
-
     // MARK: - State milestones
 
     /// Stores a `state` milestone for each session whose resolved state text
     /// changed since its last stored one, and marks those sessions changed.
-    /// Whether anything was stored. `changedAt`: when the fast lane first
-    /// reported the change.
-    private func observeStates(_ listed: [SessionReportSlice.Windowed], changedAt: Date) -> Bool {
+    /// `changedAt`: when the fast lane first reported the change.
+    private func observeStates(_ listed: [SessionReportSlice.Windowed], changedAt: Date) {
         do {
             let latest = try sidecar.stateMilestones().compactMapValues(\.first)
             let cutoff = now().addingTimeInterval(-HubSyncState.milestoneLifetime)
             var transitions: [Int64] = []
-            var stored = false
             for session in listed {
                 guard let text = SessionTimelineSlice.stateText(session.state) else { continue }
                 let last = latest[session.sessionID]
@@ -249,17 +232,14 @@ final class SessionReportRunner: HubCompanion, Sendable {
                     guard at >= cutoff else { continue }
                 }
                 try sidecar.addStateMilestone(.init(sessionID: session.sessionID, at: at, text: text))
-                stored = true
             }
             state.withLock { [transitions] state in
                 for id in transitions { state.entries[id, default: Entry()].stateChanged = true }
             }
-            return stored
         } catch {
             logger.error("session report: storing state milestones failed: \(error.localizedDescription, privacy: .public)")
             // Resolved again at the next pass.
             restoreStatesChanged(changedAt)
-            return false
         }
     }
 
@@ -281,17 +261,13 @@ final class SessionReportRunner: HubCompanion, Sendable {
     }
 
     /// Drops the stored reports of sessions that left the window and the
-    /// milestones past 14 days or a session's newest 100. Whether a stored
-    /// report was dropped.
-    private func prune(keeping ids: Set<Int64>) -> Bool {
+    /// milestones past 14 days or a session's newest 100.
+    private func prune(keeping ids: Set<Int64>) {
         do {
-            let before = Set(try sidecar.sessionReports().keys)
             try sidecar.removeSessionReports(keeping: ids)
             try sidecar.pruneSessionMilestones(olderThan: now().addingTimeInterval(-HubSyncState.milestoneLifetime))
-            return !before.isSubset(of: ids)
         } catch {
             logger.error("session report: pruning the sidecar failed: \(error.localizedDescription, privacy: .public)")
-            return false
         }
     }
 
@@ -346,9 +322,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
     private enum RunOutcome {
         /// The pass's generation ended during the run: nothing stored.
         case cut
-        /// Whether a changed report was stored (a failure keeps the stored
-        /// one and counts as finished).
-        case finished(stored: Bool)
+        /// The run ended (a failure keeps the stored report and counts as
+        /// finished).
+        case finished
     }
 
     private func run(_ taken: Taken, passGeneration: Int) async -> RunOutcome {
@@ -369,12 +345,12 @@ final class SessionReportRunner: HubCompanion, Sendable {
             logger.warning("session report for session \(id) failed: \(error.localizedDescription, privacy: .public)")
         case .success(let report)?:
             do {
-                return .finished(stored: try sidecar.saveSessionReport(try SessionReportSlice.encode(report), sessionID: id, at: now()))
+                try sidecar.saveSessionReport(try SessionReportSlice.encode(report), sessionID: id, at: now())
             } catch {
                 logger.error("storing the session report of \(id) failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        return .finished(stored: false)
+        return .finished
     }
 
     // MARK: - HubCompanion

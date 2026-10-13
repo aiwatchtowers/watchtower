@@ -52,7 +52,6 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     /// Whether a pass runs at all (the hub's linked-phone gate).
     private let isActive: @Sendable () -> Bool
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
-    private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -116,13 +115,6 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     /// good run, or when the summary does not name it.
     func summary(workbenchID: Int64, sessionID: Int64) -> SessionReportSummary? {
         entries.withLock { $0[workbenchID]?.summaries?[sessionID] }
-    }
-
-    /// Runs after a workbench's summaries changed (the hub's nudge of the
-    /// `terminal_session` kind is dropped: it publishes on the next 30 s
-    /// full tick).
-    func setOnChange(_ handler: (@Sendable () -> Void)?) {
-        onChange.withLock { $0 = handler }
     }
 
     /// A session of `workbenchID` changed state: run it at the next wake,
@@ -229,13 +221,11 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     }
 
     private func store(_ summaries: [Int64: SessionReportSummary], for id: Int64) {
-        let changed = entries.withLock { entries -> Bool in
+        entries.withLock { entries in
             // The workbench may have been forgotten while the run was out.
-            guard entries[id] != nil, entries[id]?.summaries != summaries else { return false }
+            guard entries[id] != nil else { return }
             entries[id]?.summaries = summaries
-            return true
         }
-        if changed { onChange.withLock { $0 }?() }
     }
 
     // MARK: - HubCompanion

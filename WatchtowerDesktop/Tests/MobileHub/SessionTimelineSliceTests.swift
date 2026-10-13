@@ -145,9 +145,6 @@ final class SessionTimelineSliceTests: XCTestCase {
                 )]
             }
         )
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        reports.setOnChange { changes.withLock { $0 += 1 } }
-
         reports.sessionStatesChanged()
         await reports.runDue()
         reports.sessionStatesChanged()
@@ -166,7 +163,6 @@ final class SessionTimelineSliceTests: XCTestCase {
         XCTAssertEqual(list.map { $0["kind"] as? String }, ["state", "state"])
         XCTAssertEqual(list[0]["at"] as? Double, now.addingTimeInterval(10).timeIntervalSince1970, "the transition at the lane's report")
         XCTAssertEqual(list[1]["at"] as? Double, stateAt.timeIntervalSince1970, "the first sighting at the state's own time")
-        XCTAssertGreaterThanOrEqual(changes.withLock { $0 }, 2)
     }
 
     /// #411: a turn end with background agents running is its own state

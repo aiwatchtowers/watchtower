@@ -78,10 +78,8 @@ extension AppState {
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
         )
-        gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
-        summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
-        reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
-        recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
+        // The companions' changes (git status, summaries, reports, phone
+        // recording jobs) are normal kinds: the next full tick diffs them.
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
             nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },

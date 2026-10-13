@@ -326,8 +326,6 @@ final class WorkbenchSliceTests: XCTestCase {
             },
             workbenchIDs: { [1, 2, 3] }
         )
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        refresher.setOnChange { changes.withLock { $0 += 1 } }
         let pass = Task { await refresher.refreshDue() }
         await awaitHubCondition("the first run is in flight") { gate.calls == [1] }
 
@@ -338,7 +336,6 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(attempted, [1])
         XCTAssertEqual(gate.calls, [1], "no CLI run after the stop")
         XCTAssertNil(refresher.status(for: 1), "the run in flight at the stop stores nothing")
-        XCTAssertEqual(changes.withLock { $0 }, 0, "and nudges nothing")
     }
 
     /// B2 deferred N1: a stop mid-pass must not leave the workbenches it cut
@@ -421,24 +418,24 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(calls.withLock { $0 }, 3, "a change on an unknown workbench runs nothing")
     }
 
-    func testAChangedStatusNotifiesAndAnUnchangedOneDoesNot() async throws {
+    /// A changed status replaces the stored one (the next full tick
+    /// publishes it); the same value again keeps it.
+    func testAChangedStatusReplacesTheStoredOne() async throws {
         let branch = OSAllocatedUnfairLock(initialState: "main")
-        let changes = OSAllocatedUnfairLock(initialState: 0)
         let clock = TestInstant()
         let refresher = makeRefresher(clock: clock) { _ in
             Self.gitStatus(branch: branch.withLock { $0 }, detached: false, changes: 0)
         }
-        refresher.setOnChange { changes.withLock { $0 += 1 } }
 
         await refresher.refreshDue()
         clock.advance(by: .seconds(120))
         await refresher.refreshDue()
-        XCTAssertEqual(changes.withLock { $0 }, 1, "the first value notifies; the same value again does not")
+        XCTAssertEqual(refresher.status(for: 7)?.branch, "main")
 
         branch.withLock { $0 = "feature/acme" }
         clock.advance(by: .seconds(120))
         await refresher.refreshDue()
-        XCTAssertEqual(changes.withLock { $0 }, 2)
+        XCTAssertEqual(refresher.status(for: 7)?.branch, "feature/acme")
     }
 
     /// Board #724: without a linked phone the loop neither lists the

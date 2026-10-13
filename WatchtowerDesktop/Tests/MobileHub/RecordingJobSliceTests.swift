@@ -15,7 +15,6 @@ final class RecordingJobSliceTests: XCTestCase {
     private var dbPool: DatabasePool!
     private var dbPath: String!
     private let dir = FileManager.default.temporaryDirectory.appendingPathComponent("recording-job-\(UUID().uuidString)", isDirectory: true)
-    private let nudges = NudgeLog()
     private let clock = TestClock(Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
     private let day: TimeInterval = 86_400
 
@@ -39,7 +38,6 @@ final class RecordingJobSliceTests: XCTestCase {
             // The ingested file's name, as the transcriber would report it.
             enqueue: { _, _, _ in dir.appendingPathComponent("rec_\(UUID().uuidString).m4a") }
         )
-        jobs.setOnChange { [nudges] in nudges.append($0) }
         return jobs
     }
 
@@ -105,9 +103,6 @@ final class RecordingJobSliceTests: XCTestCase {
         XCTAssertNil(job["error"])
         XCTAssertEqual(jobs.uploadID(forTranscript: 7), "R1", "the meeting_transcript slice's phone_recording_id")
         XCTAssertNil(jobs.uploadID(forTranscript: 8))
-
-        XCTAssertTrue(nudges.all.allSatisfy { $0.contains(.recordingJob) }, "every change takes the fast lane")
-        XCTAssertEqual(nudges.all.last, [.recordingJob, .meetingTranscript], "a finished job also links its transcript")
     }
 
     func testFirstPhaseBeforeAnyWindowIsZeroPercent() async throws {
@@ -123,13 +118,14 @@ final class RecordingJobSliceTests: XCTestCase {
         let jobs = try makeJobs()
         let audio = try await ingest(jobs)
         jobs.phaseChanged(audioURL: audio, phase: .transcribing(done: 3, total: 12))
-        let count = nudges.all.count
+        let written = try XCTUnwrap(try sidecar.phoneRecordings().first).updatedAt
+        clock.advance(60)
 
         // The same window again, then another window of the same percent.
         jobs.phaseChanged(audioURL: audio, phase: .transcribing(done: 3, total: 12))
         jobs.phaseChanged(audioURL: audio, phase: .transcribing(done: 6, total: 24))
 
-        XCTAssertEqual(nudges.all.count, count)
+        XCTAssertEqual(try sidecar.phoneRecordings().first?.updatedAt, written, "the row is not rewritten")
     }
 
     func testPhasesOfAMacRecordingAreIgnored() async throws {
@@ -140,7 +136,7 @@ final class RecordingJobSliceTests: XCTestCase {
 
         XCTAssertTrue(try records().isEmpty)
         XCTAssertNil(jobs.uploadID(forTranscript: 3))
-        XCTAssertTrue(nudges.all.isEmpty)
+        XCTAssertTrue(try sidecar.phoneRecordings().isEmpty)
     }
 
     func testAPhaseAfterDoneIsIgnored() async throws {
@@ -286,17 +282,6 @@ private final class FakeJobEvents: PhoneRecordingJobEvents {
     var onJobFinished: ((_ audioURL: URL, _ transcriptID: Int64) -> Void)?
 }
 
-/// Every fast-lane nudge the tracker sent.
-private final class NudgeLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var log: [Set<SliceKind>] = []
-
-    var all: [Set<SliceKind>] { lock.withLock { log } }
-
-    func append(_ kinds: Set<SliceKind>) {
-        lock.withLock { log.append(kinds) }
-    }
-}
 
 /// A settable wall clock.
 private final class TestClock: @unchecked Sendable {

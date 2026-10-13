@@ -386,8 +386,6 @@ final class TerminalSessionSliceTests: XCTestCase {
             workbenches: { .init(live: [project], published: [project]) },
             clock: { clock.now }
         )
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        summaries.setOnChange { changes.withLock { $0 += 1 } }
         let source = slice(live: [session]) { summaries.summary(workbenchID: $0, sessionID: $1) }
 
         let before = try XCTUnwrap(try payloads(source)[session])
@@ -396,7 +394,6 @@ final class TerminalSessionSliceTests: XCTestCase {
 
         await summaries.runDue()
         XCTAssertEqual(runner.invocations, [["workbench", "session-report", "--workbench", String(project), "--summary", "--json"]])
-        XCTAssertEqual(changes.withLock { $0 }, 1)
         let mapped = try XCTUnwrap(try payloads(source)[session])
         XCTAssertEqual(mapped["report_target_id"] as? Int, 415)
         XCTAssertEqual(mapped["report_done"] as? Int, 1)
@@ -410,7 +407,40 @@ final class TerminalSessionSliceTests: XCTestCase {
         let kept = try XCTUnwrap(try payloads(source)[session])
         XCTAssertEqual(kept["report_target_id"] as? Int, 415, "a summary failure keeps the last values")
         XCTAssertEqual(kept["report_pr_line"] as? String, "PR #175 open")
-        XCTAssertEqual(changes.withLock { $0 }, 1, "and nudges nothing")
+    }
+
+    /// Board #724: without a linked phone (`isActive` false) the loop
+    /// neither lists the workbenches nor runs the CLI; a linked phone
+    /// starts the due runs.
+    func testWithoutALinkedPhoneTheSummaryLoopRunsNothing() async throws {
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let listings = OSAllocatedUnfairLock(initialState: 0)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let summaries = SessionReportSummaryRunner(
+            fetch: { _ in
+                calls.withLock { $0 += 1 }
+                return []
+            },
+            workbenches: {
+                listings.withLock { $0 += 1 }
+                return .init(live: [7], published: [7])
+            },
+            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(5), wake: .milliseconds(10)),
+            isActive: {
+                checks.withLock { $0 += 1 }
+                return linked.withLock { $0 }
+            }
+        )
+        summaries.start()
+        defer { summaries.stop() }
+        await awaitHubCondition("the loop woke three times") { checks.withLock { $0 } >= 3 }
+        XCTAssertEqual(listings.withLock { $0 }, 0)
+        XCTAssertEqual(calls.withLock { $0 }, 0)
+
+        linked.withLock { $0 = true }
+        await awaitHubCondition("a linked phone starts the runs") { calls.withLock { $0 } >= 1 }
+        XCTAssertGreaterThanOrEqual(listings.withLock { $0 }, 1)
     }
 
     func testSummaryCadenceIsEvery60SecondsAndAStateChangeIsCoalesced() async throws {

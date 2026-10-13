@@ -52,7 +52,6 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// phone nothing reads the status, so no CLI runs.
     private let isActive: @Sendable () -> Bool
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
-    private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -91,12 +90,6 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// The last good status; nil before the first one.
     func status(for workbenchID: Int64) -> WorkbenchGitSnapshot? {
         entries.withLock { $0[workbenchID]?.snapshot }
-    }
-
-    /// Runs after a status changed (the hub's nudge of the `workbench` kind
-    /// is dropped: it publishes on the next 30 s full tick).
-    func setOnChange(_ handler: (@Sendable () -> Void)?) {
-        onChange.withLock { $0 = handler }
     }
 
     /// A session of `workbenchID` changed state: refresh at the next wake,
@@ -214,13 +207,11 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     private func store(_ snapshot: WorkbenchGitSnapshot, for id: Int64) {
-        let changed = entries.withLock { entries -> Bool in
+        entries.withLock { entries in
             // The workbench may have been forgotten while the run was out.
-            guard entries[id] != nil, entries[id]?.snapshot != snapshot else { return false }
+            guard entries[id] != nil else { return }
             entries[id]?.snapshot = snapshot
-            return true
         }
-        if changed { onChange.withLock { $0 }?() }
     }
 
     static func snapshot(_ status: WorkbenchGitStatus) -> WorkbenchGitSnapshot {
