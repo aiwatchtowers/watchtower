@@ -54,6 +54,6 @@ final class NowWiringTests: XCTestCase {
             enabledAt: now, ownerUser: "_user", sharing: .none
         )
         XCTAssertEqual(NowModel(snapshot: snapshot, now: now.addingTimeInterval(12)).macChip, "Mac online · 12s")
-        XCTAssertEqual(NowModel(snapshot: snapshot, now: now.addingTimeInterval(800)).macChip, "Mac offline · 13m")
+        XCTAssertEqual(NowModel(snapshot: snapshot, now: now.addingTimeInterval(2_160)).macChip, "Mac offline · 36m")
     }
 }

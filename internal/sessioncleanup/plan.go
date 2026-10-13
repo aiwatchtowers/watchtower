@@ -65,7 +65,7 @@ type builder struct {
 // PlanResult evaluates the request and returns the plan as the command
 // prints it: a plan-mode Result naming the workbench the session belongs
 // to. It writes nothing: no ref, worktree, file, database row or signal
-// (PROJ-16).
+// (PROJ-18).
 func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
 	b, err := newBuilder(ctx, d, r)
 	if err != nil {

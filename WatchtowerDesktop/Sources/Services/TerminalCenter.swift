@@ -361,11 +361,14 @@ final class TerminalCenter {
     /// permission prompt the owner has not seen. Never starts a session.
     /// `keepingLineBreaks` keeps a multi-line text (a code question's
     /// hand-off) as several lines inside the one paste.
-    func sendPrompt(_ line: String, sessionID: Int64, keepingLineBreaks: Bool = false) -> PromptDelivery {
+    func sendPrompt(
+        _ line: String, sessionID: Int64, keepingLineBreaks: Bool = false, keepingFormatCharacters: Bool = false
+    ) -> PromptDelivery {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
         answerHints[sessionID] = nil
         switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode,
-                                                      keepingLineBreaks: keepingLineBreaks) {
+                                                      keepingLineBreaks: keepingLineBreaks,
+                                                      keepingFormatCharacters: keepingFormatCharacters) {
         case let .paste(bytes):
             clipboardHints.remove(sessionID)
             pasteHints.remove(sessionID)
@@ -464,6 +467,7 @@ final class TerminalCenter {
         _ text: String,
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
+        keepingFormatCharacters: Bool = false,
         delay: Duration? = nil,
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
@@ -475,7 +479,8 @@ final class TerminalCenter {
         let promptWasEmpty = !promptDrafts.contains(sessionID) && !pendingReturns.contains(run)
         // Read before the paste, which clears the bars it names.
         let heldBack = promptWasEmpty ? nil : heldBackBeforePause(sessionID, run: run)
-        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
+        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks,
+                          keepingFormatCharacters: keepingFormatCharacters) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
@@ -502,6 +507,16 @@ final class TerminalCenter {
         pasteHints.insert(sessionID)
         if besideText { sharedPrompts.insert(sessionID) }
         return .pasted
+    }
+
+    /// Whether the session's prompt holds text not submitted right now: the
+    /// owner's draft, a line left without its Return, or a line in its pause
+    /// before its Return — what `submitPrompt` only pastes over. The phone's
+    /// lines are held instead of pasted then (PROJ-16).
+    func promptHoldsText(_ sessionID: Int64) -> Bool {
+        if promptDrafts.contains(sessionID) { return true }
+        guard let run = runs[sessionID] else { return false }
+        return pendingReturns.contains(run)
     }
 
     /// Why the prompt held text before the paste, for the log: a bar still

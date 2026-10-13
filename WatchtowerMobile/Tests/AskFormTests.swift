@@ -25,7 +25,7 @@ final class AskFormTests: XCTestCase {
         let drafts = AskDraftStore()
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: drafts)
         let starter = SessionStarter.sending(through: outbox, store: store)
-        await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
+        await outbox.setAppliedObserver(HubSession.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
         return Fixture(store: store, outbox: outbox, drafts: drafts, answerer: answerer, starter: starter)
     }
 
@@ -385,6 +385,24 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(form.question)
         XCTAssertFalse(form.isEditable)
         XCTAssertNil(form.openOnMac, "a closed ask is shown, not sent to the Mac")
+    }
+
+    /// Board #223: an ask the owner dismissed on the Mac says so, never an
+    /// empty "Answered".
+    func testADismissedAskSaysDismissed() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(162, [
+            "kind": "check", "status": "answered",
+            "payload": ["checklist": [["id": "1", "text": "Open the menu"]]],
+            "answer": ["verdict": "", "answers": [[String: Any]](), "checklist": [[String: Any]](), "comments": [[String: Any]](),
+                       "dismissed": true, "note": "Not now"]
+        ])])
+        let form = try formOf(AskViewModel(askID: 162, drafts: fixture.drafts, answerer: fixture.answerer), snapshot)
+        XCTAssertEqual(form.closedStatus, "Dismissed")
+        XCTAssertEqual(form.closedLines, [
+            AskFormModel.ClosedLine(label: "Dismissed", value: "Closed on the Mac without an answer"),
+            AskFormModel.ClosedLine(label: "Note", value: "Not now")
+        ])
     }
 
     /// Design pass A6 and review focus 1: each stored part is a label over a

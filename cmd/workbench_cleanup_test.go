@@ -372,7 +372,7 @@ func (f *cleanupFixture) planItems(t *testing.T) []sessioncleanup.Item {
 // Inside an agent's terminal session ($WATCHTOWER_TERMINAL_SESSION_ID, where
 // the auto-approved allow rule applies) the command acts only on that
 // session: another session is refused, exit 2, nothing done.
-func TestProj16_CallerSessionCannotCleanAnotherSession(t *testing.T) {
+func TestProj18_CallerSessionCannotCleanAnotherSession(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")
 	caller := f.addSession(f.wb)
@@ -395,7 +395,7 @@ func TestProj16_CallerSessionCannotCleanAnotherSession(t *testing.T) {
 
 // A sweep from inside a terminal session is refused: sweeps are the
 // Desktop's.
-func TestProj16_CallerSessionCannotSweep(t *testing.T) {
+func TestProj18_CallerSessionCannotSweep(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")
 	t.Setenv(terminalSessionEnv, f.sessionArg())
@@ -415,7 +415,7 @@ func TestProj16_CallerSessionCannotSweep(t *testing.T) {
 }
 
 // From inside a terminal session, --workbench must be that session's.
-func TestProj16_CallerSessionCannotNameAnotherWorkbench(t *testing.T) {
+func TestProj18_CallerSessionCannotNameAnotherWorkbench(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")
 	otherFolder, err := filepath.EvalSymlinks(t.TempDir())
@@ -436,7 +436,7 @@ func TestProj16_CallerSessionCannotNameAnotherWorkbench(t *testing.T) {
 // A caller session variable that is present but empty or blank fails
 // closed: it is never read as "no caller", so the guards above cannot be
 // lifted by clearing it. Exit 2, nothing done.
-func TestProj16_CallerSessionEmptyVariableIsRefused(t *testing.T) {
+func TestProj18_CallerSessionEmptyVariableIsRefused(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")
 	wb := strconv.FormatInt(f.wb, 10)

@@ -132,13 +132,16 @@ final class RecordingUploaderTests: XCTestCase {
         let store = try ReplicaStore.inMemory()
         let file = try makeAudioFile()
 
-        let first = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
+        let clock = TestClock()
+        let first = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID) { clock.now }
         let recording = try await register(first, file: file, duration: 60)
         _ = try await first.uploadPending()
 
-        // "Relaunch": a fresh uploader over the same store re-sends the
-        // still-uploading row (the hub's processed-set absorbs duplicates).
-        let second = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
+        // "Relaunch" once the first backoff step has passed: a fresh
+        // uploader over the same store re-sends the still-uploading row
+        // (the hub's processed-set absorbs duplicates).
+        clock.advance(RecordingUploader.retryDelays[0])
+        let second = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID) { clock.now }
         let resent = try await second.uploadPending()
         XCTAssertEqual(resent, 1)
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
@@ -197,13 +200,17 @@ final class RecordingUploaderTests: XCTestCase {
     /// the relaunch retry — and later passes leave it alone.
     func testTheLaunchPassResendsAnUploadingRowOnce() async throws {
         let store = try ReplicaStore.inMemory()
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let clock = TestClock()
+        let before = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID
+        ) { clock.now }
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
 
+        clock.advance(RecordingUploader.retryDelays[0])
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID) { clock.now }
         let launch = try await relaunched.uploadPending()
         let later = try await relaunched.uploadPending()
 
@@ -213,19 +220,24 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(saves, ["recupload-\(recording.id)"])
     }
 
-    /// A launch pass that exits by throwing (a store write failing after a
-    /// re-save) keeps the in-flight re-send armed, so the next pass re-sends
-    /// the `uploading` row instead of stranding it until the next launch
-    /// (final-review P1-M1). The store's failure seam is an SQLite trigger.
+    /// A launch pass that exits by throwing (a store write failing — the
+    /// attempt count, before any save) keeps the in-flight re-send armed, so
+    /// the next pass re-sends the `uploading` row instead of stranding it
+    /// until the next launch (final-review P1-M1). The store's failure seam
+    /// is an SQLite trigger.
     func testALaunchPassThatThrowsKeepsTheInFlightResendArmed() async throws {
         let store = try ReplicaStore.inMemory()
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let clock = TestClock()
+        let before = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID
+        ) { clock.now }
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
 
+        clock.advance(RecordingUploader.retryDelays[0])
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID) { clock.now }
         try await store.writer.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_state BEFORE UPDATE ON phone_recordings
@@ -242,25 +254,88 @@ final class RecordingUploaderTests: XCTestCase {
 
         XCTAssertEqual(retried, 1, "the uploading row is re-sent by the next pass")
         let saves = await spy.savedNames
-        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+        XCTAssertEqual(saves, ["recupload-\(recording.id)"], "the throwing pass failed before its save")
     }
 
     /// The launch pass waits for a link: a pass without a device sends
     /// nothing and does not use up the re-send of in-flight rows.
     func testTheLaunchResendWaitsForALinkedDevice() async throws {
         let store = try ReplicaStore.inMemory()
-        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let clock = TestClock()
+        let before = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID
+        ) { clock.now }
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
 
+        clock.advance(RecordingUploader.retryDelays[0])
         let spy = SpyTransport()
-        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: nil)
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: nil) { clock.now }
         _ = try await relaunched.uploadPending()
         await relaunched.setDeviceID(Self.deviceID)
         _ = try await relaunched.uploadPending()
 
         let saves = await spy.savedNames
         XCTAssertEqual(saves, ["recupload-\(recording.id)"])
+    }
+
+    /// While the Mac sleeps (its heartbeat is stale) the relaunch re-save of
+    /// an `uploading` row waits: the row is already in CloudKit's queue, so
+    /// nothing is saved and no attempt is counted toward "Upload stuck". The
+    /// first foreground pass that finds the Mac online re-saves it.
+    func testTheRelaunchResaveWaitsForTheMacOnline() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let before = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID
+        ) { clock.now }
+        let recording = try await register(before, file: try makeAudioFile())
+        _ = try await before.uploadPending()
+        let saved = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(saved.uploadAttempts, 1)
+
+        clock.advance(RecordingUploader.retryDelays[0])
+        let online = OnlineFlag()
+        let spy = SpyTransport()
+        let relaunched = RecordingUploader(
+            transport: spy, store: store, directory: dir, deviceID: Self.deviceID,
+            now: { clock.now }, macOnline: { online.value }
+        )
+        for _ in 0..<3 {
+            let sent = try await relaunched.uploadPending()
+            XCTAssertEqual(sent, 0, "no re-save while the Mac sleeps")
+        }
+        let waiting = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(waiting.state, .uploading)
+        XCTAssertEqual(waiting.uploadAttempts, 1, "no attempt is counted")
+        XCTAssertEqual(waiting.lastAttemptAt, saved.lastAttemptAt)
+        let none = await spy.savedNames
+        XCTAssertTrue(none.isEmpty)
+
+        online.value = true
+        let resent = try await relaunched.uploadPending()
+        let later = try await relaunched.uploadPending()
+        XCTAssertEqual(resent, 1, "the Mac is back: the relaunch re-save runs once")
+        XCTAssertEqual(later, 0)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.uploadAttempts, 2)
+    }
+
+    /// A wipe emptied the queue: its re-send does not wait for the Mac.
+    func testAWipeResendDoesNotWaitForTheMac() async throws {
+        let spy = SpyTransport()
+        let store = try ReplicaStore.inMemory()
+        let asleep: @Sendable () -> Bool = { false }
+        let uploader = RecordingUploader(
+            transport: spy, store: store, directory: dir, deviceID: Self.deviceID, macOnline: asleep
+        )
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+
+        await uploader.resendInFlightAfterWipe()
+        _ = try await uploader.uploadPending()
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
     }
 
     /// A wiped transport store lost its send queue: the next pass re-sends
@@ -330,6 +405,196 @@ final class RecordingUploaderTests: XCTestCase {
         row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.state, .uploading)
         XCTAssertNil(row.errorMessage)
+    }
+
+    // MARK: - Bounded retry (board #724)
+
+    /// A box the tests flip to say whether the app is in the foreground.
+    private final class Foreground: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Bool
+        init(_ value: Bool) { self.value = value }
+        var isOn: Bool { lock.withLock { value } }
+        func set(_ on: Bool) { lock.withLock { value = on } }
+    }
+
+    private func makeBounded(
+        transport: any CloudSyncTransport,
+        store: ReplicaStore,
+        clock: TestClock,
+        foreground: Foreground = Foreground(true)
+    ) -> RecordingUploader {
+        RecordingUploader(
+            transport: transport, store: store, directory: dir, deviceID: Self.deviceID,
+            now: { clock.now }, retriesAllowed: { foreground.isOn }
+        )
+    }
+
+    /// A save that keeps failing is retried 1 min, 5 min, 30 min, 2 h and
+    /// 6 h after each attempt, never earlier, and stops at the sixth: the
+    /// row then reads stuck and offers Retry.
+    func testRetriesBackOffAndStopAtTheCap() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let spy = SpyTransport()
+        await spy.setFailing(true)
+        let uploader = makeBounded(transport: spy, store: store, clock: clock)
+        let recording = try await register(uploader, file: try makeAudioFile())
+        let attempts = { try XCTUnwrap(try store.phoneRecording(id: recording.id)).uploadAttempts }
+
+        _ = try await uploader.uploadPending()
+        XCTAssertEqual(try attempts(), 1, "a new recording goes out at once")
+        for (index, delay) in RecordingUploader.retryDelays.enumerated() {
+            clock.advance(delay - 1)
+            _ = try await uploader.uploadPending()
+            XCTAssertEqual(try attempts(), index + 1, "not before \(Int(delay)) s")
+            clock.advance(1)
+            _ = try await uploader.uploadPending()
+            XCTAssertEqual(try attempts(), index + 2, "due after \(Int(delay)) s")
+        }
+        XCTAssertEqual(try attempts(), PhoneRecording.uploadAttemptCap)
+
+        clock.advance(7 * 86_400)
+        _ = try await uploader.uploadPending()
+        XCTAssertEqual(try attempts(), PhoneRecording.uploadAttemptCap, "no attempt past the cap")
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .waiting)
+        XCTAssertTrue(row.isUploadStuck)
+        XCTAssertTrue(row.offersRetry)
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves.count, PhoneRecording.uploadAttemptCap)
+    }
+
+    /// The schedule itself: due at once before any attempt, each delay
+    /// after the latest attempt, nil at the cap.
+    func testNextAttemptSchedule() {
+        let last = Date()
+        XCTAssertEqual(RecordingUploader.nextAttemptAt(attempts: 0, last: nil), .distantPast)
+        XCTAssertEqual(RecordingUploader.retryDelays, [60, 300, 1_800, 7_200, 21_600])
+        for (index, delay) in RecordingUploader.retryDelays.enumerated() {
+            XCTAssertEqual(RecordingUploader.nextAttemptAt(attempts: index + 1, last: last), last.addingTimeInterval(delay))
+        }
+        XCTAssertNil(RecordingUploader.nextAttemptAt(attempts: PhoneRecording.uploadAttemptCap, last: last))
+    }
+
+    /// A launch into the background (a silent push) re-sends nothing: an
+    /// `uploading` row waits, however due, while a new recording still goes
+    /// out. The first foreground pass then
+    /// re-sends the due rows.
+    func testABackgroundLaunchStartsNoReupload() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let before = makeBounded(transport: InMemoryCloudTransport(), store: store, clock: clock)
+        let inFlight = try await register(before, file: try makeAudioFile(name: "flight.m4a"))
+        _ = try await before.uploadPending()
+        clock.advance(3_600)
+
+        let spy = SpyTransport()
+        let foreground = Foreground(false)
+        let relaunched = makeBounded(transport: spy, store: store, clock: clock, foreground: foreground)
+        let fresh = try await register(relaunched, file: try makeAudioFile(name: "fresh.m4a"))
+        _ = try await relaunched.uploadPending()
+        var saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(fresh.id)"], "only the never-sent recording goes out in the background")
+        XCTAssertEqual(try store.phoneRecording(id: inFlight.id)?.uploadAttempts, 1)
+
+        foreground.set(true)
+        _ = try await relaunched.uploadPending()
+        saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(fresh.id)", "recupload-\(inFlight.id)"], "the foreground pass re-sends")
+        XCTAssertEqual(try store.phoneRecording(id: inFlight.id)?.uploadAttempts, 2)
+    }
+
+    /// A save that failed in the foreground is not retried by a background
+    /// pass, even when due.
+    func testABackgroundPassDoesNotRetryAFailedSave() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let spy = SpyTransport()
+        await spy.setFailing(true)
+        let foreground = Foreground(true)
+        let uploader = makeBounded(transport: spy, store: store, clock: clock, foreground: foreground)
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+        await spy.setFailing(false)
+        foreground.set(false)
+        clock.advance(3_600)
+
+        _ = try await uploader.uploadPending()
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.uploadAttempts, 1)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .waiting)
+
+        foreground.set(true)
+        _ = try await uploader.uploadPending()
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+    }
+
+    /// The owner's Retry on a stuck upload resets the backoff and sends at
+    /// once.
+    func testManualRetryOfAStuckUploadResetsTheBackoff() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let spy = SpyTransport()
+        await spy.setFailing(true)
+        let uploader = makeBounded(transport: spy, store: store, clock: clock)
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+        for delay in RecordingUploader.retryDelays {
+            clock.advance(delay)
+            _ = try await uploader.uploadPending()
+        }
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.isUploadStuck, true)
+
+        await spy.setFailing(false)
+        try await uploader.retryFailed(id: recording.id)
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertEqual(row.uploadAttempts, 1, "the Retry starts a fresh backoff")
+        XCTAssertFalse(row.isUploadStuck)
+        XCTAssertFalse(row.offersRetry)
+    }
+
+    /// A `received` echo ends the retries: a delivered row is never sent
+    /// again, at the next foreground launch or ever.
+    func testAReceivedEchoEndsRetries() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let uploader = makeBounded(transport: InMemoryCloudTransport(), store: store, clock: clock)
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .received))
+
+        clock.advance(86_400)
+        let spy = SpyTransport()
+        let relaunched = makeBounded(transport: spy, store: store, clock: clock)
+        let sent = try await relaunched.uploadPending()
+        XCTAssertEqual(sent, 0)
+        let saves = await spy.savedNames
+        XCTAssertTrue(saves.isEmpty)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
+    }
+
+    /// A stuck `uploading` row (the cap reached by relaunch re-sends) that
+    /// the Mac finally acknowledges is delivered, not stuck.
+    func testAStuckUploadThatIsAcknowledgedIsDelivered() async throws {
+        let store = try ReplicaStore.inMemory()
+        let clock = TestClock()
+        let first = makeBounded(transport: InMemoryCloudTransport(), store: store, clock: clock)
+        let recording = try await register(first, file: try makeAudioFile())
+        _ = try await first.uploadPending()
+        for delay in RecordingUploader.retryDelays {
+            clock.advance(delay)
+            let relaunched = makeBounded(transport: InMemoryCloudTransport(), store: store, clock: clock)
+            _ = try await relaunched.uploadPending()
+        }
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.isUploadStuck, true)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+
+        try await first.applyEcho(echo(for: recording, status: .received))
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .delivered)
+        XCTAssertFalse(row.isUploadStuck)
+        XCTAssertFalse(row.offersRetry)
     }
 
     // MARK: - Echo degenerates
@@ -647,6 +912,21 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     }
 
+    /// A recordings folder holding folders (`phone-recordings` holds the
+    /// per-hub folders under `hubs/`): the sweep deletes files only.
+    func testOrphanSweepLeavesSubdirectoriesAlone() async throws {
+        let (uploader, _, _) = try makeStack()
+        let nested = dir.appendingPathComponent("hubs/hub-acme", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let nestedAudio = nested.appendingPathComponent("rec-1.m4a")
+        try Data(repeating: 0x5A, count: 256).write(to: nestedAudio)
+
+        let removed = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(removed, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nestedAudio.path), "another hub's folder is not this sweep's")
+    }
+
     func testOnlyARemoteFailureOffersRetry() async throws {
         let (uploader, store, _) = try makeStack()
         let recording = try await register(uploader, file: try makeAudioFile())
@@ -862,6 +1142,10 @@ private actor SpyTransport: CloudSyncTransport {
 
     func holdSaves() { holding = true }
 
+    /// While true every save is recorded, then throws (a transient failure).
+    private(set) var failing = false
+    func setFailing(_ failing: Bool) { self.failing = failing }
+
     func release() {
         holding = false
         let waiting = held
@@ -874,11 +1158,24 @@ private actor SpyTransport: CloudSyncTransport {
         if holding {
             await withCheckedContinuation { held.append($0) }
         }
+        if failing { throw SaveFailed() }
     }
+
+    struct SaveFailed: Error {}
 
     func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+    }
+}
+
+/// The Mac's online state a test flips by hand.
+private final class OnlineFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var online = false
+    var value: Bool {
+        get { lock.withLock { online } }
+        set { lock.withLock { online = newValue } }
     }
 }

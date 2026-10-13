@@ -1,0 +1,12 @@
+{
+  "kind": "question",
+  "payload": {
+    "focus": [],
+    "questions": [
+      {"id": "1", "question": "Which one?", "options": [{"label": "A"}, {"label": "B"}]}
+    ],
+    "checklist": []
+  },
+  "answer": {"answers": [{"id": "1", "labels": ["A"], "other": ""}], "checklist": [], "comments": [], "dismissed": true, "note": "", "verdict": ""},
+  "error": "dismissed: a dismissal carries no answer"
+}

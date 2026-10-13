@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -40,12 +41,13 @@ final class MobileHubServiceTests: XCTestCase {
         relayActiveInterval: Duration? = nil,
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
+        sources: [any SliceSource] = [],
         assets: SliceAssetStore? = nil,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport, sources: sources,
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)),
             assets: assets
         )
@@ -135,6 +137,20 @@ final class MobileHubServiceTests: XCTestCase {
         service.stop()
         XCTAssertEqual(companion.stops, 1)
         offline.stop()
+    }
+
+    /// Board #724: the companions start before the publisher, so its first
+    /// full cycle already sees the fast lane's liveness copy (live
+    /// sessions are never published as not running).
+    func testCompanionsStartBeforeThePublishersFirstCycle() async throws {
+        let order = OSAllocatedUnfairLock(initialState: [String]())
+        let source = OrderedSliceSource(kind: .terminalSession) { order.withLock { $0.append("read") } }
+        let companion = OrderedCompanion { order.withLock { $0.append("companion") } }
+        let service = makeService(transport: StubHubTransport(), companions: [companion], sources: [source])
+        await service.start()
+        await awaitHubCondition("the publisher's first cycle reads") { order.withLock { $0.contains("read") } }
+        XCTAssertEqual(order.withLock { $0.first }, "companion")
+        service.stop()
     }
 
     func testRunningHubAnswersAProbe() async throws {
@@ -680,6 +696,7 @@ final class MobileHubServiceTests: XCTestCase {
     /// An AppState whose hub storage is a stub; counts how often it is built.
     private func makeAppState(
         transport: StubHubTransport,
+        shares: (any ShareService)? = nil,
         pushRegistrations: (@MainActor () -> Void)? = nil,
         storageBuilds: @escaping () -> Void
     ) throws -> AppState {
@@ -691,6 +708,8 @@ final class MobileHubServiceTests: XCTestCase {
             storageBuilds()
             var storage = MobileHubStorage(transport: transport, sidecar: sidecar)
             storage.registerForPushes = pushRegistrations
+            storage.shares = shares
+            storage.ownerUser = { "_owner-acme" }
             return storage
         }
         return appState
@@ -804,6 +823,75 @@ final class MobileHubServiceTests: XCTestCase {
         await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 2 }
     }
 
+    /// #66.7: a new QR wakes the relay loop instead of waiting the idle interval.
+    func testIssuingACodeWakesTheRelayLoop() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(3600))
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        center.attach(to: service)
+        await service.start()
+        defer { service.stop() }
+        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 1 }
+
+        _ = try await center.issueCode()
+
+        await awaitHubCondition("the open code wakes the relay loop") { transport.pulls == 2 }
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// #66.1: a hub rebuilt while the QR is on screen keeps the run's link
+    /// center: the code stays open and its link is not closed.
+    func testAHubRebuiltWithTheQROpenKeepsTheCodeAndItsLink() async throws {
+        let transport = StubHubTransport()
+        let shares = FakeShareService()
+        let appState = try makeAppState(transport: transport, shares: shares) {}
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        let first = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the first hub runs") { first.status == .running }
+        let center = try XCTUnwrap(first.linkCenter)
+        let code = try await center.issueCode()
+        shares.clearCalls()
+
+        runInitWorkbenches(appState)
+        let rebuilt = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the rebuilt hub runs") { rebuilt.status == .running }
+
+        XCTAssertTrue(rebuilt.linkCenter === center)
+        XCTAssertEqual(rebuilt.sharing, .available, "the rebuilt heartbeat says the link is open")
+        XCTAssertEqual(center.openCode?.nonce, code.nonce)
+        XCTAssertTrue(shares.isLinkOpen)
+        XCTAssertFalse(shares.calls.contains("setPublicLink:false"), "\(shares.calls)")
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// A hub rebuilt with no QR on screen still retries a pending sweep.
+    func testAHubRebuiltWithoutAQRRetriesAPendingSweep() async throws {
+        let shares = FakeShareService()
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        center.attach(to: makeService(transport: StubHubTransport()))
+        await awaitHubCondition("the first attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.clearCalls()
+
+        center.attach(to: makeService(transport: StubHubTransport()))
+
+        await awaitHubCondition("the rebuilt hub's attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        XCTAssertTrue(shares.calls.contains("setPublicLink:false"))
+    }
+
     func testWakeRelayWhileStoppedDoesNothing() async throws {
         let transport = StubHubTransport()
         let service = makeService(transport: transport, relayInterval: .seconds(3600))
@@ -855,4 +943,32 @@ final class CountingCompanion: HubCompanion, @unchecked Sendable {
 
     func start() { lock.withLock { startCount += 1 } }
     func stop() { lock.withLock { stopCount += 1 } }
+}
+
+/// A companion that reports its start.
+final class OrderedCompanion: HubCompanion, @unchecked Sendable {
+    private let onStart: () -> Void
+
+    init(onStart: @escaping () -> Void) {
+        self.onStart = onStart
+    }
+
+    func start() { onStart() }
+    func stop() {}
+}
+
+/// A slice source with no records that reports each read.
+final class OrderedSliceSource: SliceSource, @unchecked Sendable {
+    let kind: SliceKind
+    private let onRead: () -> Void
+
+    init(kind: SliceKind, onRead: @escaping () -> Void) {
+        self.kind = kind
+        self.onRead = onRead
+    }
+
+    func records(_ db: Database) throws -> [SliceRecord] {
+        onRead()
+        return []
+    }
 }

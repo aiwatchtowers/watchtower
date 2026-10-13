@@ -337,6 +337,46 @@ echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut
 cp "$STAGE_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
 
+# BEGIN sdk-stamp (extracted verbatim by scripts/tests/test-build-app-sdk-stamp.sh)
+# Since Xcode 27, SwiftPM's release build links against the current SDK but
+# records sdk = minos (14.0) in LC_BUILD_VERSION. AppKit picks its design
+# generation from that linked-SDK version, so such a binary runs in the
+# macOS 14 compatibility look (no Liquid Glass) while the CI release (Xcode
+# 26.x records the real SDK) gets the new one. Re-stamp the bundled copies
+# with the real SDK version (a no-op when it is already right) before they are
+# signed; SwiftPM's own output in .build stays untouched so its cache holds.
+build_version_field() {
+    vtool -show-build "$1" | awk -v f="$2" '$1 == f { print $2; exit }'
+}
+
+stamp_sdk_version() {
+    local bin="$1" sdk="$2" minos recorded
+    minos=$(build_version_field "$bin" minos)
+    if [ -z "$minos" ]; then
+        echo "ERROR: no LC_BUILD_VERSION minos in $bin"
+        return 1
+    fi
+    if ! vtool -set-build-version macos "$minos" "$sdk" -replace -output "$bin.sdkstamp" "$bin"; then
+        echo "ERROR: vtool could not stamp sdk $sdk into $bin"
+        rm -f "$bin.sdkstamp"
+        return 1
+    fi
+    mv "$bin.sdkstamp" "$bin"
+    recorded=$(build_version_field "$bin" sdk)
+    if [ "$recorded" != "$sdk" ] || [ "$recorded" = "$minos" ]; then
+        echo "ERROR: $bin records sdk '$recorded' (minos $minos, SDK $sdk); AppKit would run it in the macOS $minos compatibility look"
+        return 1
+    fi
+    echo "    Stamped $(basename "$bin"): minos $minos, sdk $recorded"
+}
+# END sdk-stamp
+
+MACOS_SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+# vtool prints a bare major version as "N.0"; match it so the check compares like with like.
+case "$MACOS_SDK_VERSION" in *.*) ;; *) MACOS_SDK_VERSION="$MACOS_SDK_VERSION.0" ;; esac
+stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop" "$MACOS_SDK_VERSION" || exit 1
+stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/watchtower-ocr" "$MACOS_SDK_VERSION" || exit 1
+
 # The licence notices of the third-party code compiled into the CLI (the
 # tree-sitter runtime and the code index's grammars): MIT, Apache-2.0 and
 # MPL-2.0 need them to reach whoever receives the binary. Guarded by

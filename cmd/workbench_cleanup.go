@@ -23,7 +23,7 @@ var workbenchCleanupCmd = &cobra.Command{
 		"and writes nothing. --session S (default $" + terminalSessionEnv + ") plans that session's\n" +
 		"cleanup: the linked worktrees and local branches it created whose work is merged or\n" +
 		"pushed, their orphan processes and LaunchServices entries; never uncommitted, unpushed,\n" +
-		"in-use or someone else's work (PROJ-16). --apply evaluates afresh and removes what is\n" +
+		"in-use or someone else's work (PROJ-18). --apply evaluates afresh and removes what is\n" +
 		"eligible now — only the --item keys named, when any — and saves the result on the\n" +
 		"session (result_saved / result_error). --workbench N --sweep lists every worktree and\n" +
 		"branch of the workbench repository with an owner hint; a sweep applies only named\n" +
@@ -173,7 +173,7 @@ func cleanupRequest(f cleanupFlags, sessionGiven bool, lookupEnv func(string) (s
 // envTerminalSession is $WATCHTOWER_TERMINAL_SESSION_ID; 0 only when the
 // variable is absent. Present but empty, whitespace or not a positive id, it
 // fails closed (a usage error): a caller session is set but unreadable, and
-// reading it as "no caller" would lift the caller-scope guard (PROJ-16).
+// reading it as "no caller" would lift the caller-scope guard (PROJ-18).
 func envTerminalSession(lookupEnv func(string) (string, bool)) (int64, error) {
 	raw, present := lookupEnv(terminalSessionEnv)
 	if !present {

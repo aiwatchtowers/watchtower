@@ -196,11 +196,11 @@ The payload stays under 700 bytes, which fits a QR at error-correction level M. 
 | Link grant wait on the phone | 60 s |
 | Record type | `WatchtowerRecord` |
 | Payload guard (hub, per record) | `maxPayloadBytes = 900_000`. Oversized records are skipped and not hashed, with a throttled warning (existing) |
-| Hub full diff tick | 10 s *(default — owner may change; was 60 s on the branch)* |
-| Fast lane coalescing window | 1 s; at least 2 s between two fast sends *(default)* |
+| Hub full diff tick | 30 s, every kind; the urgent kinds (`owner_ask`, `ask_alert`, `device_grant`) also every 10 s *(amended by board #724, owner decision Q3; was 10 s for every kind, 60 s on the branch)* |
+| Fast lane coalescing window | 1 s; at least 2 s between two fast sends; urgent kinds only — every other kind rides the full tick *(amended by board #724, owner decision Q3)* |
 | Relay poll on the Mac | 3 s while a phone action was seen in the last 300 s, otherwise 30 s (branch values), plus CKSyncEngine pushes |
-| Heartbeat | written every 300 s. Phone shows the Mac "online" while `heartbeat.updated_at` is less than 720 s old (branch values) |
-| Phone foreground fetch | every 5 s while Now or Workbench is on screen, 30 s otherwise; silent push plus `BGAppRefreshTask` in the background *(default)* |
+| Heartbeat | written every 900 s. Phone shows the Mac "online" while `heartbeat.updated_at` is less than 2100 s old *(amended by board #724, owner decision Q2; was 300 s / 720 s, the branch values)* |
+| Phone foreground fetch | silent pushes (fetched at once in the foreground, coalesced over 10 s in the background) plus a 60 s safety poll on every tab, paused while the app is not active *(amended by board #724, owner decision Q1; was every 5 s while Now or Workbench is on screen, 30 s otherwise)*; silent push plus `BGAppRefreshTask` in the background |
 | Latency target | 2–15 s from a Mac DB write to the phone screen; measured in A3 |
 | Relay action max age | 7 days, then `failed`/`expired` (branch) |
 | Session input and finish request expiry | 24 h after `created_at` *(default — owner may change)* |
@@ -323,7 +323,7 @@ The phone renders the report line as `#<report_target_id> · <done>/<total> · <
 - from `SessionAgentStateCenter.onChange` (`Sources/Services/SessionAgentStateCenter.swift:56`), which fires after the 1 s poll sees a change;
 - from GRDB `ValueObservation` over `owner_asks`, `terminal_sessions`, `project_comments` and `targets WHERE project_id IS NOT NULL`.
 
-Nudges coalesce for 1 s, the diff runs over the fast-lane kinds only (`terminal_session`, `owner_ask`, `ask_alert`, `workbench`, `workbench_target`, `workbench_comment`, `recording_job`), and then the hub calls `CKSyncEngine.sendChanges()` at once. Two fast sends are at least 2 s apart.
+Nudges coalesce for 1 s, the diff runs over the fast-lane kinds only (`owner_ask`, `ask_alert`, `device_grant`), and then the hub calls `CKSyncEngine.sendChanges()` at once. Two fast sends are at least 2 s apart. *(Amended by board #724, owner decision Q3: the other nudged kinds — `terminal_session`, `workbench`, `workbench_target`, `workbench_comment`, `recording_job` — ride the 30 s full tick without an immediate send, so they cost at most one push per 30 s.)*
 
 The hook is `onChange` and `onRead` from the hub. `SessionAgentStateCenter` already exposes single-closure properties, which `initWorkbenches` assigns at `AppState.swift:1703-1778`. The hub therefore wraps them: it chains to the existing closure and does not replace it.
 
@@ -672,7 +672,7 @@ Verified at main `b21f2c44`. The analysis's numbers were taken at `c78edea4`; th
 |---|---|
 | **Mac asleep or app quit** | The phone reads from its replica. Writes go to the outbox and the RelayZone, and each row shows "Waiting for your Mac" while the heartbeat is stale. The Mac applies the queue on launch or wake, subject to the expiries in §3. The start sheet stays on "Sent to your Mac". A recording upload stays `pending` and the Recordings list shows "Waiting for the Mac to wake" |
 | **`.limitExceeded`** (batch too large) | The transport halves the batch (200 → 100 → … → 1) and retries. A single record that still fails is logged with its record name, and its `slice_state` hash is cleared, so it is not believed published. The publisher's projection caps make this a bug signal, not a steady state |
-| **`.requestRateLimited` / `.zoneBusy`** | Honour `CKErrorRetryAfterKey`, defaulting to 5 s and doubling up to 120 s. Pause fast-lane sends until then; the 10 s tick keeps diffing. Settings shows "iCloud is slowing sync down" after 60 s of throttling |
+| **`.requestRateLimited` / `.zoneBusy`** | Honour `CKErrorRetryAfterKey`, defaulting to 5 s and doubling up to 120 s. Pause fast-lane sends until then; the full tick keeps diffing. Settings shows "iCloud is slowing sync down" after 60 s of throttling |
 | **`.quotaExceeded`** | Sync pauses and a Desktop banner opens Settings → Mobile. The phone shows its last replica with a "Mac sync paused (iCloud full)" row. Recording uploads stay on the phone |
 | **Oversized payload** | Projection caps (§4). The 900 KB guard is the last resort: skip, no hash, throttled warning (existing). A test asserts that each slice's worst-case fixture stays under 900 KB |
 | **Duplicate delivery** (push twice, re-fetch, extension plus app) | Same record name, so §5.2 rule 1 applies. Recording ingest keeps the accepted edge: a crash between the ack save and the processed mark re-copies the audio, which yields a duplicate transcript the owner may delete |
@@ -830,7 +830,7 @@ No B or C milestone starts until A3 passes, or until the owner accepts each fail
 
 **A4 Phone shell and onboarding.** Onboarding (Welcome, then Scan the code on your Mac, then Linked to <Mac name>, then the notifications permission, then Now), the "The Mac doesn't show up" screen, the switch-Mac confirmation, Unlink this Mac; tabs Now, Workbench, Calendar, More (More = Settings); the Settings screen (Your Mac status, Workbench toggles, Notifications, "Chat without the Mac — later" as a disabled row); a DemoSeed rewrite; the app icon from `WatchtowerDesktop/Sources/Resources/Assets.xcassets/AppIcon.appiconset`; the NSE and content extension targets wired to the app group; light and dark mode from the system; system blue accent. Tests:
 
-- (a) heartbeat age 719 s shows online and 720 s shows offline;
+- (a) heartbeat age 2099 s shows online and 2100 s shows offline *(amended by board #724; was 719 s / 720 s)*;
 - (b) no heartbeat at all shows "Your Mac has not connected yet";
 - (c) the queued count equals the pending outbox rows;
 - (d) `ReplicaWiringTests` counts match DemoSeed after an uninstall;
@@ -849,7 +849,7 @@ No B or C milestone starts until A3 passes, or until the owner accepts each fail
 - (c) an archived target is published with `archived: true`, and one archived 91 days ago is not;
 - (d) a 2 MiB `doc_snapshot` publishes 256 KiB cut at a newline with `doc_clipped` and `doc_bytes`, and a snapshot with no newline before the cap is cut at the cap's grapheme boundary;
 - (e) `quick` is set for one single-select question with a recommended option and 3 options, and absent for multi-select, for no recommended option, for 5 options and for 2 questions;
-- (f) a state change to Needs approval reaches the published `state_kind` within one coalescing window plus one send (fake clock), not after the 10 s tick;
+- (f) a state change to Needs approval reaches the published `state_kind` at the next 30 s full tick, without an immediate send (fake clock) *(amended by board #724, owner decision Q3; was within one coalescing window plus one send)*;
 - (g) for each SessionStatePresentation kind, the published tone, caption and glyph equal `SessionStatePresentation`'s;
 - (h) an ask open when the hub was enabled produces no `ask_alert`, a new one produces exactly one, and a re-hydrate produces none;
 - (i) zero workbenches publish zero records and no error;

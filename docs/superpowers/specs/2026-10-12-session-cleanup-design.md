@@ -10,7 +10,7 @@ it reuses #565's parse and resolver and adds a per-session *history* of the work
 **Touches:** `cmd/workbench_session_state.go`, new `cmd/workbench_cleanup.go`, new `internal/sessioncleanup`,
 `internal/db` (migration, `terminal_session_worktrees`), `internal/devpack` (permission entry, skill v7),
 `cmd/workbench_brief.go`, `internal/sessionreport`, Desktop (`SessionCleanupCenter`, session dialogs, report, header
-menu), `docs/inventory/workbench.md` (PROJ-02/04/11, new PROJ-16), `docs/inventory/dev-surface.md` (DEV-04
+menu), `docs/inventory/workbench.md` (PROJ-02/04/11, new PROJ-18), `docs/inventory/dev-surface.md` (DEV-04
 changelog), `docs/features/workbench.md`, `docs/app-guide.md`.
 
 ## 1. Scope
@@ -152,7 +152,7 @@ watchtower workbench cleanup --workbench N --sweep --apply --item KEY [--item KE
 (`--no-size` or over the size budget): `removed_bytes` is then only what was measured, not 0 freed. `summary` is one line, English, ready for the finish summary. `result_saved` /
 `result_error` is the envelope for the best-effort write of `cleanup_result` (review-rules envelope symmetry).
 
-## 5. Safety catches (PROJ-16)
+## 5. Safety catches (PROJ-18)
 
 Evaluated in this order; the first that fires sets `action: keep` and its `reason`. Re-checked immediately before
 each removal (§7); git's own refusal is the last catch.
@@ -299,7 +299,7 @@ re-install fixtures (`internal/devpack/testdata/watchtower-workbench-v6.md`).
 
 ## 13. Contract changes (need owner approval)
 
-**New PROJ-16 — session cleanup never removes unsaved, unpushed, in-use or someone else's work.**
+**New PROJ-18 — session cleanup never removes unsaved, unpushed, in-use or someone else's work.**
 > `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 > repository and local branches, and only after every catch passes, checked again immediately before the removal:
 > a worktree with uncommitted or untracked changes, a HEAD not in the default branch nor on a remote, a locked
@@ -312,17 +312,17 @@ re-install fixtures (`internal/devpack/testdata/watchtower-workbench-v6.md`).
 > session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A plan writes nothing; an apply acts
 > only on items eligible at that moment and, when items are named, only on those.
 
-Guards (Go): `TestProj16_UncommittedWorktreeIsKept`, `TestProj16_UntrackedFileKeepsTheWorktree`,
-`TestProj16_UnpushedCommitKeepsWorktreeAndBranch`, `TestProj16_LiveProcessKeepsTheWorktree`,
-`TestProj16_SessionInTheWorktreeKeepsIt`, `TestProj16_LockedWorktreeIsKept`,
-`TestProj16_WorktreeOlderThanTheSessionIsKept`, `TestProj16_BranchOlderThanTheSessionIsKept`,
-`TestProj16_BranchCheckedOutElsewhereIsKept`, `TestProj16_DefaultBranchIsNeverDeleted`,
-`TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates`, `TestProj16_ClaudeHistoryAndMainBuildUntouched`,
-`TestProj16_PlanWritesNothing`, `TestProj16_ApplyRechecksAndActsOnlyOnNamedItems`,
-`TestProj16_BranchThatMovedAfterThePlanIsKept`, `TestProj16_OnlyOrphansAreSignalled`,
-`TestProj16_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1),
-`TestProj16_WorktreeHoldingANestedWorktreeIsKept` (W9, review of PR #227).
-Swift: `testProj16_DeleteAppliesOnlyThePlannedItems`, `testProj16_FailedCleanupKeepsTheSessionRow`.
+Guards (Go): `TestProj18_UncommittedWorktreeIsKept`, `TestProj18_UntrackedFileKeepsTheWorktree`,
+`TestProj18_UnpushedCommitKeepsWorktreeAndBranch`, `TestProj18_LiveProcessKeepsTheWorktree`,
+`TestProj18_SessionInTheWorktreeKeepsIt`, `TestProj18_LockedWorktreeIsKept`,
+`TestProj18_WorktreeOlderThanTheSessionIsKept`, `TestProj18_BranchOlderThanTheSessionIsKept`,
+`TestProj18_BranchCheckedOutElsewhereIsKept`, `TestProj18_DefaultBranchIsNeverDeleted`,
+`TestProj18_MainFolderAndWorkbenchFoldersAreNeverCandidates`, `TestProj18_ClaudeHistoryAndMainBuildUntouched`,
+`TestProj18_PlanWritesNothing`, `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems`,
+`TestProj18_BranchThatMovedAfterThePlanIsKept`, `TestProj18_OnlyOrphansAreSignalled`,
+`TestProj18_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1),
+`TestProj18_WorktreeHoldingANestedWorktreeIsKept` (W9, review of PR #227).
+Swift: `testProj18_DeleteAppliesOnlyThePlannedItems`, `testProj18_FailedCleanupKeepsTheSessionRow`.
 
 **PROJ-11 amendment** (on top of #565's): add to Observable —
 > The state hooks also record, for any agent of the session, the worktree root and branch its event's `cwd` resolves

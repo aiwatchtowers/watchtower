@@ -24,6 +24,7 @@ package enum OwnerAskAnswerProblem: Equatable, Sendable {
     case unknownCheckItem(index: Int, id: String)
     case checkItemMarkedTwice(index: Int, id: String)
     case checkItemUnmarked(id: String)
+    case dismissalWithAnswer
 
     /// Go's `asks.Answer.note` bound, in runes.
     package static let maxNoteRunes = 4000
@@ -46,6 +47,7 @@ package enum OwnerAskAnswerProblem: Equatable, Sendable {
         case let .unknownCheckItem(i, id): "checklist[\(i)].id: no check item \(Self.quoted(id))"
         case let .checkItemMarkedTwice(i, id): "checklist[\(i)].id: item \(Self.quoted(id)) marked twice"
         case let .checkItemUnmarked(id): "checklist: item \(Self.quoted(id)) has no state"
+        case .dismissalWithAnswer: "dismissed: a dismissal carries no answer"
         }
     }
 
@@ -63,6 +65,10 @@ extension OwnerAskAnswer {
             return .brokenWithoutNote(index: index)
         }
         if note.unicodeScalars.count > OwnerAskAnswerProblem.maxNoteRunes { return .noteTooLong }
+        if dismissed {
+            let empty = verdict == nil && answers.isEmpty && checklist.isEmpty && comments.isEmpty
+            return empty ? nil : .dismissalWithAnswer
+        }
         if kind == .review && verdict == nil { return .verdictRequired }
         if kind != .review && verdict != nil { return .verdictNotAllowed }
         if kind != .review && !comments.isEmpty { return .commentsNotAllowed }

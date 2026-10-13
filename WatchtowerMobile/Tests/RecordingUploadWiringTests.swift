@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class RecordingUploadWiringTests: XCTestCase {
     private struct Wired {
-        let env: AppEnvironment
+        let env: HubSession
         let transport: InMemoryCloudTransport
         let engine: FakeAudioEngine
         let clock: FakeClock
@@ -22,7 +22,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let directory = try makeRecordingsDirectory()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: transport,
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
@@ -71,7 +71,7 @@ final class RecordingUploadWiringTests: XCTestCase {
     func testAnUploadWhileTheMacSleepsStaysPendingAndSaysSo() async throws {
         let wired = try await makeWired()
         let recording = try await recordAndStop(wired)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         let uploads = try await relayUploads(in: wired.transport)
         XCTAssertEqual(uploads.map(\.status), [.pending], "no echo from a sleeping Mac")
@@ -83,10 +83,67 @@ final class RecordingUploadWiringTests: XCTestCase {
         let row = try XCTUnwrap(model.snapshot.recording(recording.id))
         let heartbeat = model.snapshot.heartbeat
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date()).label, "Sending to your Mac")
-        let asleep = PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date().addingTimeInterval(800))
+        let asleep = PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date().addingTimeInterval(3_600))
         XCTAssertEqual(asleep, .waitingForMac)
         XCTAssertEqual(asleep.label, "Waiting for the Mac to wake")
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()), .waitingForMac)
+    }
+
+    /// An app relaunched while the Mac sleeps leaves an upload in flight
+    /// alone (it waits in CloudKit's queue): no re-save and no attempt
+    /// counted, so it reads "Waiting for the Mac to wake", never "Upload
+    /// stuck". A relaunch that finds the Mac online re-saves it when due.
+    func testARelaunchWhileTheMacSleepsNeitherResavesNorCountsAnAttempt() async throws {
+        let transport = InMemoryCloudTransport()
+        let path = try makeReplicaPath()
+        let defaults = try makeDefaults()
+        let directory = try makeRecordingsDirectory()
+        let engine = FakeAudioEngine()
+        let clock = FakeClock()
+        let launch: (Date) throws -> HubSession = { now in
+            let env = try HubSession(
+                transport: transport,
+                replicaPath: path,
+                transportKind: .inMemoryDemo,
+                defaults: defaults,
+                recordingsDirectory: directory,
+                uploadRetriesAllowed: true,
+                makeRecorder: { uploader in
+                    PhoneRecorderController(
+                        uploader: uploader, engine: engine, notificationCenter: NotificationCenter(),
+                        now: { clock.now }, tickInterval: nil
+                    )
+                },
+                now: { now }
+            )
+            self.addTeardownBlock { @MainActor in env.stop() }
+            return env
+        }
+        let first = try launch(Date())
+        try await poll { first.isBootstrapped }
+        await first.recorder.recordVoiceNote()
+        clock.advance(30)
+        await first.recorder.stop()
+        let id = try XCTUnwrap(first.recorder.savedRecording?.id)
+        XCTAssertEqual(try first.store.phoneRecording(id: id)?.uploadAttempts, 1)
+        first.stop()
+
+        // Two hours on: the backoff is due, but the heartbeat the boot
+        // brings is two hours old.
+        let asleepAt = Date().addingTimeInterval(7_200)
+        let asleep = try launch(asleepAt)
+        try await poll { asleep.isBootstrapped }
+        let row = try XCTUnwrap(try asleep.store.phoneRecording(id: id))
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertEqual(row.uploadAttempts, 1, "no re-save while the Mac sleeps")
+        let model = asleep.phoneRecordings
+        try await poll { model.snapshot.heartbeat != nil }
+        XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: model.snapshot.heartbeat, now: asleepAt), .waitingForMac)
+        asleep.stop()
+
+        let awake = try launch(Date().addingTimeInterval(RecordingUploader.retryDelays[0] + 1))
+        try await poll { awake.isBootstrapped }
+        XCTAssertEqual(try awake.store.phoneRecording(id: id)?.uploadAttempts, 2, "the Mac is online: re-saved")
     }
 
     // MARK: - Ack
@@ -97,7 +154,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
 
         try await echo(recording, status: .received, in: wired.transport)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "received → the local copy goes")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
@@ -110,7 +167,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let recording = try await recordAndStop(wired)
 
         try await echo(recording, status: .failed, error: "The Mac could not save the recording.", in: wired.transport)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
@@ -136,6 +193,64 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertEqual(wired.env.recorder.phase, .recording, "the capture itself goes on")
         wired.env.setActive(true)
         XCTAssertTrue(wired.env.isLooping)
+    }
+
+    // MARK: - Bounded retry (board #724)
+
+    /// A launch into the background (a silent push) uploads nothing — not
+    /// the relaunch retry of a recording already sent, not a recording
+    /// waiting to go — until the app becomes active; then both go out.
+    func testALaunchIntoTheBackgroundUploadsNothingUntilTheAppIsActive() async throws {
+        let replicaPath = try makeReplicaPath()
+        let directory = try makeRecordingsDirectory()
+        let clock = MutableClock()
+        let device = LinkedDevice(
+            deviceID: "device-a", name: "Phone A", model: "iPhone", appVersion: "1.0",
+            scope: .private, userRecordName: "_user-a"
+        )
+        // The previous process sent one recording and finalized another
+        // without sending it.
+        let earlier = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: try ReplicaStore(path: replicaPath),
+            directory: directory, deviceID: device.deviceID
+        ) { clock.now }
+        var ids: [String] = []
+        for name in ["sent", "waiting"] {
+            let file = directory.appendingPathComponent("\(name).m4a")
+            try Data(repeating: 1, count: 64).write(to: file)
+            let ended = clock.now
+            let row = try await earlier.register(fileURL: file, startedAt: ended.addingTimeInterval(-60), endedAt: ended, titleHint: name)
+            ids.append(try XCTUnwrap(row).id)
+            if name == "sent" { _ = try await earlier.uploadPending() }
+        }
+        clock.advance(3_600)
+
+        let transport = InMemoryCloudTransport()
+        // The Mac is online: the relaunch retry does not wait for it.
+        try await transport.save(try DemoSeed.records(now: clock.now).filter { $0.recordName == HeartbeatPayload.recordName })
+        let engine = FakeAudioEngine()
+        let env = try HubSession(
+            transport: transport,
+            replicaPath: replicaPath,
+            transportKind: .cloudKit,
+            linkedDevice: device,
+            defaults: try makeDefaults(),
+            recordingsDirectory: directory,
+            uploadRetriesAllowed: false,
+            makeRecorder: { uploader in
+                PhoneRecorderController(uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), tickInterval: nil)
+            },
+            now: { clock.now }
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        try await poll({ env.isBootstrapped }, "the boot did not finish")
+        var uploads = try await relayUploads(in: transport)
+        XCTAssertTrue(uploads.isEmpty, "a background launch uploads nothing")
+
+        env.setActive(true)
+        try await poll({ (try? env.store.phoneRecordings().allSatisfy { $0.state == .uploading }) == true }, "no pass on activation")
+        uploads = try await relayUploads(in: transport)
+        XCTAssertEqual(Set(uploads.map(\.id)), Set(ids))
     }
 
     // MARK: - Link seam

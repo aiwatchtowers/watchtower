@@ -550,6 +550,18 @@ final class OwnerAsksViewModel {
         return Task { await answer(ask, verdict: action.verdict) }
     }
 
+    /// Dismiss (board #223): `ask` closes unanswered — an
+    /// dismissal down the one answer path, so its line reaches the session
+    /// and the agent goes on without it. The draft's note goes with it;
+    /// its picks and marks do not. Nil while an answer to it runs or once
+    /// it is closed.
+    @discardableResult
+    func dismiss(_ ask: OwnerAsk) -> Task<Void, Never>? {
+        guard ask.isOpen, !isAnswering(ask.id) else { return nil }
+        let note = drafts.askDraft(for: ask.id).note
+        return Task { await answer(ask, with: OwnerAskAnswer(note: note, dismissed: true)) }
+    }
+
     /// ⌘↩ (`shift`: ⌘⇧↩) in an ask's drawer (owner ask #90): presses the
     /// button the key names (`OwnerAskPresentation.keyAction`) as a click
     /// would; nil when it names none or that button is off.

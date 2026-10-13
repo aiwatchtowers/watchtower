@@ -17,14 +17,6 @@ final class RootTabTests: XCTestCase {
         XCTAssertFalse(RootTabView.Tab.allCases.map(\.rawValue).contains("more"), "More is gone")
     }
 
-    /// Spec §3: the foreground fetch runs every 5 s while Now (Settings
-    /// included) or Workbench is on screen and every 30 s on Calendar.
-    func testForegroundFetchIsFastOnNowAndWorkbenchOnly() {
-        XCTAssertEqual(RootTabView.Tab.now.fetchInterval, .seconds(5))
-        XCTAssertEqual(RootTabView.Tab.workbench.fetchInterval, .seconds(5))
-        XCTAssertEqual(RootTabView.Tab.calendar.fetchInterval, .seconds(30))
-    }
-
     /// §5: the open-ask badge is orange on every tab bar item layout, not
     /// only through `UITabBarItem.appearance()`.
     func testTheBadgeIsOrangeOnEveryTabBarLayout() {

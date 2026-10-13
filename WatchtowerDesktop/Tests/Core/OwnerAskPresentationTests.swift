@@ -136,6 +136,17 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(OwnerAskPresentation.askStatusLine(try ask(.question), replacedBy: nil), "Waiting for you")
     }
 
+    /// Board #223: a dismissed ask reads as dismissed, read by its agent or not.
+    func testStatusLineOfADismissedAsk() throws {
+        for status in ["answered", "delivered"] {
+            let dismissed = try OwnerAsk(row: Row([
+                "id": 4, "project_id": 1, "level": "full", "origin": "agent", "kind": "check", "title": "t", "payload": "{}",
+                "status": status, "answer": try OwnerAskAnswer.dismissal.encoded()
+            ]))
+            XCTAssertEqual(OwnerAskPresentation.askStatusLine(dismissed, replacedBy: nil), "Dismissed", status)
+        }
+    }
+
     func testAStoredAnswerReadsBackAsPicksAndMarks() {
         let answer = OwnerAskAnswer(
             answers: [.init(id: "a", labels: ["Yes"]), .init(id: "b", labels: [], other: "Later")],

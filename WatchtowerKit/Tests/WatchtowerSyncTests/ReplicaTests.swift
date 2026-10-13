@@ -368,6 +368,35 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.storedToken(), CloudChangeToken(value: 5))
     }
 
+    // MARK: - Per-kind change stamps
+
+    func testApplyBumpsTheStampsOfTheKindsItTouchesOnly() throws {
+        let store = try ReplicaStore.inMemory()
+        let kinds: [SliceKind] = [.target, .heartbeat, .calendarEvent]
+        func versions() throws -> [SliceKind: Int64] {
+            try store.reader.read { db in try store.kindVersions(kinds, from: db) }
+        }
+        XCTAssertEqual(try versions(), [.target: 0, .heartbeat: 0, .calendarEvent: 0], "never written reads 0")
+
+        let beat = dataRecord(kind: .heartbeat, id: "mac", payload: Data("{}".utf8))
+        try store.apply(CloudChangeBatch(changed: [beat], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        XCTAssertEqual(try versions(), [.target: 0, .heartbeat: 1, .calendarEvent: 0])
+
+        let target = dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "a")))
+        let other = dataRecord(kind: .target, id: "2", payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "b")))
+        try store.apply(CloudChangeBatch(
+            changed: [target, other], deletedRecordNames: [beat.recordName, "never-stored"], newToken: CloudChangeToken(value: 2)
+        ))
+        XCTAssertEqual(
+            try versions(), [.target: 1, .heartbeat: 2, .calendarEvent: 0],
+            "one bump per kind per batch; a delete bumps its record's kind; an unknown name bumps nothing"
+        )
+
+        let stale = dataRecord(kind: .calendarEvent, id: "e", payload: Data("{}".utf8))
+        XCTAssertFalse(try store.apply(CloudChangeBatch(changed: [stale], deletedRecordNames: [], newToken: CloudChangeToken(value: 2))))
+        XCTAssertEqual(try versions()[.calendarEvent], 0, "a dropped stale batch bumps nothing")
+    }
+
     // MARK: - Reentrancy coalescing
 
     /// Transport whose `changes` blocks on an external gate and counts calls,
@@ -652,6 +681,35 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
     }
 
+    // MARK: - Suspension (0xdead10cc)
+
+    /// A replica opened with `observesSuspension` refuses writes while GRDB's
+    /// suspension is posted and takes them again after the resume; one
+    /// opened without it ignores both.
+    func testASuspendedReplicaRefusesWritesUntilResumed() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-suspend-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let observing = try ReplicaStore(path: dir.appendingPathComponent("observing.sqlite").path, observesSuspension: true)
+        let plain = try ReplicaStore(path: dir.appendingPathComponent("plain.sqlite").path)
+
+        let write: (ReplicaStore) throws -> Void = { store in
+            try store.writer.write { db in
+                try db.execute(sql: "INSERT OR REPLACE INTO replica_meta (key, value) VALUES ('probe', '1')")
+            }
+        }
+
+        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+        XCTAssertThrowsError(try write(observing), "a suspended replica takes no write lock")
+        XCTAssertNoThrow(try write(plain), "only the observing replica is suspended")
+
+        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+        XCTAssertNoThrow(try write(observing))
+    }
+
     // MARK: - Phone recordings ledger upgrade
 
     /// A replica written before `event_id` existed opens with its ledger
@@ -675,6 +733,10 @@ final class ReplicaTests: XCTestCase {
         let rows = try store.phoneRecordings()
         XCTAssertEqual(rows.map(\.id), ["old"])
         XCTAssertNil(rows.first?.eventID)
+        // The upload backoff and the auto-finish mark start empty.
+        XCTAssertEqual(rows.first?.uploadAttempts, 0)
+        XCTAssertNil(rows.first?.lastAttemptAt)
+        XCTAssertEqual(rows.first?.autoFinished, false)
 
         let audio = dir.appendingPathComponent("new.m4a")
         try Data(repeating: 1, count: 16).write(to: audio)

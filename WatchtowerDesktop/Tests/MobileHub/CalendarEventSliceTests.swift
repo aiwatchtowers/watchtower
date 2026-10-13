@@ -486,6 +486,31 @@ final class CalendarEventSliceTests: XCTestCase {
         XCTAssertEqual(payload["is_all_day"] as? Bool, true)
     }
 
+    /// The publish order (board #724 computes each start once before the
+    /// sort): local start first — an all-day event at its local midnight,
+    /// not its stored UTC instant — then the id for equal starts, and a
+    /// de-duplicated copy keeps its start.
+    func testEventsAreOrderedByLocalStartThenID() throws {
+        let west = try calendar(TimeZone(secondsFromGMT: -7 * 3600))
+        let localNoon = try XCTUnwrap(west.date(bySettingHour: 12, minute: 0, second: 0, of: now))
+        let today = west.startOfDay(for: localNoon)
+        let tomorrow = try XCTUnwrap(west.date(byAdding: .day, value: 1, to: today))
+        let dayAfter = try XCTUnwrap(west.date(byAdding: .day, value: 2, to: today))
+        try insertEvent("evt-c", start: tomorrow.addingTimeInterval(8 * 3600))
+        try insertEvent("evt-e2", start: tomorrow.addingTimeInterval(9 * 3600))
+        try insertEvent("evt-e1", start: tomorrow.addingTimeInterval(9 * 3600))
+        // Stored as tomorrow's UTC midnight: today 17:00 here, before evt-b.
+        try insertEvent("evt-z", allDay: (storedDay(tomorrow, in: west), storedDay(dayAfter, in: west)))
+        try insertEvent("evt-b", start: today.addingTimeInterval(20 * 3600))
+        try insertEvent("evt-a1", start: today.addingTimeInterval(14 * 3600), icalUID: "uid-1@example.com", calendarID: "cal-a")
+        try insertEvent(
+            "evt-a2", start: today.addingTimeInterval(14 * 3600), icalUID: "uid-1@example.com",
+            conferenceURL: "https://meet.example.com/x", calendarID: "cal-b"
+        )
+
+        XCTAssertEqual(try ids(now: localNoon, calendar: west), ["evt-a2", "evt-b", "evt-z", "evt-c", "evt-e1", "evt-e2"])
+    }
+
     /// East of UTC the trap is at the window start: yesterday's all-day day
     /// ends at UTC midnight, already inside the local window.
     func testAnAllDayEventBeforeTheWindowStaysOutEastOfUTC() throws {

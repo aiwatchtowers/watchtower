@@ -1,9 +1,9 @@
 import Foundation
 
-/// The hub's liveness record (mobile POC spec §4.1), rewritten every 300 s.
+/// The hub's liveness record (mobile POC spec §4.1), rewritten every 900 s.
 /// It lives in DataZone under the record name `heartbeat`: only the hub
 /// writes that zone, so a RelayZone share participant cannot rewrite it.
-/// The phone shows the Mac online while `updatedAt` is under 720 s old.
+/// The phone shows the Mac online while `updatedAt` is under 2100 s old.
 ///
 /// Wire: RelayCoder JSON (snake_case, Unix-second dates, sorted keys). A nil
 /// optional is an absent key.

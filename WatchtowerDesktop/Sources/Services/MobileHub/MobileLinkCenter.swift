@@ -11,6 +11,8 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
     /// The Mac's iCloud user record name (the QR's `owner_user`) could not
     /// be looked up.
     case ownerUnknown
+    /// The Mac's iCloud account changed while the code was being made.
+    case accountChanged
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +20,7 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
         case .account(.restricted): return "Mobile isn't available on this Mac: iCloud is restricted by your organization."
         case .account(.unavailable(let reason)): return "Mobile isn't available on this Mac: \(reason)"
         case .account(.available), .ownerUnknown: return "This Mac couldn't read its iCloud account. Try again."
+        case .accountChanged: return "This Mac's iCloud account changed. Show a new code."
         }
     }
 }
@@ -46,7 +49,11 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   no grant at all. A linked phone keeps its link whatever nonce it sends
 ///   later; a removed one is never re-linked by an old nonce. A linked
 ///   phone's own rewrite without a nonce unlinks it (`unlinked: true`) or
-///   sets its start-sessions grant.
+///   sets its start-sessions grant and its typing request (spec §10: a
+///   request asks the owner — `onTypingRequested` — and never grants; the
+///   phone's toggle off revokes the grant).
+/// - Revoke, Remove and the phone's own revoke or unlink tell
+///   `onTypingRevoked`, which fails the phone's held lines (PROJ-16).
 ///
 /// The `device_grant` records are `DeviceGrantSlice`'s, from the sidecar;
 /// every change here nudges that kind.
@@ -59,6 +66,10 @@ final class MobileLinkCenter {
         case sheetClosed = "sheet_closed"
         /// A link left open by an earlier run (a crash with the QR shown).
         case restart
+        /// The code could not be stored after its link opened.
+        case issueFailed = "issue_failed"
+        /// The Mac's iCloud account changed: the QR names the old user.
+        case accountChanged = "account_changed"
     }
 
     /// `link_codes` keeps this many, newest first (spec §2.3).
@@ -72,27 +83,50 @@ final class MobileLinkCenter {
 
     /// The QR on screen; nil once it was used, expired or the sheet closed.
     private(set) var openCode: LinkPayload?
+    /// Why the last close ran (the sheet tells an account change from expiry).
+    private(set) var lastCloseReason: CloseReason?
     /// The linked phones, oldest link first.
     private(set) var devices: [HubSyncState.LinkedDevice] = []
 
     /// The heartbeat's `sharing` (set to `MobileHubService.sharing`).
     @ObservationIgnored var onSharingChanged: (@MainActor (HubSharing) -> Void)?
+    /// A linked phone turned "Type into sessions" on while the Mac has not
+    /// allowed it: the Mac asks the owner (spec §10, OD-2).
+    @ObservationIgnored var onTypingRequested: (@MainActor (HubSyncState.LinkedDevice) -> Void)?
+    /// A phone lost its typing grant (Revoke, the phone's toggle off) or its
+    /// link (Remove, unlink): its held lines fail (spec §10, PROJ-16).
+    @ObservationIgnored var onTypingRevoked: (@MainActor (_ deviceID: String) -> Void)?
+    /// The last `sharing` reported, re-applied to a rebuilt hub.
+    @ObservationIgnored private var sharing: HubSharing?
 
     @ObservationIgnored private let sidecar: HubSyncState
     @ObservationIgnored private let shares: any ShareService
     @ObservationIgnored private let macName: String
     @ObservationIgnored private let ownerUser: @Sendable () async -> String?
-    @ObservationIgnored private let nudge: @MainActor (Set<SliceKind>) -> Void
+    /// nil: the attached hub's publisher.
+    @ObservationIgnored private let nudge: (@MainActor (Set<SliceKind>) -> Void)?
+    /// The hub the center hangs on now; a rebuilt hub replaces it.
+    @ObservationIgnored private weak var hub: MobileHubService?
+    /// The first `attach` closes a link an earlier run left open; a rebuilt
+    /// hub's does the same unless a QR is on screen.
+    @ObservationIgnored private var attachedOnce = false
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let shareTimeout: Duration
     /// The close that follows a link, run outside the relay pass.
     @ObservationIgnored private(set) var closeAfterLink: Task<Void, Never>?
+    /// The close an account change started; a new code waits for it, so it
+    /// never lands on the new code's link.
+    @ObservationIgnored private var accountChangeClose: Task<Void, Never>?
     @ObservationIgnored private var knownOwnerUser: String?
+    /// Bumped when the account changes, so a lookup still running then
+    /// never caches the old user.
+    @ObservationIgnored private var ownerEpoch = 0
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
-    /// Bumped each time the public link opens, so a close that was
-    /// suspended while a new code opened it never marks it closed.
-    @ObservationIgnored private var linkEpoch = 0
+    /// Bumped each time the sweep is marked pending (the public link opens,
+    /// a Remove fails), so a close that was suspended meanwhile never clears
+    /// the mark.
+    @ObservationIgnored private var sweepEpoch = 0
     @ObservationIgnored private let logger = Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
 
     init(
@@ -100,7 +134,7 @@ final class MobileLinkCenter {
         shares: any ShareService,
         macName: String,
         ownerUser: @escaping @Sendable () async -> String?,
-        nudge: @escaping @MainActor (Set<SliceKind>) -> Void,
+        nudge: (@MainActor (Set<SliceKind>) -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         shareTimeout: Duration = MobileHubService.defaultCloudTimeout
@@ -116,14 +150,12 @@ final class MobileLinkCenter {
         reloadDevices()
     }
 
-    /// The hub's link center over `storage`'s shares; nil for a storage
-    /// without a share service (a stub), which links no phone.
-    static func forHub(storage: MobileHubStorage, macName: String, publisher: SlicePublisher) -> MobileLinkCenter? {
+    /// The run's link center over `storage`'s shares, kept across hub
+    /// rebuilds; nil for a storage without a share service (a stub), which
+    /// links no phone.
+    static func forRun(storage: MobileHubStorage, macName: String) -> MobileLinkCenter? {
         guard let shares = storage.shares else { return nil }
-        return MobileLinkCenter(
-            sidecar: storage.sidecar, shares: shares, macName: macName, ownerUser: storage.ownerUser,
-            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) } // swiftlint:disable:this trailing_closure
-        )
+        return MobileLinkCenter(sidecar: storage.sidecar, shares: shares, macName: macName, ownerUser: storage.ownerUser)
     }
 
     /// Where the relay sends phone `device` records.
@@ -132,13 +164,21 @@ final class MobileLinkCenter {
     }
 
     /// Hangs the center on `hub`: Settings reaches it there, the hub's
-    /// zones deleted forget every phone, the heartbeat carries `sharing`. A
-    /// public link an earlier run left open (a crash with the QR shown) is
-    /// closed now.
+    /// zones deleted forget every phone, the heartbeat carries `sharing`, an
+    /// account change forgets the iCloud user. A public link an earlier run
+    /// left open (a crash with the QR shown), or a sweep still pending, is
+    /// closed now, unless a rebuilt hub attaches while the QR is on screen:
+    /// that code keeps its link.
     func attach(to hub: MobileHubService) {
+        self.hub = hub
         hub.linkCenter = self
         hub.onZonesDeleted = { [weak self] in try self?.hubZonesDeleted() }
+        hub.onAccountChanged = { [weak self] in self?.accountChanged() }
         onSharingChanged = { [weak hub] in hub?.sharing = $0 }
+        if let sharing { hub.sharing = sharing }
+        let keepsQR = attachedOnce && openCode != nil
+        attachedOnce = true
+        guard !keepsQR else { return }
         Task { await closeLink(reason: .restart) }
     }
 
@@ -158,22 +198,38 @@ final class MobileLinkCenter {
     /// iCloud or the Mac's user name; nothing is created then. The codes
     /// still open are retired: only the newest one links.
     func issueCode() async throws -> LinkPayload {
+        await accountChangeClose?.value
+        let epoch = ownerEpoch
         let account = await accountAvailability()
         guard account == .available else { throw MobileLinkError.account(account) }
         guard let owner = await resolveOwnerUser() else { throw MobileLinkError.ownerUnknown }
         let hubID = try sidecar.ensureHubID()
         let urls = await openPublicLink()
+        guard epoch == ownerEpoch else {
+            // The account changed meanwhile: the code would name the old user.
+            await closeLink(reason: .accountChanged)
+            throw MobileLinkError.accountChanged
+        }
         let code = LinkPayload.issue(
             hubID: hubID, macName: macName, ownerUser: owner,
             dataShare: urls?.data, relayShare: urls?.relay, now: now()
         )
-        try sidecar.addLinkCode(
-            nonce: code.nonce, issuedAt: Date(timeIntervalSince1970: TimeInterval(code.iat)),
-            exp: Date(timeIntervalSince1970: TimeInterval(code.exp)), keeping: Self.keptCodes,
-            retiringOpenCodesAt: now()
-        )
+        do {
+            try sidecar.addLinkCode(
+                nonce: code.nonce, issuedAt: Date(timeIntervalSince1970: TimeInterval(code.iat)),
+                exp: Date(timeIntervalSince1970: TimeInterval(code.exp)), keeping: Self.keptCodes,
+                retiringOpenCodesAt: now()
+            )
+        } catch {
+            // No code links, so the link just opened must not stay open.
+            await closeLink(reason: .issueFailed)
+            throw error
+        }
         openCode = code
         scheduleExpiry(of: code)
+        // The relay loop polls fast while a QR is open: start now, not after
+        // the idle wait.
+        hub?.wakeRelay()
         return code
     }
 
@@ -183,15 +239,14 @@ final class MobileLinkCenter {
         do {
             let shares = self.shares
             let urls = try await share { try await shares.ensureShares() }
-            linkEpoch += 1
             // Marked before it opens: a crash in between still closes it.
-            try sidecar.setMetaValue("1", forKey: Self.sweepPendingKey)
+            try markSweepPending()
             try await share { try await shares.setPublicLink(open: true) }
-            onSharingChanged?(.available)
+            report(.available)
             return urls
         } catch {
             logger.warning("zone shares unavailable, QR without share URLs: \(error.localizedDescription, privacy: .public)")
-            onSharingChanged?(.unavailable)
+            report(.unavailable)
             return nil
         }
     }
@@ -223,16 +278,17 @@ final class MobileLinkCenter {
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil
+        lastCloseReason = reason
         do {
             guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return }
-            let epoch = linkEpoch
+            let epoch = sweepEpoch
             let shares = self.shares
             try await share { try await shares.setPublicLink(open: false) }
             let bound = Set(try sidecar.linkedDevices().filter { $0.scope == .shared }.map(\.userRecordName))
             for zone in [CloudZoneID.data, .relay] {
                 try await share { try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") } }
             }
-            guard epoch == linkEpoch else { return }
+            guard epoch == sweepEpoch else { return }
             try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
         } catch {
             let why = error.localizedDescription
@@ -279,7 +335,8 @@ final class MobileLinkCenter {
             name: String(payload.name.prefix(DevicePayload.maxNameLength)),
             scope: payload.scope,
             userRecordName: payload.userRecordName,
-            linkedAt: Self.wholeSeconds(current)
+            linkedAt: Self.wholeSeconds(current),
+            typingRequested: payload.typingRequested
         )
         let decision = try sidecar.linkDevice(device, nonce: nonce, now: current)
         if case .refused(let reason) = decision {
@@ -289,7 +346,10 @@ final class MobileLinkCenter {
         guard decision == .valid else { return }
         logger.info("linked phone \(payload.deviceID, privacy: .public) (\(payload.scope.rawValue, privacy: .public))")
         reloadDevices()
-        nudge([.deviceGrant])
+        nudgeKinds([.deviceGrant])
+        if let linked = devices.first(where: { $0.deviceID == payload.deviceID }), linked.typingRequested, !linked.typingAllowed {
+            onTypingRequested?(linked)
+        }
         // Outside the relay pass: the close's share calls never hold it.
         closeAfterLink = Task { await self.closeLink(reason: .used) }
     }
@@ -297,8 +357,10 @@ final class MobileLinkCenter {
     /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
     /// revoke", §10): `unlinked: true` removes it as Remove does (in
     /// `shared` scope it has left the shares already); otherwise its
-    /// start-sessions choice becomes the grant. `typing_requested` is not
-    /// stored (the typing prompt is deferred). The record must be the
+    /// start-sessions choice becomes the grant, and its typing request is
+    /// stored: turned on while not allowed, the owner is asked
+    /// (`onTypingRequested`); turned off while allowed, the grant goes (a
+    /// revoke from the phone's side, spec §10). The record must be the
     /// linked phone's: its scope, and a creator both checks accept. An
     /// unlinked device's record changes nothing.
     private func handleLinkedRewrite(_ record: CloudRecord, _ payload: DevicePayload) async throws {
@@ -319,8 +381,28 @@ final class MobileLinkCenter {
             }
             return
         }
-        guard payload.startSessions != device.startSessionsAllowed else { return }
-        try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
+        if payload.startSessions != device.startSessionsAllowed {
+            try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
+        }
+        try applyTypingRequest(payload.typingRequested, of: device)
+    }
+
+    /// Stores the phone's typing request; asks the owner when it newly
+    /// asks, revokes the grant only when the stored request goes from on to
+    /// off (a rewrite for another toggle keeps it).
+    private func applyTypingRequest(_ requested: Bool, of device: HubSyncState.LinkedDevice) throws {
+        if try sidecar.setTypingRequested(requested, deviceID: device.deviceID) {
+            reloadDevices()
+        }
+        if requested, !device.typingAllowed, !device.typingRequested {
+            logger.info("phone \(device.deviceID, privacy: .public) asks to type into sessions")
+            var asking = device
+            asking.typingRequested = true
+            onTypingRequested?(asking)
+        } else if !requested, device.typingRequested, device.typingAllowed {
+            logger.info("phone \(device.deviceID, privacy: .public) turned typing off: grant revoked")
+            try setTypingAllowed(false, deviceID: device.deviceID)
+        }
     }
 
     /// Publishes the refusal, unless the phone is linked already: a linked
@@ -331,7 +413,7 @@ final class MobileLinkCenter {
             deviceID: payload.deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)),
             scope: payload.scope, reason: reason, at: Self.wholeSeconds(date)
         ))
-        nudge([.deviceGrant])
+        nudgeKinds([.deviceGrant])
     }
 
     /// `shared`: the record's creator is the phone's own user. `private`:
@@ -376,7 +458,8 @@ final class MobileLinkCenter {
     private func dropDevice(_ deviceID: String) throws -> HubSyncState.LinkedDevice? {
         guard let removed = try sidecar.removeLinkedDevice(deviceID) else { return nil }
         reloadDevices()
-        nudge([.deviceGrant])
+        nudgeKinds([.deviceGrant])
+        onTypingRevoked?(deviceID)
         return removed
     }
 
@@ -394,7 +477,11 @@ final class MobileLinkCenter {
                 try await share { try await shares.removeParticipants(in: zone) { $0.userRecordName == name } }
             }
         } catch {
-            try sidecar.setMetaValue("1", forKey: Self.sweepPendingKey)
+            do {
+                try markSweepPending()
+            } catch let markError {
+                logger.error("removed phone's participant left unswept: \(markError.localizedDescription, privacy: .public)")
+            }
             throw error
         }
     }
@@ -412,7 +499,8 @@ final class MobileLinkCenter {
     private func setGrant(_ grant: HubSyncState.DeviceGrantKind, _ allowed: Bool, deviceID: String) throws {
         guard try sidecar.setDeviceGrant(grant, allowed, deviceID: deviceID, at: Self.wholeSeconds(now())) else { return }
         reloadDevices()
-        nudge([.deviceGrant])
+        nudgeKinds([.deviceGrant])
+        if grant == .typing, !allowed { onTypingRevoked?(deviceID) }
     }
 
     /// The grants a session start or input from `deviceID` gets. The relay
@@ -429,6 +517,30 @@ final class MobileLinkCenter {
             return .denied
         }
     }
+
+    /// Whether any phone is linked: the publisher and the CLI companions
+    /// skip their work without one (board #724). An unreadable sidecar
+    /// counts as linked, so a read failure never stops a linked phone's
+    /// updates. Called every few seconds, so a failure streak logs one
+    /// error at its start and one notice when the read works again.
+    nonisolated static func hasLinkedPhone(_ sidecar: HubSyncState) -> Bool {
+        let logger = Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
+        do {
+            let linked = try sidecar.hasLinkedDevice()
+            if linkedPhoneReadFailing.withLock({ failing in defer { failing = false }; return failing }) {
+                logger.notice("linked phones readable again")
+            }
+            return linked
+        } catch {
+            if !linkedPhoneReadFailing.withLock({ failing in defer { failing = true }; return failing }) {
+                logger.error("linked phones unreadable, publishing anyway: \(error.localizedDescription, privacy: .public)")
+            }
+            return true
+        }
+    }
+
+    /// The linked-phone read is in a failure streak (logged once).
+    nonisolated private static let linkedPhoneReadFailing = OSAllocatedUnfairLock(initialState: false)
 
     // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
@@ -454,12 +566,44 @@ final class MobileLinkCenter {
             clearFailure = error
         }
         reloadDevices()
-        nudge([.deviceGrant])
-        onSharingChanged?(.none)
+        nudgeKinds([.deviceGrant])
+        report(.none)
         if let clearFailure { throw clearFailure }
     }
 
+    // MARK: - iCloud account change
+
+    /// The Mac's iCloud account signed out or switched (the transport's
+    /// account reset): the cached user is the old one, so it is looked up
+    /// again, the new account has no shares yet (`sharing` none), and a QR
+    /// on screen, which names the old user, closes.
+    func accountChanged() {
+        knownOwnerUser = nil
+        ownerEpoch += 1
+        report(.none)
+        guard openCode != nil else { return }
+        accountChangeClose = Task { await self.closeLink(reason: .accountChanged) }
+    }
+
     // MARK: - Helpers
+
+    private func report(_ value: HubSharing) {
+        sharing = value
+        onSharingChanged?(value)
+    }
+
+    private func markSweepPending() throws {
+        sweepEpoch += 1
+        try sidecar.setMetaValue("1", forKey: Self.sweepPendingKey)
+    }
+
+    private func nudgeKinds(_ kinds: Set<SliceKind>) {
+        if let nudge {
+            nudge(kinds)
+        } else {
+            hub?.nudge(kinds: kinds)
+        }
+    }
 
     private func reloadDevices() {
         do {
@@ -472,8 +616,10 @@ final class MobileLinkCenter {
     private func resolveOwnerUser() async -> String? {
         if let knownOwnerUser { return knownOwnerUser }
         let lookup = ownerUser
+        let epoch = ownerEpoch
         let lookedUp = await MobileHubService.bounded(Self.ownerLookupTimeout) { await lookup() }
-        guard let found = lookedUp.flatMap({ $0 }) else { return nil }
+        // The account changed during the lookup: its answer may be the old user.
+        guard let found = lookedUp.flatMap({ $0 }), epoch == ownerEpoch else { return nil }
         knownOwnerUser = found
         return found
     }

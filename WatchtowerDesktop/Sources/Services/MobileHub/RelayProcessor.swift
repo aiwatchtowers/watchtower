@@ -347,12 +347,40 @@ final class RelayProcessor: Sendable {
 
     /// Rewrites the phone's record with the outcome (§5.2 rule 6).
     private func writeEcho(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
+        try await transport.save([try Self.echoRecord(action, outcome, at: now())])
+    }
+
+    private static func echoRecord(_ action: ActionRequestPayload, _ outcome: ActionOutcome, at date: Date) throws -> CloudRecord {
         var echoed = action
         echoed.status = outcome.status
         echoed.reason = outcome.reason
         echoed.result = outcome.result
         echoed.errorMessage = outcome.errorMessage
-        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now())])
+        return try CloudRecordFactory.record(for: echoed, modifiedAt: date)
+    }
+
+    /// A later outcome of an action already echoed and `done`: a held phone
+    /// line that went, failed, expired or was cancelled (spec §6.6).
+    typealias LateEcho = @Sendable (ActionRequestPayload, ActionOutcome) async throws -> Void
+
+    /// The late echo over `transport` and `sidecar`: it rewrites the
+    /// record and the ledger's stored echo (a lost ack re-echoes the final
+    /// outcome), inside the relay gate — so it lands after the pass that
+    /// echoed `held` for the same record. Never awaited from inside a
+    /// handler's dispatch (the gate is not re-entrant).
+    static func lateEcho(
+        transport: any CloudSyncTransport & Sendable,
+        sidecar: HubSyncState,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) -> LateEcho {
+        { action, outcome in
+            try await sidecar.relayGate.exclusively {
+                try await transport.save([try echoRecord(action, outcome, at: now())])
+                try sidecar.replaceRelayEcho(
+                    action.recordName, outcome: ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome), at: now()
+                )
+            }
+        }
     }
 
     private static func ledgerOutcome(_ outcome: ActionOutcome) -> String {

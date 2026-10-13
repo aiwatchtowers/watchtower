@@ -241,7 +241,7 @@ final class SessionDetailWiringTests: XCTestCase {
     func testTheDetailModelsHaveNoTranscriptField() throws {
         let store = try ReplicaStore.inMemory()
         let viewModel = SessionDetailViewModel(sessionID: 11, store: store, requester: SessionReportRequester(now: { Date() }, send: { _ in }))
-        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "store", "requester", "cancellable"])
+        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "store", "requester", "cancellable", "decodeCache"])
         XCTAssertEqual(fieldNames(try model(11)), [
             "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "asks", "asksSince", "report",
             "timeline", "timelineEmptyText", "timelineMoreText"
@@ -275,12 +275,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertTrue(drawn.contains("Plain title"))
         XCTAssertTrue(drawn.contains("Working"))
         XCTAssertFalse(drawn.contains { $0.contains(secret) }, "transcript text reached the screen")
-    }
-
-    // MARK: - The Tell bar waits for B-T18
-
-    func testTheTellBarIsHidden() {
-        XCTAssertFalse(SessionDetailView.showsTellBar)
     }
 
     // MARK: - Helpers

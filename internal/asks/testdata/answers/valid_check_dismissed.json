@@ -1,0 +1,12 @@
+{
+  "kind": "check",
+  "payload": {
+    "focus": [],
+    "questions": [],
+    "checklist": [
+      {"id": "1", "text": "Launch the app"}
+    ]
+  },
+  "answer": {"answers": [], "checklist": [], "comments": [], "dismissed": true, "note": "Not now.", "verdict": ""},
+  "canonical": "{\"answers\":[],\"checklist\":[],\"comments\":[],\"dismissed\":true,\"note\":\"Not now.\",\"verdict\":\"\"}"
+}

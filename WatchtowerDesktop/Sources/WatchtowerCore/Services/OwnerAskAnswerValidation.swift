@@ -13,6 +13,12 @@ extension OwnerAskAnswer {
     /// `commentsNotAllowed`), where a draft silently drops them. A draft's
     /// answer comes back unchanged. Pure.
     package func normalized(for ask: OwnerAsk) -> OwnerAskAnswer {
+        // A dismissal marks nothing: its note alone is trimmed.
+        if dismissed {
+            var trimmed = self
+            trimmed.note = Self.trimmed(note)
+            return trimmed
+        }
         let marked = Set(checklist.map(\.id))
         return OwnerAskAnswer(
             verdict: verdict,

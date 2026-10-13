@@ -41,6 +41,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var failingCalls: Set<String> = []
     private var hangingCalls: Set<String> = []
     private var cancellationAware = false
+    /// Call names that park on their gate until the test releases it.
+    private var gates: [String: SaveGate] = [:]
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -58,6 +60,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     func clearCalls() { lock.withLock { log = [] } }
     func setFailing(_ calls: Set<String>) { lock.withLock { failingCalls = calls } }
     func setHanging(_ calls: Set<String>) { lock.withLock { hangingCalls = calls } }
+    /// The next `call` parks on `gate` (once).
+    func gate(_ call: String, on gate: SaveGate) { lock.withLock { gates[call] = gate } }
     /// Every call throws `CancellationError` when its task is cancelled
     /// (like a cancellation-aware CloudKit await).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
@@ -77,10 +81,14 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     private func record(_ call: String) async throws {
         let name = String(call.prefix { $0 != ":" })
-        let (fails, hangs, aware) = lock.withLock {
+        let (fails, hangs, aware, gate) = lock.withLock {
             log.append(call)
-            return (failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware)
+            return (
+                failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware,
+                gates.removeValue(forKey: name)
+            )
         }
+        await gate?.park()
         if aware { try Task.checkCancellation() }
         if fails { throw URLError(.cannotConnectToHost) }
         if hangs { try await Task.sleep(for: .seconds(5)) }
@@ -158,11 +166,12 @@ final class MobileLinkCenterTests: XCTestCase {
     /// The expiry timer parks (until cancelled) unless a test passes its own.
     private func makeCenter(
         sleep: (@Sendable (Duration) async -> Void)? = nil,
-        shareTimeout: Duration = .seconds(30)
+        shareTimeout: Duration = .seconds(30),
+        ownerUser: (@Sendable () async -> String?)? = nil
     ) throws -> MobileLinkCenter {
         let clock = try XCTUnwrap(self.clock)
         let made = MobileLinkCenter(
-            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: ownerUser ?? { "_owner-acme" },
             nudge: { [weak self] in self?.nudges.append($0) },
             now: { clock.now },
             sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) },
@@ -213,6 +222,31 @@ final class MobileLinkCenterTests: XCTestCase {
         let slice = DeviceGrantSlice(sidecar: sidecar, hubID: hubID) { clock.now }
         // The slice reads the sidecar; the main-DB handle is unused.
         return try DatabaseQueue().read { try slice.records($0) }
+    }
+
+    /// #64 review F3: the phone reads a deleted grant as its removal, so no
+    /// linked phone's grant is ever capped; refusals fill only the room left
+    /// under 20, the latest first.
+    func testEveryLinkedPhonesGrantIsPublishedAndOnlyRefusalsAreCapped() throws {
+        let now = try XCTUnwrap(clock).now
+        // Inside the refusals' lifetime on the test clock.
+        let refuse = { (id: String, ago: TimeInterval) in
+            try self.sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
+                deviceID: id, name: "iPhone", scope: .private, reason: .expiredCode, at: now.addingTimeInterval(-ago)
+            ))
+        }
+        for index in 0..<18 { try sidecar.linkTestDevice("phone-\(index)") }
+        try refuse("refused-old", 300)
+        try refuse("refused-mid", 200)
+        try refuse("refused-new", 100)
+        var published = try grants()
+        XCTAssertEqual(published.values.filter(\.linked).count, 18)
+        XCTAssertEqual(Set(published.values.filter { !$0.linked }.map(\.deviceID)), ["refused-new", "refused-mid"])
+
+        for index in 18..<21 { try sidecar.linkTestDevice("phone-\(index)") }
+        published = try grants()
+        XCTAssertEqual(published.count, 21, "21 linked phones, every grant published")
+        XCTAssertTrue(published.values.allSatisfy(\.linked), "no room left for a refusal")
     }
 
     // MARK: - One link, idempotent
@@ -474,6 +508,7 @@ final class MobileLinkCenterTests: XCTestCase {
         clock.advance(1)
         await center.closeLinkIfExpired()
         XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
         XCTAssertTrue(shares.participantNames(in: .relay).isEmpty)
     }
@@ -490,6 +525,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         await awaitHubCondition("the timer closes the link") { !self.shares.isLinkOpen }
         XCTAssertEqual(slept.value, .seconds(600))
+        XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
     }
 
@@ -879,8 +915,9 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// #3: the phone's start-sessions toggle (a nonce-less rewrite) reaches
-    /// the grant; `typing_requested` is not stored (R6).
-    func testALinkedPhonesStartSessionsToggleIsMirroredAndTypingRequestIsNot() async throws {
+    /// the grant; its typing request is stored (PROJ-16) and is never a
+    /// grant.
+    func testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted() async throws {
         let code = try await center.issueCode()
         try await handle(try deviceRecord("phone-a", nonce: code.nonce))
         clock.advance(10)
@@ -889,6 +926,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         let device = try XCTUnwrap(center.devices.first)
         XCTAssertFalse(device.startSessionsAllowed)
+        XCTAssertTrue(device.typingRequested, "the request is kept for Settings → Mobile")
         XCTAssertFalse(device.typingAllowed, "a typing request is never a grant")
         XCTAssertEqual(device.decidedAt, clock.now)
         let grant = try XCTUnwrap(try grants()["phone-a"])
@@ -899,7 +937,74 @@ final class MobileLinkCenterTests: XCTestCase {
         clock.advance(10)
         try await handle(try deviceRecord("phone-a", nonce: nil, startSessions: true))
         XCTAssertEqual(center.devices.first?.startSessionsAllowed, true)
+        XCTAssertEqual(center.devices.first?.typingRequested, false)
         XCTAssertEqual(center.devices.first?.decidedAt, clock.now)
+    }
+
+    /// Spec §10 (OD-2): a phone turning typing on asks the owner once; the
+    /// same request again does not ask twice, and an allowed phone is not
+    /// asked.
+    func testATypingRequestAsksTheOwnerOnce() async throws {
+        var asked: [String] = []
+        center.onTypingRequested = { asked.append($0.name) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, name: "Colleague A's iPhone"))
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, name: "Colleague A's iPhone", typingRequested: true))
+        try await handle(try deviceRecord("phone-a", nonce: nil, name: "Colleague A's iPhone", typingRequested: true))
+
+        XCTAssertEqual(asked, ["Colleague A's iPhone"])
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false))
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: true))
+        XCTAssertEqual(asked.count, 2, "turned off and on again, it asks again")
+    }
+
+    /// A phone linking with typing already on asks at once.
+    func testAPhoneLinkingWithTypingOnAsks() async throws {
+        var asked: [String] = []
+        center.onTypingRequested = { asked.append($0.deviceID) }
+        let code = try await center.issueCode()
+
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, typingRequested: true))
+
+        XCTAssertEqual(asked, ["phone-a"])
+        XCTAssertEqual(center.devices.first?.typingRequested, true)
+    }
+
+    /// Spec §10: the phone's toggle off revokes the grant, and Revoke and
+    /// Remove tell `onTypingRevoked` (the held lines fail, PROJ-16).
+    func testThePhonesToggleOffRevokesAndRevokeAndRemoveAreReported() async throws {
+        var revoked: [String] = []
+        center.onTypingRevoked = { revoked.append($0) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, typingRequested: true))
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false))
+
+        XCTAssertEqual(center.devices.first?.typingAllowed, false)
+        XCTAssertEqual(MobileLinkCenter.sessionGrant(sidecar, deviceID: "phone-a").typingAllowed, false)
+        XCTAssertEqual(revoked, ["phone-a"])
+        try await center.remove(deviceID: "phone-a")
+        XCTAssertEqual(revoked, ["phone-a", "phone-a"])
+    }
+
+    /// A rewrite for another toggle (start sessions) with typing off keeps
+    /// a grant the owner gave: only the request going from on to off
+    /// revokes it.
+    func testAnUnrelatedRewriteKeepsTheTypingGrant() async throws {
+        var revoked: [String] = []
+        center.onTypingRevoked = { revoked.append($0) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false, startSessions: false))
+
+        XCTAssertEqual(center.devices.first?.typingAllowed, true)
+        XCTAssertEqual(center.devices.first?.startSessionsAllowed, false)
+        XCTAssertTrue(revoked.isEmpty)
     }
 
     /// #3: an unchanged choice stamps nothing new.
@@ -957,6 +1062,164 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(grant.decidedAt, Date(timeIntervalSince1970: clock.now.timeIntervalSince1970.rounded(.down)))
     }
 
+    // MARK: - Link tails (#65, #66)
+
+    /// #65: after the iCloud account changed, the next QR names the new user.
+    func testAnAccountChangeLooksTheOwnerUpAgainForTheNextCode() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        center = try makeCenter { owner.value }
+        let first = try await center.issueCode()
+        owner.set("_owner-new")
+        let issued1 = try await center.issueCode()
+        XCTAssertEqual(issued1.ownerUser, "_owner-acme", "cached while the account stays")
+
+        center.accountChanged()
+        let next = try await center.issueCode()
+
+        XCTAssertEqual(first.ownerUser, "_owner-acme")
+        XCTAssertEqual(next.ownerUser, "_owner-new")
+    }
+
+    /// #65: a lookup still running when the account changes may answer
+    /// with the old user; it is not cached, and the code is refused.
+    func testAnOwnerLookupRunningAcrossAnAccountChangeIsNotCached() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        center = try makeCenter {
+            let answer = owner.value
+            await gate.park()
+            return answer
+        }
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("a code naming the old user is not shown")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .ownerUnknown)
+        }
+        let next = try await center.issueCode()
+        XCTAssertEqual(next.ownerUser, "_owner-new")
+    }
+
+    /// #65: a new code waits for the account change's close, so that close
+    /// never shuts the new code's link.
+    func testANewCodeWaitsForTheAccountChangesClose() async throws {
+        _ = try await center.issueCode()
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        center.accountChanged()
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        let issuing = Task { try await center.issueCode() }
+        gate.release()
+        let code = try await issuing.value
+
+        XCTAssertEqual(center.openCode, code)
+        XCTAssertTrue(shares.isLinkOpen)
+    }
+
+    /// #65: a code still being made when the account changes is closed, not shown.
+    func testACodeBeingIssuedAcrossAnAccountChangeIsClosed() async throws {
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("the code is refused")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .accountChanged)
+        }
+        XCTAssertNil(center.openCode)
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertEqual(center.lastCloseReason, .accountChanged)
+    }
+
+    /// #65: a QR on screen names the old user, so an account change closes it.
+    func testAnAccountChangeClosesTheOpenCodeAndItsLink() async throws {
+        _ = try await center.issueCode()
+        XCTAssertTrue(shares.isLinkOpen)
+
+        center.accountChanged()
+
+        await awaitHubCondition("the link closes") { !shares.isLinkOpen }
+        XCTAssertNil(center.openCode)
+        XCTAssertEqual(sharing.last, HubSharing.none, "the new account has no shares yet")
+    }
+
+    /// #66.3: a Remove that fails while a close is suspended keeps the sweep
+    /// pending; the suspended close does not clear it.
+    func testARemoveFailingDuringASuspendedCloseKeepsTheSweepPending() async throws {
+        try await linkSharedPhone()
+        _ = try await center.issueCode()
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        let close = Task { await center.closeLink(reason: .sheetClosed) }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        shares.setFailing(["removeParticipants"])
+        do {
+            try await center.remove(deviceID: "phone-a")
+            XCTFail("the failed removal is reported")
+        } catch {}
+        shares.setFailing([])
+        gate.release()
+        await close.value
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1")
+    }
+
+    /// #66.3: when even the sweep mark cannot be written, the removal's own
+    /// error is the one reported.
+    func testARemoveWhoseSweepMarkFailsReportsTheRemovalError() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        try await linkSharedPhone()
+        await center.closeAfterLink?.value
+        shares.setFailing(["removeParticipants"])
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_mark BEFORE UPDATE ON hub_meta BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        do {
+            try await center.remove(deviceID: "phone-a")
+            XCTFail("the failed removal is reported")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .cannotConnectToHost)
+        }
+    }
+
+    /// #66.4: a code that could not be stored closes the link it opened.
+    func testACodeThatCannotBeStoredClosesTheLinkItOpened() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_code BEFORE INSERT ON link_codes BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        do {
+            _ = try await center.issueCode()
+            XCTFail("the store failure is reported")
+        } catch {}
+
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertNil(center.openCode)
+    }
+
     /// #7: New code retires the code it replaces.
     func testANewCodeRetiresThePreviousUnusedCode() async throws {
         let first = try await center.issueCode()
@@ -969,6 +1232,50 @@ final class MobileLinkCenterTests: XCTestCase {
         try await handle(try deviceRecord("phone-b", nonce: second.nonce))
         XCTAssertEqual(center.devices.map(\.deviceID), ["phone-b"])
     }
+
+    // MARK: - Linked-phone gate (board #724)
+
+    /// `hasLinkedDevice` reads the devices table: empty → false, a row →
+    /// true; `hasLinkedPhone` follows it, and fails open (true) once the
+    /// sidecar cannot be read, then follows it again once it can.
+    func testTheLinkedPhoneGateFollowsTheSidecarAndFailsOpen() throws {
+        let (state, raw, dir) = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertFalse(try state.hasLinkedDevice())
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state))
+
+        try raw.write { db in
+            try db.execute(sql: """
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at)
+                VALUES ('device-a', 'Phone A', 'private', '_user-a', 0)
+                """)
+        }
+        XCTAssertTrue(try state.hasLinkedDevice())
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state))
+
+        try raw.write { db in try db.execute(sql: "DELETE FROM devices") }
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state))
+        try raw.write { db in try db.execute(sql: "ALTER TABLE devices RENAME TO devices_gone") }
+        XCTAssertThrowsError(try state.hasLinkedDevice())
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state), "an unreadable sidecar counts as linked")
+        XCTAssertTrue(MobileLinkCenter.hasLinkedPhone(state), "still failing open")
+
+        try raw.write { db in try db.execute(sql: "ALTER TABLE devices_gone RENAME TO devices") }
+        XCTAssertFalse(MobileLinkCenter.hasLinkedPhone(state), "readable again: no phone")
+    }
+}
+
+/// The iCloud user the lookup returns; the test switches it.
+final class OwnerUserBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String
+
+    init(_ value: String) {
+        stored = value
+    }
+
+    var value: String { lock.withLock { stored } }
+    func set(_ value: String) { lock.withLock { stored = value } }
 }
 
 /// The last `Duration` the expiry timer asked to sleep.

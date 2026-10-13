@@ -191,12 +191,14 @@ final class ResilientObservationTests: XCTestCase {
         try await poll({ !model.snapshot.events.isEmpty }, "the model did not load the events")
         let failuresBefore = ObservationHealth.shared.failures["calendar"]?.count ?? 0
 
-        // A write the model observes, after which its read fails: the real
-        // table swapped for one without the payload column.
+        // A write the model observes (it bumps the calendar's change stamp,
+        // as every replica write does), after which its read fails: the
+        // real table swapped for one without the payload column.
         try await pool.write { db in
             try db.execute(sql: "ALTER TABLE slice_records RENAME TO slice_records_away")
             try db.execute(sql: "CREATE TABLE slice_records (record_name TEXT, kind TEXT)")
             try db.execute(sql: "INSERT INTO slice_records VALUES ('x', 'x')")
+            try db.execute(sql: "UPDATE slice_kind_versions SET version = version + 1 WHERE kind = 'calendar_event'")
         }
         try await poll({ (ObservationHealth.shared.failures["calendar"]?.count ?? 0) > failuresBefore }, "the failed read was not reported")
         try await pool.write { db in

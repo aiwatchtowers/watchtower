@@ -16,6 +16,9 @@ enum RecordingEntryState: Equatable {
     case onMac(String)
     case macFailed(String)
     case ready
+    /// Held for the Mac it was recorded for (board #63): sent only after
+    /// this phone links that Mac again. nil when its name is unknown.
+    case heldForMac(String?)
 
     init(upload: PhoneUploadStage) {
         switch upload {
@@ -34,6 +37,8 @@ enum RecordingEntryState: Equatable {
         case .waitingForMac: "Waiting for the Mac to wake"
         case let .sendFailed(message, _), let .macFailed(message), let .onMac(message): message
         case .ready: "Ready"
+        case let .heldForMac(name):
+            name.map { "Waiting for \($0) — link it again to send" } ?? "Waiting for the Mac it was recorded for"
         }
     }
 
@@ -41,7 +46,7 @@ enum RecordingEntryState: Equatable {
         switch self {
         case .recordingOnPhone, .sendFailed, .macFailed: .red
         case .sending: .accent
-        case .waitingForMac: .secondary
+        case .waitingForMac, .heldForMac: .secondary
         case .onMac: .purple
         case .ready: .green
         }
@@ -145,6 +150,10 @@ struct RecordingsListModel {
         transcripts.filter(seen.isNew).count
     }
 
+    /// The subtitle note of a capture the recorder finished after a long
+    /// pause (`PhoneRecorderController.pauseLimit`).
+    static let autoFinishedNote = "auto-finished after a 60 min pause"
+
     /// The Calendar's pill: "Recordings · 1 new", or "Recordings".
     static func pillText(newCount: Int) -> String {
         newCount > 0 ? "Recordings · \(newCount) new" : "Recordings"
@@ -155,7 +164,8 @@ struct RecordingsListModel {
         replica: CalendarReplicaSnapshot,
         seen: RecordingsSeen,
         now: Date,
-        calendar: Calendar
+        calendar: Calendar,
+        held: [HeldRecording] = []
     ) {
         let format = RecordingsFormat(calendar: calendar, now: now)
         var byPhoneID: [String: MeetingTranscript] = [:]
@@ -170,6 +180,22 @@ struct RecordingsListModel {
             let transcript = byPhoneID[recording.id]
             if let transcript { claimed.insert(transcript.id) }
             entries.append(Self.entry(recording, transcript: transcript, recordings: recordings, seen: seen, now: now, format: format))
+        }
+        for recording in held {
+            entries.append(RecordingEntry(
+                id: "held-\(recording.id)",
+                title: recording.titleHint ?? "Recording",
+                subtitle: [
+                    format.when(recording.startedAt),
+                    format.duration(recording.durationSec),
+                    recording.eventID == nil ? "voice note" : "from this phone"
+                ].joined(separator: " · "),
+                state: .heldForMac(recording.macName),
+                transcriptID: nil,
+                phoneRecordingID: nil,
+                isNew: false,
+                sortDate: recording.startedAt
+            ))
         }
         for transcript in replica.transcripts where !claimed.contains(transcript.id) {
             // A phone upload whose ledger row was removed still names it.
@@ -193,7 +219,10 @@ struct RecordingsListModel {
         now: Date,
         format: RecordingsFormat
     ) -> RecordingEntry {
-        let origin = recording.eventID == nil ? "voice note" : "from this phone"
+        var origin = recording.eventID == nil ? "voice note" : "from this phone"
+        if recording.autoFinished {
+            origin += " · \(Self.autoFinishedNote)"
+        }
         if let transcript {
             return entry(transcript, origin: origin, seen: seen, format: format, phoneRecordingID: recording.id)
         }

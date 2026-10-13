@@ -10,6 +10,11 @@ import os
 /// fresh observation from the same factory. `cancel()` stops it for good,
 /// including a pending retry; so does releasing it. `onError` lets a screen
 /// show the failure while it waits.
+///
+/// While its `ReplicaObservationGate` is suspended (the app in the
+/// background, board #724) it holds no observation, so no replica write
+/// wakes it; on resume it starts a fresh one, whose first value is the
+/// latest.
 @MainActor
 final class ResilientObservation {
     private static let firstDelay = Duration.seconds(1)
@@ -29,12 +34,17 @@ final class ResilientObservation {
     private var retry: Task<Void, Never>?
     private var delay = ResilientObservation.firstDelay
     private var isCancelled = false
+    private var isSuspended = false
+    private let gate: ReplicaObservationGate
 
-    /// Starts at once. `observation` is called again for every restart.
+    /// Starts at once, or on the gate's resume while it is suspended
+    /// (`gate` nil is `.shared`). `observation` is called again for every
+    /// restart.
     init<Reducer: ValueReducer>(
         name: String,
         reader: any DatabaseReader,
         health: ObservationHealth = .shared,
+        gate: ReplicaObservationGate? = nil,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         observation: @escaping @Sendable () -> ValueObservation<Reducer>,
         onError: @escaping @MainActor (any Error) -> Void = { _ in },
@@ -44,6 +54,7 @@ final class ResilientObservation {
         self.health = health
         self.sleep = sleep
         self.onError = onError
+        self.gate = gate ?? .shared
         startObserving = { onError, onValue in
             observation().start(
                 in: reader,
@@ -57,7 +68,12 @@ final class ResilientObservation {
                 }
             )
         }
-        begin()
+        self.gate.register(self)
+        if self.gate.isSuspended {
+            isSuspended = true
+        } else {
+            begin()
+        }
     }
 
     func cancel() {
@@ -65,6 +81,23 @@ final class ResilientObservation {
         retry?.cancel()
         retry = nil
         current = nil
+    }
+
+    /// Drops the observation and any pending retry until `resume()`.
+    func suspend() {
+        guard !isCancelled, !isSuspended else { return }
+        isSuspended = true
+        retry?.cancel()
+        retry = nil
+        current = nil
+    }
+
+    /// Starts a fresh observation: its first value is the replica's latest.
+    func resume() {
+        guard !isCancelled, isSuspended else { return }
+        isSuspended = false
+        delay = Self.firstDelay
+        begin()
     }
 
     private func begin() {
@@ -80,7 +113,7 @@ final class ResilientObservation {
     }
 
     private func failed(_ error: any Error) {
-        guard !isCancelled else { return }
+        guard !isCancelled, !isSuspended else { return }
         Self.logger.error("\(self.name, privacy: .public) observation failed: \(error.localizedDescription, privacy: .public)")
         health.recordFailure(name, error: error)
         onError(error)
@@ -94,8 +127,46 @@ final class ResilientObservation {
             } catch {
                 return
             }
-            guard let self, !self.isCancelled else { return }
+            guard let self, !self.isCancelled, !self.isSuspended else { return }
             self.begin()
         }
+    }
+}
+
+/// Suspends every replica observation while the app is in the background
+/// (board #724): nothing on screen needs them there, and each replica
+/// write would otherwise re-read and re-decode in the background. The
+/// outbox, the uploader and the relay feed read the store directly and
+/// never wait on an observation. The app drives `.shared` from its scene
+/// phase; tests build their own.
+@MainActor
+final class ReplicaObservationGate {
+    static let shared = ReplicaObservationGate()
+
+    private(set) var isSuspended = false
+    private var members: [WeakObservation] = []
+
+    private struct WeakObservation {
+        weak var observation: ResilientObservation?
+    }
+
+    /// Suspends every live observation, or resumes each with its latest
+    /// value; a repeated call changes nothing.
+    func setSuspended(_ suspended: Bool) {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+        members.removeAll { $0.observation == nil }
+        for member in members {
+            if suspended {
+                member.observation?.suspend()
+            } else {
+                member.observation?.resume()
+            }
+        }
+    }
+
+    fileprivate func register(_ observation: ResilientObservation) {
+        members.removeAll { $0.observation == nil }
+        members.append(WeakObservation(observation: observation))
     }
 }
