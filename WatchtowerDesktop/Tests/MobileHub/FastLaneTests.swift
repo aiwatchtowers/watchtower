@@ -8,9 +8,10 @@ import WatchtowerSync
 import WatchtowerTestSupport
 
 /// The hub's fast lane (mobile POC spec §4.5): the session state center's
-/// changes and the Desktop's own table writes nudge the publisher, which
-/// sends within one coalescing window plus one send instead of the 10 s
-/// tick; the center's existing closures keep firing (PROJ-12 wiring).
+/// changes and the Desktop's own table writes nudge the publisher; asks go
+/// out within one coalescing window plus one send, every other kind rides
+/// the 30 s full tick (board #724, owner decision Q3); the center's
+/// existing closures keep firing (PROJ-12 wiring).
 @MainActor
 final class FastLaneTests: XCTestCase {
     private var pool: DatabasePool!
@@ -146,10 +147,10 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Fast lane
 
-    /// Spec §13 B1 (f): Needs approval reaches the published `state_kind`
-    /// within one coalescing window plus one send on a fake clock, long
-    /// before the 10 s tick.
-    func testNeedsApprovalReachesTheZoneWithinOneWindowPlusOneSend() async throws {
+    /// Spec §13 B1 (f), amended by board #724 (owner decision Q3): Needs
+    /// approval reaches the published `state_kind` at the next 30 s full
+    /// tick, without an immediate send; the 10 s urgent tick leaves it.
+    func testNeedsApprovalRidesTheNextFullTickWithoutAnImmediateSend() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)
         let center = makeCenter()
@@ -158,31 +159,36 @@ final class FastLaneTests: XCTestCase {
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
-            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })]
-        ) { clock.now }
+            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
+            clock: { clock.now },
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         lane.start()
         terminals.start(row, fresh: true)
         await center.poll()
-        try await publisher.publishOnce()
+        XCTAssertEqual(publisher.takeDueCycle(now: clock.origin), .full)
+        await publisher.run(.full)
         let record = SliceKind.terminalSession.recordName(id: String(row.id))
         XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_kind"] as? String, "running")
-        _ = publisher.takeDueFastKinds(now: clock.origin + .seconds(1))
 
         clock.set(.seconds(5))
         try hookWrites([row.id], "approval", at: 1)
         await center.poll()
 
-        let deadline = try XCTUnwrap(publisher.fastDeadline, "the state change nudged the publisher")
-        XCTAssertLessThanOrEqual(deadline, clock.origin + .seconds(6), "one coalescing window")
-        XCTAssertLessThan(deadline, clock.origin + .seconds(10), "not the 10 s tick")
-        let kinds = try XCTUnwrap(publisher.takeDueFastKinds(now: deadline))
-        XCTAssertTrue(kinds.isSuperset(of: [.terminalSession, .workbench]))
-        try await publisher.publishOnce(kinds: kinds)
+        XCTAssertNil(publisher.fastDeadline, "a session state is not sent at once")
+        let urgent = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(10)))
+        XCTAssertEqual(urgent, .urgent(SlicePublisher.urgentKinds))
+        await publisher.run(urgent)
+        XCTAssertEqual(try latestPayloads(transport, kind: .terminalSession)[record]?["state_kind"] as? String, "running")
+
+        XCTAssertEqual(publisher.takeDueCycle(now: clock.origin + .seconds(30)), .full)
+        await publisher.run(.full)
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
         XCTAssertEqual(published["state_kind"] as? String, "needs_approval")
         XCTAssertEqual(published["state_tone"] as? String, "orange")
         XCTAssertEqual(published["state_glyph"] as? String, "hand.raised.fill")
+        XCTAssertEqual(transport.sendNowCalls, 0, "a session state leaves the send to CKSyncEngine")
     }
 
     /// #411 (PROJ-11: Agents working is never announced): a turn end with
@@ -193,7 +199,6 @@ final class FastLaneTests: XCTestCase {
         let row = try await session(in: bench)
         let center = makeCenter()
         let liveness = SessionLivenessBox()
-        let clock = FakeClock()
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
         _ = try HubIdentity(sidecar: sidecar).ensureEnabledAt(started)
@@ -204,7 +209,7 @@ final class FastLaneTests: XCTestCase {
                 TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil }, now: { sliceNow }),
                 AskAlertSlice(sidecar: sidecar) { sliceNow }
             ]
-        ) { clock.now }
+        )
         let log = NudgeLog()
         let lane = makeLane(center, liveness: liveness) { kinds in
             log.record(kinds)
@@ -215,9 +220,7 @@ final class FastLaneTests: XCTestCase {
         try hookWrites([row.id], "working", at: 1)
         await center.poll()
         try await publisher.publishOnce()
-        _ = publisher.takeDueFastKinds(now: clock.origin + .seconds(1))
 
-        clock.set(.seconds(5))
         let turnEnd = stamp(2)
         let other = try DatabaseQueue(path: path)
         try await other.write { db in
@@ -232,10 +235,9 @@ final class FastLaneTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state.kind, .background)
 
-        let deadline = try XCTUnwrap(publisher.fastDeadline, "the state change nudged the publisher")
-        let kinds = try XCTUnwrap(publisher.takeDueFastKinds(now: deadline))
+        XCTAssertTrue(log.nudges.contains { $0.contains(.terminalSession) }, "the state change nudged its kind")
         XCTAssertFalse(log.nudges.contains { $0.contains(.askAlert) }, "a session state never nudges an alert")
-        try await publisher.publishOnce(kinds: kinds.union([.askAlert]))
+        try await publisher.publishOnce(kinds: [.terminalSession, .askAlert])
         let record = SliceKind.terminalSession.recordName(id: String(row.id))
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
         XCTAssertEqual(published["state_kind"] as? String, "working")
@@ -381,11 +383,12 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Review focus 5
 
-    /// 30 live sessions changing state every second for 60 s: at most 30
-    /// fast sends, each ≥ 2 s apart, and the last published state of every
-    /// session equals its last DB state, at most one window plus one
-    /// spacing after the last change.
-    func testReviewFocus5AStormOfStateChangesSendsAtMostOncePerSpacing() async throws {
+    /// 30 live sessions changing state every second for 60 s (amended by
+    /// board #724, owner decision Q3): the session kind is saved at most
+    /// once per 30 s full tick, never with an immediate send, and the last
+    /// published state of every session equals its last DB state at most
+    /// one tick after the last change.
+    func testReviewFocus5AStormOfStateChangesIsSavedAtMostOncePerTick() async throws {
         let bench = try await workbench()
         var rows: [TerminalSession] = []
         for _ in 0..<30 { rows.append(try await session(in: bench)) }
@@ -396,45 +399,43 @@ final class FastLaneTests: XCTestCase {
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
-            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })]
-        ) { clock.now }
+            sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
+            clock: { clock.now },
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         rows.forEach { terminals.start($0, fresh: true) }
         await center.poll()
         lane.start()
-        try await publisher.publishOnce()
-        _ = publisher.takeDueFastKinds(now: clock.origin + .seconds(1))
 
         let states = ["working", "approval", "waiting"]
         let wire = ["working": "working", "approval": "needs_approval", "waiting": "stopped"]
-        var sends: [ContinuousClock.Instant] = []
-        var lastChange = clock.origin
+        var saves: [Duration] = []
+        var lastChange = Duration.zero
         var lastState = ""
         let start = Duration.seconds(10)
-        for step in 0..<(64 * 4) {
-            let offset = start + .milliseconds(250 * step)
+        for step in 0...(90 * 4) {
+            let offset = Duration.milliseconds(250 * step)
             clock.set(offset)
-            if step.isMultiple(of: 4), step / 4 < 60 {
-                let second = step / 4
+            if offset >= start, step.isMultiple(of: 4), (offset - start) < .seconds(60) {
+                let second = Int((offset - start).components.seconds)
                 lastState = states[second % states.count]
                 try hookWrites(ids, lastState, at: Double(second + 1))
                 await center.poll()
-                lastChange = clock.now
+                lastChange = offset
             }
-            if let kinds = publisher.takeDueFastKinds(now: clock.now) {
-                sends.append(clock.now)
-                try await publisher.publishOnce(kinds: kinds)
+            let before = transport.saved.count
+            if let cycle = publisher.takeDueCycle(now: clock.now) {
+                await publisher.run(cycle)
             }
+            if transport.saved.count > before { saves.append(offset) }
         }
 
-        XCTAssertLessThanOrEqual(sends.count, 30)
-        XCTAssertGreaterThan(sends.count, 20, "the storm is sent, not starved")
-        for (earlier, later) in zip(sends, sends.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(later - earlier, .seconds(2), "fast sends are at least 2 s apart")
-        }
-        let lastSend = try XCTUnwrap(sends.last)
-        XCTAssertGreaterThanOrEqual(lastSend, lastChange)
-        XCTAssertLessThanOrEqual(lastSend - lastChange, .seconds(3), "never older than one window plus one spacing")
+        let ticks: [Duration] = [.zero, .seconds(30), .seconds(60), .seconds(90)]
+        XCTAssertTrue(Set(saves).isSubset(of: ticks), "saved only at full ticks: \(saves)")
+        XCTAssertTrue(saves.starts(with: [.zero, .seconds(30), .seconds(60)]), "the storm is sent, not starved")
+        XCTAssertEqual(transport.sendNowCalls, 0, "session states never ask for an immediate send")
+        XCTAssertLessThanOrEqual(.seconds(90) - lastChange, .seconds(30), "checked one full tick after the last change")
         let published = try latestPayloads(transport, kind: .terminalSession)
         for id in ids {
             let record = SliceKind.terminalSession.recordName(id: String(id))

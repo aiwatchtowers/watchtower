@@ -47,6 +47,9 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     private let workbenchIDs: @Sendable () async throws -> [Int64]
     private let timing: Timing
     private let clock: @Sendable () -> ContinuousClock.Instant
+    /// Whether a pass runs at all (the hub's linked-phone gate): with no
+    /// phone nothing reads the status, so no CLI runs.
+    private let isActive: @Sendable () -> Bool
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
     private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
@@ -58,16 +61,19 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     /// - Parameters:
     ///   - workbenchIDs: the workbenches to keep a status for (the published
     ///     ones); a workbench that leaves the list is forgotten.
+    ///   - isActive: false skips the loop's passes (nothing is listed or run).
     init(
         fetch: @escaping Fetch,
         workbenchIDs: @escaping @Sendable () async throws -> [Int64],
         timing: Timing = .standard,
-        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        isActive: @escaping @Sendable () -> Bool = { true }
     ) {
         self.fetch = fetch
         self.workbenchIDs = workbenchIDs
         self.timing = timing
         self.clock = clock
+        self.isActive = isActive
     }
 
     /// The last good status; nil before the first one.
@@ -215,7 +221,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refreshDue()
+                if self.isActive() { await self.refreshDue() }
                 try? await Task.sleep(for: self.timing.wake)
             }
         }

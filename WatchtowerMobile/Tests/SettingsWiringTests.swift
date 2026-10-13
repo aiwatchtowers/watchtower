@@ -36,16 +36,16 @@ final class SettingsWiringTests: XCTestCase {
 
     // MARK: - Your Mac: online / offline / never connected
 
-    func testHeartbeat719SecondsOldIsOnline() {
+    func testHeartbeat2099SecondsOldIsOnline() {
         let now = Date()
-        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-719)), now: now)
+        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-2099)), now: now)
         XCTAssertEqual(status, .online(macName: "Acme Mac"))
         XCTAssertEqual(status.title, "Online")
     }
 
-    func testHeartbeat720SecondsOldIsOffline() {
+    func testHeartbeat2100SecondsOldIsOffline() {
         let now = Date()
-        let stamp = now.addingTimeInterval(-720)
+        let stamp = now.addingTimeInterval(-2100)
         let status = MacStatus(heartbeat: heartbeat(updatedAt: stamp), now: now)
         XCTAssertEqual(status, .offline(macName: "Acme Mac", lastSeen: stamp))
         XCTAssertEqual(status.title, "Offline")

@@ -413,6 +413,39 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(changes.withLock { $0 }, 2)
     }
 
+    /// Board #724: without a linked phone the loop neither lists the
+    /// workbenches nor runs the CLI; it starts once a phone is linked.
+    func testWithoutALinkedPhoneTheLoopListsAndRunsNothing() async throws {
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let listings = OSAllocatedUnfairLock(initialState: 0)
+        let runs = OSAllocatedUnfairLock(initialState: 0)
+        let refresher = WorkbenchGitRefresher(
+            fetch: { _ in
+                runs.withLock { $0 += 1 }
+                return Self.gitStatus(branch: "main", detached: false, changes: 0)
+            },
+            workbenchIDs: {
+                listings.withLock { $0 += 1 }
+                return [7]
+            },
+            timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(5), wake: .milliseconds(10)),
+            isActive: {
+                checks.withLock { $0 += 1 }
+                return linked.withLock { $0 }
+            }
+        )
+        refresher.start()
+        defer { refresher.stop() }
+        await awaitHubCondition("the loop woke three times") { checks.withLock { $0 } >= 3 }
+        XCTAssertEqual(listings.withLock { $0 }, 0)
+        XCTAssertEqual(runs.withLock { $0 }, 0)
+
+        linked.withLock { $0 = true }
+        await awaitHubCondition("a linked phone starts the runs") { refresher.status(for: 7) != nil }
+        XCTAssertEqual(runs.withLock { $0 }, 1)
+    }
+
     func testADeletedWorkbenchIsForgotten() async throws {
         let ids = OSAllocatedUnfairLock<[Int64]>(initialState: [7])
         let refresher = WorkbenchGitRefresher(

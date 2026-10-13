@@ -83,7 +83,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let row = try XCTUnwrap(model.snapshot.recording(recording.id))
         let heartbeat = model.snapshot.heartbeat
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date()).label, "Sending to your Mac")
-        let asleep = PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date().addingTimeInterval(800))
+        let asleep = PhoneUploadStage(recording: row, heartbeat: heartbeat, now: Date().addingTimeInterval(3_600))
         XCTAssertEqual(asleep, .waitingForMac)
         XCTAssertEqual(asleep.label, "Waiting for the Mac to wake")
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()), .waitingForMac)

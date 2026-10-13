@@ -79,6 +79,8 @@ final class SessionReportRunner: HubCompanion, Sendable {
     private let timing: Timing
     private let clock: @Sendable () -> ContinuousClock.Instant
     private let now: @Sendable () -> Date
+    /// Whether a pass runs at all (the hub's linked-phone gate).
+    private let isActive: @Sendable () -> Bool
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
@@ -94,6 +96,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
         timing: Timing = .standard,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         now: @escaping @Sendable () -> Date = { Date() },
+        isActive: @escaping @Sendable () -> Bool = { true },
         window: @escaping Window
     ) {
         self.fetch = fetch
@@ -102,6 +105,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
         self.timing = timing
         self.clock = clock
         self.now = now
+        self.isActive = isActive
     }
 
     /// `SessionReportCenter`'s argv, plus `--no-network` for every run the
@@ -112,11 +116,15 @@ final class SessionReportRunner: HubCompanion, Sendable {
     }
 
     /// The hub's runner: the CLI through `runner`, over the report window
-    /// of `sessions`.
+    /// of `sessions`; no pass runs while `isActive` is false.
     static func live(
-        _ runner: any CLIRunnerProtocol, dbPool: DatabasePool, sessions: TerminalSessionSlice, sidecar: HubSyncState
+        _ runner: any CLIRunnerProtocol,
+        dbPool: DatabasePool,
+        sessions: TerminalSessionSlice,
+        sidecar: HubSyncState,
+        isActive: @escaping @Sendable () -> Bool = { true }
     ) -> SessionReportRunner {
-        SessionReportRunner(fetch: cliFetch(runner), sidecar: sidecar) {
+        SessionReportRunner(fetch: cliFetch(runner), sidecar: sidecar, isActive: isActive) {
             try await dbPool.read { try SessionReportSlice.window($0, sessions: sessions, now: Date()) }
         }
     }
@@ -377,7 +385,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.runDue()
+                if self.isActive() { await self.runDue() }
                 try? await Task.sleep(for: self.timing.wake)
             }
         }

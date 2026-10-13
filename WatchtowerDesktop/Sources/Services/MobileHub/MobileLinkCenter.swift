@@ -430,6 +430,20 @@ final class MobileLinkCenter {
         }
     }
 
+    /// Whether any phone is linked: the publisher and the CLI companions
+    /// skip their work without one (board #724). An unreadable sidecar
+    /// counts as linked, so a read failure never stops a linked phone's
+    /// updates.
+    nonisolated static func hasLinkedPhone(_ sidecar: HubSyncState) -> Bool {
+        do {
+            return try sidecar.hasLinkedDevice()
+        } catch {
+            Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
+                .error("linked phones unreadable, publishing anyway: \(error.localizedDescription, privacy: .public)")
+            return true
+        }
+    }
+
     // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
     /// Settings turned the hub off and its zones were deleted: their shares

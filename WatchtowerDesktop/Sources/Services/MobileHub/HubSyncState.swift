@@ -824,6 +824,12 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Whether any phone is linked (the publisher's and the CLI
+    /// companions' gate: nothing but `device_grant` is published without one).
+    func hasLinkedDevice() throws -> Bool {
+        try queue.read { db in try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM devices)") ?? false }
+    }
+
     /// Deletes the device's row and refusal; the removed row, nil when it
     /// was not linked.
     func removeLinkedDevice(_ deviceID: String) throws -> LinkedDevice? {

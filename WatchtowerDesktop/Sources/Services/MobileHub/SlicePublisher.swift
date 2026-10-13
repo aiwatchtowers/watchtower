@@ -15,12 +15,22 @@ protocol SliceSource: Sendable {
 }
 
 /// Pushes the DataZone slices to the cloud transport (mobile POC spec §3,
-/// §4). One loop does both cadences, so two sends never interleave:
-/// - the full diff tick (10 s) over every kind;
-/// - the fast lane: `nudge(kinds:)` coalesces for 1 s, then diffs only the
-///   nudged kinds, with at least 2 s between two fast sends. A fast cycle
-///   that saved or deleted something then asks the transport to send at
-///   once (`sendNow`, spec §4.5); the tick leaves that to CKSyncEngine.
+/// §4). Every DataZone save becomes a silent push to the phone, so the
+/// cadences are what the phone's battery pays for (board #724, owner
+/// decision Q3). One loop runs them all, so two sends never interleave:
+/// - the full diff tick (30 s) over every kind: the only cycle that
+///   publishes the normal kinds, so they cost at most one save batch per
+///   30 s, sent when CKSyncEngine schedules it;
+/// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants) are
+///   also diffed every 10 s on their own (Go's writes, which no nudge
+///   sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
+///   coalesces them for 1 s, then diffs only them, with at least 2 s
+///   between two fast sends. Any cycle that saved or deleted an urgent
+///   record asks the transport to send at once (`sendNow`, spec §4.5);
+///   the pending normal records go with that send.
+/// - without a linked phone only `device_grant` (the link flow's answer)
+///   is published; the first cycle that sees a phone linked publishes
+///   every kind.
 ///
 /// A poll, not ValueObservation: the Go daemon writes through its own
 /// connection, so observation never fires. Rows are diffed against the
@@ -32,17 +42,44 @@ protocol SliceSource: Sendable {
 /// (the hub was off, a reset) is published again even when its hash matches.
 final class SlicePublisher: Sendable {
     struct Timing: Equatable, Sendable {
+        /// The full diff over every kind (the normal kinds' only cycle).
         let tick: Duration
+        /// The diff over the urgent kinds alone.
+        let urgentTick: Duration
         let fastWindow: Duration
         let fastSpacing: Duration
 
-        static let standard = Self(tick: .seconds(10), fastWindow: .seconds(1), fastSpacing: .seconds(2))
+        /// `urgentTick` defaults to `tick` (one cadence).
+        init(tick: Duration, urgentTick: Duration? = nil, fastWindow: Duration, fastSpacing: Duration) {
+            self.tick = tick
+            self.urgentTick = urgentTick ?? tick
+            self.fastWindow = fastWindow
+            self.fastSpacing = fastSpacing
+        }
+
+        static let standard = Self(tick: .seconds(30), urgentTick: .seconds(10), fastWindow: .seconds(1), fastSpacing: .seconds(2))
     }
 
     struct Outcome: Equatable {
         var pushed = 0
         var deleted = 0
         var skipped: [String] = []
+        /// Records of `urgentKinds` saved or deleted (the immediate send).
+        var urgentChanges = 0
+    }
+
+    /// What the owner waits for at once (owner decision Q3): an ask, its
+    /// alert, and a phone's link grant (the phone waits 60 s for it). Every
+    /// other kind rides the 30 s full tick.
+    static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant]
+
+    /// What is published while no phone is linked: the link flow's answer.
+    static let unlinkedKinds: Set<SliceKind> = [.deviceGrant]
+
+    /// One loop cycle: every kind, or the urgent kinds named.
+    enum Cycle: Equatable {
+        case full
+        case urgent(Set<SliceKind>)
     }
 
     /// CloudKit's per-record cap is 1 MB. The 100 KB headroom covers system
@@ -56,9 +93,13 @@ final class SlicePublisher: Sendable {
     static let sliceSQL: [SliceKind: String] = [:]
 
     private struct Lane {
+        /// Nudged urgent kinds.
         var pendingKinds: Set<SliceKind> = []
         var firstNudgeAt: ContinuousClock.Instant?
         var lastFastSendAt: ContinuousClock.Instant?
+        /// The next full and urgent ticks; nil: due now (before the first).
+        var nextTick: ContinuousClock.Instant?
+        var nextUrgentTick: ContinuousClock.Instant?
         /// The loop's current sleep; a nudge cancels it so the loop
         /// recomputes its deadline. Under the same lock as the nudge state,
         /// so a nudge can never land between "deadline computed" and
@@ -89,6 +130,10 @@ final class SlicePublisher: Sendable {
     /// Where asset-backed records' files are staged; nil: such records are
     /// skipped (logged), never published without their asset.
     private let assets: SliceAssetStore?
+    /// Whether a phone is linked (`HubSyncState.hasLinkedDevice`).
+    private let isLinked: @Sendable () -> Bool
+    /// The link state the previous cycle saw; nil before the first.
+    private let linkedAtLastCycle = OSAllocatedUnfairLock<Bool?>(initialState: nil)
 
     init(
         dbPool: DatabasePool,
@@ -99,6 +144,7 @@ final class SlicePublisher: Sendable {
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         now: @escaping @Sendable () -> Date = { Date() },
         assets: SliceAssetStore? = nil,
+        isLinked: @escaping @Sendable () -> Bool = { true },
         sendNow: @escaping @Sendable () async -> Void = {}
     ) {
         self.dbPool = dbPool
@@ -110,6 +156,7 @@ final class SlicePublisher: Sendable {
         self.now = now
         self.sendNow = sendNow
         self.assets = assets
+        self.isLinked = isLinked
     }
 
     /// Oversized warnings actually emitted (the throttle's observable).
@@ -124,7 +171,8 @@ final class SlicePublisher: Sendable {
     /// Test seams: the loop's stored sleep handle and the loop task.
     var currentSleepForTesting: Task<Void, Never>? { lane.withLock { $0.sleep } }
     var loopTaskForTesting: Task<Void, Never>? { loopTask.withLock { $0 } }
-    /// Fast cycles that finished, the immediate send included (a test seam).
+    /// Urgent cycles (fast lane and urgent tick) that finished, the
+    /// immediate send included (a test seam).
     var fastCyclesCompleted: Int { fastCycles.withLock { $0 } }
 
     // MARK: - Publishing
@@ -141,9 +189,11 @@ final class SlicePublisher: Sendable {
             let diff = current.diff
             let saveable = splitOversized(diff.upserts, skipped: &outcome.skipped)
             outcome.skipped.append(contentsOf: diff.skipped)
+            let before = outcome.pushed + outcome.deleted
             let pushed = try await pushKind(
                 saveable, assets: current.assets, deletions: diff.deletions, startGen: startGen, into: &outcome
             )
+            if Self.urgentKinds.contains(kind) { outcome.urgentChanges += outcome.pushed + outcome.deleted - before }
             guard pushed else {
                 logger.warning("publish: generation changed mid-cycle; aborted to avoid recording stale hashes")
                 return outcome
@@ -381,13 +431,16 @@ final class SlicePublisher: Sendable {
 
     // MARK: - Fast lane
 
-    /// Asks for `kinds` to be published soon: after the 1 s coalescing
-    /// window, and at least 2 s after the previous fast send.
+    /// Asks for the urgent ones among `kinds` to be published soon: after
+    /// the 1 s coalescing window, and at least 2 s after the previous fast
+    /// send. The other kinds ride the next full tick (≤ 30 s), which diffs
+    /// every kind anyway.
     func nudge(kinds: Set<SliceKind>) {
-        guard !kinds.isEmpty else { return }
+        let urgent = kinds.intersection(Self.urgentKinds)
+        guard !urgent.isEmpty else { return }
         lane.withLock { lane in
             if lane.pendingKinds.isEmpty { lane.firstNudgeAt = clock() }
-            lane.pendingKinds.formUnion(kinds)
+            lane.pendingKinds.formUnion(urgent)
             lane.sleep?.cancel()
         }
     }
@@ -406,21 +459,46 @@ final class SlicePublisher: Sendable {
         return max(windowEnd, last + timing.fastSpacing)
     }
 
-    /// The nudged kinds when their deadline has passed (taken, and the send
-    /// stamped now); nil otherwise.
-    func takeDueFastKinds(now: ContinuousClock.Instant) -> Set<SliceKind>? {
+    /// The cycle due at `now` (taken: its deadlines move on), nil when none
+    /// is. The full tick first (it covers every pending nudge), then the
+    /// urgent tick and the fast lane's nudges, merged into one cycle.
+    func takeDueCycle(now: ContinuousClock.Instant) -> Cycle? {
         lane.withLock { [timing] lane in
-            guard let deadline = Self.fastDeadline(lane, timing: timing), now >= deadline else { return nil }
-            let kinds = lane.pendingKinds
-            lane.pendingKinds = []
-            lane.firstNudgeAt = nil
-            lane.lastFastSendAt = now
-            return kinds
+            if lane.nextTick.map({ now >= $0 }) ?? true {
+                lane.nextTick = now + timing.tick
+                lane.nextUrgentTick = now + timing.urgentTick
+                lane.pendingKinds = []
+                lane.firstNudgeAt = nil
+                return .full
+            }
+            let fastDue = Self.fastDeadline(lane, timing: timing).map { now >= $0 } ?? false
+            let urgentDue = lane.nextUrgentTick.map { now >= $0 } ?? true
+            guard fastDue || urgentDue else { return nil }
+            var kinds: Set<SliceKind> = []
+            if fastDue {
+                kinds = lane.pendingKinds
+                lane.pendingKinds = []
+                lane.firstNudgeAt = nil
+                lane.lastFastSendAt = now
+            }
+            if urgentDue {
+                kinds.formUnion(Self.urgentKinds)
+                lane.nextUrgentTick = now + timing.urgentTick
+            }
+            return .urgent(kinds)
         }
     }
 
-    private func sleepUntilNextDeadline(tick: ContinuousClock.Instant) async {
-        let sleep = beginSleep(tick: tick)
+    /// The earliest of the full and urgent ticks (the loop's wake without
+    /// a nudge); `fallback` before the first cycle.
+    private func nextTickDeadline(fallback: ContinuousClock.Instant) -> ContinuousClock.Instant {
+        lane.withLock { lane in
+            [lane.nextTick, lane.nextUrgentTick].compactMap { $0 }.min() ?? fallback
+        }
+    }
+
+    private func sleepUntilNextDeadline() async {
+        let sleep = beginSleep(tick: nextTickDeadline(fallback: clock()))
         // stop() may have cancelled the loop before this sleep existed.
         if Task.isCancelled { sleep.cancel() }
         await sleep.value
@@ -452,18 +530,17 @@ final class SlicePublisher: Sendable {
     /// Starts the loop; the first full cycle runs at once.
     func start() {
         assets?.open()
+        lane.withLock { lane in
+            lane.nextTick = nil
+            lane.nextUrgentTick = nil
+        }
         let task = Task { [weak self] in
-            var nextTick = self?.clock() ?? .now
             while !Task.isCancelled {
                 guard let self else { return }
-                let now = self.clock()
-                if now >= nextTick {
-                    await self.runCycle(kinds: nil)
-                    nextTick = self.clock() + self.timing.tick
-                } else if let kinds = self.takeDueFastKinds(now: now) {
-                    await self.runFastCycle(kinds: kinds)
+                if let cycle = self.takeDueCycle(now: self.clock()) {
+                    await self.run(cycle)
                 } else {
-                    await self.sleepUntilNextDeadline(tick: nextTick)
+                    await self.sleepUntilNextDeadline()
                 }
             }
         }
@@ -475,8 +552,38 @@ final class SlicePublisher: Sendable {
         lane.withLock { $0.sleep?.cancel() }
     }
 
-    /// One cycle; nil when it failed.
+    /// One loop cycle over what the link state allows, then the immediate
+    /// send when it changed an urgent record (the lane's ≥ 2 s spacing and
+    /// the urgent tick bound the send rate; the transport itself honours a
+    /// throttle wait or a stop). nil when it failed.
     @discardableResult
+    func run(_ cycle: Cycle) async -> Outcome? {
+        let outcome = await runCycle(kinds: scope(of: cycle))
+        if let outcome, outcome.urgentChanges > 0 {
+            await sendNow()
+        }
+        if case .urgent = cycle { fastCycles.withLock { $0 += 1 } }
+        return outcome
+    }
+
+    /// The kinds a cycle diffs (nil: every kind). Without a linked phone
+    /// only `unlinkedKinds`; the first cycle after a phone linked diffs every
+    /// kind, so the new phone gets everything at once.
+    private func scope(of cycle: Cycle) -> Set<SliceKind>? {
+        let requested: Set<SliceKind>? = {
+            if case .urgent(let kinds) = cycle { return kinds }
+            return nil
+        }()
+        let linked = isLinked()
+        let wasLinked = linkedAtLastCycle.withLock { last -> Bool? in
+            defer { last = linked }
+            return last
+        }
+        guard linked else { return (requested ?? Set(SliceKind.allCases)).intersection(Self.unlinkedKinds) }
+        return wasLinked == false ? nil : requested
+    }
+
+    /// One cycle; nil when it failed.
     private func runCycle(kinds: Set<SliceKind>?) async -> Outcome? {
         do {
             let outcome = try await publishOnce(kinds: kinds)
@@ -488,16 +595,6 @@ final class SlicePublisher: Sendable {
             logger.error("publish cycle failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
-    }
-
-    /// A fast cycle, then the immediate send when it changed the zone. The
-    /// lane's ≥ 2 s spacing bounds the send rate; the transport itself
-    /// honours a throttle wait or a stop.
-    private func runFastCycle(kinds: Set<SliceKind>) async {
-        if let outcome = await runCycle(kinds: kinds), outcome.pushed + outcome.deleted > 0 {
-            await sendNow()
-        }
-        fastCycles.withLock { $0 += 1 }
     }
 
     func stop() {

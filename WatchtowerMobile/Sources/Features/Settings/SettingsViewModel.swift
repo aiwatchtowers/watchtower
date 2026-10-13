@@ -5,7 +5,7 @@ import os
 import WatchtowerSync
 
 /// The Mac's status line in Settings → Your Mac. Online while the DataZone
-/// heartbeat is under 720 s old (spec §3, `RelayFeed.heartbeatStaleAfter`);
+/// heartbeat is under 2100 s old (spec §3, `RelayFeed.heartbeatStaleAfter`);
 /// a heartbeat stamped ahead of the phone's clock reads as online.
 enum MacStatus: Equatable {
     case notConnected

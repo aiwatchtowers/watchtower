@@ -121,13 +121,17 @@ final class MobileHubService {
     nonisolated static let defaultRelayActiveInterval: Duration = .seconds(3)
     /// A phone action seen this recently keeps the fast relay cadence.
     nonisolated static let activityWindow: TimeInterval = 300
-    /// The heartbeat is rewritten this often (spec §3).
-    nonisolated static let heartbeatInterval: Duration = .seconds(300)
+    /// The heartbeat is rewritten this often (spec §3; 15 min since board
+    /// #724, owner decision Q2: each write is a silent push to the phone).
+    nonisolated static let heartbeatInterval: Duration = .seconds(900)
     /// Bound on each CloudKit wait the hub adds: the iCloud user lookup,
     /// the legacy zone check and the zone delete.
     nonisolated static let defaultCloudTimeout: Duration = .seconds(30)
-    /// Heartbeat ticks failing in a row before the hub stops (3 × 300 s
-    /// outlasts the 720 s the phone waits before it shows the Mac offline).
+    /// Heartbeat ticks failing in a row before the hub stops: 3 × 900 s
+    /// (45 min) outlasts the 35 min (`RelayFeed.heartbeatStaleAfter`) the
+    /// phone waits before it shows the Mac offline, so the phone has shown
+    /// it offline before the hub gives up; one missed write (30 min) does
+    /// not show it offline.
     nonisolated static let maxTickFailures = 3
 
     private(set) var status: HubStatus = .off

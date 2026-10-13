@@ -82,8 +82,12 @@ final class HubHeartbeatTests: XCTestCase {
 
     // MARK: - Enable
 
+    /// Board #724, owner decision Q2: every 15 min, and three failed
+    /// writes in a row (45 min) outlast the phone's 35 min offline mark.
     func testPinnedHeartbeatTiming() {
-        XCTAssertEqual(MobileHubService.heartbeatInterval, .seconds(300))
+        XCTAssertEqual(MobileHubService.heartbeatInterval, .seconds(900))
+        XCTAssertEqual(MobileHubService.maxTickFailures, 3)
+        XCTAssertGreaterThan(MobileHubService.heartbeatInterval * MobileHubService.maxTickFailures, .seconds(35 * 60))
     }
 
     func testAnotherMacsLiveHeartbeatNeitherRefusesNorStopsThisHub() async throws {

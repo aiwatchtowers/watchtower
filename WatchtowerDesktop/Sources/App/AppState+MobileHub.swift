@@ -51,18 +51,25 @@ extension AppState {
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
+        // Without a linked phone only the link flow's answer is published,
+        // and the CLI companions run nothing (board #724).
+        let sidecar = storage.sidecar
+        let hasPhone: @Sendable () -> Bool = { MobileLinkCenter.hasLinkedPhone(sidecar) }
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
         let gitRefresher = workbenchesViewModel?.cli.map { cli in
             WorkbenchGitRefresher(
                 fetch: { try await cli.gitStatus(projectID: $0) },
-                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
+                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } },
+                isActive: hasPhone
             )
         }
         // The terminals' liveness, copied by the fast lane for the session
         // projection's off-main resolution.
         let liveness = SessionLivenessBox()
-        let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
+        let summaries = workbenchesViewModel?.cli.map {
+            SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness, isActive: hasPhone)
+        }
         let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
         let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
         let sessions = TerminalSessionSlice(
@@ -71,8 +78,9 @@ extension AppState {
         )
         // Each session's own report (`--session S --json`, scoped by the CLI,
         // PROJ-14) and the timeline's state milestones; no CLI, no reports.
-        let sidecar = storage.sidecar
-        let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
+        let reports = workbenchesViewModel?.cli.map {
+            SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar, isActive: hasPhone)
+        }
         if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
         let sources: [any SliceSource] = [
             WorkbenchSlice(
@@ -93,6 +101,7 @@ extension AppState {
         let transport = storage.transport
         let publisher = SlicePublisher(
             dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            isLinked: hasPhone,
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
