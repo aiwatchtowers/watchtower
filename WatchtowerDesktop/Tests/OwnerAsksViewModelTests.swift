@@ -177,6 +177,27 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id], "nothing left for the owner to do")
     }
 
+    /// Board #223: Dismiss closes the ask with a dismissal, ignoring the
+    /// draft, and types the line so the agent goes on without it.
+    func testDismissStoresADismissalAndTellsTheSession() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let ask = try await openAsk(vm, project: p, id: askID)
+        vm.asks.openDrawer(askID: askID, projectID: p)
+        pick(vm, askID)
+
+        await vm.asks.dismiss(ask)?.value
+
+        let stored = try await status(askID)
+        XCTAssertEqual(stored.status, "answered")
+        XCTAssertEqual(try OwnerAskAnswer.decode(stored.answer), .dismissal, "the draft's picks are not sent")
+        XCTAssertTrue(String(bytes: typed[0], encoding: .utf8)?.contains("Ask #\(askID) answered (question: dismissed)") == true)
+        XCTAssertEqual(typed[1], [0x0D])
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+        XCTAssertEqual(vm.asks.openAsks[p], [])
+    }
+
     /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"; amended 2026-10-04,
     /// board #379): the answer is stored before anything is typed, the line
     /// is one bracketed paste with no line break or control character of its

@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The drawer's footer (spec 2026-10-03 Part 8). An open ask: Later (closes
-/// the drawer, the draft stays) and the kind's answer buttons — Request
+/// The drawer's footer (spec 2026-10-03 Part 8). An open ask: Dismiss
+/// (closes the ask unanswered, board #223 — it replaced Later; the drawer's
+/// × still closes it with the draft kept) and the kind's answer buttons — Request
 /// changes / Approve, Send ("N not checked" above it), Answer — enabled per
 /// `OwnerAskPresentation.canAnswer`, with the reason when they are not;
 /// their keys (⌘↩, a review's Request changes ⌘⇧↩) in their help.
@@ -35,8 +36,9 @@ struct OwnerAskAnswerBar: View {
             }
             HStack(spacing: 8) {
                 if ask.isOpen {
-                    Button("Later") { asks.closeDrawer(projectID: ask.projectID) }
-                        .help("Close; your draft is kept")
+                    Button("Dismiss") { asks.dismiss(ask) }
+                        .disabled(answering)
+                        .help("Close this ask without answering; the agent goes on without it")
                     Spacer()
                     if answering { ProgressView().controlSize(.small) }
                     ForEach(actions, id: \.verdict) { action in

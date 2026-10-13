@@ -51,6 +51,9 @@ struct OwnerAskQuickActions: View {
             Button("Reply…") { replying = true }
                 .buttonStyle(.bordered)
                 .help("Answer in your own words, on one line")
+            Button("Dismiss") { send(.dismissal) }
+                .buttonStyle(.borderless)
+                .help("Close this ask without answering; the agent goes on without it")
             detailsButton
             sendingIndicator
         }
