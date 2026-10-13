@@ -118,8 +118,9 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         entries.withLock { $0[workbenchID]?.summaries?[sessionID] }
     }
 
-    /// Runs after a workbench's summaries changed (the hub nudges the
-    /// `terminal_session` kind).
+    /// Runs after a workbench's summaries changed (the hub's nudge of the
+    /// `terminal_session` kind is dropped: it publishes on the next 30 s
+    /// full tick).
     func setOnChange(_ handler: (@Sendable () -> Void)?) {
         onChange.withLock { $0 = handler }
     }

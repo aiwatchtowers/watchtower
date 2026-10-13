@@ -137,8 +137,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
         }
     }
 
-    /// Runs after a stored report or milestone changed (the hub nudges
-    /// `session_report` and `session_timeline`).
+    /// Runs after a stored report or milestone changed (the hub's nudge of
+    /// `session_report` and `session_timeline` is dropped: normal kinds
+    /// publish on the next 30 s full tick).
     func setOnChange(_ handler: (@Sendable () -> Void)?) {
         onChange.withLock { $0 = handler }
     }

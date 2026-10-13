@@ -93,7 +93,8 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         entries.withLock { $0[workbenchID]?.snapshot }
     }
 
-    /// Runs after a status changed (the hub nudges the `workbench` kind).
+    /// Runs after a status changed (the hub's nudge of the `workbench` kind
+    /// is dropped: it publishes on the next 30 s full tick).
     func setOnChange(_ handler: (@Sendable () -> Void)?) {
         onChange.withLock { $0 = handler }
     }
