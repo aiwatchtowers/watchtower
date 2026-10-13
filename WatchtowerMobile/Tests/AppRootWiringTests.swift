@@ -138,7 +138,13 @@ final class AppRootWiringTests: XCTestCase {
                     uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
                 )
             }
-            self?.addTeardownBlock { @MainActor in session.stop() }
+            // Runs before the temp directory's removal (teardown blocks run
+            // last-in first-out): the boot has ended and the replica's
+            // handles are closed, so nothing writes a file already unlinked.
+            self?.addTeardownBlock { @MainActor in
+                await session.shutDown()
+                try? session.store.reader.close()
+            }
             self?.built.append((session, scope, hubID, memory))
             return session
         }
@@ -472,7 +478,13 @@ final class AppRootWiringTests: XCTestCase {
 
         hubB.onLinkSignal?(.unlinked)
 
-        try await poll { (try? self.registry.row(TestHub.home))?.state == .unlinkedByMac && !hubB.writesAllowed }
+        // The notice lands last, once the freeze (its outbox, uploader and
+        // recorder hand-off) has returned: wait for the whole removal, not
+        // for its first visible step.
+        try await poll { root.linking.notice != nil }
+        XCTAssertEqual(root.linking.notice, .removed(macName: "Home Mac"))
+        XCTAssertEqual(try registry.row(TestHub.home)?.state, .unlinkedByMac)
+        XCTAssertFalse(hubB.writesAllowed, "the removed hub sends nothing")
         XCTAssertFalse(hubB.isLooping, "the removed hub stops syncing")
         XCTAssertEqual(hubB.linkedDevice, device, "its link stands, read-only")
         do {

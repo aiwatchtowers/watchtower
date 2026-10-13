@@ -209,7 +209,6 @@ func TestAssetVectorsDecryptInGo(t *testing.T) {
 	loadFixture(t, "asset.json", &fx)
 	key := seq(0xE0, 0xFF)
 	assetID := mustParseUUID("0F0E0D0C-0B0A-0908-0706-050403020100")
-	const chunkSize = 16
 	if len(fx.Sealed) != 3 {
 		t.Fatalf("fixture holds %d assets, want 3", len(fx.Sealed))
 	}
@@ -220,55 +219,62 @@ func TestAssetVectorsDecryptInGo(t *testing.T) {
 			plain[i] = byte(i*7 + 3)
 		}
 		digest := sha256.Sum256(plain)
-		header, count := assetHeader(assetID, chunkSize, uint64(length))
+		header, count := assetHeader(assetID, assetChunkSize, uint64(length))
 		wantDescriptor := cat(key, header, digest[:])
 		if got := hex.EncodeToString(wantDescriptor); got != fx.Descriptors[name] {
 			t.Errorf("descriptor %s: got %s, fixture %s", name, got, fx.Descriptors[name])
 		}
+		checkSealedAsset(t, name, mustHex(t, fx.Descriptors[name]), mustHex(t, fx.Sealed[name]), plain, count)
+	}
+}
 
-		// Decrypt the frozen sealed file with the frozen descriptor's own header.
-		desc := mustHex(t, fx.Descriptors[name])
-		sealed := mustHex(t, fx.Sealed[name])
-		if len(desc) != 101 {
-			t.Fatalf("descriptor %s: %d bytes, want 101", name, len(desc))
-		}
-		dKey, dHeader, dDigest := desc[:32], desc[32:69], desc[69:]
-		total := binary.BigEndian.Uint64(dHeader[25:33])
-		dCount := binary.BigEndian.Uint32(dHeader[33:37])
-		if total != uint64(length) || dCount != count {
-			t.Errorf("descriptor %s header: total %d count %d", name, total, dCount)
-		}
-		if want := int(count) * (chunkSize + 16); len(sealed) != want {
-			t.Fatalf("sealed %s: %d bytes, want %d", name, len(sealed), want)
-		}
-		aead, err := chacha20poly1305.New(dKey)
+// assetChunkSize is the asset fixture's chunk size.
+const assetChunkSize = 16
+
+// checkSealedAsset decrypts the frozen sealed file `sealed` with the frozen
+// descriptor `desc`'s own key and header, and checks it yields `plain` in
+// `count` chunks, its digest matches, and a moved chunk fails.
+func checkSealedAsset(t *testing.T, name string, desc, sealed, plain []byte, count uint32) {
+	t.Helper()
+	if len(desc) != 101 {
+		t.Fatalf("descriptor %s: %d bytes, want 101", name, len(desc))
+	}
+	dKey, dHeader, dDigest := desc[:32], desc[32:69], desc[69:]
+	total := binary.BigEndian.Uint64(dHeader[25:33])
+	dCount := binary.BigEndian.Uint32(dHeader[33:37])
+	if total != uint64(len(plain)) || dCount != count {
+		t.Errorf("descriptor %s header: total %d count %d", name, total, dCount)
+	}
+	if want := int(count) * (assetChunkSize + 16); len(sealed) != want {
+		t.Fatalf("sealed %s: %d bytes, want %d", name, len(sealed), want)
+	}
+	aead, err := chacha20poly1305.New(dKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []byte
+	for c := uint32(0); c < dCount; c++ {
+		chunk := sealed[int(c)*(assetChunkSize+16) : int(c+1)*(assetChunkSize+16)]
+		p, err := aead.Open(nil, chunkNonce(c), chunk, chunkAAD(dHeader, c, dCount))
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("asset %s chunk %d: %v", name, c, err)
 		}
-		var out []byte
-		for c := uint32(0); c < dCount; c++ {
-			chunk := sealed[int(c)*(chunkSize+16) : int(c+1)*(chunkSize+16)]
-			p, err := aead.Open(nil, chunkNonce(c), chunk, chunkAAD(dHeader, c, dCount))
-			if err != nil {
-				t.Fatalf("asset %s chunk %d: %v", name, c, err)
-			}
-			out = append(out, p...)
-		}
-		if total > uint64(len(out)) {
-			t.Fatalf("asset %s: total_len %d exceeds %d decrypted bytes", name, total, len(out))
-		}
-		out = out[:total]
-		if !bytes.Equal(out, plain) {
-			t.Errorf("asset %s: plaintext mismatch", name)
-		}
-		if got := sha256.Sum256(out); !bytes.Equal(got[:], dDigest) {
-			t.Errorf("asset %s: digest mismatch", name)
-		}
-		// A chunk moved to another position must fail (index is in nonce and AAD).
-		if dCount > 1 {
-			if _, err := aead.Open(nil, chunkNonce(1), sealed[:chunkSize+16], chunkAAD(dHeader, 1, dCount)); err == nil {
-				t.Errorf("asset %s: chunk 0 opened as chunk 1", name)
-			}
+		out = append(out, p...)
+	}
+	if total > uint64(len(out)) {
+		t.Fatalf("asset %s: total_len %d exceeds %d decrypted bytes", name, total, len(out))
+	}
+	out = out[:total]
+	if !bytes.Equal(out, plain) {
+		t.Errorf("asset %s: plaintext mismatch", name)
+	}
+	if got := sha256.Sum256(out); !bytes.Equal(got[:], dDigest) {
+		t.Errorf("asset %s: digest mismatch", name)
+	}
+	// A chunk moved to another position must fail (index is in nonce and AAD).
+	if dCount > 1 {
+		if _, err := aead.Open(nil, chunkNonce(1), sealed[:assetChunkSize+16], chunkAAD(dHeader, 1, dCount)); err == nil {
+			t.Errorf("asset %s: chunk 0 opened as chunk 1", name)
 		}
 	}
 }
@@ -327,6 +333,15 @@ func parseFrame(t *testing.T, b []byte) frame {
 	return f
 }
 
+// envWant is a case's spec-pinned expectations, independent of the
+// fixture's own fields (class codes: Envelope.swift).
+type envWant struct {
+	class                  int
+	signed                 bool
+	zone, kind, id, notify string
+	payload                string
+}
+
 func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 	var fx struct {
 		Cases map[string]envCase `json:"cases"`
@@ -341,14 +356,7 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 	}
 	senders := map[string][]byte{"data": hubID, "relayToHub": k.deviceID, "relayToPhone": hubID}
 	zoneByte := map[string]byte{"DataZone": 1, "RelayZone": 2}
-	// Spec-pinned expectations, independent of the fixture's own fields (class codes: Envelope.swift).
-	type want struct {
-		class                  int
-		signed                 bool
-		zone, kind, id, notify string
-		payload                string
-	}
-	wants := map[string]want{
+	wants := map[string]envWant{
 		"data":         {1, true, "DataZone", "meeting_transcript", "9", "urgent", `{"title":"Acme sync"}`},
 		"relayToHub":   {5, false, "RelayZone", "action", "a1", "", `{"op":"close"}`},
 		"relayToPhone": {6, false, "RelayZone", "echo", "a1", "", `{"ok":true}`},
@@ -362,9 +370,6 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			header := mustHex(t, c.Header)
 			body := mustHex(t, c.Body)
-			if len(header) != 68 || string(header[:3]) != "WTE" || header[3] != 1 || header[4] != 1 {
-				t.Fatalf("bad header %x", header)
-			}
 			w, ok := wants[name]
 			if !ok {
 				t.Fatalf("unexpected case %q", name)
@@ -373,48 +378,10 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 			if !ok || c.Zone != w.zone {
 				t.Fatalf("zone %q, want %q", c.Zone, w.zone)
 			}
+			checkEnvelopeHeader(t, header, body, w, senders[name], nonce)
 			signed := header[5]&1 != 0
-			if signed != w.signed {
-				t.Errorf("signed flag %v, want %v", signed, w.signed)
-			}
-			hasAsset := header[5]&2 != 0
-			if header[5]&4 == 0 {
-				t.Error("padded flag not set")
-			}
-			if !bytes.Equal(header[6:22], hubID) {
-				t.Error("hub id")
-			}
-			if !bytes.Equal(header[22:38], senders[name]) {
-				t.Errorf("sender id %x", header[22:38])
-			}
-			if binary.BigEndian.Uint32(header[38:42]) != 1 || binary.BigEndian.Uint64(header[42:50]) != 7 {
-				t.Error("epoch/seq")
-			}
-			if !bytes.Equal(header[50:62], nonce) {
-				t.Error("nonce")
-			}
-			if int(binary.BigEndian.Uint16(header[62:64])) != w.class {
-				t.Error("class")
-			}
-			if int(binary.BigEndian.Uint32(header[64:68])) != len(body) {
-				t.Errorf("body_len %d, body %d", binary.BigEndian.Uint32(header[64:68]), len(body))
-			}
-
 			aad := cat(header, []byte{zb}, be16(len(c.WireName)), []byte(c.WireName))
-			if signed != (c.Signature != "") {
-				t.Fatalf("fixture signature presence %q disagrees with the signed flag", c.Signature)
-			}
-			if signed {
-				sig := mustHex(t, c.Signature)
-				if !ed25519.Verify(hubSigPub, cat([]byte("wt/sig/v1"), aad, body), sig) {
-					t.Error("stored signature does not verify")
-				}
-				tampered := cat([]byte("wt/sig/v1"), aad, body)
-				tampered[len(tampered)-1] ^= 1
-				if ed25519.Verify(hubSigPub, tampered, sig) {
-					t.Error("signature verifies a tampered body")
-				}
-			}
+			checkEnvelopeSignature(t, hubSigPub, signed, c.Signature, aad, body)
 
 			aead, err := chacha20poly1305.New(aeadKeys[name])
 			if err != nil {
@@ -424,37 +391,100 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
-			// Padded to a bucket: 256 here.
-			if len(plain) != 256 {
-				t.Errorf("padded frame %d bytes, want 256", len(plain))
-			}
-			f := parseFrame(t, plain)
-			if f.kind != w.kind || f.id != w.id || f.notify != w.notify {
-				t.Errorf("frame %q/%q/%q, want %q/%q/%q", f.kind, f.id, f.notify, w.kind, w.id, w.notify)
-			}
-			if string(f.payload) != w.payload {
-				t.Errorf("payload %q, want %q", f.payload, w.payload)
-			}
-			if c.Kind != w.kind || c.ID != w.id || c.NotifyLevel != w.notify || c.Payload != hex.EncodeToString([]byte(w.payload)) {
-				t.Error("fixture metadata disagrees with the pinned expectations")
-			}
-			if hasAsset != (f.asset != nil) {
-				t.Error("has-asset flag disagrees with the frame")
-			}
-			if f.asset != nil {
-				// Key 0x90..0xAF, asset id = hub id, chunk 16, plaintext "[]".
-				digest := sha256.Sum256([]byte("[]"))
-				hdr, _ := assetHeader(hubID, 16, 2)
-				want := cat(seq(0x90, 0xAF), hdr, digest[:])
-				if !bytes.Equal(f.asset, want) {
-					t.Errorf("asset descriptor %x, derived %x", f.asset, want)
-				}
-			}
+			checkEnvelopeFrame(t, plain, c, w, header[5]&2 != 0)
 			// The wrong zone byte must not open (AAD binds the zone).
 			bad := cat(header, []byte{3 - zb}, be16(len(c.WireName)), []byte(c.WireName))
 			if _, err := aead.Open(nil, header[50:62], body, bad); err == nil {
 				t.Error("opened under the wrong zone")
 			}
 		})
+	}
+}
+
+// checkEnvelopeHeader checks the 68-byte "WTE" header's fields against the
+// pinned expectations `w`, the case's `sender` and the fixture's `nonce`.
+func checkEnvelopeHeader(t *testing.T, header, body []byte, w envWant, sender, nonce []byte) {
+	t.Helper()
+	if len(header) != 68 || string(header[:3]) != "WTE" || header[3] != 1 || header[4] != 1 {
+		t.Fatalf("bad header %x", header)
+	}
+	if signed := header[5]&1 != 0; signed != w.signed {
+		t.Errorf("signed flag %v, want %v", signed, w.signed)
+	}
+	if header[5]&4 == 0 {
+		t.Error("padded flag not set")
+	}
+	if !bytes.Equal(header[6:22], hubID) {
+		t.Error("hub id")
+	}
+	if !bytes.Equal(header[22:38], sender) {
+		t.Errorf("sender id %x", header[22:38])
+	}
+	if binary.BigEndian.Uint32(header[38:42]) != 1 || binary.BigEndian.Uint64(header[42:50]) != 7 {
+		t.Error("epoch/seq")
+	}
+	if !bytes.Equal(header[50:62], nonce) {
+		t.Error("nonce")
+	}
+	if int(binary.BigEndian.Uint16(header[62:64])) != w.class {
+		t.Error("class")
+	}
+	if int(binary.BigEndian.Uint32(header[64:68])) != len(body) {
+		t.Errorf("body_len %d, body %d", binary.BigEndian.Uint32(header[64:68]), len(body))
+	}
+}
+
+// checkEnvelopeSignature checks the fixture's signature is present exactly
+// when the header is `signed`, verifies over aad and body, and fails on a
+// tampered body.
+func checkEnvelopeSignature(t *testing.T, hubSigPub ed25519.PublicKey, signed bool, signature string, aad, body []byte) {
+	t.Helper()
+	if signed != (signature != "") {
+		t.Fatalf("fixture signature presence %q disagrees with the signed flag", signature)
+	}
+	if !signed {
+		return
+	}
+	sig := mustHex(t, signature)
+	if !ed25519.Verify(hubSigPub, cat([]byte("wt/sig/v1"), aad, body), sig) {
+		t.Error("stored signature does not verify")
+	}
+	tampered := cat([]byte("wt/sig/v1"), aad, body)
+	tampered[len(tampered)-1] ^= 1
+	if ed25519.Verify(hubSigPub, tampered, sig) {
+		t.Error("signature verifies a tampered body")
+	}
+}
+
+// checkEnvelopeFrame checks the opened, padded frame `plain` against the
+// pinned expectations `w` and the fixture case's metadata `c`; `hasAsset` is
+// the header's has-asset flag.
+func checkEnvelopeFrame(t *testing.T, plain []byte, c envCase, w envWant, hasAsset bool) {
+	t.Helper()
+	// Padded to a bucket: 256 here.
+	if len(plain) != 256 {
+		t.Errorf("padded frame %d bytes, want 256", len(plain))
+	}
+	f := parseFrame(t, plain)
+	if f.kind != w.kind || f.id != w.id || f.notify != w.notify {
+		t.Errorf("frame %q/%q/%q, want %q/%q/%q", f.kind, f.id, f.notify, w.kind, w.id, w.notify)
+	}
+	if string(f.payload) != w.payload {
+		t.Errorf("payload %q, want %q", f.payload, w.payload)
+	}
+	if c.Kind != w.kind || c.ID != w.id || c.NotifyLevel != w.notify || c.Payload != hex.EncodeToString([]byte(w.payload)) {
+		t.Error("fixture metadata disagrees with the pinned expectations")
+	}
+	if hasAsset != (f.asset != nil) {
+		t.Error("has-asset flag disagrees with the frame")
+	}
+	if f.asset != nil {
+		// Key 0x90..0xAF, asset id = hub id, chunk 16, plaintext "[]".
+		digest := sha256.Sum256([]byte("[]"))
+		hdr, _ := assetHeader(hubID, 16, 2)
+		want := cat(seq(0x90, 0xAF), hdr, digest[:])
+		if !bytes.Equal(f.asset, want) {
+			t.Errorf("asset descriptor %x, derived %x", f.asset, want)
+		}
 	}
 }
