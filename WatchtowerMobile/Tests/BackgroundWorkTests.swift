@@ -188,10 +188,10 @@ final class BackgroundWorkTests: XCTestCase {
         XCTAssertEqual(tasks.ended.count, 1, "no second end")
     }
 
-    /// iOS grants no extra time (`.invalid`): the hold is still taken and
-    /// released exactly once at the end, so the replica rests again; no
-    /// task is ended for the invalid id.
-    func testAnUngrantedTaskStillReleasesItsHold() {
+    /// iOS grants no extra time (`.invalid`) in the background: no hold is
+    /// taken (no expiration would ever suspend the replica again), so it
+    /// stays at rest; the end changes nothing and ends no task.
+    func testAnUngrantedTaskInTheBackgroundTakesNoHold() {
         let tasks = FakeBackgroundTasks()
         tasks.grantsTime = false
         let (suspension, posts) = makeSuspension()
@@ -199,11 +199,43 @@ final class BackgroundWorkTests: XCTestCase {
         let work = BackgroundWork(name: "silent-push-fetch", runner: tasks, suspension: suspension) { true }
         work.begin()
         XCTAssertEqual(tasks.begun, ["silent-push-fetch"])
+        XCTAssertTrue(suspension.isSuspended, "no hold: the replica stays at rest")
+        XCTAssertEqual(posts.names, [Database.suspendNotification])
+
+        work.end()
+        work.end()
+        XCTAssertTrue(suspension.isSuspended)
+        XCTAssertEqual(posts.names, [Database.suspendNotification], "nothing resumed, nothing posted again")
+        XCTAssertTrue(tasks.ended.isEmpty, "no end for an invalid task")
+
+        let other = suspension.hold()
+        work.end()
+        XCTAssertFalse(suspension.isSuspended, "an end takes nothing from another hold")
+        other()
+        XCTAssertTrue(suspension.isSuspended)
+    }
+
+    /// iOS grants no extra time (`.invalid`) in the foreground: the hold is
+    /// still taken, so the work can finish while the app runs, and released
+    /// exactly once at the end; no task is ended for the invalid id.
+    func testAnUngrantedTaskInTheForegroundStillHoldsAndReleases() {
+        let tasks = FakeBackgroundTasks()
+        tasks.grantsTime = false
+        let (suspension, posts) = makeSuspension()
+        var inBackground = false
+        let work = BackgroundWork(name: "recording-save", runner: tasks, suspension: suspension) { inBackground }
+        work.begin()
+        XCTAssertEqual(tasks.begun, ["recording-save"])
+
+        // The app leaves the foreground while the work runs: it holds.
+        inBackground = true
+        suspension.setBackground(true)
         XCTAssertFalse(suspension.isSuspended, "the work holds the replica")
+        XCTAssertTrue(posts.names.isEmpty)
 
         work.end()
         XCTAssertTrue(suspension.isSuspended, "the hold is released: back to rest")
-        XCTAssertEqual(posts.names.last, Database.suspendNotification)
+        XCTAssertEqual(posts.names, [Database.suspendNotification])
         XCTAssertTrue(tasks.ended.isEmpty, "no end for an invalid task")
 
         let other = suspension.hold()

@@ -105,7 +105,8 @@ final class BackgroundWork {
     private var task: UIBackgroundTaskIdentifier = .invalid
     private var release: (@MainActor () -> Void)?
     /// Begun and not yet ended or expired — tracked apart from `task`, which
-    /// stays `.invalid` when iOS grants no extra time but the hold is taken.
+    /// stays `.invalid` when iOS grants no extra time (the hold is then
+    /// taken only in the foreground).
     private var isRunning = false
     private let logger = Logger(subsystem: "WatchtowerMobile", category: "BackgroundWork")
 
@@ -139,14 +140,18 @@ final class BackgroundWork {
     }
 
     /// Begins the task and holds the replica. When iOS grants no extra time
-    /// (`.invalid`) the hold is still taken, so the work can finish while
-    /// the app runs, and released at the end like any other.
+    /// (`.invalid`) in the foreground the hold is still taken, so the work
+    /// can finish while the app runs, and released at the end like any
+    /// other. In the background no hold is taken: with no task there is no
+    /// expiration to suspend the replica again before iOS suspends the app.
     func begin() {
         guard !isRunning else { return }
         isRunning = true
         task = runner.begin(name: name) { [weak self] in self?.expire() }
         if task == .invalid {
-            logger.notice("\(self.name, privacy: .public): iOS granted no background time")
+            let background = isInBackground()
+            logger.notice("\(self.name, privacy: .public): iOS granted no background time (background: \(background, privacy: .public))")
+            if background { return }
         }
         release = suspension.hold()
     }
