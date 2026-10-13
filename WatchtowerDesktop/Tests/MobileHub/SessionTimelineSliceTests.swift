@@ -237,12 +237,12 @@ final class SessionTimelineSliceTests: XCTestCase {
         box.withLock { $0 = nil }
     }
 
-    /// Review M2: the Desktop's own ask and target writes reach the timeline
-    /// through the fast lane.
-    func testAskAndTargetWritesNudgeTheTimeline() {
-        let kinds = Dictionary(uniqueKeysWithValues: FastLane.observedTables.map { ($0.table, $0.kinds) })
-        XCTAssertEqual(kinds["owner_asks"]?.contains(.sessionTimeline), true)
-        XCTAssertEqual(kinds["targets"]?.contains(.sessionTimeline), true)
+    /// Review M2, amended by board #724: the Desktop's own ask and target
+    /// writes reach the timeline on the full tick, which diffs every kind;
+    /// the timeline is not urgent, so no observation nudges it.
+    func testAskAndTargetWritesReachTheTimelineOnTheFullTick() {
+        XCTAssertFalse(SlicePublisher.urgentKinds.contains(.sessionTimeline))
+        XCTAssertFalse(FastLane.observedTables.contains { $0.kinds.contains(.sessionTimeline) })
     }
 
     func testStatusHistoryOfALinkedTargetBeforeTheSessionIsExcluded() throws {
