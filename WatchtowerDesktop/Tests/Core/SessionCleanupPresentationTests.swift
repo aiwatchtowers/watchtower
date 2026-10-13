@@ -140,48 +140,48 @@ final class SessionCleanupPresentationTests: XCTestCase {
 
     // MARK: - Offer line and totals
 
-    private func worktree(_ key: String, _ bytes: Int64, known: Bool = true, keep reason: String? = nil) -> Item {
+    private func worktreeItem(_ key: String, _ bytes: Int64, known: Bool = true, keep reason: String? = nil) -> Item {
         Item(key: key, kind: .worktree, bytes: bytes, bytesKnown: known, action: reason == nil ? .remove : .keep,
              reason: reason.map(SessionCleanupReason.init(code:)))
     }
 
-    private func branch(_ key: String, keep reason: String? = nil) -> Item {
+    private func branchItem(_ key: String, keep reason: String? = nil) -> Item {
         Item(key: key, kind: .branch, action: reason == nil ? .remove : .keep,
              reason: reason.map(SessionCleanupReason.init(code:)))
     }
 
     func testOfferLineWithKeptItems() {
         let plan = SessionCleanupPlan(items: [
-            worktree("a", 7_000_000_000), worktree("b", 5_000_000_000),
-            branch("x"), branch("y"), branch("z"),
-            worktree("c", 1_000, keep: "uncommitted_changes")
+            worktreeItem("a", 7_000_000_000), worktreeItem("b", 5_000_000_000),
+            branchItem("x"), branchItem("y"), branchItem("z"),
+            worktreeItem("c", 1_000, keep: "uncommitted_changes")
         ])
         XCTAssertEqual(Presentation.offerLine(plan),
                        "Also clean up: 2 worktrees, 3 branches (~12 GB). Kept: 1 worktree — uncommitted changes.")
     }
 
     func testOfferLineWithoutKeptItems() {
-        let plan = SessionCleanupPlan(items: [branch("x")])
+        let plan = SessionCleanupPlan(items: [branchItem("x")])
         XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 branch.")
     }
 
     func testOfferLineIsNilWhenNothingIsRemovable() {
         XCTAssertNil(Presentation.offerLine(SessionCleanupPlan()))
-        let keptOnly = SessionCleanupPlan(items: [worktree("a", 1, keep: "locked"), branch("b", keep: "default_branch")])
+        let keptOnly = SessionCleanupPlan(items: [worktreeItem("a", 1, keep: "locked"), branchItem("b", keep: "default_branch")])
         XCTAssertNil(Presentation.offerLine(keptOnly))
     }
 
     func testOfferLineSizeVariants() {
-        let unknown = SessionCleanupPlan(items: [worktree("a", 0, known: false)])
+        let unknown = SessionCleanupPlan(items: [worktreeItem("a", 0, known: false)])
         XCTAssertEqual(Presentation.offerLine(unknown), "Also clean up: 1 worktree (size unknown).")
-        let some = SessionCleanupPlan(items: [worktree("a", 2_000_000_000), worktree("b", 0, known: false)])
+        let some = SessionCleanupPlan(items: [worktreeItem("a", 2_000_000_000), worktreeItem("b", 0, known: false)])
         XCTAssertEqual(Presentation.offerLine(some), "Also clean up: 2 worktrees (~2.0 GB, some sizes unknown).")
     }
 
     func testKeptReasonsAreListedOnceInFirstSeenOrder() {
         let items = [
-            branch("a", keep: "checked_out"), worktree("b", 1, keep: "uncommitted_changes"),
-            branch("c", keep: "checked_out"),
+            branchItem("a", keep: "checked_out"), worktreeItem("b", 1, keep: "uncommitted_changes"),
+            branchItem("c", keep: "checked_out"),
             Item(key: "p", kind: .process, action: .keep, reason: .known(.processRunning))
         ]
         XCTAssertEqual(Presentation.keptText(items), "1 worktree, 2 branches — checked out, uncommitted changes")
