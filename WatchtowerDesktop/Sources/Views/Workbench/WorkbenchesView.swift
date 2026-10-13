@@ -40,6 +40,9 @@ struct WorkbenchesView: View {
                 panel
                     .frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
                     .panelSurface()
+                    // The Undo of a session delete (board #480), at the
+                    // bottom of the left column at either level.
+                    .overlay(alignment: .bottom) { SessionDeleteToast(vm: vm) }
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
@@ -58,7 +61,14 @@ struct WorkbenchesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+            // With the panel hidden, the delete's Undo shows over the page.
+            .overlay(alignment: .bottomLeading) {
+                if !vm.panelVisible {
+                    SessionDeleteToast(vm: vm).frame(maxWidth: 320)
+                }
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: vm.pendingDeleteToast)
         // ⌥⌘S, the title row's toggle, "All Workbenches" and the switchers' "Show
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)

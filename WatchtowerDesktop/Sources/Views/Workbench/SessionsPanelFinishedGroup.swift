@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The sessions panel's session row (main list, finished group or the
 /// pinned row — they look alike, board #480): the row with its open asks,
-/// report line and closed-asks button, the tab while on screen.
+/// report line and closed-asks button, the tab while on screen; the ✕
+/// while hovered or under the panel cursor when its agent is not working.
 struct SessionsPanelSessionRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let projectID: Int64
@@ -11,6 +12,11 @@ struct SessionsPanelSessionRow: View {
     let actions: SessionRowActions
     let openAsks: Int
     let closedAsks: Int
+    /// The row under the mouse, kept by the panel: a click elsewhere in
+    /// the list is a click on its empty space.
+    @Binding var hoveredRow: Int64?
+    /// The panel has the keyboard (`SessionsPanelKeyView`).
+    let panelHasKeyboard: Bool
 
     var body: some View {
         TerminalSessionRow(
@@ -21,9 +27,39 @@ struct SessionsPanelSessionRow: View {
             reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
-                : nil
+                : nil,
+            quickDelete: isQuick ? quickDelete : nil,
+            showsDelete: hoveredRow == row.id || hasCursor,
+            hasCursor: hasCursor
         )
         .panelTab(isSelected: vm.panelSelection == .session(row.id))
+        .onHover { inside in
+            if inside {
+                hoveredRow = row.id
+            } else if hoveredRow == row.id {
+                hoveredRow = nil
+            }
+        }
+    }
+
+    private var isQuick: Bool {
+        SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true)
+    }
+
+    private var hasCursor: Bool {
+        panelHasKeyboard && vm.panelCursor == row.id
+    }
+
+    /// The ✕: the panel takes the keyboard (⌘⌫ goes on from the
+    /// neighbour); a state that turned busy since the ✕ showed asks first.
+    private func quickDelete() {
+        vm.requestPanelKeyboard()
+        let session = row.session
+        if vm.isQuickDelete(session) {
+            Task { await vm.delete(session) }
+        } else {
+            actions.delete(session)
+        }
     }
 }
 

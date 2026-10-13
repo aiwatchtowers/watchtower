@@ -178,6 +178,13 @@ final class WorkbenchesViewModel {
     /// of the owner keeps its main-list slot until another one comes on
     /// screen (`refreshStickySection`).
     var stickySection: SessionPanelSections.Sticky?
+    /// The sessions panel's keyboard highlight (spec
+    /// 2026-10-12-sessions-panel-design §4.4): the row ↑ ↓ move over and ⌘⌫
+    /// deletes, apart from the session on screen; moving it opens nothing.
+    var panelCursor: Int64?
+    /// Bumped to hand the keyboard to the sessions panel
+    /// (`requestPanelKeyboard`): its key view takes first responder.
+    var panelKeyboardSerial = 0
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
     /// Consecutive "no owner message yet" title answers per session; at

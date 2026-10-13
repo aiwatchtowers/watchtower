@@ -16,6 +16,10 @@ struct WorkbenchSessionsPanel: View {
     /// View-local: it is only this list's scroll. The view keeps its identity
     /// when another workbench is opened, so `project.id` resets it.
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
+    /// The panel holds the keyboard (`SessionsPanelKeyView`, board #480).
+    @State private var hasKeyboard = false
+    /// The row under the mouse: a list click off every row takes the keyboard.
+    @State private var hoveredRow: Int64?
 
     var body: some View {
         let sections = vm.panelSections(projectID: project.id)
@@ -29,6 +33,8 @@ struct WorkbenchSessionsPanel: View {
                 .padding(.top, 4)
                 .padding(.bottom, 2)
                 .accessibilityAddTraits(.isHeader)
+                .contentShape(Rectangle())
+                .onTapGesture { vm.requestPanelKeyboard() }
             // No List selection: its highlight would draw over the tab. The
             // tab follows `vm.panelSelection` (the session on screen) and a
             // row opens on its own click (`SessionRowActions.open`), which
@@ -43,6 +49,16 @@ struct WorkbenchSessionsPanel: View {
                     sessionList(sections)
                 }
                 .clearPlainList()
+                // ↑ ↓ Return Esc ⌘⌫ ⌘Z once a click on the list's empty
+                // space, the label, the group header, a ✕ or Undo gave the
+                // panel the keyboard; a row click still sends it into the
+                // terminal (ask #195).
+                .sessionsPanelKeys(vm: vm, projectID: project.id, actions: actions,
+                                   hasKeyboard: $hasKeyboard, hoveredRow: $hoveredRow)
+                .onChange(of: vm.panelCursor) { _, id in
+                    guard hasKeyboard else { return }
+                    proxy.followSelection(along: sections.panelScrollPath(to: id))
+                }
                 .onChange(of: selectedSessionID, initial: true) { _, id in
                     let target = scroll.panelScrollTarget(selecting: id, rows: scrollIDs)
                     proxy.followSelection(along: sections.panelScrollPath(to: target))
@@ -84,19 +100,22 @@ struct WorkbenchSessionsPanel: View {
         ForEach(sections.main) { row in
             SessionsPanelSessionRow(
                 vm: vm, projectID: project.id, row: row, actions: actions,
-                openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0
+                openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0,
+                hoveredRow: $hoveredRow, panelHasKeyboard: hasKeyboard
             )
         }
         .onMove { vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1) }
         if sections.finishedCount > 0 {
             SessionsPanelFinishedHeader(count: sections.finishedCount, expanded: sections.expanded) {
                 vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
+                vm.requestPanelKeyboard()
             }
             .id(SessionPanelSections.groupHeaderScrollID)
             ForEach(sections.finished + (sections.pinned.map { [$0] } ?? [])) { row in
                 SessionsPanelSessionRow(
                     vm: vm, projectID: project.id, row: row, actions: actions,
-                    openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0
+                    openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0,
+                    hoveredRow: $hoveredRow, panelHasKeyboard: hasKeyboard
                 )
             }
         }

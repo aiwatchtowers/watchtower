@@ -17,6 +17,14 @@ struct TerminalSessionRow: View {
     /// The line's mini progress bar (`WorkbenchesViewModel.reportProgress`).
     var reportProgress: Double?
     var closedAsks: OwnerAskClosedButton?
+    /// Deletes the row at once with Undo; set only when its agent is not
+    /// working (`SessionDeletePolicy.isQuick`, board #480). VoiceOver offers
+    /// it as an action; the ✕ shows while `showsDelete`.
+    var quickDelete: (() -> Void)?
+    /// The row is hovered or under the panel cursor.
+    var showsDelete = false
+    /// The panel has the keyboard and its cursor is on this row.
+    var hasCursor = false
 
     private var session: TerminalSession { row.session }
 
@@ -32,6 +40,17 @@ struct TerminalSessionRow: View {
                     .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
             }
             closedAsks
+            if showsDelete, let quickDelete {
+                SessionRowDeleteButton(onDelete: quickDelete)
+            }
+        }
+        .overlay {
+            if hasCursor {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(-3)
+                    .allowsHitTesting(false)
+            }
         }
         .listRowSeparator(.hidden)
         .contextMenu {
@@ -89,6 +108,9 @@ struct TerminalSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(session) }
+        .accessibilityActions {
+            if let quickDelete { Button("Delete session", action: quickDelete) }
+        }
         .help(row.state.live ? session.title : "Not running — click to start")
     }
 }
