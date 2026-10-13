@@ -66,7 +66,13 @@ type slackRecipient struct {
 	ChannelID string `json:"channel_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	Label     string `json:"label"`
-	ThreadTS  string `json:"thread_ts,omitempty"`
+	// Handle and RealName (a DM only) sit beside Label so the card can show
+	// who the person really is: Label prefers the display name, which anyone
+	// may set to look like someone else; the handle and the user id are
+	// unique within the workspace.
+	Handle   string `json:"handle,omitempty"`
+	RealName string `json:"real_name,omitempty"`
+	ThreadTS string `json:"thread_ts,omitempty"`
 }
 
 // storedSlackSend is the row's args after Normalize: the call plus either the
@@ -237,7 +243,8 @@ func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a 
 	// A DM addressed by its id or a link names the person, not the IM: the
 	// card must say who receives it.
 	rows, err := d.QueryContext(ctx, `SELECT c.id, c.name, c.type, COALESCE(c.dm_user_id, ''),
-			COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, '')
+			COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, ''),
+			COALESCE(u.name, ''), COALESCE(u.real_name, '')
 		FROM channels c LEFT JOIN users u ON u.id = c.dm_user_id
 		WHERE c.id LIKE ? || ':%' AND c.is_archived = 0
 		  AND NOT (c.type = 'dm' AND (COALESCE(u.is_deleted, 0) = 1 OR COALESCE(u.is_bot, 0) = 1))
@@ -249,13 +256,16 @@ func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a 
 	defer rows.Close()
 	var out []slackRecipient
 	for rows.Next() {
-		var id, chName, chType, dmUser, person string
-		if err := rows.Scan(&id, &chName, &chType, &dmUser, &person); err != nil {
+		var id, chName, chType, dmUser, person, handle, realName string
+		if err := rows.Scan(&id, &chName, &chType, &dmUser, &person, &handle, &realName); err != nil {
 			return nil, fmt.Errorf("resolving slack channel %q: %w", a.Channel, err)
 		}
 		_, raw, _ := slack.SplitAccountID(id)
 		r := slackRecipient{AccountID: acct.ID, Workspace: slackWorkspaceName(acct), ChannelID: raw, ThreadTS: thread}
 		r.UserID, r.Label = channelRecipientLabel(raw, chName, chType, dmUser, person)
+		if chType == "dm" {
+			r.Handle, r.RealName = handle, realName
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -353,7 +363,7 @@ func resolveSlackUser(ctx context.Context, d *db.DB, acct db.SlackAccount, who s
 			}
 		}
 		out = append(out, slackRecipient{AccountID: acct.ID, Workspace: slackWorkspaceName(acct),
-			ChannelID: rawDM, UserID: rawUser, Label: "@" + label})
+			ChannelID: rawDM, UserID: rawUser, Label: "@" + label, Handle: name, RealName: realName})
 	}
 	return out, rows.Err()
 }
