@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/mcpoauth"
+	"watchtower/internal/netsec"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
@@ -291,6 +292,13 @@ func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnecti
 	} else if secret != nil {
 		server.Env = secret.Env
 		server.Headers = secret.Headers
+	}
+	// Headers (a static secret or the OAuth bearer) never go to a remote
+	// host over plain http — a connection added before add refused that.
+	if server.Kind == "http" && len(server.Headers) > 0 {
+		if err := netsec.RequireSecureURL(server.URL, "a connection with headers"); err != nil {
+			return server, connectionUnmounted(database, c, err.Error())
+		}
 	}
 	return server, true
 }

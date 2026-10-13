@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/mcpoauth"
+	"watchtower/internal/netsec"
 )
 
 // connectionNamePattern constrains --name to characters that are safe to
@@ -259,6 +260,11 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("parsing secret JSON from stdin: %w", err)
 		}
 		secret = &sec
+	}
+	if kind == "http" && secret != nil && len(secret.Headers) > 0 {
+		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
+			return fmt.Errorf("--url: %w", err)
+		}
 	}
 
 	cfg, database, err := openConnectionsCmdDB(cmd)

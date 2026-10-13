@@ -521,3 +521,28 @@ func TestLoadExternalMCPServers_OAuth_SaveFailureFromOKRecordsRevoked(t *testing
 	require.Equal(t, "revoked", conn.Status)
 	require.Contains(t, conn.Error, "temp secret file")
 }
+
+// A connection stored before add refused it — static headers on plain http
+// to a remote host — is not mounted: the headers never leave, and the row
+// says why.
+func TestLoadExternalMCPServers_StaticHeadersOverRemoteHTTPNotMounted(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "plain", Kind: "http", URL: "http://mcp.example.com/mcp", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Save(&externalmcp.Secret{
+		Headers: map[string]string{"X-Api-Key": "static-key"},
+	}))
+
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.Contains(t, conn.Error, "must use https")
+}

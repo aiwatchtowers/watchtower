@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"watchtower/internal/netsec"
+
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav"
 	webcaldav "github.com/emersion/go-webdav/caldav"
@@ -22,8 +24,13 @@ type Client struct {
 	c *webcaldav.Client
 }
 
-// DialCalDAV creates a CalDAV client for the server at baseURL.
+// DialCalDAV creates a CalDAV client for the server at baseURL. Basic auth
+// sends the password with every request, so baseURL must be https unless it
+// names a loopback host.
 func DialCalDAV(baseURL, username, password string) (*Client, error) {
+	if err := netsec.RequireSecureURL(baseURL, "CalDAV basic auth"); err != nil {
+		return nil, fmt.Errorf("caldav: %w", err)
+	}
 	httpClient := webdav.HTTPClientWithBasicAuth(&http.Client{Timeout: httpTimeout}, username, password)
 	c, err := webcaldav.NewClient(httpClient, baseURL)
 	if err != nil {
