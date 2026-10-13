@@ -248,7 +248,7 @@ func TestDiscover_PlainOnlyPKCE_Rejected(t *testing.T) {
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
 		case "/.well-known/oauth-authorization-server":
-			meta := validASMetadata("")
+			meta := validASMetadata("http://" + r.Host)
 			meta.CodeChallengeMethodsSupported = []string{"plain"}
 			writeJSON(t, w, meta)
 		default:
@@ -403,17 +403,22 @@ func TestDiscover_RedirectToCleartextHost_Rejected(t *testing.T) {
 // redirect at all and resolves metadata from the destination, proving the
 // CheckRedirect policy doesn't just block everything).
 func TestDiscover_RedirectAcrossHosts_Allowed(t *testing.T) {
-	var realServer *httptest.Server
+	// The redirected-to document still names the issuer discovery asked
+	// for (the MCP server's origin here) — RFC 8414 §3.3 binds the issuer
+	// to the URL it was formed from, not to wherever a redirect lands.
+	var realServer, mcpServer *httptest.Server
 	realServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-authorization-server" {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(t, w, validASMetadata(realServer.URL))
+		meta := validASMetadata(realServer.URL)
+		meta.Issuer = mcpServer.URL
+		writeJSON(t, w, meta)
 	}))
 	defer realServer.Close()
 
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcpServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
@@ -443,7 +448,7 @@ func TestDiscover_RejectsInsecureAuthorizationEndpoint(t *testing.T) {
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
 		case "/.well-known/oauth-authorization-server":
-			meta := validASMetadata("https://as.example.com")
+			meta := validASMetadata("http://" + r.Host)
 			meta.AuthorizationEndpoint = "http://evil.example.com/authorize"
 			writeJSON(t, w, meta)
 		default:
@@ -470,7 +475,7 @@ func TestDiscover_RejectsInsecureTokenEndpoint(t *testing.T) {
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
 		case "/.well-known/oauth-authorization-server":
-			meta := validASMetadata("https://as.example.com")
+			meta := validASMetadata("http://" + r.Host)
 			meta.TokenEndpoint = "http://evil.example.com/token"
 			writeJSON(t, w, meta)
 		default:
@@ -497,7 +502,7 @@ func TestDiscover_RejectsInsecureRegistrationEndpointOnlyWhenPresent(t *testing.
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
 		case "/.well-known/oauth-authorization-server":
-			meta := validASMetadata("https://as.example.com")
+			meta := validASMetadata("http://" + r.Host)
 			meta.RegistrationEndpoint = "http://evil.example.com/register"
 			writeJSON(t, w, meta)
 		default:
@@ -521,7 +526,7 @@ func TestDiscover_RejectsInsecureRevocationEndpointOnlyWhenPresent(t *testing.T)
 		case "/.well-known/oauth-protected-resource":
 			http.NotFound(w, r)
 		case "/.well-known/oauth-authorization-server":
-			meta := validASMetadata("https://as.example.com")
+			meta := validASMetadata("http://" + r.Host)
 			meta.RevocationEndpoint = "http://evil.example.com/revoke"
 			writeJSON(t, w, meta)
 		default:
@@ -685,5 +690,79 @@ func TestDiscover_PathIssuer_UsesRFC8414WellKnownInsertion(t *testing.T) {
 	}
 	if got.AuthorizationEndpoint != asServer.URL+"/tenant1/authorize" {
 		t.Errorf("AuthorizationEndpoint = %q, want %q", got.AuthorizationEndpoint, asServer.URL+"/tenant1/authorize")
+	}
+}
+
+// RFC 8414 §3.3 (AS mix-up): the metadata document must name the issuer it was
+// fetched for. A protected-resource document pointing at one authorization
+// server whose metadata claims to be another — or claims nothing — is
+// refused; a lone trailing-slash difference is not a different issuer.
+func TestDiscover_IssuerMustMatchTheOneFetchedFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		issuer  func(asURL string) string
+		prEntry func(asURL string) string
+		wantErr bool
+	}{
+		{"exact", func(u string) string { return u }, func(u string) string { return u }, false},
+		{"trailing slash on the pointer", func(u string) string { return u }, func(u string) string { return u + "/" }, false},
+		{"trailing slash on the issuer", func(u string) string { return u + "/" }, func(u string) string { return u }, false},
+		{"another authorization server", func(string) string { return "https://other-as.example.com" }, func(u string) string { return u }, true},
+		{"issuer with a different path", func(u string) string { return u + "/tenant-b" }, func(u string) string { return u }, true},
+		{"no issuer", func(string) string { return "" }, func(u string) string { return u }, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var asServer *httptest.Server
+			asServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/oauth-authorization-server" {
+					http.NotFound(w, r)
+					return
+				}
+				meta := validASMetadata(asServer.URL)
+				meta.Issuer = c.issuer(asServer.URL)
+				writeJSON(t, w, meta)
+			}))
+			defer asServer.Close()
+
+			mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/.well-known/oauth-protected-resource" {
+					http.NotFound(w, r)
+					return
+				}
+				writeJSON(t, w, protectedResourceMetadata{AuthorizationServers: []string{c.prEntry(asServer.URL)}})
+			}))
+			defer mcpServer.Close()
+
+			_, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+			if c.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "issuer") {
+					t.Fatalf("Discover: err = %v, want an issuer mismatch", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+		})
+	}
+}
+
+// The openid-configuration fallback is held to the same rule.
+func TestDiscover_OpenIDFallback_IssuerMustMatch(t *testing.T) {
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		meta := validASMetadata("http://" + r.Host)
+		meta.Issuer = "https://other-as.example.com"
+		writeJSON(t, w, meta)
+	}))
+	defer mcpServer.Close()
+
+	_, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err == nil || !strings.Contains(err.Error(), "issuer") {
+		t.Fatalf("Discover: err = %v, want an issuer mismatch", err)
 	}
 }
