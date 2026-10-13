@@ -690,6 +690,7 @@ Verified at main `b21f2c44`. The analysis's numbers were taken at `c78edea4`; th
 ## 10. Security
 
 - **Data.** All content goes through `encryptedValues`, so it is end-to-end encrypted when the user has Advanced Data Protection on. Only `kind` and `modifiedAt` are plaintext. The replica sits under iOS Data Protection in the app group.
+  Superseded by app-level E2E, see docs/features/mobile-companion.md (2026-10-12).
 - **Closed command set.** The relay runs only the closed `ActionKind` set. No SQL, shell or arbitrary argv travels from the phone. Free text reaches Claude Code only through §6.5's brief and §6.6's line, both gated.
 - **Linking is the device consent.** Only a device that wrote the nonce of a QR shown on the Mac's screen is linked (§2.3). The QR is a bearer secret:
   - It is shown only on the Mac's screen, never logged, copied or sent.
