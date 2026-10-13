@@ -276,6 +276,23 @@ extension ReplicaStore {
         }
     }
 
+    /// Marks a saved recording `uploading`, unless the Mac's `received` echo
+    /// marked it delivered while the save was in flight: delivered is final.
+    /// Returns whether the row changed.
+    @discardableResult
+    func setPhoneRecordingUploading(id: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET state = ?, error_message = NULL, failure_kind = NULL
+                    WHERE recording_id = ? AND state != ?
+                    """,
+                arguments: [PhoneRecording.State.uploading.rawValue, id, PhoneRecording.State.delivered.rawValue]
+            )
+            return db.changesCount > 0
+        }
+    }
+
     /// Records a recording's seal in one update: the envelope, its wire name
     /// and the sealed file. Only an unsealed row takes it (a second seal of
     /// the same recording would send a different envelope); returns whether

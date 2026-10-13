@@ -225,6 +225,25 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(saves.filter { $0 == (try? self.wire(second.id)) }.count, 1)
     }
 
+    /// The Mac's `received` echo can land while the save that sent the
+    /// recording is still in flight (the actor is suspended in it): the row
+    /// stays delivered when the save returns, never back to `uploading`.
+    func testADeliveredRecordingStaysDeliveredAfterAnInFlightSave() async throws {
+        let spy = SpyTransport()
+        await spy.holdSaves()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let recording = try await register(uploader, file: try makeAudioFile())
+
+        let pass = Task { try await uploader.uploadPending() }
+        try await eventually { await spy.heldCount == 1 }
+        try await uploader.applyEcho(echo(for: recording, status: .received))
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
+        await spy.release()
+        _ = try await pass.value
+
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered, "delivered is final")
+    }
+
     /// The launch pass of a new process re-sends an `uploading` row once —
     /// the relaunch retry — and later passes leave it alone.
     func testTheLaunchPassResendsAnUploadingRowOnce() async throws {

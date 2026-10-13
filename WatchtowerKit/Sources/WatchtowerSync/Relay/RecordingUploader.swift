@@ -618,7 +618,8 @@ public actor RecordingUploader: RecordingUploadAcking {
                 }
                 continue
             }
-            try store.setPhoneRecordingState(id: row.id, state: .uploading)
+            // A `received` echo may have marked it delivered while the save was in flight: that stays.
+            try store.setPhoneRecordingUploading(id: row.id)
             // The save above replaced any queued save of this record (by name), so an older seal's file is no
             // longer pointed at. The row's seal is read again: whatever it stores now is kept too.
             let current = try store.phoneRecording(id: row.id)?.sealedFileURL(in: directory)
