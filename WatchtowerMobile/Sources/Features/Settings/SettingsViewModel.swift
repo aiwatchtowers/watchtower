@@ -108,17 +108,17 @@ final class SettingsViewModel {
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
     @ObservationIgnored private let health: ObservationHealth
-    @ObservationIgnored private let diagnostics: BatteryDiagnostics
+    @ObservationIgnored private let batteryDiagnostics: BatteryDiagnostics
 
-    init(health: ObservationHealth = .shared, diagnostics: BatteryDiagnostics = .shared) {
+    init(health: ObservationHealth = .shared, batteryDiagnostics: BatteryDiagnostics = .shared) {
         self.health = health
-        self.diagnostics = diagnostics
+        self.batteryDiagnostics = batteryDiagnostics
     }
 
     /// Re-reads the counters and the newest MetricKit report (neither is
     /// observable: the view calls this on appear and periodically).
     func refreshBattery() {
-        battery = BatteryReport(diagnostics: diagnostics)
+        battery = BatteryReport(diagnostics: batteryDiagnostics)
     }
 
     /// One row per replica observation that failed since launch, in name

@@ -130,7 +130,7 @@ final class BatteryDiagnosticsTests: XCTestCase {
     func testTheViewModelReadsTheDiagnosticsOnRefresh() throws {
         let counter = EnergyCounter(defaults: try makeDefaults())
         let metrics = MetricHistory(fileURL: nil)
-        let model = SettingsViewModel(health: ObservationHealth(), diagnostics: BatteryDiagnostics(counter: counter, metrics: metrics))
+        let model = SettingsViewModel(health: ObservationHealth(), batteryDiagnostics: BatteryDiagnostics(counter: counter, metrics: metrics))
         XCTAssertNil(model.battery, "nothing is read before the first refresh")
 
         counter.record(.silentPush)
