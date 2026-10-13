@@ -256,6 +256,7 @@ func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, 
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))
 	}
 	fmt.Fprintf(w, "  hook     %s\n", hookReportLine(rep.HookChanged, err))
+	fmt.Fprintf(w, "  cleanup  allow rule %s\n", hookReportLine(rep.CleanupPermissionChanged, err))
 	fmt.Fprintf(w, "  exclude  %d line(s) added\n", len(rep.Excluded))
 	if rep.MCPRegistered {
 		fmt.Fprintf(w, "  mcp      registered (%s, local scope)\n", devpack.WorkbenchMCPServerName)

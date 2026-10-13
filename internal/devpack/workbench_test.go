@@ -496,6 +496,9 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if len(f.registered) != 0 {
 		t.Fatalf("PROJ-02: the MCP registration survived: %v", f.registered)
 	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || st.CleanupPermission {
+		t.Fatalf("PROJ-02: the cleanup permission survived the removal: %+v err=%v", st, err)
+	}
 	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("a second removal must be a clean no-op: %v", err)
 	}

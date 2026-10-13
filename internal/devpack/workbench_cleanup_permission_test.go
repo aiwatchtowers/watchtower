@@ -1,10 +1,12 @@
 package devpack
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -178,5 +180,105 @@ func TestCleanupPermission_RemoveLeavesNoFileOrOnlyTheOwners(t *testing.T) {
 	}
 	if got := readTestFile(t, settingsFile(dir)); got != ownerOnly {
 		t.Fatalf("the owner's file was rewritten: %q", got)
+	}
+}
+
+// A malformed permissions shape is refused by the whole workbench setup like
+// a malformed hooks shape: no step writes, so the file stays byte-identical
+// (PROJ-04), and the status reports it as one error.
+func TestProj04_MalformedPermissionsRefusedByEveryWorkbenchStep(t *testing.T) {
+	for _, content := range []string{
+		`{"permissions":"x"}`,
+		`{"permissions":{"allow":"x"}}`,
+	} {
+		folder := fakeRepo(t)
+		writeTestFile(t, settingsFile(folder), content)
+		o := workbenchOpts(folder, newFakeClaude())
+		rep, err := InstallWorkbench(context.Background(), o)
+		if !errors.Is(err, ErrMalformedSettings) {
+			t.Fatalf("%s: install: expected ErrMalformedSettings, got %v", content, err)
+		}
+		if rep.HookChanged || rep.CleanupPermissionChanged {
+			t.Fatalf("%s: install reported a change on a refused file: %+v", content, rep)
+		}
+		if got := readTestFile(t, settingsFile(folder)); got != content {
+			t.Fatalf("%s: PROJ-04: install modified the file: %q", content, got)
+		}
+		if _, err := StatusWorkbench(context.Background(), o); !errors.Is(err, ErrMalformedSettings) {
+			t.Fatalf("%s: status: expected ErrMalformedSettings, got %v", content, err)
+		} else if n := strings.Count(err.Error(), ErrMalformedSettings.Error()); n != 1 {
+			t.Fatalf("%s: status must report the malformed file once, got %d times: %v", content, n, err)
+		}
+		if got := readTestFile(t, settingsFile(folder)); got != content {
+			t.Fatalf("%s: PROJ-04: status modified the file: %q", content, got)
+		}
+	}
+}
+
+// An entry the owner (or Claude Code) adds between our first read and the
+// write survives: the edit is applied to a fresh read.
+func TestCleanupPermission_WriteKeepsAnEntryAddedMeanwhile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		op   func(dir string) (bool, error)
+		seed string
+		want []any
+	}{
+		{"install", func(dir string) (bool, error) { return InstallCleanupPermission(dir, testCleanupBin) },
+			`{"permissions": {"allow": ["Read(*)"]}}`, []any{"Read(*)", "Bash(make test)", testCleanupRule}},
+		{"remove", RemoveCleanupPermission,
+			`{"permissions": {"allow": ["Read(*)", "` + testCleanupRule + `"]}}`, []any{"Read(*)", "Bash(make test)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestFile(t, settingsFile(dir), tc.seed)
+			prev := beforeCleanupRuleWrite
+			t.Cleanup(func() { beforeCleanupRuleWrite = prev })
+			beforeCleanupRuleWrite = func() {
+				var s map[string]any
+				if err := json.Unmarshal([]byte(readTestFile(t, settingsFile(dir))), &s); err != nil {
+					t.Fatalf("seam read: %v", err)
+				}
+				perms := s["permissions"].(map[string]any)
+				allow := perms["allow"].([]any)
+				perms["allow"] = append(allow[:1:1], append([]any{"Bash(make test)"}, allow[1:]...)...)
+				b, _ := json.Marshal(s)
+				writeTestFile(t, settingsFile(dir), string(b))
+			}
+			if changed, err := tc.op(dir); err != nil || !changed {
+				t.Fatalf("changed=%v err=%v", changed, err)
+			}
+			if got := allowList(t, dir); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("an entry added meanwhile was lost: got %#v want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Only an absolute watchtower bin's rule is ours: the owner's bare or
+// relative form is never rewritten by the install nor taken by the removal.
+func TestCleanupPermission_OwnerBareOrRelativeRuleIsNeverOurs(t *testing.T) {
+	owners := []any{
+		"Bash(watchtower workbench cleanup:*)",
+		"Bash(./bin/watchtower workbench cleanup:*)",
+		"Bash('bin dir/watchtower' workbench cleanup:*)",
+	}
+	dir := t.TempDir()
+	b, _ := json.Marshal(map[string]any{"permissions": map[string]any{"allow": owners}})
+	writeTestFile(t, settingsFile(dir), string(b))
+	if has, err := HasCleanupPermission(dir); err != nil || has {
+		t.Fatalf("an owner's rule counted as ours: has=%v err=%v", has, err)
+	}
+	if changed, err := InstallCleanupPermission(dir, testCleanupBin); err != nil || !changed {
+		t.Fatalf("install: changed=%v err=%v", changed, err)
+	}
+	if got, want := allowList(t, dir), append(slices.Clone(owners), testCleanupRule); !reflect.DeepEqual(got, want) {
+		t.Fatalf("install touched an owner's rule: got %#v want %#v", got, want)
+	}
+	if changed, err := RemoveCleanupPermission(dir); err != nil || !changed {
+		t.Fatalf("remove: changed=%v err=%v", changed, err)
+	}
+	if got := allowList(t, dir); !reflect.DeepEqual(got, owners) {
+		t.Fatalf("remove took an owner's rule: got %#v", got)
 	}
 }

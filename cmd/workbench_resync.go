@@ -44,13 +44,16 @@ func init() {
 type workbenchResyncJSON struct {
 	ID int64 `json:"id"`
 
-	IntegrationOK    bool     `json:"integration_ok"`
-	IntegrationError string   `json:"integration_error"`
-	Skill            string   `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign; "" = not installed
-	HooksAdded       bool     `json:"hooks_added"`
-	Excluded         []string `json:"excluded"`
-	MCPRegistered    bool     `json:"mcp_registered"`
-	MCPCommand       string   `json:"mcp_command"` // the manual registration when MCPRegistered is false
+	IntegrationOK    bool   `json:"integration_ok"`
+	IntegrationError string `json:"integration_error"`
+	Skill            string `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign; "" = not installed
+	HooksAdded       bool   `json:"hooks_added"`
+	// CleanupPermissionAdded: the cleanup allow rule was added or repaired
+	// (session cleanup §10); reported apart from hooks_added. Additive.
+	CleanupPermissionAdded bool     `json:"cleanup_permission_added"`
+	Excluded               []string `json:"excluded"`
+	MCPRegistered          bool     `json:"mcp_registered"`
+	MCPCommand             string   `json:"mcp_command"` // the manual registration when MCPRegistered is false
 
 	// The migration of a folder set up before the Workbench rename (spec
 	// 2026-10-02 §5.4). LegacySkill is a devpack state: removed, drifted or
@@ -174,6 +177,7 @@ func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyn
 	res.install = rep
 	res.Skill = string(rep.Skill.State)
 	res.HooksAdded = rep.HookChanged
+	res.CleanupPermissionAdded = rep.CleanupPermissionChanged
 	if rep.Excluded != nil {
 		res.Excluded = rep.Excluded
 	}

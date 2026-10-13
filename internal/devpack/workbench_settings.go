@@ -413,17 +413,27 @@ func readSettings(file string) (map[string]any, os.FileMode, bool, error) {
 }
 
 // eventGroupsOf returns the hooks object (a fresh one when absent, not yet
-// attached) and its groups for event, refusing a shape it does not know. The
-// whole file counts as malformed when any event we own an entry in has the
-// wrong shape, so a file one install step refuses is refused — and left
-// byte-identical — by every step (PROJ-04).
+// attached) and its groups for event, refusing a shape it does not know
+// (checkOwnedShapes).
 func eventGroupsOf(settings map[string]any, file, event string) (map[string]any, []any, error) {
-	for _, spec := range ownedHookSpecs {
-		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
-			return nil, nil, err
-		}
+	if err := checkOwnedShapes(settings, file); err != nil {
+		return nil, nil, err
 	}
 	return rawEventGroups(settings, file, event)
+}
+
+// checkOwnedShapes refuses the whole file when any part we own an entry in —
+// an event of ours under hooks, or permissions.allow (the cleanup rule) — has
+// the wrong shape, so a file one install step refuses is refused, and left
+// byte-identical, by every step (PROJ-04).
+func checkOwnedShapes(settings map[string]any, file string) error {
+	for _, spec := range ownedHookSpecs {
+		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
+			return err
+		}
+	}
+	_, _, err := allowRules(settings, file)
+	return err
 }
 
 func rawEventGroups(settings map[string]any, file, event string) (map[string]any, []any, error) {
