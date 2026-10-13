@@ -21,21 +21,25 @@ type SessionWorktree struct {
 }
 
 // HasSessionWorktree reports whether session sessionID already recorded
-// (root, branch). It reads in a read-only transaction, so it works on a
-// query_only handle and never takes the write lock.
-func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, branch string) (bool, error) {
+// (root, branch), and whether it is full — already at MaxSessionWorktrees
+// rows, so a new pair would not be recorded. It is one read in a read-only
+// transaction, so it works on a query_only handle and never takes the write
+// lock: the hook learns a pair is known, or the session full, without one.
+func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, branch string) (has, full bool, err error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
+		return false, false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var found bool
+	var n int
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM terminal_session_worktrees
-		WHERE session_id = ? AND root = ? AND branch = ?)`, sessionID, root, branch).Scan(&found)
+		WHERE session_id = ? AND root = ? AND branch = ?),
+		(SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ?)`,
+		sessionID, root, branch, sessionID).Scan(&has, &n)
 	if err != nil {
-		return false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
+		return false, false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
 	}
-	return found, nil
+	return has, n >= MaxSessionWorktrees, nil
 }
 
 // RecordSessionWorktree records (root, branch) for session sessionID at time

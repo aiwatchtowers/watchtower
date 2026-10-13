@@ -241,6 +241,10 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     package var branches: [WorkbenchGitBranch]
     package var branchesOK: Bool
     package var branchesError: String
+    /// `folder_not_a_worktree`, `folder_unreadable` or `git_failed` when the
+    /// `--folder` asked for could not be used (board #565); nothing listed.
+    package var refused: String
+    package var refusedDetail: String
 
     package init(
         workbenchID: Int64 = 0,
@@ -250,7 +254,9 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         current: String = "",
         branches: [WorkbenchGitBranch] = [],
         branchesOK: Bool = true,
-        branchesError: String = ""
+        branchesError: String = "",
+        refused: String = "",
+        refusedDetail: String = ""
     ) {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
@@ -260,6 +266,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         self.branches = branches
         self.branchesOK = branchesOK
         self.branchesError = branchesError
+        self.refused = refused
+        self.refusedDetail = refusedDetail
     }
 
     package init(from decoder: Decoder) throws {
@@ -272,14 +280,17 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         branches = try c.decodeIfPresent([WorkbenchGitBranch].self, forKey: .branches) ?? []
         branchesOK = try c.decodeIfPresent(Bool.self, forKey: .branchesOK) ?? true
         branchesError = try c.decodeIfPresent(String.self, forKey: .branchesError) ?? ""
+        refused = try c.decodeIfPresent(String.self, forKey: .refused) ?? ""
+        refusedDetail = try c.decodeIfPresent(String.self, forKey: .refusedDetail) ?? ""
     }
 
     package enum CodingKeys: String, CodingKey {
-        case git, note, current, branches
+        case git, note, current, branches, refused
         case workbenchID = "workbench_id"
         case gitAvailable = "git_available"
         case branchesOK = "branches_ok"
         case branchesError = "branches_error"
+        case refusedDetail = "refused_detail"
     }
 }
 

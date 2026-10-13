@@ -10,7 +10,7 @@ struct UsagesView: View {
     let root: CodeRoot
 
     var body: some View {
-        if let model = usages.usages(for: root.workbenchID) {
+        if let model = usages.usages(for: root) {
             VStack(alignment: .leading, spacing: 0) {
                 header(model)
                 Divider()
@@ -70,8 +70,8 @@ struct UsagesView: View {
     /// matches stream in.
     private func expansion(of path: String) -> Binding<Bool> {
         Binding(
-            get: { usages.usages(for: root.workbenchID)?.isCollapsed(path) == false },
-            set: { usages.setCollapsed(!$0, path: path, workbenchID: root.workbenchID) }
+            get: { usages.usages(for: root)?.isCollapsed(path) == false },
+            set: { usages.setCollapsed(!$0, path: path, root: root) }
         )
     }
 }

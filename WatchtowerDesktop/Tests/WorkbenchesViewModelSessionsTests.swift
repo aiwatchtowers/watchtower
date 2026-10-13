@@ -78,8 +78,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM() -> WorkbenchesViewModel {
-        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+    private func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { [weak self] id in
             guard let self else { throw CancellationError() }
@@ -124,6 +124,62 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     }
 
     private var launches: [TerminalLaunch] { processes.flatMap(\.launches) }
+
+    // MARK: - New sessions start in the main folder (board #565)
+
+    /// The page shows a session placed in a worktree of `acme` (its
+    /// recorded cwd, read through `workbench git status --folder`).
+    private func showWorktreeSession(_ vm: WorkbenchesViewModel, projectID p: Int64) async throws {
+        let worktree = folder.appendingPathComponent("acme/.claude/worktrees/mobile-a", isDirectory: true)
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        let row = try await insertSession(.init(projectID: p, kind: .claude, title: "wt", folderPath: acme,
+                                                claudeSessionID: UUID().uuidString.lowercased()))
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ? WHERE id = ?",
+                           arguments: [worktree.path, "2026-10-12 10:00:00.000", row.id])
+        }
+        await vm.reload()
+        let project = try XCTUnwrap(vm.summaries.first { $0.id == p }?.project)
+        vm.makeGitWatcher = { _, _, onChange in SessionPlaceViewModelTests.FakeWatcher(onChange: onChange) }
+        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitNotificationCenter = NotificationCenter()
+        await vm.startGitWatching(project: project)
+        var layout = WorkspaceLayout.default
+        layout.primary = .session(row.id)
+        vm.setLayout(layout, projectID: p)
+        let deadline = Date().addingTimeInterval(5)
+        while vm.activeCodeRoot(project: project).isMain, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(vm.activeCodeRoot(project: project).isMain, "the page shows the worktree")
+        vm.stopGitWatching(projectID: p)
+    }
+
+    func testPlusStartsInTheMainFolderWhileAWorktreeSessionIsShown() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM(runner: SessionPlaceViewModelTests.RoutingRunner(workbenchID: p))
+        try await showWorktreeSession(vm, projectID: p)
+
+        await vm.newSession(projectID: p)
+
+        let started = try await rows(p).filter { $0.title != "wt" }
+        XCTAssertEqual(started.map(\.folderPath), [acme])
+        XCTAssertEqual(launches.map(\.currentDirectory), [acme])
+    }
+
+    func testWorkOnItStartsInTheMainFolder() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        let vm = makeVM(runner: SessionPlaceViewModelTests.RoutingRunner(workbenchID: p))
+        try await showWorktreeSession(vm, projectID: p)
+
+        await vm.workOn(targetID: target, targetText: "Ship it")
+
+        let all = try await rows(p)
+        let row = try XCTUnwrap(all.first { $0.targetID == target })
+        XCTAssertEqual(row.folderPath, acme)
+        XCTAssertEqual(launches.map(\.currentDirectory), [acme])
+    }
 
     // MARK: - Work on it
 

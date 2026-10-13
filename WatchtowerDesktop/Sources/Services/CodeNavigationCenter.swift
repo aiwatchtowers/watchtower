@@ -56,8 +56,9 @@ struct CodeDefinitionRequest: Equatable {
 @MainActor
 @Observable
 final class CodeNavigationCenter {
-    /// Per workbench (one Files pane each).
-    private(set) var histories: [Int64: CodeNavigationHistory] = [:]
+    /// Per code root (#565): a Back entry is a path of the root it was
+    /// recorded in, so a worktree's history never replays into another root.
+    private(set) var histories: [CodeRoot: CodeNavigationHistory] = [:]
     /// "No definition of `w`", shown above the editor for `noticeDuration`.
     private(set) var notices: [Int64: String] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
@@ -215,12 +216,18 @@ final class CodeNavigationCenter {
     /// origin does; nothing when the page has not reported it.
     func recordJumpFromCurrentLocation(root: CodeRoot) {
         guard let origin = currentLocation(root) else { return }
-        histories[root.workbenchID, default: CodeNavigationHistory()].recordJump(from: origin)
+        histories[root, default: CodeNavigationHistory()].recordJump(from: origin)
     }
 
     private func jump(to target: CodeNavLocation, from origin: CodeNavLocation, root: CodeRoot) {
-        histories[root.workbenchID, default: CodeNavigationHistory()].recordJump(from: origin)
+        histories[root, default: CodeNavigationHistory()].recordJump(from: origin)
         workbenches?.showLocation(target, root: root, keepingTab: true)
+    }
+
+    /// A removed worktree's Back/Forward history goes: nothing of it can
+    /// be shown again (board #565, spec §7).
+    func codeRootRemoved(_ root: CodeRoot) {
+        histories[root] = nil
     }
 
     private func showNotice(_ text: String, workbenchID: Int64) {
@@ -273,12 +280,12 @@ final class CodeNavigationCenter {
 
     // MARK: History
 
-    func canGoBack(workbenchID: Int64?) -> Bool {
-        workbenchID.flatMap { histories[$0]?.canGoBack } ?? false
+    func canGoBack(root: CodeRoot?) -> Bool {
+        root.flatMap { histories[$0]?.canGoBack } ?? false
     }
 
-    func canGoForward(workbenchID: Int64?) -> Bool {
-        workbenchID.flatMap { histories[$0]?.canGoForward } ?? false
+    func canGoForward(root: CodeRoot?) -> Bool {
+        root.flatMap { histories[$0]?.canGoForward } ?? false
     }
 
     /// ⌃⌘← (and the jump bar's ‹).
@@ -292,9 +299,9 @@ final class CodeNavigationCenter {
     }
 
     private func step(root: CodeRoot, _ move: (inout CodeNavigationHistory, CodeNavLocation?) -> CodeNavLocation?) {
-        guard var history = histories[root.workbenchID] else { return }
+        guard var history = histories[root] else { return }
         guard let target = move(&history, currentLocation(root)) else { return }
-        histories[root.workbenchID] = history
+        histories[root] = history
         workbenches?.showLocation(target, root: root, keepingTab: false)
     }
 

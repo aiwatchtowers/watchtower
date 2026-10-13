@@ -11,8 +11,11 @@ struct WorkbenchBranchCrumb: View {
     @State private var showsPopover = false
 
     var body: some View {
-        let error = vm.gitStatusErrors[project.id]
-        if let status = vm.gitStatus[project.id], WorkbenchBranchPresentation.showsButton(status) {
+        // The root the page shows: the session's worktree or the main
+        // folder (board #565).
+        let root = vm.activeCodeRoot(project: project)
+        let error = vm.gitStatusErrors[root]
+        if let status = vm.gitStatus[root], WorkbenchBranchPresentation.showsButton(status) {
             HStack(spacing: 4) {
                 Text("›")
                     .font(.caption)
@@ -21,15 +24,15 @@ struct WorkbenchBranchCrumb: View {
                 WorkbenchBranchButton(
                     status: status,
                     staleError: error,
-                    pendingBranch: vm.pendingBranchConfirmation[project.id]?.branch,
-                    stashEntry: vm.gitStashNotes[project.id]?.entry,
-                    busy: vm.switchingBranch[project.id] != nil
+                    pendingBranch: vm.pendingBranchConfirmation[root]?.branch,
+                    stashEntry: vm.gitStashNotes[root]?.entry,
+                    busy: vm.switchingBranch[root] != nil
                 ) {
                     // A pending confirmation shows as the popover's dialog.
                     showsPopover.toggle()
                 }
                 .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
-                    WorkbenchBranchPopover(vm: vm, project: project)
+                    WorkbenchBranchPopover(vm: vm, project: project, root: root)
                         .popoverSurface()
                 }
             }
@@ -39,6 +42,14 @@ struct WorkbenchBranchCrumb: View {
                 .foregroundStyle(.orange)
                 .help(error)
                 .accessibilityLabel("Git status unavailable")
+        } else if let note = vm.gitScopeNotes[root] {
+            // Go did not place the session's folder in its worktree: no
+            // menu there, and no error either (board #565).
+            Image(systemName: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(note)
+                .accessibilityLabel("Branch menu unavailable")
         }
     }
 }
