@@ -290,43 +290,43 @@ final class FetchCadenceWiringTests: XCTestCase {
     func testAPushPastTheDeadlineCompletesOnceAndTheFetchGoesOn() async throws {
         let wired = try await makeWired()
         let deadline = TickSleeper()
+        let tasks = FakeBackgroundTasks()
         var completions: [FetchOutcome] = []
-        var fetchEnded = false
         wired.remote.holding = true
 
-        PushCompletion.race(
+        PushCompletion.serve(
+            wired.env, arrivedAt: wired.clock.now, inForeground: false,
+            startWork: BackgroundWork.starter(runner: tasks, suspension: DatabaseSuspension { _ in }) { true },
             sleep: { try await deadline.sleep($0) },
-            fetch: {
-                let outcome = await wired.env.handlePush(inForeground: false)
-                fetchEnded = true
-                return outcome
-            },
-            outcomeAtDeadline: { wired.env.lastFetchFailed ? .failed : .noData },
             completion: { completions.append($0) }
         )
         try await poll({ wired.remote.heldCount == 1 && deadline.waitingCount == 1 }, "the race did not start")
         deadline.tick()
         try await poll({ completions.count == 1 }, "the deadline never completed the push")
         XCTAssertEqual(completions, [.noData])
+        XCTAssertTrue(tasks.ended.isEmpty, "the work outlives the completion")
         wired.remote.release()
-        try await poll({ fetchEnded }, "the fetch was dropped at the deadline")
+        try await poll({ tasks.ended.count == 1 }, "the fetch was dropped at the deadline")
 
         XCTAssertEqual(completions, [.noData], "the late fetch completes nothing")
     }
 
-    func testThePushDeadlineReportsFailedAfterAFailedFetch() async throws {
+    /// The deadline reports the push's own state, not an unrelated fetch's:
+    /// a pull that failed before the push does not turn it into `.failed`.
+    func testThePushDeadlineIgnoresAnUnrelatedFailedFetch() async throws {
         let wired = try await makeWired()
         wired.remote.failing = true
-        _ = await wired.env.refresh(.pull)
-        XCTAssertTrue(wired.env.lastFetchFailed)
+        let pulled = await wired.env.refresh(.pull)
+        XCTAssertFalse(pulled)
+        wired.remote.failing = false
         let deadline = TickSleeper()
         var completions: [FetchOutcome] = []
         wired.remote.holding = true
 
-        PushCompletion.race(
+        PushCompletion.serve(
+            wired.env, arrivedAt: wired.clock.now, inForeground: false,
+            startWork: BackgroundWork.starter(runner: FakeBackgroundTasks(), suspension: DatabaseSuspension { _ in }) { true },
             sleep: { try await deadline.sleep($0) },
-            fetch: { await wired.env.handlePush(inForeground: false) },
-            outcomeAtDeadline: { wired.env.lastFetchFailed ? .failed : .noData },
             completion: { completions.append($0) }
         )
         try await poll({ wired.remote.heldCount == 1 && deadline.waitingCount == 1 }, "the race did not start")
@@ -334,7 +334,113 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ completions.count == 1 }, "the deadline never completed the push")
         wired.remote.release()
 
-        XCTAssertEqual(completions, [.failed])
+        XCTAssertEqual(completions, [.noData])
+    }
+
+    /// The push's arrival, stamped by the app delegate before any hop, is
+    /// the `since` its light fetch is covered from.
+    func testThePushIsCoveredFromItsArrivalStamp() async throws {
+        let wired = try await makeWired()
+        let arrivedAt = wired.clock.now
+        wired.clock.advance(3)
+
+        _ = await wired.env.handlePush(at: arrivedAt, inForeground: false)
+
+        XCTAssertEqual(wired.remote.depths.last, .push(since: arrivedAt, pollOnFallback: false))
+    }
+
+    // MARK: - Launch into the background (board #724)
+
+    /// A demo environment built in the background (`startsActive: false`)
+    /// whose CloudKit reach is held until released.
+    private func makeBackgroundLaunch(
+        startWork: BackgroundWork.Starter? = nil
+    ) throws -> (AppEnvironment, TickSleeper, MutableClock, RemoteFetchRecorder, EnergyCounter) {
+        let sleeper = TickSleeper()
+        let clock = MutableClock()
+        let remote = RemoteFetchRecorder()
+        remote.holding = true
+        let counter = EnergyCounter(defaults: try makeDefaults())
+        let env = try AppEnvironment(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            transportKind: .inMemoryDemo,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            startsActive: false,
+            uploadRetriesAllowed: false,
+            now: { clock.now },
+            remoteFetch: { try await remote.fetch($0) },
+            sleep: { try await sleeper.sleep($0) },
+            energy: counter,
+            startWork: startWork
+        )
+        addTeardownBlock { @MainActor in
+            env.stop()
+            remote.release()
+        }
+        return (env, sleeper, clock, remote, counter)
+    }
+
+    /// Built in the background: no safety poll after the boot or after a
+    /// push; the scene's first active phase makes it active and starts the
+    /// poll with a full fetch.
+    func testAnEnvironmentBuiltInTheBackgroundPollsOnlyOnceActive() async throws {
+        let (env, sleeper, _, remote, _) = try makeBackgroundLaunch()
+        XCTAssertFalse(env.isActive)
+        try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
+        XCTAssertEqual(remote.depths, [.full], "no push: the launch keeps the full reach")
+        remote.holding = false
+        remote.release()
+        await env.waitForBoot()
+        XCTAssertTrue(env.isBootstrapped)
+        XCTAssertFalse(env.isLooping, "no poll after a background boot")
+
+        _ = await env.handlePush(inForeground: false)
+        XCTAssertFalse(env.isLooping, "no poll after a background push")
+        XCTAssertEqual(sleeper.requested, [], "nothing ever waited on the poll")
+
+        env.setActive(RootTabView.isActive(in: .active))
+        XCTAssertTrue(env.isActive)
+        XCTAssertTrue(env.isLooping)
+        try await poll({ sleeper.waitingCount == 1 }, "the poll never started")
+    }
+
+    /// A push that arrives before the boot has started the transport: it
+    /// waits for the launch fetch, which serves it with the light reach (no
+    /// forced zone poll); the push gets that outcome, and its work ends
+    /// only once the boot has ended. The first activation fetches in full.
+    func testAPushBeforeTheBootIsServedByALightLaunchFetch() async throws {
+        let tasks = FakeBackgroundTasks()
+        let suspension = DatabaseSuspension { _ in }
+        let (env, sleeper, clock, remote, counter) = try makeBackgroundLaunch()
+        let arrivedAt = clock.now
+        var completions: [FetchOutcome] = []
+        PushCompletion.serve(
+            env, arrivedAt: arrivedAt, inForeground: false,
+            startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
+            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            completion: { completions.append($0) }
+        )
+        XCTAssertEqual(tasks.begun, ["silent-push-fetch"])
+
+        try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
+        XCTAssertEqual(remote.depths, [.push(since: arrivedAt, pollOnFallback: false)],
+                       "one light fetch serves the launch and the push")
+        remote.release()
+        try await poll({ completions == [.newData] }, "the push did not get the launch fetch's outcome")
+        await env.waitForBoot()
+        try await poll({ tasks.ended.count == 1 }, "the push's work never ended")
+        XCTAssertTrue(env.isBootstrapped)
+        XCTAssertEqual(counter.counts(daysAgo: 0)[.fetchLaunch], 1)
+        XCTAssertEqual(counter.counts(daysAgo: 0)[.fetchPush] ?? 0, 0, "the push rode the launch fetch")
+        XCTAssertFalse(env.isLooping)
+
+        // Opened within seconds: the light launch owes a full fetch.
+        clock.advance(1)
+        remote.holding = false
+        env.setActive(true)
+        try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 }, "the first activation did not fetch in full")
     }
 }
 

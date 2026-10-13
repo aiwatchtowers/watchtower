@@ -185,13 +185,12 @@ final class AppEnvironment {
     static let pushEngineGrace: TimeInterval = 2
 
     /// false while the app is not active (inactive or in the background):
-    /// the safety poll is paused.
-    private(set) var isActive = true
+    /// the safety poll is paused. Seeded from the app's state at launch, so
+    /// a launch into the background (a silent push) never polls; the
+    /// scene's first active phase sets it (`setActive`).
+    private(set) var isActive: Bool
     /// true while the safety poll runs.
     var isLooping: Bool { loopTask != nil }
-    /// The latest finished fetch failed: a silent push's deadline reports
-    /// `.failed` rather than `.noData` (`PushCompletion`).
-    var lastFetchFailed: Bool { lastFinishedFetch?.outcome == .failed }
     /// Fetch cycles the loop has begun (a cancelled loop begins none).
     @ObservationIgnored private(set) var fetchCycles = 0
 
@@ -230,6 +229,15 @@ final class AppEnvironment {
     /// owed if that fetch fails before it hydrates.
     @ObservationIgnored private var applyOwed = false
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    /// The boot's first fetch, begun as soon as the transport has started
+    /// (`beginLaunchFetch`).
+    @ObservationIgnored private var launchFetchTask: Task<FetchOutcome, Never>?
+    /// The first silent push that arrived before the launch fetch began: a
+    /// launch into the background for it takes the light reach.
+    @ObservationIgnored private var pushBeforeLaunch: PushArrival?
+    /// The launch took the light reach (a push launched the app): the first
+    /// activation fetches in full whatever the last fetch's age.
+    @ObservationIgnored private var fullFetchOwed = false
     /// Ends the boot's background work (`BackgroundWork`): run once, when the boot ends or the
     /// environment stops.
     @ObservationIgnored private var endBootWork: (@MainActor () -> Void)?
@@ -264,6 +272,7 @@ final class AppEnvironment {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
             let transportStore = try TransportStore(path: try Self.liveTransportStorePath())
+            let active = UIApplication.shared.applicationState == .active
             try self.init(
                 transport: CloudKitTransport(
                     store: transportStore, scope: scope, hubID: hubID, role: .phone, energy: energy
@@ -273,6 +282,8 @@ final class AppEnvironment {
                 hubID: hubID,
                 linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory,
+                startsActive: active,
+                uploadRetriesAllowed: active,
                 replicaObservesSuspension: true,
                 energy: energy,
                 startWork: BackgroundWork.starter()
@@ -283,6 +294,7 @@ final class AppEnvironment {
                 replicaPath: try Self.applicationSupportDirectory().appendingPathComponent("replica.sqlite").path,
                 transportKind: .inMemoryDemo,
                 recordingsDirectory: recordingsDirectory,
+                startsActive: UIApplication.shared.applicationState == .active,
                 energy: energy
             )
         }
@@ -299,6 +311,9 @@ final class AppEnvironment {
     /// `CloudKitTransport` (none for any other transport). `linkedDevice`
     /// is the saved link (the demo kind is always `DemoSeed.device`).
     /// `energy` counts the fetches and the upload attempts.
+    /// `startsActive` seeds `isActive`: the app passes whether it launched
+    /// active (`UIApplication`), so a launch into the background starts no
+    /// safety poll; tests default to an active app.
     /// `uploadRetriesAllowed` is whether the app starts active (nil reads
     /// `UIApplication`; a cold launch reads not active there, and the
     /// scene's first active phase opens the gate through `setActive`).
@@ -314,6 +329,7 @@ final class AppEnvironment {
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
+        startsActive: Bool = true,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         replicaObservesSuspension: Bool = false,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
@@ -331,6 +347,7 @@ final class AppEnvironment {
         self.sleep = sleep
         self.now = now
         self.energy = energy
+        isActive = startsActive
         self.transport = transport
         self.transportKind = transportKind
         self.hubID = hubID
@@ -387,6 +404,9 @@ final class AppEnvironment {
         self.uploader = uploader
         hold = uploader.directory.map(RecordingHold.init(recordingsDirectory:))
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
+        if !startsActive {
+            recorder.setForeground(false)
+        }
         feed = RelayFeed(
             transport: transport,
             store: store,
@@ -407,7 +427,10 @@ final class AppEnvironment {
         // before a push can end its own work, until the boot is done.
         endBootWork = startWork?("app-boot")
         adoption = Task { await adoptHeld() }
-        let transportStart = Task { await startTransport() }
+        let transportStart = Task {
+            await startTransport()
+            beginLaunchFetch()
+        }
         transportStartTask = transportStart
         bootstrapTask = Task {
             await transportStart.value
@@ -420,6 +443,21 @@ final class AppEnvironment {
     private func finishBootWork() {
         endBootWork?()
         endBootWork = nil
+    }
+
+    /// The launch fetch, begun right after the transport started, so a push
+    /// that arrived before it is served by it (`handlePush`). In the
+    /// foreground it takes the full reach; a launch into the background for
+    /// a push takes the push's light reach, without the forced zone poll,
+    /// and the first activation then fetches in full.
+    private func beginLaunchFetch() {
+        guard !stopped else { return }
+        var depth = RemoteFetchDepth.full
+        if !isActive, let push = pushBeforeLaunch {
+            depth = .push(since: push.at, pollOnFallback: false)
+            fullFetchOwed = true
+        }
+        launchFetchTask = startFetch(.launch, depth: depth)
     }
 
     /// Returns once the boot has ended (a silent push keeps its own work
@@ -473,7 +511,7 @@ final class AppEnvironment {
     /// After `startTransport`: a first fetch so the screens have content
     /// at once, the launch sweeps, then the safety poll.
     private func bootstrap() async {
-        await refresh(.launch)
+        _ = await launchFetchTask?.value
         // An action the Mac never answered within 24 h is failed locally, so
         // the queued count never counts it forever.
         do {
@@ -489,7 +527,8 @@ final class AppEnvironment {
         // only, the upload pass with the relaunch retry: recordings saved
         // but not yet acknowledged go out again when their backoff is due
         // (the hub's processed set absorbs duplicates). A launch into the
-        // background uploads nothing; the first activation runs the pass.
+        // background uploads nothing; the first activation runs the pass
+        // (`setUploadRetries`; one opened during the boot is covered here).
         await recorder.recoverOnLaunch()
         if uploadRetries.isOpen {
             await recorder.uploadPending()
@@ -566,9 +605,22 @@ final class AppEnvironment {
     /// follow-up fetch behind it. In the foreground the safety poll restarts
     /// from that fetch, and a fallback fetch polls the zones; the
     /// background keeps the light fetch and starts no poll. Each caller gets
-    /// the outcome of the fetch that served its push.
-    func handlePush(inForeground: Bool) async -> FetchOutcome {
-        await fetch(for: PushArrival(serial: fetchSerial, at: now(), inForeground: inForeground))
+    /// the outcome of the fetch that served its push. `at` is when the push
+    /// arrived (the `AppDelegate` stamps it before any hop; nil: now): the
+    /// CloudKit run that covers it began then or later. A push arriving
+    /// before the launch fetch began is served by it, and a launch into the
+    /// background for it takes the light reach.
+    func handlePush(at arrival: Date? = nil, inForeground: Bool) async -> FetchOutcome {
+        let push = PushArrival(serial: fetchSerial, at: arrival ?? now(), inForeground: inForeground)
+        if launchFetchTask == nil {
+            if pushBeforeLaunch == nil {
+                pushBeforeLaunch = push
+            }
+            // The launch fetch begins once the engine has started: the push
+            // never fetches through an engine not yet built.
+            await transportStartTask?.value
+        }
+        return await fetch(for: push)
     }
 
     /// The fetch serving `push`: one begun after it, else one follow-up
@@ -611,11 +663,17 @@ final class AppEnvironment {
     }
 
     /// Begins one fetch now and tracks it as the running one. A push
-    /// fetch takes the light CloudKit reach, any other the full one.
-    private func startFetch(_ trigger: FetchTrigger, push: PushArrival? = nil) -> Task<FetchOutcome, Never> {
+    /// fetch takes the light CloudKit reach, any other the full one unless
+    /// `depth` says otherwise.
+    private func startFetch(
+        _ trigger: FetchTrigger, push: PushArrival? = nil, depth: RemoteFetchDepth? = nil
+    ) -> Task<FetchOutcome, Never> {
         fetchSerial += 1
         let serial = fetchSerial
-        let depth: RemoteFetchDepth = push.map { .push(since: $0.at, pollOnFallback: $0.inForeground) } ?? .full
+        let depth = depth ?? push.map { .push(since: $0.at, pollOnFallback: $0.inForeground) } ?? .full
+        if depth == .full {
+            fullFetchOwed = false
+        }
         let task = Task { [weak self] () -> FetchOutcome in
             guard let self else { return .failed }
             let outcome = await self.performFetch(trigger, depth: depth)
@@ -649,7 +707,9 @@ final class AppEnvironment {
             applyOwed = false
         }
         if let remoteError {
-            Self.logger.error("fetch failed: \(remoteError.localizedDescription, privacy: .public)")
+            Self.logger.error(
+                "CloudKit fetch failed (\(String(describing: trigger), privacy: .public), \(Self.describe(depth), privacy: .public)): \(remoteError.localizedDescription, privacy: .public)"
+            )
             if owed {
                 await applyBuffered()
             }
@@ -658,7 +718,9 @@ final class AppEnvironment {
         do {
             hydrated = try await hydrator.hydrateOnce()
         } catch {
-            Self.logger.error("fetch failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error(
+                "replica hydrate failed (\(String(describing: trigger), privacy: .public), \(Self.describe(depth), privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
             return .failed
         }
         lastSyncAt = now()
@@ -670,6 +732,14 @@ final class AppEnvironment {
         }
         onFetched?()
         return hydrated.applied + hydrated.deleted + routed > 0 ? .newData : .noData
+    }
+
+    /// A depth for the log: `full` or `push`.
+    nonisolated private static func describe(_ depth: RemoteFetchDepth) -> String {
+        switch depth {
+        case .full: "full"
+        case let .push(_, poll): poll ? "push+poll" : "push"
+        }
     }
 
     /// What the engine already buffered lands in the replica and the relay
@@ -713,7 +783,7 @@ final class AppEnvironment {
             restartLoop(firstCycle: nil)
             return
         }
-        let recent = lastSyncAt.map { now().timeIntervalSince($0) < Self.foregroundRefetchAfter } ?? false
+        let recent = !fullFetchOwed && (lastSyncAt.map { now().timeIntervalSince($0) < Self.foregroundRefetchAfter } ?? false)
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {
             Task { await applyBuffered() }
@@ -721,14 +791,12 @@ final class AppEnvironment {
     }
 
     /// Opens or closes the uploader's retries with the scene phase. Each
-    /// opening runs an upload pass once the boot is done: due retries go
-    /// out on the return to the foreground (the boot's own pass covers a
-    /// gate already open when it runs).
+    /// opening after the boot runs an upload pass: due retries go out on
+    /// the return to the foreground. The boot's own pass covers a gate
+    /// open when it reaches it, so a cold launch runs one pass, not two.
     private func setUploadRetries(_ open: Bool) {
-        guard uploadRetries.set(open), open else { return }
-        let boot = bootstrapTask
+        guard uploadRetries.set(open), open, isBootstrapped, !stopped else { return }
         Task { [weak self] in
-            await boot?.value
             guard let self, !self.stopped else { return }
             await self.recorder.uploadPending()
         }

@@ -74,7 +74,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // (`AppEnvironment.handlePush`), and each push gets its completion
         // when the fetch serving it ends or at iOS's deadline, whichever
         // comes first (`PushCompletion`). In the foreground a fallback fetch
-        // also polls the zones.
+        // also polls the zones. The arrival is stamped here, before any
+        // hop, so the CloudKit run that covers it is one begun after it.
+        let arrivedAt = Date()
         let inForeground = application.applicationState == .active
         Task { @MainActor in
             guard let env = Self.root?.env else {
@@ -82,23 +84,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completionHandler(.noData)
                 return
             }
-            // A background task keeps the app running until the fetch
-            // returns, past a completion sent at the deadline, and the
-            // replica is held usable meanwhile (`BackgroundWork`).
-            let endWork = BackgroundWork.starter()("silent-push-fetch")
-            PushCompletion.race(
-                fetch: {
-                    let outcome = await env.handlePush(inForeground: inForeground)
-                    // A push that launched the app may be served before the
-                    // boot's own writes ran: the work lasts until the boot
-                    // ends too, without holding back the completion.
-                    Task { @MainActor in
-                        await env.waitForBoot()
-                        endWork()
-                    }
-                    return outcome
-                },
-                outcomeAtDeadline: { env.lastFetchFailed ? .failed : .noData },
+            PushCompletion.serve(
+                env, arrivedAt: arrivedAt, inForeground: inForeground,
+                startWork: BackgroundWork.starter(),
                 completion: { completionHandler($0.backgroundFetchResult) }
             )
         }
@@ -115,9 +103,8 @@ enum PushCompletion {
     /// Under iOS's ~30 s, with room for the completion itself.
     nonisolated static let deadline: Duration = .seconds(25)
 
-    /// `outcomeAtDeadline` is what the deadline reports (`.noData`, or
-    /// `.failed` after a failed fetch). `sleep` is the deadline's wait
-    /// (tests step it).
+    /// `outcomeAtDeadline` is what the deadline reports. `sleep` is the
+    /// deadline's wait (tests step it).
     static func race(
         deadline: Duration = Self.deadline,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
@@ -143,6 +130,37 @@ enum PushCompletion {
                 completion(outcome)
             }
         }
+    }
+
+    /// One silent push on `env`: a background task keeps the app running
+    /// until the fetch returns, past a completion sent at the deadline, and
+    /// the replica is held usable meanwhile (`BackgroundWork`). A push that
+    /// launched the app may be served before the boot's own writes ran: the
+    /// work lasts until the boot ends too, without holding back the
+    /// completion. The deadline reports `.noData`: the push's own fetch has
+    /// not ended then, so nothing says it failed.
+    static func serve(
+        _ env: AppEnvironment,
+        arrivedAt: Date,
+        inForeground: Bool,
+        startWork: BackgroundWork.Starter,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        completion: @escaping @MainActor (FetchOutcome) -> Void
+    ) {
+        let endWork = startWork("silent-push-fetch")
+        race(
+            sleep: sleep,
+            fetch: {
+                let outcome = await env.handlePush(at: arrivedAt, inForeground: inForeground)
+                Task { @MainActor in
+                    await env.waitForBoot()
+                    endWork()
+                }
+                return outcome
+            },
+            outcomeAtDeadline: { .noData },
+            completion: completion
+        )
     }
 
     /// The once-flag: the first `claim()` wins.
