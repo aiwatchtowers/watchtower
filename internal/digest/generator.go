@@ -108,7 +108,7 @@ func validateModelArgs(model string) []string {
 const StdinThreshold = 32 * 1024
 
 // generateArgs builds the CLI args for a digest generation request; when
-// userMessage exceeds StdinThreshold (or stdinOnly is set) it is returned as
+// userMessage exceeds StdinThreshold or begins with '-' (or stdinOnly is set) it is returned as
 // stdin content instead ("-p" with no value makes claude read the prompt from
 // stdin). A non-empty systemPromptFile replaces the inline --system-prompt
 // (see Generate for when the prompt is written to a file).
@@ -116,7 +116,9 @@ const StdinThreshold = 32 * 1024
 func generateArgs(model, systemPrompt, systemPromptFile, userMessage string, stdinOnly bool) ([]string, string) {
 	stdin := ""
 	args := []string{"-p"}
-	if stdinOnly || len(userMessage) > StdinThreshold {
+	// A message beginning with '-' would be parsed as a flag (-c is
+	// --continue), so it travels on stdin like a large one.
+	if stdinOnly || len(userMessage) > StdinThreshold || strings.HasPrefix(userMessage, "-") {
 		stdin = userMessage
 	} else {
 		args = append(args, userMessage)
