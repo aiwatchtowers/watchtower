@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -373,20 +374,38 @@ public final class TransportStore: Sendable {
 
     // MARK: - Fetched-asset stash
 
+    /// The largest fetched asset the store stashes: a phone recording at the
+    /// uploader's cap, sealed (the largest asset any record legitimately
+    /// carries; a meeting transcript's is smaller).
+    public static let maximumStashBytes = RecordingUploader.maximumSealedAssetBytes
+
     /// Copies a fetched CKAsset file into the store's durable asset
     /// directory, named after the record so a re-fetch overwrites rather
     /// than accumulates. Returns the stashed URL, or nil when there is
-    /// nowhere to stash (in-memory store) or the copy failed — callers keep
-    /// the original (temporary) URL in that case, best-effort. A relay
-    /// upload's consumer (the desktop hub) deletes the stashed file once
-    /// ingested; a data-zone stash goes at `compactEvents(in: .data, …)`.
-    func stashAsset(from url: URL, recordName: String) -> URL? {
+    /// nowhere to stash (in-memory store), the file is over `maxBytes` or
+    /// the copy failed — callers keep the original (temporary) URL in that
+    /// case, best-effort. A relay upload's consumer (the desktop hub)
+    /// deletes the stashed file once ingested; a data-zone stash goes at
+    /// `compactEvents(in: .data, …)`.
+    ///
+    /// The record name is server-supplied and unauthenticated here (the
+    /// stash runs before anything is opened), so the file name is its
+    /// SHA-256 with the zone, in hex: never a path of the sender's choosing.
+    func stashAsset(
+        from url: URL, recordName: String, zone: CloudZoneID, maxBytes: Int64 = TransportStore.maximumStashBytes
+    ) -> URL? {
         guard let assetsDirectory else { return nil }
-        // Record names are `recupload-<uuid>` shaped, but sanitize anyway:
-        // a path separator in a name must not escape the stash directory.
-        let safeName = recordName.replacingOccurrences(of: "/", with: "_")
-        let destination = assetsDirectory.appendingPathComponent(safeName)
+        let destination = assetsDirectory.appendingPathComponent(Self.stashFileName(recordName: recordName, zone: zone))
+        guard destination.deletingLastPathComponent().standardizedFileURL == assetsDirectory.standardizedFileURL else {
+            logger.error("stash path for \(recordName, privacy: .public) left the stash directory: not stashed")
+            return nil
+        }
         do {
+            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            guard size <= maxBytes else {
+                logger.warning("fetched asset for \(recordName, privacy: .public) is \(size) bytes, over the stash cap: not stashed")
+                return nil
+            }
             try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
@@ -400,6 +419,12 @@ public final class TransportStore: Sendable {
                 """)
             return nil
         }
+    }
+
+    /// The stash file name of a record: hex SHA-256 of zone and name.
+    static func stashFileName(recordName: String, zone: CloudZoneID) -> String {
+        let digest = SHA256.hash(data: Data("\(zone.rawValue)\u{0}\(recordName)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - CK system fields

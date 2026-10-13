@@ -73,6 +73,8 @@ final class RelayProcessor: Sendable {
         let ingest: RecordingIngest
         /// The ingest timeout's clock.
         var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        /// The sealed asset size past which an upload is refused undecrypted: the phone's own cap.
+        var maxSealedBytes: Int64 = RecordingUploader.maximumSealedAssetBytes
     }
 
     /// Where phone `device` records go (`MobileLinkCenter.handleDevice`), and
@@ -629,6 +631,7 @@ final class RelayProcessor: Sendable {
     }
 
     static let missingAudioMessage = "The recording's audio did not reach your Mac. Send it again."
+    static let tooLargeMessage = RecordingUploader.tooLargeMessage
 
     /// Decrypts the sealed asset, validates it and runs the ingest under its
     /// timeout. A failure leaves nothing behind (the transcriber's phone
@@ -643,6 +646,13 @@ final class RelayProcessor: Sendable {
         guard let sealed = asset.file, let descriptor = asset.descriptor,
               FileManager.default.fileExists(atPath: sealed.path) else {
             return .failed(.notFound, message: Self.missingAudioMessage)
+        }
+        // The phone's own cap, sealed: anything larger is never decrypted (disk and time a linked phone could
+        // otherwise spend at will).
+        let sealedSize = (try? FileManager.default.attributesOfItem(atPath: sealed.path)[.size] as? Int64) ?? 0
+        guard sealedSize <= uploads.maxSealedBytes else {
+            logger.warning("recording upload \(upload.recordName, privacy: .public) is \(sealedSize) sealed bytes: refused")
+            return .failed(.invalidParams, message: Self.tooLargeMessage)
         }
         // Beside the stash (the same volume, cleaned with it); hidden, created owner-only (0600) before the first
         // plaintext byte (`ChunkedAssetCipher.decryptFile`), removed below on every path. On an ingest timeout the

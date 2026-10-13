@@ -900,9 +900,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // purged after this callback; the buffered event outlives it, so
             // stash a durable copy and point the event at that. A failed
             // stash keeps the temporary URL — best-effort, the consumer's
-            // validation surfaces a vanished file as a failed ingest.
+            // validation surfaces a vanished file as a failed ingest. An
+            // asset over the stash cap is not copied (its consumer refuses
+            // it by size).
             guard let assetURL = record.assetFileURL,
-                  let stashed = store.stashAsset(from: assetURL, recordName: record.recordName) else {
+                  let stashed = store.stashAsset(from: assetURL, recordName: record.recordName, zone: record.zone) else {
                 return record
             }
             return CloudRecord(

@@ -80,15 +80,55 @@ final class TransportAssetTests: XCTestCase {
 
         let source = dir.appendingPathComponent("staged.m4a")
         try Data("audio-bytes".utf8).write(to: source)
-        let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "recupload-S1"))
+        let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "recupload-S1", zone: .relay))
         XCTAssertEqual(try Data(contentsOf: stashed), Data("audio-bytes".utf8))
-        XCTAssertEqual(stashed.lastPathComponent, "recupload-S1")
+        XCTAssertEqual(stashed.lastPathComponent, TransportStore.stashFileName(recordName: "recupload-S1", zone: .relay))
 
         // A re-fetch overwrites rather than accumulates.
         try Data("newer-bytes".utf8).write(to: source)
-        let restashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "recupload-S1"))
+        let restashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "recupload-S1", zone: .relay))
         XCTAssertEqual(restashed, stashed)
         XCTAssertEqual(try Data(contentsOf: restashed), Data("newer-bytes".utf8))
+    }
+
+    /// The stash name is never the server-supplied record name (target 149): `..` named the folder holding the
+    /// store, `.` the stash itself, and both were removed before the copy.
+    func testStashNamesThatAreDirectoriesStayInsideTheStash() throws {
+        let (store, dir) = try fileStore()
+        let storeDB = dir.appendingPathComponent("store.sqlite")
+        let source = dir.appendingPathComponent("staged.m4a")
+        try Data("audio".utf8).write(to: source)
+        let kept = try XCTUnwrap(store.stashAsset(from: source, recordName: "recupload-K", zone: .relay))
+
+        for name in ["..", ".", "../..", "a/../../b", ""] {
+            let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: name, zone: .relay), name)
+            XCTAssertEqual(
+                stashed.deletingLastPathComponent().standardizedFileURL,
+                kept.deletingLastPathComponent().standardizedFileURL, name)
+            XCTAssertNotEqual(stashed.lastPathComponent, name)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeDB.path), "the store's folder survived")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "the stash survived")
+    }
+
+    /// The same name in the two zones stashes to two files.
+    func testStashNamesAreScopedByZone() {
+        XCTAssertNotEqual(
+            TransportStore.stashFileName(recordName: "x-1", zone: .data),
+            TransportStore.stashFileName(recordName: "x-1", zone: .relay))
+    }
+
+    /// An asset over the cap is not copied (target 149).
+    func testAnOversizedAssetIsNotStashed() throws {
+        let (store, dir) = try fileStore()
+        let source = dir.appendingPathComponent("big.m4a")
+        try Data(repeating: 1, count: 2_048).write(to: source)
+
+        XCTAssertNil(store.stashAsset(from: source, recordName: "recupload-B", zone: .relay, maxBytes: 1_024))
+        let stash = try XCTUnwrap(store.stashDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: stash.appendingPathComponent(TransportStore.stashFileName(recordName: "recupload-B", zone: .relay)).path))
+        XCTAssertNotNil(store.stashAsset(from: source, recordName: "recupload-B", zone: .relay, maxBytes: 2_048))
     }
 
     // MARK: - Data-zone stash cleanup at compaction
@@ -107,7 +147,7 @@ final class TransportAssetTests: XCTestCase {
     private func bufferFetched(_ store: TransportStore, dir: URL, name: String, contents: String) throws -> URL {
         let staged = dir.appendingPathComponent("staged-\(UUID().uuidString).json")
         try Data(contents.utf8).write(to: staged)
-        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: name))
+        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: name, zone: .data))
         try store.bufferChanged([CloudRecord(
             recordName: name, zone: .data, kind: "meeting_transcript", modifiedAt: stamp,
             payload: Data("{}".utf8), assetFileURL: stashed
@@ -223,7 +263,7 @@ final class TransportAssetTests: XCTestCase {
         let (store, dir) = try fileStore()
         let staged = dir.appendingPathComponent("staged-\(UUID().uuidString).m4a")
         try Data("audio".utf8).write(to: staged)
-        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: "recupload-A1"))
+        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: "recupload-A1", zone: .relay))
         try store.bufferChanged([CloudRecord(
             recordName: "recupload-A1", zone: .relay, kind: "recording_upload", modifiedAt: stamp,
             payload: Data("{}".utf8), assetFileURL: stashed
@@ -248,7 +288,7 @@ final class TransportAssetTests: XCTestCase {
 
     func testStashAssetOnInMemoryStoreReturnsNil() throws {
         let store = try TransportStore.inMemory()
-        XCTAssertNil(store.stashAsset(from: URL(fileURLWithPath: "/tmp/x.m4a"), recordName: "recupload-X"))
+        XCTAssertNil(store.stashAsset(from: URL(fileURLWithPath: "/tmp/x.m4a"), recordName: "recupload-X", zone: .relay))
     }
 
     // MARK: - CKRecord mapping
