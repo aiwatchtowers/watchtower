@@ -197,6 +197,31 @@ extension HubSyncState {
         }
     }
 
+    // MARK: - Relay seq high-water mark (D4)
+
+    /// The highest envelope seq a linked phone's relay records carried; nil before the first one. Diagnostics only:
+    /// D4 gates replays with the ledger, the authenticated age and the rollback guard, never with this mark.
+    func deviceLastSeq(_ deviceID: String) throws -> UInt64? {
+        try queue.read { db in
+            let stored = try Int64.fetchOne(
+                db, sql: "SELECT last_seq FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            return stored.map { UInt64(bitPattern: $0) }
+        }
+    }
+
+    /// `last_seq = max(last_seq, seq)` for a linked phone (no row: nothing). Stored by bit pattern, compared here.
+    func raiseDeviceLastSeq(_ deviceID: String, to seq: UInt64) throws {
+        try queue.write { db in
+            let stored = try Row.fetchOne(
+                db, sql: "SELECT last_seq FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            guard let stored else { return }
+            if let current = stored["last_seq"] as Int64?, UInt64(bitPattern: current) >= seq { return }
+            try db.execute(
+                sql: "UPDATE devices SET last_seq = ? WHERE device_id = ? COLLATE NOCASE",
+                arguments: [Int64(bitPattern: seq), deviceID])
+        }
+    }
+
     // MARK: - Relay rollback guard (F3)
 
     /// The highest (epoch, seq) recorded for one relay wire name and sender; nil when none was.

@@ -822,9 +822,11 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Device ids are UUID text; the lookup ignores case, like the key rows (`deviceKeyRow`).
     func linkedDevice(_ deviceID: String) throws -> LinkedDevice? {
         try queue.read { db in
-            try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID]).map(Self.device)
+            try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+                .map(Self.device)
         }
     }
 

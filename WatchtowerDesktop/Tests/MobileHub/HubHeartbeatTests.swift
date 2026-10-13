@@ -47,7 +47,7 @@ final class HubHeartbeatTests: XCTestCase {
             timing: .init(tick: .seconds(3600), fastWindow: .seconds(3600), fastSpacing: .seconds(3600))
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(),
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(),
             hubID: try sidecar.ensureHubID()
         ) { instant }
         let hub = MobileHubService(
@@ -225,7 +225,7 @@ final class HubHeartbeatTests: XCTestCase {
         let sidecar = try HubSyncState.inMemory()
         let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport.sealing(), sources: [])
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         let hub = MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
@@ -318,7 +318,7 @@ final class HubHeartbeatTests: XCTestCase {
         let sidecar = try HubSyncState.inMemory()
         let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: nil, sources: [])
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: nil, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         let hub = MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,

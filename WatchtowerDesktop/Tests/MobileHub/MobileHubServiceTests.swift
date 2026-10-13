@@ -21,7 +21,7 @@ final class MobileHubServiceTests: XCTestCase {
     override func setUp() async throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
         sidecar = try HubSyncState.inMemoryPerHub()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         defaults = UserDefaults(suiteName: suiteName)
     }
@@ -50,7 +50,7 @@ final class MobileHubServiceTests: XCTestCase {
             assets: assets
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,

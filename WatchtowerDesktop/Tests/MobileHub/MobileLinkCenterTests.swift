@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 
 /// A settable clock shared by the center and the test.
@@ -310,42 +311,59 @@ final class MobileLinkCenterTests: XCTestCase {
 
     func testTwoPhonesWithTheirOwnCodesAreBothLinkedAndRemovingOneLeavesTheOtherApplied() async throws {
         let first = try await center.issueCode()
-        try await handle(try deviceRecord("phone-a", nonce: first.nonce))
+        try await handle(try deviceRecord(phoneA, nonce: first.nonce))
         clock.advance(30)
         let second = try await center.issueCode()
-        try await handle(try deviceRecord("phone-b", nonce: second.nonce))
-        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a", "phone-b"])
+        try await handle(try deviceRecord(phoneB, nonce: second.nonce))
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA, phoneB])
 
-        try await center.remove(deviceID: "phone-a")
+        try await center.remove(deviceID: phoneA)
 
-        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-b"])
-        XCTAssertEqual(Array(try grants().keys), ["phone-b"], "the removed phone's grant leaves the zone")
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneB])
+        XCTAssertEqual(Array(try grants().keys), [phoneB], "the removed phone's grant leaves the zone")
         let transport = StubHubTransport()
-        let fromA = try probe(from: "phone-a")
-        let fromB = try probe(from: "phone-b")
+        let fromA = try probe(from: phoneA)
+        let fromB = try probe(from: phoneB)
         try await transport.save([fromA, fromB])
         _ = try await RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: relaySide(transport), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         ).processOnce()
 
         XCTAssertEqual(try lastEcho(fromA, in: transport)?.reason, .deviceNotLinked)
         XCTAssertEqual(try lastEcho(fromB, in: transport)?.status, .applied)
     }
 
+    /// The two test phones with relay keys (`TestE2E`): the sidecar ids their payloads carry.
+    private let phoneA = TestE2E.deviceID.uuidString
+    private let phoneB = TestE2E.strangerDeviceID.uuidString
+    private let strangerID = TestE2E.strangerDeviceID.uuidString
+
+    /// The hub's sealing transport over `transport`, holding both test phones' relay keys: the sidecar alone
+    /// decides which of them is linked.
+    private func relaySide(_ transport: StubHubTransport) -> SecureTransport {
+        let keys = TestE2E.hub()
+        keys.link(TestE2E.strangerIdentity)
+        return testSecureTransport(transport, keys: keys)
+    }
+
+    /// A probe naming `deviceID`, sealed by the test phone of that id (the paired phone for any other id).
     private func probe(from deviceID: String, creator: String? = nil) throws -> CloudRecord {
         let action = ActionRequestPayload(
             id: UUID().uuidString, kind: .probe, entityID: nil, params: ["nonce": .string("n-\(deviceID)")],
             createdAt: Date(), deviceID: deviceID
         )
         let record = try CloudRecordFactory.record(for: action, modifiedAt: Date())
-        return CloudRecord(
-            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
-            payload: record.payload, creatorUserRecordName: creator
-        )
+        return try TestRelayPhone.seal(
+            CloudRecord(
+                recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+                payload: record.payload, creatorUserRecordName: creator
+            ),
+            as: deviceID == phoneB ? TestE2E.strangerIdentity : TestE2E.deviceIdentity)
     }
 
     private func lastEcho(_ record: CloudRecord, in transport: StubHubTransport) throws -> ActionRequestPayload? {
-        try transport.saved.last { $0.record.recordName == record.recordName }.map { try decodeAction($0.record) }
+        try transport.saved.last { $0.record.recordName == record.recordName && $0.record != record }
+            .map { try decodeAction($0.record) }
     }
 
     // MARK: - Shared scope
@@ -406,13 +424,16 @@ final class MobileLinkCenterTests: XCTestCase {
             return .applied()
         }
         let action = ActionRequestPayload(
-            id: UUID().uuidString, kind: .sessionReportRequest, entityID: "7", params: [:], createdAt: Date(), deviceID: "phone-x"
+            id: UUID().uuidString, kind: .sessionReportRequest, entityID: "7", params: [:], createdAt: Date(), deviceID: strangerID
         )
         let transport = StubHubTransport()
-        let record = try CloudRecordFactory.record(for: action, modifiedAt: Date())
+        let record = try TestRelayPhone.seal(
+            try CloudRecordFactory.record(for: action, modifiedAt: Date()), as: TestE2E.strangerIdentity)
         try await transport.save([record])
 
-        _ = try await RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme").processOnce()
+        _ = try await RelayProcessor(
+            transport: relaySide(transport), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme"
+        ).processOnce()
 
         let echo = try XCTUnwrap(try lastEcho(record, in: transport))
         XCTAssertEqual(echo.status, .failed)
@@ -421,15 +442,15 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     func testASharedPhonesActionWrittenByAnotherCreatorFailsDeviceNotLinked() async throws {
-        try sidecar.linkTestDevice("phone-a", scope: .shared, userRecordName: "_colleague-a")
+        try sidecar.linkTestDevice(phoneA, scope: .shared, userRecordName: "_colleague-a")
         let transport = StubHubTransport()
-        let forged = try probe(from: "phone-a", creator: "_stranger")
-        let genuine = try probe(from: "phone-a", creator: "_colleague-a")
-        let unknown = try probe(from: "phone-a")
+        let forged = try probe(from: phoneA, creator: "_stranger")
+        let genuine = try probe(from: phoneA, creator: "_colleague-a")
+        let unknown = try probe(from: phoneA)
         try await transport.save([forged, genuine, unknown])
 
         _ = try await RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: relaySide(transport), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         ).processOnce()
 
         XCTAssertEqual(try lastEcho(forged, in: transport)?.reason, .deviceNotLinked)
@@ -440,10 +461,11 @@ final class MobileLinkCenterTests: XCTestCase {
     func testTheRelayHandsDeviceRecordsToTheLinkCenter() async throws {
         let code = try await center.issueCode()
         let transport = StubHubTransport()
-        try await transport.save([try deviceRecord("phone-a", nonce: code.nonce)])
+        // A device record reaches the relay sealed by a phone the hub holds keys for (Task 13 routes hellos).
+        try await transport.save([try TestRelayPhone.seal(try deviceRecord("phone-a", nonce: code.nonce))])
         let center = try XCTUnwrap(self.center)
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
+            transport: relaySide(transport), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
             deviceRecords: .init { try await center.handleDevice($0) }
         )
 
@@ -797,7 +819,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let record = try probe(from: deviceID, creator: creator)
         try await transport.save([record])
         _ = try await RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: relaySide(transport), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         ).processOnce()
         return try lastEcho(record, in: transport)
     }
@@ -812,32 +834,32 @@ final class MobileLinkCenterTests: XCTestCase {
     /// #1: the phone's own unlink (`unlinked: true`, no nonce) removes it.
     func testAPhonesOwnUnlinkRemovesItAndItsLaterActionsFailDeviceNotLinked() async throws {
         let code = try await center.issueCode()
-        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        try await handle(try deviceRecord(phoneA, nonce: code.nonce))
 
-        try await handle(try deviceRecord("phone-a", nonce: nil, unlinked: true))
+        try await handle(try deviceRecord(phoneA, nonce: nil, unlinked: true))
 
         XCTAssertTrue(center.devices.isEmpty)
-        XCTAssertNil(try sidecar.linkedDevice("phone-a"))
+        XCTAssertNil(try sidecar.linkedDevice(phoneA))
         XCTAssertTrue(try grants().isEmpty, "its grant leaves the zone")
-        let echo = try await relayedProbe(from: "phone-a")
+        let echo = try await relayedProbe(from: phoneA)
         XCTAssertEqual(echo?.reason, .deviceNotLinked)
     }
 
     /// #1: in `shared` scope the phone has left the shares before the hub
     /// reads its unlink; the missing participant is no error.
     func testASharedPhonesUnlinkAfterItLeftTheSharesRemovesIt() async throws {
-        try await linkSharedPhone()
+        try await linkSharedPhone(phoneA)
         for zone in [CloudZoneID.data, .relay] {
             try await shares.removeParticipants(in: zone) { _ in true }
         }
 
         try await handle(try deviceRecord(
-            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_colleague-a", unlinked: true
+            phoneA, nonce: nil, scope: .shared, user: "_colleague-a", creator: "_colleague-a", unlinked: true
         ))
 
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertTrue(try grants().isEmpty)
-        let echo = try await relayedProbe(from: "phone-a", creator: "_colleague-a")
+        let echo = try await relayedProbe(from: phoneA, creator: "_colleague-a")
         XCTAssertEqual(echo?.reason, .deviceNotLinked)
     }
 
@@ -857,19 +879,19 @@ final class MobileLinkCenterTests: XCTestCase {
 
     /// #1: an unlink another iCloud user wrote removes nothing.
     func testAForgedUnlinkInSharedScopeRemovesNothing() async throws {
-        try await linkSharedPhone()
+        try await linkSharedPhone(phoneA)
         shares.join("_stranger")
 
         try await handle(try deviceRecord(
-            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_stranger", unlinked: true
+            phoneA, nonce: nil, scope: .shared, user: "_colleague-a", creator: "_stranger", unlinked: true
         ))
         try await handle(try deviceRecord(
-            "phone-a", nonce: nil, scope: .shared, user: "_stranger", creator: "_stranger", unlinked: true
+            phoneA, nonce: nil, scope: .shared, user: "_stranger", creator: "_stranger", unlinked: true
         ))
 
-        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a"])
-        XCTAssertEqual(try grants()["phone-a"]?.linked, true)
-        let echo = try await relayedProbe(from: "phone-a", creator: "_colleague-a")
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
+        XCTAssertEqual(try grants()[phoneA]?.linked, true)
+        let echo = try await relayedProbe(from: phoneA, creator: "_colleague-a")
         XCTAssertEqual(echo?.status, .applied)
     }
 

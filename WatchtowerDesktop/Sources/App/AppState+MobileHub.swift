@@ -134,7 +134,7 @@ extension AppState {
         let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
         mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            transport: storage.secure, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
             deviceRecords: linkCenter?.relayRoute
         )

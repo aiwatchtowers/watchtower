@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerE2ETesting
@@ -214,8 +215,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
         try await inner.save(records)
         let now = ContinuousClock.now
         let applied = records.compactMap { record -> String? in
-            guard record.kind == RelayRecordKind.action.rawValue,
-                  let action = try? decodeAction(record), action.status == .applied else { return nil }
+            guard record.zone == .relay, let action = try? decodeAction(record), action.status == .applied else { return nil }
             return action.id
         }
         lock.withLock {
@@ -377,7 +377,11 @@ func awaitHubCondition(
     XCTFail(message, file: file, line: line)
 }
 
-/// A pending phone action record, `createdAt` = `age` seconds before `now`.
+/// The paired test phone's id (`TestE2E.deviceID`) as payloads and the sidecar spell it.
+let testPhoneID = TestE2E.deviceID.uuidString
+
+/// A pending phone action record, `createdAt` = `age` seconds before `now`, sealed by the paired test phone
+/// (`TestRelayPhone.seal`): the wire record a phone's outbox saves. `deviceID` is the payload's `device_id`.
 func pendingActionRecord(
     id: String = UUID().uuidString,
     kind: ActionKind,
@@ -385,17 +389,127 @@ func pendingActionRecord(
     params: [String: JSONValue] = [:],
     age: TimeInterval = 0,
     now: Date = Date(),
-    hubID: String? = nil
+    hubID: String? = nil,
+    deviceID: String? = testPhoneID,
+    sender: DeviceIdentityKeys = TestE2E.deviceIdentity
 ) throws -> CloudRecord {
     let created = now.addingTimeInterval(-age)
     let action = ActionRequestPayload(
-        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: "device-a", hubID: hubID
+        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: deviceID, hubID: hubID
     )
-    return try CloudRecordFactory.record(for: action, modifiedAt: created)
+    return try TestRelayPhone.seal(try CloudRecordFactory.record(for: action, modifiedAt: created), as: sender)
 }
 
+/// A relay record's action: a sealed one opened as a test phone would (an h2p echo, or a phone's own p2h save),
+/// a plain one decoded as it is.
 func decodeAction(_ record: CloudRecord) throws -> ActionRequestPayload {
-    try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
+    let plain = record.kind == WireKind.envelope ? try TestRelayPhone.openAny(record) : record
+    return try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: plain.payload)
+}
+
+/// The test phones' half of RelayZone (F25: `TestE2E` keys, no copies): sealing a plain relay record `.relayToHub`
+/// under a phone's pairwise key, exactly as `SecureTransport` does on the phone, and opening the hub's
+/// `.relayToPhone` echoes. Synchronous, so it works inside handler closures and `map`s.
+enum TestRelayPhone {
+    /// Envelope seqs for records sealed without an explicit one; above any seq a test passes.
+    private static let seqs = OSAllocatedUnfairLock<UInt64>(initialState: 1_000_000)
+    /// Wire → plain names of every record sealed here (`CloudRecord.plainName`).
+    private static let plainNames = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+
+    /// One provider per test phone (its relay keys are derived once and cached).
+    private static let providers = OSAllocatedUnfairLock<[UUID: PhoneKeyProvider]>(initialState: [:])
+
+    static func keys(_ identity: DeviceIdentityKeys) throws -> PhoneKeyProvider {
+        if let cached = providers.withLock({ $0[identity.deviceID] }) { return cached }
+        let made = try TestE2E.phone(store: TestE2E.phoneStore(identity: identity))
+        providers.withLock { $0[identity.deviceID] = made }
+        return made
+    }
+
+    /// The opaque RelayZone name of a plain record name (`K_meta`, shared by every test phone and the test hub).
+    static func wireName(_ plain: String) throws -> String {
+        try TestE2E.hubTransport().wireName(plain: plain, zone: .relay)
+    }
+
+    /// `plain` sealed by `identity`'s phone at `epoch`/`seq`: kind `wt`, the opaque name, the asset file and the
+    /// creator kept (the creator is server metadata the in-memory fake carries as given).
+    static func seal(
+        _ plain: CloudRecord,
+        as identity: DeviceIdentityKeys = TestE2E.deviceIdentity,
+        epoch: UInt32 = 1,
+        seq: UInt64? = nil
+    ) throws -> CloudRecord {
+        let keys = try keys(identity)
+        let wire = try wireName(plain.recordName)
+        let frame = InnerFrame(kind: plain.kind, id: plain.recordName, asset: plain.asset, payload: plain.payload)
+        let envelope = try EnvelopeSealer.sealSymmetric(
+            frame, envelopeClass: .relayToHub,
+            key: try keys.relayKey(.phoneToHub, deviceID: identity.deviceID, epoch: epoch),
+            hubID: TestE2E.hubID, senderID: identity.deviceID, epoch: epoch,
+            seq: seq ?? seqs.withLock { next in
+                defer { next += 1 }
+                return next
+            },
+            context: EnvelopeContext(zone: .relay, wireName: wire), signer: nil)
+        plainNames.withLock { $0[wire] = plain.recordName }
+        return CloudRecord(
+            recordName: wire, zone: .relay, kind: WireKind.envelope, modifiedAt: plain.modifiedAt, payload: envelope,
+            assetFileURL: plain.assetFileURL, creatorUserRecordName: plain.creatorUserRecordName)
+    }
+
+    /// A hub echo opened by `identity`'s phone; throws (`EnvelopeError.authenticationFailed`) when it was not
+    /// sealed to that phone.
+    static func open(_ wire: CloudRecord, as identity: DeviceIdentityKeys = TestE2E.deviceIdentity) throws -> CloudRecord {
+        try open(wire, direction: .hubToPhone, as: identity)
+    }
+
+    /// A sealed relay record opened by whichever test phone can: a hub echo to either phone, or either phone's own
+    /// p2h save.
+    static func openAny(_ wire: CloudRecord) throws -> CloudRecord {
+        var lastError: (any Error)?
+        for identity in [TestE2E.deviceIdentity, TestE2E.strangerIdentity] {
+            for direction in [RelayDirection.hubToPhone, .phoneToHub] {
+                do { return try open(wire, direction: direction, as: identity) } catch { lastError = error }
+            }
+        }
+        throw lastError ?? TestOpeningError.notAnEnvelope(wire.recordName)
+    }
+
+    private static func open(
+        _ wire: CloudRecord, direction: RelayDirection, as identity: DeviceIdentityKeys
+    ) throws -> CloudRecord {
+        let keys = try keys(identity)
+        let opened = try EnvelopeSealer.openSymmetric(
+            wire.payload, accepting: [direction == .hubToPhone ? .relayToPhone : .relayToHub],
+            context: EnvelopeContext(zone: .relay, wireName: wire.recordName), verifier: nil
+        ) { header in try keys.relayKey(direction, deviceID: identity.deviceID, epoch: header.epoch) }
+        return CloudRecord(
+            recordName: opened.frame.id, zone: .relay, kind: opened.frame.kind, modifiedAt: wire.modifiedAt,
+            payload: opened.frame.payload, assetFileURL: wire.assetFileURL, asset: opened.frame.asset,
+            sealed: SealedInfo(
+                wireName: wire.recordName, senderID: opened.header.senderID, epoch: opened.header.epoch,
+                seq: opened.header.seq, envelopeClass: opened.header.envelopeClass))
+    }
+
+    static func plainName(forWire wire: String) -> String? {
+        plainNames.withLock { $0[wire] }
+    }
+}
+
+extension CloudRecord {
+    /// The plain record name the exactly-once ledger keys on: a record sealed by `TestRelayPhone` maps back to
+    /// the name it was sealed under; a plain record is its own name.
+    var plainName: String { TestRelayPhone.plainName(forWire: recordName) ?? recordName }
+}
+
+extension StubHubTransport {
+    /// The hub's echoes the paired phone (or `identity`) can open, in save order, opened.
+    func openedEchoes(as identity: DeviceIdentityKeys = TestE2E.deviceIdentity) -> [CloudRecord] {
+        saved.compactMap { entry in
+            guard entry.record.zone == .relay, entry.record.kind == WireKind.envelope else { return nil }
+            return try? TestRelayPhone.open(entry.record, as: identity)
+        }
+    }
 }
 
 /// Parks a handler until the test releases it; counts entries per action.
@@ -426,7 +540,7 @@ extension HubSyncState {
     /// Seeds a linked phone past the device gate (spec §5.2 rule 4), as if
     /// it had scanned a code: tests of the relay's own rules start here.
     func linkTestDevice(
-        _ deviceID: String = "device-a",
+        _ deviceID: String = testPhoneID,
         scope: DeviceScope = .private,
         userRecordName: String = "_owner-acme",
         at date: Date = Date()
@@ -445,9 +559,10 @@ extension HubSyncState {
 func testSecureTransport(
     _ inner: any CloudSyncTransport & Sendable,
     names: (any WireNameIndex)? = nil,
-    keys: TestHubKeyProvider = TestE2E.hub()
+    keys: TestHubKeyProvider = TestE2E.hub(),
+    onRejected: (@Sendable (_ wireName: String, _ reason: String) -> Void)? = nil
 ) -> SecureTransport {
-    SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard(), names: names)
+    SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard(), names: names, onRejected: onRejected)
 }
 
 /// What the hub publishes, read the way the paired phone reads it.

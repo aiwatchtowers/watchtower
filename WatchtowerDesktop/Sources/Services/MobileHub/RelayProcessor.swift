@@ -25,10 +25,13 @@ import WatchtowerSync
 /// retry. A re-echo never counts toward `batchLimit`.
 ///
 /// Phone recordings (§5.3, §6.4): a pending `recording_upload` from a linked
-/// device is claimed `begun`, its asset handed to `RecordingUploads.ingest` (the
-/// transcriber's phone ingest, under its own timeout) and the record
-/// rewritten `received` without the asset, or `failed` with a message. A
-/// failed upload wrote nothing, so the phone's Retry (the same record name,
+/// device is claimed `begun`, its asset — sealed with the chunked cipher, its
+/// key in the record's frame — decrypted to a temporary plaintext file
+/// beside the stash and handed to `RecordingUploads.ingest` (the
+/// transcriber's phone ingest, under its own timeout; the plaintext is
+/// removed whatever the outcome), and the record rewritten `received`
+/// without the asset, or `failed` with a message. A failed upload wrote
+/// nothing, so the phone's Retry (the same record name,
 /// pending again) is ingested; a `received` one never is again (a phone save
 /// that put it back to `pending` only gets `received` echoed again). An upload
 /// found still `begun` is echoed `failed` / `outcome_unknown`, not re-ingested.
@@ -37,12 +40,24 @@ import WatchtowerSync
 /// hub fails `wrong_hub`, ledgered `done` like any refusal, so a re-save is
 /// re-echoed, never dispatched.
 ///
-/// Device gate (§5.2 rule 4): an action or upload is applied only when its
-/// `device_id` is a linked phone in the sidecar's `devices` table and, in
+/// End-to-end (mobile E2E spec §2.2, D4, D9): the processor reads RelayZone
+/// through the hub's `SecureTransport`, so only records that opened under a
+/// linked phone's pairwise relay key (current epoch, or the previous one for
+/// 7 days, D10) and the hub's own echoes reach it; anything else is dropped
+/// and reported by the transport, never echoed (the hub holds no key to
+/// answer it with). Every echo carries the opened record's `sealed` info, so
+/// the transport seals it to the authenticated sender (F16).
+///
+/// Device gate (§5.2 rule 4): an action or upload is applied only when the
+/// phone whose key opened it (`sealed.senderID`) is the payload's
+/// `device_id` and a linked phone in the sidecar's `devices` table, and, in
 /// `shared` scope, the record's creator is that phone's iCloud user
-/// (`LinkedDevice.accepts(creator:)`); anything else fails
-/// `device_not_linked` and is never dispatched. A `device` record (a phone's
-/// link request) goes to `deviceRecords`, the link center, unbudgeted.
+/// (`LinkedDevice.accepts(creator:)`, kept as defense in depth); anything
+/// else fails `device_not_linked`, echoed to the sender, never dispatched.
+/// The authenticated `created_at` then decides the age. The sender's
+/// `devices.last_seq` is raised as a high-water mark for diagnostics only
+/// (D4: no ordering gate, CloudKit delivers out of order). A `device` record
+/// goes to `deviceRecords`, the link center, unbudgeted.
 ///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
@@ -98,7 +113,9 @@ final class RelayProcessor: Sendable {
     /// hop): a hub stop waits for the record being applied.
     static let recordingIngestTimeout: Duration = .seconds(300)
 
-    private let transport: any CloudSyncTransport & Sendable
+    /// nil: the hub has no E2E keys (no CloudKit entitlement); nothing is read
+    /// or written, never in the clear.
+    private let transport: SecureTransport?
     private let sidecar: HubSyncState
     private let dispatcher: MobileHubCommandDispatcher
     private let hubID: String
@@ -111,9 +128,10 @@ final class RelayProcessor: Sendable {
     private let logger = Logger(subsystem: Constants.bundleID, category: "RelayProcessor")
     private let lastActivity = OSAllocatedUnfairLock<Date?>(initialState: nil)
     private let backlog = OSAllocatedUnfairLock(initialState: 0)
+    private let warnedNoKeys = OSAllocatedUnfairLock(initialState: false)
 
     init(
-        transport: any CloudSyncTransport & Sendable,
+        transport: SecureTransport?,
         sidecar: HubSyncState,
         dispatcher: MobileHubCommandDispatcher,
         hubID: String,
@@ -155,13 +173,15 @@ final class RelayProcessor: Sendable {
     }
 
     private func processPass() async throws -> Pass {
+        guard let transport = keyedTransport() else { return Pass(handled: 0, remaining: 0) }
         let since = try storedToken()
+        // A locked keychain throws `keysUnavailable` here: the token stays, the next pass replays.
         let batch = try await transport.changes(in: .relay, since: since)
         var window = RelayWindow(since: since?.value ?? 0, mark: batch.newToken.value)
         var handled = 0
         var remaining = 0
         for record in batch.changed {
-            guard let work = try await pendingWork(in: record, window: &window) else { continue }
+            guard let work = try await pendingWork(in: record, transport: transport, window: &window) else { continue }
             if work.budgeted, handled >= batchLimit {
                 remaining += 1
                 continue
@@ -183,6 +203,29 @@ final class RelayProcessor: Sendable {
         return Pass(handled: handled, remaining: remaining)
     }
 
+    /// The transport, or nil (warned once) when the hub has no keys.
+    private func keyedTransport() -> SecureTransport? {
+        if let transport { return transport }
+        let first = warnedNoKeys.withLock { warned in
+            defer { warned = true }
+            return !warned
+        }
+        if first { logger.warning("relay: this Mac has no encryption keys; phone requests are not read") }
+        return nil
+    }
+
+    /// Who sent a record, as `SecureTransport` authenticated it, and its
+    /// CloudKit creator (the shared-scope check).
+    private struct Origin: Sendable {
+        let sealed: SealedInfo?
+        let creator: String?
+
+        init(_ record: CloudRecord) {
+            sealed = record.sealed
+            creator = record.creatorUserRecordName
+        }
+    }
+
     private struct Work {
         let run: @Sendable () async throws -> Void
         /// Counts toward `batchLimit`: an apply or an ingest, not a re-echo.
@@ -190,34 +233,39 @@ final class RelayProcessor: Sendable {
     }
 
     /// The work a record still needs; nil when there is none.
-    private func pendingWork(in record: CloudRecord, window: inout RelayWindow) async throws -> Work? {
+    private func pendingWork(
+        in record: CloudRecord, transport: SecureTransport, window: inout RelayWindow
+    ) async throws -> Work? {
         let mark = window.mark
+        let origin = Origin(record)
         switch record.kind {
         case RelayRecordKind.action.rawValue:
-            switch try await pendingAction(in: record, window: &window) {
+            switch try await pendingAction(in: record, transport: transport, window: &window) {
             case nil:
                 return nil
             case .apply(let action):
-                let creator = record.creatorUserRecordName
-                return Work(run: { try await self.processAction(action, creator: creator, doneSeq: mark) }, budgeted: true)
+                return Work(run: {
+                    try await self.processAction(action, origin: origin, transport: transport, doneSeq: mark)
+                }, budgeted: true)
             case let .reEcho(action, outcome):
-                return Work(run: { try await self.reEchoAction(action, outcome) }, budgeted: false)
+                return Work(run: {
+                    try await self.reEchoAction(action, outcome, origin: origin, transport: transport)
+                }, budgeted: false)
             }
         case RelayRecordKind.recordingUpload.rawValue:
-            guard let uploads = recordingUploads, let pending = try await pendingUpload(in: record, window: &window) else {
+            guard let uploads = recordingUploads,
+                  let pending = try await pendingUpload(in: record, transport: transport, window: &window) else {
                 return nil
             }
+            let asset = SealedAsset(file: record.assetFileURL, descriptor: record.asset)
             switch pending {
             case .ingest(let upload):
-                let asset = record.assetFileURL
-                let creator = record.creatorUserRecordName
-                return Work(
-                    run: { try await self.processUpload(upload, asset: asset, creator: creator, uploads: uploads, doneSeq: mark) },
-                    budgeted: true
-                )
+                let context = UploadContext(origin: origin, transport: transport, uploads: uploads, doneSeq: mark)
+                return Work(run: { try await self.processUpload(upload, asset: asset, context: context) }, budgeted: true)
             case .reEchoReceived(let upload):
-                let asset = record.assetFileURL
-                return Work(run: { try await self.reEchoReceived(upload, asset: asset) }, budgeted: false)
+                return Work(run: {
+                    try await self.reEchoReceived(upload, asset: asset.file, origin: origin, transport: transport)
+                }, budgeted: false)
             }
         case RelayRecordKind.device.rawValue:
             guard let deviceRecords else { return nil }
@@ -244,7 +292,9 @@ final class RelayProcessor: Sendable {
     /// undecodable, moved past `received` by an echo, `done` and not changed
     /// by the phone since, or `done` without a readable stored echo (a row
     /// from before echoes were kept).
-    private func pendingAction(in record: CloudRecord, window: inout RelayWindow) async throws -> PendingAction? {
+    private func pendingAction(
+        in record: CloudRecord, transport: SecureTransport, window: inout RelayWindow
+    ) async throws -> PendingAction? {
         let action: ActionRequestPayload
         do {
             action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
@@ -255,7 +305,7 @@ final class RelayProcessor: Sendable {
         }
         guard action.status == .pending || action.status == .received else { return nil }
         guard try sidecar.relayPhase(action.recordName) == .done else { return .apply(action) }
-        guard try await phoneChanged(action.recordName, window: &window),
+        guard try await phoneChanged(action.recordName, transport: transport, window: &window),
               let stored = try sidecar.relayEcho(action.recordName) else { return nil }
         do {
             return .reEcho(action, try JSONDecoder().decode(ActionOutcome.self, from: stored))
@@ -268,35 +318,41 @@ final class RelayProcessor: Sendable {
     /// Rewrites a `done` action with its stored outcome: no claim, no
     /// dispatch, no ledger write. The re-saved echo reads back as past
     /// `received`, so this does not loop.
-    private func reEchoAction(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
+    private func reEchoAction(
+        _ action: ActionRequestPayload, _ outcome: ActionOutcome, origin: Origin, transport: SecureTransport
+    ) async throws {
         lastActivity.withLock { $0 = now() }
-        try await writeEcho(action, outcome)
+        try await writeEcho(action, outcome, origin: origin, transport: transport)
         logger.info("action \(action.recordName, privacy: .public) read \(action.status.rawValue, privacy: .public) after its echo: echoed again")
     }
 
     /// Whether the buffered change of a `done` record came after the pass
     /// that marked it (a phone save), not the hub's own stale copy.
-    private func phoneChanged(_ recordName: String, window: inout RelayWindow) async throws -> Bool {
+    private func phoneChanged(
+        _ recordName: String, transport: SecureTransport, window: inout RelayWindow
+    ) async throws -> Bool {
         try await window.changedAfter(try sidecar.relayDoneSeq(recordName), recordName, in: transport)
     }
 
-    private func processAction(_ action: ActionRequestPayload, creator: String?, doneSeq: Int) async throws {
+    private func processAction(
+        _ action: ActionRequestPayload, origin: Origin, transport: SecureTransport, doneSeq: Int
+    ) async throws {
         lastActivity.withLock { $0 = now() }
         let outcome: ActionOutcome
         if try sidecar.relayPhase(action.recordName) == .begun {
             outcome = .failed(.outcomeUnknown, message: "The Mac restarted while applying this")
         } else if let target = action.hubID, target != hubID {
             outcome = .failed(.wrongHub, message: Self.wrongHubMessage)
-        } else if try !isFromLinkedDevice(action.deviceID, creator: creator) {
+        } else if try !admitsDevice(action.deviceID, origin: origin) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else if isExpired(action) {
             outcome = .expired
-        } else if let applied = try await applyAction(action) {
+        } else if let applied = try await applyAction(action, origin: origin, transport: transport) {
             outcome = applied
         } else {
             return
         }
-        try await writeEcho(action, outcome)
+        try await writeEcho(action, outcome, origin: origin, transport: transport)
         try sidecar.markRelayDone(
             action.recordName, outcome: Self.ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome),
             doneSeq: doneSeq, at: now()
@@ -306,10 +362,16 @@ final class RelayProcessor: Sendable {
     static let notLinkedMessage = "This phone is not linked to this Mac."
     static let wrongHubMessage = "This was sent to another Mac."
 
-    /// The device gate (§5.2 rule 4).
-    private func isFromLinkedDevice(_ deviceID: String?, creator: String?) throws -> Bool {
-        guard let deviceID, let device = try sidecar.linkedDevice(deviceID) else { return false }
-        return device.accepts(creator: creator)
+    /// The device gate (§5.2 rule 4, E2E): the phone whose relay key opened
+    /// the record is the payload's `device_id` and a linked phone, and its
+    /// creator check passes (defense in depth). An admitted record raises the
+    /// phone's `last_seq` high-water mark (D4: never a gate).
+    private func admitsDevice(_ deviceID: String?, origin: Origin) throws -> Bool {
+        guard let sealed = origin.sealed, let deviceID, UUID(uuidString: deviceID) == sealed.senderID,
+              let device = try sidecar.linkedDevice(sealed.senderID.uuidString),
+              device.accepts(creator: origin.creator) else { return false }
+        try sidecar.raiseDeviceLastSeq(device.deviceID, to: sealed.seq)
+        return true
     }
 
     private func isExpired(_ action: ActionRequestPayload) -> Bool {
@@ -318,7 +380,9 @@ final class RelayProcessor: Sendable {
     }
 
     /// nil when another pass already claimed the record (it echoes it).
-    private func applyAction(_ action: ActionRequestPayload) async throws -> ActionOutcome? {
+    private func applyAction(
+        _ action: ActionRequestPayload, origin: Origin, transport: SecureTransport
+    ) async throws -> ActionOutcome? {
         if action.kind == .probe { return probeOutcome(action) }
         guard !Self.refusedKinds.contains(action.kind), await dispatcher.handles(action.kind) else {
             return .failed(.unsupportedInPOC)
@@ -327,7 +391,9 @@ final class RelayProcessor: Sendable {
             guard try sidecar.claimRelay(action.recordName, at: now()) else { return nil }
         }
         if Self.receivedEchoKinds.contains(action.kind), action.status == .pending {
-            try await writeEcho(action, ActionOutcome(status: .received, reason: nil, result: nil, errorMessage: nil))
+            try await writeEcho(
+                action, ActionOutcome(status: .received, reason: nil, result: nil, errorMessage: nil),
+                origin: origin, transport: transport)
         }
         do {
             return try await dispatcher.dispatch(action) ?? .failed(.unsupportedInPOC)
@@ -345,14 +411,27 @@ final class RelayProcessor: Sendable {
         return .applied(["nonce": .string(nonce), "hub_id": .string(hubID)])
     }
 
-    /// Rewrites the phone's record with the outcome (§5.2 rule 6).
-    private func writeEcho(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
+    /// Rewrites the phone's record with the outcome (§5.2 rule 6), sealed to
+    /// the record's authenticated sender (F16).
+    private func writeEcho(
+        _ action: ActionRequestPayload, _ outcome: ActionOutcome, origin: Origin, transport: SecureTransport
+    ) async throws {
         var echoed = action
         echoed.status = outcome.status
         echoed.reason = outcome.reason
         echoed.result = outcome.result
         echoed.errorMessage = outcome.errorMessage
-        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now())])
+        try await transport.save([Self.echo(try CloudRecordFactory.record(for: echoed, modifiedAt: now()), origin: origin)])
+    }
+
+    /// The echo record carrying the opened record's `sealed` info: `SecureTransport` seals it `.relayToPhone` to
+    /// `sealed.senderID` (F16), so a `device_not_linked` answer to a payload naming another phone goes to the
+    /// phone that sent it.
+    private static func echo(_ record: CloudRecord, origin: Origin) -> CloudRecord {
+        CloudRecord(
+            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+            payload: record.payload, notifyLevel: record.notifyLevel, assetFileURL: record.assetFileURL,
+            sealed: origin.sealed)
     }
 
     private static func ledgerOutcome(_ outcome: ActionOutcome) -> String {
@@ -374,7 +453,9 @@ final class RelayProcessor: Sendable {
 
     /// The work a decodable, still `pending` upload needs; nil for none (a
     /// `done` upload the phone has not saved again since is none).
-    private func pendingUpload(in record: CloudRecord, window: inout RelayWindow) async throws -> PendingUpload? {
+    private func pendingUpload(
+        in record: CloudRecord, transport: SecureTransport, window: inout RelayWindow
+    ) async throws -> PendingUpload? {
         let upload: RecordingUploadPayload
         do {
             upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
@@ -384,7 +465,7 @@ final class RelayProcessor: Sendable {
         }
         guard upload.status == .pending else { return nil }
         guard try sidecar.relayPhase(upload.recordName) == .done else { return .ingest(upload) }
-        guard try await phoneChanged(upload.recordName, window: &window) else { return nil }
+        guard try await phoneChanged(upload.recordName, transport: transport, window: &window) else { return nil }
         let outcome = try sidecar.relayOutcome(upload.recordName)
         if outcome == RecordingUploadStatus.received.rawValue { return .reEchoReceived(upload) }
         return outcome?.hasPrefix(ActionStatus.failed.rawValue) == true ? .ingest(upload) : nil
@@ -397,19 +478,35 @@ final class RelayProcessor: Sendable {
     /// its row delivered and deletes only the local audio file (the row
     /// stays); a delivered row is never uploaded again, and this echo reads
     /// back `received`, not `pending`, so this does not loop.
-    private func reEchoReceived(_ upload: RecordingUploadPayload, asset: URL?) async throws {
+    private func reEchoReceived(
+        _ upload: RecordingUploadPayload, asset: URL?, origin: Origin, transport: SecureTransport
+    ) async throws {
         lastActivity.withLock { $0 = now() }
         var echoed = upload
         echoed.status = .received
         echoed.errorMessage = nil
-        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
+        let record = try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)
+        try await transport.save([Self.echo(record, origin: origin)])
         logger.info("recording upload \(upload.recordName, privacy: .public) re-saved pending after its ingest: echoed received again")
         removeConsumedAsset(asset)
     }
 
-    private func processUpload(
-        _ upload: RecordingUploadPayload, asset: URL?, creator: String?, uploads: RecordingUploads, doneSeq: Int
-    ) async throws {
+    /// The stashed sealed audio of an upload and the descriptor (`K_asset` +
+    /// header) its frame carried.
+    private struct SealedAsset: Sendable {
+        let file: URL?
+        let descriptor: AssetDescriptor?
+    }
+
+    /// The pass's facts one upload's processing needs.
+    private struct UploadContext: Sendable {
+        let origin: Origin
+        let transport: SecureTransport
+        let uploads: RecordingUploads
+        let doneSeq: Int
+    }
+
+    private func processUpload(_ upload: RecordingUploadPayload, asset: SealedAsset, context: UploadContext) async throws {
         lastActivity.withLock { $0 = now() }
         let name = upload.recordName
         let outcome: ActionOutcome
@@ -417,24 +514,26 @@ final class RelayProcessor: Sendable {
             outcome = .failed(.outcomeUnknown, message: "Your Mac restarted while saving this recording. Send it again.")
         } else if let target = upload.hubID, target != hubID {
             outcome = .failed(.wrongHub, message: Self.wrongHubMessage)
-        } else if try !isFromLinkedDevice(upload.deviceID, creator: creator) {
+        } else if try !admitsDevice(upload.deviceID, origin: context.origin) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else {
+            // A failed attempt is claimable again: the phone's Retry re-sends the identical envelope (Task 9).
             guard try sidecar.claimRelayRetryingFailure(name, at: now()) else { return }
-            outcome = await ingestUpload(upload, asset: asset, uploads: uploads)
+            outcome = await ingestUpload(upload, asset: asset, uploads: context.uploads)
         }
         var echoed = upload
         echoed.status = outcome.status == .applied ? .received : .failed
         echoed.errorMessage = outcome.errorMessage
         // The rewrite carries no asset: that is what frees the iCloud storage.
-        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
+        let record = try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)
+        try await context.transport.save([Self.echo(record, origin: context.origin)])
         let ledger = echoed.status == .received ? RecordingUploadStatus.received.rawValue : Self.ledgerOutcome(outcome)
-        try sidecar.markRelayDone(name, outcome: ledger, doneSeq: doneSeq, at: now())
+        try sidecar.markRelayDone(name, outcome: ledger, doneSeq: context.doneSeq, at: now())
         guard echoed.status == .received else {
             logger.warning("recording upload \(name, privacy: .public) failed: \(ledger, privacy: .public)")
             return
         }
-        removeConsumedAsset(asset)
+        removeConsumedAsset(asset.file)
     }
 
     /// The transport's received copy is consumed. Best-effort: a file left
@@ -448,16 +547,37 @@ final class RelayProcessor: Sendable {
         }
     }
 
-    /// Validates the asset and runs the ingest under its timeout. A failure
-    /// leaves nothing behind (the transcriber's phone ingest removes what it
-    /// created), so the phone keeps its file and may retry.
-    private func ingestUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async -> ActionOutcome {
-        guard let asset, FileManager.default.fileExists(atPath: asset.path) else {
-            return .failed(.notFound, message: "The recording's audio did not reach your Mac. Send it again.")
+    static let missingAudioMessage = "The recording's audio did not reach your Mac. Send it again."
+
+    /// Decrypts the sealed asset, validates it and runs the ingest under its
+    /// timeout. A failure leaves nothing behind (the transcriber's phone
+    /// ingest removes what it created; the plaintext copy is removed here),
+    /// so the phone keeps its file and may retry. An asset that does not
+    /// open under the frame's key (tampered, truncated, or restaged under a
+    /// new key while this envelope was in flight) is `not_found`: retry, not
+    /// poison.
+    private func ingestUpload(
+        _ upload: RecordingUploadPayload, asset: SealedAsset, uploads: RecordingUploads
+    ) async -> ActionOutcome {
+        guard let sealed = asset.file, let descriptor = asset.descriptor,
+              FileManager.default.fileExists(atPath: sealed.path) else {
+            return .failed(.notFound, message: Self.missingAudioMessage)
+        }
+        // Beside the stash (the same volume, cleaned with it); hidden, owner-only, removed below on every path.
+        let plain = sealed.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).m4a")
+        defer { removePlaintext(plain) }
+        do {
+            try ChunkedAssetCipher.decryptFile(at: sealed, to: plain, descriptor: descriptor)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plain.path)
+        } catch {
+            // The error is a cipher code (chunk index, length) or a file error, never key material.
+            logger.warning(
+                "recording upload \(upload.recordName, privacy: .public) did not decrypt: \(String(describing: error), privacy: .public)")
+            return .failed(.notFound, message: Self.missingAudioMessage)
         }
         let size: Int64
         do {
-            size = (try FileManager.default.attributesOfItem(atPath: asset.path)[.size] as? Int64) ?? 0
+            size = (try FileManager.default.attributesOfItem(atPath: plain.path)[.size] as? Int64) ?? 0
         } catch {
             return .failed(.writeFailed, message: "Your Mac could not read this recording: \(error.localizedDescription)")
         }
@@ -469,7 +589,7 @@ final class RelayProcessor: Sendable {
                 Self.recordingIngestTimeout, sleep: uploads.sleep,
                 message: "Your Mac took too long to save this recording. Check Recordings on the Mac before sending it again."
             ) {
-                try await uploads.ingest(upload, asset)
+                try await uploads.ingest(upload, plain)
                 return .applied()
             }
         } catch {
@@ -477,13 +597,28 @@ final class RelayProcessor: Sendable {
         }
     }
 
+    /// The decrypted copy never outlives its ingest. A missing file is the
+    /// decrypt-failure path (nothing was written); any other failure is logged.
+    private func removePlaintext(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            logger.error("decrypted recording copy not removed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: - Hygiene (relay retention)
 
     /// Daily retention pass over the relay zone, guarded by a hub_meta stamp:
     /// action and recording-upload records older than 7 days are deleted
-    /// through a full zone scan (`since: nil`; the change token is
+    /// through a full zone scan (`relayHygieneScan`; the change token is
     /// untouched), except a still-unhandled pending one, which waits for
-    /// its `expired` echo. Then the local event buffer is swept (strictly
+    /// its `expired` echo. The scan opens the hub's own echoes too (F2);
+    /// records nobody here can open (a removed phone's, a stranger's, another
+    /// hub's leftovers, an older version the rollback guard refused) are
+    /// deleted by wire name once their plaintext `modifiedAt` is older than
+    /// 7 days. Then the local event buffer is swept (strictly
     /// after the record pass, and never past the stored token, so an
     /// unconsumed event survives) and the ledger is pruned.
     func runHygieneIfDue() async throws {
@@ -491,20 +626,25 @@ final class RelayProcessor: Sendable {
     }
 
     private func runHygienePass() async throws {
+        guard let transport = keyedTransport() else { return }
         let current = now()
         if let raw = try sidecar.metaValue(forKey: Self.hygieneStampKey),
            let last = TimeInterval(raw),
            current.timeIntervalSince1970 - last < Self.hygieneInterval {
             return
         }
-        let batch = try await transport.changes(in: .relay, since: nil)
-        let stale = try batch.changed.filter { try isStale($0, at: current) }.map(\.recordName)
+        let scan = try await transport.relayHygieneScan()
+        let staleOpened = try scan.opened.filter { try isStale($0, at: current) }.compactMap(\.sealed?.wireName)
+        let staleUnopenable = scan.unopenable
+            .filter { current.timeIntervalSince($0.modifiedAt) > Self.actionMaxAge }
+            .map(\.wireName)
+        let stale = staleOpened + staleUnopenable
         if !stale.isEmpty {
-            try await transport.delete(recordNames: stale, in: .relay)
-            logger.info("hygiene: deleted \(stale.count) stale relay records")
+            try await transport.deleteWire(wireNames: stale, in: .relay)
+            logger.info("hygiene: deleted \(staleOpened.count) stale and \(staleUnopenable.count) unopenable relay records")
         }
         let cutoff = current.addingTimeInterval(-(Self.actionMaxAge + Self.retentionMargin))
-        await sweepBuffer(olderThan: cutoff)
+        await sweepBuffer(olderThan: cutoff, transport: transport)
         try sidecar.pruneRelayProcessed(olderThan: cutoff)
         try sidecar.setMetaValue(String(current.timeIntervalSince1970), forKey: Self.hygieneStampKey)
     }
@@ -526,11 +666,12 @@ final class RelayProcessor: Sendable {
         }
     }
 
-    private func sweepBuffer(olderThan cutoff: Date) async {
-        guard let sweeping = transport as? any SweepingTransport else { return }
+    /// Through `SecureTransport`'s `SweepingTransport` conformance (F1): it
+    /// forwards to a buffering inner transport, else sweeps nothing.
+    private func sweepBuffer(olderThan cutoff: Date, transport: SecureTransport) async {
         do {
             let floor = try storedToken() ?? CloudChangeToken(value: 0)
-            let swept = try await sweeping.sweepEvents(in: .relay, olderThan: cutoff, upTo: floor)
+            let swept = try await transport.sweepEvents(in: .relay, olderThan: cutoff, upTo: floor)
             if swept > 0 { logger.info("hygiene: swept \(swept) aged relay buffer events") }
         } catch {
             // Local trim only: never fail the hygiene pass over it.

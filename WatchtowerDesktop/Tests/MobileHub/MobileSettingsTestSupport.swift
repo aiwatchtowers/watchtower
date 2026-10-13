@@ -61,7 +61,7 @@ final class MobileSettingsFixture {
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10))
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         hub = MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,

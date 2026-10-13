@@ -1,7 +1,9 @@
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
@@ -10,9 +12,21 @@ import WatchtowerTestSupport
 /// own phone-ingest helpers, the record is rewritten `received` without its
 /// asset, and every failure is a `failed` echo that leaves the phone its file
 /// and a working Retry. Review focus 3 (unwritable recordings dir) and 4 (the
-/// event deleted after recording) live here.
+/// event deleted after recording) live here. Uploads are sealed by a
+/// `TestE2E` phone and their audio by the chunked cipher (mobile E2E spec
+/// §2.5): the hub decrypts to a temporary file, ingests it and removes it.
 @MainActor
 final class RelayProcessorRecordingUploadTests: XCTestCase {
+    /// The stashed sealed audio of an upload, as CloudKit hands it over, and the descriptor its frame carries.
+    private struct StagedAsset {
+        let sealed: URL
+        let descriptor: AssetDescriptor
+        var path: String { sealed.path }
+    }
+
+    /// A phone the hub holds keys for but the sidecar has not linked (until a test links it).
+    private let strangerID = TestE2E.strangerDeviceID.uuidString
+    private var hubKeys: TestHubKeyProvider!
     private var transport: StubHubTransport!
     private var sidecar: HubSyncState!
     private var dbPool: DatabasePool!
@@ -28,8 +42,10 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     override func setUp() async throws {
         transport = StubHubTransport()
+        hubKeys = TestE2E.hub()
+        hubKeys.link(TestE2E.strangerIdentity)
         sidecar = try HubSyncState.inMemory()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         (dbPool, dbPath) = try TestDatabase.createPool()
         try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
         enqueued = []
@@ -44,6 +60,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         try? FileManager.default.removeItem(at: base)
         jobs = nil
         transport = nil
+        hubKeys = nil
         sidecar = nil
         dbPool = nil
         TestDatabase.cleanup(path: dbPath)
@@ -67,30 +84,55 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     private func makeProcessor(
         ingest: Bool = true,
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        beforeIngest: (@MainActor @Sendable (URL) throws -> Void)? = nil
     ) throws -> RelayProcessor {
         let jobs = try XCTUnwrap(self.jobs)
         let uploads = RelayProcessor.RecordingUploads(
-            ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
+            ingest: { upload, audio in
+                try beforeIngest?(audio)
+                try await jobs.ingest(upload, audio: audio)
+            },
             sleep: sleep
         )
         return RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
-            recordingUploads: ingest ? uploads : nil
+            transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar,
+            dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme", recordingUploads: ingest ? uploads : nil
         ) { [now] in now }
     }
 
-    private func makeAsset(_ name: String = "staged.m4a", bytes: Int = 128) throws -> URL {
-        let url = assetsDir.appendingPathComponent(name)
-        try Data(repeating: 0xCD, count: bytes).write(to: url)
-        return url
+    /// The audio the phone recorded.
+    private static func audio(bytes: Int) -> Data { Data(repeating: 0xCD, count: bytes) }
+
+    /// The phone's audio sealed with a fresh `K_asset` into the transport's stash (`assetsDir/<name>`); no
+    /// plaintext copy is left behind.
+    private func makeAsset(_ name: String = "staged.m4a", bytes: Int = 128) throws -> StagedAsset {
+        let plain = base.appendingPathComponent("plain-\(UUID().uuidString)")
+        try Self.audio(bytes: bytes).write(to: plain)
+        defer { try? FileManager.default.removeItem(at: plain) }
+        let sealed = assetsDir.appendingPathComponent(name)
+        let descriptor = try ChunkedAssetCipher.encryptFile(at: plain, to: sealed)
+        return StagedAsset(sealed: sealed, descriptor: descriptor)
+    }
+
+    /// A pending upload as `identity`'s phone saves it: the record sealed `.relayToHub`, the descriptor in its
+    /// frame, the sealed audio as its asset.
+    private func sealedUpload(
+        _ upload: RecordingUploadPayload, asset: StagedAsset?, as identity: DeviceIdentityKeys = TestE2E.deviceIdentity
+    ) throws -> CloudRecord {
+        let plain = try CloudRecordFactory.record(for: upload, modifiedAt: now, assetFileURL: asset?.sealed)
+        return try TestRelayPhone.seal(
+            CloudRecord(
+                recordName: plain.recordName, zone: plain.zone, kind: plain.kind, modifiedAt: plain.modifiedAt,
+                payload: plain.payload, assetFileURL: plain.assetFileURL, asset: asset?.descriptor),
+            as: identity)
     }
 
     private func uploadPayload(
         id: String = "R1",
         title: String? = "Acme standup",
         eventID: String? = nil,
-        deviceID: String? = "device-a",
+        deviceID: String? = testPhoneID,
         hubID: String? = nil
     ) -> RecordingUploadPayload {
         RecordingUploadPayload(
@@ -100,19 +142,23 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         )
     }
 
-    /// Saves a pending upload as the phone does; returns its record.
+    /// Saves a pending upload as the phone does; returns its sealed record.
     @discardableResult
-    private func send(_ upload: RecordingUploadPayload, asset: URL?) async throws -> CloudRecord {
-        let record = try CloudRecordFactory.record(for: upload, modifiedAt: now, assetFileURL: asset)
+    private func send(
+        _ upload: RecordingUploadPayload, asset: StagedAsset?, as identity: DeviceIdentityKeys = TestE2E.deviceIdentity
+    ) async throws -> CloudRecord {
+        let record = try sealedUpload(upload, asset: asset, as: identity)
         try await transport.save([record])
         return record
     }
 
-    /// Every echo the hub wrote for `recordName`, in order.
-    private func echoes(of recordName: String) throws -> [(payload: RecordingUploadPayload, record: CloudRecord)] {
-        try transport.saved
-            .map(\.record)
-            .filter { $0.recordName == recordName }
+    /// Every echo the hub wrote for the wire record `recordName`, in order, opened by the paired phone (`record`
+    /// is the opened echo: its asset field is the wire record's).
+    private func echoes(
+        of recordName: String, as identity: DeviceIdentityKeys = TestE2E.deviceIdentity
+    ) throws -> [(payload: RecordingUploadPayload, record: CloudRecord)] {
+        try transport.openedEchoes(as: identity)
+            .filter { $0.sealed?.wireName == recordName }
             .map { (try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: $0.payload), $0) }
             .filter { $0.payload.status != .pending }
     }
@@ -144,9 +190,9 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertNil(echo.payload.errorMessage)
         XCTAssertNil(echo.record.assetFileURL, "the rewrite drops the asset, which frees the iCloud storage")
         XCTAssertEqual(echo.payload.eventID, nil)
-        XCTAssertEqual(echo.payload.deviceID, "device-a", "the echo keeps the phone's fields")
-        XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
+        XCTAssertEqual(echo.payload.deviceID, testPhoneID, "the echo keeps the phone's fields")
+        XCTAssertEqual(try sidecar.relayPhase(record.plainName), .done)
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
         XCTAssertFalse(FileManager.default.fileExists(atPath: asset.path), "the transport's copy is consumed")
 
         let job = try XCTUnwrap(try sidecar.phoneRecordings().first)
@@ -164,7 +210,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         // The phone re-saved `pending` (with its asset) before it fetched
         // the hub's `received`, and its save won.
-        let again = try CloudRecordFactory.record(for: uploadPayload(), modifiedAt: now, assetFileURL: try makeAsset("again.m4a"))
+        let again = try sealedUpload(uploadPayload(), asset: try makeAsset("again.m4a"))
         try await transport.save([again])
         _ = try await processor.processOnce()
         _ = try await makeProcessor().processOnce()
@@ -174,7 +220,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let echoes = try echoes(of: record.recordName)
         XCTAssertEqual(echoes.map(\.payload.status), [.received, .received], "the stale pending converges to received")
         XCTAssertNil(echoes.last?.record.assetFileURL, "the re-echo drops the asset again")
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: try XCTUnwrap(again.assetFileURL).path),
             "the re-fetched copy is deleted after the re-echo, never left in the stash"
@@ -185,7 +231,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         try await send(uploadPayload(), asset: try makeAsset())
         let processor = try makeProcessor()
         _ = try await processor.processOnce()
-        let again = try CloudRecordFactory.record(for: uploadPayload(), modifiedAt: now, assetFileURL: try makeAsset("again.m4a"))
+        let again = try sealedUpload(uploadPayload(), asset: try makeAsset("again.m4a"))
         try await transport.save([again])
         let copy = try XCTUnwrap(again.assetFileURL)
 
@@ -201,6 +247,106 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(enqueued.count, 1)
     }
 
+    // MARK: - Sealed uploads (mobile E2E spec §2.5, Review Focus 2)
+
+    /// CloudKit's re-fetch of the same record: the identical envelope bytes, its asset stashed again under a new
+    /// local path.
+    private func refetched(_ record: CloudRecord, asset: StagedAsset, as name: String) throws -> CloudRecord {
+        let copy = assetsDir.appendingPathComponent(name)
+        try FileManager.default.copyItem(at: asset.sealed, to: copy)
+        return CloudRecord(
+            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+            payload: record.payload, assetFileURL: copy, creatorUserRecordName: record.creatorUserRecordName)
+    }
+
+    /// Review Focus 2: the phone's relaunch retry re-sends the stored envelope byte for byte. The hub takes it
+    /// as the record it already ingested (the ledger), never as a rollback and never as a second recording;
+    /// the phone gets `received` again.
+    func testARetriedUploadWithTheSameEnvelopeIsIngestedOnce() async throws {
+        let asset = try makeAsset()
+        let record = try sealedUpload(uploadPayload(), asset: asset)
+        // Stashed now: the first ingest consumes the first copy.
+        let retry = try refetched(record, asset: asset, as: "retry.bin")
+        try await transport.save([record])
+        let processor = try makeProcessor()
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(retry.payload, record.payload, "the identical envelope")
+        try await transport.save([retry])
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(enqueued.count, 1, "ingested once")
+        XCTAssertEqual(recordingFiles().count, 2, "one .m4a and its .meta")
+        XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.received, .received], "re-echoed received")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(retry.assetFileURL).path), "the copy is consumed")
+    }
+
+    /// Task 9: Retry after a FAILED hub echo re-sends the identical envelope too; a failed attempt wrote
+    /// nothing, so that one is ingested.
+    func testARetryOfTheSameEnvelopeAfterAFailedIngestIsIngested() async throws {
+        let asset = try makeAsset()
+        // The first delivery's asset never reached the Mac's stash.
+        let record = try sealedUpload(uploadPayload(), asset: asset)
+        let withoutAsset = CloudRecord(
+            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+            payload: record.payload)
+        try await transport.save([withoutAsset])
+        let processor = try makeProcessor()
+        _ = try await processor.processOnce()
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:not_found")
+
+        try await transport.save([record])
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(enqueued.count, 1)
+        XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.failed, .received])
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
+    }
+
+    /// The ingest is handed the decrypted audio in a temporary file beside the stash; once the pass ends no
+    /// plaintext copy is left, and the sealed stash of a received upload is consumed.
+    func testTheIngestReceivesThePlainAudioAndNoPlainCopyIsLeft() async throws {
+        let handed = OSAllocatedUnfairLock<[(url: URL, bytes: Data)]>(initialState: [])
+        let asset = try makeAsset(bytes: 3 * 1024 * 1024 + 17)
+        let record = try await send(uploadPayload(), asset: asset)
+
+        _ = try await makeProcessor { audio in
+            let bytes = try Data(contentsOf: audio)
+            handed.withLock { $0.append((audio, bytes)) }
+        }.processOnce()
+
+        let seen = try XCTUnwrap(handed.withLock { $0 }.first)
+        XCTAssertEqual(seen.bytes, Self.audio(bytes: 3 * 1024 * 1024 + 17), "the plain audio, not the ciphertext")
+        XCTAssertEqual(seen.url.deletingLastPathComponent().standardizedFileURL, assetsDir.standardizedFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: seen.url.path), "the plaintext copy is removed")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: assetsDir.path), [], "nothing left in the stash")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
+    }
+
+    /// A sealed asset that does not open under the frame's key (a flipped bit, or restaged under another key)
+    /// fails `not_found`: nothing is written and the phone's Retry stays possible.
+    func testATamperedSealedAssetFailsNotFoundAndWritesNothing() async throws {
+        let asset = try makeAsset()
+        var sealed = try Data(contentsOf: asset.sealed)
+        sealed[10] ^= 0x01
+        try sealed.write(to: asset.sealed)
+        let record = try await send(uploadPayload(), asset: asset)
+
+        _ = try await makeProcessor().processOnce()
+
+        let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
+        XCTAssertEqual(echo.payload.status, .failed)
+        XCTAssertEqual(echo.payload.errorMessage, RelayProcessor.missingAudioMessage)
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:not_found")
+        XCTAssertTrue(enqueued.isEmpty)
+        XCTAssertTrue(recordingFiles().isEmpty)
+        XCTAssertTrue(try sidecar.phoneRecordings().isEmpty)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: assetsDir.path), [asset.sealed.lastPathComponent],
+            "no plaintext left; the sealed copy is kept until an ingest succeeds")
+    }
+
     // MARK: - Missing asset
 
     func testMissingAssetFailsAndThePhoneKeepsItsFile() async throws {
@@ -211,7 +357,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
         XCTAssertEqual(echo.payload.status, .failed, "not `received`, so the phone keeps its file")
         XCTAssertFalse(echo.payload.errorMessage?.isEmpty ?? true, "the phone shows why")
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:not_found")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:not_found")
         XCTAssertTrue(enqueued.isEmpty)
         XCTAssertTrue(recordingFiles().isEmpty)
         XCTAssertTrue(try sidecar.phoneRecordings().isEmpty, "no job for an upload that was not ingested")
@@ -223,7 +369,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         _ = try await makeProcessor().processOnce()
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:not_found")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:not_found")
         XCTAssertTrue(enqueued.isEmpty)
     }
 
@@ -239,7 +385,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.failed, .received])
         XCTAssertEqual(enqueued.count, 1)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
     }
 
     // MARK: - Data-zone reset (final-review P2-I1)
@@ -256,8 +402,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
             sleep: sleep
         )
         return RelayProcessor(
-            transport: buffer, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
-            recordingUploads: uploads
+            transport: testSecureTransport(buffer, keys: hubKeys), sidecar: sidecar,
+            dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme", recordingUploads: uploads
         ) { [now] in now }
     }
 
@@ -267,17 +413,17 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     /// re-ingested; only a later phone save is.
     func testAReReadOfTheHubsOwnStaleCopiesEchoesAndIngestsNothing() async throws {
         let buffer = PhoneOnlyBuffer()
-        let failed = try CloudRecordFactory.record(
-            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1.m4a")
+        let failed = try sealedUpload(
+            uploadPayload(id: "R1", deviceID: strangerID), asset: try makeAsset("r1.m4a"), as: TestE2E.strangerIdentity
         )
-        let received = try CloudRecordFactory.record(
-            for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
+        let received = try sealedUpload(
+            uploadPayload(id: "R2"), asset: try makeAsset("r2.m4a")
         )
         try await buffer.phone.save([failed, received])
         _ = try await processor(over: buffer).processOnce()
         let echoCount = await buffer.echoes.count
         XCTAssertEqual(echoCount, 2)
-        try sidecar.linkTestDevice("device-x")  // the phone links meanwhile
+        try sidecar.linkTestDevice(strangerID)  // the phone links meanwhile
 
         try sidecar.wipeSyncState(now: now)  // an account reset: the relay is read from the start
         _ = try await processor(over: buffer).processOnce()
@@ -287,8 +433,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(enqueued.count, 1, "the failed upload is not ingested without a phone retry")
 
         // The phone's Retry is a later save: it is ingested.
-        let retry = try CloudRecordFactory.record(
-            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1-again.m4a")
+        let retry = try sealedUpload(
+            uploadPayload(id: "R1", deviceID: strangerID), asset: try makeAsset("r1-again.m4a"), as: TestE2E.strangerIdentity
         )
         try await buffer.phone.save([retry])
         _ = try await processor(over: buffer).processOnce()
@@ -308,30 +454,30 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
                 sleep: sleep
             )
             return RelayProcessor(
-                transport: buffer, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
-                recordingUploads: uploads
+                transport: testSecureTransport(buffer, keys: hubKeys), sidecar: sidecar,
+                dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme", recordingUploads: uploads
             ) { [now] in now }
         }
-        let failed = try CloudRecordFactory.record(
-            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1.m4a")
+        let failed = try sealedUpload(
+            uploadPayload(id: "R1", deviceID: strangerID), asset: try makeAsset("r1.m4a"), as: TestE2E.strangerIdentity
         )
-        let received = try CloudRecordFactory.record(
-            for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
+        let received = try sealedUpload(
+            uploadPayload(id: "R2"), asset: try makeAsset("r2.m4a")
         )
         try await buffer.phone.save([failed, received])
         _ = try await processor().processOnce()
-        XCTAssertEqual(try sidecar.relayOutcome(failed.recordName), "failed:device_not_linked")
-        XCTAssertEqual(try sidecar.relayOutcome(received.recordName), "received")
+        XCTAssertEqual(try sidecar.relayOutcome(failed.plainName), "failed:device_not_linked")
+        XCTAssertEqual(try sidecar.relayOutcome(received.plainName), "received")
         let echoCount = await buffer.echoes.count
 
         try sidecar.wipeSyncState(now: now, keepingRelayToken: true)
-        try sidecar.linkTestDevice("device-x")  // the phone links meanwhile
+        try sidecar.linkTestDevice(strangerID)  // the phone links meanwhile
         _ = try await processor().processOnce()
 
         XCTAssertEqual(enqueued.count, 1, "the failed upload is not ingested without a phone retry")
         let echoesAfter = await buffer.echoes.count
         XCTAssertEqual(echoesAfter, echoCount, "the received upload is not re-echoed")
-        XCTAssertEqual(try sidecar.relayOutcome(failed.recordName), "failed:device_not_linked")
+        XCTAssertEqual(try sidecar.relayOutcome(failed.plainName), "failed:device_not_linked")
     }
 
     // MARK: - Review focus 3: the Mac cannot write the recording
@@ -347,22 +493,22 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
         XCTAssertEqual(echo.payload.status, .failed, "the phone keeps its file and offers Retry")
         XCTAssertFalse(echo.payload.errorMessage?.isEmpty ?? true)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:write_failed")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:write_failed")
         XCTAssertTrue(recordingFiles().isEmpty, "no half-written .m4a or .meta")
         XCTAssertTrue(enqueued.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: asset.path), "the received copy is kept until an ingest succeeds")
     }
 
     func testACopyThatFailsMidwayLeavesNeitherAudioNorSidecar() async throws {
-        // The reservation succeeds; the copy cannot read the source.
-        let asset = try makeAsset()
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: asset.path)
-        let record = try await send(uploadPayload(), asset: asset)
+        // The reservation succeeds; the copy cannot read the source (the decrypted copy).
+        let record = try await send(uploadPayload(), asset: try makeAsset())
 
-        _ = try await makeProcessor().processOnce()
+        _ = try await makeProcessor { audio in
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: audio.path)
+        }.processOnce()
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:write_failed")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:write_failed")
         XCTAssertTrue(recordingFiles().isEmpty, "the reserved .meta is removed with the partial audio")
     }
 
@@ -394,13 +540,13 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     func testAnUploadFromAnUnlinkedDeviceFailsDeviceNotLinkedAndWritesNothing() async throws {
         let asset = try makeAsset()
-        let record = try await send(uploadPayload(deviceID: "device-x"), asset: asset)
+        let record = try await send(uploadPayload(deviceID: strangerID), asset: asset, as: TestE2E.strangerIdentity)
 
         _ = try await makeProcessor().processOnce()
 
-        let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
+        let echo = try XCTUnwrap(try echoes(of: record.recordName, as: TestE2E.strangerIdentity).first)
         XCTAssertEqual(echo.payload.status, .failed)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:device_not_linked")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:device_not_linked")
         XCTAssertTrue(enqueued.isEmpty)
         XCTAssertTrue(recordingFiles().isEmpty)
         XCTAssertTrue(try sidecar.phoneRecordings().isEmpty)
@@ -411,7 +557,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         _ = try await makeProcessor().processOnce()
 
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:device_not_linked")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:device_not_linked")
         XCTAssertTrue(enqueued.isEmpty)
     }
 
@@ -420,14 +566,14 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     func testAnUploadFoundBegunAtStartIsNotIngestedAgainButARetryIs() async throws {
         let record = try await send(uploadPayload(), asset: try makeAsset())
         // The previous run stopped between the claim and the echo.
-        try sidecar.markRelayBegun(record.recordName, at: now)
+        try sidecar.markRelayBegun(record.plainName, at: now)
         let processor = try makeProcessor()
 
         _ = try await processor.processOnce()
 
         XCTAssertTrue(enqueued.isEmpty, "a `begun` upload is never re-applied by the hub itself")
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:outcome_unknown")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:outcome_unknown")
 
         try await send(uploadPayload(), asset: try makeAsset("retry.m4a"))
         _ = try await processor.processOnce()
@@ -447,7 +593,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         _ = try await makeProcessor(sleep: { _ in }).processOnce() // swiftlint:disable:this trailing_closure
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:outcome_unknown")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:outcome_unknown")
     }
 
     func testAHubWithoutAnIngestLeavesUploadsPending() async throws {
@@ -457,14 +603,14 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(pass.handled, 0)
         XCTAssertTrue(try echoes(of: record.recordName).isEmpty)
-        XCTAssertNil(try sidecar.relayPhase(record.recordName))
+        XCTAssertNil(try sidecar.relayPhase(record.plainName))
     }
 
     func testAnUndecodableUploadIsSkipped() async throws {
-        let record = CloudRecord(
+        let record = try TestRelayPhone.seal(CloudRecord(
             recordName: "recupload-bad", zone: .relay, kind: RelayRecordKind.recordingUpload.rawValue,
             modifiedAt: now, payload: Data("{}".utf8)
-        )
+        ))
         try await transport.save([record])
 
         let pass = try await makeProcessor().processOnce()
@@ -480,7 +626,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         _ = try await makeProcessor().processOnce()
 
-        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:wrong_hub")
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:wrong_hub")
         XCTAssertTrue(enqueued.isEmpty)
         XCTAssertTrue(recordingFiles().isEmpty)
     }
