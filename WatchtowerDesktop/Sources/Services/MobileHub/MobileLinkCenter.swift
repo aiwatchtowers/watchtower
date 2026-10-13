@@ -365,14 +365,28 @@ final class MobileLinkCenter {
     /// waiting phone's participant is never swept before the owner decided),
     /// then closes the public link and removes every participant not bound to
     /// a used nonce (spec §2.3). No share call when no link was opened.
+    /// A close whose share calls fail is retried in the background after
+    /// these waits (`sweepRetry`), then left to the next close.
     func closeLink(reason: CloseReason) async {
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil
         lastCloseReason = reason
         refusePendingLinks(closing: reason)
+        if await !sweepShares(reason: reason) { scheduleSweepRetry() }
+    }
+
+    /// Waits before each retry of a failed close's share calls (target 153): bounded, so an iCloud outage costs a
+    /// handful of calls, never a loop.
+    nonisolated static let sweepRetryDelays: [Duration] = [.seconds(60), .seconds(300), .seconds(900), .seconds(3600)]
+    /// The running retry of a failed close; nil when none. Cancelled when the hub stops (`cancelSweepRetry`).
+    @ObservationIgnored private(set) var sweepRetry: Task<Void, Never>?
+
+    /// Closes the public link and removes the unbound participants while the sweep is pending. false: a share
+    /// call failed (logged), the sweep stays pending.
+    private func sweepShares(reason: CloseReason) async -> Bool {
         do {
-            guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return }
+            guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return true }
             let epoch = sweepEpoch
             let shares = self.shares
             try await share { try await shares.setPublicLink(open: false) }
@@ -380,12 +394,35 @@ final class MobileLinkCenter {
             for zone in [CloudZoneID.data, .relay] {
                 try await share { try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") } }
             }
-            guard epoch == sweepEpoch else { return }
+            guard epoch == sweepEpoch else { return true }
             try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
+            return true
         } catch {
             let why = error.localizedDescription
-            logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried at the next close: \(why, privacy: .public)")
+            logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried later: \(why, privacy: .public)")
+            return false
         }
+    }
+
+    /// Retries the sweep after each of `sweepRetryDelays` until one succeeds, the sweep is no longer pending, or a
+    /// QR is on screen (its own close sweeps). One retry runs at a time.
+    private func scheduleSweepRetry() {
+        guard sweepRetry == nil else { return }
+        sweepRetry = Task { [weak self, sleep] in
+            for delay in Self.sweepRetryDelays {
+                await sleep(delay)
+                guard !Task.isCancelled, let self else { return }
+                if self.openCode != nil { break }
+                if await self.sweepShares(reason: .restart) { break }
+            }
+            self?.sweepRetry = nil
+        }
+    }
+
+    /// The hub stops: no share call runs behind it.
+    func cancelSweepRetry() {
+        sweepRetry?.cancel()
+        sweepRetry = nil
     }
 
     // MARK: - Device records (spec §2.3, §5.1)

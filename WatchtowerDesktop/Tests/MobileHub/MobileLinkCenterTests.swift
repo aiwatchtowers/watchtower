@@ -25,6 +25,15 @@ final class LinkTestClock: @unchecked Sendable {
 
 /// The hub's two zone shares in memory: share creation, the public link,
 /// participants, and a log of every call.
+/// The waits a center's injected sleep was asked for; returns at once.
+final class WaitLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waits: [Duration] = []
+
+    var all: [Duration] { lock.withLock { waits } }
+    func append(_ wait: Duration) { lock.withLock { waits.append(wait) } }
+}
+
 final class FakeShareService: ShareService, @unchecked Sendable {
     struct Share: Equatable {
         let url: String
@@ -45,6 +54,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var cancellationAware = false
     /// Call names that park on their gate until the test releases it.
     private var gates: [String: SaveGate] = [:]
+    /// Call names that throw for their next N calls.
+    private var failCounts: [String: Int] = [:]
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -67,6 +78,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     /// Every call throws `CancellationError` when its task is cancelled
     /// (like a cancellation-aware CloudKit await).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
+    /// The next `times` calls named `call` throw.
+    func failNext(_ call: String, times: Int) { lock.withLock { failCounts[call] = times } }
 
     /// A participant (a phone, or a stranger who opened the URL) joins both shares.
     func join(_ userRecordName: String, accepted: Bool = true, zones: [CloudZoneID] = [.data, .relay]) {
@@ -85,8 +98,10 @@ final class FakeShareService: ShareService, @unchecked Sendable {
         let name = String(call.prefix { $0 != ":" })
         let (fails, hangs, aware, gate) = lock.withLock {
             log.append(call)
+            let counted = (failCounts[name] ?? 0) > 0
+            if counted { failCounts[name, default: 0] -= 1 }
             return (
-                failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware,
+                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), cancellationAware,
                 gates.removeValue(forKey: name)
             )
         }
@@ -161,6 +176,7 @@ final class MobileLinkCenterTests: XCTestCase {
         // Ends the expiry timer of an open code.
         await center?.closeAfterLink?.value
         await center?.closeLink(reason: .sheetClosed)
+        center?.cancelSweepRetry()
         center = nil
         keyring = nil
         sidecar = nil
@@ -1902,6 +1918,52 @@ final class MobileLinkCenterTests: XCTestCase {
         await awaitHubCondition("the link closes") { !shares.isLinkOpen }
         XCTAssertNil(center.openCode)
         XCTAssertEqual(sharing.last, HubSharing.none, "the new account has no shares yet")
+    }
+
+    /// Target 153: a close whose share calls fail retries in the background after `sweepRetryDelays`, and stops
+    /// once the sweep went through.
+    func testAFailedCloseIsRetriedUntilTheSweepGoesThrough() async throws {
+        let waits = WaitLog()
+        center = try makeCenter { waits.append($0) }
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.failNext("setPublicLink", times: 2)
+
+        await center.closeLink(reason: .restart)
+        await center.sweepRetry?.value
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "0")
+        XCTAssertEqual(waits.all, Array(MobileLinkCenter.sweepRetryDelays.prefix(2)), "two retries: one failed, one swept")
+        XCTAssertNil(center.sweepRetry)
+    }
+
+    /// The retries are bounded: a sweep that keeps failing stays pending for the next close, with no loop.
+    func testAFailingSweepIsRetriedABoundedNumberOfTimes() async throws {
+        let waits = WaitLog()
+        center = try makeCenter { waits.append($0) }
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.setFailing(["setPublicLink"])
+
+        await center.closeLink(reason: .restart)
+        await center.sweepRetry?.value
+
+        XCTAssertEqual(waits.all, MobileLinkCenter.sweepRetryDelays)
+        XCTAssertEqual(shares.calls.filter { $0.hasPrefix("setPublicLink") }.count, 1 + MobileLinkCenter.sweepRetryDelays.count)
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1")
+        XCTAssertNil(center.sweepRetry)
+    }
+
+    /// Stopping the hub cancels a waiting retry: no share call runs after it.
+    func testCancellingTheRetryStopsIt() async throws {
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.setFailing(["setPublicLink"])
+        await center.closeLink(reason: .restart)
+        let retry = try XCTUnwrap(center.sweepRetry, "the default sleep parks the retry")
+
+        center.cancelSweepRetry()
+        await retry.value
+
+        XCTAssertEqual(shares.calls.filter { $0.hasPrefix("setPublicLink") }.count, 1)
+        XCTAssertNil(center.sweepRetry)
     }
 
     /// #66.3: a Remove that fails while a close is suspended keeps the sweep
