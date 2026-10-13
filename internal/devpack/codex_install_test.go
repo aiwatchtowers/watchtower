@@ -536,6 +536,27 @@ func TestProj04_DedupeRefusesASymlinkOutsideTheFolder(t *testing.T) {
 	info, err := os.Lstat(link)
 	require.NoError(t, err)
 	assert.NotZero(t, info.Mode()&os.ModeSymlink, "a link inside the folder is kept")
+	t.Run("directory link", testProj04DedupeRefusesACodexDirectoryLink)
+}
+
+// A .codex directory that is a symlink leaving the folder is refused the
+// same way: neither file under it is written or removed. Part of
+// TestProj04_DedupeRefusesASymlinkOutsideTheFolder.
+func testProj04DedupeRefusesACodexDirectoryLink(t *testing.T) {
+	ours := `{"x":true,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + ourClaudeStart + `"}]}]}}`
+	folder := t.TempDir()
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "hooks.json")
+	writeTestFile(t, outside, ours)
+	require.NoError(t, os.Symlink(outsideDir, filepath.Join(folder, ".codex")))
+
+	changed, err := dedupeImportedHooks(folder, 7)
+	require.ErrorIs(t, err, ErrSymlinkOutsideFolder)
+	assert.False(t, changed)
+	assert.Equal(t, ours, readTestFile(t, outside), "the outside file stays byte-identical")
+	got, err := os.Readlink(filepath.Join(folder, ".codex"))
+	require.NoError(t, err)
+	assert.Equal(t, outsideDir, got, "the directory link is untouched")
 }
 
 const importedConfigTOML = `# owner's codex settings

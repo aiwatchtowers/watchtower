@@ -452,6 +452,54 @@ func TestProj04_SymlinkOutsideTheFolderIsRefused(t *testing.T) {
 			}
 		}
 	}
+	t.Run("directory link", testProj04DirectoryLinkOutsideTheFolderIsRefused)
+}
+
+// The same refusal holds when the .claude directory itself is a symlink
+// leaving the folder: the settings file under it is a regular file, but a
+// write would still land outside (ask #109). Part of
+// TestProj04_SymlinkOutsideTheFolderIsRefused.
+func testProj04DirectoryLinkOutsideTheFolderIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "settings.local.json")
+	if err := os.Symlink(outsideDir, filepath.Join(dir, ".claude")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	ours := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + testHookCmd + `"}]}]},"model":"sonnet"}`
+	for _, content := range []string{"", `{"model": "sonnet"}`, ours} {
+		if content == "" {
+			_ = os.Remove(outside)
+		} else {
+			writeTestFile(t, outside, content)
+		}
+		ops := map[string]func() (bool, error){
+			"install": func() (bool, error) { return InstallSessionStartHook(dir, testHookCmd, 7) },
+			"remove":  func() (bool, error) { return RemoveSessionStartHook(dir, 7) },
+		}
+		for name, op := range ops {
+			changed, err := op()
+			if content == "" && name == "remove" {
+				if err != nil || changed {
+					t.Fatalf("remove with no settings file: changed=%v err=%v", changed, err)
+				}
+				continue
+			}
+			if !errors.Is(err, ErrSymlinkOutsideFolder) || changed {
+				t.Fatalf("%s through a .claude link leaving the folder: changed=%v err=%v", name, changed, err)
+			}
+			if !strings.Contains(err.Error(), filepath.Join(dir, ".claude")) {
+				t.Fatalf("%s: the error must name the directory link: %v", name, err)
+			}
+			if content == "" {
+				if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("%s: nothing may be created outside the folder, stat err=%v", name, err)
+				}
+			} else if got := readTestFile(t, outside); got != content {
+				t.Fatalf("%s: the outside file must stay byte-identical, got %s", name, got)
+			}
+		}
+	}
 }
 
 // A dangling symlink can never be safely written through: resolution fails

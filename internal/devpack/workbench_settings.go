@@ -851,18 +851,41 @@ func resolveSymlink(file string) (string, error) {
 // root: a symlink whose resolved target lies outside root is refused with
 // ErrSymlinkOutsideFolder, naming the link, its target and the fix first (the
 // Desktop shows the start of the CLI's stderr), so the caller writes nothing
-// anywhere. A link that stays inside root is followed as
-// before.
+// anywhere. The same holds for a directory between root and file (.claude,
+// .codex) that is a symlink leaving root. A link that stays inside root is
+// followed as before.
 func resolveSymlinkInside(file, root string) (string, error) {
-	target, err := resolveSymlink(file)
-	if err != nil || target == file {
-		return target, err
-	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", root, err)
 	}
-	if rel, err := filepath.Rel(realRoot, target); err != nil || !filepath.IsLocal(rel) {
+	outside := func(target string) bool {
+		rel, err := filepath.Rel(realRoot, target)
+		return err != nil || !filepath.IsLocal(rel)
+	}
+	// The nearest existing directory above file decides where a write lands;
+	// one not yet created is made under it.
+	for dir := filepath.Dir(file); dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("inspecting %s: %w", dir, err)
+		}
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
+		if outside(realDir) {
+			return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%w)",
+				dir, realDir, ErrSymlinkOutsideFolder)
+		}
+		break
+	}
+	target, err := resolveSymlink(file)
+	if err != nil || target == file {
+		return target, err
+	}
+	if outside(target) {
 		return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%w)",
 			file, target, ErrSymlinkOutsideFolder)
 	}
