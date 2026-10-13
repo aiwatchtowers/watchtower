@@ -135,7 +135,7 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 	case res := <-resultCh:
 		return res.grant, res.err
 	case <-loginCtx.Done():
-		return nil, fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", loginCtx.Err())
+		return nil, fmt.Errorf("mcpoauth: %w or was cancelled: %w", oauthpage.ErrLoginTimedOut, loginCtx.Err())
 	}
 }
 

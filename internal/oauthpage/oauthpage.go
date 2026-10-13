@@ -34,8 +34,8 @@ const appReturnURL = "watchtower-auth://connected"
 // to read the page if a browser does allow it.
 const closeAttemptMS = "3000"
 
-// ErrLoginTimedOut is what every loopback Login wraps when nobody completed
-// the consent in time — ReturnAfterLogin does not pull the app forward for it.
+// ErrLoginTimedOut is what every loopback Login wraps when its wait for the
+// callback ends (timeout, or the login was cancelled) — ReturnAfterLogin does not pull the app forward for it.
 var ErrLoginTimedOut = errors.New("login timed out")
 
 // Success renders the page served when the provider redirected back with a
@@ -162,14 +162,15 @@ func SetOpenURLForTest(fn func(u string) error) (restore func()) {
 // sign-in) it opens watchtower-auth:// through LaunchServices, so the app
 // comes back to the front and the owner sees the outcome there. The browser
 // cannot be relied on to follow a scripted redirect to a custom scheme, so
-// this is the automatic half of app-return. Skipped when loginErr is a
-// timeout or a cancel: nobody is waiting on the browser then, and pulling
-// the app forward minutes later would only steal focus. A failure to open
+// this is the automatic half of app-return. Skipped when the wait for the
+// callback ran out (loginErr wraps ErrLoginTimedOut): nobody is at the
+// browser then, and pulling the app forward minutes later would only steal
+// focus. A failure after the callback (a slow exchange hitting the
+// deadline included) still brings the app back. A failure to open
 // the app only warns: the sign-in itself is unaffected and the page still
 // has the link.
 func ReturnAfterLogin(appReturn bool, loginErr error, warn io.Writer) {
-	if !appReturn || errors.Is(loginErr, ErrLoginTimedOut) ||
-		errors.Is(loginErr, context.DeadlineExceeded) || errors.Is(loginErr, context.Canceled) {
+	if !appReturn || errors.Is(loginErr, ErrLoginTimedOut) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

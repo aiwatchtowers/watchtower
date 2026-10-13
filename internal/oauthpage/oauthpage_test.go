@@ -103,12 +103,21 @@ func TestReturnAfterLogin_SkipsTimeoutAndCancel(t *testing.T) {
 	for _, loginErr := range []error{
 		fmt.Errorf("%w after %s", ErrLoginTimedOut, "5m0s"),
 		fmt.Errorf("oauth login: %w", fmt.Errorf("%w after %s", ErrLoginTimedOut, "5m0s")),
-		fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", context.DeadlineExceeded),
-		fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", context.Canceled),
+		fmt.Errorf("mcpoauth: %w or was cancelled: %w", ErrLoginTimedOut, context.DeadlineExceeded),
 	} {
 		ReturnAfterLogin(true, loginErr, &bytes.Buffer{})
 		assert.False(t, called, "nobody is at the browser after %v — no focus steal", loginErr)
 	}
+}
+
+func TestReturnAfterLogin_ExchangeDeadlineStillReturns(t *testing.T) {
+	called := false
+	stubOpenURL(t, func(context.Context, string) error { called = true; return nil })
+
+	// The callback arrived, then the exchange ran into the deadline: the owner
+	// has just been in the browser, so the app comes back with the error.
+	ReturnAfterLogin(true, fmt.Errorf("exchanging code for token: %w", context.DeadlineExceeded), &bytes.Buffer{})
+	assert.True(t, called)
 }
 
 func TestReturnAfterLogin_OpenFailureWarns(t *testing.T) {

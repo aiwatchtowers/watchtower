@@ -3,6 +3,7 @@ package mcpoauth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -480,6 +481,9 @@ func TestLogin_ContextCancelled(t *testing.T) {
 	case err := <-resultCh:
 		if err == nil {
 			t.Fatal("Login: want error after context cancellation, got nil")
+		}
+		if !errors.Is(err, oauthpage.ErrLoginTimedOut) {
+			t.Errorf("Login: err = %v, want it to wrap oauthpage.ErrLoginTimedOut", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Login did not return after context cancellation")
