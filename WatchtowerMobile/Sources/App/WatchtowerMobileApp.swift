@@ -41,9 +41,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let subscriber = MetricSubscriber(history: diagnostics.metrics)
         subscriber.register()
         metricSubscriber = subscriber
-        // A launch into the background (a silent push, a prewarm) starts
-        // the replica observations suspended; the scene's first
-        // foreground phase resumes them (`WatchtowerMobileApp`).
+        // A launch that reads `.background` here (a silent push, a prewarm —
+        // and, in a scene-based app, a tap too) starts the replica
+        // observations suspended; the scene's first non-background phase
+        // resumes them (`WatchtowerMobileApp`). Never while hosting XCTest
+        // (the guard above): the tests drive their own gates.
         if application.applicationState == .background {
             MainActor.assumeIsolated { ReplicaObservationGate.shared.setSuspended(true) }
         }
