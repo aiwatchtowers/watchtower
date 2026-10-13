@@ -125,6 +125,11 @@ func generateAndSaveCert(certPath, keyPath string) (tls.Certificate, error) {
 	}, nil
 }
 
+// securityBin is macOS's keychain tool, by absolute path: a bare "security"
+// is a PATH lookup any earlier PATH dir could shadow with a fake that
+// answers "trusted".
+const securityBin = "/usr/bin/security"
+
 // IsCertTrusted checks whether the localhost cert is trusted by macOS for SSL.
 func IsCertTrusted() bool {
 	certPath, _, err := CertPaths()
@@ -134,7 +139,7 @@ func IsCertTrusted() bool {
 	if _, err := os.Stat(certPath); err != nil {
 		return false
 	}
-	cmd := exec.Command("security", "verify-cert", "-c", certPath, "-p", "ssl", "-s", "127.0.0.1")
+	cmd := exec.Command(securityBin, "verify-cert", "-c", certPath, "-p", "ssl", "-s", "127.0.0.1")
 	return cmd.Run() == nil
 }
 
@@ -166,7 +171,7 @@ func TrustCert() error {
 	keychain := loginKeychainPath()
 
 	// Step 1: Import cert into login keychain (Chrome needs this).
-	importCmd := exec.Command("security", "import", certPath, "-k", keychain)
+	importCmd := exec.Command(securityBin, "import", certPath, "-k", keychain)
 	if output, err := importCmd.CombinedOutput(); err != nil {
 		out := strings.TrimSpace(string(output))
 		// "already exists" is fine — skip
@@ -179,7 +184,7 @@ func TrustCert() error {
 	}
 
 	// Step 2: Set trust policy for SSL on this cert.
-	trustCmd := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, certPath)
+	trustCmd := exec.Command(securityBin, "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, certPath)
 	if output, err := trustCmd.CombinedOutput(); err != nil {
 		out := strings.TrimSpace(string(output))
 		if out != "" {
