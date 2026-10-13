@@ -269,34 +269,44 @@ package enum WorkbenchBranchPresentation {
     /// `folder_unreadable` (board #565): the session's folder failed to
     /// resolve for a reason other than not existing; no git ran there.
     package static func folderUnreadableText(_ detail: String) -> String {
-        let base = "That session's folder could not be read — the branch menu cannot work there"
+        let base = "This session's folder could not be read — the branch menu is unavailable"
         return detail.isEmpty ? base + "." : base + " (\(detail))."
     }
 
     /// The note a worktree root gets instead of a status when Go does not
-    /// place the folder in a worktree (board #565): `outside`/`missing`
+    /// place the folder in that worktree (board #565): `outside`/`missing`
     /// envelopes are the main folder's status, `unresolved` is no place at
-    /// all — none is that root's, so its branch menu is off. nil for
-    /// `main`/`worktree` (the caller checks the root those name).
-    package static func worktreeScopeNote(_ status: WorkbenchGitStatus) -> String? {
+    /// all, and a `main` scope or a `worktree` scope naming another root
+    /// resolved the session's folder elsewhere — none is that root's, so its
+    /// branch menu is off. The caller has already checked that the status
+    /// does not name the root itself.
+    package static func worktreeScopeNote(_ status: WorkbenchGitStatus) -> String {
         switch status.folderScope {
         case .outside: folderOutsideTheRepositoryText
         case .missing: folderNotAWorktreeText
         case .unresolved: folderUnreadableText("")
-        case .main, .worktree: nil
+        case .main: folderResolvedToMainText
+        case .worktree: folderResolvedElsewhereText
         }
     }
 
     /// `folder_not_a_worktree` (board #565) for a session folder that no
-    /// longer exists (`missing`, or a detail this app does not know): the
-    /// session's place falls back and the menu with it to the main folder.
+    /// longer exists (`missing`, or a detail this app does not know).
     package static let folderNotAWorktreeText =
-        "That session's worktree is gone — the branch menu shows the main folder."
+        "This session's worktree is gone — the branch menu is unavailable."
 
     /// `folder_not_a_worktree` with detail `outside`: the session's folder
     /// exists but is in none of the repository's worktrees.
     package static let folderOutsideTheRepositoryText =
-        "That session is outside this repository — the branch menu shows the main folder."
+        "This session's folder is outside this repository — the branch menu is unavailable."
+
+    /// A worktree root whose folder Go resolved to the main folder.
+    package static let folderResolvedToMainText =
+        "This session's folder resolved to the main folder, not its worktree — the branch menu is unavailable."
+
+    /// A worktree root whose folder Go resolved to a different worktree.
+    package static let folderResolvedElsewhereText =
+        "This session's folder resolved to another worktree — the branch menu is unavailable."
 
     private static func changeCount(_ count: Int) -> String {
         count == 1 ? "1 change is" : "\(count) changes are"

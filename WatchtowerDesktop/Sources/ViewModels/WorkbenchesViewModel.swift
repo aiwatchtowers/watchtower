@@ -110,8 +110,9 @@ final class WorkbenchesViewModel {
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
     /// The ask link clicked last per workbench, while it runs
-    /// (`clickAskLink`): a newer click cancels it.
-    @ObservationIgnored var askLinkTasks: [Int64: (token: UUID, task: Task<Void, Never>)] = [:]
+    /// (`clickAskLink`): a newer click cancels it, and so does its view
+    /// (`owner`) going away.
+    @ObservationIgnored var askLinkTasks: [Int64: AskLinkInFlight] = [:]
     /// How long an ask link waits for a session brought onto the page to
     /// prove its place. Internal for tests.
     @ObservationIgnored var askPlaceTimeout: Duration = .seconds(3)

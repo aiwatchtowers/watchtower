@@ -1221,7 +1221,7 @@ extension WorkbenchesViewModelGitTests {
             ("folder_not_a_worktree", "missing", WorkbenchBranchPresentation.folderNotAWorktreeText),
             ("folder_not_a_worktree", "outside", WorkbenchBranchPresentation.folderOutsideTheRepositoryText),
             ("folder_unreadable", "reading the folder: permission denied",
-             "That session's folder could not be read — the branch menu cannot work there "
+             "This session's folder could not be read — the branch menu is unavailable "
                 + "(reading the folder: permission denied)."),
             ("git_failed", "listing the worktrees: boom", "git could not read the folder: listing the worktrees: boom")
         ]
@@ -1259,6 +1259,8 @@ extension WorkbenchesViewModelGitTests {
         try await assertMenuOff(scope: "outside", note: WorkbenchBranchPresentation.folderOutsideTheRepositoryText)
         try await assertMenuOff(scope: "missing", note: WorkbenchBranchPresentation.folderNotAWorktreeText)
         try await assertMenuOff(scope: "", note: WorkbenchBranchPresentation.folderUnreadableText(""))
+        try await assertMenuOff(scope: "main", note: WorkbenchBranchPresentation.folderResolvedToMainText)
+        try await assertMenuOff(scope: "worktree", note: WorkbenchBranchPresentation.folderResolvedElsewhereText)
     }
 
     private func assertMenuOff(scope: String, note: String, line: UInt = #line) async throws {

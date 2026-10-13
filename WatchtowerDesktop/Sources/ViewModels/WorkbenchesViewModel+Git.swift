@@ -385,7 +385,6 @@ extension WorkbenchesViewModel {
             gitStatus[key] = nil
             gitStatusErrors[key] = nil
             gitScopeNotes[key] = WorkbenchBranchPresentation.worktreeScopeNote(status)
-                ?? WorkbenchBranchPresentation.folderNotAWorktreeText
             pendingBranchConfirmation[key] = nil
             stopGitWatcher(key: key)
             return

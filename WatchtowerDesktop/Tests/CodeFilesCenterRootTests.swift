@@ -773,11 +773,41 @@ final class CodeFilesActiveRootTests: XCTestCase {
         try "package main\n".write(to: folder.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
         var beeps = 0
 
+        let drawer = UUID()
         let waiting = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
-                                      projectID: project.id, sessionID: sessionID) { beeps += 1 }
-        vm.cancelAskLink(projectID: project.id)
+                                      projectID: project.id, sessionID: sessionID, owner: drawer) { beeps += 1 }
+        vm.cancelAskLink(projectID: project.id, owner: drawer)
         await waiting.value
 
+        XCTAssertEqual(beeps, 0)
+        XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
+    }
+
+    /// Two drawers of one workbench: the one going away cancels only the
+    /// link it started; the other drawer's link runs on until its own
+    /// drawer goes.
+    func testAnotherDrawerGoingAwayLeavesTheLinkInFlight() async throws {
+        try await unplaceSession()
+        let vm = makeVM()
+        vm.askPlaceTimeout = .seconds(30)
+        await vm.reload()
+        vm.setLayout(layout(.board), projectID: project.id)
+        let folder = URL(fileURLWithPath: project.folderPath)
+        try "package main\n".write(to: folder.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+        var beeps = 0
+        let clicked = UUID()
+        let other = UUID()
+
+        let waiting = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
+                                      projectID: project.id, sessionID: sessionID, owner: clicked) { beeps += 1 }
+        vm.cancelAskLink(projectID: project.id, owner: other)
+        XCTAssertEqual(vm.askLinkTasks[project.id]?.owner, clicked, "the other drawer leaves it in flight")
+        XCTAssertFalse(waiting.isCancelled)
+
+        vm.cancelAskLink(projectID: project.id, owner: clicked)
+        await waiting.value
+        XCTAssertTrue(waiting.isCancelled)
+        XCTAssertNil(vm.askLinkTasks[project.id])
         XCTAssertEqual(beeps, 0)
         XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
     }

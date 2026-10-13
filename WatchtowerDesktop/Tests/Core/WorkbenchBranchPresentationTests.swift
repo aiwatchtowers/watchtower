@@ -282,11 +282,11 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         for scope in ["missing", ""] {
             let result = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: scope)
             XCTAssertEqual(Pres.outcome(result).error,
-                           "That session's worktree is gone — the branch menu shows the main folder.", scope)
+                           "This session's worktree is gone — the branch menu is unavailable.", scope)
         }
         let outside = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: "outside")
         XCTAssertEqual(Pres.outcome(outside).error,
-                       "That session is outside this repository — the branch menu shows the main folder.")
+                       "This session's folder is outside this repository — the branch menu is unavailable.")
     }
 
     /// A session folder that could not be read names the OS error; a switch
@@ -294,11 +294,11 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     func testFolderUnreadableRefusalText() {
         let detail = "reading the folder: lstat /tmp/x: permission denied"
         let result = WorkbenchGitSwitchResult(refused: "folder_unreadable", refusedDetail: detail)
-        let text = "That session's folder could not be read — the branch menu cannot work there (\(detail))."
+        let text = "This session's folder could not be read — the branch menu is unavailable (\(detail))."
         XCTAssertEqual(Pres.outcome(result).error, text)
         XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: detail), text)
         XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: ""),
-                       "That session's folder could not be read — the branch menu cannot work there.")
+                       "This session's folder could not be read — the branch menu is unavailable.")
     }
 
     /// A worktree root Go does not place in a worktree gets a note instead
@@ -312,8 +312,13 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.worktreeScopeNote(status("outside")), Pres.folderOutsideTheRepositoryText)
         XCTAssertEqual(Pres.worktreeScopeNote(status("")), Pres.folderUnreadableText(""))
         XCTAssertEqual(Pres.worktreeScopeNote(status("bogus")), Pres.folderUnreadableText(""))
-        XCTAssertNil(Pres.worktreeScopeNote(status("worktree")))
-        XCTAssertNil(Pres.worktreeScopeNote(status("main")))
+        XCTAssertEqual(Pres.worktreeScopeNote(status("worktree")), Pres.folderResolvedElsewhereText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("main")), Pres.folderResolvedToMainText)
+        for note in [Pres.folderNotAWorktreeText, Pres.folderOutsideTheRepositoryText, Pres.folderUnreadableText(""),
+                     Pres.folderResolvedToMainText, Pres.folderResolvedElsewhereText] {
+            XCTAssertTrue(note.hasSuffix("the branch menu is unavailable."), note)
+        }
+        XCTAssertFalse(Pres.folderResolvedElsewhereText.contains("gone"))
     }
 
     /// A branch list refused for its folder decodes the refusal.
