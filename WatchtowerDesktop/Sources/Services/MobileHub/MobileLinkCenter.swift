@@ -521,16 +521,26 @@ final class MobileLinkCenter {
     /// Whether any phone is linked: the publisher and the CLI companions
     /// skip their work without one (board #724). An unreadable sidecar
     /// counts as linked, so a read failure never stops a linked phone's
-    /// updates.
+    /// updates. Called every few seconds, so a failure streak logs one
+    /// error at its start and one notice when the read works again.
     nonisolated static func hasLinkedPhone(_ sidecar: HubSyncState) -> Bool {
+        let logger = Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
         do {
-            return try sidecar.hasLinkedDevice()
+            let linked = try sidecar.hasLinkedDevice()
+            if linkedPhoneReadFailing.withLock({ failing in defer { failing = false }; return failing }) {
+                logger.notice("linked phones readable again")
+            }
+            return linked
         } catch {
-            Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
-                .error("linked phones unreadable, publishing anyway: \(error.localizedDescription, privacy: .public)")
+            if !linkedPhoneReadFailing.withLock({ failing in defer { failing = true }; return failing }) {
+                logger.error("linked phones unreadable, publishing anyway: \(error.localizedDescription, privacy: .public)")
+            }
             return true
         }
     }
+
+    /// The linked-phone read is in a failure streak (logged once).
+    nonisolated private static let linkedPhoneReadFailing = OSAllocatedUnfairLock(initialState: false)
 
     // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
