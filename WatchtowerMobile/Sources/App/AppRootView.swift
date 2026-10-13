@@ -14,9 +14,7 @@ struct AppRootView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let failure = root.failure {
-            BootFailureView(message: failure)
-        } else if root.showsOnboarding {
+        if root.showsOnboarding {
             OnboardingView()
         } else {
             RootTabView()
@@ -39,8 +37,9 @@ struct AppRootView: View {
     }
 }
 
-/// The link's notice above the tabs (spec §9): moved and stale offer a
-/// new scan; a "Not sent" or a kept-recording report can be closed.
+/// The link's notice above the tabs (spec §9): stale offers a new scan;
+/// "<Mac> removed this phone", a "Not sent" or a kept-recording report can
+/// be closed.
 struct LinkNoticeBanner: View {
     @Environment(LinkingViewModel.self) private var linking
     let notice: LinkNotice
@@ -53,7 +52,7 @@ struct LinkNoticeBanner: View {
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             switch notice {
-            case .moved, .stale, .encryptionReScan:
+            case .stale, .encryptionReScan:
                 // A large control: the bordered shape is the hit area, and
                 // a frame outside it would not grow it to 44 pt.
                 Button("Scan") { linking.startScan() }

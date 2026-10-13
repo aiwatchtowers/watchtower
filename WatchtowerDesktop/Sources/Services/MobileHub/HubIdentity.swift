@@ -143,6 +143,9 @@ struct HubHostInfo: Sendable {
 /// each connected Slack, Google and Jira account, at most 20. Only those
 /// three columns are read, so no token or secret can reach the payload.
 enum HubAccountRows {
+    /// `@Sendable` so `DatabasePool.read` takes it as is: a static function
+    /// captures nothing.
+    @Sendable
     static func fetch(_ db: Database) throws -> [HeartbeatAccount] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT kind, label, status FROM (

@@ -25,7 +25,7 @@ final class AskFormTests: XCTestCase {
         let drafts = AskDraftStore()
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: drafts)
         let starter = SessionStarter.sending(through: outbox, store: store)
-        await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
+        await outbox.setAppliedObserver(HubSession.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
         return Fixture(store: store, outbox: outbox, drafts: drafts, answerer: answerer, starter: starter)
     }
 

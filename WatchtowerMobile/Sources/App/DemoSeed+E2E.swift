@@ -44,20 +44,26 @@ extension DemoSeed {
         SecureTransport(inner: inner, keys: DemoHubKeys(seq: seq), rollback: InMemoryRollbackGuard())
     }
 
-    /// The demo hub's seqs: a ceiling persisted in `defaults` (`SeqAllocator` blocks), so each launch's seed is
-    /// newer than what the persisted replica holds (it refuses an older `(epoch, seq)` of a record) whatever the
-    /// clock does. The first launch with no ceiling starts above `now` in microseconds, where the seqs of the
-    /// builds that took them from the clock ended.
-    static func hubSeq(defaults: UserDefaults, now: Date) -> SeqAllocator {
+    /// A demo hub's seqs: a ceiling persisted in `defaults` per demo Mac (`SeqAllocator` blocks), so each
+    /// launch's seed is newer than what that Mac's persisted replica holds (it refuses an older `(epoch, seq)` of a
+    /// record) whatever the clock does. The first launch with no ceiling starts above `now` in microseconds, where
+    /// the seqs of the builds that took them from the clock ended.
+    static func hubSeq(defaults: UserDefaults, now: Date, hubID: String = primary.hubID) -> SeqAllocator {
         nonisolated(unsafe) let defaults = defaults
+        let key = hubSeqCeilingKey(hubID: hubID)
         let floor = UInt64(max(0, now.timeIntervalSince1970 * 1_000_000))
         return SeqAllocator(
-            load: { defaults.string(forKey: hubSeqCeilingKey).flatMap(UInt64.init) ?? floor },
-            store: { defaults.set(String($0), forKey: hubSeqCeilingKey) }
+            load: { defaults.string(forKey: key).flatMap(UInt64.init) ?? floor },
+            store: { defaults.set(String($0), forKey: key) }
         )
     }
 
+    /// The primary demo Mac keeps the key the single-hub demo used.
     static let hubSeqCeilingKey = "demo.hubSeqCeiling"
+
+    static func hubSeqCeilingKey(hubID: String) -> String {
+        hubID == primary.hubID ? hubSeqCeilingKey : "\(hubSeqCeilingKey).\(hubID)"
+    }
     #endif
 }
 

@@ -200,7 +200,7 @@ final class RecorderTests: XCTestCase {
         let rig = try makeRecorderRig(store: store) { try await sleeper.sleep($0) }
         let suspension = DatabaseSuspension { NotificationCenter.default.post(name: $0, object: nil) }
         let tasks = FakeBackgroundTasks()
-        AppEnvironment.holdReplica(
+        HubSession.holdReplica(
             for: rig.controller,
             suspension: suspension,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true }

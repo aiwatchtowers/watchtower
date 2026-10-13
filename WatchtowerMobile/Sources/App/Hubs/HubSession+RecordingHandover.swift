@@ -2,7 +2,7 @@ import Foundation
 import os
 import WatchtowerSync
 
-/// What adopting the held recordings did (`AppEnvironment.adoptHeld`).
+/// What adopting the held recordings did (`HubSession.adoptHeld`).
 struct HeldAdoption: Equatable, Sendable {
     /// Held recordings whose audio was gone, or too short to register:
     /// they cannot be sent ("Not sent").
@@ -12,8 +12,8 @@ struct HeldAdoption: Equatable, Sendable {
     var problem: String?
 }
 
-/// What a wipe did with the outgoing environment's recordings
-/// (`AppEnvironment.handOverRecordings`).
+/// What a wipe did with the outgoing session's recordings
+/// (`HubSession.handOverRecordings`).
 struct RecordingHandover: Equatable, Sendable {
     /// Recordings still on their way to the Mac that cannot be held (no
     /// audio, over the size cap, or not carried on an account change).
@@ -23,6 +23,20 @@ struct RecordingHandover: Equatable, Sendable {
     /// Why some recordings could not be read: their audio was moved out of
     /// the sweep's reach (`.held/unreadable`), but it is not sent.
     var problem: String?
+}
+
+/// Serialises the hold's reads and writes across every hub's session
+/// (multi-hub spec §5.4): the manifest is one file shared by all hubs, so
+/// each load-modify-save (and each move of held audio) runs whole here,
+/// never interleaved with another session's. A read for display only
+/// (`reloadHeldRecordings`) reads past it: the manifest is written
+/// atomically.
+actor HoldGate {
+    static let shared = HoldGate()
+
+    func run<T>(_ body: () throws -> T) rethrows -> T {
+        try body()
+    }
 }
 
 /// Recordings across a wipe (board #63). A wipe never deletes audio the Mac
@@ -36,21 +50,22 @@ struct RecordingHandover: Equatable, Sendable {
 ///   adopted recording is registered again and sealed fresh under the
 ///   current link (`RecordingUploader.register` drops its stale seal files);
 ///   one never adopted here is swept;
-/// - an environment adopts the held recordings of its own hub only, so a
+/// - a session adopts the held recordings of its own hub only, so a
 ///   recording never reaches another owner's Mac; the others wait, listed
 ///   in Recordings as waiting for their Mac;
 /// - on an iCloud account change nothing is carried: the recordings were
 ///   made for the old account's Mac, and are reported "Not sent".
-extension AppEnvironment {
+extension HubSession {
     nonisolated private static let handoverLogger = Logger(subsystem: "WatchtowerMobile", category: "RecordingHandover")
 
-    /// After the outgoing environment's shutdown (its boot, and so its own
+    /// After the outgoing session's shutdown (its boot, and so its own
     /// launch recovery, has ended): captures still `recording` are
     /// finalized from their files, then the recordings are held for this
-    /// environment's hub (`keep`), or counted lost. `stoppedCapture` is the
+    /// session's hub (`keep`), or counted lost. `stoppedCapture` is the
     /// capture the wipe stopped (`PhoneRecorderController.stopForWipe`).
     func handOverRecordings(stoppedCapture: String?, keep: Bool) async -> RecordingHandover {
-        guard let hold else { return RecordingHandover() }
+        guard let hold, let recordings = uploader.directory else { return RecordingHandover() }
+        let gate = HoldGate.shared
         var handover = RecordingHandover()
         var unreadable: String?
         do {
@@ -79,9 +94,10 @@ extension AppEnvironment {
                 }
             }
             if !keep {
-                handover.lost += try hold.dropAll()
+                handover.lost += try await gate.run { try hold.dropAll(recordingsDirectory: recordings) }
             }
-            try hold.hold(held)
+            let toHold = held
+            try await gate.run { try hold.hold(toHold, from: recordings) }
             handover.stoppedCaptureKept = stoppedCapture.map { id in held.contains { $0.id == id } } ?? false
         } catch {
             unreadable = error.localizedDescription
@@ -89,7 +105,7 @@ extension AppEnvironment {
         if let reason = unreadable {
             Self.handoverLogger.error("recordings not handed over: \(reason, privacy: .public)")
             do {
-                let (moved, failures) = try hold.protectUnreadable()
+                let (moved, failures) = try await gate.run { try hold.protectUnreadable(in: recordings) }
                 handover.problem = "Some recordings couldn't be read (\(reason)): their audio stays on this iPhone, unsent"
                     + (moved == 1 ? " (1 file)" : " (\(moved) files)")
                 if !failures.isEmpty {
@@ -147,16 +163,32 @@ extension AppEnvironment {
         return heartbeat.macName
     }
 
+    /// Reads the hold's list again (another hub's removal held its
+    /// recordings): Recordings shows them as waiting for their Mac. Adopts
+    /// nothing; that stays the boot's.
+    func reloadHeldRecordings() {
+        guard let hold else { return }
+        do {
+            heldRecordings = try hold.load()
+        } catch {
+            Self.handoverLogger.error("held recordings not listed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// At boot, before the launch sweep: the held recordings of this
-    /// environment's hub become `waiting` rows again (sent once a device id
+    /// session's hub become `waiting` rows again (sent once a device id
     /// is set); a recording whose row is already here only leaves the hold.
-    /// Held recordings of other hubs stay held (`heldRecordings`).
+    /// Held recordings of other hubs stay held (`heldRecordings`). Every
+    /// session adopts at its boot, several at once: each touch of the hold
+    /// goes through `HoldGate`, and the manifest is edited by id against
+    /// its current content, never saved from this boot's first read.
     func adoptHeld() async -> HeldAdoption {
-        guard let hold else { return HeldAdoption() }
+        guard let hold, let recordings = uploader.directory else { return HeldAdoption() }
+        let gate = HoldGate.shared
         var report = HeldAdoption()
         let held: [HeldRecording]
         do {
-            held = try hold.load()
+            held = try await gate.run { try hold.load() }
         } catch {
             report.problem = "Held recordings couldn't be read (\(error.localizedDescription))"
             return report
@@ -169,11 +201,11 @@ extension AppEnvironment {
                     // Held but never wiped (a kill, or a replica that could
                     // not be removed): the row is here, the audio goes back
                     // next to it. A failed move keeps the entry held.
-                    _ = try hold.restoreAudio(of: recording)
+                    _ = try await gate.run { try hold.restoreAudio(of: recording, to: recordings) }
                     settled.insert(recording.id)
                     continue
                 }
-                guard let audio = try hold.restoreAudio(of: recording) else {
+                guard let audio = try await gate.run({ try hold.restoreAudio(of: recording, to: recordings) }) else {
                     settled.insert(recording.id)
                     report.lost += 1
                     continue
@@ -193,7 +225,7 @@ extension AppEnvironment {
                     settled.insert(recording.id)
                 } catch {
                     // Back out of the sweep's reach until the next boot.
-                    try hold.hold([recording])
+                    try await gate.run { try hold.hold([recording], from: recordings) }
                     throw error
                 }
             } catch {
@@ -204,8 +236,11 @@ extension AppEnvironment {
             }
         }
         do {
-            try hold.remove(ids: settled)
-            heldRecordings = try hold.load()
+            let adopted = settled
+            heldRecordings = try await gate.run {
+                try hold.remove(ids: adopted)
+                return try hold.load()
+            }
         } catch {
             failures.append(error.localizedDescription)
         }

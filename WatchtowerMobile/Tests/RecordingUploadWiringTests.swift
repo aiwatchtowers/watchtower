@@ -12,7 +12,7 @@ import XCTest
 @MainActor
 final class RecordingUploadWiringTests: XCTestCase {
     private struct Wired {
-        let env: AppEnvironment
+        let env: HubSession
         let transport: InMemoryCloudTransport
         let engine: FakeAudioEngine
         let clock: FakeClock
@@ -30,13 +30,14 @@ final class RecordingUploadWiringTests: XCTestCase {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let directory = try makeRecordingsDirectory()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: gate ?? transport,
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
             keys: keys,
             defaults: try makeDefaults(),
             recordingsDirectory: directory,
+            hold: RecordingHold(directory: directory.appendingPathComponent(".held", isDirectory: true)),
             notifications: notifications
         ) { uploader in
             PhoneRecorderController(
@@ -113,8 +114,8 @@ final class RecordingUploadWiringTests: XCTestCase {
         let directory = try makeRecordingsDirectory()
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let launch: (Date) throws -> AppEnvironment = { now in
-            let env = try AppEnvironment(
+        let launch: (Date) throws -> HubSession = { now in
+            let env = try HubSession(
                 transport: transport,
                 replicaPath: path,
                 transportKind: .inMemoryDemo,
@@ -296,7 +297,7 @@ final class RecordingUploadWiringTests: XCTestCase {
             let hold = try XCTUnwrap(wired.env.hold)
             let saved = try XCTUnwrap(wired.env.recorder.savedRecording)
             let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: saved.id))
-            try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)])
+            try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)], from: wired.directory)
             try assertClass(of: hold.directory, classC, set, "the hold folder")
             try assertClass(
                 of: hold.directory.appendingPathComponent("manifest.json"), classC, set,
@@ -368,7 +369,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         try await TestPhone.hub(over: transport).save(
             try DemoSeed.records(now: clock.now).filter { $0.recordName == HeartbeatPayload.recordName })
         let engine = FakeAudioEngine()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: transport,
             replicaPath: replicaPath,
             transportKind: .cloudKit,

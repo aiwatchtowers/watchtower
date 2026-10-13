@@ -9,6 +9,25 @@ final class TransportStoreTests: XCTestCase {
         CloudRecord(recordName: name, zone: zone, kind: "target", modifiedAt: stamp, payload: Data(payload.utf8))
     }
 
+    /// A queued save is pending until the send is acknowledged; another
+    /// zone's row of the same name is not this one.
+    func testIsPendingFromTheQueueUntilTheSendIsAcknowledged() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .relay))
+
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertTrue(try store.isPending(recordName: "device-1", zone: .relay))
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .data), "another zone")
+
+        try store.clearPending(saves: [(name: "device-1", zone: .relay, sentModifiedAt: stamp)], deletes: [])
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .relay), "acknowledged")
+
+        try store.enqueueDelete(recordNames: ["device-2"], zone: .relay)
+        XCTAssertTrue(try store.isPending(recordName: "device-2", zone: .relay), "a queued delete waits too")
+        try store.dropPending(recordName: "device-2", zone: .relay)
+        XCTAssertFalse(try store.isPending(recordName: "device-2", zone: .relay), "removed")
+    }
+
     func testChangesMirrorInMemorySemantics() throws {
         let store = try TransportStore.inMemory()
         try store.bufferChanged([record("target-1"), record("target-2")])

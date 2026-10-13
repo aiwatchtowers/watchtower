@@ -943,6 +943,21 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
     }
 
+    /// A recordings folder holding folders (`phone-recordings` holds the
+    /// per-hub folders under `hubs/`): the sweep deletes files only.
+    func testOrphanSweepLeavesSubdirectoriesAlone() async throws {
+        let (uploader, _, _) = try makeStack()
+        let nested = dir.appendingPathComponent("hubs/hub-acme", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let nestedAudio = nested.appendingPathComponent("rec-1.m4a")
+        try Data(repeating: 0x5A, count: 256).write(to: nestedAudio)
+
+        let removed = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(removed, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nestedAudio.path), "another hub's folder is not this sweep's")
+    }
+
     func testOnlyARemoteFailureOffersRetry() async throws {
         let (uploader, store, _) = try makeStack()
         let recording = try await register(uploader, file: try makeAudioFile())

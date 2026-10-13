@@ -254,6 +254,19 @@ public final class TransportStore: Sendable {
         }
     }
 
+    /// Whether `recordName` in `zone` still waits in the send queue (a
+    /// save or a delete CloudKit has not acknowledged yet). The phone's
+    /// unlink reads it to wait, bounded, for its `unlinked` record to go.
+    public func isPending(recordName: String, zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM pending WHERE record_name = ? AND zone = ?)",
+                arguments: [recordName, zone.rawValue]
+            ) ?? false
+        }
+    }
+
     func clearPending(
         saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)],
         deletes: [(name: String, zone: CloudZoneID)]

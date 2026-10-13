@@ -36,12 +36,14 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
 }
 
 /// The hold: recordings carried across a wipe, kept outside the replica in
-/// the recordings folder's hidden `.held` folder with a JSON manifest. A
-/// hidden folder is out of the launch sweep's reach (it skips hidden
-/// files), so held audio survives every boot, a failed restart and a kill,
-/// until its hub's environment adopts it (`AppEnvironment.adoptHeld`).
-/// Files that could not be classified (the ledger was unreadable) go to
-/// `.held/unreadable`: kept, never sent.
+/// a hidden `.held` folder with a JSON manifest, shared by every hub
+/// (`HubPaths.holdDirectory`). A hidden folder is out of the launch sweep's
+/// reach (it skips hidden files), so held audio survives every boot, a
+/// failed restart and a kill, until its hub's session adopts it
+/// (`HubSession.adoptHeld`). Each move in or out names the hub's own
+/// recordings folder (`recordingsDirectory`). Files that could not be
+/// classified (the ledger was unreadable) go to `.held/unreadable`: kept,
+/// never sent.
 ///
 /// File protection (mobile E2E D8): the folders and the manifest are class C
 /// (`completeUntilFirstUserAuthentication`), so a wipe or a boot while the
@@ -49,16 +51,16 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
 /// writes the manifest and hands the audio over; the manifest holds metadata
 /// only (titles, times, the Mac's name). Moved audio keeps its own class
 /// (`completeUnlessOpen` for a capture). Should an adoption still fail, it
-/// runs again after unlock (`AppEnvironment.keysBecameAvailable`).
+/// runs again after unlock (`HubSession.keysBecameAvailable`).
 struct RecordingHold {
+    /// The `.held` folder itself.
     let directory: URL
 
-    init(recordingsDirectory: URL) {
-        directory = recordingsDirectory.appendingPathComponent(".held", isDirectory: true)
+    init(directory: URL) {
+        self.directory = directory
     }
 
     private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
-    private var recordingsDirectory: URL { directory.deletingLastPathComponent() }
 
     /// Every held recording; empty when nothing is held.
     func load() throws -> [HeldRecording] {
@@ -78,11 +80,11 @@ struct RecordingHold {
         try FileProtection.write(try JSONEncoder().encode(held), to: manifestURL, as: FileProtection.ciphertext)
     }
 
-    /// Adds `recordings` (an entry with a held id is replaced): the
-    /// manifest is written first, then each file moves in, so a crash in
-    /// between leaves a listed file in the recordings folder, which
-    /// `audioURL` still finds.
-    func hold(_ recordings: [HeldRecording]) throws {
+    /// Adds `recordings` (an entry with a held id is replaced), moving
+    /// their audio in from `recordingsDirectory`: the manifest is written
+    /// first, then each file moves in, so a crash in between leaves a
+    /// listed file in the recordings folder, which `audioURL` still finds.
+    func hold(_ recordings: [HeldRecording], from recordingsDirectory: URL) throws {
         guard !recordings.isEmpty else { return }
         let ids = Set(recordings.map(\.id))
         try save(try load().filter { !ids.contains($0.id) } + recordings)
@@ -93,17 +95,18 @@ struct RecordingHold {
         }
     }
 
-    /// Where a held recording's audio is now; nil when it is gone.
-    func audioURL(of recording: HeldRecording) -> URL? {
+    /// Where a held recording's audio is now (the hold, or
+    /// `recordingsDirectory` after a crash mid-move); nil when it is gone.
+    func audioURL(of recording: HeldRecording, recordingsDirectory: URL) -> URL? {
         [directory, recordingsDirectory]
             .map { $0.appendingPathComponent(recording.fileName) }
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    /// Moves a held recording's audio back into the recordings folder and
+    /// Moves a held recording's audio back into `recordingsDirectory` and
     /// returns it there; nil when the audio is gone.
-    func restoreAudio(of recording: HeldRecording) throws -> URL? {
-        guard let current = audioURL(of: recording) else { return nil }
+    func restoreAudio(of recording: HeldRecording, to recordingsDirectory: URL) throws -> URL? {
+        guard let current = audioURL(of: recording, recordingsDirectory: recordingsDirectory) else { return nil }
         let target = recordingsDirectory.appendingPathComponent(recording.fileName)
         if current != target {
             try FileManager.default.moveItem(at: current, to: target)
@@ -119,13 +122,14 @@ struct RecordingHold {
     }
 
     /// Deletes every held recording and its audio (an iCloud account
-    /// change: the recordings were made for the old account's Macs).
+    /// change: the recordings were made for the old account's Macs); audio
+    /// a crash left mid-move is looked for in `recordingsDirectory`.
     /// Returns how many there were.
     @discardableResult
-    func dropAll() throws -> Int {
+    func dropAll(recordingsDirectory: URL) throws -> Int {
         let held = try load()
         for recording in held {
-            if let url = audioURL(of: recording) {
+            if let url = audioURL(of: recording, recordingsDirectory: recordingsDirectory) {
                 try FileManager.default.removeItem(at: url)
             }
         }
@@ -133,13 +137,13 @@ struct RecordingHold {
         return held.count
     }
 
-    /// The ledger could not be read: every audio file still in the
-    /// recordings folder moves to `.held/unreadable`, out of the sweep's
+    /// The ledger could not be read: every audio file still in
+    /// `recordingsDirectory` moves to `.held/unreadable`, out of the sweep's
     /// reach. A name already taken there gets a numbered one; a file that
     /// cannot move does not stop the others. Returns how many moved and the
     /// failures.
     @discardableResult
-    func protectUnreadable() throws -> (moved: Int, failures: [String]) {
+    func protectUnreadable(in recordingsDirectory: URL) throws -> (moved: Int, failures: [String]) {
         let unreadable = directory.appendingPathComponent("unreadable", isDirectory: true)
         let files = try FileManager.default.contentsOfDirectory(
             at: recordingsDirectory,

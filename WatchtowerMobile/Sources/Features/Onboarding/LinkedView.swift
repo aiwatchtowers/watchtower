@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Step 6: "Linked to <Mac name>". Continue asks for notification
-/// permission, then opens Now.
+/// "Linked to <Mac name>". Continue asks for notification permission, then
+/// opens Now.
 struct LinkedView: View {
     @Environment(LinkingViewModel.self) private var linking
     let macName: String
@@ -15,35 +15,6 @@ struct LinkedView: View {
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
-        }
-    }
-}
-
-/// Step 6's prompt: the phone is linked to another Mac.
-struct SwitchMacView: View {
-    @Environment(LinkingViewModel.self) private var linking
-    let old: String
-    let new: String
-
-    var body: some View {
-        LinkOutcomeLayout(
-            systemImage: "arrow.left.arrow.right",
-            title: LinkingViewModel.switchPrompt(from: old, to: new),
-            detail: "This phone unlinks from \(old) first. Changes still waiting for it are not sent."
-        ) {
-            Button {
-                Task { await linking.confirmSwitch(true) }
-            } label: {
-                Text("Switch")
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.borderedProminent)
-            Button {
-                Task { await linking.confirmSwitch(false) }
-            } label: {
-                Text("Keep \(old)")
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
         }
     }
 }

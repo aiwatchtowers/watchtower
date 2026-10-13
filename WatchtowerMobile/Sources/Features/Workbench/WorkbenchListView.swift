@@ -21,6 +21,7 @@ struct WorkbenchListView: View {
         NavigationStack {
             content
                 .navigationTitle("Workbenches")
+                .hubSwitcher()
                 .navigationDestination(for: WorkbenchRoute.self) { route in
                     WorkbenchView(replica: replica, writer: env.boardWriter, workbenchID: route.id)
                 }

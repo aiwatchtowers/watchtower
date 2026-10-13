@@ -74,6 +74,12 @@ struct RootTabView: View {
                     .tag(tab)
             }
         }
+        // A hub switch rebuilds the tabs, so every tab's stack starts at
+        // its root (multi-hub spec §5.6). Only the tabs: the recorder's
+        // cover and the REC bar below stay outside it, so the recorder
+        // that owns the microphone or the screen (`env.recorder`, maybe
+        // another hub's) stays on screen across the switch.
+        .id(env.activeHubID)
         // A minimized capture keeps a red bar above everything: tap to
         // return to the recorder.
         .safeAreaInset(edge: .top, spacing: 0) {

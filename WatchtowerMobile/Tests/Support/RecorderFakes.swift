@@ -35,6 +35,9 @@ final class FakeAudioEngine: AudioCaptureEngine {
     static let unclamped: TimeInterval = 1_000_000_000
     var fileDuration: TimeInterval? = FakeAudioEngine.unclamped
     var holdFinish = false
+    /// Keeps `requestPermission` suspended until `releasePermission()`.
+    var holdPermission = false
+    private var permissionWaiter: CheckedContinuation<Void, Never>?
     var resumeError: (any Error)?
     private(set) var begunURLs: [URL] = []
     private(set) var pauseCount = 0
@@ -44,7 +47,16 @@ final class FakeAudioEngine: AudioCaptureEngine {
     private var finishWaiter: CheckedContinuation<Void, Never>?
 
     func requestPermission() async -> Bool {
-        permissionGranted
+        if holdPermission {
+            await withCheckedContinuation { permissionWaiter = $0 }
+        }
+        return permissionGranted
+    }
+
+    /// Answers a permission request `holdPermission` kept waiting.
+    func releasePermission() {
+        permissionWaiter?.resume()
+        permissionWaiter = nil
     }
 
     func begin(url: URL) throws {
