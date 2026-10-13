@@ -10,11 +10,6 @@ extension WorkbenchesViewModel {
         summaries.first { $0.id == drilledWorkbenchID }?.project
     }
 
-    /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
-    var drilledSessions: [TerminalSession] {
-        drilledWorkbenchID.map { orderedSessions(projectID: $0) } ?? []
-    }
-
     /// A session list in the panel's order: stable while the owner switches
     /// sessions — opening one never moves it — and changed only by a drag.
     /// `projectID` nil = the standalone terminals.
@@ -23,18 +18,9 @@ extension WorkbenchesViewModel {
         return TerminalSessionOrder.apply(rows, saved: sessionOrder(projectID: projectID))
     }
 
-    /// A drag in a session list; the new order is saved for that list.
-    /// `displayed` is the list the drag's offsets index — the one the view
-    /// rendered, not a re-read that a reload may have changed meanwhile.
-    func moveSessions(_ displayed: [TerminalSession], projectID: Int64?, from source: IndexSet, to destination: Int) {
-        let order = TerminalSessionOrder.move(displayed, from: source, to: destination)
-        sessionOrders[projectID] = order
-        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(workbenchID: projectID))
-    }
-
     /// Cached once dragged: UserDefaults is not observed, the cache is what
     /// re-renders the list after a drag.
-    private func sessionOrder(projectID: Int64?) -> [Int64] {
+    func sessionOrder(projectID: Int64?) -> [Int64] {
         if let cached = sessionOrders[projectID] { return cached }
         let key = TerminalSessionOrder.key(workbenchID: projectID)
         guard let raw = defaults.array(forKey: key) else { return [] }
@@ -97,7 +83,7 @@ extension WorkbenchesViewModel {
         return activeSessionID(projectID: projectID).flatMap { session($0, projectID: projectID) }
     }
 
-    private func visibleSession(projectID: Int64) -> WorkspacePane? {
+    func visibleSession(projectID: Int64) -> WorkspacePane? {
         let layout = layout(projectID: projectID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
         return candidates.first { if case .session = $0 { true } else { false } }
@@ -143,21 +129,6 @@ extension WorkbenchesViewModel {
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
         panelVisible = true
-    }
-
-    /// ⌘1…⌘9: the n-th session of the workbench on screen, in the panel's
-    /// order, opened like a panel click. Out of range, or no workbench
-    /// page: nothing happens.
-    func openSession(atShortcut n: Int) async {
-        guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
-        let ticket = beginSwitch(projectID: projectID)
-        // With the panel hidden nothing may have read the list yet.
-        if terminalSessions[projectID] == nil {
-            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
-        }
-        let rows = orderedSessions(projectID: projectID)
-        guard n <= rows.count else { return }
-        await showSession(id: rows[n - 1].id, ticket: ticket)
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).

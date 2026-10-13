@@ -27,10 +27,11 @@ extension WorkbenchesViewModel {
     }
 
     /// The palette's sections for `query` (`GoToRanking`): the page's own
-    /// sessions in the panel's order first, when a workbench page is shown.
+    /// sessions first, when a workbench page is shown — the panel's main
+    /// list, then its finished group, the session switcher's order (#480).
     func goToSections(query: String) -> [GoToSection] {
         let current = selectedWorkbenchID.map {
-            GoToRanking.Current(workbenchID: $0, orderedSessions: orderedSessions(projectID: $0))
+            GoToRanking.Current(workbenchID: $0, orderedSessions: panelOrderedSessions(projectID: $0))
         }
         return GoToRanking.results(query: query, current: current, sessions: goToSessions, workbenches: switcherSummaries)
     }

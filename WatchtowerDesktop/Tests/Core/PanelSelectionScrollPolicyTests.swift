@@ -66,4 +66,20 @@ final class PanelSelectionScrollPolicyTests: XCTestCase {
         XCTAssertEqual(policy.panelScrollTarget(selecting: 5, rows: [5, 4]), 5)
         XCTAssertEqual(policy.panelScrollTarget(selecting: 4, rows: [5, 4]), 4)
     }
+
+    /// #480: a row pinned under the folded group resumes into its main
+    /// slot (or the reverse) with no new selection — the scroll follows it.
+    func testMovedSelectionFollowsTheSameRowToANewPlace() {
+        let header: Int64 = -1
+        XCTAssertEqual(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [header, 4], to: [4]), 4)
+        XCTAssertEqual(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [4], to: [header, 4]), 4)
+    }
+
+    func testMovedSelectionIgnoresANewSelectionOrNoMove() {
+        let header: Int64 = -1
+        XCTAssertNil(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [4], to: [5]), "a new selection")
+        XCTAssertNil(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [header, 4], to: [header, 4]))
+        XCTAssertNil(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [4], to: []), "selection cleared")
+        XCTAssertNil(PanelSelectionScrollPolicy<Int64>.movedSelection(from: [], to: [4]), "first selection")
+    }
 }
