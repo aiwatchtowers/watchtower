@@ -372,6 +372,8 @@ stamp_sdk_version() {
 # END sdk-stamp
 
 MACOS_SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+# vtool prints a bare major version as "N.0"; match it so the check compares like with like.
+case "$MACOS_SDK_VERSION" in *.*) ;; *) MACOS_SDK_VERSION="$MACOS_SDK_VERSION.0" ;; esac
 stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop" "$MACOS_SDK_VERSION" || exit 1
 stamp_sdk_version "$APP_BUNDLE/Contents/MacOS/watchtower-ocr" "$MACOS_SDK_VERSION" || exit 1
 
