@@ -81,6 +81,13 @@ enum HubBoot {
         let legacyReplica = legacyGroupDirectory.appendingPathComponent("replica.sqlite")
         let legacyTransport = URL(fileURLWithPath: legacyTransportStorePath)
         guard let link = store.link else {
+            // A link saved but unreadable (a newer build's) is not "no link":
+            // its replica may hold unsent recordings. Nothing is touched; a
+            // build that reads it migrates it.
+            guard !store.holdsUnreadableLink else {
+                logger.fault("saved link unreadable: the F1 files are kept, nothing migrated")
+                return
+            }
             for database in [legacyReplica, legacyTransport] {
                 try removeDatabase(database, fileManager: fileManager)
             }
@@ -110,7 +117,8 @@ enum HubBoot {
     /// Hub directories with no registry row, other than `pendingHubID`'s
     /// (a link waiting for its grant), belong to a link that never
     /// completed: a session built on each (never started) hands its
-    /// recordings to the hold, then its files are deleted.
+    /// recordings to the hold, then its files are deleted. A hand-over that
+    /// reports a problem keeps the hub's files for the next launch.
     @MainActor
     static func removeOrphans(
         registry: HubRegistry,
@@ -126,7 +134,10 @@ enum HubBoot {
             await session.shutDown()
             let handover = await session.handOverRecordings(stoppedCapture: nil, keep: true)
             if let problem = handover.problem {
-                logger.error("orphan hub recordings: \(problem, privacy: .public)")
+                // Audio the hold could not take may still be in the hub's
+                // folder: nothing is deleted, the next launch tries again.
+                logger.error("orphan hub kept, recordings not handed over: \(problem, privacy: .public)")
+                continue
             }
             try paths.removeHubFiles(hubID)
             logger.notice("removed the files of a link that never completed")

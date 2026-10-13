@@ -244,6 +244,25 @@ final class HubBootTests: XCTestCase {
         XCTAssertNil(store.link)
     }
 
+    func testAnUnreadableLegacyLinkTouchesNothing() async throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        defaults.set(Data("not a link".utf8), forKey: "link.record")
+        let recordingID = try await seedRecording(replicaPath: legacyReplica(paths).path, recordings: paths.recordingsBase)
+        try makeTransportStore(at: legacyLocalTransport(paths))
+        let registry = try HubRegistry.inMemory()
+
+        try migrate(LinkStore(defaults: defaults), registry, paths, transport: legacyLocalTransport(paths), defaults: defaults)
+
+        XCTAssertEqual(try registry.rows(), [], "nothing migrated")
+        XCTAssertNotNil(defaults.object(forKey: "link.record"), "the saved link stays for a build that reads it")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyLocalTransport(paths).path), "the transport store stays")
+        XCTAssertEqual(
+            try ReplicaStore(path: legacyReplica(paths).path).phoneRecordings().map(\.id), [recordingID],
+            "the replica keeps its unsent recording"
+        )
+    }
+
     // MARK: - Orphans
 
     func testOrphanHubDirectoryIsHandedToTheHoldAndRemoved() async throws {
@@ -269,6 +288,26 @@ final class HubBootTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), directory.path)
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-acme").path), "a linked hub stays")
+    }
+
+    func testAnOrphanWhoseHandOverFailedKeepsItsFiles() async throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        try paths.prepare("hub-orphan")
+        _ = try await seedRecording(replicaPath: paths.replicaPath("hub-orphan"), recordings: paths.recordingsDirectory("hub-orphan"))
+        // A file where the hold folder goes: the hold can take nothing.
+        try Data("blocked".utf8).write(to: paths.holdDirectory)
+        let registry = try HubRegistry.inMemory()
+
+        try await HubBoot.removeOrphans(
+            registry: registry, paths: paths, keeping: nil, factory: testFactory(paths, defaults: defaults)
+        )
+
+        XCTAssertEqual(built, ["hub-orphan"])
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: paths.recordingsDirectory("hub-orphan").appendingPathComponent("rec-1.m4a").path
+        ), "audio the hold could not take is not deleted")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath("hub-orphan")), "the next launch tries again")
     }
 
     func testThePendingLinksDirectoryIsNotAnOrphan() async throws {
@@ -328,6 +367,30 @@ final class HubBootTests: XCTestCase {
         XCTAssertFalse(frozen.isLooping)
         XCTAssertNil(frozen.linkedDevice, "a removed hub sends as no device")
         try await poll({ env.session("hub-acme")?.isLooping == true }, "the linked hub runs")
+    }
+}
+
+extension HubBootTests {
+    // MARK: - The single-link bridge (until F2 Task 4)
+
+    func testAFailedWipeNeverLeavesARowTheBridgeTurnsBackIntoALink() throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        let store = LinkStore(defaults: defaults)
+        let registry = try HubRegistry.inMemory()
+        try registry.upsert(link("hub-acme"), now: Date())
+        try registry.setActive("hub-acme")
+        try paths.prepare("hub-acme")
+        // Not a database: emptying the transport store throws.
+        try Data("not a database".utf8).write(to: URL(fileURLWithPath: paths.transportStorePath("hub-acme")))
+        // The unlink cleared the saved link before the wipe.
+        store.link = nil
+
+        XCTAssertThrowsError(try AppRoot.wipeHub("hub-acme", paths: paths, registry: registry))
+
+        XCTAssertNil(try registry.row("hub-acme"), "the row went before the files")
+        try AppRoot.bridgeSingleLink(store: store, registry: registry)
+        XCTAssertNil(store.link, "the next launch does not bring the unlinked hub back")
     }
 }
 

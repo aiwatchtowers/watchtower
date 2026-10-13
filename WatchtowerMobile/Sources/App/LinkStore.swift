@@ -94,6 +94,12 @@ final class LinkStore {
         set { write(newValue, key: Keys.link) }
     }
 
+    /// `link.record` holds data that does not decode: a link is saved, but
+    /// `link` reads nil.
+    var holdsUnreadableLink: Bool {
+        defaults.object(forKey: Keys.link) != nil && link == nil
+    }
+
     var pending: PendingLink? {
         get { read(PendingLink.self, key: Keys.pending) }
         set { write(newValue, key: Keys.pending) }

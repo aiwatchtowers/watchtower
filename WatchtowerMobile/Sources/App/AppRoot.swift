@@ -139,13 +139,7 @@ final class AppRoot {
             hubID: active.hubID,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
-                wipe: { hubID in
-                    try wipeFiles(replicaPath: paths.replicaPath(hubID), transportStorePath: paths.transportStorePath(hubID))
-                    // A wiped hub's link is gone (unlink, account change,
-                    // a new scan): its row too, so the bridge never brings
-                    // it back.
-                    try registry.remove(hubID)
-                },
+                wipe: { hubID in try wipeHub(hubID, paths: paths, registry: registry) },
                 make: { scope, hubID, device in
                     .single(try factory.make(nil, hubID, scope, device), defaults: defaults)
                 },
@@ -168,7 +162,16 @@ final class AppRoot {
     /// 4), which reads and writes `LinkStore.link`: a link that flow saved
     /// joins the registry and goes on screen; with none, the registry's
     /// active link is the one the flow sees.
-    private static func bridgeSingleLink(store: LinkStore, registry: HubRegistry) throws {
+    /// A live wipe of one hub (F2 Task 3 bridge): the hub's link is gone
+    /// (unlink, account change, a new scan), so its row goes first, before
+    /// any file: a kill or a failed file removal never leaves a row the
+    /// bridge would turn back into a link.
+    static func wipeHub(_ hubID: String, paths: HubPaths, registry: HubRegistry) throws {
+        try registry.remove(hubID)
+        try wipeFiles(replicaPath: paths.replicaPath(hubID), transportStorePath: paths.transportStorePath(hubID))
+    }
+
+    static func bridgeSingleLink(store: LinkStore, registry: HubRegistry) throws {
         if let link = store.link {
             if try registry.row(link.hubID) == nil {
                 try registry.upsert(link, now: Date())
