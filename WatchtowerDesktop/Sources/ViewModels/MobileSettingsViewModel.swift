@@ -25,8 +25,10 @@ final class MobileSettingsViewModel {
     nonisolated static let corpNotice = "Work data from this Mac will be stored in your personal iCloud account."
     nonisolated static let needsSignedBuild = "Needs a signed build"
     nonisolated static let slowingLine = "iCloud is slowing sync down"
-    nonisolated static let removedSameAppleID =
-        "Removed. It is signed into your Apple ID, so it can still read synced data until you sign it out of iCloud"
+    /// D9/F18: a removed same-Apple-ID phone keeps what it already holds but gets no newer keys.
+    nonisolated static func removedSameAppleID(_ name: String) -> String {
+        "Removed \(name). It can no longer read anything new from this Mac."
+    }
     /// Throttling this long shows `slowingLine` (spec §9).
     nonisolated static let slowingAfter: TimeInterval = 60
     nonisolated static let refreshInterval: Duration = .seconds(5)
@@ -223,13 +225,14 @@ final class MobileSettingsViewModel {
         }
     }
 
-    /// Remove (spec §2.3). A same-Apple-ID phone still reads the private
-    /// database, and the notice says so.
+    /// Remove (spec §2.3). The epoch rotates with it (D9): a same-Apple-ID
+    /// phone still reaches the private database but no longer has the keys
+    /// to read anything new, and the notice says so.
     func remove(_ device: HubSyncState.LinkedDevice) async {
         guard let center = hub?.linkCenter else { return }
         do {
             try await center.remove(deviceID: device.deviceID)
-            notice = device.scope == .private ? Self.removedSameAppleID : "Removed \(device.name)."
+            notice = device.scope == .private ? Self.removedSameAppleID(device.name) : "Removed \(device.name)."
         } catch {
             let why = error.localizedDescription
             if center.devices.contains(where: { $0.deviceID == device.deviceID }) {

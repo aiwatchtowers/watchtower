@@ -198,6 +198,8 @@ final class MobileHubService {
     /// Bumped by an account change, so a lookup still running then never
     /// stores the old user.
     @ObservationIgnored private var ownerEpoch = 0
+    /// A due epoch rotation failed and was logged; cleared by the next one that runs.
+    @ObservationIgnored private var rotationFailing = false
     /// Heartbeat ticks failed in a row; reset by a good tick and a start.
     @ObservationIgnored private var tickFailures = 0
     @ObservationIgnored private let relayIdleInterval: Duration
@@ -321,6 +323,9 @@ final class MobileHubService {
             startReprobeLoop()
             return
         }
+        // The resume check: a rotation that came due while the hub was off runs before anything seals; one
+        // committed before a crash reads as fresh and does not run again (Review Focus 4).
+        rotateEpochIfDue()
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.
@@ -648,6 +653,7 @@ final class MobileHubService {
     /// One relay cycle: pull, daily hygiene, then passes until the backlog
     /// is empty — a long Mac sleep drains in one cycle (Review focus 5).
     private func runRelayCycle() async {
+        rotateEpochIfDue()
         do {
             try await transport.pull()
             try await processor.runHygieneIfDue()
@@ -660,6 +666,23 @@ final class MobileHubService {
             return
         } catch {
             logger.error("relay cycle failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Spec §2.2: at each cycle start, the epoch rotates once it is 90 days old or used 2^28 seqs. The rotation
+    /// wipes the slice hashes, so the publisher's next cycle republishes the window under the new epoch; the
+    /// keyboxes are nudged first. A failure keeps the current epoch (still valid) and is retried next cycle,
+    /// logged once per failing stretch.
+    func rotateEpochIfDue() {
+        guard let keyring else { return }
+        do {
+            let rotated = try keyring.rotateIfDue()
+            rotationFailing = false
+            if rotated { publisher.nudge(kinds: [.deviceGrant]) }
+        } catch {
+            guard !rotationFailing else { return }
+            rotationFailing = true
+            logger.error("epoch rotation failed: \(String(describing: error), privacy: .public)")
         }
     }
 

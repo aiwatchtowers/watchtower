@@ -15,6 +15,19 @@ enum HubKeyringError: Error, Equatable {
     case unknownDevice
     /// `hub_meta.envelope_seq_ceiling` is not a number: never read as 0, which would reuse seqs.
     case corruptSeqCeiling
+    /// A rotation prepared for this epoch found another current epoch (another hub process rotated first): nothing
+    /// was written, never a forked epoch.
+    case epochRaced(UInt32)
+}
+
+/// Why the hub rotates its epoch (spec §2.2).
+enum RotationReason: Equatable {
+    /// Remove on the Mac, or the phone's own unlink: the device leaves with the rotation.
+    case removed(String)
+    /// 90 days or 2^28 messages (`rotationDue`).
+    case cap
+    /// A suspected leak.
+    case manual
 }
 
 /// The hub's `SecureKeyProvider` and relay `RollbackGuard` (spec §2.2, D2/D3/D10, F3/F5).
@@ -117,12 +130,53 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     }
 
     /// Clears K_meta and every epoch (hub turned off / zones deleted): the next pairing starts fresh. The seq
-    /// ceiling stays, so seqs never repeat.
+    /// ceiling stays, so seqs never repeat. The cached relay keys go too.
     func resetGroupKeys() throws {
         try sidecar.writeKeys { db in
             try db.execute(sql: "DELETE FROM hub_epochs")
             try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [Self.metaKeySealedKey])
         }
+        lock.withLock { relayMaterial = [:] }
+    }
+
+    /// Rotates to a new epoch (spec §2.2, Task 14): fresh `K_data`/`K_alert`, sealed here, committed with the
+    /// retired epoch and the slice hash wipe in one transaction (`HubSyncState.removeDeviceAndRotate` /
+    /// `rotate(newEpoch:at:)`, Review Focus 4). The next publish cycle republishes the window under the new epoch,
+    /// keyboxes included; the previous epoch stays readable (keyboxes carry it, relay accepts it for 7 days, D10).
+    /// `.removed`: the device leaves in the same transaction and its cached relay keys are dropped; a device that
+    /// is not linked changes nothing. Before the first epoch nothing was sealed: `.removed` only removes the
+    /// device, `.cap`/`.manual` do nothing. A failure (another process rotated first, the wipe failed) writes
+    /// nothing and throws: the old epoch stays current and the device stays linked.
+    func rotate(reason: RotationReason) throws {
+        guard let current = try sidecar.latestEpochs().last else {
+            if case .removed(let deviceID) = reason, let removed = try sidecar.removeLinkedDevice(deviceID) {
+                forgetRelayKeys(removed.deviceID)
+            }
+            return
+        }
+        let (next, overflow) = current.epoch.addingReportingOverflow(1)
+        guard !overflow else { throw HubKeyringError.unknownEpoch(current.epoch) }
+        let sealed = try seal(Self.randomKey() + Self.randomKey(), aad: epochAAD(next))
+        let at = now()
+        switch reason {
+        case .removed(let deviceID):
+            guard let removed = try sidecar.removeDeviceAndRotate(deviceID, newEpoch: (next, sealed), at: at) else { return }
+            forgetRelayKeys(removed.deviceID)
+            Self.logger.notice(
+                "epoch \(next, privacy: .public) begun: device \(removed.deviceID, privacy: .public) removed")
+        case .cap, .manual:
+            try sidecar.rotate(newEpoch: (next, sealed), at: at)
+            Self.logger.notice("epoch \(next, privacy: .public) begun (\(String(describing: reason), privacy: .public))")
+        }
+    }
+
+    /// Rotates (`.cap`) when `rotationDue()`; true when it did. Read from the committed state, so a hub restarted
+    /// after a rotation finds the new epoch fresh and never rotates twice (Review Focus 4).
+    @discardableResult
+    func rotateIfDue() throws -> Bool {
+        guard try rotationDue() else { return false }
+        try rotate(reason: .cap)
+        return true
     }
 
     func epochKeys(_ epoch: UInt32) throws -> EpochKeys {
@@ -132,15 +186,24 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
         return EpochKeys(epoch: epoch, dataKey: Data(plain.prefix(32)), alertKey: Data(plain.suffix(32)))
     }
 
-    /// The keys a linked phone's keybox carries (spec §2.3): the current epoch's `K_data` and `K_alert`, and `K_meta`.
-    /// `keysUnavailable` before `ensureGroupKeys`.
+    /// The keys a linked phone's keybox carries (spec §2.3): the current epoch's `K_data` and `K_alert`, and `K_meta`;
+    /// after a rotation also the retired epoch's (`previous*`) while its D10 grace runs, so records not yet
+    /// republished still open. `keysUnavailable` before `ensureGroupKeys`.
     func keyboxKeys() throws -> KeyboxKeys {
-        let epoch = try currentEpoch()
-        let keys = try epochKeys(epoch)
+        let epochs = try sidecar.latestEpochs()
+        guard let current = epochs.last else { throw SecureTransportError.keysUnavailable }
+        let keys = try epochKeys(current.epoch)
         let meta = try metaKey().withUnsafeBytes { Data($0) }
+        var previous: EpochKeys?
+        if epochs.count == 2, let retired = epochs.first,
+           now().timeIntervalSince(retired.retiredAt ?? current.createdAt) < Self.previousEpochGrace {
+            previous = try epochKeys(retired.epoch)
+        }
         return KeyboxKeys(
-            epoch: epoch, dataKey: WireBytes.base64URL(keys.dataKey), alertKey: WireBytes.base64URL(keys.alertKey),
-            metaKey: WireBytes.base64URL(meta))
+            epoch: current.epoch, dataKey: WireBytes.base64URL(keys.dataKey), alertKey: WireBytes.base64URL(keys.alertKey),
+            metaKey: WireBytes.base64URL(meta), previousEpoch: previous?.epoch,
+            previousDataKey: previous.map { WireBytes.base64URL($0.dataKey) },
+            previousAlertKey: previous.map { WireBytes.base64URL($0.alertKey) })
     }
 
     /// Due when the current epoch is 90 days old or has used 2^28 seqs (spec §2.2). False before the first epoch.
@@ -255,6 +318,12 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
         lock.withLock { relayMaterial[deviceID] = nil }
     }
 
+    /// `forgetRelayKeys` for a stored device id (any case); a non-UUID id has no cache entry.
+    private func forgetRelayKeys(_ deviceID: String) {
+        guard let id = UUID(uuidString: deviceID) else { return }
+        forgetRelayKeys(deviceID: id)
+    }
+
     // MARK: - RollbackGuard (F3)
 
     func check(wireName: String, senderID: UUID, epoch: UInt32, seq: UInt64) throws -> RollbackVerdict {
@@ -328,7 +397,7 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
 
     private static func randomKey() -> Data { SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) } }
 
-    private static func seqCeiling(_ text: String?) throws -> UInt64 {
+    static func seqCeiling(_ text: String?) throws -> UInt64 {
         guard let text else { return 0 }
         guard let value = UInt64(text) else { throw HubKeyringError.corruptSeqCeiling }
         return value

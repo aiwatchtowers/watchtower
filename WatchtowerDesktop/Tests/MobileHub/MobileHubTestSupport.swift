@@ -619,9 +619,10 @@ extension StubHubTransport {
 // MARK: - Hellos (Task 13)
 
 extension HubSyncState {
-    /// The hub's keyring over this sidecar (an in-memory Keychain), its K_meta and first epoch made.
-    func testKeyring() throws -> HubKeyring {
-        let keyring = try HubKeyring(hubID: try ensureHubID(), sidecar: self, store: InMemoryHubKeyStore())
+    /// The hub's keyring over this sidecar (an in-memory Keychain), its K_meta and first epoch made; `now` stamps
+    /// its epochs and removals.
+    func testKeyring(now: @escaping @Sendable () -> Date = { Date() }) throws -> HubKeyring {
+        let keyring = try HubKeyring(hubID: try ensureHubID(), sidecar: self, store: InMemoryHubKeyStore(), now: now)
         try keyring.ensureGroupKeys()
         return keyring
     }

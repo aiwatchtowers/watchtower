@@ -18,14 +18,21 @@ import WatchtowerSync
 /// linked with keys (its hello confirmed on the Mac) gets the current epoch's
 /// keys and `K_meta`; a pending request (`pending_devices`) reads
 /// `awaitingConfirmation: true` with no keys; a refusal has no keys. Keys are
-/// never wrapped for a device that is not linked. The plain name uses the
-/// uppercase `uuidString` form (F30), the form the transport and the phone use.
+/// never wrapped for a device that is not linked. A phone removed on the Mac
+/// or unlinked by itself (`revoked_devices`, D9) reads `linked: false,
+/// revoked: true` without keys for `revokedLifetime`, sealed to its own key,
+/// then its record is deleted. Precedence: linked, pending, refused (only a
+/// newer attempt than the removal, which cleared the old refusal), revoked.
+/// The plain name uses the uppercase `uuidString` form (F30), the form the
+/// transport and the phone use.
 struct DeviceGrantSlice: SliceSource {
     let kind = SliceKind.deviceGrant
 
     static let maxRecords = 20
     /// The phone waits 60 s for its grant; a refusal is kept far longer.
     static let refusalLifetime: TimeInterval = 3600
+    /// D9: a removed phone is told for 7 days.
+    static let revokedLifetime: TimeInterval = 7 * 86_400
 
     let sidecar: HubSyncState
     let hubID: String
@@ -49,6 +56,12 @@ struct DeviceGrantSlice: SliceSource {
         } catch {
             // Housekeeping only: the next tick prunes.
             Self.logger.warning("link refusal prune failed: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try sidecar.pruneRevokedDevices(olderThan: now().addingTimeInterval(-Self.revokedLifetime))
+        } catch {
+            // Housekeeping only: the filter below still drops an expired one.
+            Self.logger.warning("revoked device prune failed: \(error.localizedDescription, privacy: .public)")
         }
         // Only a phone linked through a confirmed hello has keys stored, and only its keybox carries the epoch keys.
         let keyed = Set(try sidecar.deviceKeyRows().map { $0.deviceID.uppercased() })
@@ -76,8 +89,19 @@ struct DeviceGrantSlice: SliceSource {
                 linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: true, decidedAt: refusal.at
             ), keys: nil))
         }
+        answered.formUnion(refused.map { $0.1.grant.deviceID.uppercased() })
+        let revokedSince = now().addingTimeInterval(-Self.revokedLifetime)
+        let current = try sidecar.revokedDevices().filter {
+            $0.removedAt > revokedSince && !answered.contains($0.deviceID.uppercased())
+        }
+        let revoked = current.map { device in
+            (device.removedAt, Keybox(grant: DeviceGrant(
+                deviceID: device.deviceID, hubID: hubID, name: device.name, scope: device.scope, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: device.removedAt, revoked: true
+            ), keys: nil))
+        }
         let encoder = RelayCoder.makeEncoder()
-        return try (linked + pending + refused).prefix(Self.maxRecords).map { modifiedAt, keybox in
+        return try (linked + pending + refused + revoked).prefix(Self.maxRecords).map { modifiedAt, keybox in
             SliceRecord(
                 kind: kind, id: UUID(uuidString: keybox.grant.deviceID)?.uuidString ?? keybox.grant.deviceID,
                 modifiedAt: modifiedAt, payload: try encoder.encode(keybox)

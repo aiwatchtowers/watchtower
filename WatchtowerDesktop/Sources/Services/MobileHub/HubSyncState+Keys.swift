@@ -11,7 +11,8 @@ import WatchtowerSync
 /// - `devices` + `signing_key`, `agreement_key`, `link_nonce` (the QR nonce text), `last_seq` (D4 diagnostics).
 /// - `link_refusals` + `agreement_key`: the refused hello's key, so the refusal keybox can be sealed (F5).
 /// - `slice_state` + `wire_name`: the opaque record name beside the plain one (F19, written by Task 11).
-/// - `pending_devices` (Task 13: `savePendingDevice`, `confirmPendingDevice`), `revoked_devices` (Task 14), `relay_seen` (the relay rollback guard, F3).
+/// - `pending_devices` (Task 13: `savePendingDevice`, `confirmPendingDevice`), `revoked_devices` (Task 14: a removed
+///   phone's key, name and scope, for its `revoked` keybox, D9), `relay_seen` (the relay rollback guard, F3).
 /// No column holds a key in the clear: epoch keys and K_meta are sealed, the device columns are public keys.
 extension HubSyncState {
     private static let keysLogger = Logger(subsystem: Constants.bundleID, category: "HubKeys")
@@ -40,7 +41,9 @@ extension HubSyncState {
             CREATE TABLE IF NOT EXISTS revoked_devices (
                 device_id TEXT PRIMARY KEY,
                 agreement_key BLOB NOT NULL,
-                removed_at REAL NOT NULL
+                removed_at REAL NOT NULL,
+                name TEXT,
+                scope TEXT
             );
             CREATE TABLE IF NOT EXISTS relay_seen (
                 wire_name TEXT NOT NULL,
@@ -56,6 +59,7 @@ extension HubSyncState {
         try addMissingColumns(
             "devices", [("signing_key", "BLOB"), ("agreement_key", "BLOB"), ("link_nonce", "TEXT"), ("last_seq", "INTEGER")], db)
         try addMissingColumns("link_refusals", [("agreement_key", "BLOB")], db)
+        try addMissingColumns("revoked_devices", [("name", "TEXT"), ("scope", "TEXT")], db)
         try addMissingColumns("slice_state", [("wire_name", "TEXT")], db)
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS slice_state_by_wire ON slice_state (wire_name)")
     }
@@ -145,6 +149,92 @@ extension HubSyncState {
             createdAt: Date(timeIntervalSince1970: row["created_at"]),
             firstSeq: UInt64(bitPattern: row["first_seq"] as Int64),
             retiredAt: (row["retired_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
+    }
+
+    // MARK: - Rotation (Task 14, spec §2.2, D3, D9)
+
+    /// Removes a linked device and rotates the epoch in one IMMEDIATE transaction (Review Focus 4): the device row
+    /// goes with its refusal, pending request and `relay_seen` rows (`WHERE sender_id = ?`, F3); a device with an
+    /// agreement key gets a `revoked_devices` row (its revoked keybox, D9); the current epoch is retired, `newEpoch`
+    /// inserted and the slice hashes wiped (the relay token kept). nil, and nothing written, when the device is not
+    /// linked. Throws, with nothing written, when `newEpoch` is not the epoch after the current one (another hub
+    /// process rotated first) or the wipe fails.
+    func removeDeviceAndRotate(
+        _ deviceID: String, newEpoch: (epoch: UInt32, sealedKeys: Data), at date: Date
+    ) throws -> LinkedDevice? {
+        try writeKeys { db in
+            guard let removed = try Self.removeDevice(deviceID, at: date, db) else { return nil }
+            try Self.rotateEpoch(newEpoch, at: date, db)
+            return removed
+        }
+    }
+
+    /// The same rotation without a device (the cap, a suspected leak).
+    func rotate(newEpoch: (epoch: UInt32, sealedKeys: Data), at date: Date) throws {
+        try writeKeys { db in try Self.rotateEpoch(newEpoch, at: date, db) }
+    }
+
+    /// The removed device, nil when none is linked under that id (any case).
+    private static func removeDevice(_ deviceID: String, at date: Date, _ db: Database) throws -> LinkedDevice? {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT * FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID]) else { return nil }
+        let removed = device(row)
+        for table in ["devices", "link_refusals", "pending_devices", "revoked_devices"] {
+            try db.execute(sql: "DELETE FROM \(table) WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        }
+        try db.execute(sql: "DELETE FROM relay_seen WHERE sender_id = ? COLLATE NOCASE", arguments: [deviceID])
+        // A pre-E2E row has no key: no keybox can be sealed to it, so it gets no revoked one.
+        if let agreementKey = row["agreement_key"] as Data? {
+            try db.execute(
+                sql: "INSERT INTO revoked_devices (device_id, name, scope, agreement_key, removed_at) VALUES (?, ?, ?, ?, ?)",
+                arguments: [
+                    removed.deviceID, removed.name, removed.scope.rawValue, agreementKey, date.timeIntervalSince1970
+                ])
+        }
+        return removed
+    }
+
+    /// Retires the current epoch, inserts `newEpoch` (its first seq is the seq ceiling now) and wipes the slice
+    /// hashes, in the caller's transaction. The epoch insert comes before the wipe.
+    private static func rotateEpoch(_ newEpoch: (epoch: UInt32, sealedKeys: Data), at date: Date, _ db: Database) throws {
+        guard let current = try latestEpochs(db).last else { throw SecureTransportError.keysUnavailable }
+        let (next, overflow) = current.epoch.addingReportingOverflow(1)
+        guard !overflow, newEpoch.epoch == next else { throw HubKeyringError.epochRaced(newEpoch.epoch) }
+        try db.execute(
+            sql: "UPDATE hub_epochs SET retired_at = ? WHERE epoch = ? AND retired_at IS NULL",
+            arguments: [date.timeIntervalSince1970, Int64(current.epoch)])
+        try insertEpoch(.init(
+            epoch: next, sealedKeys: newEpoch.sealedKeys, createdAt: date,
+            firstSeq: try HubKeyring.seqCeiling(metaValue(HubKeyring.seqCeilingKey, db)), retiredAt: nil), db)
+        try wipeForRotation(db)
+    }
+
+    // MARK: - Revoked devices (D9)
+
+    /// A phone removed on the Mac: its keybox reads `revoked` (no keys) for `DeviceGrantSlice.revokedLifetime`.
+    struct RevokedDevice: Equatable, Sendable {
+        let deviceID: String
+        let name: String
+        let scope: DeviceScope
+        let removedAt: Date
+    }
+
+    /// Every revoked device, newest removal first.
+    func revokedDevices() throws -> [RevokedDevice] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM revoked_devices ORDER BY removed_at DESC, device_id").map { row in
+                RevokedDevice(
+                    deviceID: row["device_id"], name: row["name"] ?? "",
+                    scope: DeviceScope(rawValue: row["scope"] ?? DeviceScope.private.rawValue),
+                    removedAt: Date(timeIntervalSince1970: row["removed_at"]))
+            }
+        }
+    }
+
+    func pruneRevokedDevices(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM revoked_devices WHERE removed_at <= ?", arguments: [date.timeIntervalSince1970])
+        }
     }
 
     // MARK: - Device keys

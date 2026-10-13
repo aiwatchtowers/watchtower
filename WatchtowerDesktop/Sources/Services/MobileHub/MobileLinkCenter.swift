@@ -619,18 +619,31 @@ final class MobileLinkCenter {
     // MARK: - The phone list (Settings → Mobile)
 
     /// Remove (spec §2.3): the device leaves `devices` (the gate refuses it
-    /// at once), its `device_grant` is deleted at the next publish, and in
-    /// `shared` scope its iCloud user leaves both shares (unless another
-    /// linked phone is on that user). A failed participant removal marks the
-    /// sweep pending, so the next close removes it, and is rethrown.
+    /// at once) and, with the hub's keys, the epoch rotates in the same
+    /// transaction (spec §2.2, Task 14): the remaining phones' keyboxes carry
+    /// the new keys, the window is republished under them, and the removed
+    /// phone's keybox reads `revoked` for 7 days (D9). In `shared` scope its
+    /// iCloud user leaves both shares (unless another linked phone is on that
+    /// user). A failed rotation removes nothing and is thrown. A failed
+    /// participant removal marks the sweep pending, so the next close removes
+    /// it, and is rethrown.
     func remove(deviceID: String) async throws {
         guard let removed = try dropDevice(deviceID) else { return }
         try await removeParticipant(of: removed)
     }
 
-    /// Deletes the device's row; the removed row, nil when it was not linked.
+    /// Deletes the device's row, rotating the epoch with it when the hub has keys (Remove and the phone's own
+    /// unlink alike); the removed row, nil when it was not linked.
     private func dropDevice(_ deviceID: String) throws -> HubSyncState.LinkedDevice? {
-        guard let removed = try sidecar.removeLinkedDevice(deviceID) else { return nil }
+        let removed: HubSyncState.LinkedDevice
+        if let keyring {
+            guard let linked = try sidecar.linkedDevice(deviceID) else { return nil }
+            try keyring.rotate(reason: .removed(linked.deviceID))
+            removed = linked
+        } else {
+            guard let linked = try sidecar.removeLinkedDevice(deviceID) else { return nil }
+            removed = linked
+        }
         reloadDevices()
         nudgeKinds([.deviceGrant])
         return removed
@@ -693,10 +706,12 @@ final class MobileLinkCenter {
     // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
     /// Settings turned the hub off and its zones were deleted: their shares
-    /// and every participant went with them. Forgets every code and phone,
-    /// so the next QR creates new shares and every phone scans again. Throws
-    /// when the phones could not be forgotten, after doing the rest: the hub
-    /// keeps the delete pending and redoes it at the next start.
+    /// and every participant went with them. Forgets every code and phone
+    /// and the group keys (`K_meta` and every epoch: the next pairing starts
+    /// on fresh keys, Task 14), so the next QR creates new shares and every
+    /// phone scans again. Throws when the phones or the keys could not be
+    /// forgotten, after doing the rest: the hub keeps the delete pending and
+    /// redoes it at the next start.
     func hubZonesDeleted() throws {
         expiryTask?.cancel()
         expiryTask = nil
@@ -712,6 +727,12 @@ final class MobileLinkCenter {
         } catch {
             logger.error("hub zones deleted: linked phones not cleared: \(error.localizedDescription, privacy: .public)")
             clearFailure = error
+        }
+        do {
+            try keyring?.resetGroupKeys()
+        } catch {
+            logger.error("hub zones deleted: group keys not reset: \(error.localizedDescription, privacy: .public)")
+            clearFailure = clearFailure ?? error
         }
         reloadDevices()
         reloadPendingLinks()

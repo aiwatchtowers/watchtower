@@ -307,6 +307,169 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try keyring(sidecar, store: store, clock: clock).rotationDue())
     }
 
+    // MARK: - Rotation (Task 14, Review Focus 4)
+
+    /// D3: the new epoch, the retired one, the removed device and the slice hash wipe are one transaction. A trigger
+    /// makes the wipe fail after the epoch insert: nothing of the rotation is left, the device stays linked.
+    func testRotationCommitsTheEpochAndTheHashWipeTogether() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+        let phone = newIdentity()
+        let phoneID = phone.deviceID.uuidString
+        try linkPhone(sidecar, identity: phone)
+        try ring.record(wireName: "wire-1", senderID: phone.deviceID, epoch: 1, seq: 7)
+        // A BEFORE DELETE trigger fires per row: the table must hold rows for it to fire.
+        try sidecar.setHash("h1", for: "workbench-1")
+        try sidecar.setHash("h2", for: SliceKind.deviceGrant.recordName(id: phoneID))
+        try sidecar.queue.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_wipe BEFORE DELETE ON slice_state BEGIN SELECT RAISE(ABORT, 'test'); END")
+        }
+        let epoch1 = try ring.epochKeys(1)
+        let generation = try sidecar.generation()
+
+        XCTAssertThrowsError(try ring.rotate(reason: .removed(phoneID)))
+        XCTAssertThrowsError(try ring.rotate(reason: .manual))
+
+        XCTAssertEqual(try ring.currentEpoch(), 1)
+        XCTAssertEqual(try sidecar.latestEpochs().map(\.epoch), [1], "no second epoch was kept")
+        XCTAssertNil(try sidecar.storedEpoch(1)?.retiredAt, "epoch 1 is not retired")
+        XCTAssertEqual(try ring.epochKeys(1), epoch1)
+        XCTAssertEqual(try sidecar.hashes(forKind: .workbench), ["workbench-1": "h1"], "the hashes are intact")
+        XCTAssertEqual(try sidecar.hashes(forKind: .deviceGrant).count, 1)
+        XCTAssertEqual(try sidecar.generation(), generation)
+        XCTAssertNotNil(try sidecar.linkedDevice(phoneID), "the device is still linked")
+        XCTAssertNotNil(try sidecar.deviceKeyRow(phoneID))
+        XCTAssertNotNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phoneID))
+        XCTAssertEqual(try revokedCount(sidecar), 0)
+        XCTAssertTrue(try ring.acceptsRelayEpoch(1, deviceID: phone.deviceID))
+
+        // Without the trigger the same rotation commits all of it.
+        try sidecar.queue.write { try $0.execute(sql: "DROP TRIGGER fail_wipe") }
+        try ring.rotate(reason: .removed(phoneID))
+
+        XCTAssertEqual(try ring.currentEpoch(), 2)
+        XCTAssertNotNil(try sidecar.storedEpoch(1)?.retiredAt)
+        XCTAssertEqual(try ring.epochKeys(1), epoch1, "the previous epoch's keys stay readable")
+        XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
+        XCTAssertTrue(try sidecar.hashes(forKind: .deviceGrant).isEmpty)
+        XCTAssertGreaterThan(try sidecar.generation(), generation, "an in-flight publish cycle aborts")
+        XCTAssertNil(try sidecar.linkedDevice(phoneID))
+        XCTAssertNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phoneID), "its relay_seen rows go (F3)")
+        XCTAssertEqual(try revokedCount(sidecar), 1)
+        XCTAssertFalse(try ring.acceptsRelayEpoch(1, deviceID: phone.deviceID))
+        XCTAssertFalse(try ring.acceptsRelayEpoch(2, deviceID: phone.deviceID))
+    }
+
+    /// Review Focus 4: a hub process killed right after a rotation committed comes back on that epoch; its next
+    /// start neither forks nor repeats the rotation.
+    func testAKilledRotationResumesOnTheSameEpoch() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let store = InMemoryHubKeyStore()
+        let clock = LinkTestClock()
+        var ring: HubKeyring? = try keyring(sidecar, store: store, clock: clock)
+        try XCTUnwrap(ring).ensureGroupKeys()
+        clock.advance(HubKeyring.rotationAge)
+        XCTAssertTrue(try XCTUnwrap(ring).rotateIfDue())
+        let epoch2 = try XCTUnwrap(ring).epochKeys(2)
+        ring = nil
+
+        let restarted = try keyring(sidecar, store: store, clock: clock)
+        try restarted.ensureGroupKeys()
+        XCTAssertFalse(try restarted.rotateIfDue(), "the committed rotation is not repeated")
+        clock.advance(86_400)
+        XCTAssertFalse(try restarted.rotateIfDue())
+
+        XCTAssertEqual(try restarted.currentEpoch(), 2)
+        XCTAssertEqual(try restarted.epochKeys(2), epoch2)
+        XCTAssertEqual(try sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM hub_epochs") }, 2)
+    }
+
+    func testRotationWithoutAnEpochOnlyRemovesTheDevice() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        let phone = newIdentity()
+        try linkPhone(sidecar, identity: phone)
+
+        try ring.rotate(reason: .manual)
+        try ring.rotate(reason: .removed(phone.deviceID.uuidString))
+
+        XCTAssertNil(try sidecar.linkedDevice(phone.deviceID.uuidString))
+        XCTAssertTrue(try sidecar.latestEpochs().isEmpty, "nothing was ever sealed: no epoch to rotate")
+    }
+
+    func testRemovingAnUnlinkedDeviceDoesNotRotate() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+
+        try ring.rotate(reason: .removed(UUID().uuidString))
+
+        XCTAssertEqual(try ring.currentEpoch(), 1)
+    }
+
+    /// Two hub processes over one file: a rotation prepared for an epoch another process already created fails
+    /// instead of forking it.
+    func testARotationRacingAnotherProcessFailsInsteadOfForking() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+        try ring.rotate(reason: .manual)
+
+        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 2, sealedKeys: Data(repeating: 1, count: 92)), at: Date()))
+        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 4, sealedKeys: Data(repeating: 1, count: 92)), at: Date()))
+        XCTAssertEqual(try ring.currentEpoch(), 2)
+    }
+
+    /// Spec §2.2: the remaining phones get the new epoch and the one just retired while its records are
+    /// republished (the D10 grace), then the new one only.
+    func testKeyboxKeysCarryThePreviousEpochDuringItsGrace() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let clock = LinkTestClock()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore(), clock: clock)
+        try ring.ensureGroupKeys()
+        XCTAssertNil(try ring.keyboxKeys().previousEpoch)
+        let epoch1 = try ring.epochKeys(1)
+
+        try ring.rotate(reason: .cap)
+        let keys = try ring.keyboxKeys()
+        XCTAssertEqual(keys.epoch, 2)
+        XCTAssertEqual(keys.dataKey, WireBytes.base64URL(try ring.epochKeys(2).dataKey))
+        XCTAssertEqual(keys.previousEpoch, 1)
+        XCTAssertEqual(keys.previousDataKey, WireBytes.base64URL(epoch1.dataKey))
+        XCTAssertEqual(keys.previousAlertKey, WireBytes.base64URL(epoch1.alertKey))
+
+        clock.advance(HubKeyring.previousEpochGrace)
+        let later = try ring.keyboxKeys()
+        XCTAssertEqual(later.epoch, 2)
+        XCTAssertNil(later.previousEpoch)
+        XCTAssertNil(later.previousDataKey)
+        XCTAssertNil(later.previousAlertKey)
+    }
+
+    /// Task 11: a rotation republishes the open ask alerts under the new `K_alert` (their generation follows the
+    /// bump) without re-saving their signals (the alert hashes stay known, blanked).
+    func testRotationKeepsAlertsPublishableAndTheirSignalsKnown() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+        let stamp = Date()
+        _ = try sidecar.markAlerted([7], at: stamp)
+        try sidecar.setHash("alert-hash", for: SliceKind.askAlert.recordName(id: "7"))
+
+        try ring.rotate(reason: .manual)
+
+        let (generation, alerted) = try sidecar.markAlerted([], at: stamp)
+        XCTAssertEqual(alerted[7]?.generation, generation, "the alert is still published in the new generation")
+        let hashes = try sidecar.hashes(forKind: .askAlert)
+        XCTAssertEqual(Array(hashes.keys), [SliceKind.askAlert.recordName(id: "7")], "its record stays known")
+        XCTAssertNotEqual(hashes.values.first, "alert-hash", "but its hash no longer matches: it is resealed")
+    }
+
+    private func revokedCount(_ sidecar: HubSyncState) throws -> Int {
+        try sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM revoked_devices") ?? 0 }
+    }
+
     // MARK: - Identity
 
     func testARecreatedIdentityWithLinkedPhonesIsReported() throws {
@@ -435,7 +598,7 @@ final class HubKeyringTests: XCTestCase {
             "device_id", "name", "model", "scope", "user_record_name", "signing_key", "agreement_key", "link_nonce", "sas",
             "received_at"
         ])
-        XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at"])
+        XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at", "name", "scope"])
         XCTAssertEqual(columns["relay_seen"], ["wire_name", "sender_id", "epoch", "seq", "at"])
     }
 

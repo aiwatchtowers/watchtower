@@ -42,6 +42,7 @@ final class MobileHubServiceTests: XCTestCase {
         companions: [any HubCompanion] = [],
         assets: SliceAssetStore? = nil,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
+        keyring: HubKeyring? = nil,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
@@ -54,7 +55,7 @@ final class MobileHubServiceTests: XCTestCase {
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
-            hostInfo: testHostInfo(), companions: companions,
+            hostInfo: testHostInfo(), keyring: keyring, companions: companions,
             relayIdleInterval: relayInterval, relayActiveInterval: relayActiveInterval ?? relayInterval,
             availabilityReprobeInterval: .milliseconds(20), cloudTimeout: cloudTimeout, isEnabled: isEnabled
         )
@@ -650,6 +651,60 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertEqual(service.sharing, HubSharing.none)
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+    }
+
+    /// Task 14: hub off forgets the group keys with the phones (the next pairing starts on fresh keys) and the
+    /// revoked keyboxes (their zone is gone).
+    func testTurningTheHubOffResetsGroupKeys() async throws {
+        let transport = StubHubTransport()
+        let keyring = try sidecar.testKeyring()
+        try keyring.rotate(reason: .manual)
+        _ = try sidecar.writeKeys { db in
+            try db.execute(
+                sql: "INSERT INTO revoked_devices (device_id, name, scope, agreement_key, removed_at) VALUES (?, 'Old', 'private', ?, 0)",
+                arguments: [UUID().uuidString, Data(repeating: 9, count: 32)])
+        }
+        let service = makeService(transport: transport, keyring: keyring)
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: keyring,
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: service)
+        await service.start()
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertTrue(try sidecar.latestEpochs().isEmpty, "every epoch is forgotten")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubKeyring.metaKeySealedKey), "K_meta is forgotten")
+        XCTAssertThrowsError(try keyring.currentEpoch()) { XCTAssertEqual($0 as? SecureTransportError, .keysUnavailable) }
+        let revoked = try await sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM revoked_devices") }
+        XCTAssertEqual(revoked, 0)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+    }
+
+    /// Spec §2.2: the 90-day (or 2^28-message) rotation runs at the next relay cycle once due, exactly once.
+    func testRotationRunsWhenDueAtCycleStart() async throws {
+        let transport = StubHubTransport()
+        let clock = LinkTestClock()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore()) {
+            clock.now
+        }
+        let service = makeService(transport: transport, keyring: keyring)
+        await service.start()
+        defer { service.stop() }
+        XCTAssertEqual(try keyring.currentEpoch(), 1, "start made the first epoch")
+
+        clock.advance(HubKeyring.rotationAge)
+        await awaitHubCondition("the due rotation runs at a cycle start") { (try? keyring.currentEpoch()) == 2 }
+        let rotatedAt = service.lastRelayAt
+        await awaitHubCondition("two more relay cycles") { service.lastRelayAt != rotatedAt }
+        let later = service.lastRelayAt
+        await awaitHubCondition("two more relay cycles") { service.lastRelayAt != later }
+
+        XCTAssertEqual(try keyring.currentEpoch(), 2, "never a third epoch")
+        XCTAssertEqual(service.status, .running)
     }
 
     /// Round 2: `.networkUnavailable` is refused before anything is sent.

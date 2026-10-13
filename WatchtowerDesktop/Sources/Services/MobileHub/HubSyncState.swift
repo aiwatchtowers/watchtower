@@ -862,6 +862,8 @@ final class HubSyncState: Sendable {
             ]
         )
         try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        // Linked again: its revoked keybox gives way to the linked one.
+        try db.execute(sql: "DELETE FROM revoked_devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
         return .valid
     }
 
@@ -956,11 +958,14 @@ final class HubSyncState: Sendable {
     }
 
     /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
-    /// code, linked phone, pending link request and refusal.
+    /// code, linked phone, pending link request, refusal and revoked phone.
     func clearLinkState() throws {
         try queue.write { db in
             try db.execute(
-                sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM pending_devices; DELETE FROM link_refusals")
+                sql: """
+                    DELETE FROM link_codes; DELETE FROM devices; DELETE FROM pending_devices; DELETE FROM link_refusals;
+                    DELETE FROM revoked_devices
+                    """)
         }
     }
 
@@ -977,7 +982,7 @@ final class HubSyncState: Sendable {
         )
     }
 
-    private static func device(_ row: Row) -> LinkedDevice {
+    static func device(_ row: Row) -> LinkedDevice {
         LinkedDevice(
             deviceID: row["device_id"],
             name: row["name"],
@@ -1046,6 +1051,32 @@ final class HubSyncState: Sendable {
                 arguments: [Self.generationKey, Self.generationKey]
             )
         }
+    }
+
+    /// The epoch rotation's share of the publish state, in the rotation's transaction (Task 14, D3): every
+    /// slice hash goes, so the next cycle republishes the whole window under the new epoch, keyboxes included. The
+    /// relay token, the ledger and the alerted asks stay. Two exceptions keep what must not repeat:
+    /// - `ask_alert` rows keep their record name with a blank hash: the alert is resealed under the new `K_alert`
+    ///   but, already in the zone, gets no second `sig-` signal (no second lock-screen alert; its wire name is
+    ///   stable, `K_meta` does not rotate, D5);
+    /// - the generation is bumped, so a cycle sealing under the old epoch aborts before recording its hashes, and
+    ///   the alerts of the bumped generation move to the new one (still published, unlike an account reset's).
+    static func wipeForRotation(_ db: Database) throws {
+        let alertPrefix = SliceKind.askAlert.recordName(id: "")
+        try db.execute(
+            sql: "UPDATE slice_state SET payload_hash = '' WHERE substr(record_name, 1, length(?1)) = ?1",
+            arguments: [alertPrefix])
+        try db.execute(
+            sql: "DELETE FROM slice_state WHERE substr(record_name, 1, length(?1)) != ?1", arguments: [alertPrefix])
+        let generation = try generation(db)
+        try db.execute(
+            sql: """
+                INSERT INTO hub_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+            arguments: [generationKey, String(generation + 1)])
+        try db.execute(
+            sql: "UPDATE alerted_asks SET generation = ? WHERE generation = ?", arguments: [generation + 1, generation])
     }
 
     /// The sync generation counter: 0 until the first `wipeSyncState(now:)`.

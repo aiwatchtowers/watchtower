@@ -176,7 +176,7 @@ final class MobileLinkCenterTests: XCTestCase {
         ownerUser: (@Sendable () async -> String?)? = nil
     ) throws -> MobileLinkCenter {
         let clock = try XCTUnwrap(self.clock)
-        keyring = try sidecar.testKeyring()
+        keyring = try sidecar.testKeyring { clock.now }
         let made = MobileLinkCenter(
             sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: ownerUser ?? { "_owner-acme" },
             keyring: keyring,
@@ -711,7 +711,10 @@ final class MobileLinkCenterTests: XCTestCase {
 
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertTrue(center.pendingLinks.isEmpty)
-        XCTAssertTrue(try grants().isEmpty)
+        // Task 14 (D9): the only answer is the removal's revoked keybox; no link, no request.
+        XCTAssertEqual(Array(try grants().keys), [phoneA])
+        XCTAssertEqual(try grants()[phoneA]?.revoked, true)
+        XCTAssertEqual(try grants()[phoneA]?.linked, false)
     }
 
     // MARK: - Two phones
@@ -722,7 +725,10 @@ final class MobileLinkCenterTests: XCTestCase {
         try await center.remove(deviceID: phoneA)
 
         XCTAssertEqual(center.devices.map(\.deviceID), [phoneB])
-        XCTAssertEqual(Array(try grants().keys), [phoneB], "the removed phone's grant leaves the zone")
+        // Task 14 (D9): the removed phone's keybox reads revoked instead of leaving the zone.
+        XCTAssertEqual(Set(try grants().keys), [phoneA, phoneB])
+        XCTAssertEqual(try grants()[phoneA]?.revoked, true)
+        XCTAssertEqual(try grants()[phoneB]?.linked, true)
         let transport = StubHubTransport()
         let fromA = try probe(from: phoneA)
         let fromB = try probe(from: phoneB)
@@ -941,6 +947,156 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertNil(try sidecar.linkedDevice(phoneA))
         XCTAssertTrue(try sidecar.linkedDevices().isEmpty, "no row is left under either spelling")
         XCTAssertTrue(center.devices.isEmpty)
+    }
+
+    // MARK: - Rotation on Remove and unlink (Task 14, spec §2.2, D9, D10)
+
+    /// The hub's DataZone sealing over the real keyring (signed, current epoch).
+    private func hubSecure() -> SecureTransport {
+        SecureTransport(inner: InMemoryCloudTransport(), keys: keyring, rollback: keyring, names: sidecar)
+    }
+
+    private func sealedSample(_ id: String) async throws -> CloudRecord {
+        let record = SliceRecord(kind: .workbench, id: id, modifiedAt: clock.now, payload: Data("{\"id\":\"\(id)\"}".utf8))
+        return try await hubSecure().seal(CloudRecordFactory.record(for: record))
+    }
+
+    /// A DataZone envelope opened the way a phone opens it (hub signature checked) with `key` for its epoch.
+    private func openData(_ wire: CloudRecord, key: (UInt32) throws -> Data) throws -> InnerFrame {
+        try EnvelopeSealer.openSymmetric(
+            wire.payload, accepting: [.data], context: EnvelopeContext(zone: .data, wireName: wire.recordName),
+            verifier: keyring.signingPublicKey
+        ) { header in SymmetricKey(data: try key(header.epoch)) }.frame
+    }
+
+    /// `phone`'s keybox keys; fails when its keybox carries none.
+    private func openedKeyboxKeys(_ phone: DeviceIdentityKeys) async throws -> KeyboxKeys {
+        let keybox = try await openedKeybox(phone)
+        return try XCTUnwrap(keybox.keys, "no keys in the keybox of \(phone.deviceID)")
+    }
+
+    private static func keyBytes(_ text: String?) throws -> Data {
+        try XCTUnwrap(WireBytes.fromBase64URL(try XCTUnwrap(text)))
+    }
+
+    func testRemoveRotatesAndTheRemovedPhoneCannotOpenNewRecords() async throws {
+        try await linkPhonesAAndB()
+        let keysA = try await openedKeyboxKeys(identityA)
+        XCTAssertEqual(keysA.epoch, 1)
+        let dataKeyA = try Self.keyBytes(keysA.dataKey)
+        let before = try await sealedSample("before")
+        nudges = []
+
+        try await center.remove(deviceID: phoneA)
+
+        XCTAssertEqual(try keyring.currentEpoch(), 2)
+        XCTAssertTrue(nudges.contains { $0.contains(.deviceGrant) })
+        XCTAssertTrue(try sidecar.hashes(forKind: .deviceGrant).isEmpty, "the window is republished")
+        let after = try await sealedSample("after")
+        XCTAssertEqual(try openData(before) { _ in dataKeyA }.id, "workbench-before", "A keeps what it already had")
+        XCTAssertThrowsError(try openData(after) { _ in dataKeyA }, "A's key opens no epoch-2 record") {
+            XCTAssertEqual($0 as? EnvelopeError, .authenticationFailed)
+        }
+
+        let keysB = try await openedKeyboxKeys(identityB)
+        XCTAssertEqual(keysB.epoch, 2)
+        XCTAssertEqual(keysB.previousEpoch, 1)
+        XCTAssertEqual(keysB.previousDataKey, keysA.dataKey, "B gets the retired epoch's keys too")
+        XCTAssertEqual(keysB.metaKey, keysA.metaKey, "K_meta does not rotate (D5)")
+        let keyOfB: (UInt32) throws -> Data = { epoch in
+            try Self.keyBytes(epoch == keysB.epoch ? keysB.dataKey : epoch == keysB.previousEpoch ? keysB.previousDataKey : nil)
+        }
+        XCTAssertEqual(try openData(after, key: keyOfB).id, "workbench-after")
+        XCTAssertEqual(try openData(before, key: keyOfB).id, "workbench-before")
+    }
+
+    /// D9: the removed phone's keybox stays, sealed to it and signed, reading `revoked` without keys for 7 days.
+    func testTheRemovedPhonesKeyboxReadsRevokedForSevenDays() async throws {
+        let code = try await center.issueCode()
+        try await link(try hello(identityA, nonce: code.nonce))
+
+        try await center.remove(deviceID: phoneA)
+
+        let keybox = try await openedKeybox(identityA)
+        XCTAssertEqual(keybox.grant.revoked, true)
+        XCTAssertFalse(keybox.grant.linked)
+        XCTAssertNil(keybox.grant.linkRefused)
+        XCTAssertNil(keybox.keys, "a removed phone gets no key")
+        clock.advance(7 * 86_400 - 1)
+        XCTAssertEqual(try grants()[phoneA]?.revoked, true)
+        clock.advance(1)
+        XCTAssertNil(try grants()[phoneA], "pruned after 7 days")
+        XCTAssertNil(try keyring.keyboxRecipient(deviceID: identityA.deviceID))
+    }
+
+    func testAPhonesOwnUnlinkRotatesLikeRemove() async throws {
+        try await linkPhonesAAndB()
+        let keysA = try await openedKeyboxKeys(identityA)
+
+        try await handleDevice(try deviceRecord(phoneA, nonce: nil, unlinked: true))
+
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneB])
+        XCTAssertEqual(try keyring.currentEpoch(), 2)
+        let removed = try await openedKeybox(identityA)
+        XCTAssertEqual(removed.grant.revoked, true)
+        XCTAssertNil(removed.keys)
+        let keysB = try await openedKeyboxKeys(identityB)
+        XCTAssertEqual(keysB.epoch, 2)
+        XCTAssertNotEqual(keysB.dataKey, keysA.dataKey)
+        XCTAssertEqual(keysB.previousDataKey, keysA.dataKey)
+    }
+
+    /// D9: after Remove the hub has no relay key for the phone: its records of the current and the previous epoch
+    /// are dropped, never echoed, never ledgered, and its `relay_seen` rows are gone (F3).
+    func testRelayRecordsOfTheRemovedPhoneAreDroppedNotEchoed() async throws {
+        let code = try await center.issueCode()
+        try await link(try hello(identityC, nonce: code.nonce))
+        let hubID = try WireBytes.hubUUID(try sidecar.ensureHubID())
+        let nonce = try XCTUnwrap(WireBytes.fromBase64URL(code.nonce))
+        let secure = hubSecure()
+        let now = clock.now
+        let phone = identityC
+        let hubAgreement = keyring.agreementPublicKey
+        /// A probe sealed by phone C at `epoch` with the relay key C derives itself; its wire record and plain name.
+        func probe(_ label: String, epoch: UInt32) throws -> (wire: CloudRecord, plain: String) {
+            let action = ActionRequestPayload(
+                id: "probe-\(label)", kind: .probe, entityID: nil, params: ["nonce": .string(label)], createdAt: now,
+                deviceID: phone.deviceID.uuidString)
+            let plain = try CloudRecordFactory.record(for: action, modifiedAt: now)
+            let wire = try secure.wireName(plain: plain.recordName, zone: .relay)
+            let key = try KeyDerivation.relayKey(
+                agreementPrivate: phone.agreement, peerPublic: hubAgreement, linkNonce: nonce,
+                hubID: hubID, deviceID: phone.deviceID, epoch: epoch, direction: .phoneToHub)
+            let envelope = try EnvelopeSealer.sealSymmetric(
+                InnerFrame(kind: plain.kind, id: plain.recordName, payload: plain.payload), envelopeClass: .relayToHub,
+                key: key, hubID: hubID, senderID: phone.deviceID, epoch: epoch, seq: UInt64(epoch) * 100,
+                context: EnvelopeContext(zone: .relay, wireName: wire), signer: nil)
+            return (CloudRecord(recordName: wire, zone: .relay, kind: WireKind.envelope, modifiedAt: now, payload: envelope),
+                    plain.recordName)
+        }
+        let transport = StubHubTransport()
+        let processor = RelayProcessor(
+            transport: MobileHubStorage.sealing(transport, keyring: keyring, sidecar: sidecar), sidecar: sidecar,
+            dispatcher: MobileHubCommandDispatcher(), hubID: try sidecar.ensureHubID())
+
+        // Control: while linked, C's probe is echoed.
+        let linked = try probe("linked", epoch: 1)
+        try await transport.save([linked.wire])
+        _ = try await processor.processOnce()
+        XCTAssertEqual(transport.saved.count, 2, "the probe and its echo")
+        XCTAssertEqual(try sidecar.relayPhase(linked.plain), .done)
+        XCTAssertNotNil(try sidecar.relaySeen(wireName: linked.wire.recordName, senderID: phoneC))
+
+        try await center.remove(deviceID: phoneC)
+        XCTAssertNil(try sidecar.relaySeen(wireName: linked.wire.recordName, senderID: phoneC))
+        let previous = try probe("previous", epoch: 1)
+        let current = try probe("current", epoch: 2)
+        try await transport.save([previous.wire, current.wire])
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(transport.saved.count, 4, "no echo for either record")
+        XCTAssertNil(try sidecar.relayPhase(previous.plain))
+        XCTAssertNil(try sidecar.relayPhase(current.plain))
     }
 
     // MARK: - Closing the link
@@ -1310,7 +1466,9 @@ final class MobileLinkCenterTests: XCTestCase {
 
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertNil(try sidecar.linkedDevice(phoneA))
-        XCTAssertTrue(try grants().isEmpty, "its grant leaves the zone")
+        // Task 14 (D9): its keybox reads revoked instead of leaving the zone.
+        XCTAssertEqual(Array(try grants().keys), [phoneA])
+        XCTAssertEqual(try grants()[phoneA]?.revoked, true)
         let echo = try await relayedProbe(from: phoneA)
         XCTAssertEqual(echo?.reason, .deviceNotLinked)
     }
@@ -1328,7 +1486,7 @@ final class MobileLinkCenterTests: XCTestCase {
         ))
 
         XCTAssertTrue(center.devices.isEmpty)
-        XCTAssertTrue(try grants().isEmpty)
+        XCTAssertEqual(try grants()[phoneA]?.revoked, true, "Task 14 (D9): revoked, not gone")
         let echo = try await relayedProbe(from: phoneA, creator: "_colleague-a")
         XCTAssertEqual(echo?.reason, .deviceNotLinked)
     }
