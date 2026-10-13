@@ -109,10 +109,10 @@ final class LinkStore {
     }
 
     /// The hub whose zones the app syncs at boot: the link's, else a pending
-    /// link's, else `AppEnvironment.unlinkedHubID` (F1's single-link bridge
+    /// link's, else `HubSession.unlinkedHubID` (F1's single-link bridge
     /// until F2's `HubRegistry`).
     var bootHubID: String {
-        link?.hubID ?? pending?.link.hubID ?? AppEnvironment.unlinkedHubID
+        link?.hubID ?? pending?.link.hubID ?? HubSession.unlinkedHubID
     }
 
     /// Plain JSON (local state, not wire format: RelayCoder's snake-case

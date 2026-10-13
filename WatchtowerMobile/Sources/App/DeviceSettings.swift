@@ -24,7 +24,9 @@ struct LinkedDevice: Equatable, Sendable {
 /// The two Workbench choices are requests to the Mac: each change rewrites
 /// the phone's `device` record while it is linked. Before linking, the
 /// choice is only kept, and the link flow sends it with the link record.
-/// Every choice is persisted in `UserDefaults`, so it survives a relaunch.
+/// Every choice is persisted in `UserDefaults`, so it survives a relaunch;
+/// the two Workbench choices per hub (each Mac has its own `device` record),
+/// the alerts choice once for the phone.
 @MainActor
 @Observable
 final class DeviceSettings {
@@ -43,6 +45,7 @@ final class DeviceSettings {
 
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let keys: Keys
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The last queued device-record write. Writes run one at a time, in
     /// toggle order, and each sends the choices current when it runs, so the
@@ -59,22 +62,31 @@ final class DeviceSettings {
         case typingRequested, startSessions
     }
 
-    private enum Keys {
-        static let typingRequested = "device.typingRequested"
-        static let startSessions = "device.startSessions"
+    /// The `UserDefaults` keys: the Workbench choices under the hub's id.
+    private struct Keys {
         static let newAskAlerts = "notifications.newAsks"
+        let typingRequested: String
+        let startSessions: String
+
+        init(hubID: String) {
+            typingRequested = "hub.\(hubID).device.typingRequested"
+            startSessions = "hub.\(hubID).device.startSessions"
+        }
     }
 
     init(
         transport: any CloudSyncTransport,
         defaults: UserDefaults,
+        hubID: String,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.defaults = defaults
+        let keys = Keys(hubID: hubID)
+        self.keys = keys
         self.now = now
-        typingRequested = defaults.object(forKey: Keys.typingRequested) as? Bool ?? false
-        startSessions = defaults.object(forKey: Keys.startSessions) as? Bool ?? true
+        typingRequested = defaults.object(forKey: keys.typingRequested) as? Bool ?? false
+        startSessions = defaults.object(forKey: keys.startSessions) as? Bool ?? true
         newAskAlerts = defaults.object(forKey: Keys.newAskAlerts) as? Bool ?? true
     }
 
@@ -85,7 +97,7 @@ final class DeviceSettings {
         await write(.typingRequested) { [weak self] saved in
             guard let self else { return }
             if saved {
-                defaults.set(value, forKey: Keys.typingRequested)
+                defaults.set(value, forKey: keys.typingRequested)
             } else {
                 typingRequested = previous
             }
@@ -99,7 +111,7 @@ final class DeviceSettings {
         await write(.startSessions) { [weak self] saved in
             guard let self else { return }
             if saved {
-                defaults.set(value, forKey: Keys.startSessions)
+                defaults.set(value, forKey: keys.startSessions)
             } else {
                 startSessions = previous
             }

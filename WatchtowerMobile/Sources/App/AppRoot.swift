@@ -73,7 +73,7 @@ final class AppRoot {
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return demo(try AppEnvironment(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
+            return demo(try AppEnvironment.demoSingle(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
@@ -81,10 +81,7 @@ final class AppRoot {
         // environment opens it; every environment and the wipe share it.
         let transportStorePath = try AppEnvironment.liveTransportStorePath()
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment(
-                transportStorePath: transportStorePath, scope: scope, hubID: hubID, linkedDevice: device,
-                energy: BatteryDiagnostics.shared.counter
-            )
+            try AppEnvironment.liveSingle(scope: scope, hubID: hubID, linkedDevice: device, energy: BatteryDiagnostics.shared.counter)
         }
         let scope = store.bootScope
         let hubID = store.bootHubID
@@ -113,7 +110,7 @@ final class AppRoot {
         return AppRoot(
             env: env,
             scope: .private,
-            hubID: AppEnvironment.unlinkedHubID,
+            hubID: HubSession.unlinkedHubID,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
             restarter: nil
         )
@@ -138,9 +135,12 @@ final class AppRoot {
 
     // MARK: - Environment
 
+    /// The link flow's hooks on the environment's one session (F2 Task 4
+    /// wires every session).
     private func wire(_ env: AppEnvironment) {
-        env.onLinkSignal = { [weak self] signal in self?.handle(signal) }
-        env.onFetched = { [weak self] in self?.checkHeartbeat() }
+        let session = env.activeSession
+        session.onLinkSignal = { [weak self] signal in self?.handle(signal) }
+        session.onFetched = { [weak self] in self?.checkHeartbeat() }
     }
 
     private func handle(_ signal: LinkSignal) {
@@ -224,7 +224,7 @@ final class AppRoot {
     /// A wipe never takes the owner's audio silently: a running capture
     /// is stopped and saved first, and every recording still on its way to
     /// the Mac is held for the hub it was recorded for
-    /// (`AppEnvironment.handOverRecordings`), unless `keepRecordings` is
+    /// (`HubSession.handOverRecordings`), unless `keepRecordings` is
     /// false (an iCloud account change), when it is reported "Not sent".
     /// Returns what the wipe lost, counted after the next environment
     /// adopted its hub's held recordings.
@@ -258,7 +258,8 @@ final class AppRoot {
     ) async throws -> LocalWipe {
         let endWork = restarter.startWork?("app-restart")
         defer { endWork?() }
-        let old = env
+        // The one session the restart replaces (F2 Task 4 restarts per hub).
+        let old = env.activeSession
         old.onLinkSignal = nil
         old.onFetched = nil
         let stoppedCapture = wipe ? await old.recorder.stopForWipe() : nil
@@ -287,7 +288,7 @@ final class AppRoot {
             self.scope = scope
             self.hubID = hubID
             retired = false
-            if let adoption = await next.adoption?.value {
+            if let adoption = await next.activeSession.adoption?.value {
                 outcome.notSent += adoption.lost
                 outcome.problem = outcome.problem ?? adoption.problem
             }
@@ -317,9 +318,9 @@ final class AppRoot {
 
     /// Outbox items still waiting for the Mac: what a wipe loses besides
     /// recordings it could not keep ("Not sent").
-    private static func pendingActionCount(_ env: AppEnvironment) -> Int {
+    private static func pendingActionCount(_ session: HubSession) -> Int {
         do {
-            return try env.store.pendingActions().filter { $0.state == .pending }.count
+            return try session.store.pendingActions().filter { $0.state == .pending }.count
         } catch {
             logger.error("not-sent count failed: \(error.localizedDescription, privacy: .public)")
             return 0
@@ -341,7 +342,7 @@ extension AppRoot: LinkHost {
                 Self.logger.error("recordings at the link restart: \(problem, privacy: .public)")
             }
         }
-        return env.linkTransport
+        return env.activeSession.linkTransport
     }
 
     func fetchGrant(deviceID: String) async -> DeviceGrant? {
@@ -363,7 +364,7 @@ extension AppRoot: LinkHost {
     }
 
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {
-        await env.setLinkedDevice(device, writesAllowed: writesAllowed)
+        await env.activeSession.setLinkedDevice(device, writesAllowed: writesAllowed)
     }
 
     func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {

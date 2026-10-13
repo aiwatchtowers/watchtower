@@ -550,7 +550,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(host.flushes, 1)
         XCTAssertEqual(host.wipes, 2)
         XCTAssertEqual(
-            host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID],
+            host.wipedHubIDs, ["hub-acme", HubSession.unlinkedHubID],
             "final review m3: a private unlink ends on the unlinked hub id too"
         )
         XCTAssertNil(model.link)
@@ -655,7 +655,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.unlink()
 
-        XCTAssertEqual(host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID])
+        XCTAssertEqual(host.wipedHubIDs, ["hub-acme", HubSession.unlinkedHubID])
         XCTAssertEqual(Array(log.events.suffix(2)), ["leave \(owner)", "wipe private"])
         XCTAssertEqual(host.retirements, 0)
         XCTAssertNil(model.link)

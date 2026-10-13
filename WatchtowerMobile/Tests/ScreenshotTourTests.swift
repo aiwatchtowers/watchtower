@@ -60,22 +60,20 @@ final class ScreenshotTourTests: XCTestCase {
 
     private func makeDemoRoot() throws -> AppRoot {
         let defaults = try makeDefaults()
-        let root = AppRoot.demo(
-            try AppEnvironment(
-                transport: InMemoryCloudTransport(),
-                replicaPath: try makeReplicaPath(),
-                transportKind: .inMemoryDemo,
-                defaults: defaults,
-                recordingsDirectory: try makeRecordingsDirectory()
-            ),
-            defaults: defaults
+        let session = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            transportKind: .inMemoryDemo,
+            defaults: defaults,
+            recordingsDirectory: try makeRecordingsDirectory()
         )
-        addTeardownBlock { @MainActor in root.env.stop() }
+        addTeardownBlock { @MainActor in session.stop() }
+        let root = AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
         return root
     }
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
-        env.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
+        env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
             && !env.calendarReplica.snapshot.events.isEmpty && !env.phoneRecordings.snapshot.recordings.isEmpty
     }
 
@@ -85,11 +83,12 @@ final class ScreenshotTourTests: XCTestCase {
     private func captureRecorder(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let env = try AppEnvironment(
+        let defaults = try makeDefaults()
+        let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
-            defaults: try makeDefaults(),
+            defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         ) { uploader in
             PhoneRecorderController(
@@ -97,8 +96,9 @@ final class ScreenshotTourTests: XCTestCase {
                 now: { clock.now }, tickInterval: nil
             )
         }
-        addTeardownBlock { @MainActor in env.stop() }
-        try await poll(timeout: 20, { env.isBootstrapped }, "the recorder environment booted")
+        addTeardownBlock { @MainActor in session.stop() }
+        try await poll(timeout: 20, { session.isBootstrapped }, "the recorder environment booted")
+        let env = AppEnvironment.single(session, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         let recorder = env.recorder
         await recorder.recordVoiceNote()

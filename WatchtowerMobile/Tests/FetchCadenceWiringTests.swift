@@ -15,7 +15,7 @@ import XCTest
 @MainActor
 final class FetchCadenceWiringTests: XCTestCase {
     private struct Wired {
-        let env: AppEnvironment
+        let env: HubSession
         let sleeper: TickSleeper
         let clock: MutableClock
         let remote: RemoteFetchRecorder
@@ -28,7 +28,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let clock = MutableClock()
         let remote = RemoteFetchRecorder()
         let counter = EnergyCounter(defaults: try makeDefaults())
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
@@ -48,12 +48,13 @@ final class FetchCadenceWiringTests: XCTestCase {
 
     func testTheSafetyPollRunsEveryMinuteOnEveryTab() async throws {
         let wired = try await makeWired()
-        XCTAssertEqual(AppEnvironment.safetyPollInterval, .seconds(60))
+        XCTAssertEqual(SessionCadence.safetyPollInterval, .seconds(60))
         XCTAssertEqual(wired.sleeper.requested, [.seconds(60)])
         XCTAssertEqual(wired.remote.depths, [.full], "the launch fetch only: no poll right behind it")
 
+        let app = AppEnvironment.single(wired.env, defaults: try makeDefaults())
         for tab in RootTabView.Tab.allCases {
-            wired.env.navigation.tab = tab
+            app.navigation.tab = tab
         }
         wired.sleeper.tick()
         try await poll({ wired.remote.depths.count == 2 && wired.sleeper.waitingCount == 1 }, "a tick is one fetch")
@@ -87,14 +88,14 @@ final class FetchCadenceWiringTests: XCTestCase {
 
         // A Control Center peek: the launch fetch is seconds old.
         wired.env.setActive(false)
-        wired.clock.advance(AppEnvironment.foregroundRefetchAfter - 1)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) - 1)
         wired.env.setActive(true)
         XCTAssertTrue(wired.env.isLooping)
         try await poll { wired.sleeper.waitingCount == 1 }
         XCTAssertEqual(wired.remote.depths, [.full], "a peek costs no fetch")
 
         wired.env.setActive(false)
-        wired.clock.advance(AppEnvironment.foregroundRefetchAfter + 1)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
         wired.env.setActive(true)
         try await poll({ wired.remote.depths.count == 2 && wired.sleeper.waitingCount == 1 }, "the return fetches at once")
         XCTAssertEqual(wired.remote.depths.last, .full)
@@ -224,7 +225,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         wired.env.onFetched = { applied += 1 }
 
         wired.env.setActive(false)
-        wired.clock.advance(AppEnvironment.foregroundRefetchAfter - 1)
+        wired.clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) - 1)
         wired.env.setActive(true)
 
         try await poll({ applied == 1 }, "the quick return applies the buffered changes")
@@ -295,7 +296,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         wired.remote.holding = true
 
         PushCompletion.serve(
-            wired.env, arrivedAt: wired.clock.now, inForeground: false,
+            AppEnvironment.single(wired.env, defaults: try makeDefaults()), arrivedAt: wired.clock.now, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: DatabaseSuspension { _ in }) { true },
             sleep: { try await deadline.sleep($0) },
             completion: { completions.append($0) }
@@ -324,7 +325,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         wired.remote.holding = true
 
         PushCompletion.serve(
-            wired.env, arrivedAt: wired.clock.now, inForeground: false,
+            AppEnvironment.single(wired.env, defaults: try makeDefaults()), arrivedAt: wired.clock.now, inForeground: false,
             startWork: BackgroundWork.starter(runner: FakeBackgroundTasks(), suspension: DatabaseSuspension { _ in }) { true },
             sleep: { try await deadline.sleep($0) },
             completion: { completions.append($0) }
@@ -359,7 +360,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let remote = RemoteFetchRecorder()
         remote.holding = true
         let counter = EnergyCounter(defaults: try makeDefaults())
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
@@ -416,7 +417,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let arrivedAt = clock.now
         var completions: [FetchOutcome] = []
         PushCompletion.serve(
-            env, arrivedAt: arrivedAt, inForeground: false,
+            AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
             sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
             completion: { completions.append($0) }
@@ -453,7 +454,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let arrivedAt = clock.now
         var completions: [FetchOutcome] = []
         PushCompletion.serve(
-            env, arrivedAt: arrivedAt, inForeground: false,
+            AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
             sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
             completion: { completions.append($0) }

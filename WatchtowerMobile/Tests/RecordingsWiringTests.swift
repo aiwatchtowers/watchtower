@@ -516,7 +516,7 @@ final class RecordingsWiringTests: XCTestCase {
     // MARK: - Routing
 
     func testSeeRecordingsOpensTheRecordingsList() async throws {
-        let env = try AppEnvironment(
+        let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .cloudKit,
@@ -528,7 +528,8 @@ final class RecordingsWiringTests: XCTestCase {
                 now: { Date() }, tickInterval: nil
             )
         }
-        addTeardownBlock { @MainActor in env.stop() }
+        addTeardownBlock { @MainActor in session.stop() }
+        let env = AppEnvironment.single(session, defaults: try makeDefaults())
         env.navigation.tab = .workbench
 
         env.showRecordings()

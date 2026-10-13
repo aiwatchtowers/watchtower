@@ -5,7 +5,7 @@ import XCTest
 
 /// Settings → Battery (board #724): the MetricKit history's persistence and
 /// merge, the report's rows, the view model's refresh, and the fetch
-/// counting by trigger in `AppEnvironment`. Dates are seeded from now.
+/// counting by trigger in `HubSession`. Dates are seeded from now.
 @MainActor
 final class BatteryDiagnosticsTests: XCTestCase {
     private func makeDirectory() throws -> URL {
@@ -218,7 +218,7 @@ final class BatteryDiagnosticsTests: XCTestCase {
         let counter = EnergyCounter(defaults: try makeDefaults()) { noon }
         let sleeper = TickSleeper()
         let clock = MutableClock()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
@@ -237,7 +237,7 @@ final class BatteryDiagnosticsTests: XCTestCase {
         try await poll({ counter.counts(daysAgo: 0)[.fetchLoop] == 1 && sleeper.waitingCount == 1 }, "a tick is a timed fetch")
 
         env.setActive(false)
-        clock.advance(AppEnvironment.foregroundRefetchAfter + 1)
+        clock.advance(SessionCadence.foregroundRefetchAfter(role: .active) + 1)
         env.setActive(true)
         try await poll({ counter.counts(daysAgo: 0)[.fetchForeground] == 1 }, "the return to the foreground")
 

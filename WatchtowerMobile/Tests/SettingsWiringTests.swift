@@ -225,7 +225,7 @@ final class SettingsWiringTests: XCTestCase {
     // MARK: - Workbench toggles
 
     func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
-        let settings = DeviceSettings(transport: InMemoryCloudTransport(), defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: InMemoryCloudTransport(), defaults: try makeDefaults(), hubID: "hub-acme")
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.newAskAlerts)
@@ -235,7 +235,7 @@ final class SettingsWiringTests: XCTestCase {
     /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults(), hubID: "hub-acme")
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -255,7 +255,7 @@ final class SettingsWiringTests: XCTestCase {
 
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults(), hubID: "hub-acme")
         settings.linkedDevice = device
 
         await settings.setStartSessions(false)
@@ -271,7 +271,7 @@ final class SettingsWiringTests: XCTestCase {
     func testToggleWhileUnlinkedKeepsTheChoiceAndWritesNothing() async throws {
         let transport = SpyTransport()
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme")
 
         await settings.setTypingRequested(true)
 
@@ -279,15 +279,33 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(saves.isEmpty)
         XCTAssertTrue(settings.typingRequested)
         XCTAssertTrue(
-            DeviceSettings(transport: transport, defaults: defaults).typingRequested,
+            DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme").typingRequested,
             "the choice must survive a relaunch"
         )
+    }
+
+    /// Each Mac has its own `device` record: the Workbench choices are kept
+    /// per hub, the new-ask alerts once for the phone.
+    func testTheWorkbenchChoicesAreKeptPerHub() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let acme = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme")
+
+        await acme.setTypingRequested(true)
+        await acme.setStartSessions(false)
+        acme.newAskAlerts = false
+
+        let home = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-home")
+        XCTAssertFalse(home.typingRequested, "another hub keeps its own default")
+        XCTAssertTrue(home.startSessions)
+        XCTAssertFalse(home.newAskAlerts, "the alerts choice is the phone's")
+        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme").typingRequested)
     }
 
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
         let transport = SpyTransport(failingSaves: [0])
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults(), hubID: "hub-acme")
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -301,7 +319,7 @@ final class SettingsWiringTests: XCTestCase {
     /// write reads the choices.
     func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults(), hubID: "hub-acme")
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1) } }
 
@@ -333,7 +351,7 @@ final class SettingsWiringTests: XCTestCase {
     func testAFailedWriteNeverRevertsANewerToggleOfTheSameSetting() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme")
         settings.linkedDevice = device
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await transport.release(0, 1, 2) } }
@@ -350,14 +368,14 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(settings.typingRequested, "the newest toggle keeps its value")
         let payloads = try await transport.devicePayloads()
         XCTAssertEqual(payloads.map(\.typingRequested), [true, true, true], "no write sends the stale revert")
-        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults).typingRequested)
+        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme").typingRequested)
     }
 
     /// A-T11 N3: a reverted toggle says why until that setting saves, even
     /// when the other setting's write succeeds right behind it.
     func testARevertedToggleKeepsItsErrorUntilThatSettingSaves() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults(), hubID: "hub-acme")
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1, 2) } }
 

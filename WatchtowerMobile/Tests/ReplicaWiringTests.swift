@@ -4,10 +4,10 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// Smoke tests for the app's WIRING, not the replica logic (the Kit's own
-/// suites cover that): `AppEnvironment` picks the transport, boots, and
-/// hydrates exactly the demo seed.
+/// suites cover that): `AppEnvironment` picks the transport, its session
+/// boots and hydrates exactly the demo seed.
 ///
-/// Coupling note (spec §10): `AppEnvironment()` here opens the app's own
+/// Coupling note (spec §10): `AppEnvironment.demoSingle()` here opens the app's own
 /// on-disk replica. The TEST_HOST app boots nothing while it hosts the tests
 /// (`WatchtowerMobileApp.Boot.hostingTests`), but a replica a previous
 /// `make mobile-run` left behind would skew the exact counts: uninstall the
@@ -47,14 +47,22 @@ final class ReplicaWiringTests: XCTestCase {
 
     /// Stops the environment's loop on teardown, so no test leaves a fetch
     /// loop running into the next one.
+    private func managed(_ session: HubSession) -> HubSession {
+        addTeardownBlock { @MainActor in session.stop() }
+        return session
+    }
+
+    /// The app's environment over `session`, stopped on teardown.
     private func managed(_ env: AppEnvironment) -> AppEnvironment {
-        addTeardownBlock { @MainActor in env.stop() }
+        for session in env.sessions.values {
+            _ = managed(session)
+        }
         return env
     }
 
-    /// An isolated demo environment on `path`; `sleeper` steps its fetch
+    /// An isolated demo session on `path`; `sleeper` steps its fetch
     /// loop by hand (nil: real sleeps).
-    private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> AppEnvironment {
+    private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> HubSession {
         let sleep: @Sendable (Duration) async throws -> Void = { interval in
             if let sleeper {
                 try await sleeper.sleep(interval)
@@ -62,7 +70,7 @@ final class ReplicaWiringTests: XCTestCase {
                 try await Task.sleep(for: interval)
             }
         }
-        return managed(try AppEnvironment(
+        return managed(try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: path,
             transportKind: .inMemoryDemo,
@@ -75,7 +83,7 @@ final class ReplicaWiringTests: XCTestCase {
     // MARK: - Boot and demo seed
 
     func testAppEnvironmentBootsAndHydratesExactlyTheDemoSeed() async throws {
-        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
+        let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         try await poll { env.lastSyncAt != nil }
 
         for (kind, expected) in bootCounts {
@@ -186,14 +194,14 @@ final class ReplicaWiringTests: XCTestCase {
     // MARK: - Transport choice
 
     /// The unsigned test host (CODE_SIGNING_ALLOWED=NO) has no iCloud
-    /// entitlement, so `AppEnvironment()` runs the demo transport and is
+    /// entitlement, so `AppEnvironment.demoSingle()` runs the demo transport and is
     /// linked to the demo device.
     func testUnsignedHostProbesFalseAndBootsDemo() async throws {
         XCTAssertFalse(
             CloudKitTransport.entitlementPresent(),
             "an unsigned simulator host must probe false, or the demo path is dead"
         )
-        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
+        let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         XCTAssertEqual(env.transportKind, .inMemoryDemo)
         XCTAssertEqual(env.linkedDevice, DemoSeed.device)
     }
@@ -202,7 +210,7 @@ final class ReplicaWiringTests: XCTestCase {
     /// runs on the `.cloudKit` kind. Forced through the designated init with
     /// an in-memory stand-in on an isolated path.
     func testCloudKitKindSeedsNothingAndStartsUnlinked() async throws {
-        let env = try managed(AppEnvironment(
+        let env = try managed(HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .cloudKit,
@@ -235,7 +243,9 @@ final class ReplicaWiringTests: XCTestCase {
             processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"],
             makeRoot: {
                 built += 1
-                return AppRoot.demo(try self.demoEnvironment(at: try self.makeReplicaPath()), defaults: try self.makeDefaults())
+                let defaults = try self.makeDefaults()
+                let session = try self.demoEnvironment(at: try self.makeReplicaPath())
+                return AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
             }
         ) else {
             return XCTFail("a test host must not build an environment")
@@ -246,7 +256,10 @@ final class ReplicaWiringTests: XCTestCase {
         let path = try makeReplicaPath()
         guard case let .ready(root) = WatchtowerMobileApp.Boot.make(
             processEnvironment: [:],
-            makeRoot: { AppRoot.demo(try self.demoEnvironment(at: path), defaults: try self.makeDefaults()) }
+            makeRoot: {
+                let defaults = try self.makeDefaults()
+                return AppRoot.demo(AppEnvironment.single(try self.demoEnvironment(at: path), defaults: defaults), defaults: defaults)
+            }
         ) else {
             return XCTFail("a normal launch must boot")
         }
@@ -259,7 +272,7 @@ final class ReplicaWiringTests: XCTestCase {
     /// never a crash. `/dev/null/sub/…` is unopenable: its parent is a device.
     func testInitThrowsWhenReplicaPathIsUnopenable() throws {
         XCTAssertThrowsError(
-            try AppEnvironment(
+            try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: "/dev/null/sub/replica.sqlite",
                 defaults: try makeDefaults(),

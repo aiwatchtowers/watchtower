@@ -502,7 +502,7 @@ final class LinkingViewModel {
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)
         guard writeUnlinked, let device else {
-            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
+            return await host.wipeLocalData(restartingOn: .private, hubID: HubSession.unlinkedHubID, keepRecordings: keepRecordings)
         }
         let scope = current.databaseScope
         var wipe = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID, keepRecordings: keepRecordings)
@@ -525,7 +525,7 @@ final class LinkingViewModel {
         // The linked hub's zones are still reachable (a private link, or
         // shares not left): end on the phone's own database, unlinked.
         // Nothing is left to stop; what this wipe could not hand over adds.
-        let final = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
+        let final = await host.wipeLocalData(restartingOn: .private, hubID: HubSession.unlinkedHubID, keepRecordings: keepRecordings)
         wipe.notSent += final.notSent
         wipe.problem = wipe.problem ?? final.problem
         return wipe
