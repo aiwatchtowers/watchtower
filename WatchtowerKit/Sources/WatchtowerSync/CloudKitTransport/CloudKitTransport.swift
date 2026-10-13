@@ -804,6 +804,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             recordError(error)
             engine = nil
             delegateBox = nil
+            releaseEngineRunWaiters()
             return
         }
         engine = nil
@@ -1208,6 +1209,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         guard !isUnlinked else { return }
         isUnlinked = true
         logger.notice("hub zones gone (\(reason, privacy: .public)); unlinked")
+        // Nothing is fetched any more: a push waiting on the engine's run
+        // returns now instead of at its grace's end.
+        releaseEngineRunWaiters()
         eventHandler?(.unlinked)
     }
 

@@ -1,4 +1,5 @@
 import CloudKit
+import os
 import XCTest
 @testable import WatchtowerSync
 
@@ -285,6 +286,97 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         await gate.open()
 
         XCTAssertEqual(engine.fetchCount, 0, "a stopped transport fetches nothing")
+    }
+
+    /// Under a server-requested wait a push sends nothing, throws nothing
+    /// and leaves no waiter behind.
+    func testAThrottledPushSendsNothing() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
+        let clock = TestClock()
+        // A sleeper that outlasts the test keeps the throttle window open.
+        let transport = try await phone(engine: engine, clock: clock) {
+            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        }
+        addTeardownBlock { await transport.retryTask?.cancel() }
+        try await transport.pull()
+        XCTAssertEqual(engine.fetchCount, 1)
+
+        try await transport.fetchForPush(since: clock.now, grace: 2)
+
+        XCTAssertEqual(engine.fetchCount, 1, "no request while throttled")
+        let waiting = await transport.engineRunWaiterCount
+        XCTAssertEqual(waiting, 0)
+    }
+
+    /// After the link ended a push sends nothing, throws nothing and leaves
+    /// no waiter behind.
+    func testAnUnlinkedPushSendsNothing() async throws {
+        let engine = FakeSyncEngine()
+        let clock = TestClock()
+        let transport = try await phone(engine: engine, clock: clock)
+        await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: HubZones.test(shared).zoneID(for: .data))
+        let unlinked = await transport.isUnlinked
+        XCTAssertTrue(unlinked)
+
+        try await transport.fetchForPush(since: clock.now, grace: 2)
+
+        XCTAssertEqual(engine.fetchCount, 0)
+        let waiting = await transport.engineRunWaiterCount
+        XCTAssertEqual(waiting, 0)
+    }
+
+    /// A push waiting on the engine's run when the link ends returns at
+    /// once (its grace timer never fires here), without a request.
+    func testAnUnlinkReleasesAWaitingPushFetch() async throws {
+        let engine = FakeSyncEngine()
+        let clock = TestClock()
+        let gate = Gate()
+        let transport = try await phone(engine: engine, clock: clock) { _ in await gate.wait() }
+
+        let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
+        try await waitForWaiters(transport)
+        await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: HubZones.test(shared).zoneID(for: .data))
+        try await push.value
+        await gate.open()
+
+        XCTAssertEqual(engine.fetchCount, 0)
+        let waiting = await transport.engineRunWaiterCount
+        XCTAssertEqual(waiting, 0)
+    }
+
+    /// An account change resets the transport: a push waiting on the old
+    /// engine's run returns at once, without a request.
+    func testAnAccountResetReleasesAWaitingPushFetch() async throws {
+        let engine = FakeSyncEngine()
+        let relaunched = FakeSyncEngine()
+        let clock = TestClock()
+        let gate = Gate()
+        // The relaunch builds a new engine, as CKSyncEngine's factory does.
+        let built = OSAllocatedUnfairLock(initialState: 0)
+        let transport = CloudKitTransport(
+            store: try .inMemory(), scope: shared, hubID: HubZones.testHubID, role: .phone,
+            entitlementPresent: { true }, zoneAdmin: FakeZoneAdmin(),
+            engineFactory: { _, _ in
+                built.withLock { count in
+                    count += 1
+                    return count == 1 ? engine : relaunched
+                }
+            },
+            now: { clock.now },
+            sleep: { _ in await gate.wait() }
+        )
+        await transport.start()
+
+        let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
+        try await waitForWaiters(transport)
+        await transport.resetForAccountChange()
+        try await push.value
+        await gate.open()
+
+        XCTAssertEqual(engine.fetchCount, 0)
+        XCTAssertEqual(relaunched.fetchCount, 0, "the push does not move to the new engine")
+        let waiting = await transport.engineRunWaiterCount
+        XCTAssertEqual(waiting, 0)
     }
 
     func testAManualFetchsEventsAreNotAnEngineRun() async throws {
