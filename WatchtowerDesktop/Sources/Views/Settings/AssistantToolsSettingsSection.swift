@@ -20,8 +20,8 @@ struct AssistantToolsSettingsSection: View {
         } header: {
             Text("Assistant tools")
         } footer: {
-            Text("Write tools create proposals you approve in the chat. \"Execute without approval\" skips the card "
-                 + "for that tool; it can never be enabled for tools that write outside this Mac.")
+            Text("Write tools create proposals you approve in the chat. A checked surface runs that tool without "
+                 + "approval on that surface only; it can never be enabled for tools that write outside this Mac.")
         }
         .task { await viewModel.load() }
     }
@@ -38,29 +38,35 @@ struct AssistantToolsSettingsSection: View {
                         .background(.orange.opacity(0.2), in: Capsule())
                 }
                 Spacer()
-                executeToggle(for: row)
             }
             Text(row.description).font(.caption).foregroundStyle(.secondary)
-            Text("Surfaces: \(row.surfaces.joined(separator: ", "))").font(.caption2).foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                ForEach(row.surfaces, id: \.self) { surface in
+                    executeToggle(for: row, surface: surface)
+                }
+            }
         }
         .padding(.vertical, 2)
     }
 
-    private func executeToggle(for row: AssistantToolRow) -> some View {
-        Toggle("Execute without approval", isOn: executeBinding(for: row))
-            .labelsHidden()
+    /// One switch per surface the tool is on: trust is per (tool, surface).
+    private func executeToggle(for row: AssistantToolRow, surface: String) -> some View {
+        Toggle(surface, isOn: executeBinding(for: row, surface: surface))
+            .toggleStyle(.checkbox)
+            .font(.caption)
             .disabled(row.isLockedToAsk)
             .help(row.external
                   ? "External tools always need your approval."
                   : row.alwaysAsk
                     ? "Bulk changes always need your approval."
-                    : "When on, the assistant's proposals with this tool run immediately and show as done.")
+                    : "When on, the assistant's proposals with this tool from the \(surface) surface "
+                        + "run immediately and show as done.")
     }
 
-    private func executeBinding(for row: AssistantToolRow) -> Binding<Bool> {
+    private func executeBinding(for row: AssistantToolRow, surface: String) -> Binding<Bool> {
         Binding(
-            get: { row.trust == "execute" },
-            set: { on in Task { await viewModel.setTrust(row.name, execute: on) } }
+            get: { row.executes(on: surface) },
+            set: { on in Task { await viewModel.setTrust(row.name, surface: surface, execute: on) } }
         )
     }
 }
