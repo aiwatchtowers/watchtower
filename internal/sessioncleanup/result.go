@@ -82,6 +82,7 @@ var reasonPhrases = map[string]string{
 	ReasonNotSelected:          "not selected",
 	ReasonNotInPlan:            "not in the plan",
 	ReasonNotAttempted:         "not attempted after a failure",
+	ReasonBundleUnreadable:     "its bundle could not be checked",
 }
 
 // Summarize is one English line for the finish summary and the session

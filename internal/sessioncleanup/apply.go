@@ -38,6 +38,9 @@ const (
 	// ReasonBundleExists: a stale LaunchServices entry's bundle is back on
 	// disk, so it is not stale any more.
 	ReasonBundleExists = "bundle_exists"
+	// ReasonBundleUnreadable: whether a stale entry's bundle is still on
+	// disk cannot be told (Lstat failed); the entry stays.
+	ReasonBundleUnreadable = "bundle_unreadable"
 )
 
 // Timeouts and waits of an apply (spec §4, §7).
@@ -65,10 +68,13 @@ type Result struct {
 	Mode        string `json:"mode"`
 	Sweep       bool   `json:"sweep"`
 	Plan
-	RemovedBytes int64  `json:"removed_bytes"`
-	Summary      string `json:"summary"`
-	ResultSaved  bool   `json:"result_saved"`
-	ResultError  string `json:"result_error"`
+	RemovedBytes int64 `json:"removed_bytes"`
+	// RemovedBytesKnown is false when a removed worktree was not measured
+	// (--no-size, or the walk ran over): RemovedBytes is then a lower bound.
+	RemovedBytesKnown bool   `json:"removed_bytes_known"`
+	Summary           string `json:"summary"`
+	ResultSaved       bool   `json:"result_saved"`
+	ResultError       string `json:"result_error"`
 }
 
 // Apply evaluates the request afresh and removes what is eligible now and,
@@ -95,7 +101,7 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	a := newApplier(b, b.evaluate(ctx), only)
 	a.run(ctx)
 	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch}
-	res.RemovedBytes = removedBytes(a.items)
+	res.RemovedBytes, res.RemovedBytesKnown = removedBytes(a.items)
 	res.Summary = Summarize(a.items)
 	a.save(ctx, &res)
 	return res, nil
@@ -467,8 +473,12 @@ func (a *applier) unregisterStale(ctx context.Context, it *Item) {
 		it.Error = "LaunchServices is not available"
 		return
 	}
-	if _, err := os.Lstat(it.Detail); !errors.Is(err, os.ErrNotExist) {
+	switch _, err := os.Lstat(it.Detail); {
+	case err == nil:
 		keepItem(it, ReasonBundleExists, it.Detail)
+		return
+	case !errors.Is(err, os.ErrNotExist):
+		keepItem(it, ReasonBundleUnreadable, it.Detail+": "+err.Error())
 		return
 	}
 	if err := a.deps.LS.Unregister(ctx, it.Detail); err != nil {
@@ -573,14 +583,21 @@ func (a *applier) settleDependents() {
 	}
 }
 
-func removedBytes(items []Item) int64 {
-	var n int64
+// removedBytes sums the measured removed worktrees; known is false when
+// one of them was not measured.
+func removedBytes(items []Item) (n int64, known bool) {
+	known = true
 	for _, it := range items {
-		if it.Kind == KindWorktree && it.Done && it.BytesKnown {
-			n += it.Bytes
+		if it.Kind != KindWorktree || !it.Done {
+			continue
 		}
+		if !it.BytesKnown {
+			known = false
+			continue
+		}
+		n += it.Bytes
 	}
-	return n
+	return n, known
 }
 
 // save stores a session-mode result as cleanup_result. The stored copy

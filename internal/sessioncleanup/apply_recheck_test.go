@@ -1,6 +1,9 @@
 package sessioncleanup
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -226,11 +229,67 @@ func TestApply_PrunableWorktreeGoesThroughWorktreeRemove(t *testing.T) {
 	f.git = &loggingGit{log: log}
 	res := f.apply(Request{}, nil, nil)
 	it := wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
-	if it.Bytes != 0 || !it.BytesKnown || res.RemovedBytes != 0 || f.listsWorktree(root) {
+	if it.Bytes != 0 || !it.BytesKnown || res.RemovedBytes != 0 || !res.RemovedBytesKnown || f.listsWorktree(root) {
 		t.Fatalf("prunable result = %+v / %+v", it, res)
 	}
 	if !slices.Contains(log.list(), "git worktree remove "+root) {
 		t.Fatalf("not removed through git worktree remove: %v", log.list())
 	}
 	wantResultItem(t, res, "branch:feat/x", ActionRemove, "", true)
+}
+
+// TestApply_UnmeasuredRemovalIsNotZeroBytes: a removal under --no-size
+// says its bytes are unknown, not 0.
+func TestApply_UnmeasuredRemovalIsNotZeroBytes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	res := f.apply(Request{NoSize: true}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if res.RemovedBytesKnown || res.RemovedBytes != 0 {
+		t.Fatalf("removed bytes = %d known %v, want unknown", res.RemovedBytes, res.RemovedBytesKnown)
+	}
+	body, err := json.Marshal(res)
+	if err != nil || !strings.Contains(string(body), `"removed_bytes_known":false`) {
+		t.Fatalf("json %s, %v", body, err)
+	}
+}
+
+// staleLS is fakeLS with fixed stale entries.
+type staleLS struct {
+	fakeLS
+	stale []string
+}
+
+func (l *staleLS) Stale(context.Context, string) ([]string, error) { return l.stale, nil }
+
+// TestApply_UnreadableStaleBundleIsKept: a stale entry whose bundle cannot
+// be told gone (Lstat fails otherwise than not-exist) stays, with its own
+// reason.
+func TestApply_UnreadableStaleBundleIsKept(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	f := newFixture(t)
+	locked := filepath.Join(f.repo, "locked")
+	bundle := filepath.Join(locked, "Old.app")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if _, err := os.Lstat(bundle); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skipf("Lstat under a 000 directory = %v", err)
+	}
+	log := &opLog{}
+	ls := &staleLS{fakeLS: fakeLS{log: log}, stale: []string{bundle}}
+	res := f.apply(Request{Sweep: true}, []string{"lsreg:" + bundle}, func(d *Deps) { d.LS = ls })
+	wantResultItem(t, res, "lsreg:"+bundle, ActionKeep, ReasonBundleUnreadable, false)
+	if len(log.list()) != 0 {
+		t.Fatalf("lsregister ran: %v", log.list())
+	}
 }

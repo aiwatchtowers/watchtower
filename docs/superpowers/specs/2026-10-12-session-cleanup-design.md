@@ -131,11 +131,12 @@ watchtower workbench cleanup --workbench N --sweep --apply --item KEY [--item KE
                "name": "x", "branch": "feat/x", "bytes": 11811160064, "bytes_known": true,
                "action": "remove"|"keep", "reason": "" | "<reason code>", "detail": "",
                "done": false, "error": "" } ],
-  "removed_bytes": 0, "summary": "2 worktrees, 4 branches removed (~14 GB); kept 1 worktree — uncommitted changes",
+  "removed_bytes": 0, "removed_bytes_known": true, "summary": "2 worktrees, 4 branches removed (~14 GB); kept 1 worktree — uncommitted changes",
   "result_saved": true, "result_error": "" }
 ```
 
-`items` is never `null` (`[]`). `summary` is one line, English, ready for the finish summary. `result_saved` /
+`items` is never `null` (`[]`). `removed_bytes_known` is false when a removed worktree was not measured
+(`--no-size` or over the size budget): `removed_bytes` is then only what was measured, not 0 freed. `summary` is one line, English, ready for the finish summary. `result_saved` /
 `result_error` is the envelope for the best-effort write of `cleanup_result` (review-rules envelope symmetry).
 
 ## 5. Safety catches (PROJ-16)

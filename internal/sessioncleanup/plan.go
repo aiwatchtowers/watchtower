@@ -434,7 +434,7 @@ func (b *builder) orphanItems(root string) []Item {
 	orphans, _ := OrphansIn(b.procs, []string{root}, b.self)
 	items := make([]Item, 0, len(orphans))
 	for _, p := range orphans {
-		items = append(items, Item{Key: fmt.Sprintf("process:%d:%s", p.PID, p.Start), Kind: KindProcess,
+		items = append(items, Item{Key: procKey(p), Kind: KindProcess,
 			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true})
 	}
 	return items
