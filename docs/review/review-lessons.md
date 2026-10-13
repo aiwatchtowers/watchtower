@@ -1426,3 +1426,12 @@ Entry format:
 - weak-dimension: 7. `BackgroundWorkTests` fakes a runner that always grants a task, so the one return value iOS documents as possible (`.invalid`) is never exercised; the cold-push-before-boot path is untested too (test-analyzer [7]).
 - rule-gap (candidate, Swift dim 7): *a seam over a system API that can refuse (`beginBackgroundTask` → `.invalid`, `requestAuthorization` → denied) gets a fake that can return the refusal and a test of the refusal path.*
 - outcome: TBD
+
+## 2026-10-13 — fix/panel-tab-selected-tint (selected `PanelTab` filled with a new dynamic `NSColor.selectedPanelTab`, the detail backdrop blended 8% toward white/black, because on macOS 26.3 the backdrop and the panel colour coincide and the tab drew nothing; owner chose "explicit fill", so the tab no longer merges into the content; 3 Swift files +30/−8, Desktop only; panel: prosecutor + codex, 3 specialists DOWN (not installed); judge verified against e7733da8 by reading, merge-tree vs fresh origin/main clean, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, prosecutor only; codex clean): the render tests were re-pointed from `detail` to `tab`, and both values come from the same `selectedPanelTab`. Nothing asserts tab ≠ panel, which is the bug this branch fixes. A blend fraction of 0, or the `?? .detailBackground` fallback, would put the invisible tab back with the suite green. The pre-fix code does fail the edited assertion, so §6's "fails pre-fix" is met in the letter but not in substance. **When a fix replaces an expected value with a new computed one, the test also has to pin the property the fix exists for (here, contrast against the neighbour colour). It must not only compare against the value the code computes.** [7]
+- false-positive: F7 (edge-line machinery partly vestigial) is the owner's accepted design. F8 (`static var` allocates a dynamic NSColor on each access) costs nothing at body-evaluation rate, and the sibling `detailBackground` follows the same pattern. [4]
+- miss: none unique. Codex returned no findings, and the only real gap was the tautological test.
+- weak-dimension: 7. A pixel test whose expected value comes from the same API as the code under test is tautological for that API's own regressions.
+- rule-gap (candidate, dim 7): *a render or pixel test whose expected colour is computed by the code under test also asserts the visible relation the change is about (≠ neighbour, ≠ backdrop) for each appearance.*
+- outcome: TBD
