@@ -379,6 +379,91 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(dataSaves().count, 4, "later urgent cycles keep their own scope")
     }
 
+    /// Board #724: a new phone's grant is saved and sent ahead of the
+    /// backlog of every other kind (the transport sends oldest first, and
+    /// the phone's link flow waits 60 s for the grant).
+    func testANewPhonesGrantIsSavedAndSentBeforeTheBacklog() async throws {
+        let clock = FakeClock()
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let grant = StubSliceSource(kind: .deviceGrant)
+        let bench = StubSliceSource(kind: .workbench)
+        let target = StubSliceSource(kind: .workbenchTarget)
+        let transcript = StubSliceSource(kind: .meetingTranscript)
+        grant.setPayload(Data(#"{"linked":false}"#.utf8), id: "phone")
+        for source in [bench, target, transcript] {
+            source.setRecords((1...3).map { SliceRecord(kind: source.kind, id: "\($0)", modifiedAt: Date(), payload: Data("{}".utf8)) })
+        }
+        let transport = try XCTUnwrap(self.transport)
+        let sentWith = OSAllocatedUnfairLock<[[String]]>(initialState: [])
+        let isLinked: @Sendable () -> Bool = { linked.withLock { $0 } }
+        let publisher = makeLanePublisher(clock, sources: [bench, target, transcript, grant], isLinked: isLinked) {
+            let names = transport.saved.filter { $0.record.zone == .data }.map(\.record.recordName)
+            sentWith.withLock { $0.append(names) }
+        }
+        await publisher.run(.full)
+        sentWith.withLock { $0 = [] }
+
+        linked.withLock { $0 = true }
+        grant.setPayload(Data(#"{"linked":true}"#.utf8), id: "phone")
+        let result = await publisher.run(.urgent([.deviceGrant]))
+
+        let names = dataSaves().map(\.record.recordName)
+        XCTAssertEqual(Array(names.prefix(2)), ["device_grant-phone", "device_grant-phone"], "the grant is saved first")
+        XCTAssertEqual(names.count, 11, "then the backlog of every other kind")
+        XCTAssertEqual(
+            sentWith.withLock { $0 }, [["device_grant-phone", "device_grant-phone"]],
+            "the grant is sent alone, before the backlog is saved"
+        )
+        let outcome = try XCTUnwrap(result)
+        XCTAssertEqual(outcome.pushed, 10, "the outcome covers both passes")
+        XCTAssertEqual(outcome.urgentChanges, 1)
+    }
+
+    /// Every cycle diffs the urgent kinds first, so a save batch carries
+    /// an ask ahead of the normal records.
+    func testACycleSavesTheUrgentKindsFirst() async throws {
+        let bench = StubSliceSource(kind: .workbench)
+        let ask = StubSliceSource(kind: .ownerAsk)
+        bench.setPayload(Data(#"{"v":1}"#.utf8))
+        ask.setPayload(Data(#"{"v":1}"#.utf8))
+        let publisher = makePublisher([bench, ask])
+
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(dataSaves().map(\.record.recordName), ["owner_ask-1", "workbench-1"])
+    }
+
+    /// The first linked cycle's full pass failed: the next cycle publishes
+    /// every kind again, whatever its own scope.
+    func testAFailedFirstLinkedCycleIsRetriedInFull() async throws {
+        let clock = FakeClock()
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let grant = StubSliceSource(kind: .deviceGrant)
+        let bench = StubSliceSource(kind: .workbench)
+        grant.setPayload(Data(#"{"linked":false}"#.utf8), id: "phone")
+        bench.setPayload(Data(#"{"v":1}"#.utf8))
+        let isLinked: @Sendable () -> Bool = { linked.withLock { $0 } }
+        let publisher = makeLanePublisher(clock, sources: [grant, bench], isLinked: isLinked)
+        await publisher.run(.full)
+
+        linked.withLock { $0 = true }
+        grant.setPayload(Data(#"{"linked":true}"#.utf8), id: "phone")
+        transport.failNextSaves(2)
+        let failed = await publisher.run(.urgent([.deviceGrant]))
+        XCTAssertNil(failed, "both passes failed")
+        XCTAssertEqual(bench.reads, 0, "the full pass stopped at the grant")
+
+        await publisher.run(.urgent([.deviceGrant]))
+        XCTAssertEqual(
+            dataSaves().map(\.record.recordName), ["device_grant-phone", "device_grant-phone", "workbench-1"],
+            "the retry still publishes every kind"
+        )
+
+        bench.setPayload(Data(#"{"v":2}"#.utf8))
+        await publisher.run(.urgent([.deviceGrant]))
+        XCTAssertEqual(dataSaves().count, 3, "once it ran to its end, cycles keep their own scope")
+    }
+
     func testStartWithoutStopCancelsTheOldSleepAndKeepsTheNewHandle() async throws {
         let source = StubSliceSource(kind: .workbench)
         let publisher = makePublisher(

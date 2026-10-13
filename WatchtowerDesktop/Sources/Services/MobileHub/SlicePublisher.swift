@@ -28,9 +28,13 @@ protocol SliceSource: Sendable {
 ///   between two fast sends. Any cycle that saved or deleted an urgent
 ///   record asks the transport to send at once (`sendNow`, spec §4.5);
 ///   the pending normal records go with that send.
+/// - every cycle diffs the urgent kinds before the others, so a save
+///   batch carries them first (the transport sends oldest first);
 /// - without a linked phone only `device_grant` (the link flow's answer)
-///   is published; the first cycle that sees a phone linked publishes
-///   every kind.
+///   is published. The first cycle that sees a phone linked first diffs
+///   the urgent kinds alone and sends them at once, so the new phone's
+///   grant goes out ahead of the backlog, then diffs every kind; until
+///   such a full cycle runs to its end, the next cycle does it again.
 ///
 /// A poll, not ValueObservation: the Go daemon writes through its own
 /// connection, so observation never fires. Rows are diffed against the
@@ -66,12 +70,25 @@ final class SlicePublisher: Sendable {
         var skipped: [String] = []
         /// Records of `urgentKinds` saved or deleted (the immediate send).
         var urgentChanges = 0
+        /// The cycle ran to its end (no mid-cycle account reset).
+        var completed = false
+
+        mutating func absorb(_ other: Self) {
+            pushed += other.pushed
+            deleted += other.deleted
+            skipped += other.skipped
+            urgentChanges += other.urgentChanges
+        }
     }
 
     /// What the owner waits for at once (owner decision Q3): an ask, its
     /// alert, and a phone's link grant (the phone waits 60 s for it). Every
     /// other kind rides the 30 s full tick.
     static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant]
+
+    /// The order a cycle diffs the kinds in: the urgent ones first.
+    static let publishOrder: [SliceKind] =
+        SliceKind.allCases.filter { urgentKinds.contains($0) } + SliceKind.allCases.filter { !urgentKinds.contains($0) }
 
     /// What is published while no phone is linked: the link flow's answer.
     static let unlinkedKinds: Set<SliceKind> = [.deviceGrant]
@@ -132,8 +149,8 @@ final class SlicePublisher: Sendable {
     private let assets: SliceAssetStore?
     /// Whether a phone is linked (`HubSyncState.hasLinkedDevice`).
     private let isLinked: @Sendable () -> Bool
-    /// Whether the previous cycle saw no phone linked (false before the
-    /// first).
+    /// A cycle saw no phone linked, and no full cycle has run to its end
+    /// since one is (false before the first cycle).
     private let unlinkedAtLastCycle = OSAllocatedUnfairLock(initialState: false)
 
     init(
@@ -178,14 +195,14 @@ final class SlicePublisher: Sendable {
 
     // MARK: - Publishing
 
-    /// One push cycle over `kinds` (nil: every kind). Oversized records are
-    /// skipped WITHOUT recording their hash, so a later smaller version
-    /// publishes normally.
+    /// One push cycle over `kinds` (nil: every kind), the urgent kinds
+    /// first (`publishOrder`). Oversized records are skipped WITHOUT
+    /// recording their hash, so a later smaller version publishes normally.
     @discardableResult
     func publishOnce(kinds: Set<SliceKind>? = nil) async throws -> Outcome {
         var outcome = Outcome()
         let startGen = try state.generation()
-        for kind in SliceKind.allCases where kinds?.contains(kind) ?? true {
+        for kind in Self.publishOrder where kinds?.contains(kind) ?? true {
             guard let current = try currentDiff(for: kind) else { continue }
             let diff = current.diff
             let saveable = splitOversized(diff.upserts, skipped: &outcome.skipped)
@@ -203,6 +220,7 @@ final class SlicePublisher: Sendable {
         }
         let finishedAt = now()
         lastPublish.withLock { $0 = finishedAt }
+        outcome.completed = true
         return outcome
     }
 
@@ -557,31 +575,47 @@ final class SlicePublisher: Sendable {
     /// send when it changed an urgent record (the lane's ≥ 2 s spacing and
     /// the urgent tick bound the send rate; the transport itself honours a
     /// throttle wait or a stop). nil when it failed.
+    ///
+    /// The first cycle that sees a phone linked runs the urgent kinds alone
+    /// first and sends them, so the new phone's grant (which its link flow
+    /// waits 60 s for) never queues behind the backlog of every other kind;
+    /// then it diffs every kind. The returned outcome covers both.
     @discardableResult
     func run(_ cycle: Cycle) async -> Outcome? {
-        let outcome = await runCycle(kinds: scope(of: cycle))
-        if let outcome, outcome.urgentChanges > 0 {
-            await sendNow()
+        let linked = isLinked()
+        let newlyLinked = linked && unlinkedAtLastCycle.withLock { $0 }
+        if !linked { unlinkedAtLastCycle.withLock { $0 = true } }
+        var first: Outcome?
+        if newlyLinked {
+            first = await runCycle(kinds: Self.urgentKinds)
+            if let first, first.urgentChanges > 0 { await sendAtOnce() }
         }
+        var outcome = await runCycle(kinds: scope(of: cycle, linked: linked, newlyLinked: newlyLinked))
+        if newlyLinked, outcome?.completed == true {
+            unlinkedAtLastCycle.withLock { $0 = false }
+        }
+        if let current = outcome, current.urgentChanges > 0 {
+            await sendAtOnce()
+        }
+        if let first { outcome?.absorb(first) }
         if case .urgent = cycle { fastCycles.withLock { $0 += 1 } }
         return outcome
     }
 
+    /// The transport's immediate send.
+    private func sendAtOnce() async {
+        await sendNow()
+    }
+
     /// The kinds a cycle diffs (nil: every kind). Without a linked phone
-    /// only `unlinkedKinds`; the first cycle after a phone linked diffs every
-    /// kind, so the new phone gets everything at once.
-    private func scope(of cycle: Cycle) -> Set<SliceKind>? {
+    /// only `unlinkedKinds`; a newly linked phone gets every kind.
+    private func scope(of cycle: Cycle, linked: Bool, newlyLinked: Bool) -> Set<SliceKind>? {
         let requested: Set<SliceKind>? = {
             if case .urgent(let kinds) = cycle { return kinds }
             return nil
         }()
-        let linked = isLinked()
-        let wasUnlinked = unlinkedAtLastCycle.withLock { last -> Bool in
-            defer { last = !linked }
-            return last
-        }
         guard linked else { return (requested ?? Set(SliceKind.allCases)).intersection(Self.unlinkedKinds) }
-        return wasUnlinked ? nil : requested
+        return newlyLinked ? nil : requested
     }
 
     /// One cycle; nil when it failed.
