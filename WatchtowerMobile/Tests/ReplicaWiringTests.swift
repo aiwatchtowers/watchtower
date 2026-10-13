@@ -55,19 +55,20 @@ final class ReplicaWiringTests: XCTestCase {
     /// An isolated demo environment on `path`; `sleeper` steps its fetch
     /// loop by hand (nil: real sleeps).
     private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> AppEnvironment {
-        managed(try AppEnvironment(
+        let sleep: @Sendable (Duration) async throws -> Void = { interval in
+            if let sleeper {
+                try await sleeper.sleep(interval)
+            } else {
+                try await Task.sleep(for: interval)
+            }
+        }
+        return managed(try AppEnvironment(
             transport: InMemoryCloudTransport(),
             replicaPath: path,
             transportKind: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            sleep: { interval in
-                if let sleeper {
-                    try await sleeper.sleep(interval)
-                } else {
-                    try await Task.sleep(for: interval)
-                }
-            }
+            sleep: sleep
         ))
     }
 
