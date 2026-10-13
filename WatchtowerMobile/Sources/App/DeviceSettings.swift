@@ -84,10 +84,27 @@ final class DeviceSettings {
         self.defaults = defaults
         let keys = Keys(hubID: hubID)
         self.keys = keys
+        Self.adoptUnlinkedChoices(into: keys, hubID: hubID, defaults: defaults)
         self.now = now
         typingRequested = defaults.object(forKey: keys.typingRequested) as? Bool ?? false
         startSessions = defaults.object(forKey: keys.startSessions) as? Bool ?? true
         newAskAlerts = defaults.object(forKey: Keys.newAskAlerts) as? Bool ?? true
+    }
+
+    /// A choice made while unlinked is the owner's choice for the Mac they
+    /// link next, which the link flow sends with the link record: a real
+    /// hub without a value of its own for a key takes the unlinked one's (a
+    /// value of its own wins). The unlinked choices are then dropped, so the
+    /// next link starts from the defaults.
+    private static func adoptUnlinkedChoices(into keys: Keys, hubID: String, defaults: UserDefaults) {
+        guard hubID != HubSession.unlinkedHubID else { return }
+        let unlinked = Keys(hubID: HubSession.unlinkedHubID)
+        for (own, carried) in [(keys.typingRequested, unlinked.typingRequested), (keys.startSessions, unlinked.startSessions)] {
+            if defaults.object(forKey: own) == nil, let value = defaults.object(forKey: carried) as? Bool {
+                defaults.set(value, forKey: own)
+            }
+            defaults.removeObject(forKey: carried)
+        }
     }
 
     func setTypingRequested(_ value: Bool) async {

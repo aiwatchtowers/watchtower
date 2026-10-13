@@ -302,6 +302,30 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme").typingRequested)
     }
 
+    /// A choice made while unlinked goes to the first hub with no value of
+    /// its own; a hub's own value wins, and either way the unlinked choice
+    /// is used up.
+    func testAHubAdoptsTheUnlinkedChoicesUnlessItHasItsOwn() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let unlinked = DeviceSettings(transport: transport, defaults: defaults, hubID: HubSession.unlinkedHubID)
+        await unlinked.setTypingRequested(true)
+        await unlinked.setStartSessions(false)
+        let own = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-home")
+        await own.setTypingRequested(false)
+
+        let home = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-home")
+        XCTAssertFalse(home.typingRequested, "the hub's own value wins")
+        XCTAssertFalse(home.startSessions, "a key it never had comes from the unlinked choice")
+
+        let acme = DeviceSettings(transport: transport, defaults: defaults, hubID: "hub-acme")
+        XCTAssertFalse(acme.typingRequested, "used up by the first hub: defaults again")
+        XCTAssertTrue(acme.startSessions)
+        let again = DeviceSettings(transport: transport, defaults: defaults, hubID: HubSession.unlinkedHubID)
+        XCTAssertFalse(again.typingRequested)
+        XCTAssertTrue(again.startSessions)
+    }
+
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
         let transport = SpyTransport(failingSaves: [0])

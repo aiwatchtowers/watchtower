@@ -301,6 +301,27 @@ final class AppRootWiringTests: XCTestCase {
         try env.store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0 }
     }
 
+    /// A Workbench choice made before linking reaches the Mac with the link
+    /// record, across the restart onto the link's hub; the next link starts
+    /// from the defaults.
+    func testAChoiceMadeBeforeLinkingTravelsWithTheLinkRecord() async throws {
+        let root = try makeRoot(linked: nil)
+        await root.env.deviceSettings.setTypingRequested(true)
+        await root.env.deviceSettings.setStartSessions(false)
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        XCTAssertEqual(built.last?.hubID, "hub-acme", "restarted onto the link's hub")
+        let payload = root.devicePayload(for: device, linkNonce: "nonce-acme", unlinked: false, now: Date())
+
+        XCTAssertTrue(payload.typingRequested)
+        XCTAssertFalse(payload.startSessions)
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-home")
+        let next = root.devicePayload(for: device, linkNonce: "nonce-home", unlinked: false, now: Date())
+        XCTAssertFalse(next.typingRequested, "the unlinked choice went to the first link only")
+        XCTAssertTrue(next.startSessions)
+    }
+
     /// A moved hub (spec §9): the link stands, but nothing is sent.
     func testWritesNotAllowedKeepTheLinkAndSendNothing() async throws {
         let root = try makeRoot(linked: device)
