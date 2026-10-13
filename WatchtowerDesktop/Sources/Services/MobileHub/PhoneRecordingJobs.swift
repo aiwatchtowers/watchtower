@@ -19,9 +19,8 @@ extension MeetingRecorderCenter: PhoneRecordingJobEvents {}
 /// follows that job through the transcriber's callbacks into the sidecar's
 /// `phone_recordings(upload_id, audio_path, transcript_id, …)`, which the
 /// `recording_job` slice publishes and whose transcript ids feed the
-/// `meeting_transcript` slice's `phone_recording_id`. Each change nudges the
-/// publisher's fast lane (`recording_job`, plus `meeting_transcript` once a
-/// transcript is linked).
+/// `meeting_transcript` slice's `phone_recording_id`. Both are normal
+/// kinds: a change publishes on the 30 s full tick (board #724).
 ///
 /// Main-actor, like the transcriber. A hub companion: `start()` chains onto
 /// the recorder's single-closure callbacks (the earlier closures still run)
@@ -40,7 +39,6 @@ final class PhoneRecordingJobs: HubCompanion {
     private let enqueue: Enqueue
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "PhoneRecordingJobs")
-    private var onChange: (@Sendable (Set<SliceKind>) -> Void)?
 
     /// Audio path → the job, for every remembered upload.
     private var jobsByPath: [String: HubSyncState.PhoneRecordingJob] = [:]
@@ -82,12 +80,6 @@ final class PhoneRecordingJobs: HubCompanion {
             guard let recorder else { throw CancellationError() }
             return try await recorder.ingestPhoneRecording(audioURL: audio, eventID: eventID, title: title, config: .fromDefaults())
         }
-    }
-
-    /// Where the fast-lane nudges go (the publisher's `nudge(kinds:)`); set
-    /// once the publisher exists.
-    func setOnChange(_ handler: (@Sendable (Set<SliceKind>) -> Void)?) {
-        onChange = handler
     }
 
     /// The upload a transcript came from; nil for a Mac recording.
@@ -165,7 +157,7 @@ final class PhoneRecordingJobs: HubCompanion {
         }
     }
 
-    /// Remembers `job` and nudges the fast lane. A sidecar write failure is
+    /// Remembers `job` (the next full tick publishes it). A sidecar write failure is
     /// logged: the in-memory job keeps following the callbacks, and the next
     /// change writes the row again.
     private func save(_ job: HubSyncState.PhoneRecordingJob) {
@@ -178,7 +170,6 @@ final class PhoneRecordingJobs: HubCompanion {
         } catch {
             logger.error("phone recording \(job.uploadID, privacy: .public) not saved: \(error.localizedDescription, privacy: .public)")
         }
-        onChange?(job.transcriptID == nil ? [.recordingJob] : [.recordingJob, .meetingTranscript])
     }
 
     // MARK: - HubCompanion

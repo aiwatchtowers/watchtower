@@ -111,7 +111,8 @@ package enum OwnerAskPresentation {
     /// What became of an ask; a superseded one names the round that replaced
     /// it (`OwnerAskQueries.replacements`).
     package static func askStatusLine(_ ask: OwnerAsk, replacedBy: Int64?) -> String {
-        switch ask.status {
+        if ask.answer?.dismissed == true { return "Dismissed" }
+        return switch ask.status {
         case .open: "Waiting for you"
         case .answered: "Answered"
         case .delivered: "Delivered"

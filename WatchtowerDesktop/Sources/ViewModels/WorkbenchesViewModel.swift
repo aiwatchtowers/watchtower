@@ -409,28 +409,26 @@ final class WorkbenchesViewModel {
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
         // A line (an answer's) is held while its session waits on a permission
-        // prompt and goes once the states show it answered (PROJ-12).
-        lineDelivery.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
-        // Its Return only into a session whose hooks reported this run (a
+        // prompt and goes once the states show it answered (PROJ-12); its
+        // Return only into a session whose hooks reported this run (a
         // state, or the mark of a run not yet turned to — board #396).
-        lineDelivery.hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.hooksReported == true }
+        lineDelivery.follow(agentStates)
         // Keys typed into a permission dialog leave no draft in the prompt.
         terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
             agentStates?.statuses[id]?.state.kind == .needsApproval
         }
-        // A failed read (or no states at all) vouches for nothing: no Return.
-        lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
+        // The states' hooks are single slots: `follow` set them for the held
+        // lines; these keep that call and add the panel's and the places'.
         agentStates?.onChange = { [weak self, weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
-            Task { await lineDelivery?.deliverHeld() }
+            lineDelivery?.statesRead()
             // The session on screen keeps its panel section (#480).
             self?.refreshStickySection()
             // A session started, stopped or began a run: whether its stored
             // cwd is trusted may have moved (board #565).
             sessionPlaces?.cwdsMayHaveChanged()
         }
-        // Also on an unchanged read: a line held because a read failed.
         agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
-            Task { await lineDelivery?.deliverHeld() }
+            lineDelivery?.statesRead()
             // A hook may have stored a new cwd: re-read only on a new stamp.
             sessionPlaces?.stateRowsRead(agentStates?.rows ?? [])
         }

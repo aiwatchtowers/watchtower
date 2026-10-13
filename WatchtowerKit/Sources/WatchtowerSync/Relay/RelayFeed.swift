@@ -25,9 +25,11 @@ import os
 /// compacted from a `CompactingTransport` (best-effort, logged) — without it
 /// every hub echo would stay in the phone's transport store forever.
 public actor RelayFeed {
-    /// The desktop refreshes its heartbeat every 300 s; the phone shows the
-    /// Mac online while the heartbeat is UNDER 720 s old (mobile POC spec §3).
-    public static let heartbeatStaleAfter: Duration = .seconds(12 * 60)
+    /// The desktop refreshes its heartbeat every 15 min; the phone shows the
+    /// Mac online while the heartbeat is UNDER 35 min (2100 s) old — one
+    /// missed write still reads online (mobile POC spec §3, board #724
+    /// owner decision Q2; was 300 s / 720 s).
+    public static let heartbeatStaleAfter: Duration = .seconds(35 * 60)
 
     private let transport: any CloudSyncTransport
     private let store: ReplicaStore
@@ -206,14 +208,20 @@ public actor RelayFeed {
 
     // MARK: - Liveness
 
-    /// True while the last desktop heartbeat is under 720 s old (spec §3);
+    /// True while the last desktop heartbeat is under 2100 s old (spec §3);
     /// false when none was ever seen. `now` is injectable for
     /// tests and for view models that batch-evaluate against one timestamp.
     nonisolated public func isDesktopReachable(now: Date = Date()) -> Bool {
+        Self.isDesktopReachable(store: store, now: now)
+    }
+
+    /// The same check over `store`, for a reader without a feed (the
+    /// recording uploader's relaunch re-save).
+    public static func isDesktopReachable(store: ReplicaStore, now: Date = Date()) -> Bool {
         // A read error means we cannot prove liveness — report unreachable
         // (try? flattens heartbeatAge's own nil into the same branch).
         guard let age = try? store.heartbeatAge(now: now) else { return false }
-        return age < Self.heartbeatStaleAfter
+        return age < heartbeatStaleAfter
     }
 
     // MARK: - Poll loop

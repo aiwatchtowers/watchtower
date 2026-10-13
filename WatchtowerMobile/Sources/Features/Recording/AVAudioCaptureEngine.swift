@@ -97,15 +97,28 @@ final class AVAudioCaptureEngine: AudioCaptureEngine {
         }
     }
 
+    /// Stops the engine (the tap and the writer stay for the resume) and
+    /// deactivates the session: a paused capture holds no audio I/O, so the
+    /// `audio` background mode no longer keeps the app running. The
+    /// route watch rests meanwhile — the resume's format check catches a
+    /// microphone that changed during the pause.
     func pause() {
         sink?.setPaused(true)
-        audioEngine?.pause()
+        watch?.cancel()
+        watch = nil
+        audioEngine?.stop()
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            Self.logger.warning("audio session not deactivated on pause: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func resume() throws {
-        // An interruption deactivated the session; the writer keeps going
-        // into the same file, but only at the format the tap was made for
-        // (starting a tap at a stale format raises an uncatchable exception).
+        // The pause (or an interruption) deactivated the session; the writer
+        // keeps going into the same file, but only at the format the tap was
+        // made for (starting a tap at a stale format raises an uncatchable
+        // exception).
         try AVAudioSession.sharedInstance().setActive(true)
         guard let audioEngine, let tapFormat else { return }
         let current = audioEngine.inputNode.outputFormat(forBus: 0)
@@ -114,6 +127,11 @@ final class AVAudioCaptureEngine: AudioCaptureEngine {
         }
         try audioEngine.start()
         sink?.setPaused(false)
+        if watch == nil {
+            watch = CaptureEndWatch(engine: audioEngine) { [weak self] message in
+                self?.onFailure?(message)
+            }
+        }
     }
 
     func finish() async {

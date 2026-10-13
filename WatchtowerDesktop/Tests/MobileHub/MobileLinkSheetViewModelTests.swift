@@ -56,6 +56,7 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         XCTAssertEqual(sheet.phase, .expired)
         XCTAssertFalse(fixture.shares.isLinkOpen, "closeLink(.expired) closed the public link")
+        XCTAssertEqual(fixture.center.lastCloseReason, .expired)
         XCTAssertNil(fixture.center.openCode)
     }
 
@@ -69,6 +70,7 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         await awaitHubCondition("the countdown reached 0") { sheet.phase == .expired }
         XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .expired)
     }
 
     func testNewCodeReplacesTheCodeAndRestartsTheCountdown() async throws {
@@ -88,6 +90,35 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         await sheet.close()
     }
 
+    /// #66.2: a double click on New code issues one code, not two.
+    func testADoubleClickOnNewCodeIssuesOneCode() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+        fixture.shares.clearCalls()
+
+        let first = Task { await sheet.newCode() }
+        let second = Task { await sheet.newCode() }
+        await first.value
+        await second.value
+
+        XCTAssertEqual(fixture.shares.calls.filter { $0 == "ensureShares" }.count, 1)
+        guard case .showing(let code) = sheet.phase else { return XCTFail("phase \(sheet.phase)") }
+        XCTAssertEqual(code, fixture.center.openCode)
+        await sheet.close()
+    }
+
+    /// #65: a code closed by an account change says so, not "expired".
+    func testAnAccountChangeShowsWhyTheCodeClosed() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+
+        fixture.center.accountChanged()
+        await awaitHubCondition("the center closed the code") { fixture.center.lastCloseReason == .accountChanged }
+        await sheet.tick()
+
+        XCTAssertEqual(sheet.phase, .failed("This Mac's iCloud account changed. Show a new code."))
+    }
+
     func testCloseClosesTheLink() async throws {
         let sheet = makeSheet()
         await sheet.start()
@@ -95,7 +126,8 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
 
         await sheet.close()
 
-        XCTAssertFalse(fixture.shares.isLinkOpen, "closeLink(.sheetClosed)")
+        XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .sheetClosed)
         XCTAssertNil(fixture.center.openCode)
     }
 
@@ -114,6 +146,41 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         await sheet.tick()
 
         XCTAssertEqual(sheet.phase, .linked("iPhone of colleague A"))
+    }
+
+    /// Board #67: a phone already linked that scans the new code re-links
+    /// with it; the sheet says so instead of "This code expired."
+    func testAnAlreadyLinkedPhoneScanningAgainShowsLinked() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+        try await deviceUses(sheet, deviceID: "phone-a", name: "iPhone of colleague A")
+        await sheet.tick()
+        XCTAssertEqual(sheet.phase, .linked("iPhone of colleague A"))
+        await sheet.close()
+
+        fixture.clock.advance(5)
+        let again = makeSheet()
+        await again.start()
+        try await deviceUses(again, deviceID: "phone-a", name: "iPhone of colleague A")
+        await again.tick()
+
+        XCTAssertEqual(again.phase, .linked("iPhone of colleague A"))
+        XCTAssertEqual(fixture.center.lastCloseReason, .used)
+        XCTAssertEqual(fixture.center.devices.map(\.deviceID), ["phone-a"], "still one phone")
+        await again.close()
+    }
+
+    /// `deviceID` writes its `device` record with the sheet's code, and the
+    /// center's close after the link runs.
+    private func deviceUses(_ sheet: MobileLinkSheetViewModel, deviceID: String, name: String) async throws {
+        guard case .showing(let code) = sheet.phase else { return XCTFail("phase \(sheet.phase)") }
+        let payload = DevicePayload(
+            deviceID: deviceID, name: name, model: "iPhone18,1", appVersion: "0.0.0-test",
+            scope: .private, userRecordName: "_owner-acme", linkNonce: code.nonce, typingRequested: false,
+            startSessions: true, updatedAt: fixture.clock.now
+        )
+        try await fixture.center.handleDevice(try CloudRecordFactory.record(for: payload, modifiedAt: fixture.clock.now))
+        await fixture.center.closeAfterLink?.value
     }
 
     func testAnAccountRefusalShowsItsSentence() async throws {

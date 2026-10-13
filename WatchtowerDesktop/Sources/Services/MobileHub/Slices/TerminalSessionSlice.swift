@@ -4,13 +4,44 @@ import os
 import WatchtowerCore
 import WatchtowerSync
 
-/// What the projection needs of the Mac's terminals: the sessions whose
-/// process runs and when each run started (`TerminalCenter.liveIDs` and
-/// `startedAt`, main-actor state). The fast lane copies it here, so the
-/// slice can resolve states inside the publisher's off-main DB read.
+/// What the projection needs of the Mac's terminals and state center: the
+/// sessions whose process runs and when each run started
+/// (`TerminalCenter.liveIDs` and `startedAt`), and the sessions whose
+/// background agent count the center shows as over after two failed
+/// staleness probes (`SessionAgentStateCenter.displayOver`, #411) — all
+/// main-actor state. The fast lane copies it here, so the slice can resolve
+/// states inside the publisher's off-main DB read the way the Mac does.
 struct SessionLiveness: Equatable, Sendable {
     var liveIDs: Set<Int64> = []
     var startedAt: [Int64: Date] = [:]
+    var displayOver: [Int64: ShownOverCount] = [:]
+
+    /// The sessions of `rows` shown over: only where the row still holds
+    /// the count the center judged (the same run and report stamp), so a
+    /// newer background report read here is never published as Stopped.
+    func shownOver(_ rows: [SessionAgentStateRow]) -> Set<Int64> {
+        var over: Set<Int64> = []
+        for row in rows where displayOver[row.id] == ShownOverCount(run: startedAt[row.id], reportedAt: row.agentBackgroundAt) {
+            over.insert(row.id)
+        }
+        return over
+    }
+}
+
+/// A background agent count the state center shows as over: the session's
+/// run and the count's `agent_background_at` it was judged for.
+struct ShownOverCount: Equatable, Sendable {
+    let run: Date?
+    let reportedAt: String?
+
+    /// `over`'s sessions with the run and report stamp of `rows`.
+    static func of(_ over: Set<Int64>, rows: [SessionAgentStateRow], startedAt: [Int64: Date]) -> [Int64: Self] {
+        var counts: [Int64: Self] = [:]
+        for row in rows where over.contains(row.id) {
+            counts[row.id] = Self(run: startedAt[row.id], reportedAt: row.agentBackgroundAt)
+        }
+        return counts
+    }
 }
 
 /// The lock-guarded `SessionLiveness` the fast lane writes and the slice
@@ -181,7 +212,7 @@ struct TerminalSessionSlice: SliceSource {
     /// The window: the published workbenches' agent sessions, every live
     /// one plus the newest 50 per workbench, in `last_active_at` order.
     func publishedSessions(_ db: Database) throws -> [Published] {
-        let workbenches = Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+        let workbenches = Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
         guard !workbenches.isEmpty else { return [] }
         let live = liveness()
         let hidden = hiddenIDs()
@@ -192,7 +223,9 @@ struct TerminalSessionSlice: SliceSource {
         guard !windowed.isEmpty else { return [] }
         // Only workbench agent rows: no standalone live ids are passed.
         let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
-        let statuses = SessionAgentStatus.resolve(rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now())
+        let statuses = SessionAgentStatus.resolve(
+            rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now(), displayOver: live.shownOver(rows)
+        )
         let rowsByID = Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
         return windowed.compactMap { session in
             guard let workbenchID = session.projectID, let agent = session.kind.agent else { return nil }

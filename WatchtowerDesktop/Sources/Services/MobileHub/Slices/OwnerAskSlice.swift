@@ -89,9 +89,9 @@ struct OwnerAskSlice: SliceSource {
     }
 
     func records(_ db: Database) throws -> [SliceRecord] {
-        let workbenches = try WorkbenchSlice.publishedWorkbenches(db)
+        let workbenches = try WorkbenchSlice.publishedWorkbenchRefs(db)
         guard !workbenches.isEmpty else { return [] }
-        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.project.name) })
+        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.name) })
         let stamp = now()
         let rows = try Row.fetchAll(db, sql: """
             SELECT * FROM (

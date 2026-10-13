@@ -183,7 +183,8 @@ extension CloudKitTransport {
         zoneAdmin: FakeZoneAdmin = FakeZoneAdmin(),
         clock: TestClock = TestClock(),
         sleeps: Collector<TimeInterval> = Collector(),
-        sleep: (@Sendable (TimeInterval) async -> Void)? = nil
+        sleep: (@Sendable (TimeInterval) async -> Void)? = nil,
+        energy: EnergyCounter? = nil
     ) async -> CloudKitTransport {
         let transport = CloudKitTransport(
             store: store,
@@ -194,7 +195,8 @@ extension CloudKitTransport {
             zoneAdmin: zoneAdmin,
             engineFactory: { _, _ in engine },
             now: { clock.now },
-            sleep: sleep ?? { sleeps.append($0) }
+            sleep: sleep ?? { sleeps.append($0) },
+            energy: energy
         )
         await transport.start()
         return transport

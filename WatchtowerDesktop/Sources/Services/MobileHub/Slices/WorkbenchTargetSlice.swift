@@ -148,7 +148,7 @@ struct WorkbenchTargetSlice: SliceSource {
     }
 
     func records(_ db: Database) throws -> [SliceRecord] {
-        let workbenches = try WorkbenchSlice.publishedWorkbenches(db)
+        let workbenches = try WorkbenchSlice.publishedWorkbenchRefs(db)
         guard !workbenches.isEmpty else { return [] }
         let window = try WorkbenchTargetWindow.load(db, now: now())
         let facts = try TargetFacts.load(db)

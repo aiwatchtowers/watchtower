@@ -142,6 +142,7 @@ struct EventDetailView: View {
                 RecordButton(fillsWidth: true) {
                     Task { await env.recorder.recordMeeting(meeting) }
                 }
+                .disabled(!env.canStartCapture)
             }
         case let .openRecap(id):
             // A link, not a calendarPath append: the event detail is also

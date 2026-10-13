@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -23,7 +24,9 @@ final class FakeClock {
 /// plays (`unclamped` by default, so the recorded time decides; nil:
 /// unreadable), `holdFinish` keeps `finish` suspended until
 /// `releaseFinish()`, `resumeError` makes `resume` throw, and `fail(_:)`
-/// reports a dead capture.
+/// reports a dead capture. `sessionActive` follows the audio session the
+/// real engine holds: active from `begin` to `pause`/`finish`, again after
+/// `resume`.
 @MainActor
 final class FakeAudioEngine: AudioCaptureEngine {
     var onFailure: (@MainActor (String) -> Void)?
@@ -32,33 +35,50 @@ final class FakeAudioEngine: AudioCaptureEngine {
     static let unclamped: TimeInterval = 1_000_000_000
     var fileDuration: TimeInterval? = FakeAudioEngine.unclamped
     var holdFinish = false
+    /// Keeps `requestPermission` suspended until `releasePermission()`.
+    var holdPermission = false
+    private var permissionWaiter: CheckedContinuation<Void, Never>?
     var resumeError: (any Error)?
     private(set) var begunURLs: [URL] = []
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private(set) var finishCount = 0
+    private(set) var sessionActive = false
     private var finishWaiter: CheckedContinuation<Void, Never>?
 
     func requestPermission() async -> Bool {
-        permissionGranted
+        if holdPermission {
+            await withCheckedContinuation { permissionWaiter = $0 }
+        }
+        return permissionGranted
+    }
+
+    /// Answers a permission request `holdPermission` kept waiting.
+    func releasePermission() {
+        permissionWaiter?.resume()
+        permissionWaiter = nil
     }
 
     func begin(url: URL) throws {
         begunURLs.append(url)
         try Data(repeating: 0x5A, count: 256).write(to: url)
+        sessionActive = true
     }
 
     func pause() {
         pauseCount += 1
+        sessionActive = false
     }
 
     func resume() throws {
         if let resumeError { throw resumeError }
         resumeCount += 1
+        sessionActive = true
     }
 
     func finish() async {
         finishCount += 1
+        sessionActive = false
         if holdFinish {
             await withCheckedContinuation { finishWaiter = $0 }
         }
@@ -79,6 +99,32 @@ final class FakeAudioEngine: AudioCaptureEngine {
 
     func fail(_ message: String) {
         onFailure?(message)
+    }
+}
+
+/// Records the background tasks begun and ended; `expire()` runs the
+/// latest expiration handler the way iOS does.
+@MainActor
+final class FakeBackgroundTasks: BackgroundTaskRunning {
+    private(set) var begun: [String] = []
+    private(set) var ended: [UIBackgroundTaskIdentifier] = []
+    private var expiration: (@MainActor () -> Void)?
+    /// False: iOS grants no time and `begin` returns `.invalid`.
+    var grantsTime = true
+
+    func begin(name: String, expiration: @escaping @MainActor () -> Void) -> UIBackgroundTaskIdentifier {
+        begun.append(name)
+        guard grantsTime else { return .invalid }
+        self.expiration = expiration
+        return UIBackgroundTaskIdentifier(rawValue: begun.count)
+    }
+
+    func end(_ task: UIBackgroundTaskIdentifier) {
+        ended.append(task)
+    }
+
+    func expire() {
+        expiration?()
     }
 }
 
@@ -105,26 +151,41 @@ extension XCTestCase {
     }
 
     /// A recorder over fakes. Pass `sharing:` to build the "relaunched" app
-    /// over an earlier rig's replica, transport and directory.
+    /// over an earlier rig's replica, transport and directory. `uploadClock`
+    /// is the uploader's clock (its retry backoff), `sleep` the wait behind
+    /// the long-pause auto-finish (by default it never ends), `store` a
+    /// replica of the test's own (an in-memory one by default).
     @MainActor
     func makeRecorderRig(
         deviceID: String? = "device-a",
         sharing earlier: RecorderRig? = nil,
+        store givenStore: ReplicaStore? = nil,
         directory movedDirectory: URL? = nil,
-        tickInterval: Duration? = nil
+        tickInterval: Duration? = nil,
+        uploadClock: MutableClock? = nil,
+        sleep: (@Sendable (Duration) async throws -> Void)? = nil
     ) throws -> RecorderRig {
-        let store = try earlier?.store ?? ReplicaStore.inMemory()
+        let store = try givenStore ?? earlier?.store ?? ReplicaStore.inMemory()
         let transport = earlier?.transport ?? InMemoryCloudTransport()
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let notifications = NotificationCenter()
         let directory = try movedDirectory ?? earlier?.directory ?? makeRecordingsDirectory()
+        // The default auto-finish wait never ends by itself (no test waits
+        // out an hour) and is cancelled on teardown, so no parked task
+        // outlives the test.
+        let parked = TickSleeper()
+        addTeardownBlock { @MainActor in parked.cancelAll() }
+        let uploader = RecordingUploader(
+            transport: transport, store: store, directory: directory, deviceID: deviceID
+        ) { uploadClock?.now ?? Date() }
         let controller = PhoneRecorderController(
-            uploader: RecordingUploader(transport: transport, store: store, directory: directory, deviceID: deviceID),
+            uploader: uploader,
             engine: engine,
             notificationCenter: notifications,
             now: { clock.now },
-            tickInterval: tickInterval
+            tickInterval: tickInterval,
+            sleep: sleep ?? { try await parked.sleep($0) }
         )
         return RecorderRig(
             controller: controller, engine: engine, clock: clock, store: store,

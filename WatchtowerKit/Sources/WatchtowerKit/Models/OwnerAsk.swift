@@ -375,19 +375,24 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
     public var checklist: [CheckAnswer]
     public var comments: [Comment]
     public var note: String
+    /// The owner closed the ask without answering it (Go's
+    /// `asks.Answer.Dismissed`); written only when true.
+    public var dismissed: Bool
 
     public init(
         verdict: Verdict? = nil,
         answers: [QuestionAnswer] = [],
         checklist: [CheckAnswer] = [],
         comments: [Comment] = [],
-        note: String = ""
+        note: String = "",
+        dismissed: Bool = false
     ) {
         self.verdict = verdict
         self.answers = answers
         self.checklist = checklist
         self.comments = comments
         self.note = note
+        self.dismissed = dismissed
     }
 
     /// The canonical JSON: sorted keys, no whitespace, slashes unescaped —
@@ -405,7 +410,7 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case verdict, answers, checklist, comments, note
+        case verdict, answers, checklist, comments, note, dismissed
     }
 
     public init(from decoder: Decoder) throws {
@@ -416,6 +421,7 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
         checklist = try c.decodeIfPresent([CheckAnswer].self, forKey: .checklist) ?? []
         comments = try c.decodeIfPresent([Comment].self, forKey: .comments) ?? []
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        dismissed = try c.decodeIfPresent(Bool.self, forKey: .dismissed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -425,5 +431,6 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
         try c.encode(checklist, forKey: .checklist)
         try c.encode(comments, forKey: .comments)
         try c.encode(note, forKey: .note)
+        if dismissed { try c.encode(true, forKey: .dismissed) }
     }
 }

@@ -16,13 +16,28 @@ struct CalendarReplicaSnapshot: Equatable {
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]
 
+    /// The slice kinds this snapshot decodes.
+    static let kinds: [SliceKind] = [.calendarEvent, .meetingTranscript]
+
     /// Reads from an ALREADY-OPEN database, so it runs inside a
-    /// ValueObservation tracking closure.
-    static func read(from db: Database, store: ReplicaStore) throws -> Self {
+    /// ValueObservation fetch. A kind whose change stamp is unchanged comes
+    /// from `cache` undecoded; the default fresh cache decodes everything.
+    static func read(from db: Database, store: ReplicaStore, cache: ReplicaDecodeCache = ReplicaDecodeCache()) throws -> Self {
+        let versions = try store.kindVersions(kinds, from: db)
         var snapshot = Self()
-        snapshot.events = try snapshot.decodeAll(CalendarEvent.self, kind: .calendarEvent, store: store, from: db)
-        snapshot.transcripts = try snapshot.decodeAll(MeetingTranscript.self, kind: .meetingTranscript, store: store, from: db)
+        snapshot.events = try snapshot.decodeAll(
+            CalendarEvent.self, kind: .calendarEvent, store: store, from: db, cache: cache, versions: versions
+        )
+        snapshot.transcripts = try snapshot.decodeAll(
+            MeetingTranscript.self, kind: .meetingTranscript, store: store, from: db, cache: cache, versions: versions
+        )
         return snapshot
+    }
+
+    /// One kind's decoded records and how many did not decode.
+    private struct Decoded<T> {
+        let records: [T]
+        let skipped: Int
     }
 
     /// The calendar mirrors are plain Codable (RelayCoder JSON), not
@@ -31,22 +46,27 @@ struct CalendarReplicaSnapshot: Equatable {
         _ type: T.Type,
         kind: SliceKind,
         store: ReplicaStore,
-        from db: Database
+        from db: Database,
+        cache: ReplicaDecodeCache,
+        versions: [SliceKind: Int64]
     ) throws -> [T] {
-        let decoder = RelayCoder.makeDecoder()
-        var skipped = 0
-        let decoded = try store.payloads(of: kind, from: db).compactMap { payload -> T? in
-            do {
-                return try decoder.decode(T.self, from: payload)
-            } catch {
-                skipped += 1
-                return nil
+        let decoded = try cache.value(kind.rawValue, version: versions[kind] ?? 0) {
+            let decoder = RelayCoder.makeDecoder()
+            var skipped = 0
+            let records = try store.payloads(of: kind, from: db).compactMap { payload -> T? in
+                do {
+                    return try decoder.decode(T.self, from: payload)
+                } catch {
+                    skipped += 1
+                    return nil
+                }
             }
+            return Decoded(records: records, skipped: skipped)
         }
-        if skipped > 0 {
-            skippedRecords[kind] = skipped
+        if decoded.skipped > 0 {
+            skippedRecords[kind] = decoded.skipped
         }
-        return decoded
+        return decoded.records
     }
 
     func event(_ id: String) -> CalendarEvent? {
@@ -61,23 +81,27 @@ struct CalendarReplicaSnapshot: Equatable {
     }
 }
 
-/// Live calendar replica state: one observation for the app's lifetime,
-/// re-read on every replica write.
+/// Live calendar replica state: one observation for the app's lifetime
+/// over its kinds' change stamps; only a calendar write decodes again.
 @MainActor
 @Observable
 final class CalendarReplicaModel {
     private(set) var snapshot = CalendarReplicaSnapshot()
+    /// The decoded kinds between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "CalendarReplicaModel")
 
-    func start(store: ReplicaStore) {
+    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
         guard cancellable == nil else { return }
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "calendar",
             reader: store.reader,
+            gate: gate,
             observation: {
-                ValueObservation.tracking { db in
-                    try CalendarReplicaSnapshot.read(from: db, store: store)
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion]) { db in
+                    try CalendarReplicaSnapshot.read(from: db, store: store, cache: cache)
                 }
                 .removeDuplicates()
             },
