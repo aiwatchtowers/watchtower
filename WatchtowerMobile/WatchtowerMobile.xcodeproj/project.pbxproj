@@ -10,6 +10,7 @@
 		00C41124954316FDB03CB1C8 /* DeviceIDKeychainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2854C4C1E98D92A27FE3ACA8 /* DeviceIDKeychainTests.swift */; };
 		04B35957623707A41C2781B9 /* PhoneRecorderController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */; };
 		04CDA58818884C7346F878B0 /* LinkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04687B6B5C6EC1EFD33A747A /* LinkStore.swift */; };
+		04CDC70965DB04962A554C2A /* DemoSeed+E2E.swift in Sources */ = {isa = PBXBuildFile; fileRef = 969182E81C510D6382CFF39A /* DemoSeed+E2E.swift */; };
 		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
 		055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */; };
 		069F7E73436AE73C0D41AC77 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */; };
@@ -52,6 +53,7 @@
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
+		4CC11EBE1DF90C0C89628B34 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		4D6748338C1E07858C8D01CE /* AppNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */; };
 		50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */; };
 		51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D1C1D5173ED2758596AA8F /* SettingsView.swift */; };
@@ -109,7 +111,7 @@
 		C24C943474F92F1DFEDE5164 /* LinkedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA4C19BC528865AFEB075299 /* LinkedView.swift */; };
 		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
 		C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC12186E8FC140813F1BFDBF /* BoardWriter.swift */; };
-		C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */ = {isa = PBXBuildFile; productRef = 6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */; };
 		C753034B078CF1407190AFEF /* ResilientObservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 232CD623FB978407C3F5E7DE /* ResilientObservationTests.swift */; };
 		C7593A3E30217F1ED57ACD46 /* DeviceIDKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBE2025D4C6A9A97B7C0D65B /* DeviceIDKeychain.swift */; };
 		CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */; };
@@ -251,6 +253,7 @@
 		94430172C5E3FCFC507CA7A6 /* PriorityDot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriorityDot.swift; sourceTree = "<group>"; };
 		9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListView.swift; sourceTree = "<group>"; };
 		966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskAnswerer.swift; sourceTree = "<group>"; };
+		969182E81C510D6382CFF39A /* DemoSeed+E2E.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+E2E.swift"; sourceTree = "<group>"; };
 		972F58018C997D775DD0EAA1 /* PhoneTone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTone.swift; sourceTree = "<group>"; };
 		9759126D122152063D8BFFD8 /* WorkbenchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchModels.swift; sourceTree = "<group>"; };
 		97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailViewModel.swift; sourceTree = "<group>"; };
@@ -330,7 +333,8 @@
 			files = (
 				45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */,
 				ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */,
-				C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */,
+				C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */,
+				4CC11EBE1DF90C0C89628B34 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -584,6 +588,7 @@
 				EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */,
 				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
 				2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */,
+				969182E81C510D6382CFF39A /* DemoSeed+E2E.swift */,
 				AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */,
 				CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */,
 				C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */,
@@ -691,6 +696,7 @@
 			packageProductDependencies = (
 				EB447CB107767855A2DBBA0F /* WatchtowerKit */,
 				82E2DC2033E6312FAD9B717C /* WatchtowerSync */,
+				6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */,
 				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
 			);
 			productName = WatchtowerMobileTests;
@@ -813,6 +819,7 @@
 				978C1CA6E8DCA5FE898C5859 /* CloudKitLinkContainer.swift in Sources */,
 				5679863B13AEE6564739DBE9 /* ConflictPrompt.swift in Sources */,
 				A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */,
+				04CDC70965DB04962A554C2A /* DemoSeed+E2E.swift in Sources */,
 				CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */,
 				CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */,
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
@@ -1332,6 +1339,10 @@
 		5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerSync;
+		};
+		6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerE2ETesting;
 		};
 		73828104AEDF42B7DD8514E7 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;

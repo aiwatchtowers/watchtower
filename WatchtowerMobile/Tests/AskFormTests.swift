@@ -20,8 +20,8 @@ final class AskFormTests: XCTestCase {
     }
 
     private func makeFixture() async throws -> Fixture {
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         let drafts = AskDraftStore()
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: drafts)
         let starter = SessionStarter.sending(through: outbox, store: store)

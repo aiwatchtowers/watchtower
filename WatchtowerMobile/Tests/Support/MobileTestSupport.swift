@@ -1,7 +1,9 @@
 import Foundation
 import Observation
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
+@testable import WatchtowerMobile
 
 /// Counts how often an `@Observable` property is SET (a set notifies its
 /// observers even when the value is equal), re-arming the tracking after
@@ -94,13 +96,14 @@ final class TickSleeper {
 
 extension XCTestCase {
     /// A pool-backed replica on a throwaway temp path: the production
-    /// mechanism (`DatabasePool` + WAL) the app's observations run against.
-    func makePoolStore() throws -> ReplicaStore {
+    /// mechanism (`DatabasePool` + WAL) the app's observations run against,
+    /// opened with `pairing`'s phone keys.
+    func makePoolStore(_ pairing: TestPhone.Pairing = .test) throws -> ReplicaStore {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("mobile-replica-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-        return try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path)
+        return try TestPhone.replica(path: dir.appendingPathComponent("replica.sqlite").path, pairing)
     }
 
     /// A throwaway replica path whose directory is removed on teardown.
@@ -136,5 +139,93 @@ extension XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertTrue(condition(), message(), file: file, line: line)
+    }
+}
+
+/// The phone tests' pairings: the Kit's test pairing (`TestE2E`, F25) by default, the demo pairing
+/// (`DemoSeed+E2E`) for the demo seed (its grant is the demo phone's keybox). Replicas open with the paired phone's
+/// keys, records a test puts into a transport are sealed by the pairing's hub (never plaintext), and the outbox, the
+/// uploader and the feed run over the paired phone's `SecureTransport`.
+enum TestPhone {
+    enum Pairing {
+        case test
+        case demo
+    }
+
+    /// Each hub and phone gets its own block of seqs above every earlier one: the replica refuses an older
+    /// `(epoch, seq)` of a record it holds, so a later hub must never restart below an earlier one.
+    private static let seqBlock: UInt64 = 1_000_000
+    private static let seqLock = NSLock()
+    nonisolated(unsafe) private static var nextFirstSeq: UInt64 = 1
+
+    private static func firstSeq() -> UInt64 {
+        seqLock.withLock {
+            defer { nextFirstSeq += seqBlock }
+            return nextFirstSeq
+        }
+    }
+
+    /// The paired phone's keys (also what an `AppEnvironment` takes).
+    static func keys(_ pairing: Pairing = .test) throws -> PhoneKeys {
+        switch pairing {
+        case .test: PhoneKeys(store: try TestE2E.phoneStore(), hubID: TestE2E.hubID.uuidString)
+        case .demo: try DemoSeed.phoneKeys()
+        }
+    }
+
+    /// The paired phone's device id, as the outbox, the uploader and the grants spell it.
+    static func deviceID(_ pairing: Pairing = .test) -> String {
+        switch pairing {
+        case .test: TestE2E.deviceID.uuidString
+        case .demo: DemoSeed.device.deviceID
+        }
+    }
+
+    /// An in-memory replica opened with the paired phone's keys.
+    static func replica(_ pairing: Pairing = .test) throws -> ReplicaStore {
+        try ReplicaStore.inMemory(opener: opener(pairing))
+    }
+
+    /// An on-disk replica at `path`, opened with the paired phone's keys.
+    static func replica(path: String, _ pairing: Pairing = .test) throws -> ReplicaStore {
+        try ReplicaStore(path: path, opener: opener(pairing))
+    }
+
+    private static func opener(_ pairing: Pairing) throws -> EnvelopeReplicaOpener {
+        let keys = try keys(pairing)
+        return EnvelopeReplicaOpener(hubID: keys.hubID, deviceID: try keys.store.identity().deviceID, keys: keys.store)
+    }
+
+    /// The paired phone sealing and opening over `inner`.
+    static func transport(
+        over inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport(), _ pairing: Pairing = .test
+    ) throws -> SecureTransport {
+        let keys = try keys(pairing)
+        let first = firstSeq()
+        let provider = try PhoneKeyProvider(
+            store: keys.store, hubID: keys.hubID, seq: SeqAllocator(load: { first }, store: { _ in }))
+        return SecureTransport(inner: inner, keys: provider, rollback: InMemoryRollbackGuard())
+    }
+
+    /// The pairing's hub sealing over `inner`: what a test saves through it reaches the transport as the Mac's
+    /// envelopes do.
+    static func hub(over inner: any CloudSyncTransport & Sendable, _ pairing: Pairing = .test) -> SecureTransport {
+        switch pairing {
+        case .test: TestE2E.hubTransport(TestE2E.hub(firstSeq: firstSeq()), inner: inner)
+        case .demo: DemoSeed.hubTransport(inner: inner, firstSeq: firstSeq())
+        }
+    }
+
+    /// `plain` as the hub ships a record's asset: sealed into `url`, its
+    /// descriptor riding in the record's frame.
+    static func sealAsset(_ plain: Data, to url: URL) throws -> AssetDescriptor {
+        let (sealed, descriptor) = try ChunkedAssetCipher.encrypt(plain)
+        try sealed.write(to: url)
+        return descriptor
+    }
+
+    /// `grant` as the hub publishes it since E2E: its `device_grant-<device_id>` record carrying the keybox.
+    static func grantRecord(_ grant: DeviceGrant, modifiedAt: Date) throws -> CloudRecord {
+        try DemoSeed.keyboxRecord(for: grant, modifiedAt: modifiedAt)
     }
 }

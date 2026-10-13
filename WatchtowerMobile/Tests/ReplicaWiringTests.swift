@@ -88,9 +88,10 @@ final class ReplicaWiringTests: XCTestCase {
 
     /// The seed in isolation, on a fresh store: same tally, no shared path.
     func testDemoSeedHydratesTheTallyOnAFreshStore() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: Date())
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: Date())
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         for (kind, expected) in seededCounts {
@@ -102,10 +103,11 @@ final class ReplicaWiringTests: XCTestCase {
     /// The demo heartbeat is fresh and the demo grant belongs to the demo
     /// device, so Settings demos an online Mac and a linked phone.
     func testDemoSeedIsOnlineAndGrantsTheDemoDevice() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport, .demo)
         let now = Date()
-        try await DemoSeed.load(into: transport, now: now)
+        try await DemoSeed.load(into: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let snapshot = try await store.reader.read { db in
@@ -125,8 +127,9 @@ final class ReplicaWiringTests: XCTestCase {
         let path = try makeReplicaPath()
         do {
             let stale = InMemoryCloudTransport()
-            try await DemoSeed.load(into: stale, now: Date().addingTimeInterval(-7_200))
-            _ = try await ReplicaHydrator(transport: stale, store: try ReplicaStore(path: path)).hydrateOnce()
+            let staleHub = TestPhone.hub(over: stale, .demo)
+            try await DemoSeed.load(into: staleHub, now: Date().addingTimeInterval(-7_200))
+            _ = try await ReplicaHydrator(transport: stale, store: try TestPhone.replica(path: path, .demo)).hydrateOnce()
         }
 
         for launch in 1...2 {

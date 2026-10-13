@@ -159,6 +159,10 @@ targets:
         product: WatchtowerKit
       - package: WatchtowerKit
         product: WatchtowerSync
+      # The Kit's test hub and test phone (F25): tests seal the records they
+      # put into the transport. Test target only; the app never links it.
+      - package: WatchtowerKit
+        product: WatchtowerE2ETesting
       - package: GRDB
         product: GRDB
     settings:

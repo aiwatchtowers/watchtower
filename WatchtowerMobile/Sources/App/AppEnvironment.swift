@@ -34,6 +34,18 @@ enum AppEnvironmentError: LocalizedError {
     }
 }
 
+/// The phone's E2E key material for one hub (mobile E2E Task 16 Step 0, compile wiring): the key store and the hub
+/// id its link is stored under. Task 16 proper builds it from the Keychain and the saved link.
+struct PhoneKeys {
+    let store: any PhoneKeyStore
+    let hubID: String
+
+    /// No link material: every seal throws `keysUnavailable` and the replica refuses every batch.
+    static func unlinked() -> Self {
+        Self(store: InMemoryPhoneKeyStore(), hubID: AppEnvironment.placeholderHubID)
+    }
+}
+
 /// Root object for the app: owns the on-device replica, the hydrator that
 /// pulls DataZone into it, and the relay pair (`ActionOutbox` out,
 /// `RelayFeed` echoes in) over the same transport and store. Injected into
@@ -121,7 +133,7 @@ final class AppEnvironment {
     /// Fetch cycles the loop has begun (a cancelled loop begins none).
     @ObservationIgnored private(set) var fetchCycles = 0
 
-    @ObservationIgnored private let transport: any CloudSyncTransport
+    @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored let uploader: RecordingUploader
@@ -183,13 +195,16 @@ final class AppEnvironment {
     /// builds the recorder over the environment's uploader; tests pass a
     /// fake audio engine and clock, the app the microphone. `sleep` is the
     /// fetch loop's wait between cycles. `linkedDevice` is the saved link
-    /// (the demo kind is always `DemoSeed.device`).
+    /// (the demo kind is always `DemoSeed.device`). `keys` is the phone's
+    /// E2E key material; nil: the demo pairing on the demo kind, none on
+    /// the CloudKit kind (Task 16 wires the Keychain).
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
         hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil,
+        keys: PhoneKeys? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
@@ -205,25 +220,21 @@ final class AppEnvironment {
         self.hubID = hubID
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
-        // Compile-only placeholder (mobile E2E Task 8, F6): the replica now keeps the hub's envelopes and needs
-        // the phone's key store, which Task 16 wires (with the SecureTransport and the demo hub). Until then no
-        // link material exists, so `apply` refuses every batch and the replica stays empty.
-        let placeholderKeys = InMemoryPhoneKeyStore()
+        // Compile wiring (mobile E2E Task 16 Step 0, F6): the replica keeps the hub's envelopes and opens them
+        // with the phone's key store; the outbox and the uploader seal, and the feed opens, through one
+        // SecureTransport. Without link material (the CloudKit kind until Task 16 wires the Keychain and the
+        // linked hub) every seal throws keysUnavailable and the replica refuses every batch. The seq allocator
+        // starts from zero until Task 17 persists its ceiling (F29).
+        let phoneKeys = try keys ?? (transportKind == .inMemoryDemo ? DemoSeed.phoneKeys() : PhoneKeys.unlinked())
+        let keyDeviceID = try phoneKeys.store.deviceID() ?? phoneKeys.store.identity().deviceID
         store = try ReplicaStore(
             path: replicaPath,
-            opener: EnvelopeReplicaOpener(
-                hubID: Self.unlinkedHubID,
-                deviceID: device.flatMap { UUID(uuidString: $0.deviceID) } ?? UUID(),
-                keys: placeholderKeys
-            )
+            opener: EnvelopeReplicaOpener(hubID: phoneKeys.hubID, deviceID: keyDeviceID, keys: phoneKeys.store)
         )
-        // Compile-only placeholder (mobile E2E Task 9, F6): the outbox and the uploader seal, and the feed opens,
-        // through a SecureTransport. Task 16 wires the real one (the linked hub's id, the Keychain store, the
-        // persisted seq ceiling). Until then no link material exists, so every seal throws keysUnavailable.
         let secure = SecureTransport(
             inner: transport,
             keys: try PhoneKeyProvider(
-                store: placeholderKeys, hubID: Self.placeholderHubID,
+                store: phoneKeys.store, hubID: phoneKeys.hubID,
                 seq: SeqAllocator(load: { 0 }, store: { _ in })),
             rollback: InMemoryRollbackGuard()
         )
@@ -296,8 +307,10 @@ final class AppEnvironment {
                 // cursor restarts, so the persisted replica's tokens must be
                 // forgotten or the fresh seed never lands.
                 try store.resetSyncTokens()
-                try await DemoSeed.load(into: transport)
-                try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: Date())
+                // Sealed by the demo hub, as a Mac's records are (Task 17 reworks the demo).
+                let hub = DemoSeed.hubTransport(inner: transport)
+                try await DemoSeed.load(into: hub)
+                try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: Date())
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }

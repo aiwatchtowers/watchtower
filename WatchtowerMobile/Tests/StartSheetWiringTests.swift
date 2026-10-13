@@ -22,8 +22,8 @@ final class StartSheetWiringTests: XCTestCase {
     /// The app's wiring: `AppEnvironment.appliedObserver` hands the
     /// outbox's applied echoes to the starter and the ask answerer.
     private func makeFixture() async throws -> Fixture {
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         let starter = SessionStarter.sending(through: outbox, store: store)
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
         await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
@@ -107,7 +107,8 @@ final class StartSheetWiringTests: XCTestCase {
     /// records may not land (use one transport for several hydrates).
     private func hydrate(_ store: ReplicaStore, _ records: [CloudRecord]) async throws {
         let transport = InMemoryCloudTransport()
-        try await transport.save(records)
+        let hub = TestPhone.hub(over: transport)
+        try await hub.save(records)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
     }
 
@@ -262,14 +263,15 @@ final class StartSheetWiringTests: XCTestCase {
         let behind = now.addingTimeInterval(-1_200)
         // One transport for both hydrates: its change cursor carries over.
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let hydrator = ReplicaHydrator(transport: transport, store: fixture.store)
-        try await transport.save([try DemoSeed.record(
+        try await hub.save([try DemoSeed.record(
             kind: .terminalSession, id: 16, json: stoppedSessionJSON(16, at: behind), modifiedAt: now
         )])
         _ = try await hydrator.hydrateOnce()
         try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
         let exitedJSON = stoppedSessionJSON(16, at: behind.addingTimeInterval(30), caption: "Exited")
-        try await transport.save([try DemoSeed.record(
+        try await hub.save([try DemoSeed.record(
             kind: .terminalSession, id: 16, json: exitedJSON, modifiedAt: now.addingTimeInterval(1)
         )])
         _ = try await hydrator.hydrateOnce()
@@ -448,7 +450,7 @@ final class StartSheetWiringTests: XCTestCase {
     /// and only when edited; without a grant record the spec's defaults
     /// hold (typing off, starts on).
     func testTheBriefFollowsTheTypingGrant() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try TestPhone.replica()
         let defaults = try form(415, try snapshot(store))
         XCTAssertEqual(defaults.grant, StartGrant(nil))
         XCTAssertFalse(defaults.grant.typingAllowed)
@@ -472,7 +474,7 @@ final class StartSheetWiringTests: XCTestCase {
     /// Review Minor 2: a clipped work-on prompt says so when the brief is
     /// editable, since an edit replaces the Mac's full prompt.
     func testAClippedPromptSaysAnEditReplacesTheMacsPrompt() throws {
-        var replica = try snapshot(try ReplicaStore.inMemory(), grant: grant(typing: true, start: true))
+        var replica = try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true))
         replica.targets.append(try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(480, workbench: DemoSeed.acmeID, [
             "work_on_prompt": "Work on target #480 with a long brief…", "work_on_prompt_clipped": true
         ])))
@@ -491,7 +493,7 @@ final class StartSheetWiringTests: XCTestCase {
     /// A phone the Mac does not allow to start sessions gets Start off with
     /// the reason (the hub would refuse `device_not_allowed`).
     func testAPhoneNotAllowedToStartCannotStart() throws {
-        let model = try form(400, try snapshot(try ReplicaStore.inMemory(), grant: grant(typing: false, start: false)))
+        let model = try form(400, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(model.canStart)
         XCTAssertEqual(model.startCaption, "This phone is not allowed to start sessions on the Mac")
     }
@@ -499,17 +501,17 @@ final class StartSheetWiringTests: XCTestCase {
     /// Bug 5 (design pass spec §3): with no target and a refused grant, the
     /// grant caption wins; a picked target on an allowed phone has none.
     func testTheGrantCaptionWinsOverTheMissingTarget() throws {
-        let refused = try form(nil, try snapshot(try ReplicaStore.inMemory(), grant: grant(typing: false, start: false)))
+        let refused = try form(nil, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(refused.canStart)
         XCTAssertEqual(refused.startCaption, "This phone is not allowed to start sessions on the Mac")
-        XCTAssertNil(try form(415, try snapshot(try ReplicaStore.inMemory())).startCaption)
+        XCTAssertNil(try form(415, try snapshot(try TestPhone.replica())).startCaption)
     }
 
     /// From the Workbench header no target is set: Start waits for one, and
     /// picking one fills the brief from its work-on prompt. Archived
     /// targets are not offered.
     func testTheHeadersNewSessionPicksATarget() throws {
-        let model = try form(nil, try snapshot(try ReplicaStore.inMemory()))
+        let model = try form(nil, try snapshot(try TestPhone.replica()))
         XCTAssertNil(model.target)
         XCTAssertFalse(model.canStart)
         XCTAssertEqual(model.startCaption, "Choose a target to start", "Start says why it is off")
@@ -585,7 +587,7 @@ final class StartSheetWiringTests: XCTestCase {
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await gate.release() } }
         try await poll(timeout: 2) { sent.count == 1 }
-        XCTAssertFalse(try form(400, try snapshot(try ReplicaStore.inMemory()), starter).canStart, "Start is off while saving")
+        XCTAssertFalse(try form(400, try snapshot(try TestPhone.replica()), starter).canStart, "Start is off while saving")
 
         let secondDone = expectation(description: "the second start returns")
         let secondSent = Counter(-1)

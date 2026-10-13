@@ -133,8 +133,9 @@ final class SettingsWiringTests: XCTestCase {
     func testSnapshotReadsTheHydratedHeartbeat() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let now = Date()
-        try await transport.save([
+        try await hub.save([
             try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
@@ -150,7 +151,7 @@ final class SettingsWiringTests: XCTestCase {
     func testQueuedCountEqualsPendingOutboxRows() async throws {
         for expected in [0, 1, 25] {
             let store = try makePoolStore()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: device.deviceID)
+            let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: device.deviceID)
             for _ in 0..<expected {
                 try await outbox.enqueue(kind: .probe, entityRecordName: nil)
             }
@@ -164,7 +165,7 @@ final class SettingsWiringTests: XCTestCase {
     /// The live view model sees a new queued row without a manual refresh.
     func testViewModelObservesTheQueuedCount() async throws {
         let store = try makePoolStore()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: device.deviceID)
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: device.deviceID)
         try await outbox.enqueue(kind: .probe, entityRecordName: nil)
         let model = SettingsViewModel()
         model.start(store: store, deviceID: device.deviceID)
@@ -365,9 +366,10 @@ final class SettingsWiringTests: XCTestCase {
 
     /// Settings reads the hub's grant for this phone.
     func testSnapshotReadsThisDevicesGrant() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: Date())
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: Date())
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let mine = try await store.reader.read { db in

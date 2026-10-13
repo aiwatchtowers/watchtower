@@ -90,6 +90,9 @@ struct RecorderRig {
     let clock: FakeClock
     let store: ReplicaStore
     let transport: InMemoryCloudTransport
+    /// The paired phone over `transport`: the uploader's, and the one that
+    /// reads its sealed uploads back.
+    let secure: SecureTransport
     let notifications: NotificationCenter
     let directory: URL
 }
@@ -113,14 +116,15 @@ extension XCTestCase {
         directory movedDirectory: URL? = nil,
         tickInterval: Duration? = nil
     ) throws -> RecorderRig {
-        let store = try earlier?.store ?? ReplicaStore.inMemory()
+        let store = try earlier?.store ?? TestPhone.replica()
         let transport = earlier?.transport ?? InMemoryCloudTransport()
+        let secure = try earlier?.secure ?? TestPhone.transport(over: transport)
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let notifications = NotificationCenter()
         let directory = try movedDirectory ?? earlier?.directory ?? makeRecordingsDirectory()
         let controller = PhoneRecorderController(
-            uploader: RecordingUploader(transport: transport, store: store, directory: directory, deviceID: deviceID),
+            uploader: RecordingUploader(transport: secure, store: store, directory: directory, deviceID: deviceID),
             engine: engine,
             notificationCenter: notifications,
             now: { clock.now },
@@ -128,13 +132,16 @@ extension XCTestCase {
         )
         return RecorderRig(
             controller: controller, engine: engine, clock: clock, store: store,
-            transport: transport, notifications: notifications, directory: directory
+            transport: transport, secure: secure, notifications: notifications, directory: directory
         )
     }
 
-    /// The `recording_upload` records in the relay zone, decoded.
-    func relayUploads(in transport: any CloudSyncTransport) async throws -> [RecordingUploadPayload] {
-        let batch = try await transport.changes(in: .relay, since: nil)
+    /// The `recording_upload` records in the relay zone, opened as the
+    /// paired phone and decoded.
+    func relayUploads(
+        in transport: any CloudSyncTransport & Sendable, _ pairing: TestPhone.Pairing = .test
+    ) async throws -> [RecordingUploadPayload] {
+        let batch = try await TestPhone.transport(over: transport, pairing).changes(in: .relay, since: nil)
         return try batch.changed
             .filter { $0.kind == RelayRecordKind.recordingUpload.rawValue }
             .map { try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: $0.payload) }

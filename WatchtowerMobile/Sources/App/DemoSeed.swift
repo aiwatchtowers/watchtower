@@ -15,9 +15,10 @@ enum DemoSeed {
     static let hubID = "demo-hub"
     static let ownerUser = "_demo-owner"
 
-    /// The phone the demo replica is linked as.
+    /// The phone the demo replica is linked as: its id is the demo
+    /// pairing's device id (`DemoSeed+E2E`).
     static let device = LinkedDevice(
-        deviceID: "demo-device",
+        deviceID: DemoPairing.phoneIdentity.deviceID.uuidString,
         name: "Demo iPhone",
         model: "iPhone",
         appVersion: "demo",
@@ -66,7 +67,7 @@ enum DemoSeed {
         )
         return [
             try CloudRecordFactory.record(for: heartbeat, modifiedAt: now),
-            try CloudRecordFactory.record(for: grant, modifiedAt: now)
+            try keyboxRecord(for: grant, modifiedAt: now)
         ] + (try workbenchRecords(now: now)) + (try sessionDetailRecords(now: now)) + (try calendarRecords(now: now))
     }
 }
