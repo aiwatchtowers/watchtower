@@ -218,6 +218,17 @@ final class RecordingsWiringTests: XCTestCase {
             PhoneUploadStage(recording: row, heartbeat: recordings.heartbeat, now: now),
             .failed(PhoneUploadStage.stuckLabel, retryable: true)
         )
+
+        // The same row while the Mac sleeps (or never connected) is waiting
+        // for it, not stuck: no red line, no Retry.
+        for beat in [heartbeat(updatedAt: now.addingTimeInterval(-3_600)), nil] {
+            recordings.heartbeat = beat
+            let waiting = try XCTUnwrap(list(recordings).inProgress.first)
+            XCTAssertEqual(waiting.statusText, "Waiting for the Mac to wake")
+            XCTAssertFalse(waiting.offersRetry)
+            XCTAssertNotEqual(waiting.tone, .red)
+            XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: beat, now: now), .waitingForMac)
+        }
     }
 
     /// A capture the recorder finished after a long pause says so in its

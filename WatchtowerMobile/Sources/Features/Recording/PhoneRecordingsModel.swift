@@ -10,7 +10,8 @@ import WatchtowerSync
 /// pending upload reads "Waiting for the Mac to wake" while the heartbeat
 /// is stale or absent (spec §9): CloudKit holds the file until then. An
 /// upload out of automatic retries (board #724) reads "Upload stuck" and
-/// offers Retry, like a failure.
+/// offers Retry, like a failure — only while the Mac is online: waiting
+/// for a sleeping Mac takes precedence.
 enum PhoneUploadStage: Equatable {
     /// The capture is still being written on the phone.
     case recording
@@ -33,13 +34,14 @@ enum PhoneUploadStage: Equatable {
         case .failed:
             self = .failed(recording.errorMessage ?? "Not sent to your Mac.", retryable: recording.offersRetry)
         case .waiting, .uploading:
-            if recording.isUploadStuck {
-                self = .failed(Self.stuckLabel, retryable: true)
-            } else if case .online = MacStatus(heartbeat: heartbeat, now: now) {
-                self = .sending
-            } else {
+            // A sleeping Mac comes first: an upload waiting for it is not
+            // stuck, whatever its attempts (the owner's Retry would change
+            // nothing until the Mac wakes).
+            guard case .online = MacStatus(heartbeat: heartbeat, now: now) else {
                 self = .waitingForMac
+                return
             }
+            self = recording.isUploadStuck ? .failed(Self.stuckLabel, retryable: true) : .sending
         }
     }
 
