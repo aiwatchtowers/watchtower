@@ -156,6 +156,11 @@ extension XCTestCase {
         let clock = FakeClock()
         let notifications = NotificationCenter()
         let directory = try movedDirectory ?? earlier?.directory ?? makeRecordingsDirectory()
+        // The default auto-finish wait never ends by itself (no test waits
+        // out an hour) and is cancelled on teardown, so no parked task
+        // outlives the test.
+        let parked = TickSleeper()
+        addTeardownBlock { @MainActor in parked.cancelAll() }
         let uploader = RecordingUploader(
             transport: transport, store: store, directory: directory, deviceID: deviceID
         ) { uploadClock?.now ?? Date() }
@@ -165,10 +170,7 @@ extension XCTestCase {
             notificationCenter: notifications,
             now: { clock.now },
             tickInterval: tickInterval,
-            sleep: sleep ?? { _ in
-                // Parks until cancelled: no test waits out an hour.
-                try await Task.sleep(for: .seconds(86_400 * 365))
-            }
+            sleep: sleep ?? { try await parked.sleep($0) }
         )
         return RecorderRig(
             controller: controller, engine: engine, clock: clock, store: store,

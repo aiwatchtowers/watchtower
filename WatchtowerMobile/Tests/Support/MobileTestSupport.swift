@@ -90,6 +90,13 @@ final class TickSleeper {
     private func cancel(_ id: UUID) {
         waiting.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
+
+    /// Ends every sleep waiting now as cancelled (a test's teardown).
+    func cancelAll() {
+        let all = waiting
+        waiting = [:]
+        all.values.forEach { $0.resume(throwing: CancellationError()) }
+    }
 }
 
 extension XCTestCase {
