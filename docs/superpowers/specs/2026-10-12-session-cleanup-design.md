@@ -196,7 +196,8 @@ Per worktree, in `--apply`:
    (`lsregister <bundle>`) and reported kept `worktree_kept`, not removed.
 
 Then branches: re-run B1–B4 (B2 now sees the removed worktrees), and delete with
-`git update-ref -d refs/heads/<name> <checked sha>` — a compare-and-delete: if the tip moved since the check, git
+`git update-ref -d refs/heads/<name> <checked sha>`, right after reading `git worktree list` once more (a branch
+checked out anywhere now is kept `checked_out`) — a compare-and-delete: if the tip moved since the check, git
 refuses and the branch is kept (`moved`). Then `git config --remove-section branch.<name>` (absent section ignored).
 
 **Orphans (S5).** A process is an orphan of this session when its ppid is 1, it runs as the current user, it is

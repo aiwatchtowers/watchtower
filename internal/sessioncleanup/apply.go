@@ -482,7 +482,7 @@ func (a *applier) unregisterStale(ctx context.Context, it *Item) {
 // apply's evaluation saw, then deletes exactly that tip.
 func (a *applier) deleteBranch(ctx context.Context, it *Item) {
 	tip, ok := a.recheckBranch(ctx, it)
-	if !ok {
+	if !ok || !a.notCheckedOutNow(ctx, it) {
 		return
 	}
 	gctx, cancel := context.WithTimeout(ctx, gitTimeout)
@@ -525,6 +525,23 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		return "", false
 	}
 	return tip, true
+}
+
+// notCheckedOutNow reads `git worktree list` once more right before the
+// delete and keeps the branch when a worktree has it checked out now.
+func (a *applier) notCheckedOutNow(ctx context.Context, it *Item) bool {
+	out, err := a.git.output(ctx, a.folder, "worktree", "list", "--porcelain")
+	if err != nil {
+		a.fail(it, fmt.Errorf("re-listing worktrees: %w", err))
+		return false
+	}
+	for _, w := range parseWorktrees(out) {
+		if w.Branch == it.Name {
+			keepItem(it, ReasonCheckedOut, resolvePath(w.Root))
+			return false
+		}
+	}
+	return true
 }
 
 // dropBranchConfig removes the deleted branch's config section; an absent

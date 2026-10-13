@@ -182,3 +182,30 @@ func TestApply_WorktreeDirtiedRightBeforeTheRemoveIsKept(t *testing.T) {
 		})
 	}
 }
+
+// TestApply_BranchCheckedOutRightBeforeTheDeleteIsKept: a worktree that
+// checks the branch out after its re-check keeps it; `git worktree list`
+// is read again right before the delete.
+func TestApply_BranchCheckedOutRightBeforeTheDeleteIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	gitIn(t, f.repo, "branch", "feat/x", "main")
+	f.store.targetBranches = []string{"feat/x"}
+	late := filepath.Join(f.base, "wt-late")
+	lists := 0
+	g := &loggingGit{log: &opLog{}}
+	g.before = func(args []string) *gitAnswer {
+		if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
+			if lists++; lists == 3 { // after the evaluation's and the re-check's
+				gitIn(t, f.repo, "worktree", "add", "-q", late, "feat/x")
+			}
+		}
+		return nil
+	}
+	f.git = g
+	res := f.apply(Request{}, nil, nil)
+	it := wantResultItem(t, res, "branch:feat/x", ActionKeep, ReasonCheckedOut, false)
+	if it.Detail != late || !f.branchExists("feat/x") {
+		t.Fatalf("detail %q, or the branch is gone", it.Detail)
+	}
+}
