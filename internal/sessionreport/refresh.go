@@ -55,7 +55,7 @@ type prJSON struct {
 	MergedAt  string `json:"mergedAt"`
 }
 
-// Refresh updates workbench workbenchID's PR cache for refs ('pr:<n>' or
+// Refresh updates the PR cache of workbench workbenchID for refs ('pr:<n>' or
 // 'branch:<name>'). Only refs whose cached row is stale are checked, within
 // opts.Budget; a ref not checked keeps its cached row (none = unknown). It
 // never fails: anything it could not check is named in the note. It writes

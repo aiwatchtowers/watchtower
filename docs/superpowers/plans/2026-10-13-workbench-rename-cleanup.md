@@ -28,7 +28,7 @@ The board's "~800" was an underestimate: the real number is about 2,400 `project
 
 **A1. Go locals, parameters, unexported fields and doc comments.**
 - Rename `projectID` → `workbenchID`, plus `parentProjectID`, `parentProject`, the `projects` local in `briefing/workbenches.go`, the `sessionreport/refresh.go` field, and test locals (`projectTools`, `projectDB`, `projectTarget`, …). Use `gopls rename` per package.
-- The agent-facing string `"(no project activity)"` → `"(no workbench activity)"`.
+- The briefing placeholder `"(no project activity)"` keeps its wording: customized `briefing.daily` templates match on it (spec A8; renaming it was tried and reverted in review).
 - Untouched:
   - every SQL string
   - `json:"ProjectID"` on `db.Target` (MCP `list_targets`/`get_target` output)
@@ -102,7 +102,7 @@ The board's "~800" was an underestimate: the real number is about 2,400 `project
 
 ## Lane C — remove the legacy aliases (#229)
 
-**Precondition (spec §10):** `integrate status` reports `legacy=false` for every workbench. Today workbench #3 is still legacy: its hooks and MCP run through `--project`, and the old `watchtower-project` skill is installed. The owner runs **Re-run Setup** on it. Then C1 checks all five workbenches again.
+**Precondition (spec §10):** `integrate status` reports `legacy=false` for every workbench. Any workbench still reporting `legacy=true` gets **Re-run Setup** from the owner first; C1 then checks every workbench again.
 
 **C1. Re-check the precondition.**
 - Run `integrate status --workbench N --json` for every workbench. All must report `legacy=false`.
@@ -152,7 +152,7 @@ The board's "~800" was an underestimate: the real number is about 2,400 `project
 
 - A, B1, B6/B7 (or C) are independent.
 - B2–B5 wait for #565 and #533.
-- C waits for the owner's resync of workbench #3.
+- C waits for the owner to resync any legacy workbench.
 - At most one Swift lane at a time.
 - Each lane: implementer subagent in its own worktree off the feature branch → `local-review` → merge into the feature branch.
 - The final PR → `main` gets `debate-review` and the owner's go-ahead.

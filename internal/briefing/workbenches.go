@@ -14,7 +14,7 @@ import (
 // like the block's "[project_id=N]" lines, keeps its pre-rename wording: a
 // customized v8 template (which names both) is rendered with this same data
 // (spec 2026-10-02 A8), and v9 names them as they are.
-const noWorkbenchActivity = "(no workbench activity)"
+const noWorkbenchActivity = "(no project activity)"
 
 // maxBriefingWorkbenches and maxWorkbenchItems keep the block short: the briefing
 // points at the board, it does not reproduce it.
