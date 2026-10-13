@@ -560,11 +560,12 @@ final class AppEnvironment {
 
     /// The device recorder: the microphone, recordings in Application
     /// Support, and local notifications for the 3-hour cap notice and the
-    /// long-pause auto-finish.
+    /// long-pause auto-finish (saved, or not saved).
     private static func liveRecorder(_ uploader: RecordingUploader) throws -> PhoneRecorderController {
         let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
         recorder.onCapNotice = { RecorderNotices.postCapNotice() }
         recorder.onAutoFinish = { RecorderNotices.postAutoFinishNotice() }
+        recorder.onAutoFinishFailed = { RecorderNotices.postAutoFinishFailedNotice() }
         holdReplica(for: recorder)
         return recorder
     }

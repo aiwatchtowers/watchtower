@@ -25,6 +25,16 @@ enum RecorderNotices {
         )
     }
 
+    /// A capture paused for 60 minutes could not be saved when it was
+    /// finished automatically: the owner learns of it away from the app.
+    static func postAutoFinishFailedNotice() {
+        post(
+            id: "recording-auto-finish-failed-notice",
+            title: "Recording could not be saved",
+            body: "Open Watchtower to see what happened to it."
+        )
+    }
+
     private static func post(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

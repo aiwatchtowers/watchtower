@@ -233,6 +233,54 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(uploads.map(\.id), [saved.id])
     }
 
+    /// An auto-finish whose save fails tells the owner (a notification, as
+    /// they are usually away) instead of the saved notice.
+    func testAFailedAutoFinishSaveRaisesTheFailureNotice() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        var saved = 0
+        var failed = 0
+        rig.controller.onAutoFinish = { saved += 1 }
+        rig.controller.onAutoFinishFailed = { failed += 1 }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(30)
+        rig.engine.fileDuration = nil
+        rig.controller.pause()
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ failed == 1 }, "the failed save raised no notice")
+        guard case .failed = rig.controller.phase else {
+            return XCTFail("expected a failed save, got \(rig.controller.phase)")
+        }
+        XCTAssertEqual(saved, 0)
+    }
+
+    /// An interruption that outlasts the pause limit finishes the capture
+    /// like a long pause; its later end, even with `.shouldResume`, changes
+    /// nothing (no resume into the saved file).
+    func testAnInterruptionLongerThanTheLimitFinishesTheCapture() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(20)
+        postInterruption(rig.notifications, began: true)
+        XCTAssertEqual(rig.controller.phase, .paused(.interruption))
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit + 1)
+        sleeper.tick()
+        try await poll({ rig.controller.savedRecording != nil }, "the long interruption did not finish the capture")
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+
+        postInterruption(rig.notifications, began: false, shouldResume: true)
+        XCTAssertEqual(rig.controller.phase, .saved(saved), "the late end is a no-op")
+        XCTAssertEqual(rig.engine.resumeCount, 0)
+        XCTAssertEqual(rig.engine.finishCount, 1)
+        XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
+    }
+
     /// A resume before the limit cancels the auto-finish; the capture then
     /// ends by the owner's Stop, not marked.
     func testAResumeBeforeTheLimitCancelsTheAutoFinish() async throws {

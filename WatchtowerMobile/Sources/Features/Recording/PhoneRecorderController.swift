@@ -87,7 +87,10 @@ struct SavedRecording: Equatable {
 /// - A pause releases the audio session and stops the ticker; a capture
 ///   paused for `pauseLimit` (60 min, board #724 owner decision Q5) is
 ///   finished and saved by itself, the same way as Stop, and marked
-///   auto-finished.
+///   auto-finished; a save that fails then raises `onAutoFinishFailed`.
+///   An interruption counts as a pause: one longer than `pauseLimit`
+///   finishes the capture, and its later end (even with `.shouldResume`)
+///   changes nothing.
 /// - Time is read only through `now`, and the recorded length is the sum
 ///   of the recording spans, so pauses and interruptions are not audio.
 @MainActor
@@ -147,6 +150,9 @@ final class PhoneRecorderController {
     /// Raised once a long pause finished a capture; the app posts a local
     /// notification.
     @ObservationIgnored var onAutoFinish: @MainActor () -> Void = {}
+    /// Raised once a long pause's save failed: the owner is usually away,
+    /// so the app posts a local notification.
+    @ObservationIgnored var onAutoFinishFailed: @MainActor () -> Void = {}
     /// true when the capture's audio starts or resumes, false when it
     /// pauses or the capture is saved: the app holds the replica usable in
     /// the background meanwhile (`DatabaseSuspension`).
@@ -696,8 +702,13 @@ final class PhoneRecorderController {
         Self.logger.notice("capture paused for \(Int(Self.pauseLimit / 60)) min: finishing it")
         endNotice = Self.autoFinishNotice
         await finish(autoFinished: true)
-        if case .saved = phase {
+        switch phase {
+        case .saved:
             onAutoFinish()
+        case .failed:
+            onAutoFinishFailed()
+        default:
+            break
         }
     }
 
