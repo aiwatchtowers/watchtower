@@ -21,6 +21,9 @@ struct TerminalSessionRow: View {
     /// working (`SessionDeletePolicy.isQuick`, board #480). VoiceOver offers
     /// it as an action; the ✕ shows while `showsDelete`.
     var quickDelete: (() -> Void)?
+    /// A click on the ✕ (not VoiceOver's action) hands the keyboard to the
+    /// sessions panel first, so ⌘⌫ goes on from the neighbour.
+    var deleteButtonTakesKeyboard: (() -> Void)?
     /// The row is hovered or under the panel cursor.
     var showsDelete = false
     /// The panel has the keyboard and its cursor is on this row.
@@ -41,7 +44,10 @@ struct TerminalSessionRow: View {
             }
             closedAsks
             if showsDelete, let quickDelete {
-                SessionRowDeleteButton(onDelete: quickDelete)
+                SessionRowDeleteButton {
+                    deleteButtonTakesKeyboard?()
+                    quickDelete()
+                }
             }
         }
         .overlay {
@@ -106,7 +112,7 @@ struct TerminalSessionRow: View {
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(hasCursor ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { actions.open(session) }
         .accessibilityActions {
             if let quickDelete { Button("Delete session", action: quickDelete) }

@@ -18,7 +18,7 @@ struct WorkbenchSessionsPanel: View {
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
     /// The panel holds the keyboard (`SessionsPanelKeyView`, board #480).
     @State private var hasKeyboard = false
-    /// The row under the mouse: a list click off every row takes the keyboard.
+    /// The row under the mouse: its ✕ shows.
     @State private var hoveredRow: Int64?
 
     var body: some View {
@@ -53,8 +53,7 @@ struct WorkbenchSessionsPanel: View {
                 // space, the label, the group header, a ✕ or Undo gave the
                 // panel the keyboard; a row click still sends it into the
                 // terminal (ask #195).
-                .sessionsPanelKeys(vm: vm, projectID: project.id, actions: actions,
-                                   hasKeyboard: $hasKeyboard, hoveredRow: $hoveredRow)
+                .sessionsPanelKeys(vm: vm, projectID: project.id, actions: actions, hasKeyboard: $hasKeyboard)
                 .onChange(of: vm.panelCursor) { _, id in
                     guard hasKeyboard else { return }
                     proxy.followSelection(along: sections.panelScrollPath(to: id))
@@ -84,6 +83,10 @@ struct WorkbenchSessionsPanel: View {
                     proxy.followSelection(along: sections.panelScrollPath(to: target))
                 }
             }
+            // The delete's Undo in its own bar under the list: it covers no
+            // row and no FILES tree, and a click on it is not a click on
+            // the list's empty space (only Undo hands the panel the keyboard).
+            SessionDeleteToast(vm: vm)
             WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }

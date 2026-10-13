@@ -40,9 +40,6 @@ struct WorkbenchesView: View {
                 panel
                     .frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
                     .panelSurface()
-                    // The Undo of a session delete (board #480), at the
-                    // bottom of the left column at either level.
-                    .overlay(alignment: .bottom) { SessionDeleteToast(vm: vm) }
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
@@ -156,6 +153,9 @@ struct WorkbenchesView: View {
                 TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
             .clearPlainList()
+            // The Undo of a session delete (board #480) in its own bar, as
+            // under the sessions list at level 2.
+            SessionDeleteToast(vm: vm)
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }

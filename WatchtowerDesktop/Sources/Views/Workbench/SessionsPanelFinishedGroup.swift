@@ -12,8 +12,7 @@ struct SessionsPanelSessionRow: View {
     let actions: SessionRowActions
     let openAsks: Int
     let closedAsks: Int
-    /// The row under the mouse, kept by the panel: a click elsewhere in
-    /// the list is a click on its empty space.
+    /// The row under the mouse, kept by the panel: its ✕ shows.
     @Binding var hoveredRow: Int64?
     /// The panel has the keyboard (`SessionsPanelKeyView`).
     let panelHasKeyboard: Bool
@@ -28,7 +27,8 @@ struct SessionsPanelSessionRow: View {
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
                 : nil,
-            quickDelete: isQuick ? quickDelete : nil,
+            quickDelete: quickDeleteAction,
+            deleteButtonTakesKeyboard: vm.requestPanelKeyboard,
             showsDelete: hoveredRow == row.id || hasCursor,
             hasCursor: hasCursor
         )
@@ -42,23 +42,23 @@ struct SessionsPanelSessionRow: View {
         }
     }
 
-    private var isQuick: Bool {
-        SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true)
-    }
-
     private var hasCursor: Bool {
         panelHasKeyboard && vm.panelCursor == row.id
     }
 
-    /// The ✕: the panel takes the keyboard (⌘⌫ goes on from the
-    /// neighbour); a state that turned busy since the ✕ showed asks first.
-    private func quickDelete() {
-        vm.requestPanelKeyboard()
-        let session = row.session
-        if vm.isQuickDelete(session) {
-            Task { await vm.delete(session) }
-        } else {
-            actions.delete(session)
+    /// The ✕ and VoiceOver's "Delete session": only on a row whose agent
+    /// is not working (`SessionDeletePolicy.isQuick`), nil otherwise. A
+    /// state that turned busy since the ✕ showed asks first. It leaves the
+    /// keyboard where it is: only a click on the ✕ itself hands it to the
+    /// panel (`deleteButtonTakesKeyboard`), so VoiceOver's action never
+    /// pulls it out of the terminal or the editor.
+    var quickDeleteAction: (() -> Void)? {
+        guard SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
+        let (vm, actions, session) = (vm, actions, row.session)
+        return {
+            Task {
+                if case let .confirm(busy) = await vm.deleteQuicklyOrConfirm(session) { actions.delete(busy) }
+            }
         }
     }
 }

@@ -3,10 +3,10 @@ import WatchtowerCore
 
 /// "Session deleted" / "N sessions deleted" with Undo while the Undo
 /// window of a delete batch runs (board #480, PROJ-17, spec
-/// 2026-10-12-sessions-panel-design §4.5): at the bottom of the left
-/// column, or over the page while the panel is hidden. Undo restores the
-/// whole batch and hands the keyboard to the panel, where ⌘Z does the
-/// same. Gone on Undo or once the batch is committed.
+/// 2026-10-12-sessions-panel-design §4.5): in its own bar under the
+/// panel's list (above FILES), or over the page while the panel is hidden.
+/// Undo restores the whole batch and hands the keyboard to the panel,
+/// where ⌘Z does the same. Gone on Undo or once the batch is committed.
 struct SessionDeleteToast: View {
     @Bindable var vm: WorkbenchesViewModel
 

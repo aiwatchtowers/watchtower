@@ -79,6 +79,18 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         await vm.loadSessions(projectID: projectID)
     }
 
+    /// `session`'s panel row as the panel builds it.
+    private func panelRow(
+        _ session: TerminalSession,
+        _ vm: WorkbenchesViewModel,
+        actions: SessionRowActions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in })
+    ) throws -> SessionsPanelSessionRow {
+        let sections = vm.panelSections(projectID: projectID)
+        let row = try XCTUnwrap((sections.main + sections.finished).first { $0.id == session.id })
+        return SessionsPanelSessionRow(vm: vm, projectID: projectID, row: row, actions: actions, openAsks: 0,
+                                       closedAsks: 0, hoveredRow: .constant(nil), panelHasKeyboard: false)
+    }
+
     private func putOnScreen(_ session: TerminalSession, _ vm: WorkbenchesViewModel) {
         var layout = WorkspaceLayout.default
         layout.primary = .session(session.id)
@@ -168,16 +180,69 @@ final class WorkbenchesViewModelPanelCursorTests: XCTestCase {
         XCTAssertTrue(center.liveIDs.isEmpty)
     }
 
-    /// Esc hands the keyboard to the terminal on screen; with none on
-    /// screen it reports so (the panel just lets the keyboard go).
-    func testEscHandsTheKeyboardToTheOnScreenTerminal() async throws {
+    /// Esc hands the keyboard to the running terminal on screen; with none
+    /// on screen it reports so (the panel just lets the keyboard go).
+    func testEscHandsTheKeyboardToTheRunningTerminalOnScreen() async throws {
         let vm = makeVM()
         let (a, _, _) = try await threeRows(vm)
         XCTAssertFalse(vm.returnKeyboardToTerminal(projectID: projectID), "no session on screen")
 
-        putOnScreen(a, vm)
+        await vm.showSession(id: a.id)
+        XCTAssertTrue(center.liveIDs.contains(a.id))
         XCTAssertTrue(vm.returnKeyboardToTerminal(projectID: projectID))
         XCTAssertNotNil(center.keyboardFocusSerial(for: a.id), "the terminal on screen takes the keyboard")
+    }
+
+    /// A session on screen whose terminal is not running has nothing to
+    /// take the keyboard: Esc reports so and requests no focus, so the
+    /// panel's key view resigns the normal way.
+    func testEscWithANotRunningSessionOnScreenLetsTheKeyboardGo() async throws {
+        let vm = makeVM()
+        let (a, _, _) = try await threeRows(vm)
+        putOnScreen(a, vm)
+        XCTAssertFalse(center.liveIDs.contains(a.id))
+
+        XCTAssertFalse(vm.returnKeyboardToTerminal(projectID: projectID))
+        XCTAssertNil(center.keyboardFocusSerial(for: a.id), "no focus request for a terminal that is not there")
+    }
+
+    /// The ✕ (and VoiceOver's "Delete session") exists only on a row whose
+    /// agent is not working; it never moves the keyboard by itself.
+    func testOnlyQuickRowsOfferTheCross() async throws {
+        let vm = makeVM()
+        let (a, b, _) = try await threeRows(vm)
+        await vm.showSession(id: a.id)
+        let serial = vm.panelKeyboardSerial
+
+        XCTAssertNil(try panelRow(a, vm).quickDeleteAction, "running with no reported state: no ✕")
+        let idle = try XCTUnwrap(try panelRow(b, vm).quickDeleteAction, "not running: the ✕")
+        let deleted = expectation(description: "deleted")
+        let watch = Task { while vm.pendingDeletes.batch.isEmpty { await Task.yield() }; deleted.fulfill() }
+        idle()
+        await fulfillment(of: [deleted], timeout: 2)
+        watch.cancel()
+        XCTAssertEqual(vm.pendingDeleteToast, "Session deleted")
+        XCTAssertEqual(vm.panelKeyboardSerial, serial, "the action itself leaves the keyboard alone")
+    }
+
+    /// A ✕ shown while the row was idle, clicked after the session started
+    /// working: the policy is re-checked and the confirmation asks first.
+    func testCrossOnARowThatTurnedBusyAsksFirst() async throws {
+        let vm = makeVM()
+        let (a, _, _) = try await threeRows(vm)
+        let confirmed = expectation(description: "confirmation asked")
+        var asked: [Int64] = []
+        let actions = SessionRowActions(open: { _ in }, rename: { _ in },
+                                        delete: { asked.append($0.id); confirmed.fulfill() })
+        let cross = try XCTUnwrap(try panelRow(a, vm, actions: actions).quickDeleteAction)
+
+        await vm.showSession(id: a.id)
+        XCTAssertEqual(vm.sessionState(a).kind, .running)
+        cross()
+        await fulfillment(of: [confirmed], timeout: 2)
+        XCTAssertEqual(asked, [a.id])
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty, "nothing deleted before the owner confirms")
+        XCTAssertTrue(center.liveIDs.contains(a.id))
     }
 
     /// The toast counts the batch; Undo brings every row of it back and

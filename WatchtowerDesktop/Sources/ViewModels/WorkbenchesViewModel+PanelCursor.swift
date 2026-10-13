@@ -64,15 +64,25 @@ extension WorkbenchesViewModel {
     func deleteAtPanelCursor(projectID: Int64) async -> PanelDeleteIntent? {
         guard let id = listedPanelCursor(projectID: projectID),
               let session = session(id, projectID: projectID) else { return nil }
+        return await deleteQuicklyOrConfirm(session)
+    }
+
+    /// ⌘⌫ or a row's ✕ (also its VoiceOver action): deletes `session` at
+    /// once when its agent is not working now — re-checked here, as it may
+    /// have turned busy since the ✕ showed — else asks for the
+    /// confirmation.
+    func deleteQuicklyOrConfirm(_ session: TerminalSession) async -> PanelDeleteIntent {
         guard isQuickDelete(session) else { return .confirm(session) }
         await delete(session)
         return .quick
     }
 
     /// Esc: the keyboard goes back to the terminal on screen. False when no
-    /// session is on screen (the panel then just lets the keyboard go).
+    /// session is on screen or its terminal is not running (there is no
+    /// terminal to take it: the panel then just lets the keyboard go).
     func returnKeyboardToTerminal(projectID: Int64) -> Bool {
-        guard case let .session(id)? = visibleSession(projectID: projectID) else { return false }
+        guard case let .session(id)? = visibleSession(projectID: projectID),
+              terminalCenter?.liveIDs.contains(id) == true else { return false }
         terminalCenter?.requestKeyboardFocus(id)
         return true
     }
