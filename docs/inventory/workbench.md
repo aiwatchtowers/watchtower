@@ -65,7 +65,10 @@ under `mcp --project N`) until the owner resyncs it; see
 `internal/agentkind/` + `internal/db/migrations/00109_terminal_sessions_codex.sql` + `internal/codex/appserver.go` +
 `internal/devpack/{codex_hooks,codex_install}.go` + `internal/terminal/codex_rollout.go` +
 `cmd/{workbench_hook_input,workbench_hook_row,workbench_launch_args}.go` +
-`WatchtowerDesktop/Sources/WatchtowerCore/{Models/AgentKind,Services/AgentInputProfile,Services/CodexRollout,Services/AgentChoicePresentation}.swift`
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/AgentKind,Services/AgentInputProfile,Services/CodexRollout,Services/AgentChoicePresentation}.swift` +
+`internal/workbenchgit/folder.go` + `internal/db/migrations/00110_terminal_session_cwd.sql` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionPlace,Models/CodeRoot,Services/SessionPlacePresentation,Services/CodeRootPolicy}.swift` +
+`WatchtowerDesktop/Sources/Services/SessionPlaceCenter.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
@@ -170,7 +173,7 @@ must be able to undo the whole feature for a folder in one step.
 
 ## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents)
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #568)
 
 **Observable:** The Desktop writes files of the workbench folder only through
 the code viewer — the owner's own actions there: the Files pane editor's saves
@@ -213,6 +216,26 @@ while the buffer has a problem with its disk version or when the selected
 text changed since the question, then the same base-revision, autosave and
 conflict path as a typed edit. The assistant never writes a file itself.
 
+**Amended 2026-10-12 (board #565/#568, owner approved 2026-10-12, ask #188):**
+the code viewer works on the root the page's session is in — the workbench
+folder, or a git worktree of its repository (PROJ-10's `--folder` rule; a
+worktree root only for a place Go read in that worktree, not stale, whose
+folder exists, taken from Go's `folder_root`; anything else is the workbench
+folder) — and the FILES tree's operations and the Files pane's saves write
+files of that root under the rules above. Each root has its own tabs and
+buffers (a root is keyed by its lexically standardized path, never
+symlink-resolved; the main folder's tabs key is unchanged); a buffer writes
+only to the file it was opened from, so switching sessions never moves an
+edit, typed or unsent, into another worktree or the main folder: the page's
+unsent edits are handed to the old root's buffers before the new root's tabs
+show. An unsaved buffer is never written into a removed worktree: once a
+root's worktree is found removed, its buffers never write again (locked for
+the app session, their unsaved edits offered to copy or discard) and its tree
+operations are refused while the root stays removed — a folder reappearing at
+that path does not unlock them. A worktree recreated at that path that the
+session's place resolves to shows again with new, writable buffers; the old
+ones stay locked.
+
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop — would race and lose either the agent's or
 the owner's edits. The 2026-10-02 amendment keeps that promise for the
@@ -225,6 +248,7 @@ owner fix a line by hand.
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnUnreadableDiskVersionIsNeverWrittenOver`
 - `internal/tools/workbench_asks_test.go::TestProj03_AskOwnerNeverWritesTheFolder` (a tree snapshot — content hash, mode and mtime per entry — is unchanged across a review ask, a supersede, an answer, `get_ask`, `list_asks`, a question ask and a withdraw)
+- Board #565, the session's worktree (2026-10-12, ask #188) — in `WatchtowerDesktop/Tests/CodeFilesCenterRootTests.swift`: `testProj03_ABufferNeverWritesIntoAnotherWorktree`, `testProj03_UnsentEditsLandInTheOldWorktreeOnASessionSwitch`, `testProj03_ARemovedWorktreeIsNeverWritten`; supporting (same file): `testARecreatedWorktreeShowsAgainAndTheOldBufferStaysLocked`, `testTreeOperationsRefuseAWorktreeWhoseFolderIsGone`, `testTreeOperationsRefuseARemovedWorktreeWhoseFolderCameBack`, `testOpenInAThenBThenBackKeepsAsTabs`; `WatchtowerDesktop/Tests/Core/CodeRootTests.swift::testExistingAndDeletedFolderShareTheKey`, `WatchtowerDesktop/Tests/Core/CodeRootPolicyTests.swift::testRootTable`; every `testProj03*` in `CodeFileBufferTests.swift` and `TestProj03_AskOwnerNeverWritesTheFolder` unchanged
 - Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go internal/tools/workbench_asks.go`
 (expected: no match).
 
@@ -631,7 +655,7 @@ separation of boards.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 
-**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03)
+**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #569)
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
@@ -693,6 +717,36 @@ rule, not the marks reader's.
   envelope names the entry and its sha, and the Desktop shows the
   `git stash apply <sha>` that brings it back.
 
+Since 2026-10-12 (board #565/#569, owner approved 2026-10-12, ask #188): the
+branch button and popover work on the worktree of the session the page shows
+— the workbench folder when the page holds no session or the session's place
+is the main folder, unknown, stale, outside the repository or removed.
+`workbench git status|branches|switch|create` take `--folder F` (the Desktop
+passes it for a worktree root only, so the main folder's argv is unchanged;
+the `fetch` of board #563 takes the same rule when it lands). Go first lists
+the repository's worktrees with git run in the workbench folder and accepts F
+only when it is the workbench folder, inside it, or inside a listed worktree
+(the longest match wins; paths compare case-insensitively on macOS); anything
+else is refused (`folder_not_a_worktree`, `refused_detail` `outside` or
+`missing`) — or, for `status`, reported as `folder_scope` `outside`/`missing`
+with the main folder's status — before any git runs in F. An F that cannot be
+read (any realpath failure but "does not exist") is never `outside`: `status`
+answers `folder_scope: ""` with `status_ok: false` ("reading the folder: …")
+and `branches`/`switch`/`create` refuse it as `folder_unreadable`; a failed
+worktree listing is likewise scope `""` (status) or `git_failed`. The Desktop
+lets a worktree root's branch menu write only with a status Go read in that
+very worktree (`folder_scope: worktree`, `folder_root` that root): any other
+answer is not stored as that root's status, the popover says the branch menu
+is unavailable, and switch and create send nothing. Every rule above applies
+to that worktree: the code viewer's edits saved first are those of its root
+(and of any workbench's main root inside its work tree, never another
+worktree's), the guards and confirmations are checked there, and
+`--agent-running` is a live embedded agent session whose place is that work
+tree, whose place is unknown, stale or removed (it may be anywhere), or —
+another workbench's or a standalone row — whose folder is in that work tree.
+A session of this workbench known to work in another worktree no longer
+counts.
+
 **Why locked:** Owner request (board target #233). Switching branches swaps
 every file in the folder: done silently it can bury the owner's edits or pull
 the files out from under a working agent, and the shared stash stack makes a
@@ -728,12 +782,13 @@ attributed to Watchtower.
   `testProj10_AnEditThatCannotBeSavedHoldsTheSwitch`, `testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas`,
   `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
+- Board #565, the session's worktree (2026-10-12, ask #188): `internal/workbenchgit/folder_test.go::TestProj10_FolderOutsideTheWorktreesIsRefusedBeforeGit`; `internal/workbenchgit/switch_test.go::TestProj10_GuardsRunInTheSessionsWorktree` (two worktrees of one repo: a dirty worktree refuses without `--stash` while the main folder is clean; a branch checked out in the main folder is refused there); `cmd/workbench_git_test.go::TestProj10_FolderFlagEnvelopeAndRefusal`; `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testProj10_TheBranchMenuFollowsTheSessionsWorktree`, `testProj10_ASessionInAnotherWorktreeIsNotReportedAnUnknownOneIs`, `testProj10_ASwitchInAWorktreeSavesThatWorktreesEdits`; supporting: `internal/workbenchgit/folder_test.go` (`TestResolveFolderScopes`, `TestResolveFolderUnreadableRequestedIsUnresolved`, `TestResolveFolderGitFailureIsAnError`, `TestResolveFolderIgnoresCaseOnMacOS`), `cmd/workbench_git_test.go` (`TestWorkbenchGitStatusWithoutFolderIsUnchanged`, `TestWorkbenchGit_FolderUnreadable`, `TestWorkbenchGit_FolderListingFailure`); every existing `TestProj10_*`/`testProj10_*` above unchanged
 
 **Locked since:** 2026-10-03 (proposed 2026-10-02)
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -867,6 +922,29 @@ skips that write) and a main-thread `PostToolUse` whose `working` write ends
 a stored `waiting`; a subagent's tool result, a `SubagentStart` or `SubagentStop`, a
 notification and a StopFailure keep the question.
 
+Since 2026-10-12 (board #565/#566, owner approved 2026-10-12, ask #188): the
+state hooks, the Stop hook's state write and the `SessionStart` run mark also
+record the main agent's working directory — the input's `cwd` from an event
+without `agent_id` (a subagent's or teammate's event, a `SubagentStart` and a
+`SubagentStop` never record one; a relative path, one over 4096 bytes or one
+holding a NUL or a line break is ignored) — in `agent_cwd` with its event
+time in `agent_cwd_at` (migration `00110`); a `codex` row's hooks record it
+the same way. It rides in the state write's own UPDATE when one is made;
+otherwise it is written alone only when it differs from the stored cwd, its
+event is later than `agent_cwd_at` and not earlier than the run mark, so an
+unchanged cwd writes nothing, an older report never replaces a newer one and
+a late hook of the previous run never records one. A cwd never changes a
+state, its time, `finished_at`, the error, the turn order, the background
+count, the agent turns or the chat question, and never turns a repeat into a
+state write. The run mark stores the new run's cwd (none when its input has
+none), the no-hooks clear removes it, a conversation switch keeps it. The
+hooks run no git, and the row readers that predate migration `00110`
+(`GetTerminalSession`) read neither column. The Desktop trusts the cwd of a
+live row only when `agent_cwd_at` is not earlier than that run's start — the
+row's own run mark (`agent_turns`' `since`), never a Desktop launch time; a
+live row without a readable run mark or stamp has no trusted cwd, and its
+place is unknown. Output and exit code are unchanged.
+
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees
 from codex's own hooks, passed as launch flags (`workbench <verb> --agent
 codex`, no `--workbench`): they find their row only through
@@ -932,6 +1010,7 @@ it again once it was cleared; only Go writes it.
 - Codex (2026-10-12, board #399) — in `cmd/workbench_codex_hooks_test.go`: `TestProj11_CodexForeignSessionIDIgnored`, `TestProj11_CodexPermissionRequestIsApproval`, `TestProj11_CodexPostToolUseClearsApproval`, `TestProj11_CodexRowNeverGetsFailure`, `TestProj11_CodexStopGateTrueWithoutSettingsFile`, `TestProj11_CodexStopWritesWaitingAndOpenTurnCount`, `TestProj11_CodexStopWithoutOpenTurnsHasNoCount`, `TestProj11_CodexSubagentStopLowersCount`, `TestProj11_CodexSubagentWithoutAgentIDWritesNothing`; `internal/db/terminal_sessions_codex_test.go::TestProj11_CodexNullIDIgnoresStateWrites` (every hook writer, a real and an empty id: the NULL-id row byte-identical); supporting: `cmd/workbench_codex_hooks_test.go` (`TestCodexSessionStart_PlanTable`, `TestCodexSessionStart_StartupSetsNullID`, `TestCodexSessionStart_ResumeMarksRun`, `TestCodexSessionStart_ClearMovesIDAndClearsState`, `TestCodexSessionStart_CompactKeepsTheLiveTurn`, `TestCodexSessionStart_StartupWithOtherStoredIDWritesNothing`, `TestCodexSessionStart_NestedClaudeNeverTakesTheRow`, `TestSessionProbe_CodexRowIsUnknownWithoutClaudeDir`), `cmd/workbench_hook_row_test.go` (`TestCodexHook_WithoutItsRowWritesNothing`, `TestCodexHook_OnItsRowWithoutAnIDWritesNothing`, `TestResolveHookRow_CodexFromEnv`), `internal/db/terminal_sessions_codex_test.go::TestAgentGuardsAcceptCodex`; every existing PROJ-11 guard above unchanged
 - supporting (board #411): `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllSixCoreNeedsFour`); `WatchtowerDesktop/Tests/Core/SessionStatePresentationTests.swift::testBackgroundIsGreenWithAgentCount`; `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift::testBackgroundEndsOnTheClockWithoutAWrite` (the 120 s grace, one notice, no write); `cmd/workbench_check_test.go::TestBackgroundAgentsCountTable` (was `TestBackgroundSubagentsCountsSubagentsAndWorkflows`; its type and malformed-input cases kept, its `except` cases moved to `TestBackgroundAgentsLeavesOutTheStoppingAgent`), `TestStopHookInputParsesTheCapturedFixtures`
 - Board #543, teammates in their turn (2026-10-11, ask #167) — in `cmd/workbench_session_state_test.go`: `TestProj11_TeammateCountsOnlyInItsTurn` (a replay of the captured inputs: two teammates in their turn at the Stop → 2, each `SubagentStop` lowers by one, the next Stop with both idle → NULL, an internal agent's stop changes nothing, a teammate's start over Stopped raises nothing until the next Stop), `TestProj11_FinishedSubagentStillListedIsNotCounted` (the last `SubagentStop` lowers to 0 although the list still carries the subagent that stopped before it), `TestProj11_SubagentStartNeverStartsOrRaisesTheCount` (over a counted `waiting` and over `working`: every column but `agent_turns` byte-identical), `TestProj11_LostTeammateStopIsCappedByTheList`, and in `internal/db/terminal_sessions_test.go` `TestProj11_LateHookOfThePreviousRunWritesNoTurn` (a turn stamped before the run mark writes nothing); `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_HookNeverWritesStdoutAndExitsZero` and `TestProj11_NestedSessionNeverMovesTheRow` extended with `SubagentStart`; in `internal/db/terminal_sessions_test.go`: `TestProj11_AgentTurnStampsOnlyMoveForward`, `TestProj11_AgentTurnsCapDropsOldestClosed`, `TestProj11_AgentTurnWriteNeverTouchesTheState`, and `TestProj11_NewRunAndConversationSwitchClearTheCount` extended (the three resets NULL `agent_turns`; a row holding only turns is cleared)
+- Board #565/#566, the session's working directory (2026-10-12, ask #188) — in `cmd/workbench_session_state_test.go`: `TestProj11_CwdNeverChangesTheState`, `TestProj11_UnchangedCwdWritesNothing`, `TestProj11_SubagentCwdIsNeverRecorded`; in `internal/db/terminal_sessions_test.go`: `TestProj11_OlderCwdNeverOverwritesANewerOne`, `TestProj11_CwdWriteNeverTouchesTheState`, `TestProj11_LateHookOfThePreviousRunWritesNoCwd`; `TestProj11_HookNeverWritesStdoutAndExitsZero` (a relative cwd and a recorded one among its inputs) and `TestProj11_NestedSessionNeverMovesTheRow` (the nested run's cwd moves nothing) extended with `cwd`; supporting: `cmd/workbench_session_state_test.go::TestHookCwdTable`, `cmd/workbench_brief_session_test.go` (`TestSessionStartRecordsTheRunsCwd`, `TestSessionStartWithoutCwdKeepsALateHooksCwdOut`), `cmd/workbench_check_test.go::TestStopHookRecordsTheCwd`, `cmd/workbench_codex_hooks_test.go::TestHookCwd_CodexHooksRecordTheMainAgentCwd`, `internal/db/terminal_sessions_test.go` (`TestSetTerminalAgentCwdWritesOnlyAChange`, `TestRunMarkStoresTheRunsCwdClearRemovesIt`, `TestConversationSwitchKeepsTheCwd`, `TestGetTerminalSessionNeedsNoCwdColumns`), `WatchtowerDesktop/Tests/Core/SessionPlaceTests.swift` (`testTrustedCwdTable`, `testResolveTable`); every existing PROJ-11 guard above unchanged
 
 **Locked since:** 2026-10-03
 
@@ -1580,6 +1659,7 @@ asks would be worse than the dialog it replaces.
 
 ## Changelog
 
+- 2026-10-12 (board #565, WT1–WT4 #566–#569; spec `docs/superpowers/specs/2026-10-12-session-worktree-design.md` §8, plan `docs/superpowers/plans/2026-10-12-session-worktree.md`; **PROJ-11, PROJ-10 and PROJ-03 amended, owner approved 2026-10-12, ask #188**): a session knows the folder its agent works in. **PROJ-11** — the main agent's hook events record their `cwd` in `agent_cwd`/`agent_cwd_at` (migration `00110`) without touching any state column. **PROJ-10** — `workbench git status|branches|switch|create --folder F` resolve F against the repository's worktrees before any git runs there (`folder_not_a_worktree`, `folder_unreadable`, `git_failed`; scope `""` = unresolved), and the header's branch menu works on the shown session's worktree, unavailable for a worktree Go did not place; the agent check counts an unknown, stale or removed place. **PROJ-03** — the code viewer works on that root with tabs and buffers per root (lexical key), and a removed worktree is never written again. No guard relaxed, renamed or split; new guards listed under each contract.
 - 2026-10-12 (board #480, sessions panel; spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §4.2–§4.3 and §8.2, plan `docs/superpowers/plans/2026-10-12-sessions-panel.md` Task 7; **PROJ-17 added, owner approved 2026-10-12, ask #195**): a session delete is deferred — the row is hidden and its process stopped at once, its DELETE runs when the 5 s Undo window of the batch ends or the app quits, and Undo restores the whole batch untouched. The spec's "PROJ-16" became PROJ-17 (PROJ-16 is the session cleanup of board #535). **PROJ-02** and **PROJ-14** unchanged: the same DELETE with the same cascades, only later; nothing writes report links. `testQuickDeleteTable` renamed to the guard `testProj17_QuickDeleteTable` (assertions unchanged). Known limits: a crash or `kill -9` inside the window leaves the row (it is listed again on the next launch); the phone's session slice reads the DB and may show the row until the commit; a late async hook of the killed process may still write the row's state, which Undo then shows.
 - 2026-10-12 (board #534, sessions panel; spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §8.1, plan `docs/superpowers/plans/2026-10-12-sessions-panel.md` Tasks 1–4; **PROJ-11 amended, owner approved 2026-10-12, ask #195**): a session whose open asks are all `check` or `review` asks (no `question`) shows **Ready to check** (purple, checklist glyph, "Ready for review" when every one is a review) instead of Finished or Waiting for you. It sits between Agents working and Finished in the order (ten kinds), is not run-scoped (a ring when not live), counts as at the prompt (`isAtPrompt`, PROJ-12's Return unchanged) and gets no state notice — the ask's own notice now reads "Ready to check: <title>" / "Ready for review: <title>". One open question keeps Waiting for you. `fetchAgentStates` adds `open_question_asks`/`open_review_asks`; no migration. The phone hub wires the kind `ready_to_check` and the tone `purple` (Kit known values appended, wire order unchanged). Guards extended, none relaxed or renamed: `testProj11_StateOrder` (ten kinds; the `row` helper's `questions` defaults to `openAsks`, so the earlier rows keep their expectation), `testProj11_OneNoticePerTransition`; new guards listed under PROJ-11.
 - 2026-10-12 (board #399, Codex as a Workbench agent; spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md` §13 and §15, business spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-business.md`, plan `docs/superpowers/plans/2026-10-12-codex-workbench-agent.md`; **owner approved the spec, which carries these amendments, in ask #189**): a workbench terminal session can run Codex CLI. No new PROJ number (no new principle): **PROJ-02** (delete also removes the Codex skill copy, never the shared trust), **PROJ-04** (`integrate codex`: only our skill copy and exclude line in the folder, only our entries removed from imported `.codex` hook files, only our `hooks.state` trust entries in `~/.codex/config.toml` through codex's API — narrower than the spec's §13 wording, since `--remove` never removes trust), **PROJ-11** (heading "never steer Claude Code" → "never steer the session's agent"; the codex mapping table and codex v1 limits), **PROJ-12** (the gates apply to codex rows; the input profile is per agent), **PROJ-13** (the ask guard for codex: `request_user_input`, `last_assistant_message`), **PROJ-14** (the report includes codex rows; the comment `agent_label` follows the row) amended. Migration `00109` rebuilds `terminal_sessions` (`kind` adds `codex`; a codex row may hold a NULL id until its first SessionStart; `agent_transcript_path`). Every existing `TestProj*`/`testProj*` guard is unchanged and green; new guards are listed under each contract. The v1 limits note (d) of "Owner asks" is updated.
