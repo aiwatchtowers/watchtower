@@ -41,6 +41,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var failingCalls: Set<String> = []
     private var hangingCalls: Set<String> = []
     private var cancellationAware = false
+    /// Call names that park on their gate until the test releases it.
+    private var gates: [String: SaveGate] = [:]
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -58,6 +60,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     func clearCalls() { lock.withLock { log = [] } }
     func setFailing(_ calls: Set<String>) { lock.withLock { failingCalls = calls } }
     func setHanging(_ calls: Set<String>) { lock.withLock { hangingCalls = calls } }
+    /// The next `call` parks on `gate` (once).
+    func gate(_ call: String, on gate: SaveGate) { lock.withLock { gates[call] = gate } }
     /// Every call throws `CancellationError` when its task is cancelled
     /// (like a cancellation-aware CloudKit await).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
@@ -77,10 +81,14 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     private func record(_ call: String) async throws {
         let name = String(call.prefix { $0 != ":" })
-        let (fails, hangs, aware) = lock.withLock {
+        let (fails, hangs, aware, gate) = lock.withLock {
             log.append(call)
-            return (failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware)
+            return (
+                failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware,
+                gates.removeValue(forKey: name)
+            )
         }
+        await gate?.park()
         if aware { try Task.checkCancellation() }
         if fails { throw URLError(.cannotConnectToHost) }
         if hangs { try await Task.sleep(for: .seconds(5)) }
@@ -158,11 +166,12 @@ final class MobileLinkCenterTests: XCTestCase {
     /// The expiry timer parks (until cancelled) unless a test passes its own.
     private func makeCenter(
         sleep: (@Sendable (Duration) async -> Void)? = nil,
-        shareTimeout: Duration = .seconds(30)
+        shareTimeout: Duration = .seconds(30),
+        ownerUser: (@Sendable () async -> String?)? = nil
     ) throws -> MobileLinkCenter {
         let clock = try XCTUnwrap(self.clock)
         let made = MobileLinkCenter(
-            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: ownerUser ?? { "_owner-acme" },
             nudge: { [weak self] in self?.nudges.append($0) },
             now: { clock.now },
             sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) },
@@ -1026,6 +1035,164 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(grant.decidedAt, Date(timeIntervalSince1970: clock.now.timeIntervalSince1970.rounded(.down)))
     }
 
+    // MARK: - Link tails (#65, #66)
+
+    /// #65: after the iCloud account changed, the next QR names the new user.
+    func testAnAccountChangeLooksTheOwnerUpAgainForTheNextCode() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        center = try makeCenter { owner.value }
+        let first = try await center.issueCode()
+        owner.set("_owner-new")
+        let issued1 = try await center.issueCode()
+        XCTAssertEqual(issued1.ownerUser, "_owner-acme", "cached while the account stays")
+
+        center.accountChanged()
+        let next = try await center.issueCode()
+
+        XCTAssertEqual(first.ownerUser, "_owner-acme")
+        XCTAssertEqual(next.ownerUser, "_owner-new")
+    }
+
+    /// #65: a lookup still running when the account changes may answer
+    /// with the old user; it is not cached, and the code is refused.
+    func testAnOwnerLookupRunningAcrossAnAccountChangeIsNotCached() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        center = try makeCenter {
+            let answer = owner.value
+            await gate.park()
+            return answer
+        }
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("a code naming the old user is not shown")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .ownerUnknown)
+        }
+        let next = try await center.issueCode()
+        XCTAssertEqual(next.ownerUser, "_owner-new")
+    }
+
+    /// #65: a new code waits for the account change's close, so that close
+    /// never shuts the new code's link.
+    func testANewCodeWaitsForTheAccountChangesClose() async throws {
+        _ = try await center.issueCode()
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        center.accountChanged()
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        let issuing = Task { try await center.issueCode() }
+        gate.release()
+        let code = try await issuing.value
+
+        XCTAssertEqual(center.openCode, code)
+        XCTAssertTrue(shares.isLinkOpen)
+    }
+
+    /// #65: a code still being made when the account changes is closed, not shown.
+    func testACodeBeingIssuedAcrossAnAccountChangeIsClosed() async throws {
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        let issuing = Task { try await center.issueCode() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        center.accountChanged()
+        gate.release()
+
+        do {
+            _ = try await issuing.value
+            XCTFail("the code is refused")
+        } catch {
+            XCTAssertEqual(error as? MobileLinkError, .accountChanged)
+        }
+        XCTAssertNil(center.openCode)
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertEqual(center.lastCloseReason, .accountChanged)
+    }
+
+    /// #65: a QR on screen names the old user, so an account change closes it.
+    func testAnAccountChangeClosesTheOpenCodeAndItsLink() async throws {
+        _ = try await center.issueCode()
+        XCTAssertTrue(shares.isLinkOpen)
+
+        center.accountChanged()
+
+        await awaitHubCondition("the link closes") { !shares.isLinkOpen }
+        XCTAssertNil(center.openCode)
+        XCTAssertEqual(sharing.last, HubSharing.none, "the new account has no shares yet")
+    }
+
+    /// #66.3: a Remove that fails while a close is suspended keeps the sweep
+    /// pending; the suspended close does not clear it.
+    func testARemoveFailingDuringASuspendedCloseKeepsTheSweepPending() async throws {
+        try await linkSharedPhone()
+        _ = try await center.issueCode()
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        let close = Task { await center.closeLink(reason: .sheetClosed) }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        shares.setFailing(["removeParticipants"])
+        do {
+            try await center.remove(deviceID: "phone-a")
+            XCTFail("the failed removal is reported")
+        } catch {}
+        shares.setFailing([])
+        gate.release()
+        await close.value
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1")
+    }
+
+    /// #66.3: when even the sweep mark cannot be written, the removal's own
+    /// error is the one reported.
+    func testARemoveWhoseSweepMarkFailsReportsTheRemovalError() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        try await linkSharedPhone()
+        await center.closeAfterLink?.value
+        shares.setFailing(["removeParticipants"])
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_mark BEFORE UPDATE ON hub_meta BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        do {
+            try await center.remove(deviceID: "phone-a")
+            XCTFail("the failed removal is reported")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .cannotConnectToHost)
+        }
+    }
+
+    /// #66.4: a code that could not be stored closes the link it opened.
+    func testACodeThatCannotBeStoredClosesTheLinkItOpened() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_code BEFORE INSERT ON link_codes BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        do {
+            _ = try await center.issueCode()
+            XCTFail("the store failure is reported")
+        } catch {}
+
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertNil(center.openCode)
+    }
+
     /// #7: New code retires the code it replaces.
     func testANewCodeRetiresThePreviousUnusedCode() async throws {
         let first = try await center.issueCode()
@@ -1038,6 +1205,19 @@ final class MobileLinkCenterTests: XCTestCase {
         try await handle(try deviceRecord("phone-b", nonce: second.nonce))
         XCTAssertEqual(center.devices.map(\.deviceID), ["phone-b"])
     }
+}
+
+/// The iCloud user the lookup returns; the test switches it.
+final class OwnerUserBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String
+
+    init(_ value: String) {
+        stored = value
+    }
+
+    var value: String { lock.withLock { stored } }
+    func set(_ value: String) { lock.withLock { stored = value } }
 }
 
 /// The last `Duration` the expiry timer asked to sleep.
