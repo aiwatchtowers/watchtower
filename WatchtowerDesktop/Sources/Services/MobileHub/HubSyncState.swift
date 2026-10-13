@@ -1053,21 +1053,19 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// The epoch rotation's share of the publish state, in the rotation's transaction (Task 14, D3): every
-    /// slice hash goes, so the next cycle republishes the whole window under the new epoch, keyboxes included. The
-    /// relay token, the ledger and the alerted asks stay. Two exceptions keep what must not repeat:
-    /// - `ask_alert` rows keep their record name with a blank hash: the alert is resealed under the new `K_alert`
-    ///   but, already in the zone, gets no second `sig-` signal (no second lock-screen alert; its wire name is
-    ///   stable, `K_meta` does not rotate, D5);
-    /// - the generation is bumped, so a cycle sealing under the old epoch aborts before recording its hashes, and
-    ///   the alerts of the bumped generation move to the new one (still published, unlike an account reset's).
+    /// The epoch rotation's share of the publish state, in the rotation's transaction (Task 14, D3). Every
+    /// `slice_state` row is kept with a blank hash (its record name and wire name stay):
+    /// - no hash matches, so the next cycle republishes the whole window under the new epoch, keyboxes included;
+    /// - the publisher still knows what the zone holds, so a record that left the window meanwhile is deleted,
+    ///   never orphaned under the old epoch;
+    /// - an `ask_alert` already in the zone is resealed under the new `K_alert` but gets no second `sig-` signal
+    ///   (no second lock-screen alert; its wire name is stable, `K_meta` does not rotate, D5).
+    ///
+    /// The relay token, the ledger and the alerted asks stay. The generation is bumped, so a cycle that sealed
+    /// under the old epoch neither saves nor records what it sealed, and the alerts of the bumped generation move to
+    /// the new one (still published, unlike an account reset's).
     static func wipeForRotation(_ db: Database) throws {
-        let alertPrefix = SliceKind.askAlert.recordName(id: "")
-        try db.execute(
-            sql: "UPDATE slice_state SET payload_hash = '' WHERE substr(record_name, 1, length(?1)) = ?1",
-            arguments: [alertPrefix])
-        try db.execute(
-            sql: "DELETE FROM slice_state WHERE substr(record_name, 1, length(?1)) != ?1", arguments: [alertPrefix])
+        try db.execute(sql: "UPDATE slice_state SET payload_hash = ''")
         let generation = try generation(db)
         try db.execute(
             sql: """

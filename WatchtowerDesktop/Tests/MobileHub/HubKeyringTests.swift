@@ -112,7 +112,7 @@ final class HubKeyringTests: XCTestCase {
         try ring.ensureGroupKeys()
         let meta = try ring.metaKey()
         let old = try ring.epochKeys(1)
-        _ = try ring.beginNextEpoch()
+        try ring.rotate(reason: .manual)
         try ring.resetGroupKeys()
 
         XCTAssertNil(try sidecar.metaValue(forKey: HubKeyring.metaKeySealedKey))
@@ -244,8 +244,7 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertFalse(try ring.acceptsRelayEpoch(2, deviceID: phone.deviceID))
 
         clock.advance(86_400)
-        let next = try ring.beginNextEpoch()
-        XCTAssertEqual(next.epoch, 2)
+        try ring.rotate(reason: .manual)
         XCTAssertEqual(try ring.currentEpoch(), 2)
         XCTAssertNotEqual(try ring.epochKeys(2), try ring.epochKeys(1))
         XCTAssertTrue(try ring.acceptsRelayEpoch(2, deviceID: phone.deviceID))
@@ -260,27 +259,9 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try ring.acceptsRelayEpoch(2, deviceID: phone.deviceID))
 
         // Two epochs back is never accepted, even right after the rotation.
-        _ = try ring.beginNextEpoch()
+        try ring.rotate(reason: .manual)
         XCTAssertTrue(try ring.acceptsRelayEpoch(2, deviceID: phone.deviceID))
         XCTAssertFalse(try ring.acceptsRelayEpoch(1, deviceID: phone.deviceID))
-    }
-
-    func testBeginNextEpochRunsTheCallersWorkInTheSameTransaction() throws {
-        let sidecar = try HubSyncState.inMemory()
-        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
-        try ring.ensureGroupKeys()
-        try sidecar.setHash("h", for: "workbench-1")
-        struct Abort: Error {}
-        XCTAssertThrowsError(try ring.beginNextEpoch { db in
-            try db.execute(sql: "DELETE FROM slice_state")
-            throw Abort()
-        })
-        XCTAssertEqual(try ring.currentEpoch(), 1)
-        XCTAssertEqual(try sidecar.hashes(forKind: .workbench).count, 1)
-
-        _ = try ring.beginNextEpoch { try $0.execute(sql: "DELETE FROM slice_state") }
-        XCTAssertEqual(try ring.currentEpoch(), 2)
-        XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
     }
 
     func testRotationIsDueAtNinetyDaysOrTheSeqCap() throws {
@@ -295,7 +276,7 @@ final class HubKeyringTests: XCTestCase {
         clock.advance(1)
         XCTAssertTrue(try ring.rotationDue())
 
-        _ = try ring.beginNextEpoch()
+        try ring.rotate(reason: .manual)
         XCTAssertFalse(try ring.rotationDue())
         // The epoch's seqs reach 2^28: the persisted ceiling is past first_seq + 2^28.
         let firstSeq = try XCTUnwrap(try sidecar.queue.read {
@@ -310,7 +291,8 @@ final class HubKeyringTests: XCTestCase {
     // MARK: - Rotation (Task 14, Review Focus 4)
 
     /// D3: the new epoch, the retired one, the removed device and the slice hash wipe are one transaction. A trigger
-    /// makes the wipe fail after the epoch insert: nothing of the rotation is left, the device stays linked.
+    /// makes the wipe (blanking every hash) fail after the epoch insert: nothing of the rotation is left, the device
+    /// stays linked.
     func testRotationCommitsTheEpochAndTheHashWipeTogether() throws {
         let sidecar = try HubSyncState.inMemory()
         let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
@@ -319,11 +301,12 @@ final class HubKeyringTests: XCTestCase {
         let phoneID = phone.deviceID.uuidString
         try linkPhone(sidecar, identity: phone)
         try ring.record(wireName: "wire-1", senderID: phone.deviceID, epoch: 1, seq: 7)
-        // A BEFORE DELETE trigger fires per row: the table must hold rows for it to fire.
+        // A row trigger fires per row: the table must hold rows for it to fire. The wipe blanks hashes (an UPDATE;
+        // the brief's DELETE trigger, adapted by the fix-round ruling: same property).
         try sidecar.setHash("h1", for: "workbench-1")
         try sidecar.setHash("h2", for: SliceKind.deviceGrant.recordName(id: phoneID))
         try sidecar.queue.write { db in
-            try db.execute(sql: "CREATE TRIGGER fail_wipe BEFORE DELETE ON slice_state BEGIN SELECT RAISE(ABORT, 'test'); END")
+            try db.execute(sql: "CREATE TRIGGER fail_wipe BEFORE UPDATE ON slice_state BEGIN SELECT RAISE(ABORT, 'test'); END")
         }
         let epoch1 = try ring.epochKeys(1)
         let generation = try sidecar.generation()
@@ -351,8 +334,8 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertEqual(try ring.currentEpoch(), 2)
         XCTAssertNotNil(try sidecar.storedEpoch(1)?.retiredAt)
         XCTAssertEqual(try ring.epochKeys(1), epoch1, "the previous epoch's keys stay readable")
-        XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
-        XCTAssertTrue(try sidecar.hashes(forKind: .deviceGrant).isEmpty)
+        XCTAssertEqual(try sidecar.hashes(forKind: .workbench), ["workbench-1": ""], "kept, blanked: republished")
+        XCTAssertEqual(Array(try sidecar.hashes(forKind: .deviceGrant).values), [""])
         XCTAssertGreaterThan(try sidecar.generation(), generation, "an in-flight publish cycle aborts")
         XCTAssertNil(try sidecar.linkedDevice(phoneID))
         XCTAssertNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phoneID), "its relay_seen rows go (F3)")
@@ -416,9 +399,31 @@ final class HubKeyringTests: XCTestCase {
         try ring.ensureGroupKeys()
         try ring.rotate(reason: .manual)
 
-        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 2, sealedKeys: Data(repeating: 1, count: 92)), at: Date()))
-        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 4, sealedKeys: Data(repeating: 1, count: 92)), at: Date()))
+        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 2, sealedKeys: Data(repeating: 1, count: 92)), at: Date())) {
+            XCTAssertEqual($0 as? HubKeyringError, .epochRaced(2))
+        }
+        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 4, sealedKeys: Data(repeating: 1, count: 92)), at: Date())) {
+            XCTAssertEqual($0 as? HubKeyringError, .epochRaced(4))
+        }
         XCTAssertEqual(try ring.currentEpoch(), 2)
+    }
+
+    /// The last epoch has no successor: both rotation layers name it `epochOverflow`, and nothing is written.
+    func testRotatingPastTheLastEpochIsAnOverflow() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+        let last = try XCTUnwrap(try sidecar.storedEpoch(1))
+        try sidecar.queue.write { db in
+            try HubSyncState.insertEpoch(.init(
+                epoch: .max, sealedKeys: last.sealedKeys, createdAt: last.createdAt, firstSeq: 0, retiredAt: nil), db)
+        }
+
+        XCTAssertThrowsError(try ring.rotate(reason: .manual)) { XCTAssertEqual($0 as? HubKeyringError, .epochOverflow) }
+        XCTAssertThrowsError(try sidecar.rotate(newEpoch: (epoch: 0, sealedKeys: Data(repeating: 1, count: 92)), at: Date())) {
+            XCTAssertEqual($0 as? HubKeyringError, .epochOverflow)
+        }
+        XCTAssertEqual(try ring.currentEpoch(), .max)
     }
 
     /// Spec §2.2: the remaining phones get the new epoch and the one just retired while its records are

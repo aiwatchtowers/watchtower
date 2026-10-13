@@ -245,8 +245,10 @@ final class SlicePublisher: Sendable {
     }
 
     /// Seals, saves and deletes one kind's changes and records the new
-    /// hashes with the wire names. False when an account reset landed
-    /// mid-cycle (nothing recorded).
+    /// hashes with the wire names. False when an account reset or an epoch
+    /// rotation landed mid-cycle: nothing recorded, and nothing saved when it
+    /// landed before the save (a save already in flight then still lands and
+    /// is overwritten by the next cycle's reseal).
     private func pushKind(
         _ kind: SliceKind,
         _ upserts: [SliceRecord],
@@ -264,6 +266,9 @@ final class SlicePublisher: Sendable {
                 batch += sealed.filter { !current.published.contains($0.record.recordName) }
                     .map { AskAlertSignal.record(forSealedAlert: $0.wire) }
             }
+            // An epoch rotation (or an account reset) committed while this kind was sealed: what was sealed under
+            // the old epoch, a fresh alert's signal included, is not saved; the next cycle reseals it (Task 14).
+            guard try state.generation() == startGen else { return false }
             try await transport.saveSealed(batch)
             var hashes: [String: String] = [:]
             var wireNames: [String: String] = [:]

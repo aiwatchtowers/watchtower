@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import XCTest
@@ -323,6 +324,64 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(try state.hashes(forKind: .workbench), ["workbench-1": "a", "workbench-2": "b"])
         XCTAssertTrue(try state.removeHashes(["workbench-1", "workbench-2"], ifGeneration: 0))
         XCTAssertEqual(try state.hashes(forKind: .workbench), [:])
+    }
+
+    // MARK: - Epoch rotation (Task 14)
+
+    /// A record published under epoch e that left the window while the epoch rotated is deleted at the next cycle:
+    /// the rotation blanks the hashes instead of forgetting what the zone holds.
+    func testARecordThatLeftTheWindowAcrossARotationIsDeletedAtTheNextCycle() async throws {
+        let keyring = try state.testKeyring()
+        let source = StubSliceSource(kind: .workbench)
+        source.setRecords([
+            SliceRecord(kind: .workbench, id: "1", modifiedAt: Date(), payload: Data(#"{"name":"acme"}"#.utf8)),
+            SliceRecord(kind: .workbench, id: "2", modifiedAt: Date(), payload: Data(#"{"name":"beta"}"#.utf8))
+        ])
+        let publisher = makePublisher([source])
+        _ = try await publisher.publishOnce()
+        let before = try await openedRecords(in: transport)
+        XCTAssertEqual(Set(before.map(\.recordName)), ["workbench-1", "workbench-2"])
+
+        try keyring.rotate(reason: .manual)
+        source.setRecords([
+            SliceRecord(kind: .workbench, id: "1", modifiedAt: Date(), payload: Data(#"{"name":"acme"}"#.utf8))
+        ])
+        let outcome = try await publisher.publishOnce()
+
+        XCTAssertEqual(outcome.pushed, 1, "the record still in the window is resealed")
+        XCTAssertEqual(outcome.deleted, 1)
+        let after = try await openedRecords(in: transport)
+        XCTAssertEqual(after.map(\.recordName), ["workbench-1"], "no orphan is left")
+        XCTAssertEqual(Array(try state.hashes(forKind: .workbench).keys), ["workbench-1"])
+    }
+
+    /// A cycle that sealed under epoch e before a rotation committed saves nothing, neither the records nor a fresh
+    /// alert's signal: the next cycle seals them under e+1.
+    func testACycleThatSealedBeforeARotationCommittedSavesNothing() async throws {
+        let keyring = try state.testKeyring()
+        let keys = RotatingKeys(keyring)
+        let workbenches = StubSliceSource(kind: .workbench)
+        workbenches.setPayload(Data(#"{"name":"acme"}"#.utf8))
+        let alerts = StubSliceSource(kind: .askAlert)
+        alerts.setPayload(Data(#"{"ask_id":7}"#.utf8), id: "7")
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: state,
+            transport: SecureTransport(inner: transport, keys: keys, rollback: keyring, names: state),
+            sources: [workbenches, alerts])
+        keys.onSign = { try? keyring.rotate(reason: .manual) }
+
+        let aborted = try await publisher.publishOnce()
+
+        XCTAssertEqual(try keyring.currentEpoch(), 2, "the rotation committed while the cycle sealed")
+        XCTAssertEqual(aborted.pushed, 0)
+        XCTAssertTrue(transport.saved.isEmpty, "nothing sealed under epoch 1 is saved, no signal either")
+
+        _ = try await publisher.publishOnce()
+        let saved = transport.saved.map(\.record)
+        let envelopes = saved.filter { $0.kind == WireKind.envelope }
+        XCTAssertEqual(envelopes.count, 2)
+        XCTAssertEqual(try envelopes.map { try Envelope.parse($0.payload).header.epoch }, [2, 2])
+        XCTAssertEqual(saved.filter { $0.kind == WireKind.signal }.count, 1, "the alert's one signal")
     }
 
     // MARK: - Fast lane
@@ -663,4 +722,47 @@ private final class StubAssetSliceSource: AssetSliceSource, @unchecked Sendable 
             asset: SliceAsset(fileName: "segments.json", data: Data(asset.utf8))
         )
     }
+}
+
+/// The hub keyring, with a hook run once when the hub signs (each DataZone seal signs after reading its epoch and
+/// key): a rotation committing between a record's seal and its save.
+final class RotatingKeys: SecureKeyProvider, @unchecked Sendable {
+    private let base: HubKeyring
+    private let lock = NSLock()
+    private var hook: (() -> Void)?
+
+    init(_ base: HubKeyring) { self.base = base }
+
+    /// Runs once, at the next `hubSigner()`.
+    var onSign: (() -> Void)? {
+        get { lock.withLock { hook } }
+        set { lock.withLock { hook = newValue } }
+    }
+
+    var role: SecureRole { base.role }
+    func metaKey() throws -> SymmetricKey { try base.metaKey() }
+    func currentEpoch() throws -> UInt32 { try base.currentEpoch() }
+    func dataKey(epoch: UInt32) throws -> SymmetricKey { try base.dataKey(epoch: epoch) }
+    func alertKey(epoch: UInt32) throws -> SymmetricKey { try base.alertKey(epoch: epoch) }
+    func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        try base.relayKey(direction, deviceID: deviceID, epoch: epoch)
+    }
+    func acceptsRelayEpoch(_ epoch: UInt32, deviceID: UUID) throws -> Bool { try base.acceptsRelayEpoch(epoch, deviceID: deviceID) }
+    func relayDeviceIDs() throws -> [UUID] { try base.relayDeviceIDs() }
+    func nextSeq() throws -> UInt64 { try base.nextSeq() }
+    func hubSigner() throws -> Curve25519.Signing.PrivateKey {
+        let run = lock.withLock { () -> (() -> Void)? in
+            defer { hook = nil }
+            return hook
+        }
+        run?()
+        return try base.hubSigner()
+    }
+    func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try base.hubAgreement() }
+    func keyboxRecipient(deviceID: UUID) throws -> Curve25519.KeyAgreement.PublicKey? {
+        try base.keyboxRecipient(deviceID: deviceID)
+    }
+    func deviceSigner() throws -> Curve25519.Signing.PrivateKey { try base.deviceSigner() }
+    func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { try base.hubAgreementPublicKey() }
+    func linkNonce() throws -> Data { try base.linkNonce() }
 }

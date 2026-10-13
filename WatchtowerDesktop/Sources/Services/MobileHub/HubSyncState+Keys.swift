@@ -199,7 +199,8 @@ extension HubSyncState {
     private static func rotateEpoch(_ newEpoch: (epoch: UInt32, sealedKeys: Data), at date: Date, _ db: Database) throws {
         guard let current = try latestEpochs(db).last else { throw SecureTransportError.keysUnavailable }
         let (next, overflow) = current.epoch.addingReportingOverflow(1)
-        guard !overflow, newEpoch.epoch == next else { throw HubKeyringError.epochRaced(newEpoch.epoch) }
+        guard !overflow else { throw HubKeyringError.epochOverflow }
+        guard newEpoch.epoch == next else { throw HubKeyringError.epochRaced(newEpoch.epoch) }
         try db.execute(
             sql: "UPDATE hub_epochs SET retired_at = ? WHERE epoch = ? AND retired_at IS NULL",
             arguments: [date.timeIntervalSince1970, Int64(current.epoch)])

@@ -347,7 +347,7 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(transport.saved.count, savesBefore, "no echo for the removed phone")
 
         // A rotation: its records of the previous epoch (inside the D10 grace) are refused the same way.
-        _ = try ring.beginNextEpoch()
+        try ring.rotate(reason: .manual)
         let previous = try await send("previous-epoch")
         let savesBeforePrevious = transport.saved.count
         _ = try await processor.processOnce()

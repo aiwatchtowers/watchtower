@@ -18,6 +18,8 @@ enum HubKeyringError: Error, Equatable {
     /// A rotation prepared for this epoch found another current epoch (another hub process rotated first): nothing
     /// was written, never a forked epoch.
     case epochRaced(UInt32)
+    /// The current epoch is `UInt32.max`: no next epoch exists.
+    case epochOverflow
 }
 
 /// Why the hub rotates its epoch (spec §2.2).
@@ -35,7 +37,8 @@ enum RotationReason: Equatable {
 /// - Identity: `hub_sig`, `hub_kx` and the 32-byte wrap key are Keychain items (`HubKeyStore`), loaded once here.
 /// - Group keys: `K_meta` (`hub_meta.k_meta_sealed`) and each epoch's `K_data ‖ K_alert` (`hub_epochs.sealed_keys`)
 ///   are sealed with ChaChaPoly under the wrap key, the AAD binding hub id and epoch, so a rotation (new epoch and
-///   hash wipe) is one SQLite transaction (`beginNextEpoch(alongside:)`).
+///   hash wipe) is one SQLite transaction (`rotate(reason:)` over `HubSyncState.removeDeviceAndRotate` /
+///   `rotate(newEpoch:at:)`, the only rotation path).
 /// - Seq: one `SeqAllocator` over `hub_meta.envelope_seq_ceiling`; one keyring per sidecar (two allocators over one
 ///   ceiling could hand out the same block).
 /// - Relay keys: per linked phone, from `hub_kx` and the row's `agreement_key`/`link_nonce`, cached per
@@ -112,23 +115,6 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
         }
     }
 
-    /// Retires the current epoch and creates the next one, running `work` (Task 14: the slice hash wipe) in the same
-    /// IMMEDIATE transaction, so the new epoch and its consequences commit together or not at all.
-    @discardableResult
-    func beginNextEpoch(alongside work: (Database) throws -> Void = { _ in }) throws -> EpochKeys {
-        try sidecar.writeKeys { db in
-            guard let current = try HubSyncState.latestEpochs(db).last else { throw SecureTransportError.keysUnavailable }
-            let (next, overflow) = current.epoch.addingReportingOverflow(1)
-            guard !overflow else { throw HubKeyringError.unknownEpoch(current.epoch) }
-            try db.execute(
-                sql: "UPDATE hub_epochs SET retired_at = ? WHERE epoch = ? AND retired_at IS NULL",
-                arguments: [now().timeIntervalSince1970, Int64(current.epoch)])
-            let keys = try insertEpoch(next, db)
-            try work(db)
-            return keys
-        }
-    }
-
     /// Clears K_meta and every epoch (hub turned off / zones deleted): the next pairing starts fresh. The seq
     /// ceiling stays, so seqs never repeat. The cached relay keys go too.
     func resetGroupKeys() throws {
@@ -155,7 +141,7 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
             return
         }
         let (next, overflow) = current.epoch.addingReportingOverflow(1)
-        guard !overflow else { throw HubKeyringError.unknownEpoch(current.epoch) }
+        guard !overflow else { throw HubKeyringError.epochOverflow }
         let sealed = try seal(Self.randomKey() + Self.randomKey(), aad: epochAAD(next))
         let at = now()
         switch reason {

@@ -991,7 +991,8 @@ final class MobileLinkCenterTests: XCTestCase {
 
         XCTAssertEqual(try keyring.currentEpoch(), 2)
         XCTAssertTrue(nudges.contains { $0.contains(.deviceGrant) })
-        XCTAssertTrue(try sidecar.hashes(forKind: .deviceGrant).isEmpty, "the window is republished")
+        XCTAssertTrue(
+            try sidecar.hashes(forKind: .deviceGrant).values.allSatisfy(\.isEmpty), "the window is republished")
         let after = try await sealedSample("after")
         XCTAssertEqual(try openData(before) { _ in dataKeyA }.id, "workbench-before", "A keeps what it already had")
         XCTAssertThrowsError(try openData(after) { _ in dataKeyA }, "A's key opens no epoch-2 record") {
