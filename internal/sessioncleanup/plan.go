@@ -50,6 +50,11 @@ type builder struct {
 	activity   map[int64]SessionActivity
 	live       map[int64]bool
 	rootOwners map[string][]int64 // sweep
+	// walked caches W9's walk per worktree root (nil = walk every time).
+	// Apply shares one map between its evaluation and the early re-checks,
+	// so a worktree is walked once there and once more right before
+	// `git worktree remove`.
+	walked map[string]string
 
 	// After the worktree pass: where each branch is checked out, and the
 	// subset of worktrees that stay.
@@ -64,10 +69,15 @@ func Build(ctx context.Context, d Deps, r Request) (Plan, error) {
 	if err != nil {
 		return Plan{Items: []Item{}}, err
 	}
+	return b.evaluate(ctx), nil
+}
+
+// evaluate lists and evaluates every candidate of the builder's facts.
+func (b *builder) evaluate(ctx context.Context) Plan {
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
-	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch}, nil
+	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch}
 }
 
 func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
@@ -429,7 +439,7 @@ func (b *builder) orphanItems(root string) []Item {
 	orphans, _ := OrphansIn(b.procs, []string{root}, b.self)
 	items := make([]Item, 0, len(orphans))
 	for _, p := range orphans {
-		items = append(items, Item{Key: fmt.Sprintf("process:%d:%s", p.PID, p.Start), Kind: KindProcess,
+		items = append(items, Item{Key: procKey(p), Kind: KindProcess,
 			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true})
 	}
 	return items

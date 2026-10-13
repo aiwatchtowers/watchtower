@@ -266,6 +266,6 @@ Delete flow per spec §12: close terminal → apply planned `remove` keys → de
 
 ### Task 14: Final gate
 
-`bash scripts/dev-health.sh` first; then `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...` — each to a log with `echo "exit=$?"`. Then a manual check filed as an owner ask: a real session with two subagent worktrees and a merged PR → finish → worktrees and branches gone, `~/.claude/projects/...` intact, the summary line and the report line present; an uncommitted file in a third worktree → kept with the reason. The same ask covers the TCC check of design §14.2
+`bash scripts/dev-health.sh` first; then `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...` — each to a log with `echo "exit=$?"`. Then a manual check filed as an owner ask: a real session with two subagent worktrees and a merged PR → finish → worktrees and branches gone, `~/.claude/projects/...` intact, the summary line and the report line present; an uncommitted file in a third worktree → kept with the reason. The same ask covers the re-registration check of design §14.4 (plain `lsregister <bundle>`, no `-f`, re-registers a bundle unregistered with `-u`: it shows in `lsregister -dump` again) and the TCC check of design §14.2
 for the shipped scan `lsof -a -d cwd,txt -n -P -w -F pfn -u <uid>` (Desktop-spawned, a process with its cwd under
 `~/Documents`, `~/Desktop` and `~/Downloads`): no privacy dialog with `txt` included.
