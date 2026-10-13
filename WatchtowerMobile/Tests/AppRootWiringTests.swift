@@ -31,8 +31,13 @@ final class AppRootWiringTests: XCTestCase {
     private var registry: HubRegistry!
     private var defaults: UserDefaults!
     private var container: FakeLinkContainer!
-    /// What the root's farewell sent: the record, its database and hub.
-    private var farewells: [(record: CloudRecord, scope: CloudDatabaseScope, hubID: String)] = []
+    /// Each look at an unlink's `unlinked` record in its hub's send queue:
+    /// the hub, the record, and whether the session was still running.
+    private var farewellChecks: [(hubID: String, record: CloudRecord, running: Bool)] = []
+    /// The farewell never leaves the send queue (a network that never
+    /// answers); `farewellCap` bounds the wait.
+    private var farewellStuck = false
+    private var farewellCap: Duration = .seconds(10)
     /// Background work the root began and ended, by name.
     private var workBegun: [String] = []
     private var workEnded: [String] = []
@@ -148,10 +153,16 @@ final class AppRootWiringTests: XCTestCase {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(container: container, store: LinkStore(defaults: defaults), identity: identity, clock: linkClock),
-            startWork: starter
-        ) { [weak self] record, scope, hubID in
-            self?.farewells.append((record, scope, hubID))
-        }
+            startWork: starter,
+            farewellDelivery: AppRoot.FarewellDelivery(
+                isPending: { [weak self] session, record in
+                    self?.farewellChecks.append((session.hubID, record, session.isLooping))
+                    return self?.farewellStuck ?? false
+                },
+                cap: farewellCap,
+                pause: .milliseconds(20)
+            )
+        )
     }
 
     /// The in-memory transport of `hubID`'s latest session.
@@ -185,7 +196,7 @@ final class AppRootWiringTests: XCTestCase {
         }
         XCTAssertEqual(try first.store.pendingActions().count, 3)
 
-        let notSent = await root.removeHub("hub-acme", keepRecordings: true)
+        let notSent = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3), "the three pending items are reported Not sent")
         XCTAssertNil(root.env.session("hub-acme"), "the session is gone")
@@ -211,7 +222,7 @@ final class AppRootWiringTests: XCTestCase {
         let before = try await transportCounts(try DatabaseQueue(path: transportPath))
         XCTAssertEqual(before.pending, 3, "the outbox's sends wait in the transport queue")
 
-        let notSent = await root.removeHub("hub-acme", keepRecordings: true)
+        let notSent = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3))
         for suffix in ["", "-wal", "-shm"] {
@@ -233,7 +244,7 @@ final class AppRootWiringTests: XCTestCase {
         let ownerStop = Task { await first.recorder.stop() }
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
-        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true) }
+        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true, farewell: nil) }
         try await poll { (try? self.registry.row("hub-acme")) == nil }
 
         XCTAssertTrue(root.env.session("hub-acme") === first, "the hand-over is still waiting for the save")
@@ -256,8 +267,8 @@ final class AppRootWiringTests: XCTestCase {
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
 
-        async let one = root.removeHub("hub-acme", keepRecordings: true)
-        async let two = root.removeHub("hub-acme", keepRecordings: true)
+        async let one = root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        async let two = root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
         let wipes = await [one, two]
 
         XCTAssertEqual(wipes, [LocalWipe(), LocalWipe()], "nothing lost, no capture running")
@@ -289,7 +300,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(root.env.sessions.isEmpty)
         XCTAssertTrue(try registry.rows().isEmpty)
         XCTAssertTrue(root.showsOnboarding)
-        XCTAssertEqual(farewells.map(\.hubID), ["hub-acme", "hub-home"])
+        XCTAssertEqual(farewellChecks.map(\.hubID), ["hub-acme", "hub-home"], "each unlink waited for its farewell")
     }
 
     /// An inactive hub's unlink leaves the hub on screen where it is.
@@ -308,6 +319,7 @@ final class AppRootWiringTests: XCTestCase {
         await root.env.deviceSettings.setTypingRequested(true)
         XCTAssertNotNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"))
         let id = try await saveVoiceNote(root)
+        try await poll { root.env.activeSession.isLooping }
 
         await root.linking.unlink("hub-acme")
 
@@ -319,10 +331,58 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory("hub-acme")))
         XCTAssertNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"), "ruling 5: its Workbench choices go")
         XCTAssertEqual(root.linking.notice, nil, "nothing was lost")
-        let farewell = try XCTUnwrap(farewells.first)
-        XCTAssertEqual(farewell.hubID, "hub-acme")
-        XCTAssertEqual(farewell.scope, .private)
-        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DevicePayload.self, from: farewell.record.payload).unlinked, true)
+        try await assertTheFarewellWentThroughTheHubsOwnTransport("hub-acme")
+    }
+
+    /// Fix round 1, I1: the `unlinked` record goes through the removed
+    /// hub's own transport (it holds the record's server state), while its
+    /// session still runs, and the removal waited for it to leave the queue.
+    private func assertTheFarewellWentThroughTheHubsOwnTransport(_ hubID: String, line: UInt = #line) async throws {
+        let check = try XCTUnwrap(farewellChecks.first, "the removal looked at the send queue", line: line)
+        XCTAssertEqual(check.hubID, hubID, line: line)
+        XCTAssertTrue(check.running, "sent before the session stops", line: line)
+        let sent = try await deviceWrites(in: try transport(hubID))
+        XCTAssertEqual(sent.last?.unlinked, true, "the hub's own transport carried it", line: line)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DevicePayload.self, from: check.record.payload).unlinked, true, line: line)
+    }
+
+    /// Fix round 1, I1: a farewell that never leaves the queue holds the
+    /// removal for the cap only; then the hub goes all the same.
+    func testAnUnlinkWhoseFarewellNeverLeavesStillRemovesTheHub() async throws {
+        farewellStuck = true
+        farewellCap = .milliseconds(200)
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+
+        await root.linking.unlink("hub-acme")
+
+        XCTAssertGreaterThan(farewellChecks.count, 1, "it asked again while the record waited")
+        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the removal finished")
+        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertTrue(root.showsOnboarding)
+        XCTAssertEqual(root.linking.phase, .idle)
+    }
+
+    /// Fix round 1, I2: a removal of an id that names no directory touches
+    /// no path.
+    func testARemovalOfAnUnusableHubIDTouchesNoPath() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+
+        let wipe = await root.removeHub("../hub-acme", keepRecordings: true, farewell: nil)
+
+        XCTAssertEqual(wipe, LocalWipe())
+        XCTAssertEqual(hubFilesExist("hub-acme"), [true, true, true])
+        XCTAssertNotNil(try registry.row("hub-acme"))
+    }
+
+    /// A hub the Mac removed is forgotten with no farewell.
+    func testForgettingAFrozenHubSendsNoFarewell() async throws {
+        let root = try makeRoot(links: [linkRecord()], frozen: ["hub-acme"])
+
+        await root.linking.forget("hub-acme")
+
+        XCTAssertTrue(farewellChecks.isEmpty)
+        XCTAssertNil(try registry.row("hub-acme"))
     }
 
     // MARK: - The Mac's removal (spec §6.1, Review Focus 4)
@@ -416,7 +476,7 @@ final class AppRootWiringTests: XCTestCase {
     func testRemovalsFreezesAndTheAccountWipeRunInsideBackgroundWork() async throws {
         let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac"), linkRecord("hub-studio")])
 
-        _ = await root.removeHub("hub-studio", keepRecordings: true)
+        _ = await root.removeHub("hub-studio", keepRecordings: true, farewell: nil)
         XCTAssertEqual(workBegun, ["hub-remove"])
         XCTAssertEqual(workEnded, ["hub-remove"])
 
@@ -844,7 +904,7 @@ final class AppRootWiringTests: XCTestCase {
         clock.advance(30)
         first.recorder.markMoment()
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true)
+        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 0, stoppedRecording: true), "held, so not reported Not sent")
         XCTAssertEqual(engine.finishCount, 1, "the file was finalised, not cut off")
@@ -882,7 +942,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        _ = await root.removeHub("hub-acme", keepRecordings: true)
+        _ = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         _ = try await root.prepare(scope: .private, hubID: "hub-studio")
         try await root.linked(linkRecord("hub-studio", macName: "Acme Studio"), device: device)
@@ -901,7 +961,7 @@ final class AppRootWiringTests: XCTestCase {
         let id = try await saveVoiceNote(root)
         let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory("hub-acme"))
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: false)
+        let wipe = await root.removeHub("hub-acme", keepRecordings: false, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         XCTAssertTrue(try hold.load().isEmpty)
@@ -970,7 +1030,7 @@ final class AppRootWiringTests: XCTestCase {
         let stranded = try await earlier.beginCapture(fileURL: file, startedAt: clock.now, titleHint: "Cut short", eventID: nil)
         engine.fileDuration = 20
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true)
+        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(), "not lost")
         let held = try XCTUnwrap(try hold.load().first)
@@ -992,7 +1052,7 @@ final class AppRootWiringTests: XCTestCase {
         let ownerStop = Task { await first.recorder.stop() }
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
-        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true) }
+        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true, farewell: nil) }
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(root.env.session("hub-acme") === first, "the removal waits for the save")
         engine.releaseFinish()
@@ -1016,7 +1076,7 @@ final class AppRootWiringTests: XCTestCase {
             at: hold.directory.appendingPathComponent("manifest.json"), withIntermediateDirectories: true
         )
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true)
+        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         let problem = try XCTUnwrap(wipe.problem)
         XCTAssertTrue(problem.hasPrefix("Some recordings couldn't be read"), problem)
@@ -1040,7 +1100,7 @@ final class AppRootWiringTests: XCTestCase {
             at: try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory("hub-acme"))
         )
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true)
+        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         XCTAssertTrue(try hold.load().isEmpty)
@@ -1134,6 +1194,7 @@ final class AppRootWiringTests: XCTestCase {
     /// writes `unlinked` to the link's hub and ends on onboarding.
     func testSettingsUnlinkOnALiveRootWritesUnlinkedAndEndsUnlinked() async throws {
         let root = try makeRoot(links: [linkRecord()])
+        try await poll { root.env.activeSession.isLooping }
         let active = root.linking.links.first { $0.hubID == root.env.activeHubID }?.link
         XCTAssertTrue(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: active))
         XCTAssertFalse(SettingsView.offersUnlink(transportKind: .inMemoryDemo, link: linkRecord()), "the demo has no link to end")
@@ -1142,9 +1203,7 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertTrue(root.linking.links.isEmpty)
         XCTAssertFalse(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: root.linking.links.first?.link))
-        let farewell = try XCTUnwrap(farewells.first)
-        XCTAssertEqual(farewell.hubID, "hub-acme", "the link's hub hears the unlink")
-        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DevicePayload.self, from: farewell.record.payload).unlinked, true)
+        try await assertTheFarewellWentThroughTheHubsOwnTransport("hub-acme")
         XCTAssertEqual(root.linking.phase, .idle)
         XCTAssertTrue(root.showsOnboarding)
     }

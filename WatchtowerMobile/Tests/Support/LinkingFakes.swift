@@ -151,7 +151,7 @@ final class FakeLinkHost: LinkHost {
     private(set) var removals: [(hubID: String, keepRecordings: Bool)] = []
     /// Every `markRemovedByMac` call.
     private(set) var markedRemoved: [String] = []
-    /// Every farewell sent: the record's scope and hub.
+    /// Every farewell a removal sent: the hub's scope and the hub.
     private(set) var farewells: [(scope: CloudDatabaseScope, hubID: String)] = []
     private(set) var permissionRequests = 0
     private(set) var openedNow = 0
@@ -244,22 +244,24 @@ final class FakeLinkHost: LinkHost {
         )
     }
 
-    func sendFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) async {
-        log.append("farewell \(Self.describe(scope))")
-        farewells.append((scope, hubID))
-        try? await transport(for: scope).save([record])
-    }
-
     /// The next removal reports a capture it stopped and kept (once; as the
     /// real host, never when the recordings are not kept).
     var stopsRecording = false
     /// The next removal reports a recording problem (once).
     var recordingProblem: String?
 
-    func removeHub(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+    /// As the real host: the row goes first, then the farewell through
+    /// the hub's own transport (here its scope's), then the rest.
+    func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
         log.append("remove \(hubID)")
         removals.append((hubID, keepRecordings))
+        let scope = row(hubID)?.link.databaseScope
         rows.removeAll { $0.hubID == hubID }
+        if let farewell, let scope {
+            log.append("farewell \(Self.describe(scope))")
+            farewells.append((scope, hubID))
+            try? await transport(for: scope).save([farewell])
+        }
         if activeHubID == hubID {
             activeHubID = rows.first?.hubID
         }

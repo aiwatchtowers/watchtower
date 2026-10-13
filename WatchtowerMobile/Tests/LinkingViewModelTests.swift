@@ -451,6 +451,24 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertFalse(pending.baselineCaptured)
     }
 
+    /// Fix round 1, I2: a pending link whose hub id is not a plain name
+    /// (an older build saved it unchecked) is dropped at the relaunch:
+    /// nothing is prepared or removed (no path is made from it), the code
+    /// reads as unusable.
+    func testAPendingLinkWithAnUnusableHubIDIsDroppedAtTheRelaunch() async throws {
+        LinkStore(defaults: defaults).pending = PendingLink(
+            link: linkRecord(hubID: "../hub-acme"), deadline: start.addingTimeInterval(50), baseline: nil, baselineCaptured: true
+        )
+        let model = makeModel()
+
+        await model.resumePendingLink()
+
+        XCTAssertEqual(model.phase, .failed(.refused))
+        XCTAssertNil(LinkStore(defaults: defaults).pending, "the pending link is cleared")
+        XCTAssertTrue(host.prepared.isEmpty)
+        XCTAssertTrue(host.removals.isEmpty, "no removal of an id that names no directory")
+    }
+
     func testRelaunchAfterTheDeadlineOffersToScanAgainAtOnce() async throws {
         let store = LinkStore(defaults: defaults)
         store.pending = PendingLink(link: linkRecord(), deadline: start.addingTimeInterval(-1), baseline: nil, baselineCaptured: true)
@@ -570,7 +588,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
             Array(log.events.suffix(2)), ["remove hub-acme", "farewell private"],
-            "the hub goes first, so the farewell's transport sends only the unlinked record"
+            "the row goes first, then the farewell through the hub's own transport"
         )
         XCTAssertEqual(host.farewells.map(\.hubID), ["hub-acme"])
         XCTAssertEqual(host.removedHubIDs, ["hub-acme"], "one removal, no second wipe")
@@ -665,8 +683,9 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(model.notice, "nothing was waiting")
     }
 
-    /// Multi-hub F2: the hub's files go first, then the farewell through a
-    /// transport of its own, then the shares; no second wipe follows.
+    /// Multi-hub F2: the hub's row goes first, then the farewell through
+    /// the hub's own transport (inside the removal), then the shares; no
+    /// second wipe follows.
     func testUnlinkRemovesFirstThenSendsTheFarewellThenLeavesShares() async throws {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())

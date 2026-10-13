@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 import os
 import UserNotifications
@@ -17,8 +18,40 @@ import WatchtowerSync
 @MainActor
 @Observable
 final class AppRoot {
-    /// Sends one `unlinked` record to a hub whose files are gone.
-    typealias Farewell = @MainActor (_ record: CloudRecord, _ scope: CloudDatabaseScope, _ hubID: String) async -> Void
+    /// How an unlink's `unlinked` record is waited for: it goes through the
+    /// removed hub's own transport (which holds the record's server state),
+    /// and the removal waits until it has left the send queue, `sendNow()`
+    /// again every `pause`, `cap` at most; then it goes on whatever
+    /// happened (best effort).
+    struct FarewellDelivery {
+        /// Whether `record` still waits in `session`'s send queue.
+        let isPending: @MainActor (_ session: HubSession, _ record: CloudRecord) -> Bool
+        var cap: Duration = .seconds(10)
+        var pause: Duration = .milliseconds(500)
+
+        /// The live app: the hub's transport store's own queue, read on its
+        /// file (the transport offers no query of it). An unreadable queue
+        /// reads as settled: the removal does not wait on what it cannot see.
+        static func live(paths: HubPaths) -> Self {
+            Self { session, record in
+                do {
+                    var configuration = Configuration()
+                    configuration.readonly = true
+                    let queue = try DatabaseQueue(path: paths.transportStorePath(session.hubID), configuration: configuration)
+                    return try queue.read { db in
+                        try Bool.fetchOne(
+                            db,
+                            sql: "SELECT EXISTS(SELECT 1 FROM pending WHERE record_name = ? AND zone = ?)",
+                            arguments: [record.recordName, record.zone.rawValue]
+                        ) ?? false
+                    }
+                } catch {
+                    AppRoot.logger.warning("send queue unreadable: \(error.localizedDescription, privacy: .public)")
+                    return false
+                }
+            }
+        }
+    }
 
     let env: AppEnvironment
     let linking: LinkingViewModel
@@ -34,7 +67,7 @@ final class AppRoot {
     /// found it): the hand-over reads the old replica (`BackgroundWork`).
     /// nil holds nothing (tests).
     @ObservationIgnored private let startWork: BackgroundWork.Starter?
-    @ObservationIgnored private let farewell: Farewell
+    @ObservationIgnored private let farewellDelivery: FarewellDelivery
     /// The removal running per hub: a second one for the same hub waits
     /// for it and counts nothing.
     @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
@@ -54,7 +87,7 @@ final class AppRoot {
         defaults: UserDefaults,
         linking: LinkingViewModel,
         startWork: BackgroundWork.Starter?,
-        sendFarewell: @escaping Farewell
+        farewellDelivery: FarewellDelivery
     ) {
         self.env = env
         self.registry = registry
@@ -64,7 +97,7 @@ final class AppRoot {
         self.defaults = defaults
         self.linking = linking
         self.startWork = startWork
-        farewell = sendFarewell
+        self.farewellDelivery = farewellDelivery
         for hubID in env.order {
             if let session = env.session(hubID) {
                 wire(session)
@@ -119,10 +152,9 @@ final class AppRoot {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
-            startWork: BackgroundWork.starter()
-        ) { record, scope, hubID in
-            await sendLiveFarewell(record, scope: scope, hubID: hubID, paths: paths)
-        }
+            startWork: BackgroundWork.starter(),
+            farewellDelivery: .live(paths: paths)
+        )
         let pendingHubID = store.pending?.link.hubID
         Task {
             do {
@@ -149,8 +181,9 @@ final class AppRoot {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
-            startWork: nil
-        ) { _, _, _ in }
+            startWork: nil,
+            farewellDelivery: FarewellDelivery { _, _ in false }
+        )
     }
 
     /// At launch: a link a kill left waiting, then the account check (the
@@ -278,10 +311,17 @@ final class AppRoot {
     /// One removal of `hubID` (see `removeHub`). The row goes first, with
     /// no wait before it: a kill anywhere after leaves no row that would
     /// bring the hub back at the next launch (its files, if any are left,
-    /// are an orphan the next launch hands over and deletes).
-    private func performRemoval(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+    /// are an orphan the next launch hands over and deletes). An unlink's
+    /// `farewell` then goes out through the session's own transport,
+    /// before the session stops.
+    private func performRemoval(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
         let endWork = startWork?("hub-remove")
         defer { endWork?() }
+        guard HubPaths.isValidHubID(hubID) else {
+            // Never a hub this app built: no path is made from it.
+            Self.logger.fault("removal of an unusable hub id refused")
+            return LocalWipe()
+        }
         let rows: [HubRow]
         do {
             rows = try registry.rows()
@@ -300,6 +340,9 @@ final class AppRoot {
         if let session = env.session(hubID) {
             session.onLinkSignal = nil
             session.onFetched = nil
+            if let farewell {
+                await deliver(farewell, through: session)
+            }
             let stoppedCapture = await session.recorder.stopForWipe()
             // After the shutdown the boot (and its launch recovery) has
             // ended: the hand-over never races it.
@@ -334,34 +377,32 @@ final class AppRoot {
         return outcome
     }
 
-    /// The live farewell: a `CloudKitTransport` of its own on a throwaway
-    /// store in the hub's local directory (outside the app group, #232),
-    /// which sends the record (best effort: the stop ends what has not gone
-    /// out) and is deleted after, with the directory when nothing else is
-    /// in it. A kill before that leaves an orphan the next launch removes.
-    private static func sendLiveFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String, paths: HubPaths) async {
-        let directory = paths.localHubDirectory(hubID)
-        let path = directory.appendingPathComponent("farewell.sqlite").path
+    /// Saves `record` through `session`'s own transport and waits until it
+    /// has left the send queue (`FarewellDelivery`), `sendNow()` again while
+    /// it waits; a failed save or the cap reached is logged and the removal
+    /// goes on.
+    private func deliver(_ record: CloudRecord, through session: HubSession) async {
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let transport = CloudKitTransport(store: try TransportStore(path: path), scope: scope, hubID: hubID, role: .phone)
-            await transport.start()
-            try await transport.save([record])
-            await transport.sendNow()
-            await transport.stop()
+            try await session.linkTransport.save([record])
         } catch {
-            logger.warning("unlinked record not sent: \(error.localizedDescription, privacy: .public)")
+            Self.logger.warning("unlinked record not queued: \(error.localizedDescription, privacy: .public)")
+            return
         }
-        let fileManager = FileManager.default
-        do {
-            for file in [path, path + "-wal", path + "-shm", path + "-journal"] where fileManager.fileExists(atPath: file) {
-                try fileManager.removeItem(atPath: file)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: farewellDelivery.cap)
+        while true {
+            await session.sendNow()
+            guard farewellDelivery.isPending(session, record) else { return }
+            let left = clock.now.duration(to: deadline)
+            guard left > .zero else {
+                Self.logger.warning("unlinked record still queued when the hub went: not sent")
+                return
             }
-            if try fileManager.contentsOfDirectory(atPath: directory.path).isEmpty {
-                try fileManager.removeItem(at: directory)
+            do {
+                try await Task.sleep(for: min(farewellDelivery.pause, left))
+            } catch {
+                return
             }
-        } catch {
-            logger.error("farewell store not removed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -400,7 +441,7 @@ extension AppRoot: LinkHost {
             }
             // Another database's zones, or a hub the Mac removed: it starts
             // again from empty files, its recordings held.
-            let wipe = await removeHub(hubID, keepRecordings: true)
+            let wipe = await removeHub(hubID, keepRecordings: true, farewell: nil)
             if let problem = wipe.problem {
                 Self.logger.error("recordings at a rescan: \(problem, privacy: .public)")
             }
@@ -453,16 +494,12 @@ extension AppRoot: LinkHost {
         return session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
     }
 
-    func sendFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) async {
-        await farewell(record, scope, hubID)
-    }
-
-    func removeHub(_ hubID: String, keepRecordings: Bool) async -> LocalWipe {
+    func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
         if let running = removals[hubID] {
             _ = await running.value
             return LocalWipe()
         }
-        let task = Task { await self.performRemoval(hubID, keepRecordings: keepRecordings) }
+        let task = Task { await self.performRemoval(hubID, keepRecordings: keepRecordings, farewell: farewell) }
         removals[hubID] = task
         let outcome = await task.value
         removals[hubID] = nil

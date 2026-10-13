@@ -55,16 +55,15 @@ protocol LinkHost: AnyObject {
     /// This phone's `device` record for `hubID` with that hub's Settings
     /// choices.
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
-    /// Writes `record` through a fresh transport on `hubID`'s zones after the
-    /// session's files are gone (only the farewell is sent), sends it, stops.
-    func sendFarewell(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) async
-    /// Removes `hubID`: stops its session (a running capture stopped and
-    /// saved), hands its recordings to the hold (`keepRecordings`; false on
-    /// an iCloud account change, when they are lost and counted), deletes
-    /// its files and its row; the next hub in order becomes active. Returns
-    /// what was lost. Also drops a session that never got a row (a failed
-    /// link).
-    func removeHub(_ hubID: String, keepRecordings: Bool) async -> LocalWipe
+    /// Removes `hubID`: deletes its row, then sends `farewell` (the
+    /// `unlinked` device record of an unlink; nil sends nothing) through
+    /// the hub's own transport and waits, bounded, for it to leave the send
+    /// queue; then stops its session (a running capture stopped and saved),
+    /// hands its recordings to the hold (`keepRecordings`; false on an
+    /// iCloud account change, when they are lost and counted) and deletes
+    /// its files; the next hub in order becomes active. Returns what was
+    /// lost. Also drops a session that never got a row (a failed link).
+    func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe
     /// The Mac removed this phone: the row turns `unlinked_by_mac` and the
     /// session freezes (no sync, no writes, data readable).
     func markRemovedByMac(_ hubID: String) async

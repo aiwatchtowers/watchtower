@@ -282,7 +282,7 @@ final class LinkingViewModel {
     private func fail(_ failure: LinkFailure, hubID: String) async {
         store.pending = nil
         if row(hubID) == nil, let host {
-            let dropped = await host.removeHub(hubID, keepRecordings: true)
+            let dropped = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
             if let problem = dropped.problem {
                 Self.logger.error("recordings of a failed link: \(problem, privacy: .public)")
             }
@@ -300,6 +300,14 @@ final class LinkingViewModel {
     /// read as this scan's: it offers to scan again at once.
     func resumePendingLink() async {
         guard let pending = store.pending, !isBusy else { return }
+        // A hub id that is not a plain name never names a directory: the
+        // pending link is dropped, nothing is removed.
+        guard HubPaths.isValidHubID(pending.link.hubID) else {
+            Self.logger.warning("pending link with an unusable hub id dropped")
+            store.pending = nil
+            phase = .failed(.refused)
+            return
+        }
         guard clock.now() < pending.deadline, pending.baselineCaptured else {
             await fail(.noAnswer, hubID: pending.link.hubID)
             return
@@ -398,7 +406,7 @@ final class LinkingViewModel {
         }
         phase = .unlinking
         ending.insert(hubID)
-        let wipe = await host.removeHub(hubID, keepRecordings: true)
+        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
         ending.remove(hubID)
         refreshLinks()
         notice = LinkNotice.after(wipe)
@@ -443,7 +451,7 @@ final class LinkingViewModel {
         // to whatever the new account links, reported "Not sent".
         var total = LocalWipe()
         for row in rows {
-            let wipe = await host.removeHub(row.hubID, keepRecordings: false)
+            let wipe = await host.removeHub(row.hubID, keepRecordings: false, farewell: nil)
             total.notSent += wipe.notSent
             total.stoppedRecording = total.stoppedRecording || wipe.stoppedRecording
             total.problem = total.problem ?? wipe.problem
@@ -514,13 +522,12 @@ final class LinkingViewModel {
         }
     }
 
-    /// Ends `row`'s link: the hub goes first (its session stopped, its
-    /// recordings held, its files and row deleted — what its queue held is
-    /// counted "Not sent" and never sent), then the `unlinked` record goes
-    /// to its Mac through a transport of its own (best effort), then a
-    /// `shared` link leaves the shares. The farewell is built before the
-    /// hub's Settings choices go. A frozen hub's zones are gone: no
-    /// farewell, no leave.
+    /// Ends `row`'s link: the host removes the hub (its row first, then the
+    /// `unlinked` record through the hub's own transport, which holds the
+    /// record's server state, best effort and bounded; then its session,
+    /// recordings and files), then a `shared` link leaves the shares. The
+    /// record is built here, before the hub's Settings choices go. A frozen
+    /// hub's zones are gone: no farewell, no leave.
     private func unlinkHub(_ row: HubRow) async -> LocalWipe {
         guard let host else { return LocalWipe() }
         let hubID = row.hubID
@@ -536,11 +543,8 @@ final class LinkingViewModel {
                 Self.logger.warning("unlinked record not built: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let wipe = await host.removeHub(hubID, keepRecordings: true)
+        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: farewell)
         refreshLinks()
-        if let farewell {
-            await host.sendFarewell(farewell, scope: scope, hubID: hubID)
-        }
         if linked, case let .shared(ownerName) = scope {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: hubID)
