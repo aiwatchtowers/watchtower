@@ -31,7 +31,7 @@ func TestPlan_MergedAndPushedWorktreesAreRemoved(t *testing.T) {
 	}
 }
 
-func TestProj16_UncommittedWorktreeIsKept(t *testing.T) {
+func TestProj18_UncommittedWorktreeIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -44,7 +44,7 @@ func TestProj16_UncommittedWorktreeIsKept(t *testing.T) {
 	wantItem(t, p, "branch:feat/x", ActionKeep, ReasonCheckedOut)
 }
 
-func TestProj16_UntrackedFileKeepsTheWorktree(t *testing.T) {
+func TestProj18_UntrackedFileKeepsTheWorktree(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -66,7 +66,7 @@ func TestPlan_IgnoredFilesDoNotKeepTheWorktree(t *testing.T) {
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
 }
 
-func TestProj16_UnpushedCommitKeepsWorktreeAndBranch(t *testing.T) {
+func TestProj18_UnpushedCommitKeepsWorktreeAndBranch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.worktree("wt", "feat/x")
@@ -83,7 +83,7 @@ func TestProj16_UnpushedCommitKeepsWorktreeAndBranch(t *testing.T) {
 	wantItem(t, f.plan(Request{}), "branch:feat/alone", ActionKeep, ReasonUnpushedCommits)
 }
 
-func TestProj16_LockedWorktreeIsKept(t *testing.T) {
+func TestProj18_LockedWorktreeIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -108,7 +108,7 @@ func TestPlan_OperationInProgressKeepsTheWorktree(t *testing.T) {
 	}
 }
 
-func TestProj16_WorktreeOlderThanTheSessionIsKept(t *testing.T) {
+func TestProj18_WorktreeOlderThanTheSessionIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -120,7 +120,7 @@ func TestProj16_WorktreeOlderThanTheSessionIsKept(t *testing.T) {
 	wantItem(t, p, "branch:feat/x", ActionKeep, ReasonCheckedOut)
 }
 
-func TestProj16_BranchOlderThanTheSessionIsKept(t *testing.T) {
+func TestProj18_BranchOlderThanTheSessionIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gitIn(t, f.repo, "branch", "feat/old", "main") // merged: only the age keeps it
@@ -142,7 +142,7 @@ func TestPlan_BranchWithoutReflogIsKept(t *testing.T) {
 	wantItem(t, f.plan(Request{}), "branch:feat/no-log", ActionKeep, ReasonCreatedUnknown)
 }
 
-func TestProj16_BranchCheckedOutElsewhereIsKept(t *testing.T) {
+func TestProj18_BranchCheckedOutElsewhereIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	other := f.pushedWork("wt-other", "feat/x") // not the session's worktree
@@ -163,7 +163,7 @@ func TestProj16_BranchCheckedOutElsewhereIsKept(t *testing.T) {
 	wantItem(t, f.plan(Request{}), "branch:feat/main-folder", ActionKeep, ReasonCheckedOut)
 }
 
-func TestProj16_DefaultBranchIsNeverDeleted(t *testing.T) {
+func TestProj18_DefaultBranchIsNeverDeleted(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gitIn(t, f.repo, "switch", "-q", "--detach")
@@ -178,7 +178,7 @@ func TestProj16_DefaultBranchIsNeverDeleted(t *testing.T) {
 	}
 }
 
-func TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates(t *testing.T) {
+func TestProj18_MainFolderAndWorkbenchFoldersAreNeverCandidates(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	bound := f.pushedWork("wt-bound", "feat/bound") // a second workbench is bound to this worktree
@@ -202,7 +202,7 @@ func TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates(t *testing.T) {
 	}
 }
 
-func TestProj16_SessionInTheWorktreeKeepsIt(t *testing.T) {
+func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -239,7 +239,7 @@ func TestProj16_SessionInTheWorktreeKeepsIt(t *testing.T) {
 	}
 }
 
-func TestProj16_LiveProcessKeepsTheWorktree(t *testing.T) {
+func TestProj18_LiveProcessKeepsTheWorktree(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -368,7 +368,7 @@ func TestPlan_SweepIgnoresOwnershipAndMarksRecentSessions(t *testing.T) {
 	wantItem(t, f.plan(Request{Sweep: true, LiveSessions: []int64{12}}), "worktree:"+stale, ActionKeep, ReasonSessionRecent)
 }
 
-func TestProj16_PlanWritesNothing(t *testing.T) {
+func TestProj18_PlanWritesNothing(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	pushed := f.pushedWork("wt-pushed", "feat/pushed")
@@ -463,7 +463,7 @@ func (g *recordingGit) RunGit(context.Context, string, string, ...string) ([]byt
 
 // Nothing under the owner's ~/.claude is ever removed, in the session's
 // cleanup or the sweep; an unknown home directory keeps every worktree.
-func TestProj16_ClaudeHomeIsNeverRemoved(t *testing.T) {
+func TestProj18_ClaudeHomeIsNeverRemoved(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	home := filepath.Join(f.base, "home")

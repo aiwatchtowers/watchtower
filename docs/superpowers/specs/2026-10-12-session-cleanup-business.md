@@ -61,7 +61,7 @@ folder, an automatic cleanup prompt when a session turns Finished.
 
 ## Contract changes (need your approval)
 
-New **PROJ-16** (cleanup never removes unsaved, unpushed, in-use or someone else's work); **PROJ-11** (the hooks
+New **PROJ-18** (cleanup never removes unsaved, unpushed, in-use or someone else's work); **PROJ-11** (the hooks
 also note which worktree and branch each agent of the session worked in, only when new); **PROJ-04/PROJ-02** (Setup
 adds the cleanup permission and removing the workbench takes it away); DEV-04 changelog only (skill pack v7).
 

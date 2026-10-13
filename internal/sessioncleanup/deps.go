@@ -3,7 +3,7 @@
 // branches it created once their work is merged or pushed, its orphan
 // processes and the LaunchServices entries of builds inside those worktrees.
 // It never removes uncommitted, unpushed, in-use or someone else's work
-// (PROJ-16, docs/inventory/workbench.md). git runs only through
+// (PROJ-18, docs/inventory/workbench.md). git runs only through
 // internal/gitbin's binary, never in a folder outside a repository, never
 // with --force and never to fetch.
 package sessioncleanup
@@ -84,7 +84,7 @@ type SessionActivity struct {
 }
 
 // Store is what a plan reads from the database. It has no write method: a
-// plan writes nothing (PROJ-16).
+// plan writes nothing (PROJ-18).
 type Store interface {
 	CleanupSession(ctx context.Context, sessionID int64) (SessionInfo, error)
 	SessionWorktrees(ctx context.Context, sessionID int64) ([]db.SessionWorktree, error)

@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// TestProj16_WorktreeHoldingANestedWorktreeIsKept: `git worktree remove`
+// TestProj18_WorktreeHoldingANestedWorktreeIsKept: `git worktree remove`
 // (no --force) deletes a linked worktree nested under an ignored directory
 // of the one it removes, uncommitted work included; such a worktree is
 // kept.
-func TestProj16_WorktreeHoldingANestedWorktreeIsKept(t *testing.T) {
+func TestProj18_WorktreeHoldingANestedWorktreeIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	outer := f.worktree("wt-outer", "feat/outer")
