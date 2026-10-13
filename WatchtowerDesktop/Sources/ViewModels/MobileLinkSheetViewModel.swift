@@ -61,6 +61,26 @@ final class MobileLinkSheetViewModel: Identifiable {
         self.sleep = sleep
     }
 
+    /// Pairing code v2: why this waiting row needs a second look, nil when it does not. Two rows with one code
+    /// cannot be told apart by comparing (refuse both); two rows with one name (a photographed QR answered under the
+    /// owner's phone name) are told apart only by the code.
+    func duplicateWarning(for link: MobileLinkCenter.PendingLink) -> String? {
+        Self.duplicateWarning(for: link, among: pendingLinks)
+    }
+
+    nonisolated static func duplicateWarning(
+        for link: MobileLinkCenter.PendingLink, among links: [MobileLinkCenter.PendingLink]
+    ) -> String? {
+        let others = links.filter { $0.id != link.id }
+        if others.contains(where: { $0.sas == link.sas }) {
+            return "Two iPhones show code \(link.sas) — refuse both and show a new code."
+        }
+        if others.contains(where: { $0.name.localizedCaseInsensitiveCompare(link.name) == .orderedSame }) {
+            return "Two iPhones named \"\(link.name)\" are waiting — link only the one whose screen shows this code."
+        }
+        return nil
+    }
+
     /// "9:59".
     var countdownText: String {
         String(format: "%d:%02d", remainingSeconds / 60, remainingSeconds % 60)

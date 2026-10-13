@@ -940,7 +940,17 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hellos.map(\.recordName), ["hello-\(device.deviceID)"])
         let opened = try TestPhone.openHello(try XCTUnwrap(hellos.first), code: code)
         XCTAssertEqual(opened.hello.device.linkNonce, code.nonce)
-        XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's hello gives the Mac the phone's code")
+        XCTAssertNil(root.linking.linkCode, "SAS v2: no code before the hub's nonce")
+        // The Mac accepted the hello: its waiting keybox carries the nonce, and the phone shows the Mac's code.
+        let waiting = DeviceGrant(
+            deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private, linked: false,
+            typingAllowed: false, startSessionsAllowed: true, awaitingConfirmation: true,
+            confirmNonce: TestPhone.confirmNonceText)
+        try await TestPhone.hub(over: macSide).save([try TestPhone.grantRecord(waiting, keys: nil, modifiedAt: Date())])
+        linkClock.release()
+        try await poll { root.linking.linkCode != nil && linkClock.waiting == 1 }
+        XCTAssertEqual(root.linking.linkCode, opened.sas, "the real host's keybox gives the phone the Mac's code")
+        XCTAssertTrue(root.linking.macSeesPhone)
         let grant = DeviceGrant(
             deviceID: device.deviceID, hubID: hubID, name: device.name, scope: .private,
             linked: true, linkedAt: linkClock.start, typingAllowed: false, startSessionsAllowed: true

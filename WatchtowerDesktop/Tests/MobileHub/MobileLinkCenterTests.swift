@@ -279,15 +279,12 @@ final class MobileLinkCenterTests: XCTestCase {
         try await center.confirmLink(deviceID: deviceID, sas: sas)
     }
 
-    /// The code `phone` computes from the QR it scanned and its own public keys.
-    private func phoneSAS(_ phone: DeviceIdentityKeys, scanned code: LinkPayload) throws -> String {
-        KeyDerivation.sas(
-            hubID: try WireBytes.hubUUID(code.hubID), linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(code.nonce)),
-            hubSigning: try Curve25519.Signing.PublicKey(
-                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubSigningKey))),
-            hubAgreement: try Curve25519.KeyAgreement.PublicKey(
-                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubAgreementKey))),
-            deviceSigning: phone.signing.publicKey, deviceAgreement: phone.agreement.publicKey)
+    /// The code `phone` computes from the QR it scanned, its own public keys and the confirm nonce its waiting
+    /// keybox carries (SAS v2).
+    private func phoneSAS(_ phone: DeviceIdentityKeys, scanned code: LinkPayload) async throws -> String {
+        let keybox = try await openedKeybox(phone)
+        let confirmNonce = try XCTUnwrap(keybox.grant.confirmNonce.flatMap(WireBytes.fromBase64URL), "no confirm nonce")
+        return try TestHello.sas(phone, scanned: code, confirmNonce: confirmNonce)
     }
 
     /// One linked phone's own device record, and the close that may follow.
@@ -399,8 +396,9 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(center.pendingLinks.count, 2)
         XCTAssertEqual(Set(center.pendingLinks.map(\.id)), [phoneA, phoneB], "one row per device")
         for (phone, id) in [(identityA, phoneA), (identityB, phoneB)] {
+            let phoneCode = try await phoneSAS(phone, scanned: code)
             XCTAssertEqual(
-                center.pendingLinks.first { $0.id == id }?.sas, try phoneSAS(phone, scanned: code),
+                center.pendingLinks.first { $0.id == id }?.sas, phoneCode,
                 "each row shows the code its own phone computes")
         }
         for phone in [identityA, identityB] {
@@ -552,7 +550,8 @@ final class MobileLinkCenterTests: XCTestCase {
         let code = try await center.issueCode()
         try await handle(try hello(identityA, nonce: code.nonce))
 
-        XCTAssertEqual(center.pendingLinks.first?.sas, try phoneSAS(identityA, scanned: code))
+        let phoneCode = try await phoneSAS(identityA, scanned: code)
+        XCTAssertEqual(center.pendingLinks.first?.sas, phoneCode)
     }
 
     /// Link binds the code the owner compared: a request replaced meanwhile (a new code, so a new SAS) is not linked
@@ -563,7 +562,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let seen = try XCTUnwrap(center.pendingLinks.first?.sas)
         let second = try await center.issueCode()
         try await handle(try hello(identityA, nonce: second.nonce))
-        let now = try phoneSAS(identityA, scanned: second)
+        let now = try await phoneSAS(identityA, scanned: second)
         XCTAssertEqual(center.pendingLinks.map(\.sas), [now], "the request was replaced")
         try XCTSkipIf(now == seen, "the two codes collided (1 in 10 000)")
 

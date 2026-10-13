@@ -62,6 +62,8 @@ var (
 	hubID     = mustParseUUID(hubIDText)
 	linkNonce = seq(0xA0, 0xBF)
 	metaKey   = seq(0xC0, 0xDF)
+	// SAS v2: the hub's confirm nonce, drawn after it accepted the hello.
+	confirmNonce = seq(0xE0, 0xFF)
 )
 
 func mustParseUUID(s string) []byte {
@@ -129,11 +131,11 @@ func recordName(zone byte, kind, id string) string {
 
 func sas(t *testing.T, k keys) string {
 	t.Helper()
-	transcript := cat([]byte("wt/sas/v1"), hubID, linkNonce,
+	transcript := cat([]byte("wt/sas/v2"), hubID, linkNonce,
 		k.hubSig.Public().(ed25519.PublicKey), k.hubKX.PublicKey().Bytes(),
-		k.devSig.Public().(ed25519.PublicKey), k.devKX.PublicKey().Bytes())
+		k.devSig.Public().(ed25519.PublicKey), k.devKX.PublicKey().Bytes(), confirmNonce)
 	digest := sha256.Sum256(transcript)
-	okm, err := hkdf.Key(sha256.New, digest[:], linkNonce, "wt/sas/v1", 4)
+	okm, err := hkdf.Key(sha256.New, digest[:], linkNonce, "wt/sas/v2", 4)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -77,7 +77,8 @@ struct MobileLinkSheet: View {
 }
 
 /// One phone waiting for the owner (mobile E2E spec §2.3): its name, the
-/// four-digit code both screens show, Link and Refuse.
+/// four-digit code both screens show, a warning when another waiting phone
+/// shares its name or code (pairing code v2), Link and Refuse.
 struct PendingLinkRow: View {
     let link: MobileLinkCenter.PendingLink
     let model: MobileLinkSheetViewModel
@@ -88,6 +89,10 @@ struct PendingLinkRow: View {
                 .font(.headline)
             Text("Code \(link.sas) — check that your iPhone shows the same code")
                 .foregroundStyle(.secondary)
+            if let warning = model.duplicateWarning(for: link) {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
             HStack {
                 Spacer()
                 Button("Refuse") { Task { await model.refuse(link) } }

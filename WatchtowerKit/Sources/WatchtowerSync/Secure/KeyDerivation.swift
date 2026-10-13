@@ -53,8 +53,15 @@ public enum KeyDerivation {
         return WireBytes.uuid(Data(digest)) ?? UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     }
 
-    /// Transcript T = SHA-256("wt/sas/v1" ‖ hub_id(16) ‖ nonce ‖ hub_sig_pub ‖ hub_kx_pub ‖ dev_sig_pub ‖ dev_kx_pub);
-    /// okm = HKDF-SHA256(ikm: T, salt: nonce, info: "wt/sas/v1", 4 bytes);
+    /// Bytes of the hub's confirm nonce (SAS v2).
+    public static let confirmNonceLength = 32
+
+    /// SAS v2 (final review I-1): the hub draws `confirm_nonce` only after it accepted the hello, whose device keys
+    /// are thereby committed, and delivers it in the waiting keybox; a phone's keys chosen offline cannot aim at a
+    /// code.
+    /// Transcript T = SHA-256("wt/sas/v2" ‖ hub_id(16) ‖ nonce ‖ hub_sig_pub ‖ hub_kx_pub ‖ dev_sig_pub ‖ dev_kx_pub
+    ///   ‖ confirm_nonce);
+    /// okm = HKDF-SHA256(ikm: T, salt: nonce, info: "wt/sas/v2", 4 bytes);
     /// four decimal digits of UInt32(bigEndian okm) % 10_000 (D6).
     public static func sas(
         hubID: UUID,
@@ -62,19 +69,21 @@ public enum KeyDerivation {
         hubSigning: Curve25519.Signing.PublicKey,
         hubAgreement: Curve25519.KeyAgreement.PublicKey,
         deviceSigning: Curve25519.Signing.PublicKey,
-        deviceAgreement: Curve25519.KeyAgreement.PublicKey
+        deviceAgreement: Curve25519.KeyAgreement.PublicKey,
+        confirmNonce: Data
     ) -> String {
-        var transcript = Data("wt/sas/v1".utf8)
+        var transcript = Data("wt/sas/v2".utf8)
         transcript.append(WireBytes.bytes(of: hubID))
         transcript.append(linkNonce)
         transcript.append(hubSigning.rawRepresentation)
         transcript.append(hubAgreement.rawRepresentation)
         transcript.append(deviceSigning.rawRepresentation)
         transcript.append(deviceAgreement.rawRepresentation)
+        transcript.append(confirmNonce)
         let digest = Data(SHA256.hash(data: transcript))
         let okm = HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: digest), salt: linkNonce,
-            info: Data("wt/sas/v1".utf8), outputByteCount: 4)
+            info: Data("wt/sas/v2".utf8), outputByteCount: 4)
         let value = okm.withUnsafeBytes { WireBytes.readUInt32(Data($0), at: 0) } ?? 0
         return String(format: "%04u", value % 10_000)
     }

@@ -665,6 +665,18 @@ enum TestHello {
             modifiedAt: plain.modifiedAt, payload: envelope, creatorUserRecordName: creator)
     }
 
+    /// The code `phone` shows for the QR `code` once its waiting keybox brought the hub's `confirmNonce` (SAS v2).
+    static func sas(_ phone: DeviceIdentityKeys, scanned code: LinkPayload, confirmNonce: Data) throws -> String {
+        KeyDerivation.sas(
+            hubID: try WireBytes.hubUUID(code.hubID), linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(code.nonce)),
+            hubSigning: try Curve25519.Signing.PublicKey(
+                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubSigningKey))),
+            hubAgreement: try Curve25519.KeyAgreement.PublicKey(
+                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubAgreementKey))),
+            deviceSigning: phone.signing.publicKey, deviceAgreement: phone.agreement.publicKey,
+            confirmNonce: confirmNonce)
+    }
+
     /// `phone`'s keybox among `records` (the `device_grant` slice), sealed by the hub's transport and opened with the
     /// phone's agreement key, its signature checked with the hub's public signing key; nil when there is none.
     static func keybox(for phone: DeviceIdentityKeys, in records: [SliceRecord], keyring: HubKeyring) async throws -> Keybox? {

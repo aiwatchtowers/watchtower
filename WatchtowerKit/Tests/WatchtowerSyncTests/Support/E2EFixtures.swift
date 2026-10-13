@@ -24,6 +24,8 @@ extension Data {
 /// The fixed synthetic inputs of every e2e fixture (`a...b` is a, a+1, ..., b).
 struct E2EFixtureKeys {
     static let metaKeyBytes = sequence(0xC0, 0xDF)
+    /// The hub's confirm nonce of the SAS v2 vector (chosen after the hello, delivered in the waiting keybox).
+    static let confirmNonce = sequence(0xE0, 0xFF)
     static let hubIDString = "00112233-4455-6677-8899-AABBCCDDEEFF"
 
     let hubID: UUID
@@ -48,11 +50,14 @@ struct E2EFixtureKeys {
         Data((Int(from)...Int(through)).map { UInt8($0) })
     }
 
-    func sas(nonce: Data? = nil, deviceAgreement: Curve25519.KeyAgreement.PublicKey? = nil) -> String {
+    func sas(
+        nonce: Data? = nil, deviceAgreement: Curve25519.KeyAgreement.PublicKey? = nil, confirmNonce: Data? = nil
+    ) -> String {
         KeyDerivation.sas(
             hubID: hubID, linkNonce: nonce ?? linkNonce,
             hubSigning: hubSig.publicKey, hubAgreement: hubKX.publicKey,
-            deviceSigning: devSig.publicKey, deviceAgreement: deviceAgreement ?? devKX.publicKey)
+            deviceSigning: devSig.publicKey, deviceAgreement: deviceAgreement ?? devKX.publicKey,
+            confirmNonce: confirmNonce ?? Self.confirmNonce)
     }
 }
 

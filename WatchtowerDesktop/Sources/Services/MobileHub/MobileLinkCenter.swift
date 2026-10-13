@@ -58,7 +58,11 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   answer at all) and the nonce decision without consuming the code. A
 ///   refused nonce is answered with a refusal keybox sealed to the hello's
 ///   key (F5); a valid one waits in `pendingLinks` with its four-digit code
-///   (SAS) until the owner clicks Link (`confirmLink`, which links it and
+///   (SAS v2: the hub draws a fresh `confirm_nonce` only after it accepted
+///   the hello, keeps it with the request and sends it in the waiting keybox;
+///   the code hashes it, so keys ground offline cannot aim at a code; at most
+///   `maxPendingPerCode` phones wait on one code, a further one reads
+///   `too_many_requests`; names are cleaned for display) until the owner clicks Link (`confirmLink`, which links it and
 ///   publishes its keys) or Refuse (`refuseLink`, `not_confirmed`). Closing
 ///   the link refuses every request still waiting: `used_code` after a link
 ///   (F17), `expired_code` at expiry, `not_confirmed` otherwise. A linked
@@ -99,6 +103,37 @@ final class MobileLinkCenter {
     nonisolated static let sweepPendingKey = "share_sweep_pending"
     /// Bound on the iCloud user lookup.
     nonisolated static let ownerLookupTimeout: Duration = .seconds(30)
+    /// Pairing code v2: at most this many phones wait on one code; every further attempt is refused, so guessing a
+    /// code online is bounded and shows on the Mac.
+    nonisolated static let maxPendingPerCode = 3
+
+    /// The hub's confirm nonce for one accepted hello: fresh random bytes.
+    nonisolated static func randomConfirmNonce() -> Data {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0 ..< KeyDerivation.confirmNonceLength).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
+    }
+
+    /// A hello's device name as the Mac shows it: control and format characters (newlines, bidi overrides,
+    /// zero-width marks) dropped, except the emoji joiner; runs of whitespace one space; trimmed; at most
+    /// `DevicePayload.maxNameLength` grapheme clusters; "iPhone" when nothing is left.
+    nonisolated static func displayName(_ raw: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in raw.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .lineSeparator, .paragraphSeparator:
+                scalars.append(" ")
+            case .control:
+                if scalar.properties.isWhitespace { scalars.append(" ") }
+            case .format:
+                if scalar == "\u{200D}" { scalars.append(scalar) }
+            default:
+                scalars.append(scalar)
+            }
+        }
+        let words = String(scalars).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let clipped = String(words.prefix(DevicePayload.maxNameLength)).trimmingCharacters(in: .whitespaces)
+        return clipped.isEmpty ? "iPhone" : clipped
+    }
 
     /// The QR on screen; nil once it was used, expired or the sheet closed.
     private(set) var openCode: LinkPayload?
@@ -147,6 +182,8 @@ final class MobileLinkCenter {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let shareTimeout: Duration
+    /// Draws the confirm nonce of an accepted hello (SAS v2).
+    @ObservationIgnored private let confirmNonce: @Sendable () -> Data
     /// The close that follows a link, run outside the relay pass.
     @ObservationIgnored private(set) var closeAfterLink: Task<Void, Never>?
     /// The close an account change started; a new code waits for it, so it
@@ -172,7 +209,8 @@ final class MobileLinkCenter {
         nudge: (@MainActor (Set<SliceKind>) -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
-        shareTimeout: Duration = MobileHubService.defaultCloudTimeout
+        shareTimeout: Duration = MobileHubService.defaultCloudTimeout,
+        confirmNonce: @escaping @Sendable () -> Data = MobileLinkCenter.randomConfirmNonce
     ) {
         self.sidecar = sidecar
         self.shares = shares
@@ -183,6 +221,7 @@ final class MobileLinkCenter {
         self.now = now
         self.sleep = sleep
         self.shareTimeout = shareTimeout
+        self.confirmNonce = confirmNonce
         reloadDevices()
         reloadPendingLinks()
     }
@@ -484,16 +523,29 @@ final class MobileLinkCenter {
         if payload.scope == .shared {
             guard await hasAcceptedBothShares(payload.userRecordName) else { return }
         }
+        // SAS v2: the nonce is drawn now, after the hello (and so its keys) was accepted. A hello re-sent unchanged
+        // keeps the stored nonce and code (`unchanged`).
+        let nonce = confirmNonce()
         let sas = KeyDerivation.sas(
             hubID: try WireBytes.hubUUID(sidecar.ensureHubID()), linkNonce: opened.nonce,
             hubSigning: keyring.signingPublicKey, hubAgreement: keyring.agreementPublicKey,
-            deviceSigning: opened.signingKey, deviceAgreement: opened.agreementKey)
+            deviceSigning: opened.signingKey, deviceAgreement: opened.agreementKey, confirmNonce: nonce)
         let saved = try sidecar.savePendingDevice(HubSyncState.PendingDevice(
-            deviceID: deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)), model: payload.model,
+            deviceID: deviceID, name: Self.displayName(payload.name), model: payload.model,
             scope: payload.scope, userRecordName: payload.userRecordName,
             signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
-            linkNonce: opened.code.nonce, sas: sas, receivedAt: current, typingRequested: payload.typingRequested))
-        guard saved else { return }
+            linkNonce: opened.code.nonce, sas: sas, confirmNonce: nonce, receivedAt: current,
+            typingRequested: payload.typingRequested), maxPerCode: Self.maxPendingPerCode)
+        switch saved {
+        case .unchanged:
+            return
+        case .capped:
+            logger.notice("link request from phone \(deviceID, privacy: .public): \(Self.maxPendingPerCode) already wait on its code, refused")
+            try refuse(opened, .tooManyRequests, at: current)
+            return
+        case .saved:
+            break
+        }
         logger.info("link request from phone \(deviceID, privacy: .public) waits for the owner")
         reloadPendingLinks()
         nudgeKinds([.deviceGrant])
@@ -571,7 +623,7 @@ final class MobileLinkCenter {
         guard try sidecar.linkedDevice(deviceID) == nil else { return }
         let payload = opened.hello.device
         try sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
-            deviceID: deviceID, name: String(payload.name.prefix(DevicePayload.maxNameLength)), scope: payload.scope,
+            deviceID: deviceID, name: Self.displayName(payload.name), scope: payload.scope,
             reason: reason, at: date, agreementKey: opened.agreementKey.rawRepresentation
         ))
         nudgeKinds([.deviceGrant])

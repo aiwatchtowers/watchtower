@@ -39,6 +39,7 @@ final class KeyboxTests: XCTestCase {
             data: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: nil)), encoding: .utf8))
         XCTAssertFalse(json.contains("keys"), json)
         XCTAssertFalse(json.contains("awaiting_confirmation"), json)
+        XCTAssertFalse(json.contains("confirm_nonce"), json)
         XCTAssertFalse(json.contains("revoked"), json)
         XCTAssertFalse(json.contains("null"), json)
 
@@ -72,6 +73,20 @@ final class KeyboxTests: XCTestCase {
         XCTAssertFalse(json.contains("revoked"), json)
         XCTAssertEqual(LinkRefusal.notConfirmed.rawValue, "not_confirmed")
         XCTAssertTrue(LinkRefusal.knownValues.contains(.notConfirmed))
+    }
+
+    /// SAS v2: the waiting keybox carries the hub's confirm nonce (base64url of 32 bytes) as `confirm_nonce`.
+    func testTheWaitingGrantCarriesTheConfirmNonce() throws {
+        let nonce = WireBytes.base64URL(Data(repeating: 0xAB, count: KeyDerivation.confirmNonceLength))
+        let waiting = DeviceGrant(
+            deviceID: "d", hubID: "h", name: "n", scope: .private, linked: false, typingAllowed: false,
+            startSessionsAllowed: true, awaitingConfirmation: true, confirmNonce: nonce)
+        let data = try RelayCoder.makeEncoder().encode(Keybox(grant: waiting, keys: nil))
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(Keybox.self, from: data).grant.confirmNonce, nonce)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(json.contains(#""confirm_nonce":"\#(nonce)""#), json)
+        XCTAssertEqual(LinkRefusal.tooManyRequests.rawValue, "too_many_requests")
+        XCTAssertTrue(LinkRefusal.knownValues.contains(.tooManyRequests))
     }
 
     func testNamesAreKeyFree() {

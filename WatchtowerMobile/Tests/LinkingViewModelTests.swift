@@ -1208,6 +1208,13 @@ final class LinkingViewModelTests: XCTestCase {
         clock.parked = true
         let model = makeModel()
         let payload = code()
+        host.mac = { [start] writes in
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            return DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
+                confirmNonce: TestPhone.confirmNonceText)
+        }
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
 
@@ -1228,6 +1235,70 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(stored.metaKey, "no keys before the keybox")
         XCTAssertEqual(stored.epochs, [])
         XCTAssertEqual(host.preparedFresh, [true], "a new pairing starts on an empty replica")
+        XCTAssertNil(model.link)
+        flow.cancel()
+        await flow.value
+    }
+
+    /// Pairing code v2: the code hashes the hub's confirm nonce, which the Mac draws after it accepted the hello and
+    /// sends in the waiting keybox. Before it arrives the phone shows no code (a waiting keybox without one says the
+    /// Mac sees this iPhone, still no code); a new nonce (the request replaced) changes the code.
+    func testThePhoneShowsNoCodeBeforeTheHubsNonceArrives() async throws {
+        let model = makeModel()
+        let payload = code()
+        let seen = LinkEventLog()
+        let other = WireBytes.base64URL(Data(repeating: 0x33, count: KeyDerivation.confirmNonceLength))
+        host.mac = { [weak model, start] writes in
+            guard writes.contains(where: { $0.linkNonce == payload.nonce }) else { return nil }
+            seen.append(model?.linkCode ?? "-")
+            let fetch = seen.events.count
+            // Fetches 1–2: waiting, no nonce yet; 3–4: the nonce; 5: a malformed one (no code); 6: a new nonce
+            // (the request replaced); 7: refused.
+            let nonce: String? = switch fetch {
+            case 1 ... 2: nil
+            case 3 ... 4: TestPhone.confirmNonceText
+            case 5: "not-a-nonce"
+            default: other
+            }
+            return DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
+                linkRefused: fetch >= 7 ? .notConfirmed : nil, typingAllowed: false, startSessionsAllowed: true,
+                decidedAt: start, awaitingConfirmation: fetch >= 7 ? nil : true, confirmNonce: fetch >= 7 ? nil : nonce)
+        }
+
+        await model.open(payload.url())
+
+        let sealed = await host.transport(for: .private).sealed
+        let hello = try XCTUnwrap(sealed.first)
+        let first = try TestPhone.openHello(hello, code: payload).sas
+        let second = try TestPhone.openHello(
+            hello, code: payload, confirmNonce: try XCTUnwrap(WireBytes.fromBase64URL(other))).sas
+        // What the phone showed when each fetch ran (the previous fetch's answer).
+        XCTAssertEqual(seen.events, ["-", "-", "-", first, first, "-", second])
+        XCTAssertEqual(model.phase, .failed(.refused))
+        XCTAssertNil(model.linkCode)
+        XCTAssertNil(ScannedHubKeys.confirmNonce(from: "not-a-nonce"))
+        XCTAssertNil(ScannedHubKeys.confirmNonce(from: WireBytes.base64URL(Data(count: 16))), "32 bytes only")
+    }
+
+    /// The same code scanned again: the hello is unchanged, so the Mac keeps the request and its nonce, and the
+    /// waiting keybox equals the scan's baseline. It still gives the code (never a refusal or a link, though).
+    func testAWaitingKeyboxAlreadyInTheBaselineStillGivesTheCode() async throws {
+        clock.parked = true
+        let model = makeModel()
+        let payload = code()
+        host.mac = { [start] _ in
+            DeviceGrant(
+                deviceID: TestE2E.deviceID.uuidString, hubID: acme, name: "iPhone", scope: .private, linked: false,
+                typingAllowed: false, startSessionsAllowed: true, decidedAt: start, awaitingConfirmation: true,
+                confirmNonce: TestPhone.confirmNonceText)
+        }
+        let flow = Task { await model.open(payload.url()) }
+        try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
+
+        let sealed = await host.transport(for: .private).sealed
+        let hello = try XCTUnwrap(sealed.first)
+        XCTAssertEqual(model.linkCode, try TestPhone.openHello(hello, code: payload).sas)
         XCTAssertNil(model.link)
         flow.cancel()
         await flow.value
@@ -1348,9 +1419,10 @@ final class LinkingViewModelTests: XCTestCase {
             hubAgreementKey: WireBytes.base64URL(hubAgreement.publicKey.rawRepresentation)
         )
 
-        let code = try ScannedHubKeys(payload).code(for: DeviceIdentityKeys(signing: deviceSigning, agreement: deviceAgreement))
+        let code = try ScannedHubKeys(payload).code(
+            for: DeviceIdentityKeys(signing: deviceSigning, agreement: deviceAgreement), confirmNonce: sequence(0xE0, 0xFF))
 
-        XCTAssertEqual(code, "7367")
+        XCTAssertEqual(code, "3378")
     }
 
     /// Unlink and removal delete the hub's keys; the `unlinked` record was

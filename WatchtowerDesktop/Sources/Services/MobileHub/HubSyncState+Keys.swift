@@ -37,7 +37,8 @@ extension HubSyncState {
                 link_nonce TEXT,
                 sas TEXT,
                 received_at REAL,
-                typing_requested INTEGER NOT NULL DEFAULT 0
+                typing_requested INTEGER NOT NULL DEFAULT 0,
+                confirm_nonce BLOB
             );
             CREATE TABLE IF NOT EXISTS revoked_devices (
                 device_id TEXT PRIMARY KEY,
@@ -60,7 +61,8 @@ extension HubSyncState {
         try addMissingColumns(
             "devices", [("signing_key", "BLOB"), ("agreement_key", "BLOB"), ("link_nonce", "TEXT"), ("last_seq", "INTEGER")], db)
         try addMissingColumns("link_refusals", [("agreement_key", "BLOB")], db)
-        try addMissingColumns("pending_devices", [("typing_requested", "INTEGER NOT NULL DEFAULT 0")], db)
+        try addMissingColumns(
+            "pending_devices", [("typing_requested", "INTEGER NOT NULL DEFAULT 0"), ("confirm_nonce", "BLOB")], db)
         try addMissingColumns("revoked_devices", [("name", "TEXT"), ("scope", "TEXT")], db)
         try addMissingColumns("slice_state", [("wire_name", "TEXT")], db)
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS slice_state_by_wire ON slice_state (wire_name)")
@@ -315,7 +317,8 @@ extension HubSyncState {
     // MARK: - Pending link requests (Task 13)
 
     /// A phone whose hello carried a valid code, waiting for the owner's Link or Refuse on the Mac. Its keys are
-    /// public keys; `sas` is the four-digit code both screens show.
+    /// public keys; `sas` is the four-digit code both screens show (SAS v2: computed with `confirmNonce`, which the
+    /// hub drew after it accepted the hello and sends the phone in its waiting keybox).
     struct PendingDevice: Equatable, Sendable {
         let deviceID: String
         let name: String
@@ -327,36 +330,58 @@ extension HubSyncState {
         /// The QR nonce text of the code the hello was sealed under.
         let linkNonce: String
         let sas: String
+        /// The hub's confirm nonce (`KeyDerivation.confirmNonceLength` random bytes).
+        let confirmNonce: Data
         let receivedAt: Date
         /// The hello's "Type into sessions" toggle (spec §10, PROJ-16): kept for the link, never a grant.
         var typingRequested = false
     }
 
-    /// Stores a pending request; false (nothing written) when the same device already waits with the same code. The
-    /// same device with another code replaces its request.
-    @discardableResult
-    func savePendingDevice(_ pending: PendingDevice) throws -> Bool {
+    /// What `savePendingDevice` did.
+    enum PendingSave: Equatable, Sendable {
+        case saved
+        /// The same device already waits with the same code and keys: nothing written (its nonce and code stay).
+        case unchanged
+        /// `maxPerCode` other devices already wait on this code: nothing written (pairing code v2 attempt cap).
+        case capped
+    }
+
+    /// Stores a pending request. The same device with the same code and keys is `unchanged`; the same device with
+    /// another code or keys replaces its request; a new device on a code `maxPerCode` others already wait on is
+    /// `capped`. One transaction: the count and the insert never race another hello.
+    func savePendingDevice(_ pending: PendingDevice, maxPerCode: Int) throws -> PendingSave {
         try queue.write { db in
             if let stored = try Row.fetchOne(
-                db, sql: "SELECT link_nonce, signing_key, agreement_key FROM pending_devices WHERE device_id = ? COLLATE NOCASE",
+                db, sql: """
+                    SELECT link_nonce, signing_key, agreement_key FROM pending_devices
+                    WHERE device_id = ? COLLATE NOCASE AND confirm_nonce IS NOT NULL
+                    """,
                 arguments: [pending.deviceID]),
                stored["link_nonce"] as String? == pending.linkNonce, stored["signing_key"] as Data? == pending.signingKey,
                stored["agreement_key"] as Data? == pending.agreementKey {
-                return false
+                return .unchanged
             }
+            // A request stored before pairing code v2 (no confirm nonce) is never offered, so it takes no place.
+            let others = try Int.fetchOne(
+                db, sql: """
+                    SELECT COUNT(*) FROM pending_devices
+                    WHERE link_nonce = ? AND device_id != ? COLLATE NOCASE AND confirm_nonce IS NOT NULL
+                    """,
+                arguments: [pending.linkNonce, pending.deviceID]) ?? 0
+            guard others < maxPerCode else { return .capped }
             try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
             try db.execute(
                 sql: """
                     INSERT INTO pending_devices (device_id, name, model, scope, user_record_name, signing_key, agreement_key,
-                                                 link_nonce, sas, received_at, typing_requested)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                 link_nonce, sas, received_at, typing_requested, confirm_nonce)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     pending.deviceID, pending.name, pending.model, pending.scope.rawValue, pending.userRecordName,
                     pending.signingKey, pending.agreementKey, pending.linkNonce, pending.sas,
-                    pending.receivedAt.timeIntervalSince1970, pending.typingRequested
+                    pending.receivedAt.timeIntervalSince1970, pending.typingRequested, pending.confirmNonce
                 ])
-            return true
+            return .saved
         }
     }
 
@@ -442,16 +467,18 @@ extension HubSyncState {
             .flatMap(pending)
     }
 
-    /// nil for a row missing a key column (never written so by `savePendingDevice`).
+    /// nil for a row missing a key column (never written so by `savePendingDevice`) or the confirm nonce (a request
+    /// stored before pairing code v2: no phone can show its code, so it is never offered for a Link).
     private static func pending(_ row: Row) -> PendingDevice? {
         guard let signingKey = row["signing_key"] as Data?, let agreementKey = row["agreement_key"] as Data?,
               let nonce = row["link_nonce"] as String?, let sas = row["sas"] as String?,
+              let confirmNonce = row["confirm_nonce"] as Data?,
               let receivedAt = row["received_at"] as Double? else { return nil }
         return PendingDevice(
             deviceID: row["device_id"], name: row["name"] ?? "", model: row["model"] ?? "",
             scope: DeviceScope(rawValue: row["scope"] ?? DeviceScope.private.rawValue),
             userRecordName: row["user_record_name"] ?? "", signingKey: signingKey, agreementKey: agreementKey,
-            linkNonce: nonce, sas: sas, receivedAt: Date(timeIntervalSince1970: receivedAt),
+            linkNonce: nonce, sas: sas, confirmNonce: confirmNonce, receivedAt: Date(timeIntervalSince1970: receivedAt),
             typingRequested: row["typing_requested"] ?? false)
     }
 

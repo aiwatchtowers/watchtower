@@ -68,13 +68,24 @@ struct ScannedHubKeys {
     }
 
     /// The four-digit code the Mac shows for this phone: `KeyDerivation.sas` with the hub's argument order
-    /// (`MobileLinkCenter.handleHello`). Never logged.
-    func code(for device: DeviceIdentityKeys) -> String {
+    /// (`MobileLinkCenter.handleHello`) and the confirm nonce the Mac drew after it accepted this phone's hello
+    /// (SAS v2, from the waiting keybox). Never logged.
+    func code(for device: DeviceIdentityKeys, confirmNonce: Data) -> String {
         KeyDerivation.sas(
             hubID: hubUUID, linkNonce: linkNonce,
             hubSigning: hubSigning, hubAgreement: hubAgreement,
-            deviceSigning: device.signing.publicKey, deviceAgreement: device.agreement.publicKey
+            deviceSigning: device.signing.publicKey, deviceAgreement: device.agreement.publicKey,
+            confirmNonce: confirmNonce
         )
+    }
+
+    /// A waiting keybox's `confirm_nonce`: base64url of exactly `KeyDerivation.confirmNonceLength` bytes, else nil
+    /// (no code is shown).
+    static func confirmNonce(from text: String?) -> Data? {
+        guard let text, let bytes = WireBytes.fromBase64URL(text), bytes.count == KeyDerivation.confirmNonceLength else {
+            return nil
+        }
+        return bytes
     }
 }
 

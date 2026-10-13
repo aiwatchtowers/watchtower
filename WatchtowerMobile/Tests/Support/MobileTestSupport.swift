@@ -250,6 +250,10 @@ enum TestPhone {
             metaKey: text(TestE2E.metaKey))
     }
 
+    /// The confirm nonce the test hub draws for a hello (SAS v2), as raw bytes and as the keybox carries it.
+    static let confirmNonce = Data(repeating: 0x5A, count: KeyDerivation.confirmNonceLength)
+    static var confirmNonceText: String { WireBytes.base64URL(confirmNonce) }
+
     /// A v3 code of the test hub (its keys and link nonce), issued at `iat`.
     static func linkCode(iat: Int64, macName: String = "Acme Mac") -> LinkPayload {
         LinkPayload(
@@ -261,8 +265,10 @@ enum TestPhone {
 
     /// The Mac's side of a sealed hello (`MobileLinkCenter.openHello`): opened with the test hub's agreement key
     /// under the code's nonce, its signature checked with the enclosed device key, and the code the hub shows for
-    /// it, computed as the hub does (`MobileLinkCenter.handleHello`).
-    static func openHello(_ record: CloudRecord, code: LinkPayload) throws -> (hello: DeviceHello, sas: String) {
+    /// it, computed as the hub does (`MobileLinkCenter.handleHello`) with the confirm nonce the hub drew (SAS v2).
+    static func openHello(
+        _ record: CloudRecord, code: LinkPayload, confirmNonce: Data = Self.confirmNonce
+    ) throws -> (hello: DeviceHello, sas: String) {
         let hubUUID = try WireBytes.hubUUID(code.hubID)
         let nonce = try XCTUnwrap(WireBytes.fromBase64URL(code.nonce))
         let context = EnvelopeContext(zone: .relay, wireName: record.recordName)
@@ -279,7 +285,7 @@ enum TestPhone {
         let sas = KeyDerivation.sas(
             hubID: hubUUID, linkNonce: nonce,
             hubSigning: TestE2E.hubSigningKey.publicKey, hubAgreement: TestE2E.hubAgreementKey.publicKey,
-            deviceSigning: signing, deviceAgreement: agreement)
+            deviceSigning: signing, deviceAgreement: agreement, confirmNonce: confirmNonce)
         return (hello, sas)
     }
 }

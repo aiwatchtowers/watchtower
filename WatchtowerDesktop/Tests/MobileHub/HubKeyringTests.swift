@@ -670,7 +670,7 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(columns["slice_state"]).contains("wire_name"))
         XCTAssertEqual(columns["pending_devices"], [
             "device_id", "name", "model", "scope", "user_record_name", "signing_key", "agreement_key", "link_nonce", "sas",
-            "received_at", "typing_requested"
+            "received_at", "typing_requested", "confirm_nonce"
         ])
         XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at", "name", "scope"])
         XCTAssertEqual(columns["relay_seen"], ["wire_name", "sender_id", "epoch", "seq", "at"])
@@ -701,7 +701,8 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertNoThrow(try HubSyncState(path: path))
     }
 
-    /// A sidecar from before B18 met E2E: its `pending_devices` gains `typing_requested` in place, unrequested.
+    /// A sidecar from before B18 met E2E: its `pending_devices` gains `typing_requested` (unrequested) and
+    /// `confirm_nonce` in place.
     func testAPendingDevicesTableWithoutTheTypingRequestGainsIt() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("hubstate-\(UUID().uuidString).db").path
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -715,7 +716,13 @@ final class HubKeyringTests: XCTestCase {
         }
         try old.close()
         let sidecar = try HubSyncState(path: path)
-        XCTAssertEqual(try sidecar.pendingDevices().map(\.typingRequested), [false])
+        let columns = try sidecar.queue.read { Set(try $0.columns(in: "pending_devices").map(\.name)) }
+        XCTAssertTrue(columns.isSuperset(of: ["typing_requested", "confirm_nonce"]))
+        let typing = try sidecar.queue.read { try Bool.fetchAll($0, sql: "SELECT typing_requested FROM pending_devices") }
+        XCTAssertEqual(typing, [false])
+        // Pairing code v2: a request stored before it has no confirm nonce, so no phone can show its code: it is
+        // never offered for a Link.
+        XCTAssertTrue(try sidecar.pendingDevices().isEmpty)
         XCTAssertNoThrow(try HubSyncState(path: path))
     }
 

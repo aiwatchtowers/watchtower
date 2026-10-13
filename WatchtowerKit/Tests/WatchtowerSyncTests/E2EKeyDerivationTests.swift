@@ -73,6 +73,16 @@ final class E2EKeyDerivationTests: XCTestCase {
         XCTAssertTrue(base.allSatisfy(\.isNumber))
         XCTAssertNotEqual(base, k.sas(nonce: Data(repeating: 0xEE, count: 32)))
         XCTAssertNotEqual(base, k.sas(deviceAgreement: Curve25519.KeyAgreement.PrivateKey().publicKey))
+        XCTAssertNotEqual(base, k.sas(confirmNonce: Data(repeating: 0x11, count: 32)))
+    }
+
+    /// I-1 (SAS v2): the code depends on the hub's confirm nonce, which the hub draws only after it accepted the
+    /// hello. A grinder who fixes keys whose code matches the owner's under one nonce does not keep that code under
+    /// the nonce the hub actually draws: across 64 nonces the same keys show many different codes.
+    func testTheSASOfFixedKeysIsSpreadByTheConfirmNonce() throws {
+        let k = try E2EFixtureKeys()
+        let codes = Set((0 ..< 64).map { byte in k.sas(confirmNonce: Data(repeating: UInt8(byte), count: 32)) })
+        XCTAssertGreaterThan(codes.count, 56, "fixed device keys must not fix the code")
     }
 
     func testDeviceIDIsDerivedFromTheSigningKey() throws {

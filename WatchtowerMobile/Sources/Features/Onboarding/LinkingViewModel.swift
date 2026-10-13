@@ -63,8 +63,10 @@ final class LinkingViewModel {
     }
     private(set) var notice: LinkNotice?
     /// The four-digit code of the running link (mobile E2E spec §2.3): the
-    /// Mac shows the same one for this phone. nil outside a wait, or when a
-    /// resumed wait cannot read the keys (locked).
+    /// Mac shows the same one for this phone. SAS v2: it hashes the nonce the
+    /// Mac drew after it accepted the hello, so it shows only once the waiting
+    /// keybox brought that nonce. nil outside a wait, before the nonce, or
+    /// when a resumed wait cannot read the keys (locked).
     private(set) var linkCode: String?
     /// The Mac read this phone's hello and waits for the owner's Link
     /// (the keybox says `awaiting_confirmation`).
@@ -332,8 +334,18 @@ final class LinkingViewModel {
             phase = .failed(.local(error.localizedDescription))
             return
         }
-        linkCode = hubKeys.code(for: deviceKeys)
-        await waitForGrant(pending)
+        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
+    }
+
+    /// What the code is computed from, apart from the Mac's nonce.
+    private struct PairingCode {
+        let hubKeys: ScannedHubKeys
+        let deviceKeys: DeviceIdentityKeys
+
+        /// nil while the keybox carries no well-formed nonce.
+        func code(confirmNonce text: String?) -> String? {
+            ScannedHubKeys.confirmNonce(from: text).map { hubKeys.code(for: deviceKeys, confirmNonce: $0) }
+        }
     }
 
     static let keysUnavailableReason = "This iPhone's Watchtower keys can't be read. Unlock it and scan again."
@@ -414,36 +426,44 @@ final class LinkingViewModel {
             endPendingLink(pending, failure: .local(error.localizedDescription))
             return
         }
-        linkCode = hubKeys.code(for: deviceKeys)
-        await waitForGrant(pending)
+        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
     }
 
     /// Fetches the keybox every 2 s until the deadline. A keybox for this
     /// hub whose grant differs from the baseline is the Mac's answer:
     /// `link_refused` (any code, `not_confirmed` included, even one this
     /// build does not know) refuses; `awaiting_confirmation` shows that the
-    /// Mac sees this iPhone; `linked` with keys stores them and links. A
-    /// cancelled wait (the app killed) leaves the pending link to resume.
-    private func waitForGrant(_ pending: PendingLink) async {
+    /// Mac sees this iPhone and, with its `confirm_nonce`, gives the code
+    /// (SAS v2; a waiting keybox without a well-formed one shows none);
+    /// `linked` with keys stores them and links. A cancelled wait (the app
+    /// killed) leaves the pending link to resume.
+    private func waitForGrant(_ pending: PendingLink, code: PairingCode) async {
         macSeesPhone = false
+        linkCode = nil
         phase = .waiting(macName: pending.link.macName)
         while true {
             if let deviceID = identity.deviceID,
                let keybox = await host?.fetchKeybox(deviceID: deviceID),
-               keybox.grant != pending.baseline, keybox.grant.hubID == pending.link.hubID {
+               keybox.grant.hubID == pending.link.hubID {
                 let grant = keybox.grant
-                if grant.linkRefused != nil {
+                // Only a keybox that differs from the baseline answers this scan. A waiting one the baseline already
+                // held still gives the code: the same code scanned again re-sends an unchanged hello, and the Mac
+                // keeps that request with its nonce and code (one from an earlier scan of another code gives a code
+                // the Mac's row does not show, until the Mac replaces the request).
+                let fresh = grant != pending.baseline
+                if fresh, grant.linkRefused != nil {
                     endPendingLink(pending, failure: .refused)
                     return
                 }
-                if grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
+                if fresh, grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
                     if let boxKeys = keybox.keys {
                         await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
                         return
                     }
                     Self.logger.warning("a linked keybox without keys: still waiting")
-                } else if grant.awaitingConfirmation == true {
+                } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
                     macSeesPhone = true
+                    linkCode = code.code(confirmNonce: grant.confirmNonce)
                 }
             }
             let remaining = pending.deadline.timeIntervalSince(clock.now())

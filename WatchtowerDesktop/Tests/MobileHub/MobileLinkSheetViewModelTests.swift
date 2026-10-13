@@ -187,6 +187,39 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         XCTAssertEqual(sheet.phase, .linked("Acme iPhone"))
     }
 
+    /// Pairing code v2: two waiting phones with one name (a photographed QR answered under the owner's phone name)
+    /// get a warning on each row; a lone request gets none.
+    func testTwoRequestsWithOneNameWarnOnEachRow() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+        let lone = try XCTUnwrap(sheet.pendingLinks.first)
+        XCTAssertNil(sheet.duplicateWarning(for: lone))
+
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+
+        XCTAssertEqual(sheet.pendingLinks.count, 2)
+        for link in sheet.pendingLinks {
+            XCTAssertEqual(
+                sheet.duplicateWarning(for: link),
+                "Two iPhones named \"Acme iPhone\" are waiting — link only the one whose screen shows this code.")
+        }
+        await sheet.close()
+    }
+
+    /// Two waiting phones showing one code cannot be told apart by comparing: both rows say so.
+    func testTwoRequestsWithOneCodeWarnToRefuseBoth() {
+        let first = MobileLinkCenter.PendingLink(id: "a", name: "Acme iPhone", sas: "1234", receivedAt: Date())
+        let second = MobileLinkCenter.PendingLink(id: "b", name: "Other iPhone", sas: "1234", receivedAt: Date())
+        let third = MobileLinkCenter.PendingLink(id: "c", name: "Third iPhone", sas: "5678", receivedAt: Date())
+        let all = [first, second, third]
+
+        XCTAssertEqual(
+            MobileLinkSheetViewModel.duplicateWarning(for: first, among: all),
+            "Two iPhones show code 1234 — refuse both and show a new code.")
+        XCTAssertNil(MobileLinkSheetViewModel.duplicateWarning(for: third, among: all))
+    }
+
     /// Board #67: a phone already linked that scans the new code re-links
     /// with it; the sheet says so instead of "This code expired." E2E: the
     /// re-scan is a new hello from the same device keys, confirmed by the
