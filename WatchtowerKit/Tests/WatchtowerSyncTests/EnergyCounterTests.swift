@@ -109,6 +109,23 @@ final class EnergyCounterTests: XCTestCase {
         XCTAssertEqual(counter.counts(daysAgo: 1)[.uploadAttempt], 1)
     }
 
+    func testAClockSetBackPastTheRetainedWindowWritesNoLeakingKey() {
+        let clock = TestClock()
+        let counter = counter(clock: clock)
+
+        for _ in 0 ..< EnergyCounter.retainedDays {
+            counter.record(.silentPush)
+            clock.advance(86_400)
+        }
+        clock.advance(-86_400 * Double(EnergyCounter.retainedDays + 5))
+        counter.record(.silentPush)
+        counter.record(.silentPush)
+
+        XCTAssertEqual(defaults.stringArray(forKey: "energy.days")?.count, EnergyCounter.retainedDays)
+        XCTAssertEqual(storedCountKeys.count, EnergyCounter.retainedDays, "a day pruned on arrival stores no count")
+        XCTAssertEqual(counter.counts(daysAgo: 0)[.silentPush], 0)
+    }
+
     func testConcurrentRecordsLoseNoCount() {
         let counter = counter(clock: TestClock())
 

@@ -68,6 +68,10 @@ public final class EnergyCounter: @unchecked Sendable {
         var end: Date
         var stamp: String
         var keys: [EnergyEvent: String]
+        /// False when the day is older than every retained one (a clock set
+        /// back past the window): registering it pruned it at once, so a
+        /// count written for it would never be pruned again and leak.
+        var retained: Bool
     }
 
     private let defaults: UserDefaults
@@ -78,11 +82,12 @@ public final class EnergyCounter: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock<Day?>(uncheckedState: nil)
 
     /// `keyPrefix` namespaces the keys in `defaults`; `calendar` decides
-    /// where a local day starts (the device's by default).
+    /// where a local day starts (the device's by default, following a time
+    /// zone change).
     public init(
         defaults: UserDefaults,
         keyPrefix: String = "energy",
-        calendar: Calendar = .current,
+        calendar: Calendar = .autoupdatingCurrent,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.defaults = defaults
@@ -97,6 +102,7 @@ public final class EnergyCounter: @unchecked Sendable {
         lock.withLockUnchecked { cached in
             let day = currentDay(cached, at: date)
             cached = day
+            guard day.retained else { return }
             // A day built just now has every key; the subscript cannot miss.
             let name = day.keys[event] ?? key(stamp: day.stamp, event: event)
             defaults.set(defaults.integer(forKey: name) + 1, forKey: name)
@@ -122,7 +128,9 @@ public final class EnergyCounter: @unchecked Sendable {
 
     /// The cached day while `date` falls inside it; otherwise the day of
     /// `date`, registered in the retained-days list (which prunes the
-    /// oldest). A clock moved backwards lands in its own day the same way.
+    /// oldest). A clock moved backwards lands in its own day the same way;
+    /// one moved back past the retained window gets a day that is not
+    /// retained, and its counts are dropped.
     private func currentDay(_ cached: Day?, at date: Date) -> Day {
         if let cached, date >= cached.start, date < cached.end { return cached }
         let start = calendar.startOfDay(for: date)
@@ -132,15 +140,17 @@ public final class EnergyCounter: @unchecked Sendable {
         for event in EnergyEvent.allCases {
             keys[event] = key(stamp: stamp, event: event)
         }
-        register(stamp)
-        return Day(start: start, end: end, stamp: stamp, keys: keys)
+        let retained = register(stamp)
+        return Day(start: start, end: end, stamp: stamp, keys: keys, retained: retained)
     }
 
     private var daysKey: String { "\(prefix).days" }
 
-    private func register(_ stamp: String) {
+    /// Adds `stamp` to the retained days, pruning the oldest past
+    /// `retainedDays`; false when `stamp` itself was the one pruned.
+    private func register(_ stamp: String) -> Bool {
         var days = defaults.stringArray(forKey: daysKey) ?? []
-        guard !days.contains(stamp) else { return }
+        guard !days.contains(stamp) else { return true }
         days.append(stamp)
         // `yyyy-MM-dd` sorts chronologically as text.
         days.sort()
@@ -151,6 +161,7 @@ public final class EnergyCounter: @unchecked Sendable {
             }
         }
         defaults.set(days, forKey: daysKey)
+        return days.contains(stamp)
     }
 
     private func key(stamp: String, event: EnergyEvent) -> String {
