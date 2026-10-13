@@ -1768,10 +1768,14 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
 
+-- Owner's standing trust per (tool, chat surface) (migration 00110): no row
+-- = ask; an execute on one surface (e.g. reaction) never covers another.
 CREATE TABLE IF NOT EXISTS tool_trust (
-    tool       TEXT PRIMARY KEY,
+    tool       TEXT NOT NULL,
+    surface    TEXT NOT NULL,
     trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (tool, surface)
 );
 
 -- Reaction commands (migration 00063): the owner drives Watchtower by reacting

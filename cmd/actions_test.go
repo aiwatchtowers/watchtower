@@ -228,6 +228,49 @@ func TestActions_TrustAndTools(t *testing.T) {
 	assert.NotContains(t, out, `"create_target"`)
 }
 
+// Trust is per (tool, surface) (target 167): without --surface the CLI sets
+// every surface the tool is on; --surface sets one; the listing shows each.
+func TestActions_TrustPerSurface(t *testing.T) {
+	database := writeActionsConfig(t)
+	type row struct {
+		Name           string            `json:"name"`
+		Trust          string            `json:"trust"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	listCreateTarget := func(args ...string) row {
+		out, err := runActions(t, append([]string{"tools", "--json"}, args...)...)
+		require.NoError(t, err)
+		var listed []row
+		require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+		for _, l := range listed {
+			if l.Name == "create_target" {
+				return l
+			}
+		}
+		t.Fatalf("create_target not listed: %s", out)
+		return row{}
+	}
+
+	_, err := runActions(t, "trust", "create_target", "execute")
+	require.NoError(t, err)
+	got := listCreateTarget()
+	assert.Equal(t, "execute", got.Trust)
+	assert.Equal(t, map[string]string{"main": "execute", "reaction": "execute"}, got.TrustBySurface)
+
+	_, err = runActions(t, "trust", "create_target", "ask", "--surface", "main")
+	require.NoError(t, err)
+	got = listCreateTarget()
+	assert.Equal(t, "mixed", got.Trust)
+	assert.Equal(t, map[string]string{"main": "ask", "reaction": "execute"}, got.TrustBySurface)
+	assert.Equal(t, "execute", listCreateTarget("--surface", "reaction").Trust)
+	trust, err := database.GetToolTrust("create_target", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "ask", trust)
+
+	_, err = runActions(t, "trust", "create_target", "execute", "--surface", "target")
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered, "create_target is not on the target surface")
+}
+
 // The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
 func TestActions_ToolsJSONMarksAlwaysAsk(t *testing.T) {
 	writeActionsConfig(t)
@@ -337,7 +380,7 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			targets, err := database.GetTargets(db.TargetFilter{})
 			require.NoError(t, err)
 			assert.Empty(t, targets, "nothing executed")
-			trust, err := database.GetToolTrust("create_target")
+			trust, err := database.GetToolTrust("create_target", "main")
 			require.NoError(t, err)
 			assert.Equal(t, "ask", trust)
 

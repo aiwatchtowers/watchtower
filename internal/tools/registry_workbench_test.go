@@ -88,7 +88,7 @@ func TestDirectApply_AppliesInlineWithAuditRow(t *testing.T) {
 	assert.Equal(t, strconv.FormatInt(pid, 10), row.ContextID)
 	assert.Equal(t, "r", row.Reason)
 
-	trust, err := reg.Trust("pecho")
+	trust, err := reg.Trust("pecho", "project")
 	require.NoError(t, err)
 	assert.Equal(t, TrustAsk, trust, "DirectApply is not global trust")
 }

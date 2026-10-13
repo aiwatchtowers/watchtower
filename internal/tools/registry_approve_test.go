@@ -28,7 +28,7 @@ func TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply(t *testing.T)
 	reg := New(d)
 	require.NoError(t, reg.Register(tool))
 	// Even a stale execute trust row cannot run it (AGENT-03's read side).
-	require.NoError(t, d.SetToolTrust("pecho", "execute"))
+	require.NoError(t, d.SetToolTrust("pecho", "project", "execute"))
 
 	rc, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
 	require.NoError(t, err)

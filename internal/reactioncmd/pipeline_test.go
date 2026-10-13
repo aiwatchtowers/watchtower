@@ -677,7 +677,7 @@ func TestReactionCmd_ToolNotOnReactionSurfaceIsRefused(t *testing.T) {
 			return "sent", nil
 		},
 	}))
-	require.NoError(t, reg.SetTrust("main_only_send", tools.TrustExecute))
+	require.NoError(t, reg.SetTrust("main_only_send", "main", tools.TrustExecute))
 	_, err = database.Exec(`INSERT OR REPLACE INTO reaction_command_map (emoji, kind, tool, enabled)
 		VALUES ('outbox_tray', 'builtin_tool', 'main_only_send', 1)`)
 	require.NoError(t, err)

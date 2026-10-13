@@ -214,8 +214,10 @@ var (
 	ErrNotReadable     = errors.New("tool is not a read tool")
 	ErrExternalExecute = errors.New("an external tool can never be trusted to execute without approval")
 	ErrAlwaysAsk       = errors.New("this tool always needs the owner's approval and can never be trusted to execute")
-	ErrBadTransition   = errors.New("action is not in an applicable state")
-	ErrNotFound        = errors.New("action not found")
+	// ErrSurfaceNotOffered: a trust setting names a surface the tool is not on.
+	ErrSurfaceNotOffered = errors.New("tool is not offered on that surface")
+	ErrBadTransition     = errors.New("action is not in an applicable state")
+	ErrNotFound          = errors.New("action not found")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -299,21 +301,24 @@ func (r *Registry) All() []*Tool {
 	return out
 }
 
-// Trust returns the tool's trust level ("ask" when never set).
-func (r *Registry) Trust(name string) (Trust, error) {
+// Trust returns the tool's trust level on one chat surface ("ask" when never
+// set). Trust is per (tool, surface): an execute granted for the reaction
+// path never covers the main chat (target 167, owner ask #109).
+func (r *Registry) Trust(name, surface string) (Trust, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return "", ErrUnknownTool
 	}
-	s, err := r.db.GetToolTrust(t.Name)
+	s, err := r.db.GetToolTrust(t.Name, surface)
 	if err != nil {
 		return "", err
 	}
 	return Trust(s), nil
 }
 
-// SetTrust changes the trust level; execute is refused for External tools.
-func (r *Registry) SetTrust(name string, trust Trust) error {
+// SetTrust changes the trust level on one surface the tool names; execute is
+// refused for External and AlwaysAsk tools.
+func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	t, ok := r.Get(name)
 	if !ok {
 		return ErrUnknownTool
@@ -327,7 +332,10 @@ func (r *Registry) SetTrust(name string, trust Trust) error {
 	if t.AlwaysAsk && trust == TrustExecute {
 		return ErrAlwaysAsk
 	}
-	return r.db.SetToolTrust(t.Name, string(trust))
+	if strings.TrimSpace(surface) == "" || !visibleOn(t, surface) {
+		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
+	}
+	return r.db.SetToolTrust(t.Name, surface, string(trust))
 }
 
 // reasonOf extracts the mandatory "reason" argument every write tool carries.
@@ -523,7 +531,9 @@ func directApplyGate(t *Tool, b Binding) error {
 // not, and a trust row keyed by tool NAME outlives a tool later being marked
 // External — the read side decides too (AGENT-03). DirectApply is execute for
 // this call only; the stored trust row is not consulted or changed. An
-// AlwaysAsk tool is ask on the same grounds as External.
+// AlwaysAsk tool is ask on the same grounds as External. Otherwise the row
+// for the binding's own surface decides: an execute set for another surface
+// does not apply here.
 func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 	if t.External || t.AlwaysAsk {
 		return TrustAsk, nil
@@ -531,7 +541,7 @@ func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 	if b.DirectApply {
 		return TrustExecute, nil
 	}
-	return r.Trust(t.Name)
+	return r.Trust(t.Name, b.Surface)
 }
 
 // newProposalRow is the agent_actions row a proposal records. A workbench-bound

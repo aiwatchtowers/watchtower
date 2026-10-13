@@ -409,8 +409,8 @@ func TestSendSlackMessage_RetryThatCannotTellDoesNotRepost(t *testing.T) {
 // without the owner's click.
 func TestSendSlackMessage_ExternalCannotBeExecuteTrust(t *testing.T) {
 	env := newSlackSendEnv(t)
-	assert.ErrorIs(t, env.reg.SetTrust("send_slack_message", TrustExecute), ErrExternalExecute)
-	require.NoError(t, env.d.SetToolTrust("send_slack_message", "execute")) // a stale row
+	assert.ErrorIs(t, env.reg.SetTrust("send_slack_message", "main", TrustExecute), ErrExternalExecute)
+	require.NoError(t, env.d.SetToolTrust("send_slack_message", "main", "execute")) // a stale row
 	rc, err := env.propose(t, `{"channel":"#ops","text":"hi","reason":"r"}`)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", rc.Status)

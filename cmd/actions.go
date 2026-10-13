@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,7 +51,16 @@ var actionsShowCmd = &cobra.Command{Use: "show <id>", Short: "Show one action", 
 var actionsApproveCmd = &cobra.Command{Use: "approve <id>", Short: "Approve a pending action and execute it", Args: cobra.ExactArgs(1), RunE: runActionsApprove}
 var actionsRejectCmd = &cobra.Command{Use: "reject <id>", Short: "Reject a pending action", Args: cobra.ExactArgs(1), RunE: runActionsReject}
 var actionsApplyCmd = &cobra.Command{Use: "apply <id>", Short: "Retry an approved or failed action", Args: cobra.ExactArgs(1), RunE: runActionsApply}
-var actionsTrustCmd = &cobra.Command{Use: "trust <tool> ask|execute", Short: "Set a tool's trust level", Args: cobra.ExactArgs(2), RunE: runActionsTrust}
+var actionsTrustCmd = &cobra.Command{
+	Use:   "trust <tool> ask|execute",
+	Short: "Set a tool's trust level, per chat surface",
+	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
+covers another. Without --surface the level is set on every surface the tool
+is offered on (the one switch Settings → Assistant tools flips); with
+--surface it is set on that surface only.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runActionsTrust,
+}
 var actionsToolsCmd = &cobra.Command{Use: "tools", Short: "List the registry's write tools", RunE: runActionsTools}
 
 func init() {
@@ -68,7 +78,9 @@ func init() {
 		"sha256 (hex) of the args_json the owner was shown; the approve is refused if the stored args differ")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
-	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target)")
+	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target|reaction|project)")
+	actionsTrustCmd.Flags().StringVar(&actionsFlagSurface, "surface", "",
+		"set the trust on this surface only (default: every surface the tool is on)")
 }
 
 // actionJSON is the wire shape of one row. Field names are load-bearing:
@@ -394,10 +406,23 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	if err := reg.SetTrust(args[0], tools.Trust(args[1])); err != nil {
-		return err
+	t, ok := reg.Get(args[0])
+	if !ok {
+		return tools.ErrUnknownTool
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s: trust = %s\n", args[0], args[1])
+	surfaces := t.Surfaces
+	if actionsFlagSurface != "" {
+		surfaces = []string{actionsFlagSurface}
+	}
+	if len(surfaces) == 0 {
+		return fmt.Errorf("%s names no surface; pass --surface", t.Name)
+	}
+	for _, s := range surfaces {
+		if err := reg.SetTrust(t.Name, s, tools.Trust(args[1])); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: trust = %s on %s\n", t.Name, args[1], strings.Join(surfaces, ", "))
 	return nil
 }
 
@@ -408,7 +433,11 @@ type toolJSON struct {
 	External    bool     `json:"external"`
 	AlwaysAsk   bool     `json:"always_ask"`
 	Surfaces    []string `json:"surfaces"`
-	Trust       string   `json:"trust"`
+	// Trust is the level on --surface when given; otherwise the one level
+	// every surface shares, or "mixed" when they differ. TrustBySurface is
+	// the per-surface truth (target 167).
+	Trust          string            `json:"trust"`
+	TrustBySurface map[string]string `json:"trust_by_surface"`
 }
 
 func runActionsTools(cmd *cobra.Command, _ []string) error {
@@ -425,22 +454,53 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	}
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
-		trust, err := reg.Trust(t.Name)
-		if err != nil {
-			return err
-		}
 		surfaces := t.Surfaces
 		if surfaces == nil {
 			surfaces = []string{}
 		}
+		bySurface := make(map[string]string, len(surfaces))
+		for _, s := range surfaces {
+			trust, err := reg.Trust(t.Name, s)
+			if err != nil {
+				return err
+			}
+			bySurface[s] = string(trust)
+		}
 		out = append(out, toolJSON{Name: t.Name, Description: t.Description, Access: string(t.Access),
-			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces, Trust: string(trust)})
+			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces,
+			Trust: summarizeTrust(surfaces, bySurface, actionsFlagSurface), TrustBySurface: bySurface})
 	}
 	if actionsFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
 	for _, t := range out {
-		fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-6s external=%-5v trust=%s\n", t.Name, t.Access, t.External, t.Trust)
+		perSurface := make([]string, 0, len(t.Surfaces))
+		for _, s := range t.Surfaces {
+			perSurface = append(perSurface, s+":"+t.TrustBySurface[s])
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-6s external=%-5v trust=%s %s\n",
+			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))
 	}
 	return nil
+}
+
+// summarizeTrust is toolJSON.Trust: the level on the filtered surface, else
+// the level all surfaces share, "mixed" when they differ, "ask" for a tool
+// that names no surface.
+func summarizeTrust(surfaces []string, bySurface map[string]string, filter string) string {
+	if filter != "" {
+		if s, ok := bySurface[filter]; ok {
+			return s
+		}
+		return string(tools.TrustAsk)
+	}
+	summary := string(tools.TrustAsk)
+	for i, s := range surfaces {
+		if i == 0 {
+			summary = bySurface[s]
+		} else if bySurface[s] != summary {
+			return "mixed"
+		}
+	}
+	return summary
 }
