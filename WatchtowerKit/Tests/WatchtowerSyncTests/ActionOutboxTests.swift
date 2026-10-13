@@ -245,11 +245,20 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertEqual(row.state, .pending)
         XCTAssertEqual(row.echoStatus, .received)
 
+        XCTAssertNil(row.reason)
+
         echo.status = .held
+        echo.reason = .agentBusy
         try await outbox.applyEcho(echo)
         row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.state, .pending)
         XCTAssertEqual(row.echoStatus, .held, "the last non-terminal echo wins")
+        XCTAssertEqual(row.reason, .agentBusy, "a held echo keeps why it is held")
+
+        echo.reason = .needsApproval
+        try await outbox.applyEcho(echo)
+        XCTAssertEqual(try XCTUnwrap(store.pendingActions().first).reason, .needsApproval, "a new reason replaces the old")
+        echo.reason = nil
 
         echo.status = .applied
         echo.result = ["session_id": .integer(42), "stage": .string("starting")]

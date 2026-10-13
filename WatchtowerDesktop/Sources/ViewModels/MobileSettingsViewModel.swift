@@ -31,6 +31,18 @@ final class MobileSettingsViewModel {
     nonisolated static let slowingAfter: TimeInterval = 60
     nonisolated static let refreshInterval: Duration = .seconds(5)
 
+    /// The one-time confirmation of a phone's typing request (spec §10),
+    /// the dialog's and the macOS notice's.
+    nonisolated static func allowQuestion(name: String) -> String {
+        "Allow \"\(name)\" to type into Claude Code sessions?"
+    }
+
+    /// A phone row's typing state.
+    nonisolated static func typingLabel(_ device: HubSyncState.LinkedDevice) -> String {
+        if device.typingAllowed { return "Typing allowed" }
+        return device.typingRequested ? "Asks to type into sessions" : "Typing off"
+    }
+
     /// `CloudKitTransport.entitlementPresent()`: false on an ad-hoc build,
     /// which cannot turn the toggle on (an inherited on can be turned off).
     let entitlementPresent: Bool

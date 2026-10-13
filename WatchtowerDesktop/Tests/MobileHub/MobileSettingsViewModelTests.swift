@@ -233,6 +233,22 @@ final class MobileSettingsViewModelTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).typingAllowed)
     }
 
+    /// Spec §10: a phone's typing request shows on its row, and the one-time
+    /// confirmation names it.
+    func testATypingRequestShowsOnTheRowAndTheConfirmationNamesThePhone() {
+        var phone = HubSyncState.LinkedDevice(
+            deviceID: "phone-a", name: "iPhone", scope: .private, userRecordName: "_owner-acme", linkedAt: Date()
+        )
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Typing off")
+        phone.typingRequested = true
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Asks to type into sessions")
+        phone.typingAllowed = true
+        XCTAssertEqual(MobileSettingsViewModel.typingLabel(phone), "Typing allowed")
+        XCTAssertEqual(
+            MobileSettingsViewModel.allowQuestion(name: "iPhone"), "Allow \"iPhone\" to type into Claude Code sessions?"
+        )
+    }
+
     func testRemovingASameAppleIDPhoneSaysItCanStillRead() async throws {
         await fixture.tearDown()
         fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
