@@ -228,10 +228,13 @@ symlink-resolved; the main folder's tabs key is unchanged); a buffer writes
 only to the file it was opened from, so switching sessions never moves an
 edit, typed or unsent, into another worktree or the main folder: the page's
 unsent edits are handed to the old root's buffers before the new root's tabs
-show. A root whose worktree was removed is never written again — its buffers
-stay locked for the app session and its tree operations are refused, even
-when a folder of that path comes back: its unsaved edits are offered to copy
-or discard.
+show. An unsaved buffer is never written into a removed worktree: once a
+root's worktree is found removed, its buffers never write again (locked for
+the app session, their unsaved edits offered to copy or discard) and its tree
+operations are refused while the root stays removed — a folder reappearing at
+that path does not unlock them. A worktree recreated at that path that the
+session's place resolves to shows again with new, writable buffers; the old
+ones stay locked.
 
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop — would race and lose either the agent's or
