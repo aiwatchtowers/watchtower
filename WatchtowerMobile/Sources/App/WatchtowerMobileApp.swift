@@ -90,7 +90,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             PushCompletion.race(
                 fetch: {
                     let outcome = await env.handlePush(inForeground: inForeground)
-                    work.end()
+                    // A push that launched the app may be served before the
+                    // boot's own writes ran: the work lasts until the boot
+                    // ends too, without holding back the completion.
+                    Task { @MainActor in
+                        await env.waitForBoot()
+                        work.end()
+                    }
                     return outcome
                 },
                 outcomeAtDeadline: { env.lastFetchFailed ? .failed : .noData },

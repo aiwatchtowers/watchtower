@@ -60,14 +60,15 @@ final class ReplicaWiringTests: XCTestCase {
             replicaPath: path,
             transportKind: .inMemoryDemo,
             defaults: try makeDefaults(),
-            recordingsDirectory: try makeRecordingsDirectory()
-        ) { interval in
-            if let sleeper {
-                try await sleeper.sleep(interval)
-            } else {
-                try await Task.sleep(for: interval)
+            recordingsDirectory: try makeRecordingsDirectory(),
+            sleep: { interval in
+                if let sleeper {
+                    try await sleeper.sleep(interval)
+                } else {
+                    try await Task.sleep(for: interval)
+                }
             }
-        })
+        ))
     }
 
     // MARK: - Boot and demo seed

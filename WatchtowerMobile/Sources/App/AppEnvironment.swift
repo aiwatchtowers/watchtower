@@ -219,6 +219,9 @@ final class AppEnvironment {
     /// owed if that fetch fails before it hydrates.
     @ObservationIgnored private var applyOwed = false
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    /// Ends the boot's background work (`BackgroundWork`): run once, when the boot ends or the
+    /// environment stops.
+    @ObservationIgnored private var endBootWork: (@MainActor () -> Void)?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
@@ -253,7 +256,8 @@ final class AppEnvironment {
                 linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory,
                 replicaObservesSuspension: true,
-                energy: energy
+                energy: energy,
+                startWork: BackgroundWork.starter()
             )
         } else {
             try self.init(
@@ -281,7 +285,9 @@ final class AppEnvironment {
     /// `UIApplication`; a cold launch reads not active there, and the
     /// scene's first active phase opens the gate through `setActive`).
     /// `replicaObservesSuspension` is for the live app-group replica, which
-    /// `DatabaseSuspension` suspends while the app rests in the background.
+    /// `DatabaseSuspension` suspends while the app rests in the background;
+    /// `startWork` then keeps the boot running and the replica usable until
+    /// the boot ends (a launch into the background by a silent push).
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
@@ -295,7 +301,8 @@ final class AppEnvironment {
         now: @escaping @Sendable () -> Date = { Date() },
         remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = nil,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        energy: EnergyCounter? = nil
+        energy: EnergyCounter? = nil,
+        startWork: BackgroundWork.Starter? = nil
     ) throws {
         assert(
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
@@ -370,7 +377,26 @@ final class AppEnvironment {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
-        bootstrapTask = Task { await bootstrap() }
+        // The boot writes the replica (the launch fetch, the outbox sweep,
+        // launch recovery): held from here, before a push can end its own
+        // work, until the boot is done.
+        endBootWork = startWork?("app-boot")
+        bootstrapTask = Task {
+            await bootstrap()
+            finishBootWork()
+        }
+    }
+
+    /// Ends the boot's background work, once.
+    private func finishBootWork() {
+        endBootWork?()
+        endBootWork = nil
+    }
+
+    /// Returns once the boot has ended (a silent push keeps its own work
+    /// until then).
+    func waitForBoot() async {
+        await bootstrapTask?.value
     }
 
     /// Demo seed or engine start, a first fetch so the screens have content
@@ -703,6 +729,7 @@ final class AppEnvironment {
     /// Stops the loop for good (tests' teardown; the app never stops).
     func stop() {
         stopped = true
+        finishBootWork()
         bootstrapTask?.cancel()
         loopTask?.cancel()
         loopTask = nil

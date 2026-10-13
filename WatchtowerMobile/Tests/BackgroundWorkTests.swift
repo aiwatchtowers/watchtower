@@ -1,5 +1,6 @@
 import GRDB
 import UIKit
+import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -117,6 +118,74 @@ final class BackgroundWorkTests: XCTestCase {
         capture()
         XCTAssertTrue(suspension.isSuspended)
         XCTAssertEqual(posts.names.last, Database.suspendNotification)
+    }
+
+    /// An environment over a held CloudKit reach, launched into the
+    /// background: its boot runs as `app-boot` work.
+    private func makeBootingEnvironment(
+        tasks: FakeBackgroundTasks,
+        suspension: DatabaseSuspension
+    ) throws -> (AppEnvironment, RemoteFetchRecorder) {
+        let remote = RemoteFetchRecorder()
+        remote.holding = true
+        let env = try AppEnvironment(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            uploadRetriesAllowed: false,
+            remoteFetch: { try await remote.fetch($0) },
+            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true }
+        )
+        addTeardownBlock { @MainActor in
+            env.stop()
+            remote.release()
+        }
+        return (env, remote)
+    }
+
+    /// A launch into the background (a silent push): the boot holds the
+    /// replica and runs in a background task from the environment's init
+    /// until the boot is done, then the replica rests again.
+    func testTheBootHoldsTheReplicaUntilItEnds() async throws {
+        let tasks = FakeBackgroundTasks()
+        let (suspension, posts) = makeSuspension()
+        suspension.setBackground(true)
+        let (env, remote) = try makeBootingEnvironment(tasks: tasks, suspension: suspension)
+        XCTAssertEqual(tasks.begun, ["app-boot"])
+        XCTAssertFalse(suspension.isSuspended, "the boot holds the replica")
+
+        try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
+        XCTAssertTrue(tasks.ended.isEmpty, "held while the launch fetch runs")
+        XCTAssertFalse(suspension.isSuspended)
+
+        remote.release()
+        await env.waitForBoot()
+        XCTAssertTrue(env.isBootstrapped)
+        try await poll({ tasks.ended.count == 1 }, "the boot's work never ended")
+        XCTAssertTrue(suspension.isSuspended, "back to rest in the background")
+        XCTAssertEqual(posts.names.last, Database.suspendNotification)
+        env.stop()
+        XCTAssertEqual(tasks.ended.count, 1, "ended once")
+    }
+
+    /// A stop during the boot ends its work at once, and the boot's own end
+    /// later is a no-op.
+    func testAStoppedBootEndsItsWorkOnce() async throws {
+        let tasks = FakeBackgroundTasks()
+        let (suspension, _) = makeSuspension()
+        suspension.setBackground(true)
+        let (env, remote) = try makeBootingEnvironment(tasks: tasks, suspension: suspension)
+        try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
+
+        env.stop()
+        XCTAssertEqual(tasks.ended.count, 1)
+        XCTAssertTrue(suspension.isSuspended)
+
+        remote.release()
+        await env.waitForBoot()
+        XCTAssertEqual(tasks.ended.count, 1, "no second end")
     }
 
     /// In the foreground the end of the push leaves the replica as it was.
