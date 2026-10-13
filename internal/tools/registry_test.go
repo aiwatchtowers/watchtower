@@ -296,7 +296,7 @@ func TestApply_ExecutesOnceAndRecordsResult(t *testing.T) {
 	var executed []Call
 	reg := New(database)
 	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
-	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)
 
 	// pending is not applicable — the owner has to approve first.
@@ -547,7 +547,7 @@ func TestApply_ExecutingIsNotApplicable(t *testing.T) {
 	var executed []Call
 	reg := New(database)
 	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
-	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)
 	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "executing", "", "")
 	require.NoError(t, err)
@@ -567,7 +567,7 @@ func TestApply_RowGoneOnReReadIsNotFound(t *testing.T) {
 	var executed []Call
 	reg := New(database)
 	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
-	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)
 	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
 	require.NoError(t, err)
@@ -606,7 +606,7 @@ func TestAgent03_ExternalToolNeverExecutesFromAPersistedTrustRow(t *testing.T) {
 	// Written behind the registry's back, exactly as a pre-External row would be.
 	require.NoError(t, database.SetToolTrust("echo", "execute"))
 
-	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)
 	assert.Equal(t, "pending", rc.Status)
 	assert.Empty(t, executed, "an external tool can never execute without an approval")
@@ -645,7 +645,7 @@ func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {
 	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
 	require.NoError(t, reg.SetTrust("echo", TrustExecute))
 
-	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)
 	assert.Equal(t, "applied", rc.Status)
 	assert.Len(t, executed, 1)
@@ -761,4 +761,35 @@ func TestPropose_TurnIDFuncWinsOverStaticTurn(t *testing.T) {
 	row, err := database.GetAgentAction(rc.ActionID)
 	require.NoError(t, err)
 	assert.Equal(t, "turn-live", row.TurnID)
+}
+
+// TestPropose_RefusesToolNotOnTheCallingSurface: Get is surface-blind, so a
+// caller dispatching by name (a reaction mapping, a model naming a tool it was
+// never offered) must be refused at Propose — no row, no Execute — on every
+// binding, not only under DirectApply.
+func TestPropose_RefusesToolNotOnTheCallingSurface(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
+	require.NoError(t, reg.SetTrust("echo", TrustExecute))
+
+	for _, surface := range []string{"reaction", "target", ""} {
+		_, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`),
+			Binding{Surface: surface})
+		var verr *ValidationError
+		require.ErrorAs(t, err, &verr, "surface %q", surface)
+		assert.Contains(t, verr.Msg, "is not available on the")
+	}
+	rows, err := database.ListAgentActions(db.AgentActionFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	assert.Empty(t, executed)
+
+	// A surface-less tool stays visible everywhere.
+	loose := newLooseTool(t)
+	require.NoError(t, reg.Register(loose))
+	_, err = reg.Propose(context.Background(), "loose", json.RawMessage(`{"text":"hi","reason":"r"}`),
+		Binding{Surface: "reaction"})
+	require.NoError(t, err)
 }
