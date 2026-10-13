@@ -277,11 +277,17 @@ func (r *Registry) List(surface string) []*Tool {
 	var out []*Tool
 	for _, name := range r.order {
 		t := r.tools[name]
-		if len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface) {
+		if visibleOn(t, surface) {
 			out = append(out, t)
 		}
 	}
 	return out
+}
+
+// visibleOn reports whether surface may see t; a surface-less tool is visible
+// everywhere.
+func visibleOn(t *Tool, surface string) bool {
+	return len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface)
 }
 
 // All returns every registered tool in registration order.
@@ -450,11 +456,18 @@ func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (boo
 }
 
 // admitProposal runs every gate a write call passes before a row is written:
-// the bound workbench is alive, the direct-apply gate, the args checks, the
-// mandatory reason, then the tool's Scope. Any failure writes nothing.
+// the bound workbench is alive, the surface gate, the direct-apply gate, the
+// args checks, the mandatory reason, then the tool's Scope. Any failure
+// writes nothing.
 func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
 	if err := r.WorkbenchAlive(ctx, b); err != nil {
 		return nil, err
+	}
+	if !visibleOn(t, b.Surface) {
+		// Get is surface-blind: a caller that dispatches by name (a reaction
+		// mapping, a model naming a tool it was never offered) must not reach a
+		// tool its surface does not list.
+		return nil, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
 	if err := directApplyGate(t, b); err != nil {
 		return nil, err

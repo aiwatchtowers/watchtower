@@ -215,7 +215,7 @@ func TestActions_TrustAndTools(t *testing.T) {
 	assert.Equal(t, "execute", listed[byName["create_target"]].Trust)
 	assert.True(t, listed[byName["create_jira_issue"]].External)
 	assert.Equal(t, "ask", listed[byName["create_jira_issue"]].Trust)
-	assert.ElementsMatch(t, []string{"main", "target"}, listed[byName["create_jira_issue"]].Surfaces)
+	assert.ElementsMatch(t, []string{"main", "target", "reaction"}, listed[byName["create_jira_issue"]].Surfaces)
 
 	out, err = runActions(t, "tools", "--surface", "target", "--json")
 	require.NoError(t, err)
