@@ -69,13 +69,21 @@ struct MacsView: View {
         .listStyle(.insetGrouped)
     }
 
+    /// The demo has no link to end: only a live build offers Unlink and
+    /// Forget; reorder and Add Mac stay in both.
+    static func offersRemoval(transportKind: TransportKind) -> Bool {
+        transportKind != .inMemoryDemo
+    }
+
     /// The row's one destructive action (`MacsModel.action`).
     @ViewBuilder private func actions(_ item: HubListItem) -> some View {
-        let action = MacsModel.action(for: item)
-        Button(action == .unlink ? "Unlink" : "Forget", role: .destructive) {
-            asking = MacsModel.Ask(action: action, item: item)
+        if Self.offersRemoval(transportKind: env.transportKind) {
+            let action = MacsModel.action(for: item)
+            Button(action == .unlink ? "Unlink" : "Forget", role: .destructive) {
+                asking = MacsModel.Ask(action: action, item: item)
+            }
+            .disabled(linking.isBusy)
         }
-        .disabled(linking.isBusy)
     }
 
     /// `List.onMove`'s offsets become the registry's index of the moved Mac.

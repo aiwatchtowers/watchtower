@@ -379,17 +379,39 @@ final class AppEnvironment {
     /// Support. `recordingsDirectory` is for tests: nil keeps the phone's
     /// own recordings folder.
     static func demoSingle(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
-        let recordings = try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
-        let session = try HubSession(
+        let session = try demoSession(DemoSeed.primary, recordingsDirectory: recordingsDirectory, energy: energy)
+        return single(session, defaults: .standard)
+    }
+
+    /// The demo as the app shows it: the two demo Macs (`DemoSeed.hubs`),
+    /// each its own session on its own in-memory transport and replica,
+    /// the primary on screen (multi-hub spec §7).
+    static func demo(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
+        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: .standard)
+        for hub in DemoSeed.hubs {
+            env.add(try demoSession(hub, recordingsDirectory: recordingsDirectory, energy: energy))
+        }
+        env.activate(DemoSeed.primary.hubID)
+        return env
+    }
+
+    /// One demo Mac's session. The primary keeps today's replica file; the
+    /// others get their own, and a recordings folder of their own.
+    private static func demoSession(_ hub: DemoSeed.Hub, recordingsDirectory: URL?, energy: EnergyCounter?) throws -> HubSession {
+        let base = try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+        let isPrimary = hub == DemoSeed.primary
+        let recordings = isPrimary ? base : base.appendingPathComponent(hub.hubID, isDirectory: true)
+        let replica = isPrimary ? "replica.sqlite" : "replica-\(hub.hubID).sqlite"
+        return try HubSession(
             transport: InMemoryCloudTransport(),
-            replicaPath: try applicationSupportDirectory().appendingPathComponent("replica.sqlite").path,
+            replicaPath: try applicationSupportDirectory().appendingPathComponent(replica).path,
             transportKind: .inMemoryDemo,
+            hubID: hub.hubID,
             recordingsDirectory: recordings,
-            hold: RecordingHold(directory: recordings.appendingPathComponent(".held", isDirectory: true)),
+            hold: RecordingHold(directory: base.appendingPathComponent(".held", isDirectory: true)),
             startsActive: UIApplication.shared.applicationState == .active,
             energy: energy
         )
-        return single(session, defaults: .standard)
     }
 
     /// The CloudKit transport's store file.

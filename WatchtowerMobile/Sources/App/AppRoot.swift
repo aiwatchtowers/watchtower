@@ -113,7 +113,7 @@ final class AppRoot {
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return try demo(try AppEnvironment.demoSingle(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
+            return try demo(try AppEnvironment.demo(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
@@ -162,15 +162,27 @@ final class AppRoot {
         return root
     }
 
-    /// A root that keeps the demo's one environment, linked as
-    /// `DemoSeed.device`: no registry on disk, no link to make or end.
+    /// A root that keeps the demo's environment, linked as
+    /// `DemoSeed.device`. The demo supplies its Macs the way a live build
+    /// does: an in-memory registry holds a row for each demo hub the
+    /// environment has a session for, so `linking.links` drives the chip,
+    /// the switcher and Settings → Macs unchanged. The demo never links or
+    /// ends a link (its link flow has no transport): reorder and switching
+    /// work, Unlink and Forget are not offered (`MacsView.offersRemoval`).
     static func demo(_ env: AppEnvironment, defaults: UserDefaults) throws -> AppRoot {
         let device = DemoSeed.device
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("demo-hubs", isDirectory: true)
+        let registry = try HubRegistry.inMemory()
+        let now = Date()
+        for hub in DemoSeed.hubs where env.session(hub.hubID) != nil {
+            try registry.upsert(DemoSeed.link(for: hub, now: now), now: now)
+            try registry.noteHeartbeat(flavor: hub.flavor.rawValue, at: now, for: hub.hubID)
+        }
+        env.nameHubs(try registry.rows())
         return AppRoot(
             env: env,
-            registry: try HubRegistry.inMemory(),
+            registry: registry,
             paths: HubPaths(groupDirectory: base, localDirectory: base, recordingsBase: base),
             factory: HubSessionFactory { _, _, _, _ in throw CocoaError(.featureUnsupported) },
             identity: identity,

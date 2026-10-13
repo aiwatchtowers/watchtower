@@ -70,7 +70,7 @@ struct SettingsView: View {
             if env.transportKind == .inMemoryDemo {
                 LabeledContent("Sync", value: "Demo")
             }
-            if env.transportKind == .cloudKit {
+            if env.transportKind == .cloudKit || !linking.links.isEmpty {
                 NavigationLink {
                     MacsView()
                 } label: {

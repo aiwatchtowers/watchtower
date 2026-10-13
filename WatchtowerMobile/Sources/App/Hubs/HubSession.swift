@@ -436,8 +436,14 @@ final class HubSession {
                 // cursor restarts, so the persisted replica's tokens must be
                 // forgotten or the fresh seed never lands.
                 try store.resetSyncTokens()
-                try await DemoSeed.load(into: transport)
-                try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: Date())
+                // An unknown hub id is the primary demo Mac (tests build
+                // sessions under their own ids); only that Mac has the phone
+                // recording.
+                let hub = DemoSeed.hub(id: hubID) ?? DemoSeed.primary
+                try await DemoSeed.load(into: transport, hub: hub)
+                if hub == DemoSeed.primary {
+                    try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: Date())
+                }
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }

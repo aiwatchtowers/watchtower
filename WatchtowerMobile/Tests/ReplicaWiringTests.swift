@@ -109,6 +109,66 @@ final class ReplicaWiringTests: XCTestCase {
         }
     }
 
+    /// The second Mac's records, counted apart: its own small tally, none of
+    /// the primary's calendar or session details, under its own heartbeat.
+    func testSecondaryDemoSeedHydratesItsOwnTally() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let now = Date()
+        try await DemoSeed.load(into: transport, hub: DemoSeed.secondary, now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        let expected: [SliceKind: Int] = [
+            .heartbeat: 1, .deviceGrant: 1, .workbench: 1, .terminalSession: 1, .ownerAsk: 1, .workbenchTarget: 3
+        ]
+        let total = try await store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        }
+        XCTAssertEqual(total, expected.values.reduce(0, +), "nothing but the secondary's own records")
+        for (kind, count) in expected {
+            let rows = try await self.count(kind, in: store)
+            XCTAssertEqual(rows, count, "unexpected \(kind.rawValue) count")
+        }
+        let snapshot = try await store.reader.read { db in
+            try SettingsSnapshot.read(from: db, store: store, deviceID: DemoSeed.device.deviceID)
+        }
+        XCTAssertEqual(MacStatus(heartbeat: snapshot.heartbeat, now: now), .online(macName: "Home Mac"))
+        XCTAssertEqual(snapshot.heartbeat?.hubID, DemoSeed.secondary.hubID)
+        XCTAssertEqual(snapshot.grant?.hubID, DemoSeed.secondary.hubID)
+    }
+
+    /// The demo as the app builds it: two Macs, the primary on screen, a
+    /// registry row each, distinct content per Mac, and a badge that is
+    /// the sum of both Macs' open asks.
+    func testTheDemoRootHasTwoMacsWithDistinctContent() async throws {
+        let env = try managed(AppEnvironment.demo(recordingsDirectory: try makeRecordingsDirectory()))
+        let root = try AppRoot.demo(env, defaults: try makeDefaults())
+        XCTAssertEqual(root.linking.links.map(\.hubID), [DemoSeed.primary.hubID, DemoSeed.secondary.hubID])
+        XCTAssertEqual(root.linking.links.map(\.link.macName), ["Acme Mac", "Home Mac"])
+        XCTAssertEqual(env.activeHubID, DemoSeed.primary.hubID)
+        XCTAssertFalse(root.showsOnboarding)
+        XCTAssertEqual(env.session(DemoSeed.secondary.hubID)?.hubName, "Home Mac")
+
+        try await poll(timeout: 20, {
+            env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
+        }, "both Macs hydrated")
+        XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
+        let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
+        XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
+        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+
+        env.activate(DemoSeed.secondary.hubID)
+        XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")
+    }
+
+    /// The demo has no link to end: Settings → Macs offers no Unlink or
+    /// Forget there, and does in a live build.
+    func testTheDemoOffersNoMacRemoval() {
+        XCTAssertFalse(MacsView.offersRemoval(transportKind: .inMemoryDemo))
+        XCTAssertTrue(MacsView.offersRemoval(transportKind: .cloudKit))
+    }
+
     /// The demo heartbeat is fresh and the demo grant belongs to the demo
     /// device, so Settings demos an online Mac and a linked phone.
     func testDemoSeedIsOnlineAndGrantsTheDemoDevice() async throws {

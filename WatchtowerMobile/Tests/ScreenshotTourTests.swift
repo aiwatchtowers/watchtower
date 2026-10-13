@@ -60,16 +60,21 @@ final class ScreenshotTourTests: XCTestCase {
 
     private func makeDemoRoot() throws -> AppRoot {
         let defaults = try makeDefaults()
-        let session = try HubSession(
-            transport: InMemoryCloudTransport(),
-            replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
-            defaults: defaults,
-            recordingsDirectory: try makeRecordingsDirectory()
-        )
-        addTeardownBlock { @MainActor in session.stop() }
-        let root = try AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
-        return root
+        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
+        for hub in DemoSeed.hubs {
+            let session = try HubSession(
+                transport: InMemoryCloudTransport(),
+                replicaPath: try makeReplicaPath(),
+                transportKind: .inMemoryDemo,
+                hubID: hub.hubID,
+                defaults: defaults,
+                recordingsDirectory: try makeRecordingsDirectory()
+            )
+            addTeardownBlock { @MainActor in session.stop() }
+            env.add(session)
+        }
+        env.activate(DemoSeed.primary.hubID)
+        return try AppRoot.demo(env, defaults: defaults)
     }
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
@@ -261,6 +266,9 @@ final class ScreenshotTourTests: XCTestCase {
                 LinkFailureView(failure: .expired)
             }),
             Shot(number: "34", slug: "linked", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in LinkedView(macName: mac) }),
+            Shot(number: "36", slug: "mac-switcher", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheet { _ in }
+            }),
             Shot(number: "35", slug: "mac-not-showing", source: source + "MacNotShowingView.swift", reached: .bareStack, make: stack { _ in
                 MacNotShowingView()
             })
