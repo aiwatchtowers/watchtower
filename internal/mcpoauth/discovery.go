@@ -72,6 +72,7 @@ type protectedResourceMetadata struct {
 //  3. GET <issuer>/.well-known/oauth-authorization-server; ONLY a 404 falls back to
 //     GET <issuer>/.well-known/openid-configuration — any other non-2xx status (e.g. a 500) is a hard
 //     error naming the URL and status, even if openid-configuration would have succeeded.
+//  4. the document's own issuer must be the issuer it was fetched for (sameIssuer).
 //
 // Requires https (plain http only for loopback hosts) and S256 in code_challenge_methods_supported.
 func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
@@ -101,6 +102,9 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, fmt.Errorf("mcpoauth: no authorization-server metadata found for %s (tried %s)", serverURL, strings.Join(tried, ", "))
 	}
 
+	if !sameIssuer(meta.Issuer, issuer) {
+		return nil, fmt.Errorf("mcpoauth: authorization-server metadata from %s names issuer %q, want %q (RFC 8414 §3.3)", metaURL, meta.Issuer, issuer)
+	}
 	if meta.AuthorizationEndpoint == "" || meta.TokenEndpoint == "" {
 		return nil, fmt.Errorf("mcpoauth: authorization-server metadata from %s is missing authorization_endpoint or token_endpoint", metaURL)
 	}
@@ -111,6 +115,17 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, err
 	}
 	return meta, nil
+}
+
+// sameIssuer reports whether the issuer a metadata document names is the one
+// it was fetched for — RFC 8414 §3.3 (and OpenID Discovery §4.3): without
+// this a document served at one authorization server's well-known URL could
+// speak for another (AS mix-up). The comparison is exact except for a single
+// trailing slash, which deployments add or drop between their protected-
+// resource document and their metadata without changing the authority. A
+// document with no issuer at all fails: there is nothing to bind it to.
+func sameIssuer(got, want string) bool {
+	return got != "" && strings.TrimSuffix(got, "/") == strings.TrimSuffix(want, "/")
 }
 
 // discoverIssuer resolves the authorization-server issuer for an MCP server:

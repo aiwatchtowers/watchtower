@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,6 +71,32 @@ func TestListTools_UnreachableServerFails(t *testing.T) {
 	defer cancel()
 	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL})
 	require.Error(t, err)
+}
+
+// TestListTools_HeadersStayOnTheServersOrigin: a redirect to another host
+// is followed without the connection's headers, so a server cannot hand
+// the owner's token to a third party (or to plain http).
+func TestListTools_HeadersStayOnTheServersOrigin(t *testing.T) {
+	var leaked atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			leaked.Add(1)
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(other.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 127.0.0.1 and localhost are different hosts to the client.
+		http.Redirect(w, r, strings.Replace(other.URL, "127.0.0.1", "localhost", 1), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer tok"}})
+	require.Error(t, err)
+	assert.Zero(t, leaked.Load(), "the redirect target must not receive the connection's headers")
 }
 
 func TestListTools_UnknownKind(t *testing.T) {

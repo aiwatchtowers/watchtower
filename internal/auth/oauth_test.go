@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -56,8 +57,8 @@ func simulateCallback(redirectURI, state, code, errMsg string) {
 		q.Set("error", errMsg)
 	} else {
 		q.Set("code", code)
-		q.Set("state", state)
 	}
+	q.Set("state", state)
 	u.RawQuery = q.Encode()
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u.String(), nil)
@@ -214,16 +215,23 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	}
 }
 
-func TestLogin_StateMismatch(t *testing.T) {
+// A callback carrying the wrong state — a stray or hostile local request,
+// even one with an `error` — is ignored: the login keeps waiting and the real
+// redirect that follows still completes it, and the stray code is never
+// exchanged.
+func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 	var capturedURL atomic.Value
 	oldOpen := getOpenBrowserFunc()
 	setOpenBrowserFunc(func(u string) { capturedURL.Store(u) })
 	defer func() { setOpenBrowserFunc(oldOpen) }()
 
+	var exchanged atomic.Value
 	oldExchange := exchangeToken
 	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-		t.Fatal("exchange should not be called on state mismatch")
-		return nil, nil
+		exchanged.Store(code)
+		return &slack.OAuthV2Response{
+			AuthedUser: slack.OAuthV2ResponseAuthedUser{ID: "U12345", AccessToken: "xoxp-test-token"},
+		}, nil
 	}
 	defer func() { exchangeToken = oldExchange }()
 
@@ -242,12 +250,22 @@ func TestLogin_StateMismatch(t *testing.T) {
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 
-	simulateCallback(redirectURI, "wrong-state", "code", "")
+	simulateCallback(redirectURI, "", "", "access_denied")
+	simulateCallback(redirectURI, "wrong-state", "", "access_denied")
+	simulateCallback(redirectURI, "wrong-state", "stray-code", "")
 
 	select {
 	case err := <-resultCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "state mismatch")
+		t.Fatalf("Login ended on a wrong-state callback: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	simulateCallback(redirectURI, parsed.Query().Get("state"), "real-code", "")
+
+	select {
+	case err := <-resultCh:
+		require.NoError(t, err)
+		assert.Equal(t, "real-code", exchanged.Load())
 	case <-time.After(5 * time.Second):
 		t.Fatal("Login did not complete in time")
 	}
@@ -281,7 +299,7 @@ func TestLogin_UserDenied(t *testing.T) {
 	require.NoError(t, err)
 	redirectURI := parsed.Query().Get("redirect_uri")
 
-	simulateCallback(redirectURI, "", "", "access_denied")
+	simulateCallback(redirectURI, parsed.Query().Get("state"), "", "access_denied")
 
 	select {
 	case err := <-resultCh:
@@ -938,6 +956,7 @@ func TestCallbackHandler_ErrorResponse(t *testing.T) {
 	u, _ := url.Parse(redirectURI)
 	q := u.Query()
 	q.Set("error", "user_denied")
+	q.Set("state", parsed.Query().Get("state"))
 	u.RawQuery = q.Encode()
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u.String(), nil)
@@ -1080,5 +1099,31 @@ func TestLogin_WithExpiresIn(t *testing.T) {
 		assert.Equal(t, "T555", res.result.TeamID)
 	case <-time.After(5 * time.Second):
 		t.Fatal("Login did not complete in time")
+	}
+}
+
+type recordingTransport struct{ hit atomic.Bool }
+
+func (rt *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.hit.Store(true)
+	return nil, errors.New("offline")
+}
+
+// The code exchange goes through a client with a finite timeout — `auth
+// complete` gives it a context with no deadline, so the client is the bound.
+func TestExchangeToken_UsesBoundedClient(t *testing.T) {
+	if slackHTTPClient.Timeout <= 0 || slackHTTPClient.Timeout > 2*time.Minute {
+		t.Fatalf("slackHTTPClient.Timeout = %v, want a finite bound of at most 2m", slackHTTPClient.Timeout)
+	}
+	rt := &recordingTransport{}
+	old := slackHTTPClient
+	slackHTTPClient = &http.Client{Timeout: old.Timeout, Transport: rt}
+	t.Cleanup(func() { slackHTTPClient = old })
+
+	if _, err := exchangeToken(context.Background(), "id", "secret", "code", "https://127.0.0.1/callback"); err == nil {
+		t.Fatal("exchangeToken: want the transport's error, got nil")
+	}
+	if !rt.hit.Load() {
+		t.Error("exchangeToken did not go through slackHTTPClient")
 	}
 }

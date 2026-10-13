@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
@@ -228,13 +227,6 @@ func idTokenEmail(idToken string) (string, error) {
 	return "", fmt.Errorf("id_token has neither email nor preferred_username claim")
 }
 
-// outlookCallbackResult is sent from the HTTP callback handler to the Login goroutine.
-type outlookCallbackResult struct {
-	code  string
-	state string
-	err   string
-}
-
 // outlookOpenBrowserFunc can be replaced in tests.
 var (
 	outlookOpenBrowserMu   sync.Mutex
@@ -286,8 +278,6 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 
 	authorizeURL := buildMicrosoftAuthURL(cfg, redirectURI, state, pkce.challenge)
 
-	resultCh := make(chan outlookCallbackResult, 1)
-
 	returnBlock, closeMS := "", "2000"
 	if opt.AppReturn {
 		returnBlock = outlookAppReturnBlock
@@ -297,24 +287,8 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 		Replace(outlookCallbackSuccessPage)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(outlookCallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			resultCh <- outlookCallbackResult{err: errMsg}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// #nosec G705 -- errMsg is html.EscapeString-encoded before
-			// interpolation, so this isn't an XSS sink despite the taint
-			// analysis (it doesn't track through html.EscapeString).
-			fmt.Fprint(w, strings.Replace(outlookCallbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1)) //nolint:gosec
-			return
-		}
-		resultCh <- outlookCallbackResult{
-			code:  q.Get("code"),
-			state: q.Get("state"),
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, successPage)
-	})
+	callback, resultCh := auth.NewCallbackHandler(state, successPage, outlookCallbackErrorPage)
+	mux.HandleFunc(outlookCallbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener) //nolint:errcheck
@@ -335,24 +309,21 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 	ctx, cancel := context.WithTimeout(ctx, outlookLoginTimeout)
 	defer cancel()
 
-	var cb outlookCallbackResult
+	var cb auth.CallbackResult
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
 		return nil, "", fmt.Errorf("login timed out after %s", outlookLoginTimeout)
 	}
 
-	if cb.err != "" {
-		return nil, "", fmt.Errorf("microsoft authorization denied: %s", cb.err)
+	if cb.Err != "" {
+		return nil, "", fmt.Errorf("microsoft authorization denied: %s", cb.Err)
 	}
-	if cb.state != state {
-		return nil, "", fmt.Errorf("state mismatch: possible CSRF attack")
-	}
-	if cb.code == "" {
+	if cb.Code == "" {
 		return nil, "", fmt.Errorf("no authorization code received")
 	}
 
-	tok, err := exchangeMicrosoftCode(ctx, cfg, cb.code, redirectURI, pkce.verifier)
+	tok, err := exchangeMicrosoftCode(ctx, cfg, cb.Code, redirectURI, pkce.verifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("exchanging code for token: %w", err)
 	}
