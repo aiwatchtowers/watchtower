@@ -62,9 +62,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         BatteryDiagnostics.shared.counter.record(.silentPush)
         recordColdLaunch(coldLaunch.receivedPush())
-        // Foreground: fetched at once. Inactive or background: coalesced
-        // with the pushes of the next few seconds (`AppEnvironment.handlePush`);
-        // each push still gets its completion when its shared fetch ends.
+        // Fetched at once; pushes landing during a fetch share one follow-up
+        // (`AppEnvironment.handlePush`), and each push still gets its
+        // completion when the fetch serving it ends. In the foreground a
+        // fallback fetch also polls the zones.
         let inForeground = application.applicationState == .active
         Task { @MainActor in
             guard let env = Self.root?.env else {

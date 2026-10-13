@@ -7,9 +7,9 @@ import XCTest
 /// The phone fetches when something changed (board #724, owner decision
 /// Q1): a 60 s safety poll on every tab that pauses whenever the app is not
 /// active, a return to the foreground that fetches unless the last fetch is
-/// seconds old, foreground pushes fetched at once with the light depth (no
-/// forced zone poll), background pushes coalesced into one fetch, and one
-/// follow-up for pushes that land during a fetch. The sleeper, the clock
+/// seconds old (then only a local apply), pushes fetched at once with the
+/// light depth (the zone poll only on a foreground push's fallback), and
+/// one follow-up for pushes that land during a fetch. The sleeper, the clock
 /// and the CloudKit reach are all stepped by hand: no wall-clock wait
 /// decides anything.
 @MainActor
@@ -111,7 +111,10 @@ final class FetchCadenceWiringTests: XCTestCase {
         let outcome = await wired.env.handlePush(inForeground: true)
 
         XCTAssertEqual(outcome, .noData, "nothing new arrived")
-        XCTAssertEqual(wired.remote.depths, [.full, .push(since: pushedAt)], "a push never forces the zone poll")
+        XCTAssertEqual(
+            wired.remote.depths, [.full, .push(since: pushedAt, pollOnFallback: true)],
+            "the light depth; only its fallback polls the zones"
+        )
         try await poll({ wired.sleeper.requested.count == 2 && wired.sleeper.waitingCount == 1 },
                        "the safety poll restarts from the push fetch")
         XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchPush], 1)
@@ -130,25 +133,45 @@ final class FetchCadenceWiringTests: XCTestCase {
         XCTAssertEqual(FetchOutcome.noData.backgroundFetchResult, .noData)
     }
 
+    func testABackgroundPushIsFetchedAtOnceWithTheLightFetchAndNoPoll() async throws {
+        let wired = try await makeWired()
+        wired.env.setActive(false)
+        try await poll { wired.sleeper.waitingCount == 0 }
+        let requested = wired.sleeper.requested.count
+        wired.clock.advance(30)
+        let pushedAt = wired.clock.now
+
+        let outcome = await wired.env.handlePush(inForeground: false)
+
+        XCTAssertEqual(outcome, .noData)
+        XCTAssertEqual(
+            wired.remote.depths, [.full, .push(since: pushedAt, pollOnFallback: false)],
+            "fetched at once, and its fallback stays light"
+        )
+        XCTAssertEqual(wired.sleeper.requested.count, requested, "nothing waits before the fetch")
+        XCTAssertFalse(wired.env.isLooping, "a background push starts no safety poll")
+    }
+
     func testABackgroundPushBurstSharesOneFetchAndEveryPushIsAnswered() async throws {
         let wired = try await makeWired()
         wired.env.setActive(false)
         try await poll { wired.sleeper.waitingCount == 0 }
+        wired.remote.holding = true
 
-        let pushes = (0..<3).map { _ in Task { await wired.env.handlePush(inForeground: false) } }
-        try await poll({ wired.sleeper.waitingCount == 1 }, "the first push opens the window")
-        XCTAssertEqual(wired.sleeper.requested.last, AppEnvironment.backgroundPushWindow)
-        XCTAssertEqual(wired.remote.depths, [.full], "nothing is fetched before the window ends")
-
-        wired.sleeper.tick()
-        var outcomes: [FetchOutcome] = []
-        for push in pushes {
+        let first = Task { await wired.env.handlePush(inForeground: false) }
+        try await poll({ wired.remote.heldCount == 1 }, "the first push is fetched at once")
+        let more = (0..<2).map { _ in Task { await wired.env.handlePush(inForeground: false) } }
+        try await poll({ wired.env.followUpWaiters == 2 }, "the pushes during the fetch wait for one follow-up")
+        XCTAssertEqual(wired.remote.pushCount, 1)
+        wired.remote.release()
+        var outcomes = [await first.value]
+        for push in more {
             outcomes.append(await push.value)
         }
 
         XCTAssertEqual(outcomes, [.noData, .noData, .noData], "every push gets its completion")
-        XCTAssertEqual(wired.remote.pushCount, 1, "three pushes, one fetch")
-        XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchPush], 1)
+        XCTAssertEqual(wired.remote.pushCount, 2, "three pushes: the fetch and one follow-up")
+        XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchPush], 2)
         XCTAssertFalse(wired.env.isLooping, "a background push starts no safety poll")
     }
 
@@ -159,7 +182,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ wired.remote.heldCount == 1 }, "the pull is not running")
 
         let pushes = (0..<3).map { _ in Task { await wired.env.handlePush(inForeground: true) } }
-        for _ in 0..<10 { await Task.yield() }
+        try await poll({ wired.env.followUpWaiters == 3 }, "every push waits for the follow-up")
         XCTAssertEqual(wired.remote.pushCount, 0, "the follow-up waits for the running fetch")
         wired.remote.release()
         _ = await pull.value
@@ -173,37 +196,39 @@ final class FetchCadenceWiringTests: XCTestCase {
         XCTAssertEqual(wired.remote.fullCount, 2, "the launch and the pull")
     }
 
-    func testBecomingActiveServesAWaitingBackgroundPushWithTheForegroundFetch() async throws {
-        let wired = try await makeWired()
-        wired.env.setActive(false)
-        try await poll { wired.sleeper.waitingCount == 0 }
-        let push = Task { await wired.env.handlePush(inForeground: false) }
-        try await poll({ wired.sleeper.waitingCount == 1 }, "the push window is open")
-
-        // Recent enough to skip the return fetch, but a push is waiting.
-        wired.clock.advance(1)
-        wired.env.setActive(true)
-        _ = await push.value
-
-        XCTAssertEqual(wired.remote.depths, [.full, .full], "the return fetch serves the push: no second fetch")
-        XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchForeground], 1)
-        XCTAssertEqual(wired.counter.counts(daysAgo: 0)[.fetchPush], 0)
-    }
-
     func testAFetchBegunAfterAPushServesIt() async throws {
         let wired = try await makeWired()
         wired.env.setActive(false)
         try await poll { wired.sleeper.waitingCount == 0 }
+        wired.remote.holding = true
+        let pull = Task { await wired.env.refresh(.pull) }
+        try await poll({ wired.remote.heldCount == 1 }, "the pull is not running")
         let push = Task { await wired.env.handlePush(inForeground: false) }
-        try await poll({ wired.sleeper.waitingCount == 1 }, "the push window is open")
+        try await poll({ wired.env.followUpWaiters == 1 }, "the push waits behind the pull")
 
-        // The link flow (say) fetches while the window is open.
-        await wired.env.refresh(.link)
-        wired.sleeper.tick()
+        // The link flow (say) begins a fetch after the push arrived.
+        let link = Task { await wired.env.refresh(.link) }
+        try await poll({ wired.remote.heldCount == 2 }, "the link fetch is not running")
+        wired.remote.release()
+        _ = await pull.value
+        _ = await link.value
         _ = await push.value
 
         XCTAssertEqual(wired.remote.pushCount, 0, "the later full fetch already covered the push")
-        XCTAssertEqual(wired.remote.fullCount, 2)
+        XCTAssertEqual(wired.remote.fullCount, 3, "the launch, the pull and the link fetch")
+    }
+
+    func testAQuickReturnAppliesWhatTheEngineBufferedWithoutFetching() async throws {
+        let wired = try await makeWired()
+        var applied = 0
+        wired.env.onFetched = { applied += 1 }
+
+        wired.env.setActive(false)
+        wired.clock.advance(AppEnvironment.foregroundRefetchAfter - 1)
+        wired.env.setActive(true)
+
+        try await poll({ applied == 1 }, "the quick return applies the buffered changes")
+        XCTAssertEqual(wired.remote.depths, [.full], "and reaches no network")
     }
 }
 

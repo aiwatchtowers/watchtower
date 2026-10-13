@@ -56,9 +56,10 @@ enum RemoteFetchDepth: Sendable, Equatable {
     /// return to the foreground, the launch and the link flow.
     case full
     /// A silent push that arrived at `since`: CKSyncEngine's own run for
-    /// it, or an engine fetch without the zone poll
-    /// (`CloudKitTransport.fetchForPush`).
-    case push(since: Date)
+    /// it, or a fallback engine fetch (`CloudKitTransport.fetchForPush`),
+    /// with the forced zone poll when `pollOnFallback` (a push in the
+    /// foreground: the owner is looking) and without it in the background.
+    case push(since: Date, pollOnFallback: Bool)
 }
 
 /// What the CloudKit transport tells the link flow (spec §9).
@@ -69,10 +70,12 @@ enum LinkSignal: Sendable {
     case accountChanged
 }
 
-/// A silent push's arrival: how many fetches had begun, and when.
+/// A silent push's arrival: how many fetches had begun, when, and whether
+/// the app was in the foreground.
 struct PushArrival {
     let serial: Int
     let at: Date
+    let inForeground: Bool
 }
 
 /// Why the environment could not boot (shown by `BootFailureView`).
@@ -99,7 +102,7 @@ enum AppEnvironmentError: LocalizedError {
 /// Every fetch feeds both consumers: it reaches CloudKit once (`RemoteFetchDepth`),
 /// then hydrates DataZone and reads RelayZone from what that buffered.
 /// The phone fetches when something changed (board #724): a silent push is
-/// fetched at once in the foreground and coalesced in the background; a
+/// fetched at once, pushes landing during a fetch share one follow-up; a
 /// 60 s safety poll runs while the app is active and pauses whenever it is
 /// not, whatever background mode keeps it alive.
 @MainActor
@@ -165,9 +168,6 @@ final class AppEnvironment {
     /// The return to the foreground fetches at once unless the last
     /// successful fetch is younger than this (a Control Center peek).
     static let foregroundRefetchAfter: TimeInterval = 5
-    /// Silent pushes landing in the background within this window share
-    /// one fetch.
-    static let backgroundPushWindow: Duration = .seconds(10)
     /// How long a push waits for CKSyncEngine's own fetch run to begin
     /// before fetching through the engine itself.
     static let pushEngineGrace: TimeInterval = 2
@@ -191,21 +191,22 @@ final class AppEnvironment {
     /// without an engine (the in-memory demo).
     @ObservationIgnored private let remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
-    /// The safety poll's wait and the background push window; tests step
-    /// it by hand.
+    /// The safety poll's wait; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let now: @Sendable () -> Date
     /// Fetches begun so far: a push is served by any fetch begun after it.
     @ObservationIgnored private var fetchSerial = 0
     @ObservationIgnored private var runningFetch: (serial: Int, task: Task<FetchOutcome, Never>)?
     @ObservationIgnored private var lastFinishedFetch: (serial: Int, outcome: FetchOutcome)?
-    /// The one follow-up fetch for foreground pushes that arrived while a
-    /// fetch ran, and the latest of those pushes.
+    /// The one follow-up fetch for pushes that arrived while a fetch ran,
+    /// and the latest of those pushes.
     @ObservationIgnored private var queuedPushTask: Task<FetchOutcome, Never>?
     @ObservationIgnored private var queuedPushArrival: PushArrival?
-    /// The open background push window, and the latest push in it.
-    @ObservationIgnored private var pushWindowTask: Task<FetchOutcome, Never>?
-    @ObservationIgnored private var pushWindowArrival: PushArrival?
+    /// Pushes waiting on that follow-up (observable in tests).
+    @ObservationIgnored private(set) var followUpWaiters = 0
+    /// Fetches still waiting on CloudKit (`remoteFetch`): each hydrates
+    /// after it, so a local apply meanwhile would only repeat that.
+    @ObservationIgnored private var fetchesAwaitingRemote = 0
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
@@ -258,7 +259,7 @@ final class AppEnvironment {
     /// cannot open (the app then shows `BootFailureView`). `makeRecorder`
     /// builds the recorder over the environment's uploader; tests pass a
     /// fake audio engine and clock, the app the microphone. `sleep` is the
-    /// safety poll's wait and the background push window, `now` the clock
+    /// safety poll's wait, `now` the clock
     /// of the foreground-return rule. `remoteFetch` replaces the CloudKit
     /// reach of each fetch (tests); nil derives it from a
     /// `CloudKitTransport` (none for any other transport). `linkedDevice`
@@ -299,8 +300,8 @@ final class AppEnvironment {
                 switch depth {
                 case .full:
                     try await cloud.pull()
-                case let .push(since):
-                    try await cloud.fetchForPush(since: since, grace: grace)
+                case let .push(since, pollOnFallback):
+                    try await cloud.fetchForPush(since: since, grace: grace, pollOnFallback: pollOnFallback)
                 }
             }
         }
@@ -383,7 +384,7 @@ final class AppEnvironment {
                 // CKSyncEngine's own push-driven fetch run: applied at once
                 // while the app is active.
                 await cloud.setEngineFetchedHandler { [weak self] in
-                    Task { @MainActor in await self?.applyEngineFetch() }
+                    Task { @MainActor in await self?.applyBuffered() }
                 }
                 await cloud.start()
             }
@@ -440,33 +441,15 @@ final class AppEnvironment {
         await startFetch(trigger).value != .failed
     }
 
-    /// A silent push (`AppDelegate`). In the foreground it is fetched at
-    /// once (a push arriving while a fetch runs gets one follow-up fetch,
-    /// shared by every push meanwhile) and the safety poll restarts from
-    /// that fetch. In the background the pushes of one
-    /// `backgroundPushWindow` share one fetch, run when it ends (or at once
-    /// when the app becomes active). Either way a fetch begun after the push
-    /// already serves it. Each caller gets the outcome of the fetch that
-    /// served its push.
+    /// A silent push (`AppDelegate`), fetched at once in the foreground and
+    /// the background alike (leading edge): a fetch begun after the push
+    /// already serves it, and pushes arriving while a fetch runs share one
+    /// follow-up fetch behind it. In the foreground the safety poll restarts
+    /// from that fetch, and a fallback fetch polls the zones; the
+    /// background keeps the light fetch and starts no poll. Each caller gets
+    /// the outcome of the fetch that served its push.
     func handlePush(inForeground: Bool) async -> FetchOutcome {
-        let push = PushArrival(serial: fetchSerial, at: now())
-        guard !inForeground else { return await fetch(for: push) }
-        pushWindowArrival = push
-        if let window = pushWindowTask {
-            return await window.value
-        }
-        let sleep = sleep
-        let window = Task { [weak self] () -> FetchOutcome in
-            // Cancelled when the app becomes active: the push is fetched now.
-            try? await sleep(Self.backgroundPushWindow)
-            guard let self, !self.stopped else { return .noData }
-            let latest = self.pushWindowArrival ?? push
-            self.pushWindowTask = nil
-            self.pushWindowArrival = nil
-            return await self.fetch(for: latest)
-        }
-        pushWindowTask = window
-        return await window.value
+        await fetch(for: PushArrival(serial: fetchSerial, at: now(), inForeground: inForeground))
     }
 
     /// The fetch serving `push`: one begun after it, else one follow-up
@@ -476,7 +459,12 @@ final class AppEnvironment {
             if running.serial > push.serial {
                 return await running.task.value
             }
-            queuedPushArrival = push
+            // The follow-up serves the latest push, and polls on its
+            // fallback if any push it serves came in the foreground.
+            let foreground = push.inForeground || (queuedPushArrival?.inForeground ?? false)
+            queuedPushArrival = PushArrival(serial: push.serial, at: push.at, inForeground: foreground)
+            followUpWaiters += 1
+            defer { followUpWaiters -= 1 }
             if let queued = queuedPushTask {
                 return await queued.value
             }
@@ -494,21 +482,24 @@ final class AppEnvironment {
         if let last = lastFinishedFetch, last.serial > push.serial {
             return last.outcome
         }
-        let outcome = await startFetch(.push, pushedAt: push.at).value
+        let outcome = await startFetch(.push, push: push).value
         // The safety poll counts from this fetch: no poll right behind it.
-        restartLoop(firstCycle: nil)
+        // In the background there is no poll to restart.
+        if isActive {
+            restartLoop(firstCycle: nil)
+        }
         return outcome
     }
 
     /// Begins one fetch now and tracks it as the running one. A push
-    /// fetch (`pushedAt`) takes the light CloudKit reach, any other the
-    /// full one.
-    private func startFetch(_ trigger: FetchTrigger, pushedAt: Date? = nil) -> Task<FetchOutcome, Never> {
+    /// fetch takes the light CloudKit reach, any other the full one.
+    private func startFetch(_ trigger: FetchTrigger, push: PushArrival? = nil) -> Task<FetchOutcome, Never> {
         fetchSerial += 1
         let serial = fetchSerial
+        let depth: RemoteFetchDepth = push.map { .push(since: $0.at, pollOnFallback: $0.inForeground) } ?? .full
         let task = Task { [weak self] () -> FetchOutcome in
             guard let self else { return .failed }
-            let outcome = await self.performFetch(trigger, depth: pushedAt.map { .push(since: $0) } ?? .full)
+            let outcome = await self.performFetch(trigger, depth: depth)
             if serial > (self.lastFinishedFetch?.serial ?? 0) {
                 self.lastFinishedFetch = (serial, outcome)
             }
@@ -525,7 +516,14 @@ final class AppEnvironment {
         energy?.record(trigger.energyEvent)
         let hydrated: (applied: Int, deleted: Int)
         do {
+            fetchesAwaitingRemote += 1
+            defer { fetchesAwaitingRemote -= 1 }
             try await remoteFetch?(depth)
+        } catch {
+            Self.logger.error("fetch failed: \(error.localizedDescription, privacy: .public)")
+            return .failed
+        }
+        do {
             hydrated = try await hydrator.hydrateOnce()
         } catch {
             Self.logger.error("fetch failed: \(error.localizedDescription, privacy: .public)")
@@ -542,10 +540,14 @@ final class AppEnvironment {
         return hydrated.applied + hydrated.deleted + routed > 0 ? .newData : .noData
     }
 
-    /// CKSyncEngine ended a fetch run of its own (a push): while the app is
-    /// active, what it buffered lands at once. Local reads only.
-    private func applyEngineFetch() async {
-        guard isActive, isBootstrapped, !stopped else { return }
+    /// What the engine already buffered lands in the replica and the relay
+    /// feed, while the app is active: after CKSyncEngine ended a fetch run
+    /// of its own (a push), and on a quick return to the foreground that
+    /// skips the fetch. Local reads only (neither the hydrator nor the feed
+    /// pulls by itself). Skipped while a fetch still waits on CloudKit: it
+    /// hydrates right after.
+    private func applyBuffered() async {
+        guard isActive, isBootstrapped, !stopped, fetchesAwaitingRemote == 0 else { return }
         do {
             _ = try await hydrator.hydrateOnce()
         } catch {
@@ -563,8 +565,8 @@ final class AppEnvironment {
 
     /// Scene phase: the safety poll pauses while the app is not active. On
     /// the return it fetches at once, unless the last successful fetch is
-    /// under `foregroundRefetchAfter` old (a Control Center peek) and no
-    /// background push waits; a waiting push joins that fetch.
+    /// under `foregroundRefetchAfter` old (a Control Center peek): then it
+    /// only applies what the engine buffered meanwhile (no network).
     func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
@@ -575,8 +577,10 @@ final class AppEnvironment {
             return
         }
         let recent = lastSyncAt.map { now().timeIntervalSince($0) < Self.foregroundRefetchAfter } ?? false
-        restartLoop(firstCycle: recent && pushWindowTask == nil ? nil : .foreground)
-        pushWindowTask?.cancel()
+        restartLoop(firstCycle: recent ? nil : .foreground)
+        if recent, isBootstrapped {
+            Task { await applyBuffered() }
+        }
     }
 
     /// The recorder's "See recordings": closes the finished recorder and
@@ -618,7 +622,6 @@ final class AppEnvironment {
         bootstrapTask?.cancel()
         loopTask?.cancel()
         loopTask = nil
-        pushWindowTask?.cancel()
     }
 
     /// Stops the loop and the CloudKit engine for good, after the boot has
