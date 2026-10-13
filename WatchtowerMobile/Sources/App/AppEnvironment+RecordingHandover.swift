@@ -29,7 +29,13 @@ struct RecordingHandover: Equatable, Sendable {
 /// has not acknowledged without saying so:
 /// - before the replica goes, every recording whose audio is on the phone
 ///   and that the Mac has not acknowledged is *held* for the hub it was
-///   recorded for (`RecordingHold`, outside the replica);
+///   recorded for (`RecordingHold`, outside the replica). The plain audio
+///   is what moves: it stays on the phone until the Mac confirms receipt
+///   (mobile E2E, owner ruling ask #89 option A). Its sealed copy and
+///   stored envelope belong to the old pairing and are not carried: an
+///   adopted recording is registered again and sealed fresh under the
+///   current link (`RecordingUploader.register` drops a stale `<id>.enc`);
+///   one never adopted here is swept;
 /// - an environment adopts the held recordings of its own hub only, so a
 ///   recording never reaches another owner's Mac; the others wait, listed
 ///   in Recordings as waiting for their Mac;

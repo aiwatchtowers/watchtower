@@ -115,12 +115,14 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(payload.status, .pending)
         XCTAssertEqual(payload.durationSec, 120)
 
-        // Hub ack: received → delivered, and ONLY now the sealed copy goes.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "no plaintext audio left after sealing")
+        // Hub ack: received → delivered, and ONLY now both local copies go (ask #89 A: the plain audio stays
+        // on the phone until the Mac confirms it).
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the plain audio waits for the Mac's receipt")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
     // MARK: - Degenerate captures
@@ -1134,7 +1136,7 @@ final class RecordingUploaderTests: XCTestCase {
         return (try XCTUnwrap(finished), file)
     }
 
-    func testSealPendingEncryptsTheFileDeletesThePlainAudioAndStoresTheEnvelope() async throws {
+    func testSealPendingEncryptsTheFileKeepsThePlainAudioAndStoresTheEnvelope() async throws {
         let (uploader, store, _) = try makeStack()
         let audio = Data((0 ..< 3_000).map { UInt8($0 % 251) })
         let (recording, file) = try await finishedCapture(uploader, bytes: audio)
@@ -1146,7 +1148,7 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(row.state, .waiting, "sealed, not yet sent")
         XCTAssertEqual(row.sealedPath, "\(recording.id).enc")
         let sealed = sealedFile(recording.id)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the plain audio is gone")
+        XCTAssertEqual(try Data(contentsOf: file), audio, "ask #89 A: the plain audio stays until the Mac confirms it")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
         XCTAssertNotEqual(try Data(contentsOf: sealed), audio)
 
@@ -1193,7 +1195,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         XCTAssertEqual(sent, 1)
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "kept until the Mac confirms it")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
     }
 
@@ -1272,17 +1274,57 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
-    /// A kill between the seal's row update and the plain file's delete leaves both: the sweep keeps the sealed
-    /// copy and deletes the plain leftover, so no plaintext stays at rest.
-    func testTheSweepKeepsTheSealedFileAndDeletesAPlainLeftover() async throws {
-        let (uploader, _, _) = try makeStack()
+    /// Ask #89 A: a sealed row that the Mac has not confirmed owns its plain audio AND its sealed copy, so the
+    /// launch sweep keeps both; once delivered it owns neither.
+    func testTheSweepKeepsBothFilesOfAnUndeliveredSealedRow() async throws {
+        let (uploader, store, _) = try makeStack()
         let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 2, count: 256))
         _ = try await uploader.sealPending()
-        try Data(repeating: 2, count: 256).write(to: file)
 
         let removed = try await uploader.sweepOrphanFiles()
 
-        XCTAssertEqual(removed.map(\.lastPathComponent), [file.lastPathComponent])
+        XCTAssertTrue(removed.isEmpty, "\(removed.map(\.lastPathComponent))")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+
+        try store.setPhoneRecordingState(id: recording.id, state: .delivered)
+        let afterDelivery = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(Set(afterDelivery.map(\.lastPathComponent)), [file.lastPathComponent, "\(recording.id).enc"])
+    }
+
+    /// Ask #89 A: a recording registered again under an id that left a sealed copy behind (a held recording
+    /// adopted after a re-link) is sealed fresh: the stale `<id>.enc`, sealed to the old pairing, is dropped.
+    func testRegisteringAgainDropsAStaleSealedCopyAndSealsFresh() async throws {
+        let (uploader, store, _) = try makeStack()
+        let id = UUID().uuidString
+        let stale = sealedFile(id)
+        try Data("sealed to the old pairing".utf8).write(to: stale)
+        let file = try makeAudioFile(name: "\(id).m4a", bytes: 512)
+
+        let ended = Date()
+        let row = try await uploader.register(
+            id: id, fileURL: file, startedAt: ended.addingTimeInterval(-30), endedAt: ended, titleHint: nil)
+
+        XCTAssertNotNil(row)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "the old pairing's copy is dropped")
+        let sealedCount = try await uploader.sealPending()
+        XCTAssertEqual(sealedCount, 1)
+        XCTAssertNotNil(try store.phoneRecording(id: id)?.envelope)
+        XCTAssertNotEqual(try Data(contentsOf: stale), Data("sealed to the old pairing".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// Ask #89 A: a `failed` echo keeps both copies (Retry re-sends the stored envelope: see the Retry tests).
+    func testAFailedEchoKeepsThePlainAndTheSealedFile() async throws {
+        let (uploader, store, _) = try makeStack()
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 8, count: 256))
+        _ = try await uploader.uploadPending()
+
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "disk full"))
+
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .failed)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
     }
 
@@ -1328,7 +1370,7 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(sealedCount, 1)
         XCTAssertNotNil(try store.phoneRecording(id: recording.id)?.envelope)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "plain deleted only after the seal is stored")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "ask #89 A: the plain audio waits for the Mac")
     }
 
     /// Review fix 2: a seal error that is not "locked" belongs to its row: rows already sealed are still sent,
@@ -1398,13 +1440,14 @@ final class RecordingUploaderTests: XCTestCase {
 
     func testDiscardRemovesTheSealedFile() async throws {
         let (uploader, store, _) = try makeStack()
-        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 256))
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 256))
         _ = try await uploader.sealPending()
 
         try await uploader.discard(id: recording.id)
 
         XCTAssertNil(try store.phoneRecording(id: recording.id))
         XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 
     // MARK: - Discard

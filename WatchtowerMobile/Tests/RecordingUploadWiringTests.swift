@@ -164,14 +164,15 @@ final class RecordingUploadWiringTests: XCTestCase {
     func testReceivedEchoDeletesTheLocalFile() async throws {
         let wired = try await makeWired()
         let recording = try await recordAndStop(wired)
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
-        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
+        let sealed = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id)?.sealedFileURL(in: wired.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
 
         try await echo(recording, status: .received, in: wired.transport)
         await wired.env.refresh(.pull)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "received → the local copy goes")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path), "and its sealed copy")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.state, .delivered)
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()).label, "Sent to your Mac")
@@ -184,10 +185,10 @@ final class RecordingUploadWiringTests: XCTestCase {
         try await echo(recording, status: .failed, error: "The Mac could not save the recording.", in: wired.transport)
         await wired.env.refresh(.pull)
 
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
-        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
+        let sealed = try XCTUnwrap(row.sealedFileURL(in: wired.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "and its sealed copy, for Retry")
         let stage = PhoneUploadStage(recording: row, heartbeat: nil, now: Date())
         XCTAssertEqual(stage, .failed("The Mac could not save the recording.", retryable: true))
         XCTAssertTrue(stage.offersRetry)
@@ -200,9 +201,10 @@ final class RecordingUploadWiringTests: XCTestCase {
 
     // MARK: - Sealing and file protection (mobile E2E Task 17)
 
-    /// A finished recording is sealed at once, even while an earlier upload pass hangs on a slow save: no
-    /// plaintext audio waits for the network.
-    func testFinishSealsTheRecordingAndRemovesThePlainFile() async throws {
+    /// A finished recording is sealed at once, even while an earlier upload pass hangs on a slow save: its
+    /// ciphertext is ready for the network, and the plain audio stays on the phone until the Mac confirms it
+    /// (owner ruling ask #89, option A).
+    func testFinishSealsTheRecordingAndKeepsThePlainFileUntilTheMacConfirms() async throws {
         let gate = RelayHoldTransport()
         // The demo pairing passed in: the environment picks it on its own only over the in-memory transport.
         let wired = try await makeWired(gate: gate, keys: try DemoSeed.phoneKeys())
@@ -224,7 +226,7 @@ final class RecordingUploadWiringTests: XCTestCase {
             "the finished recording waited for the hanging upload pass to be sealed"
         )
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: id))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: row.fileURL(in: wired.directory).path), "the plain audio is gone")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: row.fileURL(in: wired.directory).path), "the plain audio stays")
         let sealed = try XCTUnwrap(row.sealedFileURL(in: wired.directory))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), "the sealed copy waits for the Mac")
         XCTAssertNotEqual(try Data(contentsOf: sealed), Data(repeating: 0x5A, count: 256), "the copy is ciphertext")
@@ -254,7 +256,11 @@ final class RecordingUploadWiringTests: XCTestCase {
             { (try? wired.env.store.phoneRecording(id: recording.id))?.state == .uploading },
             "the unlock did not seal and send the recording"
         )
-        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
+        XCTAssertNotNil(try wired.env.store.phoneRecording(id: recording.id)?.sealedPath)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path),
+            "ask #89 A: the plain audio stays until the Mac confirms it"
+        )
         let uploads = try await relayUploads(in: wired.transport, .demo)
         XCTAssertEqual(uploads.map(\.id), [recording.id])
     }

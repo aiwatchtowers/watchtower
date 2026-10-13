@@ -61,7 +61,8 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
 
     /// Mobile E2E: the sealed audio (`<id>.enc`, by name inside the
     /// recordings folder like `storedPath`); nil until the recording is
-    /// sealed. Once set, the plain file at `storedPath` is gone.
+    /// sealed. The plain file at `storedPath` stays beside it until the Mac
+    /// confirms receipt (ask #89 A).
     public internal(set) var sealedPath: String?
     /// The sealed upload record (envelope bytes) and the wire name it travels
     /// under, made once at sealing and re-sent unchanged by every retry.

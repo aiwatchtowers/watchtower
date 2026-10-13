@@ -498,9 +498,7 @@ final class RecorderTests: XCTestCase {
         await relaunched.controller.recoverOnLaunch()
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "a file with a row is kept")
-        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "a file with a row is kept")
     }
 
     func testRelaunchWithTheFileGoneFailsWithoutRetry() async throws {
@@ -608,7 +606,8 @@ final class RecorderTests: XCTestCase {
         await relaunched.controller.uploadPending()
 
         let files = try FileManager.default.contentsOfDirectory(atPath: moved.path)
-        XCTAssertEqual(files.count, 2, "nothing is swept: \(files)")
+        // Each recording keeps its plain audio and its sealed copy until the Mac confirms it (ask #89 A).
+        XCTAssertEqual(files.count, 4, "nothing is swept: \(files)")
         XCTAssertEqual(try relaunched.store.phoneRecording(id: strandedID)?.state, .uploading)
         XCTAssertEqual(try relaunched.store.phoneRecording(id: saved.id)?.state, .uploading)
         let batch = try await relaunched.secure.changes(in: .relay, since: nil)

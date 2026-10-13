@@ -928,7 +928,8 @@ final class AppEnvironment {
     }
 
     /// The unlock signal: the rows a locked hydrate stored are indexed (they appear at once, no fetch needed),
-    /// recordings finished while locked are sealed (their plain audio goes) and sent, and held recordings the
+    /// recordings finished while locked are sealed (their plain audio stays until the Mac confirms it, ask #89 A)
+    /// and sent, and held recordings the
     /// locked boot could not read are adopted.
     func keysBecameAvailable() async {
         guard !stopped else { return }

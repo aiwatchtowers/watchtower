@@ -365,6 +365,20 @@ final class AppRootWiringTests: XCTestCase {
         return try XCTUnwrap(root.env.recorder.savedRecording?.id)
     }
 
+    /// Ask #89 A: a saved recording is sealed at once, and its plain audio stays on the phone (what a wipe
+    /// holds) until the Mac confirms it.
+    private func assertSealedKeepingThePlainAudio(
+        _ root: AppRoot, _ id: String, file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id), file: file, line: line)
+        let sealed = try XCTUnwrap(row.sealedFileURL(in: recordingsDirectory), "sealed at once", file: file, line: line)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path), file: file, line: line)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: row.fileURL(in: recordingsDirectory).path),
+            "the plain audio waits for the Mac", file: file, line: line
+        )
+    }
+
     /// An unlink or a removal during a meeting capture: the capture is
     /// stopped and saved, held for its hub, listed as waiting for that Mac,
     /// and sent only once this phone is on that hub again.
@@ -408,6 +422,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(try hold.load().isEmpty, "adopted, out of the hold")
         let uploads = try await relayUploads(in: try XCTUnwrap(transports.last))
         XCTAssertEqual(uploads.map(\.id), [row.id], "sent after relinking its Mac")
+        try assertSealedKeepingThePlainAudio(root, row.id)
     }
 
     /// Review F6: a recording held for one Mac never goes to another.
@@ -415,6 +430,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
         let id = try await saveVoiceNote(root)
+        try assertSealedKeepingThePlainAudio(root, id)
         await root.setLink(nil, writesAllowed: true)
         _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
@@ -424,9 +440,7 @@ final class AppRootWiringTests: XCTestCase {
         let uploads = try await relayUploads(in: try XCTUnwrap(transports.last))
         XCTAssertTrue(uploads.isEmpty, "the other Mac gets nothing")
         XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty)
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertEqual(root.env.heldRecordings.map(\.id), [id], "still waiting for its own Mac")
-        }
+        XCTAssertEqual(root.env.heldRecordings.map(\.id), [id], "still waiting for its own Mac")
     }
 
     /// Review F6: an iCloud account change carries nothing: the recordings
@@ -454,14 +468,13 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
         let id = try await saveVoiceNote(root)
+        try assertSealedKeepingThePlainAudio(root, id)
         await root.setLink(nil, writesAllowed: true)
 
         async let one = root.wipeLocalData(restartingOn: .private, hubID: "hub-acme", keepRecordings: true)
         async let two = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
         let wipes = await [one, two]
 
-        // Until ask #89: from here to the end (the XCTUnwrap below throws).
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true)
         XCTAssertEqual(wipes, [LocalWipe(), LocalWipe()], "nothing lost, no capture running")
         try await poll { root.env.isBootstrapped }
         let held = try XCTUnwrap(root.env.heldRecordings.first)
@@ -479,6 +492,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
         let id = try await saveVoiceNote(root)
+        try assertSealedKeepingThePlainAudio(root, id)
         let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id))
         let file = row.fileURL(in: recordingsDirectory)
         try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)])
@@ -511,9 +525,7 @@ final class AppRootWiringTests: XCTestCase {
         addTeardownBlock { @MainActor in relaunched.stop() }
         try await poll { relaunched.isBootstrapped }
 
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "back next to its row, past the sweep")
-        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "back next to its row, past the sweep")
         XCTAssertTrue(try hold.load().isEmpty)
         XCTAssertEqual(try relaunched.store.phoneRecordings().map(\.id), [id])
         let uploads = try await relayUploads(in: transport)
@@ -575,6 +587,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
         let id = try await saveVoiceNote(root)
+        try assertSealedKeepingThePlainAudio(root, id)
         let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: recordingsDirectory)
         // A manifest that cannot be read: holding fails.
         try FileManager.default.createDirectory(
@@ -585,14 +598,10 @@ final class AppRootWiringTests: XCTestCase {
         let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
         let problem = try XCTUnwrap(wipe.problem)
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(problem.hasPrefix("Some recordings couldn't be read"), problem)
-        }
+        XCTAssertTrue(problem.hasPrefix("Some recordings couldn't be read"), problem)
         try await poll { root.env.isBootstrapped }
         let kept = hold.directory.appendingPathComponent("unreadable").appendingPathComponent(file.lastPathComponent)
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true) {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "the audio is kept")
-        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "the audio is kept")
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         if case .recordingsProblem = LinkNotice.after(wipe, otherwise: .removed()) {} else {
             XCTFail("the notice reports the problem")
@@ -605,8 +614,6 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(linked: device, hubID: "hub-acme")
         try await poll { root.env.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        // Until ask #89: the plain file is already gone, so the removal throws and ends the test.
-        XCTExpectFailure("E2E ask #89: plain .m4a deleted after sealing breaks the #63 hold/hand-over", strict: true)
         try FileManager.default.removeItem(at: try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: recordingsDirectory))
 
         let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
