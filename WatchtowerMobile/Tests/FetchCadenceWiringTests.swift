@@ -230,6 +230,41 @@ final class FetchCadenceWiringTests: XCTestCase {
         try await poll({ applied == 1 }, "the quick return applies the buffered changes")
         XCTAssertEqual(wired.remote.depths, [.full], "and reaches no network")
     }
+
+    // MARK: - Engine-run apply during a fetch
+
+    func testAnApplySkippedDuringAFetchThatFailsLandsAfterIt() async throws {
+        let wired = try await makeWired()
+        var applied = 0
+        wired.env.onFetched = { applied += 1 }
+        wired.remote.holding = true
+        wired.remote.failing = true
+        let pull = Task { await wired.env.refresh(.pull) }
+        try await poll({ wired.remote.heldCount == 1 }, "the pull is not running")
+
+        await wired.env.applyBuffered()
+        XCTAssertEqual(applied, 0, "skipped while the fetch waits on CloudKit")
+        wired.remote.release()
+        let fetched = await pull.value
+
+        XCTAssertFalse(fetched)
+        XCTAssertEqual(applied, 1, "the failed fetch runs the skipped apply")
+    }
+
+    func testAnApplySkippedDuringAFetchThatSucceedsIsCoveredByIt() async throws {
+        let wired = try await makeWired()
+        var applied = 0
+        wired.env.onFetched = { applied += 1 }
+        wired.remote.holding = true
+        let pull = Task { await wired.env.refresh(.pull) }
+        try await poll({ wired.remote.heldCount == 1 }, "the pull is not running")
+
+        await wired.env.applyBuffered()
+        wired.remote.release()
+        _ = await pull.value
+
+        XCTAssertEqual(applied, 1, "the fetch's own hydrate, no second apply")
+    }
 }
 
 /// Stands in for an environment's CloudKit reach (`remoteFetch`): records

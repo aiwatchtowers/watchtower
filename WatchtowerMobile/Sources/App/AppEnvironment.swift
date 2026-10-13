@@ -207,6 +207,9 @@ final class AppEnvironment {
     /// Fetches still waiting on CloudKit (`remoteFetch`): each hydrates
     /// after it, so a local apply meanwhile would only repeat that.
     @ObservationIgnored private var fetchesAwaitingRemote = 0
+    /// An engine-run apply was skipped while a fetch waited on CloudKit:
+    /// owed if that fetch fails before it hydrates.
+    @ObservationIgnored private var applyOwed = false
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
@@ -515,12 +518,25 @@ final class AppEnvironment {
     private func performFetch(_ trigger: FetchTrigger, depth: RemoteFetchDepth) async -> FetchOutcome {
         energy?.record(trigger.energyEvent)
         let hydrated: (applied: Int, deleted: Int)
+        var remoteError: (any Error)?
+        fetchesAwaitingRemote += 1
         do {
-            fetchesAwaitingRemote += 1
-            defer { fetchesAwaitingRemote -= 1 }
             try await remoteFetch?(depth)
         } catch {
-            Self.logger.error("fetch failed: \(error.localizedDescription, privacy: .public)")
+            remoteError = error
+        }
+        fetchesAwaitingRemote -= 1
+        // The last fetch off CloudKit settles a skipped engine-run apply:
+        // its own hydrate covers it, a failure applies it here.
+        let owed = applyOwed && fetchesAwaitingRemote == 0
+        if owed {
+            applyOwed = false
+        }
+        if let remoteError {
+            Self.logger.error("fetch failed: \(remoteError.localizedDescription, privacy: .public)")
+            if owed {
+                await applyBuffered()
+            }
             return .failed
         }
         do {
@@ -545,9 +561,13 @@ final class AppEnvironment {
     /// of its own (a push), and on a quick return to the foreground that
     /// skips the fetch. Local reads only (neither the hydrator nor the feed
     /// pulls by itself). Skipped while a fetch still waits on CloudKit: it
-    /// hydrates right after.
-    private func applyBuffered() async {
-        guard isActive, isBootstrapped, !stopped, fetchesAwaitingRemote == 0 else { return }
+    /// hydrates right after, or, if it fails first, runs the skipped apply.
+    func applyBuffered() async {
+        guard isActive, isBootstrapped, !stopped else { return }
+        guard fetchesAwaitingRemote == 0 else {
+            applyOwed = true
+            return
+        }
         do {
             _ = try await hydrator.hydrateOnce()
         } catch {
