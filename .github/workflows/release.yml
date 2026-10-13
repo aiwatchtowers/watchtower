@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       # -tags codegrammars: the release CLI carries the code index's full
       # grammar set (scripts/build-app.sh builds it the same way).
@@ -79,7 +79,7 @@ jobs:
       # instead of skipping or failing.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Cache SPM build
         uses: actions/cache@v4

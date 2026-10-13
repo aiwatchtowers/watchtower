@@ -50,7 +50,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -129,7 +129,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Build
         run: go build ./...
@@ -207,7 +207,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Test (full grammar set)
         run: make test-codeindex-full
@@ -274,7 +274,7 @@ jobs:
       # needs 1.25), so the suite runs here instead of skipping or failing.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       # GRDB alone is minutes of compile on a cold runner; reuse build
       # products across runs until dependencies change.

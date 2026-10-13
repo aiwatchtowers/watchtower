@@ -1,7 +1,7 @@
 # Watchtower — Developer Notes
 
 **Project:** `watchtower` (Go module: `watchtower`)
-**Backend:** Go 1.25, SQLite via `modernc.org/sqlite` (`database/sql`), see `go.mod`
+**Backend:** Go 1.26, SQLite via `modernc.org/sqlite` (`database/sql`), see `go.mod`
 **Desktop:** SwiftUI macOS app (Swift 5.10 language mode, macOS 14+; building requires a Swift 6+ toolchain / Xcode 16+ — the FluidAudio dependency's manifest declares swift-tools 6.0), GRDB.swift, see `WatchtowerDesktop/Package.swift`
 **Mobile (POC):** shared Swift package `WatchtowerKit/` (`WatchtowerSync` + `WatchtowerKit`, macOS 14 / iOS 17) and the iPhone app `WatchtowerMobile/` (SwiftUI, iOS 17+, xcodegen `project.yml` with the generated `.xcodeproj` committed), see `docs/features/mobile-companion.md`
 
