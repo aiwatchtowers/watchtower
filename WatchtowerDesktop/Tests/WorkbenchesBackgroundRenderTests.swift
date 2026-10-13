@@ -97,7 +97,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
         var layout = vm.layout
         layout.show(.session(selected.id))
         vm.layout = layout
-        XCTAssertEqual(vm.drilledSessions.map(\.id), sessions.reversed().map(\.id))
+        XCTAssertEqual(vm.panelSections(projectID: projectID).visibleOrder, sessions.reversed().map(\.id))
         XCTAssertEqual(vm.panelSelection, .session(selected.id))
         let appState = AppState.isolated()
         appState.databaseManager = manager

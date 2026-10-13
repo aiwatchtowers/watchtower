@@ -10,11 +10,6 @@ extension WorkbenchesViewModel {
         summaries.first { $0.id == drilledWorkbenchID }?.project
     }
 
-    /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
-    var drilledSessions: [TerminalSession] {
-        drilledWorkbenchID.map { orderedSessions(projectID: $0) } ?? []
-    }
-
     /// A session list in the panel's order: stable while the owner switches
     /// sessions — opening one never moves it — and changed only by a drag.
     /// `projectID` nil = the standalone terminals.
