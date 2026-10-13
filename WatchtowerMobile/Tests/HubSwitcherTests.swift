@@ -13,7 +13,7 @@ import XCTest
 final class HubSwitcherTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let device = LinkedDevice(
-        deviceID: "device-acme-1",
+        deviceID: TestPhone.deviceID(),
         name: "Acme iPhone",
         model: "iPhone",
         appVersion: "1.0",
@@ -33,7 +33,7 @@ final class HubSwitcherTests: XCTestCase {
         HubRow(
             link: LinkRecord(
                 hubID: hub, macName: mac, scope: .private, ownerName: "_owner-acme", userRecordName: "_owner-acme",
-                nonce: "nonce-\(hub)", dataShareURL: nil, relayShareURL: nil, deviceID: "device-acme-1", linkedAt: nil
+                nonce: "nonce-\(hub)", dataShareURL: nil, relayShareURL: nil, deviceID: TestPhone.deviceID(), linkedAt: nil
             ),
             flavor: flavor, sortOrder: order, state: state, grantMissingSince: nil,
             lastHeartbeatAt: heartbeat, linkedOn: linkedOn ?? now.addingTimeInterval(-30 * 86_400)
@@ -44,15 +44,15 @@ final class HubSwitcherTests: XCTestCase {
 
     func testOnlineAndOfflineDaysFollowTheHeartbeatAndForgetIsOfferedForLongOfflineAndRemovedHubs() {
         let rows = [
-            row("hub-acme", order: 0, heartbeat: now.addingTimeInterval(-600)),
-            row("hub-home", mac: "Home Mac", order: 1, heartbeat: now.addingTimeInterval(-8 * 86_400)),
-            row("hub-lab", mac: "Lab Mac", order: 2, state: .unlinkedByMac, heartbeat: now.addingTimeInterval(-60)),
-            row("hub-new", mac: "New Mac", order: 3, linkedOn: now.addingTimeInterval(-2 * 86_400))
+            row(TestHub.acme, order: 0, heartbeat: now.addingTimeInterval(-600)),
+            row(TestHub.home, mac: "Home Mac", order: 1, heartbeat: now.addingTimeInterval(-8 * 86_400)),
+            row(TestHub.lab, mac: "Lab Mac", order: 2, state: .unlinkedByMac, heartbeat: now.addingTimeInterval(-60)),
+            row(TestHub.fresh, mac: "New Mac", order: 3, linkedOn: now.addingTimeInterval(-2 * 86_400))
         ]
 
-        let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: "hub-acme", now: now)
+        let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: TestHub.acme, now: now)
 
-        XCTAssertEqual(items.map(\.id), ["hub-acme", "hub-home", "hub-lab", "hub-new"], "registry order")
+        XCTAssertEqual(items.map(\.id), [TestHub.acme, TestHub.home, TestHub.lab, TestHub.fresh], "registry order")
         XCTAssertTrue(items[0].online)
         XCTAssertNil(items[0].offlineDays)
         XCTAssertFalse(items[1].online)
@@ -66,11 +66,11 @@ final class HubSwitcherTests: XCTestCase {
 
     func testTheOnlineDotFollowsThePhones2100SecondRule() {
         let rows = [
-            row("hub-acme", order: 0, heartbeat: now.addingTimeInterval(-2099)),
-            row("hub-home", mac: "Home Mac", order: 1, heartbeat: now.addingTimeInterval(-2100))
+            row(TestHub.acme, order: 0, heartbeat: now.addingTimeInterval(-2099)),
+            row(TestHub.home, mac: "Home Mac", order: 1, heartbeat: now.addingTimeInterval(-2100))
         ]
 
-        let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: "hub-acme", now: now)
+        let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: TestHub.acme, now: now)
 
         XCTAssertEqual(items.map(\.online), [true, false])
         XCTAssertEqual(items[1].offlineDays, 0)
@@ -81,7 +81,7 @@ final class HubSwitcherTests: XCTestCase {
         let rows = [
             row("a1b2c3d4-x", mac: "Acme Mac", order: 0),
             row("e5f6a7b8-y", mac: "Acme Mac", order: 1),
-            row("hub-home", mac: "Home Mac", order: 2)
+            row(TestHub.home, mac: "Home Mac", order: 2)
         ]
 
         let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: nil, now: now)
@@ -91,9 +91,9 @@ final class HubSwitcherTests: XCTestCase {
 
     func testTheFlavorShowsOnlyWhenItIsNotDefault() {
         let rows = [
-            row("hub-acme", order: 0, flavor: "default"),
-            row("hub-home", mac: "Home Mac", order: 1, flavor: "corp"),
-            row("hub-lab", mac: "Lab Mac", order: 2)
+            row(TestHub.acme, order: 0, flavor: "default"),
+            row(TestHub.home, mac: "Home Mac", order: 1, flavor: "corp"),
+            row(TestHub.lab, mac: "Lab Mac", order: 2)
         ]
 
         let items = HubListModel.items(rows: rows, sessions: [:], activeHubID: nil, now: now)
@@ -106,13 +106,13 @@ final class HubSwitcherTests: XCTestCase {
     func testAFailedFetchIsTheRowsProblem() async throws {
         let base = try makeBase()
         let remote = RemoteFetchRecorder()
-        let hubA = try makeSession("hub-acme", base: base)
-        let hubB = try makeSession("hub-home", base: base, remote: remote)
+        let hubA = try makeSession(TestHub.acme, base: base)
+        let hubB = try makeSession(TestHub.home, base: base, remote: remote)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
         remote.failing = true
         _ = await env.refreshAll(.pull)
-        let rows = [row("hub-acme", order: 0), row("hub-home", mac: "Home Mac", order: 1)]
+        let rows = [row(TestHub.acme, order: 0), row(TestHub.home, mac: "Home Mac", order: 1)]
 
         let items = HubListModel.items(rows: rows, sessions: env.sessions, activeHubID: env.activeHubID, now: now)
 
@@ -126,16 +126,16 @@ final class HubSwitcherTests: XCTestCase {
         let base = try makeBase()
         let transportA = InMemoryCloudTransport()
         let transportB = InMemoryCloudTransport()
-        try await transportA.save([try openAsk(11)])
-        try await transportB.save([try openAsk(21), try openAsk(22)])
-        let hubA = try makeSession("hub-acme", base: base, transport: transportA)
-        let hubB = try makeSession("hub-home", base: base, transport: transportB)
+        try await TestHub.hub(over: transportA, TestHub.acme).save([try openAsk(11)])
+        try await TestHub.hub(over: transportB, TestHub.home).save([try openAsk(21), try openAsk(22)])
+        let hubA = try makeSession(TestHub.acme, base: base, transport: transportA)
+        let hubB = try makeSession(TestHub.home, base: base, transport: transportB)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
         try await poll({ env.openAskTotal == 3 }, "the asks never hydrated")
-        let rows = [row("hub-acme", order: 0), row("hub-home", mac: "Home Mac", order: 1)]
+        let rows = [row(TestHub.acme, order: 0), row(TestHub.home, mac: "Home Mac", order: 1)]
 
-        let items = HubListModel.items(rows: rows, sessions: env.sessions, activeHubID: "hub-acme", now: now)
+        let items = HubListModel.items(rows: rows, sessions: env.sessions, activeHubID: TestHub.acme, now: now)
 
         XCTAssertEqual(items.map(\.openAsks), [1, 2])
         XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 2)
@@ -160,15 +160,15 @@ final class HubSwitcherTests: XCTestCase {
     /// stack empties, the tab stays.
     func testActivatingAnotherHubResetsNavigationToTheRoot() throws {
         let base = try makeBase()
-        let hubA = try makeSession("hub-acme", base: base)
-        let hubB = try makeSession("hub-home", base: base)
+        let hubA = try makeSession(TestHub.acme, base: base)
+        let hubB = try makeSession(TestHub.home, base: base)
         let env = try makeEnvironment([hubA, hubB])
         env.navigation.tab = .calendar
         env.navigation.calendarPath = [.recordings, .recap(7)]
 
-        env.activate("hub-home")
+        env.activate(TestHub.home)
 
-        XCTAssertEqual(env.activeHubID, "hub-home")
+        XCTAssertEqual(env.activeHubID, TestHub.home)
         XCTAssertEqual(env.navigation.calendarPath, [])
         XCTAssertEqual(env.navigation.tab, .calendar, "the tab is kept")
     }
@@ -208,6 +208,8 @@ final class HubSwitcherTests: XCTestCase {
             transportKind: .cloudKit,
             hubID: hubID,
             linkedDevice: device,
+            // The test hub's keys whatever the hub id: tests seal through the test hub.
+            keys: try TestHub.keys(hubID),
             defaults: try makeDefaults(),
             recordingsDirectory: paths.recordingsDirectory(hubID),
             hold: RecordingHold(directory: paths.holdDirectory),

@@ -12,6 +12,12 @@ public enum CloudRecordFactory {
         try relayRecord(name: device.recordName, kind: .device, payload: device, modifiedAt: modifiedAt)
     }
 
+    /// The phone's hello (mobile E2E spec §2.3), `hello-<device_id>` in RelayZone. The payload is the plain
+    /// RelayCoder JSON; sealing it to `hub_kx` is the caller's step.
+    public static func record(for hello: DeviceHello, modifiedAt: Date) throws -> CloudRecord {
+        try relayRecord(name: hello.recordName, kind: .hello, payload: hello, modifiedAt: modifiedAt)
+    }
+
     /// The heartbeat lives in DataZone (mobile POC spec §4.1): the hub is
     /// that zone's only writer, so a RelayZone share participant cannot
     /// rewrite it. Record name `heartbeat`, kind `SliceKind.heartbeat`,

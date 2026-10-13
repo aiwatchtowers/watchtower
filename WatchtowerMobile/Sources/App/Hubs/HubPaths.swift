@@ -46,11 +46,14 @@ struct HubPaths {
         recordingsBase.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
     }
 
-    /// Creates the hub's three directories.
+    /// Creates the hub's three directories, each class C (mobile E2E D8):
+    /// the replica, the transport store and sealed recordings hold
+    /// ciphertext that background work reaches after the first unlock, and
+    /// every file created in them inherits the class.
     func prepare(_ hubID: String) throws {
         precondition(Self.isValidHubID(hubID), "not a hub id: \(hubID.debugDescription)")
         for directory in [hubDirectory(hubID), localHubDirectory(hubID), recordingsDirectory(hubID)] {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileProtection.protectDirectory(directory)
         }
     }
 

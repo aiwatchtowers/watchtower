@@ -29,6 +29,19 @@ struct MobileLinkSheet: View {
         switch model.phase {
         case .issuing:
             ProgressView("Making a code…")
+        case .showing where !model.pendingLinks.isEmpty:
+            VStack(spacing: 12) {
+                ForEach(model.pendingLinks) { link in
+                    PendingLinkRow(link: link, model: model)
+                }
+                if let error = model.decisionError {
+                    Text(error)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+                Text("Expires in \(model.countdownText)")
+                    .monospacedDigit()
+            }
         case .showing:
             VStack(spacing: 12) {
                 if let image = model.qrImage {
@@ -60,5 +73,32 @@ struct MobileLinkSheet: View {
                 Button("Try again") { Task { await model.newCode() } }
             }
         }
+    }
+}
+
+/// One phone waiting for the owner (mobile E2E spec §2.3): its name, the
+/// four-digit code both screens show, a warning when another waiting phone
+/// shares its name or code (pairing code v2), Link and Refuse.
+struct PendingLinkRow: View {
+    let link: MobileLinkCenter.PendingLink
+    let model: MobileLinkSheetViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Link \"\(link.name)\"?")
+                .font(.headline)
+            Text("Code \(link.sas) — check that your iPhone shows the same code")
+                .foregroundStyle(.secondary)
+            if let warning = model.duplicateWarning(for: link) {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                Button("Refuse") { Task { await model.refuse(link) } }
+                Button("Link") { Task { await model.confirm(link) } }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

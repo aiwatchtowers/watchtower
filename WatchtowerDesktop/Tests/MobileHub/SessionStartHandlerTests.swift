@@ -447,11 +447,11 @@ final class SessionStartHandlerTests: XCTestCase {
     private func relay(now: Date = Date()) throws -> (StubHubTransport, HubSyncState, RelayProcessor, SessionStartStopHandlers) {
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         let dispatcher = MobileHubCommandDispatcher()
         let handlers = makeHandlers(makeVM())
         handlers.register(on: dispatcher)
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme") { now }
+        let processor = RelayProcessor(transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme") { now }
         return (transport, sidecar, processor, handlers)
     }
 
@@ -471,7 +471,7 @@ final class SessionStartHandlerTests: XCTestCase {
         var echoesAtStart: [ActionStatus] = []
         onPause = { [weak self] in
             guard self?.pauses == 1 else { return }
-            phaseAtStart = try sidecar.relayPhase(record.recordName)
+            phaseAtStart = try sidecar.relayPhase(record.plainName)
             echoesAtStart = try self?.echoes(transport, of: record.recordName).map(\.status) ?? []
         }
         try await transport.save([record])
@@ -485,7 +485,7 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(echoes.last?.result, ["session_id": .integer(row.id), "stage": .string("starting")])
         XCTAssertEqual(phaseAtStart, .begun, "`begun` is committed before the start")
         XCTAssertEqual(echoesAtStart, [.received], "`received` is written before any work")
-        XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+        XCTAssertEqual(try sidecar.relayPhase(record.plainName), .done)
     }
 
     /// The hub stopped between `begun` and `done`: never a second session.
@@ -495,7 +495,7 @@ final class SessionStartHandlerTests: XCTestCase {
         let (transport, sidecar, processor, _) = try relay()
         let record = try pendingActionRecord(kind: .sessionStart, entityID: String(t), params: startParams(p))
         try await transport.save([record])
-        try sidecar.markRelayBegun(record.recordName, at: Date())
+        try sidecar.markRelayBegun(record.plainName, at: Date())
 
         _ = try await processor.processOnce()
         try await transport.save([record])

@@ -386,6 +386,7 @@ final class PhoneRecorderController {
             let (title, eventID) = finalTitleAndEvent(startedAt: start)
             row = try await uploader.beginCapture(fileURL: url, startedAt: start, titleHint: title, eventID: eventID)
             try engine.begin(url: url)
+            protectCapture(url)
             captureID = row?.id
             fileURL = url
             startedAt = start
@@ -399,6 +400,19 @@ final class PhoneRecorderController {
                 try? await uploader.discard(id: row.id)
             }
             phase = .failed("Could not start recording: \(error.localizedDescription)")
+        }
+    }
+
+    /// D8: the capture is plaintext audio, `completeUnlessOpen` (it keeps
+    /// writing once the phone locks, and nothing opens it anew while locked)
+    /// until it is sealed. The engine has just created the file (the writer
+    /// refuses an existing one). A failure leaves the folder's class C and
+    /// is logged: a capture is never stopped over an attribute.
+    private func protectCapture(_ url: URL) {
+        do {
+            try FileProtection.protect(url, as: FileProtection.plaintext)
+        } catch {
+            Self.logger.error("capture file protection not set: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -565,6 +579,13 @@ final class PhoneRecorderController {
             Self.logger.error("recording save failed: \(error.localizedDescription, privacy: .public)")
             phase = .failed("Could not save the recording: \(error.localizedDescription)")
             return
+        }
+        // Sealed at once, not behind an upload pass that may wait on the
+        // network: no plaintext audio waits for the Mac (mobile E2E D8).
+        do {
+            try await uploader.sealPending()
+        } catch {
+            Self.logger.warning("recording seal failed, retried by the upload pass: \(error.localizedDescription, privacy: .public)")
         }
         await uploadPending()
     }

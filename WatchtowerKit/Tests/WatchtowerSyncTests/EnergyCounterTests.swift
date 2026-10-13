@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -179,9 +180,10 @@ final class EnergyCounterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("capture.m4a")
         try Data(repeating: 0xAB, count: 64).write(to: file)
+        let keys = try TestE2E.phoneStore()
         let uploader = RecordingUploader(
-            transport: InMemoryCloudTransport(),
-            store: try ReplicaStore.inMemory(),
+            transport: TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: InMemoryCloudTransport()),
+            store: try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys)),
             directory: directory,
             deviceID: "device-a",
             energy: counter

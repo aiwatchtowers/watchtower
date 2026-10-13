@@ -68,6 +68,28 @@ struct MobileHubStorage {
     /// CloudKit. No user prompt: silent pushes need no notification
     /// permission.
     var registerForPushes: (@MainActor () -> Void)?
+    /// The hub's E2E keys (Task 10): the Keychain identity and the sealed epoch keys in `hubstate.db`. One per
+    /// sidecar (it owns the envelope seq allocator). nil only in a live storage without the CloudKit entitlement
+    /// (an unsigned dev build has no data protection keychain and reaches no CloudKit).
+    var keyring: HubKeyring?
+    /// The hub's record I/O (Task 11): `transport` behind the keyring, sealing what the hub publishes; the
+    /// sidecar is its persisted wire → plain name map (F19). Lifecycle calls stay on `transport`. nil exactly when
+    /// `keyring` is: then nothing is published, never in the clear.
+    var secure: SecureTransport?
+
+    /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
+    static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
+        var storage = Self(transport: transport, sidecar: sidecar)
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        storage.keyring = keyring
+        storage.secure = sealing(transport, keyring: keyring, sidecar: sidecar)
+        return storage
+    }
+
+    /// The hub's sealing transport over `transport`: the keyring provides the keys and the relay rollback guard.
+    static func sealing(_ transport: any HubTransport, keyring: HubKeyring, sidecar: HubSyncState) -> SecureTransport {
+        SecureTransport(inner: transport, keys: keyring, rollback: keyring, names: sidecar)
+    }
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -85,12 +107,18 @@ struct MobileHubStorage {
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
+        let keyring = CloudKitTransport.entitlementPresent()
+            ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
+            : nil
+        let transport = CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub)
         return Self(
-            transport: CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub),
+            transport: transport,
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
             shares: CloudKitShareService(hubID: hubID),
-            registerForPushes: registerForCloudKitPushes
+            registerForPushes: registerForCloudKitPushes,
+            keyring: keyring,
+            secure: keyring.map { sealing(transport, keyring: $0, sidecar: sidecar) }
         )
     }
 
@@ -164,6 +192,9 @@ final class MobileHubService {
     @ObservationIgnored private let companions: [any HubCompanion]
     @ObservationIgnored private let processor: RelayProcessor
     @ObservationIgnored private let sidecar: HubSyncState
+    /// The hub's E2E keys; `start()` creates `K_meta` and the first epoch when none exist. nil in tests that seal
+    /// with fixed test keys, and without the CloudKit entitlement.
+    @ObservationIgnored private let keyring: HubKeyring?
     @ObservationIgnored private let identity: HubIdentity
     @ObservationIgnored private let hostInfo: HubHostInfo
     @ObservationIgnored private let heartbeatEvery: Duration
@@ -179,6 +210,8 @@ final class MobileHubService {
     /// Bumped by an account change, so a lookup still running then never
     /// stores the old user.
     @ObservationIgnored private var ownerEpoch = 0
+    /// A due epoch rotation failed and was logged; cleared by the next one that runs.
+    @ObservationIgnored private var rotationFailing = false
     /// Heartbeat ticks failed in a row; reset by a good tick and a start.
     @ObservationIgnored private var tickFailures = 0
     @ObservationIgnored private let relayIdleInterval: Duration
@@ -213,6 +246,7 @@ final class MobileHubService {
         processor: RelayProcessor,
         sidecar: HubSyncState,
         hostInfo: HubHostInfo,
+        keyring: HubKeyring? = nil,
         companions: [any HubCompanion] = [],
         relayIdleInterval: Duration = MobileHubService.defaultRelayIdleInterval,
         relayActiveInterval: Duration = MobileHubService.defaultRelayActiveInterval,
@@ -228,6 +262,7 @@ final class MobileHubService {
         self.companions = companions
         self.processor = processor
         self.sidecar = sidecar
+        self.keyring = keyring
         self.identity = HubIdentity(sidecar: sidecar)
         self.hostInfo = hostInfo
         self.heartbeatEvery = heartbeatInterval
@@ -279,6 +314,14 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        do {
+            try markE2ECutIfDue()
+        } catch {
+            logger.error("E2E cut check failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
         let zonesSettled = await finishPendingZoneDelete()
         guard status == .starting, epoch == startEpoch else { return }
         guard zonesSettled else {
@@ -294,6 +337,20 @@ final class MobileHubService {
             startReprobeLoop()
             return
         }
+        do {
+            // The zones are gone: the cut, if one ran, is done. Then, before anything seals: K_meta and the first
+            // epoch (idempotent).
+            try finishE2ECut()
+            try keyring?.ensureGroupKeys()
+        } catch {
+            logger.error("hub group keys unavailable: \(String(describing: error), privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
+        // The resume check: a rotation that came due while the hub was off runs before anything seals; one
+        // committed before a crash reads as fresh and does not run again (Review Focus 4).
+        rotateEpochIfDue()
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.
@@ -365,9 +422,10 @@ final class MobileHubService {
             // The recreated zone gets every record again, restaged.
             publisher.removeStagedAssets()
         }
-        await transport.setRecordRejectedHandler { recordName, zone in
+        // CloudKit names the rejected record by its wire name; the publisher maps it back (F19).
+        await transport.setRecordRejectedHandler { wireName, zone in
             guard zone == .data else { return }
-            publisher.recordRejected(recordName)
+            Task { await publisher.recordRejected(wireName: wireName) }
         }
     }
 
@@ -542,6 +600,48 @@ final class MobileHubService {
         }
     }
 
+    /// The E2E hard cut (spec §2.8, D13): a hub that published before the E2E build (or whose pairing a recreated
+    /// identity voided) deletes its two zones once, through the pending zone delete that `finishPendingZoneDelete`
+    /// runs next, which forgets the phones (`onZonesDeleted`, keys included) and wipes the sync state. Due when the
+    /// marker is absent on a hub that ran before, `pending` (a cut a failure, a timeout or a crash interrupted),
+    /// or `1` with a recreated identity or stored keys that no longer open. A hub that never ran, or one without
+    /// keys (nothing is published), cuts nothing.
+    private func markE2ECutIfDue() throws {
+        guard let keyring else { return }
+        switch try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) {
+        case HubIdentity.e2eCutDone?:
+            if keyring.identityWasRecreated {
+                logger.notice("E2E cut due: the hub identity was recreated")
+            } else if try keyring.storedGroupKeysUnreadable() {
+                logger.error("E2E cut due: the stored hub keys do not open under this identity; phones must re-pair")
+            } else {
+                return
+            }
+        case nil:
+            guard try keyring.identityWasRecreated || sidecar.ranBeforeE2E() else {
+                try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+                return
+            }
+            logger.notice("E2E cut due: first start on the E2E build; linked phones re-pair once")
+        default:
+            logger.notice("E2E cut due: finishing an interrupted cut")
+        }
+        try sidecar.markE2ECutPending()
+    }
+
+    /// After the cut's zone delete settled: the pre-E2E staged files (plaintext, no `.desc`) go, the phones and the
+    /// group keys are forgotten even without a link center, and only then is the marker `1` (never beside a pre-E2E
+    /// device row). A crash before it reruns the cut.
+    private func finishE2ECut() throws {
+        guard let keyring,
+              try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) == HubIdentity.e2eCutPending else { return }
+        publisher.removeStagedAssets()
+        try sidecar.clearLinkState()
+        try keyring.resetGroupKeys()
+        try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+        logger.notice("E2E cut done: this Mac's zones start empty on fresh keys")
+    }
+
     /// First start on the per-hub build: the transport store, bound to no
     /// hub, wipes itself at `start()`, so what the sidecar believes published
     /// and its relay cursor describe the old fixed-name zones. Forgets them
@@ -626,6 +726,7 @@ final class MobileHubService {
     /// One relay cycle: pull, daily hygiene, then passes until the backlog
     /// is empty — a long Mac sleep drains in one cycle (Review focus 5).
     private func runRelayCycle() async {
+        rotateEpochIfDue()
         do {
             try await transport.pull()
             try await processor.runHygieneIfDue()
@@ -638,6 +739,23 @@ final class MobileHubService {
             return
         } catch {
             logger.error("relay cycle failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Spec §2.2: at each cycle start, the epoch rotates once it is 90 days old or used 2^28 seqs. The rotation
+    /// wipes the slice hashes, so the publisher's next cycle republishes the window under the new epoch; the
+    /// keyboxes are nudged first. A failure keeps the current epoch (still valid) and is retried next cycle,
+    /// logged once per failing stretch.
+    func rotateEpochIfDue() {
+        guard let keyring else { return }
+        do {
+            let rotated = try keyring.rotateIfDue()
+            rotationFailing = false
+            if rotated { publisher.nudge(kinds: [.deviceGrant]) }
+        } catch {
+            guard !rotationFailing else { return }
+            rotationFailing = true
+            logger.error("epoch rotation failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -782,7 +900,8 @@ final class MobileHubService {
             sharing: facts.sharing
         )
         let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
-        try await transport.save([record])
+        // Sealed like every DataZone record (spec §2.7: the fixed name `heartbeat` stays).
+        try await publisher.saveHeartbeat(record)
         heartbeatFacts = facts
         return true
     }

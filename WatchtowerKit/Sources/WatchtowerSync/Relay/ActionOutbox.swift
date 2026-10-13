@@ -12,6 +12,12 @@ public enum ActionOutboxError: Error, Equatable {
 /// models can render optimistic state without ever mutating `slice_records`
 /// (Plan 4 decision 4 — overlay, not mutation).
 ///
+/// Mobile E2E: every action is sealed ONCE at enqueue (`SecureTransport.seal`,
+/// a p2h envelope under the device's relay key); the same envelope is sent
+/// (`saveSealed`) and kept as the overlay row's payload, which the replica
+/// opens on read. No plaintext action is stored, and a locked keychain makes
+/// enqueue throw `KeyStoreError.locked` before anything is sent.
+///
 /// Lifecycle of one action:
 /// 1. `enqueue` — relay record saved, overlay row inserted (`pending`).
 /// 2. Desktop applies it and rewrites the record with `applied`/`failed`;
@@ -31,7 +37,7 @@ public actor ActionOutbox {
     /// per Apple's docs, so a shared instance is fine.
     private static let snoozeFormatter = ISO8601DateFormatter()
 
-    private let transport: any CloudSyncTransport
+    private let transport: SecureTransport
     private let store: ReplicaStore
     private let now: @Sendable () -> Date
     /// The linked phone's device id, stamped on every enqueued action. nil
@@ -42,7 +48,7 @@ public actor ActionOutbox {
     private var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
 
     public init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         store: ReplicaStore,
         deviceID: String? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
@@ -111,8 +117,9 @@ public actor ActionOutbox {
             createdAt: now(),
             deviceID: deviceID
         )
-        try await transport.save([try CloudRecordFactory.record(for: action, modifiedAt: action.createdAt)])
-        try store.insertPendingAction(action, entityRecordName: entityRecordName)
+        let sealed = try await transport.seal(try CloudRecordFactory.record(for: action, modifiedAt: action.createdAt))
+        try await transport.saveSealed([sealed])
+        try store.insertPendingAction(action, entityRecordName: entityRecordName, sealed: sealed)
         return action.id
     }
 
@@ -149,16 +156,23 @@ public actor ActionOutbox {
     }
 
     /// Fails (locally) every row still `pending` after `age` — default 24 h,
-    /// the Plan 3 notes' silent-pending rule. Returns the swept ids.
+    /// the Plan 3 notes' silent-pending rule. Returns the swept ids. Also
+    /// prunes the relay rollback guard's rows older than 8 days (past the
+    /// 7-day action age window, F3).
     @discardableResult
     public func sweepSilentPending(olderThan age: Duration = .seconds(86_400)) throws -> [String] {
         let seconds = TimeInterval(age.components.seconds)
             + TimeInterval(age.components.attoseconds) / 1e18
-        return try store.sweepPendingActions(
+        let swept = try store.sweepPendingActions(
             before: now().addingTimeInterval(-seconds),
             errorMessage: Self.silentPendingMessage
         )
+        try store.pruneRelaySeen(before: now().addingTimeInterval(-Self.relaySeenRetention))
+        return swept
     }
+
+    /// How long the relay rollback guard remembers a record (F3).
+    private static let relaySeenRetention: TimeInterval = 8 * 86_400
 
     /// `target-42` → "42", `inbox_item-7` → "7": SliceKind rawValues never
     /// contain hyphens (underscores only), so everything after the FIRST

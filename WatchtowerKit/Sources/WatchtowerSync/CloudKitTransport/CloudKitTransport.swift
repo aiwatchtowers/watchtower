@@ -48,7 +48,14 @@ public enum HubZoneError: Error, Equatable {
 /// `.limitExceeded`, retry-after backoff on `.requestRateLimited` /
 /// `.zoneBusy`, the quota pause, and "unlinked" when a share vanishes.
 public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
-    static let recordType = "WatchtowerRecord"
+    /// Every sealed record (mobile E2E spec §2.8: a new type, the hard cut). The pre-E2E type
+    /// `WatchtowerRecord` is ignored on fetch (`cloudRecord(from:zone:)`).
+    static let recordType = "WatchtowerEnvelope"
+    /// A payload-free signal (`WireKind.signal`): the ask-alert subscription's trigger (D14).
+    static let signalRecordType = "WatchtowerSignal"
+    /// Record types already logged as ignored: one line per type, not one per record.
+    private static let ignoredTypesLogged = OSAllocatedUnfairLock(initialState: Set<String>())
+    private static let mappingLogger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
     /// Records per send batch; `.limitExceeded` halves it (spec §9).
     static let maxBatchSize = 200
     /// Backoff when a throttle carries no `CKErrorRetryAfterKey` (spec §9).
@@ -1311,9 +1318,13 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             ck = decoded
         } else {
             let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
-            ck = CKRecord(recordType: Self.recordType, recordID: id)
+            let type = record.kind == WireKind.signal ? Self.signalRecordType : Self.recordType
+            ck = CKRecord(recordType: type, recordID: id)
         }
-        ck.encryptedValues["payload"] = record.payload
+        // A signal carries no payload: it only names the record a subscription fires on.
+        if record.kind != WireKind.signal {
+            ck.encryptedValues["payload"] = record.payload
+        }
         ck["kind"] = record.kind
         ck["modifiedAt"] = record.modifiedAt
         // The audio of a phone recording upload. A PLAIN field on purpose:
@@ -1342,7 +1353,21 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// `zone` is the kind of the record's zone, resolved by the caller
     /// through `HubZones` (a zone name carries the hub id).
     static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
-        guard let payload = ck.encryptedValues["payload"] as? Data else { return nil }
+        let payload: Data
+        switch ck.recordType {
+        case Self.recordType:
+            guard let sealed = ck.encryptedValues["payload"] as? Data else { return nil }
+            payload = sealed
+        case Self.signalRecordType:
+            payload = Data()
+        default:
+            // The pre-E2E type (and anything unknown) after the hard cut: never read, logged once per type.
+            let type = ck.recordType
+            if ignoredTypesLogged.withLock({ $0.insert(type).inserted }) {
+                mappingLogger.notice("ignoring records of type \(type, privacy: .public)")
+            }
+            return nil
+        }
         return CloudRecord(
             recordName: ck.recordID.recordName,
             zone: zone,

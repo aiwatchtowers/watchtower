@@ -16,7 +16,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         )
         let ck = CloudKitTransport.ckRecord(from: original, in: zoneID, systemFields: nil)
         XCTAssertEqual(ck.recordID.recordName, "target-9")
-        XCTAssertEqual(ck.recordType, "WatchtowerRecord")
+        XCTAssertEqual(ck.recordType, "WatchtowerEnvelope")
 
         let roundTripped = CloudKitTransport.cloudRecord(from: ck, zone: .data)
         XCTAssertEqual(roundTripped, original)
@@ -49,7 +49,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         // Identity comes from the archive; payload/kind/modifiedAt always from the CloudRecord.
         XCTAssertEqual(rebuilt.recordID, first.recordID)
         XCTAssertEqual(rebuilt.recordID.zoneID, zoneID)
-        XCTAssertEqual(rebuilt.recordType, "WatchtowerRecord")
+        XCTAssertEqual(rebuilt.recordType, "WatchtowerEnvelope")
         XCTAssertEqual(rebuilt.encryptedValues["payload"] as? Data, Data("{\"v\":2}".utf8))
         XCTAssertEqual(rebuilt["kind"] as? String, "target")
         XCTAssertEqual(rebuilt["modifiedAt"] as? Date, stamp.addingTimeInterval(60))
@@ -69,13 +69,13 @@ final class CloudKitTransportMappingTests: XCTestCase {
         let ck = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: Data("not an archive".utf8))
         XCTAssertEqual(ck.recordID.recordName, "action-1")
         XCTAssertEqual(ck.recordID.zoneID, zoneID)
-        XCTAssertEqual(ck.recordType, "WatchtowerRecord")
+        XCTAssertEqual(ck.recordType, "WatchtowerEnvelope")
         XCTAssertEqual(ck.encryptedValues["payload"] as? Data, Data("{}".utf8))
     }
 
     func testCKRecordWithoutPayloadMapsToNil() {
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.relay.rawValue, ownerName: CKCurrentUserDefaultName)
-        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "x", zoneID: zoneID))
+        let ck = CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "x", zoneID: zoneID))
         XCTAssertNil(CloudKitTransport.cloudRecord(from: ck, zone: .relay))
     }
 
@@ -118,15 +118,67 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertNil(CloudKitTransport.cloudRecord(from: ck, zone: .data)?.notifyLevel)
     }
 
-    func testLegacyCKRecordWithoutNotifyLevelDecodesToNil() {
-        // Records written by pre-Plan-6 desktop versions carry no notifyLevel field.
+    func testEnvelopeRecordWithoutNotifyLevelDecodesToNil() {
+        // Sealed records never carry a wire notifyLevel (F28): absent decodes to nil.
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
-        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "target-1", zoneID: zoneID))
+        let ck = CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "target-1", zoneID: zoneID))
         ck.encryptedValues["payload"] = Data("{}".utf8)
         ck["kind"] = "target"
         ck["modifiedAt"] = stamp
         let decoded = CloudKitTransport.cloudRecord(from: ck, zone: .data)
         XCTAssertNotNil(decoded)
         XCTAssertNil(decoded?.notifyLevel)
+    }
+
+    // MARK: - E2E record types (mobile E2E spec §2.8)
+
+    func testEnvelopeRecordsUseTheWatchtowerEnvelopeType() {
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let record = CloudRecord(
+            recordName: "abcdefghijklmnopqrstuvwxyz", zone: .data, kind: WireKind.envelope, modifiedAt: stamp,
+            payload: Data("WTE".utf8))
+        let ck = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: nil)
+        XCTAssertEqual(CloudKitTransport.recordType, "WatchtowerEnvelope")
+        XCTAssertEqual(ck.recordType, "WatchtowerEnvelope")
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck, zone: .data), record)
+    }
+
+    func testSignalRecordsUseTheWatchtowerSignalTypeAndCarryNoPayload() {
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let signal = CloudRecord(
+            recordName: "sig-abcdefghijklmnopqrstuvwxyz", zone: .data, kind: WireKind.signal, modifiedAt: stamp,
+            payload: Data("ignored".utf8))
+        let ck = CloudKitTransport.ckRecord(from: signal, in: zoneID, systemFields: nil)
+        XCTAssertEqual(CloudKitTransport.signalRecordType, "WatchtowerSignal")
+        XCTAssertEqual(ck.recordType, "WatchtowerSignal")
+        XCTAssertNil(ck.encryptedValues["payload"], "a signal carries no payload")
+        XCTAssertFalse(ck.allKeys().contains("payload"))
+        let decoded = CloudKitTransport.cloudRecord(from: ck, zone: .data)
+        XCTAssertEqual(decoded?.payload, Data())
+        XCTAssertEqual(decoded?.kind, WireKind.signal)
+        XCTAssertEqual(decoded?.recordName, signal.recordName)
+    }
+
+    func testARecordOfThePreE2ETypeIsIgnoredOnFetch() {
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.data.rawValue, ownerName: CKCurrentUserDefaultName)
+        let legacy = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "target-1", zoneID: zoneID))
+        legacy.encryptedValues["payload"] = Data("{}".utf8)
+        legacy["kind"] = "target"
+        legacy["modifiedAt"] = stamp
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: legacy, zone: .data))
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: legacy, zone: .data), "ignored again (logged once per type)")
+    }
+
+    func testPayloadStaysAnEncryptedValueAndModifiedAtAPlainField() {
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.relay.rawValue, ownerName: CKCurrentUserDefaultName)
+        let record = CloudRecord(
+            recordName: "abcdefghijklmnopqrstuvwxyz", zone: .relay, kind: WireKind.envelope, modifiedAt: stamp,
+            payload: Data("WTE-sealed".utf8))
+        let ck = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: nil)
+        XCTAssertEqual(ck.encryptedValues["payload"] as? Data, Data("WTE-sealed".utf8))
+        XCTAssertNil(ck["payload"], "the envelope is never a plain field (spec §3, §7: encryptedValues stays the outer layer)")
+        XCTAssertEqual(ck["modifiedAt"] as? Date, stamp, "modifiedAt stays plaintext (spec §2.4)")
+        XCTAssertNil(ck.encryptedValues["modifiedAt"])
+        XCTAssertEqual(ck["kind"] as? String, WireKind.envelope)
     }
 }

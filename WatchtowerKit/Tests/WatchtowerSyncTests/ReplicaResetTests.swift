@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerE2ETesting
 import XCTest
 @_spi(DemoTransport) @testable import WatchtowerSync
 
@@ -8,8 +9,19 @@ import XCTest
 /// (`DemoTransport`): even this `@testable` import needs the SPI name, so a
 /// caller without it does not compile — that is the guard (A-T11 N1).
 final class ReplicaResetTests: XCTestCase {
+    /// Seqs of the records this test seals, in creation order.
+    private var nextSeq: UInt64 = 1
+
+    /// A plain record sealed by the test hub (the replica no longer accepts plaintext).
+    private func sealed(_ record: CloudRecord, wireName: String? = nil) throws -> CloudRecord {
+        defer { nextSeq += 1 }
+        return try TestE2E.sealedDataRecord(record, wireName: wireName, seq: nextSeq)
+    }
+
     private func heartbeatRecord(at stamp: Date) throws -> CloudRecord {
-        try CloudRecordFactory.record(for: HeartbeatFixtures.minimal(updatedAt: stamp), modifiedAt: stamp)
+        try sealed(
+            CloudRecordFactory.record(for: HeartbeatFixtures.minimal(updatedAt: stamp), modifiedAt: stamp),
+            wireName: HeartbeatPayload.recordName)
     }
 
     private func storedStamp(in store: ReplicaStore) throws -> Date? {
@@ -20,7 +32,7 @@ final class ReplicaResetTests: XCTestCase {
     }
 
     func testARestartedTransportLandsOnlyAfterTheReset() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let first = Date().addingTimeInterval(-3_600).rounded()
         let second = Date().rounded()
 
@@ -42,7 +54,7 @@ final class ReplicaResetTests: XCTestCase {
     }
 
     func testResetClearsTheRelayTokenAndKeepsTheWatermark() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         try store.setRelayToken(CloudChangeToken(value: 7))
         let watermark = Date().rounded()
         try store.setLastAlertedWatermark(watermark)
@@ -56,13 +68,13 @@ final class ReplicaResetTests: XCTestCase {
     /// Every stored payload of one kind, from an already-open database;
     /// other kinds are left out.
     func testPayloadsOfAKindListOnlyThatKind() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let transport = InMemoryCloudTransport()
         let stamp = Date().rounded()
         try await transport.save([
             try heartbeatRecord(at: stamp),
-            CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "1", modifiedAt: stamp, payload: Data("{\"id\":1}".utf8))),
-            CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "2", modifiedAt: stamp, payload: Data("{\"id\":2}".utf8)))
+            sealed(CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "1", modifiedAt: stamp, payload: Data("{\"id\":1}".utf8)))),
+            sealed(CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "2", modifiedAt: stamp, payload: Data("{\"id\":2}".utf8))))
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
@@ -73,7 +85,7 @@ final class ReplicaResetTests: XCTestCase {
     }
 
     func testPayloadForAnAbsentRecordIsNil() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let payload = try store.reader.read { db in try store.payload(forRecordName: "heartbeat", from: db) }
         XCTAssertNil(payload)
     }

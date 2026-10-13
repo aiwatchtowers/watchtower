@@ -1,4 +1,5 @@
 import GRDB
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -16,22 +17,25 @@ final class ReplicaKindTrackingTests: XCTestCase {
 
     private struct Seeded {
         let store: ReplicaStore
-        let transport: InMemoryCloudTransport
+        /// The demo hub sealing over the replica's transport (mobile E2E: the replica takes only the hub's
+        /// envelopes).
+        let hub: SecureTransport
         let hydrator: ReplicaHydrator
     }
 
-    /// A pool replica hydrated with the demo seed.
+    /// A pool replica hydrated with the demo seed, sealed by the demo hub.
     private func makeSeeded() async throws -> Seeded {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport, .demo)
         let hydrator = ReplicaHydrator(transport: transport, store: store)
-        try await transport.save(try DemoSeed.records(now: now))
+        try await hub.save(try DemoSeed.records(now: now))
         _ = try await hydrator.hydrateOnce()
-        return Seeded(store: store, transport: transport, hydrator: hydrator)
+        return Seeded(store: store, hub: hub, hydrator: hydrator)
     }
 
     private func write(_ records: [CloudRecord], to seeded: Seeded) async throws {
-        try await seeded.transport.save(records)
+        try await seeded.hub.save(records)
         _ = try await seeded.hydrator.hydrateOnce()
     }
 
@@ -42,6 +46,32 @@ final class ReplicaKindTrackingTests: XCTestCase {
 
     private func decodes(_ cache: ReplicaDecodeCache, _ kinds: [SliceKind]) -> [Int] {
         kinds.map { cache.decodes($0.rawValue) }
+    }
+
+    /// Final review Protocol M-9: decoded plaintext does not outlive the unlocked foreground. The cache is
+    /// dropped when protected data is about to become unavailable (the lock) and when the app goes to the
+    /// background; the next read decodes again.
+    func testTheDecodeCacheIsDroppedAtTheLockAndInTheBackground() {
+        let notifications = NotificationCenter()
+        let cache = ReplicaDecodeCache(notifications: notifications)
+        var decoded = 0
+        func read() -> String {
+            cache.value("workbench", version: 1) {
+                decoded += 1
+                return "plain"
+            }
+        }
+        _ = read()
+        _ = read()
+        XCTAssertEqual(decoded, 1, "a hit while unlocked")
+
+        notifications.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        _ = read()
+        XCTAssertEqual(decoded, 2, "dropped at the lock")
+
+        notifications.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        _ = read()
+        XCTAssertEqual(decoded, 3, "dropped in the background")
     }
 
     func testAHeartbeatWriteDecodesOnlyTheHeartbeat() async throws {

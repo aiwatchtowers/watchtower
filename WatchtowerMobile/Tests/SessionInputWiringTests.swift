@@ -18,8 +18,8 @@ final class SessionInputWiringTests: XCTestCase {
     }
 
     private func makeFixture() async throws -> Fixture {
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         let inputs = SessionInputSender.sending(through: outbox, store: store)
         let starter = SessionStarter.sending(through: outbox, store: store)
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
