@@ -369,6 +369,7 @@ final class AppRoot {
         for remaining in env.sessions.values {
             remaining.reloadHeldRecordings()
         }
+        env.nameHubs(linkedHubs())
         return outcome
     }
 
@@ -500,6 +501,7 @@ extension AppRoot: LinkHost {
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
         guard let session = env.session(record.hubID) else { throw CancellationError() }
         try registry.upsert(record, now: Date())
+        env.nameHubs(linkedHubs())
         session.deviceSettings.adoptUnlinkedChoices()
         // The held recordings of this hub are in its replica before the
         // device goes on: the upload of the waiting ones starts at once.

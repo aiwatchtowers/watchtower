@@ -133,9 +133,16 @@ final class HubSession {
     /// Recordings a wipe carried over (board #63), outside the replica,
     /// shared by every hub; nil holds nothing.
     @ObservationIgnored let hold: RecordingHold?
-    /// Held recordings waiting for another hub than this one (the
-    /// Recordings list shows them).
+    /// The hold's manifest as this session last read it (its boot's
+    /// adoption, `reloadHeldRecordings`): every hub's held recordings,
+    /// this one's only when its adoption failed. Another session may adopt
+    /// its own since, so the list can be stale for other hubs: the
+    /// Recordings list reads `AppEnvironment.heldRecordings`, which keeps
+    /// none of another linked hub's.
     var heldRecordings: [HeldRecording] = []
+    /// The hub's name as the switcher shows it (`HubDisplayName`), set by
+    /// the root from the registry; nil before (tests, the demo).
+    var hubName: String?
 
     /// This phone's link, nil until the link flow sets one. The demo
     /// transport is linked to `DemoSeed.device`.

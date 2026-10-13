@@ -141,6 +141,7 @@ private struct NextMeetingCardView: View {
             RecordButton {
                 Task { await env.recorder.recordMeeting(card.meetingEvent) }
             }
+            .disabled(!env.canStartCapture)
         }
         .card(.plain)
     }

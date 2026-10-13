@@ -58,6 +58,13 @@ private struct RecordingCaptureView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
+            // A capture for another hub than the one on screen names its Mac.
+            if let hubName = env.captureHubName {
+                Text("Recording for \(hubName)")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+
             Spacer(minLength: 0)
 
             Text(recorder.timerText)
@@ -314,6 +321,9 @@ struct RecordingMiniBar: View {
                 Image(systemName: "circle.fill").font(.caption2)
                 Text(recorder.phase == .recording ? "REC" : "PAUSED").font(.footnote.weight(.bold))
                 Text(recorder.timerText).font(.footnote.monospacedDigit())
+                if let hubName = env.captureHubName {
+                    Text("for \(hubName)").font(.footnote).lineLimit(1)
+                }
                 Spacer()
                 Text("Return").font(.footnote)
             }
@@ -323,6 +333,9 @@ struct RecordingMiniBar: View {
             .background(.red)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Recording \(recorder.timerText). Return to the recorder")
+        .accessibilityLabel(
+            env.captureHubName.map { "Recording for \($0), \(recorder.timerText). Return to the recorder" }
+                ?? "Recording \(recorder.timerText). Return to the recorder"
+        )
     }
 }

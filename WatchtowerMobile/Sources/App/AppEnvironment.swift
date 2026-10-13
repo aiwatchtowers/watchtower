@@ -114,6 +114,15 @@ final class AppEnvironment {
         }
     }
 
+    /// Names every session as the switcher does (`HubDisplayName`), from
+    /// the registry's `rows`: the recorder says which Mac a capture is for.
+    func nameHubs(_ rows: [HubRow]) {
+        let names = HubDisplayName.names(for: rows)
+        for (hubID, session) in sessions {
+            session.hubName = names[hubID]
+        }
+    }
+
     /// Puts `hubID`'s session on screen and keeps it as the active hub.
     func activate(_ hubID: String) {
         activeHubID = hubID
@@ -250,18 +259,41 @@ final class AppEnvironment {
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }
     var phoneRecordings: PhoneRecordingsModel { activeSession.phoneRecordings }
-    var heldRecordings: [HeldRecording] { activeSession.heldRecordings }
+    /// The held recordings the active hub's Recordings list shows: its own
+    /// not yet adopted, and those waiting for a Mac the phone no longer has
+    /// (no session here) — never another linked hub's, which that hub's
+    /// session adopts (multi-hub spec §5.4: the list shows the active hub's
+    /// recordings). With one hub this is the whole hold, as before.
+    var heldRecordings: [HeldRecording] {
+        let active = activeSession
+        return active.heldRecordings.filter { $0.hubID == active.hubID || sessions[$0.hubID] == nil }
+    }
     var linkedDevice: LinkedDevice? { activeSession.linkedDevice }
     var lastSyncAt: Date? { activeSession.lastSyncAt }
     var isLooping: Bool { activeSession.isLooping }
 
-    /// The session whose recorder is capturing, if any.
+    /// The session whose recorder is capturing or paused, if any: one
+    /// microphone, so at most one across hubs (multi-hub spec §5.4).
     var capturingSession: HubSession? {
         order.lazy.compactMap { self.sessions[$0] }.first { $0.recorder.isCapturing }
     }
 
-    /// The recorder on screen: a running capture's, else the active hub's.
+    /// The recorder on screen: a running capture's, whichever hub it is
+    /// for, else the active hub's. A capture started on one hub stays with
+    /// it after a switch: its session saves it and its uploader sends it to
+    /// that Mac, polling while the upload is pending (`SessionCadence`).
     var recorder: PhoneRecorderController { capturingSession?.recorder ?? activeSession.recorder }
+
+    /// No capture runs on any hub: the Record buttons are on.
+    var canStartCapture: Bool { capturingSession == nil }
+
+    /// The Mac a running capture is for when that is not the hub on screen
+    /// ("Recording for <name>" on the recorder); nil otherwise. A hub with
+    /// no name yet reads "another Mac".
+    var captureHubName: String? {
+        guard let capturing = capturingSession, capturing.hubID != activeHubID else { return nil }
+        return capturing.hubName ?? "another Mac"
+    }
 
     /// Pull to refresh: the session on screen.
     @discardableResult
@@ -312,6 +344,7 @@ final class AppEnvironment {
                 env.add(try factory.make(row, row.hubID, row.link.databaseScope, device))
             }
         }
+        env.nameHubs(rows)
         let saved = try registry.activeHubID
         if let active = rows.first(where: { $0.hubID == saved }) ?? rows.first {
             env.activate(active.hubID)

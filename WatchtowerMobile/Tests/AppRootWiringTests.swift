@@ -973,6 +973,22 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(uploads.map(\.id), [row.id], "sent after relinking its Mac")
     }
 
+    /// Multi-hub spec §5.4: the recorder names the Mac a capture is for as
+    /// the switcher does, from the registry at boot and after each link.
+    func testTheRootNamesEachHubFromTheRegistry() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])
+        XCTAssertEqual(try session(root, "hub-acme").hubName, "Acme Mac")
+        XCTAssertEqual(try session(root, "hub-home").hubName, "Home Mac")
+        await root.env.waitForBoot()
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-work")
+        try await root.linked(linkRecord("hub-work", macName: "Acme Mac"), device: device)
+
+        XCTAssertEqual(try session(root, "hub-acme").hubName, "Acme Mac · hub-")
+        XCTAssertEqual(try session(root, "hub-work").hubName, "Acme Mac · hub-")
+        XCTAssertEqual(try session(root, "hub-home").hubName, "Home Mac")
+    }
+
     /// Review F6: a recording held for one Mac never goes to another.
     func testAnotherHubNeverReceivesAHeldRecording() async throws {
         let root = try makeRoot(links: [linkRecord()])

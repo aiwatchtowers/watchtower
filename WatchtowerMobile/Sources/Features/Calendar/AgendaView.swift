@@ -124,6 +124,9 @@ struct AgendaView: View {
                 .background(PhoneTone.red.color, in: Circle())
                 .shadow(radius: 3, y: 1)
         }
+        // One microphone: off while any hub's capture runs.
+        .disabled(!env.canStartCapture)
+        .opacity(env.canStartCapture ? 1 : 0.4)
         .accessibilityLabel("Record a voice note")
     }
 }
@@ -209,6 +212,7 @@ private struct AgendaEventRow: View {
                             RecordButton {
                                 Task { await env.recorder.recordMeeting(meeting) }
                             }
+                            .disabled(!env.canStartCapture)
                         }
                         Button("Prep", action: open)
                             .buttonStyle(.bordered)
