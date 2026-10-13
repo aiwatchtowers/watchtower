@@ -458,6 +458,8 @@ final class SettingsWiringTests: XCTestCase {
     private var macsRegistry: HubRegistry!
     private var macsDefaults: UserDefaults!
     private var farewells: [String] = []
+    /// The farewell stays in the send queue until the cap: an unlink in flight.
+    private var farewellStuck = false
 
     private func macLink(_ hubID: String, _ macName: String) -> LinkRecord {
         LinkRecord(
@@ -525,7 +527,7 @@ final class SettingsWiringTests: XCTestCase {
             farewellDelivery: AppRoot.FarewellDelivery(
                 isPending: { [weak self] _, record in
                     self?.farewells.append(record.recordName)
-                    return false
+                    return self?.farewellStuck ?? false
                 },
                 cap: .seconds(1), pause: .milliseconds(20), send: noSend
             )
@@ -554,6 +556,40 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(root.env.order, ["hub-acme"])
         XCTAssertEqual(root.env.activeHubID, "hub-acme")
         XCTAssertEqual(farewells.count, 1, "a linked Mac hears the farewell")
+    }
+
+    /// Spec §5.7: the active Mac's unlink from Settings activates the next
+    /// Mac in order; the last one returns to onboarding.
+    func testUnlinkingTheActiveMacActivatesTheNextAndTheLastShowsOnboarding() async throws {
+        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+
+        await root.linking.unlink("hub-acme")
+
+        XCTAssertEqual(root.env.activeHubID, "hub-home")
+        XCTAssertFalse(root.showsOnboarding)
+
+        await root.linking.unlink("hub-home")
+
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// A reorder during an unlink in flight does nothing.
+    func testReorderingWhileAnUnlinkIsInFlightDoesNothing() async throws {
+        let root = try makeMacsRoot(
+            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac"), macLink("hub-lab", "Lab Mac")], active: "hub-acme"
+        )
+        farewellStuck = true
+        let unlinking = Task { await root.linking.unlink("hub-lab") }
+        for _ in 0 ..< 1000 where !root.linking.isBusy { await Task.yield() }
+        XCTAssertTrue(root.linking.isBusy)
+
+        root.linking.moveHub("hub-home", to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID).filter { $0 != "hub-lab" }, ["hub-acme", "hub-home"])
+        await unlinking.value
+
+        root.linking.moveHub("hub-home", to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-home", "hub-acme"], "idle again: the move goes through")
     }
 
     func testForgettingAFrozenMacRemovesItWithNoFarewell() async throws {

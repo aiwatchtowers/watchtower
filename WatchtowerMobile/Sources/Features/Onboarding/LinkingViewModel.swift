@@ -389,6 +389,7 @@ final class LinkingViewModel {
     /// Settings → Macs: reorders the Macs (the host saves it and the order
     /// follows on screen).
     func moveHub(_ hubID: String, to index: Int) {
+        guard !isBusy else { return }
         host?.moveHub(hubID, to: index)
     }
 

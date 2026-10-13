@@ -1,36 +1,13 @@
 import SwiftUI
 
 /// Settings → Macs (multi-hub spec §5.6): the linked Macs in order, reordered
-/// with Edit, each Unlinked (a linked Mac) or Forgotten (one the Mac
-/// removed, or long offline) from its swipe action or context menu; Add Mac
-/// at the bottom as in the switcher.
+/// with Edit, each Unlinked or Forgotten (`MacsModel.action`) from its swipe
+/// action or context menu; Add Mac at the bottom as in the switcher.
 struct MacsView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(LinkingViewModel.self) private var linking
     /// The Mac the owner is asked about, and what is asked.
-    @State private var asking: Ask?
-
-    struct Ask: Identifiable, Equatable {
-        enum Kind { case unlink, forget }
-        let kind: Kind
-        let hubID: String
-        let name: String
-        var id: String { "\(kind)-\(hubID)" }
-
-        var title: String {
-            switch kind {
-            case .unlink: "Unlink \(name)?"
-            case .forget: "Forget \(name)?"
-            }
-        }
-
-        var message: String {
-            switch kind {
-            case .unlink: "This phone forgets the Mac's data. Changes still waiting for the Mac are not sent."
-            case .forget: "Its data on this iPhone is deleted."
-            }
-        }
-    }
+    @State private var asking: MacsModel.Ask?
 
     var body: some View {
         // Online turns offline by the clock alone.
@@ -47,9 +24,9 @@ struct MacsView: View {
             asking?.title ?? "", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
             titleVisibility: .visible, presenting: asking
         ) { ask in
-            Button(ask.kind == .unlink ? "Unlink" : "Forget", role: .destructive) {
+            Button(ask.button, role: .destructive) {
                 Task {
-                    switch ask.kind {
+                    switch ask.action {
                     case .unlink: await linking.unlink(ask.hubID)
                     case .forget: await linking.forget(ask.hubID)
                     }
@@ -73,6 +50,7 @@ struct MacsView: View {
                 .onMove { source, destination in
                     move(items, from: source, to: destination)
                 }
+                .moveDisabled(linking.isBusy)
             }
             Section {
                 Button {
@@ -91,28 +69,18 @@ struct MacsView: View {
         .listStyle(.insetGrouped)
     }
 
-    /// Unlink for a linked Mac; Forget for one the Mac removed or long
-    /// offline.
+    /// The row's one destructive action (`MacsModel.action`).
     @ViewBuilder private func actions(_ item: HubListItem) -> some View {
-        if !item.removedByMac {
-            Button("Unlink", role: .destructive) {
-                asking = Ask(kind: .unlink, hubID: item.id, name: item.name)
-            }
-            .disabled(linking.isBusy)
+        let action = MacsModel.action(for: item)
+        Button(action == .unlink ? "Unlink" : "Forget", role: .destructive) {
+            asking = MacsModel.Ask(action: action, item: item)
         }
-        if item.canForget {
-            Button("Forget", role: .destructive) {
-                asking = Ask(kind: .forget, hubID: item.id, name: item.name)
-            }
-            .disabled(linking.isBusy)
-        }
+        .disabled(linking.isBusy)
     }
 
     /// `List.onMove`'s offsets become the registry's index of the moved Mac.
     private func move(_ items: [HubListItem], from source: IndexSet, to destination: Int) {
-        guard let from = source.first else { return }
-        let to = destination > from ? destination - 1 : destination
-        guard to != from else { return }
+        guard let from = source.first, let to = MacsModel.targetIndex(from: from, destination: destination) else { return }
         linking.moveHub(items[from].id, to: to)
     }
 }
