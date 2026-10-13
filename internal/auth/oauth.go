@@ -11,7 +11,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"fmt"
-	"html"
 	"io"
 	"math/big"
 	"net"
@@ -169,13 +168,6 @@ func Complete(ctx context.Context, cfg OAuthConfig, code, redirectURI string) (*
 	return result, nil
 }
 
-// callbackResult is sent from the HTTP callback handler to the Login goroutine.
-type callbackResult struct {
-	code  string
-	state string
-	err   string
-}
-
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	// SkipBrowserOpen disables automatic browser launch; the authorize URL is still printed.
@@ -227,8 +219,6 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	}
 	authorizeURL := slackAuthorizeURL + "?" + params.Encode()
 
-	resultCh := make(chan callbackResult, 1)
-
 	// With app-return the page first sits for 3s (so the confirmation is
 	// readable and the redirect doesn't race page load), then navigates to
 	// the app scheme; the tab tries to close itself only after that. Without
@@ -242,21 +232,8 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		Replace(callbackSuccessPage)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			resultCh <- callbackResult{err: errMsg}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1))
-			return
-		}
-		resultCh <- callbackResult{
-			code:  q.Get("code"),
-			state: q.Get("state"),
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, successPage)
-	})
+	callback, resultCh := NewCallbackHandler(state, successPage, callbackErrorPage)
+	mux.HandleFunc(callbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener)
@@ -280,22 +257,18 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 
-	var cb callbackResult
+	var cb CallbackResult
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
 		return nil, fmt.Errorf("login timed out after %s", loginTimeout)
 	}
 
-	if cb.err != "" {
-		return nil, fmt.Errorf("slack authorization denied: %s", cb.err)
+	if cb.Err != "" {
+		return nil, fmt.Errorf("slack authorization denied: %s", cb.Err)
 	}
 
-	if cb.state != state {
-		return nil, fmt.Errorf("state mismatch: possible CSRF attack")
-	}
-
-	if cb.code == "" {
+	if cb.Code == "" {
 		return nil, fmt.Errorf("no authorization code received")
 	}
 
@@ -307,7 +280,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	}()
 
 	// Exchange code for token
-	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, cb.code, redirectURI)
+	resp, err := exchangeToken(ctx, cfg.ClientID, cfg.ClientSecret, cb.Code, redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}

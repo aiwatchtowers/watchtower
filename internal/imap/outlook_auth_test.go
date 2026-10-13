@@ -364,9 +364,9 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 	}
 }
 
-func TestLoginOutlook_StateMismatchRejected(t *testing.T) {
+func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Fatal("token endpoint must not be called on state mismatch")
+		t.Fatal("token endpoint must not be called on a denied or wrong-state callback")
 	}))
 	defer tokenSrv.Close()
 
@@ -401,18 +401,32 @@ func TestLoginOutlook_StateMismatchRejected(t *testing.T) {
 	cbURL, err := url.Parse(u.Query().Get("redirect_uri"))
 	require.NoError(t, err)
 	q := cbURL.Query()
-	q.Set("code", "auth-code")
+	q.Set("error", "access_denied")
 	q.Set("state", "wrong-state")
 	cbURL.RawQuery = q.Encode()
 
 	resp, err := http.Get(cbURL.String())
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("LoginOutlook ended on a wrong-state callback: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The real redirect still gets through and ends the login.
+	q.Set("state", u.Query().Get("state"))
+	cbURL.RawQuery = q.Encode()
+	resp, err = http.Get(cbURL.String())
+	require.NoError(t, err)
+	resp.Body.Close()
 
 	select {
 	case err := <-errCh:
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "state mismatch")
+		assert.Contains(t, err.Error(), "access_denied")
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for LoginOutlook to complete")
 	}
