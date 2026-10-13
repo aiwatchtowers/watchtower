@@ -132,8 +132,9 @@ final class SlicePublisher: Sendable {
     private let assets: SliceAssetStore?
     /// Whether a phone is linked (`HubSyncState.hasLinkedDevice`).
     private let isLinked: @Sendable () -> Bool
-    /// The link state the previous cycle saw; nil before the first.
-    private let linkedAtLastCycle = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+    /// Whether the previous cycle saw no phone linked (false before the
+    /// first).
+    private let unlinkedAtLastCycle = OSAllocatedUnfairLock(initialState: false)
 
     init(
         dbPool: DatabasePool,
@@ -575,12 +576,12 @@ final class SlicePublisher: Sendable {
             return nil
         }()
         let linked = isLinked()
-        let wasLinked = linkedAtLastCycle.withLock { last -> Bool? in
-            defer { last = linked }
+        let wasUnlinked = unlinkedAtLastCycle.withLock { last -> Bool in
+            defer { last = !linked }
             return last
         }
         guard linked else { return (requested ?? Set(SliceKind.allCases)).intersection(Self.unlinkedKinds) }
-        return wasLinked == false ? nil : requested
+        return wasUnlinked ? nil : requested
     }
 
     /// One cycle; nil when it failed.

@@ -357,7 +357,8 @@ final class SlicePublisherTests: XCTestCase {
         grant.setPayload(Data(#"{"linked":false}"#.utf8), id: "phone")
         bench.setPayload(Data(#"{"v":1}"#.utf8))
         ask.setPayload(Data(#"{"v":1}"#.utf8))
-        let publisher = makeLanePublisher(clock, sources: [grant, bench, ask], isLinked: { linked.withLock { $0 } })
+        let isLinked: @Sendable () -> Bool = { linked.withLock { $0 } }
+        let publisher = makeLanePublisher(clock, sources: [grant, bench, ask], isLinked: isLinked)
 
         await publisher.run(.full)
         await publisher.run(.urgent(SlicePublisher.urgentKinds))

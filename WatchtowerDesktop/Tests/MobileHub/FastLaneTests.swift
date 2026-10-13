@@ -161,7 +161,7 @@ final class FastLaneTests: XCTestCase {
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
             sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
             clock: { clock.now },
-            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+            sendNow: { await transport.sendNow() }
         )
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         lane.start()
@@ -401,7 +401,7 @@ final class FastLaneTests: XCTestCase {
             dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
             sources: [TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil })],
             clock: { clock.now },
-            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+            sendNow: { await transport.sendNow() }
         )
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         rows.forEach { terminals.start($0, fresh: true) }
