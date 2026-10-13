@@ -59,9 +59,10 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     /// (`PhoneRecorderController.pauseLimit`), not the owner's Stop.
     public let autoFinished: Bool
 
-    /// Mobile E2E: the sealed audio (`<id>.enc`, by name inside the
-    /// recordings folder like `storedPath`); nil until the recording is
-    /// sealed. The plain file at `storedPath` stays beside it until the Mac
+    /// Mobile E2E: the sealed audio (`<id>.enc`, `<id>-<n>.enc` after the
+    /// n-th re-seal; by name inside the recordings folder like
+    /// `storedPath`); nil until the recording is first sealed, kept while a
+    /// re-seal is due. The plain file at `storedPath` stays beside it until the Mac
     /// confirms receipt (ask #89 A).
     public internal(set) var sealedPath: String?
     /// The sealed upload record (envelope bytes) and the wire name it travels
@@ -294,12 +295,13 @@ extension ReplicaStore {
 
     /// Forgets a row's seal so the next pass seals it again (an envelope of an epoch the phone has moved
     /// past, final review Kit I1). Only while the row still holds `envelope` (compare-and-clear); returns
-    /// whether this call cleared it. The sealed file stays until the re-seal replaces it.
+    /// whether this call cleared it. `sealed_path` stays: an older queued save may still point at that file, so
+    /// it is kept (and known to the sweep) until the re-seal, written to a new name, has stored its envelope.
     func clearPhoneRecordingSeal(id: String, envelope: Data) throws -> Bool {
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE phone_recordings SET envelope = NULL, wire_name = NULL, sealed_path = NULL
+                    UPDATE phone_recordings SET envelope = NULL, wire_name = NULL
                     WHERE recording_id = ? AND envelope = ?
                     """,
                 arguments: [id, envelope]

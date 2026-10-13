@@ -1270,6 +1270,49 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the plain audio waits for the Mac")
     }
 
+    /// A re-seal never rewrites the file an older queued save still points at: each seal gets its own name
+    /// (`<id>.enc`, then `<id>-1.enc`, …). While the row waits for its new seal the sweep keeps the old file; once
+    /// the new envelope is stored the superseded file goes.
+    func testAReSealWritesANewFileAndRemovesTheSupersededOneOnceStored() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 6, count: 512))
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
+        let first = sealedFile(recording.id)
+        let firstBytes = try Data(contentsOf: first)
+        let stale = try XCTUnwrap(try store.phoneRecording(id: recording.id)?.envelope)
+
+        // The seal is forgotten (a rotation): until the re-seal stores its envelope the old file stays known.
+        XCTAssertTrue(try store.clearPhoneRecordingSeal(id: recording.id, envelope: stale))
+        let swept = try await uploader.sweepOrphanFiles()
+        XCTAssertTrue(swept.isEmpty, "\(swept.map(\.lastPathComponent))")
+        XCTAssertEqual(try Data(contentsOf: first), firstBytes)
+
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [1, 2]).hubLink(TestE2E.hubID.uuidString)))
+        try await uploader.retryFailed(id: recording.id)
+
+        let saves = await spy.saves
+        guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
+        XCTAssertEqual(saves[0].file, "\(recording.id).enc")
+        XCTAssertEqual(saves[1].file, "\(recording.id)-1.enc", "a new file per seal")
+        XCTAssertEqual(saves[1].name, saves[0].name)
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.sealedPath, "\(recording.id)-1.enc")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "the superseded file goes once the new seal is stored")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(recording.id)-1.enc").path))
+        let afterReseal = try await uploader.sweepOrphanFiles()
+        XCTAssertTrue(afterReseal.isEmpty, "\(afterReseal.map(\.lastPathComponent))")
+
+        // A second re-seal counts on.
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: [2, 3]).hubLink(TestE2E.hubID.uuidString)))
+        try await uploader.retryFailed(id: recording.id)
+        let third = await spy.saves
+        XCTAssertEqual(third.last?.file, "\(recording.id)-2.enc")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("\(recording.id)-1.enc").path))
+    }
+
     /// A pass (not only Retry) re-seals a stale-epoch row before it re-sends it: the relaunch retry of an
     /// in-flight upload after a rotation.
     func testARelaunchPassReSealsAnInFlightEnvelopeOfAnOlderEpoch() async throws {
@@ -1353,6 +1396,8 @@ final class RecordingUploaderTests: XCTestCase {
         let id = UUID().uuidString
         let stale = sealedFile(id)
         try Data("sealed to the old pairing".utf8).write(to: stale)
+        let staleReseal = dir.appendingPathComponent("\(id)-2.enc")
+        try Data("re-sealed to the old pairing".utf8).write(to: staleReseal)
         let file = try makeAudioFile(name: "\(id).m4a", bytes: 512)
 
         let ended = Date()
@@ -1361,6 +1406,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         XCTAssertNotNil(row)
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "the old pairing's copy is dropped")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staleReseal.path), "every seal generation of it")
         let sealedCount = try await uploader.sealPending()
         XCTAssertEqual(sealedCount, 1)
         XCTAssertNotNil(try store.phoneRecording(id: id)?.envelope)
@@ -1536,6 +1582,8 @@ private actor SpyTransport: CloudSyncTransport {
         let payload: Data
         /// The asset file's bytes when it was saved.
         let asset: Data?
+        /// The asset file's name.
+        let file: String?
     }
 
     private(set) var savedNames: [String] = []
@@ -1561,7 +1609,9 @@ private actor SpyTransport: CloudSyncTransport {
     func save(_ records: [CloudRecord]) async throws {
         savedNames += records.map(\.recordName)
         saves += records.map { record in
-            Save(name: record.recordName, payload: record.payload, asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) })
+            Save(
+                name: record.recordName, payload: record.payload,
+                asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) }, file: record.assetFileURL?.lastPathComponent)
         }
         if holding {
             await withCheckedContinuation { held.append($0) }

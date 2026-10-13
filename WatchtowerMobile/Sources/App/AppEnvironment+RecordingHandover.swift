@@ -34,7 +34,7 @@ struct RecordingHandover: Equatable, Sendable {
 ///   (mobile E2E, owner ruling ask #89 option A). Its sealed copy and
 ///   stored envelope belong to the old pairing and are not carried: an
 ///   adopted recording is registered again and sealed fresh under the
-///   current link (`RecordingUploader.register` drops a stale `<id>.enc`);
+///   current link (`RecordingUploader.register` drops its stale seal files);
 ///   one never adopted here is swept;
 /// - an environment adopts the held recordings of its own hub only, so a
 ///   recording never reaches another owner's Mac; the others wait, listed

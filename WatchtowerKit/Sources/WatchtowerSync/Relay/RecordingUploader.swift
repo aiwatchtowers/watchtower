@@ -21,10 +21,10 @@ public protocol RecordingUploadAcking: Sendable {
 /// - a recording registers ONLY after its file is final on disk — the ledger
 ///   row plus the file survive an app kill;
 /// - mobile E2E: a finalized recording is sealed ONCE (`sealPending`): the
-///   audio is encrypted to `<id>.enc` under a fresh asset key, the upload
-///   record (asset descriptor inside) is sealed by `SecureTransport`, the
-///   envelope, its wire name and the sealed file are stored in one row
-///   update. Only ciphertext ever leaves the phone; the plain audio stays
+///   audio is encrypted to `<id>.enc` (a re-seal: `<id>-<n>.enc`) under a
+///   fresh asset key, the upload record (asset descriptor inside) is sealed
+///   by `SecureTransport`, the envelope, its wire name and the sealed file
+///   are stored in one row update. Only ciphertext ever leaves the phone; the plain audio stays
 ///   on the phone (under its `completeUnlessOpen` file protection) until
 ///   the Mac confirms receipt — owner ruling ask #89, option A — so the
 ///   hold across a wipe (board #63) can carry it to a new link, where it is
@@ -121,7 +121,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// A new process starts empty, so a capture cut short is recovered.
     private var liveCaptureIDs: Set<String> = []
     /// Recordings being sealed now (the actor suspends inside `sealRow`): a
-    /// second seal of one recording would overwrite the same `<id>.enc`.
+    /// second seal of one recording would write the same next seal file.
     private var sealingIDs: Set<String> = []
     private var ledgerPrepared = false
     /// Whether the next foreground pass re-saves `uploading` rows: true
@@ -248,7 +248,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         // sealed fresh: a copy sealed under the old pairing is dropped. A
         // row still holding the id keeps its copy (the insert below fails).
         if try store.phoneRecording(id: recordingID) == nil {
-            removeSealedLeftover(sealTarget(id: recordingID, plain: fileURL))
+            removeSealedLeftovers(id: recordingID, plain: fileURL)
         }
         let recording = PhoneRecording(
             id: recordingID,
@@ -427,13 +427,16 @@ public actor RecordingUploader: RecordingUploadAcking {
         guard let directory else { return [] }
         try prepareLedger()
         // An undelivered row owns its plain file (kept until the Mac
-        // confirms it, ask #89 A) AND its sealed copy: the stored one, or
-        // `<id>.enc` that a seal in progress (suspended in `transport.seal`,
-        // before `sealed_path` is stored) has already written.
+        // confirms it, ask #89 A) AND its sealed copy: the stored one (also
+        // while a re-seal is due: an older queued save may point at it),
+        // and, for a row without an envelope, the next seal file that a seal
+        // in progress (suspended in `transport.seal`, before `sealed_path`
+        // is stored) has already written.
         var known: Set<String> = []
         for row in try store.phoneRecordings() where row.state != .delivered {
             known.insert(fileURL(row).standardizedFileURL.path)
-            known.insert((row.sealedFileURL(in: directory) ?? sealTarget(for: row)).standardizedFileURL.path)
+            if let sealed = row.sealedFileURL(in: directory) { known.insert(sealed.standardizedFileURL.path) }
+            if row.envelope == nil { known.insert(sealTarget(for: row).standardizedFileURL.path) }
         }
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -617,7 +620,7 @@ public actor RecordingUploader: RecordingUploadAcking {
 
     /// Seals every finalized recording that has no envelope yet (`waiting`,
     /// and an `uploading` row a pre-E2E build sent in the clear): the audio
-    /// is encrypted to `<id>.enc` with a fresh asset key, the upload record
+    /// is encrypted to a fresh seal file (`sealTarget`) with a fresh asset key, the upload record
     /// is sealed once, and the envelope, wire name and sealed file are
     /// stored in one row update; the plain audio stays until the Mac
     /// confirms it (`applyEcho`, ask #89 A). The asset cap is
@@ -711,6 +714,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         else { return false }
         sealingIDs.insert(row.id)
         defer { sealingIDs.remove(row.id) }
+        // A re-seal's predecessor: kept until this seal is stored (an older queued save may still point at it).
+        let superseded = row.sealedFileURL(in: directory)
         let plain = fileURL(row)
         guard let size = try? FileManager.default.attributesOfItem(atPath: plain.path)[.size] as? Int64 else {
             try failLocally(row.id, .missingFile)
@@ -772,17 +777,44 @@ public actor RecordingUploader: RecordingUploadAcking {
             removeSealedLeftover(sealedFile)
             return false
         }
+        if let superseded, superseded.standardizedFileURL != sealedFile.standardizedFileURL {
+            removeSealedLeftover(superseded)
+        }
         return true
     }
 
-    /// Where `sealRow` writes a row's sealed audio: `<id>.enc` in the
-    /// recordings folder, or next to a plain file kept elsewhere.
+    /// Where `sealRow` writes a row's next sealed audio, in the recordings
+    /// folder or next to a plain file kept elsewhere: `<id>.enc` for the
+    /// first seal, `<id>-<n>.enc` for the n-th re-seal. A fresh name per
+    /// seal: a re-seal never rewrites the file an older queued save still
+    /// points at.
     private func sealTarget(for row: PhoneRecording) -> URL {
-        sealTarget(id: row.id, plain: fileURL(row))
+        let first = sealTarget(id: row.id, plain: fileURL(row))
+        guard let current = row.sealedFileURL(in: directory) else { return first }
+        let generation = Self.sealGeneration(of: current, id: row.id) + 1
+        return first.deletingLastPathComponent().appendingPathComponent("\(row.id)-\(generation).enc")
     }
 
     private func sealTarget(id: String, plain: URL) -> URL {
         (directory ?? plain.deletingLastPathComponent()).appendingPathComponent("\(id).enc")
+    }
+
+    /// 0 for `<id>.enc` (or a name this build did not write), n for `<id>-<n>.enc`.
+    private static func sealGeneration(of file: URL, id: String) -> Int {
+        let name = file.deletingPathExtension().lastPathComponent
+        guard name.hasPrefix("\(id)-"), let generation = Int(name.dropFirst(id.count + 1)), generation > 0 else { return 0 }
+        return generation
+    }
+
+    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file.
+    private func removeSealedLeftovers(id: String, plain: URL) {
+        let first = sealTarget(id: id, plain: plain)
+        let folder = first.deletingLastPathComponent()
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        for file in files where file.lastPathComponent == first.lastPathComponent
+            || (file.pathExtension == "enc" && Self.sealGeneration(of: file, id: id) > 0) {
+            removeSealedLeftover(file)
+        }
     }
 
     private func removeSealedLeftover(_ url: URL) {
