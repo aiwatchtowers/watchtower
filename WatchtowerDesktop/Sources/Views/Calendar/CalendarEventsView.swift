@@ -43,6 +43,8 @@ struct CalendarEventsView: View {
     /// short loop while the tab is open, so it clears once the sync lands.
     @State private var syncHealth: CalendarSyncHealth = .ok
     @State private var syncHealthError: String?
+    @State private var syncHealthReadFailed = false
+    @State private var isRestartingSync = false
     /// Derived tri-state position of the now-line marker relative to the
     /// viewport (nil while no marker is rendered — no Today section). Storing
     /// the derived state instead of the raw frame means scroll ticks don't
@@ -72,35 +74,52 @@ struct CalendarEventsView: View {
         }
         .task {
             while !Task.isCancelled {
-                refreshSyncHealth()
+                await refreshSyncHealth()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
     }
 
-    private func refreshSyncHealth() {
+    private func refreshSyncHealth() async {
+        // The shared connect state gates the meetings list itself: refresh it
+        // too, so a Reconnect that succeeded leaves the not-connected screen.
+        await google.calendar.checkStatusAsync()
         guard let db = appState.databaseManager else { return }
         do {
-            let (accounts, calendarCount) = try db.dbPool.read { conn in
-                (try GoogleAccountQueries.fetchAll(conn), try CalendarQueries.calendarCount(conn))
+            let (accounts, counts) = try await db.dbPool.read { conn in
+                (try GoogleAccountQueries.fetchAll(conn), try CalendarQueries.calendarCountsBySource(conn))
             }
+            let config = ConfigService()
             syncHealth = CalendarSyncHealth.evaluate(
                 accounts: accounts,
                 hasCalDAVSource: appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false,
-                syncSwitchOn: ConfigService().calendarEnabled,
-                calendarCount: calendarCount
+                // An unreadable config.yaml says nothing about the switch —
+                // never diagnose (and offer to "fix") a switch we cannot read.
+                syncSwitchOn: config.parseError == nil ? config.calendarEnabled : true,
+                googleCalendarCount: counts.google,
+                calDAVCalendarCount: counts.calDAV,
+                daemonRunning: DaemonManager.checkDaemonRunning()
             )
+            syncHealthReadFailed = false
         } catch {
-            // Keep the last known state, but never silently.
-            print("CalendarEventsView sync health read failed: \(error)")
+            // Keep the last known state; log once per failure streak, not
+            // every 15 s.
+            if !syncHealthReadFailed {
+                NSLog("CalendarEventsView: calendar sync health read failed: %@", error.localizedDescription)
+            }
+            syncHealthReadFailed = true
         }
     }
 
     /// The fix for an install connected before the CLI turned the switch on
     /// itself: write `calendar.enabled`, then restart the daemon so it wires
     /// the calendar syncer and syncs it right at startup.
-    private func turnOnCalendarSync() {
+    private func turnOnCalendarSync() async {
         let config = ConfigService()
+        if let parseError = config.parseError {
+            syncHealthError = "config.yaml can't be read (\(parseError)) — fix the file, then try again."
+            return
+        }
         config.calendarEnabled = true
         do {
             try config.save()
@@ -108,9 +127,20 @@ struct CalendarEventsView: View {
             syncHealthError = "Couldn't turn calendar sync on: \(error.localizedDescription)"
             return
         }
-        syncHealthError = nil
-        refreshSyncHealth()
-        Task { await DaemonManager.restartLogging() }
+        await restartSync()
+    }
+
+    /// Starts the daemon (or restarts it) and surfaces a failure in the banner.
+    private func restartSync() async {
+        isRestartingSync = true
+        defer { isRestartingSync = false }
+        do {
+            try await DaemonManager.restart()
+            syncHealthError = nil
+        } catch {
+            syncHealthError = "Couldn't start the sync: \(error.localizedDescription)"
+        }
+        await refreshSyncHealth()
     }
 
     /// Resolves a `MeetingSelection` (row tap, deep link) to its
@@ -634,20 +664,37 @@ struct CalendarEventsView: View {
                 text: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it.",
                 error: syncHealthError
             ) {
-                Button("Turn On Calendar Sync") { turnOnCalendarSync() }
+                syncButton("Turn On Calendar Sync") { await turnOnCalendarSync() }
             }
-        case .needsReconnect(let account):
+        case .accountError(let account):
             healthBanner(
                 icon: "exclamationmark.triangle",
-                text: reconnectText(account),
+                text: accountErrorText(account),
                 error: appState.googleAccountsViewModel?.error
             ) {
                 reconnectButton(account)
+            }
+        case .daemonStopped:
+            healthBanner(
+                icon: "exclamationmark.triangle",
+                text: "Watchtower's sync isn't running, so your calendar hasn't synced yet.",
+                error: syncHealthError
+            ) {
+                syncButton("Start Sync") { await restartSync() }
             }
         case .awaitingFirstSync:
             healthBanner(icon: nil, text: "Syncing your calendar — events appear within a minute.", error: nil) {
                 EmptyView()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func syncButton(_ title: String, action: @escaping () async -> Void) -> some View {
+        if isRestartingSync {
+            ProgressView().controlSize(.small)
+        } else {
+            Button(title) { Task { await action() } }
         }
     }
 
@@ -682,9 +729,9 @@ struct CalendarEventsView: View {
         .padding(.bottom, 8)
     }
 
-    private func reconnectText(_ account: GoogleAccount) -> String {
-        let reason = account.error.isEmpty ? "" : " (\(account.error))"
-        return "Google Calendar for \(account.displayName) needs reconnecting\(reason)."
+    private func accountErrorText(_ account: GoogleAccount) -> String {
+        let reason = account.error.isEmpty ? "" : ": \(account.error)"
+        return "Google Calendar for \(account.displayName) can't sync\(reason). Reconnect if it keeps failing."
     }
 
     @ViewBuilder
@@ -692,7 +739,9 @@ struct CalendarEventsView: View {
         if appState.googleAccountsViewModel?.isConnecting == true {
             ProgressView().controlSize(.small)
         } else {
-            Button("Reconnect") { appState.googleAccountsViewModel?.relogin(account) }
+            Button("Reconnect") {
+                appState.googleAccountsViewModel?.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
+            }
         }
     }
 
@@ -716,10 +765,10 @@ struct CalendarEventsView: View {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            if case .needsReconnect(let account) = syncHealth {
-                Text("Google Calendar needs reconnecting")
+            if case .accountError(let account) = syncHealth {
+                Text("Google Calendar can't sync")
                     .font(.headline)
-                Text(reconnectText(account))
+                Text(accountErrorText(account))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

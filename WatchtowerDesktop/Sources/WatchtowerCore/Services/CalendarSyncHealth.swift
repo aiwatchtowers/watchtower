@@ -6,28 +6,35 @@ package enum CalendarSyncHealth: Equatable {
     /// A Google account granted Calendar, but `calendar.enabled` is off, so
     /// the daemon never syncs it.
     case syncOff
-    /// A Google account granted Calendar, but its grant is broken (`status`
-    /// not ok) — it needs a fresh consent.
-    case needsReconnect(GoogleAccount)
-    /// Everything is on, no calendar has synced yet.
+    /// A Google account granted Calendar, but its last sync or token check
+    /// failed (`status` not ok) — the row carries the reason.
+    case accountError(GoogleAccount)
+    /// A connected calendar has never synced and no daemon is running to do it.
+    case daemonStopped
+    /// A connected calendar has never synced; the running daemon will.
     case awaitingFirstSync
     case ok
 
-    /// Pure: the first matching reason, most actionable first. `calendarCount`
-    /// is the number of `calendar_calendars` rows — a sync writes the calendar
-    /// list before any event, so zero means no sync has completed yet.
+    /// Pure: the first matching reason, most actionable first. The counts are
+    /// `calendar_calendars` rows per source kind — a sync writes the calendar
+    /// list before any event, so zero means that kind has never synced. They
+    /// are kept apart so a synced CalDAV calendar cannot hide a Google one
+    /// that never synced.
     package static func evaluate(
         accounts: [GoogleAccount],
         hasCalDAVSource: Bool,
         syncSwitchOn: Bool,
-        calendarCount: Int
+        googleCalendarCount: Int,
+        calDAVCalendarCount: Int,
+        daemonRunning: Bool
     ) -> Self {
         let googleCalendars = accounts.filter(\.calendarEnabled)
         let healthy = googleCalendars.contains(where: \.isOK)
         if healthy && !syncSwitchOn { return .syncOff }
-        if let broken = googleCalendars.first(where: { !$0.isOK }) { return .needsReconnect(broken) }
-        let syncable = (healthy && syncSwitchOn) || hasCalDAVSource
-        if syncable && calendarCount == 0 { return .awaitingFirstSync }
-        return .ok
+        if let broken = googleCalendars.first(where: { !$0.isOK }) { return .accountError(broken) }
+        let googleWaiting = healthy && googleCalendarCount == 0
+        let calDAVWaiting = hasCalDAVSource && calDAVCalendarCount == 0
+        guard googleWaiting || calDAVWaiting else { return .ok }
+        return daemonRunning ? .awaitingFirstSync : .daemonStopped
     }
 }

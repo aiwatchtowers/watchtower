@@ -394,6 +394,17 @@ struct ConfigServiceTests {
         #expect(ConfigService(configPath: path).calendarEnabled == true)
     }
 
+    /// Gmail has its own branch in `save()` (its section is written only on a
+    /// change): turning Gmail sync off in Settings must still reach the file.
+    @Test("Save writes a Gmail switch the owner changed")
+    func saveWritesChangedGmailSwitch() throws {
+        let path = makeTempConfig("gmail:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        svc.gmailEnabled = false
+        try svc.save()
+        #expect(ConfigService(configPath: path).gmailEnabled == false)
+    }
+
     @Test("Load parses jira features")
     func loadJiraFeatures() {
         let path = makeTempConfig("""

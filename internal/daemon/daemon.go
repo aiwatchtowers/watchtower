@@ -350,7 +350,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// first cycle's Slack sync of a fresh install takes minutes and runSync
 	// puts it ahead of the calendar phases. A daemon (re)started right after
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
-	// events within seconds (#740). The cycle below syncs them again, cheaply.
+	// events within seconds (#740). The cycle below syncs them a second time —
+	// a few API calls per account, accepted on a (re)start for that latency.
 	d.phaseCalendarSync(ctx)
 	d.phaseCalDAVSync(ctx)
 

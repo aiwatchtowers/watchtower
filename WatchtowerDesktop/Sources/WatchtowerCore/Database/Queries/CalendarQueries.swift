@@ -147,6 +147,16 @@ package enum CalendarQueries {
         ) ?? 0
     }
 
+    /// Synced calendars split by source kind: Google rows carry their
+    /// `account_id`, CalDAV/ICS rows leave it NULL (migration 00043).
+    package static func calendarCountsBySource(_ db: Database) throws -> (google: Int, calDAV: Int) {
+        let row = try Row.fetchOne(
+            db,
+            sql: "SELECT COUNT(account_id) AS google, COUNT(*) - COUNT(account_id) AS caldav FROM calendar_calendars"
+        )
+        return (row?["google"] ?? 0, row?["caldav"] ?? 0)
+    }
+
     /// Calendars for the Settings "Synced Calendars" section, pre-ordered so
     /// Google-linked rows are grouped by their owning account and CalDAV/ICS
     /// rows (`account_id IS NULL`) sort last — the View groups this flat list
