@@ -244,9 +244,9 @@ func cleanupAllowRule(bin string) string // Bash('<bin>' workbench cleanup:*)
     func phase(for key: CleanupScope) -> Phase
 }
 ```
-Delete flow per spec §12: close terminal → apply planned `remove` keys → delete row only on success; a failure shows the message and leaves the row. Live session ids passed from `TerminalCenter.liveIDs`.
+The center's cleanup calls run without `WATCHTOWER_TERMINAL_SESSION_ID` in the child environment (spec §4: inside a terminal session the CLI refuses sweeps and other sessions; an app launched from a workbench terminal would inherit the variable). Delete flow per spec §12: close terminal → apply planned `remove` keys → delete row only on success; a failure shows the message and leaves the row. Live session ids passed from `TerminalCenter.liveIDs`.
 
-**Tests:** `testProj16_DeleteAppliesOnlyThePlannedItems` (fake runner records argv: `--apply` + exactly the planned keys), `testProj16_FailedCleanupKeepsTheSessionRow`, `testDeleteOnlySkipsTheCleanup`, `testCleanupSurvivesNavigation` (start → leave the page → return → phase kept), `testPlanPassesLiveSessions`, `testReportShowsTheCleanupLine`.
+**Tests:** `testProj16_DeleteAppliesOnlyThePlannedItems` (fake runner records argv: `--apply` + exactly the planned keys), `testProj16_FailedCleanupKeepsTheSessionRow`, `testDeleteOnlySkipsTheCleanup`, `testCleanupSurvivesNavigation` (start → leave the page → return → phase kept), `testPlanPassesLiveSessions`, `testCleanupCallsDropTheTerminalSessionVariable`, `testReportShowsTheCleanupLine`.
 
 **Verify:** `make test-swift FILTER='SessionCleanupCenterTests|WorkbenchSessionDeleteTests'`.
 

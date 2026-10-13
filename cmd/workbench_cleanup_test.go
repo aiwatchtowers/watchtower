@@ -353,3 +353,194 @@ func (f *cleanupFixture) planItems(t *testing.T) []sessioncleanup.Item {
 	require.NoError(t, err, out)
 	return decodeCleanup(t, out).Items
 }
+
+// Inside an agent's terminal session ($WATCHTOWER_TERMINAL_SESSION_ID, where
+// the auto-approved allow rule applies) the command acts only on that
+// session: another session is refused, exit 2, nothing done.
+func TestProj16_CallerSessionCannotCleanAnotherSession(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	caller := f.addSession(f.wb)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(caller, 10))
+
+	for _, args := range [][]string{
+		{"--session", f.sessionArg(), "--apply"},
+		{"--session", f.sessionArg(), "--apply", "--item", "worktree:" + root},
+		{"--session", f.sessionArg()},
+	} {
+		out, err := runCleanupCmd(t, args...)
+		requireExitCode(t, err, 2)
+		assert.Empty(t, out)
+		assert.Contains(t, err.Error(), "only that session")
+	}
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
+// A sweep from inside a terminal session is refused: sweeps are the
+// Desktop's.
+func TestProj16_CallerSessionCannotSweep(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	t.Setenv(terminalSessionEnv, f.sessionArg())
+	wb := strconv.FormatInt(f.wb, 10)
+
+	for _, args := range [][]string{
+		{"--sweep", "--workbench", wb},
+		{"--sweep", "--workbench", wb, "--apply", "--item", "worktree:" + root},
+	} {
+		out, err := runCleanupCmd(t, args...)
+		requireExitCode(t, err, 2)
+		assert.Empty(t, out)
+		assert.Contains(t, err.Error(), "sweep is refused")
+	}
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+}
+
+// From inside a terminal session, --workbench must be that session's.
+func TestProj16_CallerSessionCannotNameAnotherWorkbench(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	otherFolder, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	other, err := f.database.CreateWorkbench("other", otherFolder)
+	require.NoError(t, err)
+	t.Setenv(terminalSessionEnv, f.sessionArg())
+
+	out, err := runCleanupCmd(t, "--workbench", strconv.FormatInt(other, 10), "--apply")
+	requireExitCode(t, err, 2)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "belongs to workbench")
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
+func (f *cleanupFixture) requireBranch(name string) {
+	f.t.Helper()
+	f.gitIn(f.repo, "rev-parse", "--verify", "-q", "refs/heads/"+name)
+}
+
+// The error of a refused id names the session once.
+func TestCleanupCmd_UnknownSessionMessageNamesItOnce(t *testing.T) {
+	newCleanupFixture(t)
+	_, err := runCleanupCmd(t, "--session", "999999")
+	requireExitCode(t, err, 2)
+	assert.Equal(t, 1, strings.Count(err.Error(), "999999"), err.Error())
+	assert.NotContains(t, err.Error(), "session 999999: terminal session 999999")
+}
+
+// The command never creates the database: a missing file is exit 1 and
+// leaves no file behind, for a plan and for --apply alike.
+func TestCleanupCmd_MissingDatabaseIsExit1AndCreatesNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(terminalSessionEnv, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+	cfg, err := loadWorkbenchCLIConfig()
+	require.NoError(t, err)
+
+	for _, args := range [][]string{{"--session", "1"}, {"--session", "1", "--apply"}} {
+		_, err := runCleanupCmd(t, args...)
+		require.Error(t, err)
+		var ec *exitCodeError
+		assert.False(t, errors.As(err, &ec), "not a usage error: %v", err)
+		assert.NoFileExists(t, cfg.DBPath())
+	}
+}
+
+// A workbench folder outside a git repository cannot be planned: exit 1,
+// nothing removed or saved.
+func TestCleanupCmd_WorkbenchNotAGitRepoIsExit1(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	plain, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	_, err = f.database.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, plain, f.wb)
+	require.NoError(t, err)
+
+	out, err := runCleanupCmd(t, "--session", f.sessionArg(), "--apply", "--json")
+	requireNotUsage(t, err)
+	assert.Contains(t, err.Error(), "not in a git repository")
+	assert.Empty(t, out)
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
+// A session start that does not parse is never read as zero: exit 1,
+// nothing removed or saved.
+func TestCleanupCmd_UnparsableSessionStartIsExit1(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	_, err := f.database.Exec(`UPDATE terminal_sessions SET created_at = 'yesterday' WHERE id = ?`, f.session)
+	require.NoError(t, err)
+
+	for _, args := range [][]string{{"--session", f.sessionArg()}, {"--session", f.sessionArg(), "--apply"}} {
+		out, err := runCleanupCmd(t, args...)
+		requireNotUsage(t, err)
+		assert.Contains(t, err.Error(), "created_at")
+		assert.Empty(t, out)
+	}
+	assert.DirExists(t, root)
+	f.requireBranch("feat/x")
+	assert.False(t, f.storedResult().Valid)
+}
+
+func requireNotUsage(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	var ec *exitCodeError
+	assert.False(t, errors.As(err, &ec), "exit 1, not a usage error: %v", err)
+}
+
+// --apply --item removes only the named key; the other eligible items are
+// not_selected and stay.
+func TestCleanupCmd_ApplyItemRemovesOnlyTheNamedKey(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	other := f.pushedWorktree("wt2", "feat/y")
+
+	out, err := runCleanupCmd(t, "--session", f.sessionArg(), "--apply", "--item", "worktree:"+root, "--json")
+	require.NoError(t, err, out)
+	res := decodeCleanup(t, out)
+	assert.True(t, cleanupItem(t, res, "worktree:"+root).Done, out)
+	assert.NoDirExists(t, root)
+	for _, key := range []string{"worktree:" + other, "branch:feat/y", "branch:feat/x"} {
+		it := cleanupItem(t, res, key)
+		assert.False(t, it.Done, "%+v", it)
+		assert.Equal(t, sessioncleanup.ReasonNotSelected, it.Reason, "%+v", it)
+	}
+	assert.DirExists(t, other)
+	f.requireBranch("feat/x")
+	f.requireBranch("feat/y")
+	assert.True(t, f.storedResult().Valid)
+}
+
+// The Desktop's sweep (no session variable) applies the named items only.
+func TestCleanupCmd_SweepApplyItemRemovesTheNamedWorktree(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	other := f.pushedWorktree("wt2", "feat/y")
+	// A finished session's work is not session_recent.
+	_, err := f.database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), f.session)
+	require.NoError(t, err)
+
+	out, err := runCleanupCmd(t, "--workbench", strconv.FormatInt(f.wb, 10), "--sweep", "--apply",
+		"--item", "worktree:"+root, "--json")
+	require.NoError(t, err, out)
+	res := decodeCleanup(t, out)
+	assert.True(t, res.Sweep)
+	assert.Equal(t, sessioncleanup.ModeApply, res.Mode)
+	assert.True(t, cleanupItem(t, res, "worktree:"+root).Done, out)
+	assert.NoDirExists(t, root)
+	assert.DirExists(t, other)
+	f.requireBranch("feat/y")
+	assert.False(t, f.storedResult().Valid, "a sweep saves no session result")
+}

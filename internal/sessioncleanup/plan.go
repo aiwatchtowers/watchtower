@@ -72,6 +72,23 @@ func Build(ctx context.Context, d Deps, r Request) (Plan, error) {
 	return b.evaluate(ctx), nil
 }
 
+// PlanResult is Build as the command prints it: a plan-mode Result naming
+// the workbench the session belongs to. It writes nothing.
+func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
+	b, err := newBuilder(ctx, d, r)
+	if err != nil {
+		return Result{}, err
+	}
+	p := b.evaluate(ctx)
+	if p.Items == nil {
+		p.Items = []Item{}
+	}
+	return Result{
+		SessionID: r.SessionID, WorkbenchID: b.req.WorkbenchID, Mode: ModePlan, Sweep: r.Sweep,
+		Plan: p, RemovedBytesKnown: true, Summary: Summarize(p.Items),
+	}, nil
+}
+
 // evaluate lists and evaluates every candidate of the builder's facts.
 func (b *builder) evaluate(ctx context.Context) Plan {
 	items := b.worktreeItems(ctx)
@@ -114,8 +131,12 @@ func clockNow(d Deps) time.Time {
 	return time.Now()
 }
 
+// ErrWrongWorkbench is a session that does not belong to the requested
+// workbench: nothing is planned or done.
+var ErrWrongWorkbench = errors.New("wrong workbench")
+
 // loadSession reads the session (session mode) and checks it belongs to
-// the requested workbench.
+// the requested workbench — the one place the ids are checked.
 func (b *builder) loadSession(ctx context.Context) error {
 	if b.req.Sweep {
 		if b.req.WorkbenchID == 0 {
@@ -125,10 +146,11 @@ func (b *builder) loadSession(ctx context.Context) error {
 	}
 	s, err := b.deps.DB.CleanupSession(ctx, b.req.SessionID)
 	if err != nil {
-		return fmt.Errorf("reading session %d: %w", b.req.SessionID, err)
+		return err // names the session already
 	}
 	if b.req.WorkbenchID != 0 && s.WorkbenchID != b.req.WorkbenchID {
-		return fmt.Errorf("session %d belongs to workbench %d, not %d", s.ID, s.WorkbenchID, b.req.WorkbenchID)
+		return fmt.Errorf("%w: session %d belongs to workbench %d, not %d",
+			ErrWrongWorkbench, s.ID, s.WorkbenchID, b.req.WorkbenchID)
 	}
 	b.session, b.req.WorkbenchID = s, s.WorkbenchID
 	return nil

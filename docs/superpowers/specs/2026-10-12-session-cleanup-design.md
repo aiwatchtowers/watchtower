@@ -114,6 +114,19 @@ watchtower workbench cleanup --workbench N --sweep --apply --item KEY [--item KE
 
 - `--session` defaults to `$WATCHTOWER_TERMINAL_SESSION_ID`; neither → refused (`cleanup needs a session or
   --workbench with --sweep`), exit 2, nothing done.
+- **A caller inside a terminal session acts only on that session.** When `$WATCHTOWER_TERMINAL_SESSION_ID` is set —
+  the command runs in an agent's terminal, where the auto-approved allow rule (§10) applies — an explicit `--session`
+  must equal it, a `--workbench` must be that session's workbench, and `--sweep` is refused; each is exit 2, nothing
+  done. Sweeps and other sessions are the Desktop's. The Desktop's own environment does not carry the variable (it is
+  set only on the terminal child it launches, `TerminalLaunch`), but its CLI runner passes the app's environment on,
+  so an app started from inside a workbench terminal (a dev build) would inherit it: `SessionCleanupCenter` removes
+  `WATCHTOWER_TERMINAL_SESSION_ID` from the environment of its cleanup calls (plan Task 11). There is deliberately no
+  flag that lifts the restriction — the agent could pass it under the same allow rule; `env -u …` in front of the
+  command does not match the rule, so it needs the owner's approval.
+- The database is opened without creating or migrating it: read-only for a plan, read-write only for `--apply`
+  (the result write); a missing file or a schema without 00111 is exit 1.
+- The session, the workbench and their match are checked in one place, the plan's evaluation, before anything is
+  done; an unknown or standalone session, an unknown workbench or a session of another workbench is exit 2.
 - **Plan and apply are separate evaluations.** `--apply` never trusts an earlier plan: it re-plans, then acts only
   on items that are `remove` now **and**, when any `--item` is given, are among them. The Desktop always passes the
   items the owner saw; the agent may apply without `--item` (everything eligible now). Sweep apply requires `--item`.

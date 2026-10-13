@@ -32,10 +32,10 @@ var ErrStandaloneSession = errors.New("not a workbench session")
 func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionInfo, error) {
 	row, err := s.DB.GetTerminalSession(sessionID)
 	if err != nil {
-		return SessionInfo{}, err
+		return SessionInfo{}, fmt.Errorf("session %d: %w", sessionID, err)
 	}
 	if !row.WorkbenchID.Valid {
-		return SessionInfo{}, fmt.Errorf("terminal session %d: %w", sessionID, ErrStandaloneSession)
+		return SessionInfo{}, fmt.Errorf("session %d: %w", sessionID, ErrStandaloneSession)
 	}
 	start, err := s.DB.TerminalSessionStart(ctx, sessionID)
 	if err != nil {
