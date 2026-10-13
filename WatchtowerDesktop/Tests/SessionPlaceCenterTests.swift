@@ -85,7 +85,7 @@ final class SessionPlaceCenterTests: XCTestCase {
         return nil
     }
 
-    private func branch(_ place: SessionPlace) -> String? {
+    private func shownBranch(_ place: SessionPlace) -> String? {
         if case let .worktree(_, _, status) = place { return status.branch }
         return nil
     }
@@ -158,9 +158,9 @@ final class SessionPlaceCenterTests: XCTestCase {
         reads.branches = [worktreeA: "feature/y", worktreeB: "feature/z"]
         await center.refreshPlaces(workbenchID: workbenchID).value
         XCTAssertEqual(reads.statusCalls.sorted(), [worktreeA, worktreeB], "one read per worktree cwd, none for the folder")
-        XCTAssertEqual(branch(center.currentPlace(sessionID: 1)), "feature/y")
-        XCTAssertEqual(branch(center.currentPlace(sessionID: 4)), "feature/y")
-        XCTAssertEqual(branch(center.currentPlace(sessionID: 2)), "feature/z")
+        XCTAssertEqual(shownBranch(center.currentPlace(sessionID: 1)), "feature/y")
+        XCTAssertEqual(shownBranch(center.currentPlace(sessionID: 4)), "feature/y")
+        XCTAssertEqual(shownBranch(center.currentPlace(sessionID: 2)), "feature/z")
 
         // A workbench not on screen is not refreshed.
         center.unfollowWorkbench(workbenchID)
@@ -295,7 +295,7 @@ final class SessionPlaceCenterTests: XCTestCase {
         reads.branches = [worktreeA: "feature/moved"]
         await center.followWorkbench(workbenchID, folder: folder).value
         XCTAssertEqual(reads.statusCalls, [worktreeA, worktreeA])
-        XCTAssertEqual(branch(center.currentPlace(sessionID: 1)), "feature/moved")
+        XCTAssertEqual(shownBranch(center.currentPlace(sessionID: 1)), "feature/moved")
     }
 
     /// A read of the cwd a session left lands on nobody: neither on that
@@ -324,7 +324,7 @@ final class SessionPlaceCenterTests: XCTestCase {
         await moved.value
         XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-b")
         XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 2)), "mobile-b")
-        XCTAssertEqual(branch(center.currentPlace(sessionID: 1)), "feature/b")
+        XCTAssertEqual(shownBranch(center.currentPlace(sessionID: 1)), "feature/b")
         XCTAssertFalse(center.staleCwds.contains { $0.cwd == worktreeA })
     }
 
