@@ -250,12 +250,24 @@ extension HubSyncState {
         }
     }
 
-    /// The owner clicked Link: in one transaction the code is re-checked (`linkDevice`: it may have expired or been
-    /// used meanwhile), a valid one links the phone with its keys and nonce, a refused one becomes a refusal sealed
-    /// to the phone's key (F5), and the request goes. nil when no request waits for `deviceID`.
-    func confirmPendingDevice(_ deviceID: String, now: Date) throws -> (pending: PendingDevice, decision: LinkDecision)? {
+    /// What the owner's Link did.
+    enum ConfirmOutcome: Equatable, Sendable {
+        /// No request waits for the device.
+        case noRequest
+        /// The request waiting now shows another code than the one the owner confirmed (it was replaced): nothing
+        /// changed, the request waits for a fresh decision.
+        case codeChanged
+        case decided(PendingDevice, LinkDecision)
+    }
+
+    /// The owner clicked Link on the request showing `sas`: in one transaction the request must still show that
+    /// code, then the link code is re-checked (`linkDevice`: it may have expired or been used meanwhile), a valid one
+    /// links the phone with its keys and nonce, a refused one becomes a refusal sealed to the phone's key (F5), and
+    /// the request goes.
+    func confirmPendingDevice(_ deviceID: String, sas: String, now: Date) throws -> ConfirmOutcome {
         try writeKeys { db in
-            guard let pending = try Self.pendingDevice(deviceID, db) else { return nil }
+            guard let pending = try Self.pendingDevice(deviceID, db) else { return .noRequest }
+            guard pending.sas == sas else { return .codeChanged }
             let device = LinkedDevice(
                 deviceID: pending.deviceID, name: pending.name, scope: pending.scope,
                 userRecordName: pending.userRecordName, linkedAt: now)
@@ -271,7 +283,7 @@ extension HubSyncState {
                 break
             }
             try db.execute(sql: "DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE", arguments: [pending.deviceID])
-            return (pending, decision)
+            return .decided(pending, decision)
         }
     }
 

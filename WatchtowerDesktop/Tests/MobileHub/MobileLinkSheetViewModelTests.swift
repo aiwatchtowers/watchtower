@@ -132,7 +132,8 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         let sheet = makeSheet()
         await sheet.start()
         let phone = try await fixture.pendingHello(name: "iPhone of colleague A")
-        try await fixture.center.confirmLink(deviceID: phone.deviceID.uuidString)
+        let sas = try XCTUnwrap(fixture.center.pendingLinks.first?.sas)
+        try await fixture.center.confirmLink(deviceID: phone.deviceID.uuidString, sas: sas)
         await fixture.center.closeAfterLink?.value
 
         await sheet.tick()

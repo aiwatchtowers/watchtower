@@ -76,9 +76,9 @@ final class MobileLinkSheetViewModel: Identifiable {
         await issue()
     }
 
-    /// Link: the phone is linked and gets its keys; the code is used.
+    /// Link: the phone is linked and gets its keys; the code is used. Bound to the code the row showed.
     func confirm(_ link: MobileLinkCenter.PendingLink) async {
-        await decide { try await $0.confirmLink(deviceID: link.id) }
+        await decide { try await $0.confirmLink(deviceID: link.id, sas: link.sas) }
     }
 
     /// Refuse: the phone reads `not_confirmed`.

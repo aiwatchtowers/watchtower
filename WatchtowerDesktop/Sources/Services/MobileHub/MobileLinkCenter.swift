@@ -16,6 +16,8 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
     case accountChanged
     /// The hub has no E2E keys (a build without the CloudKit entitlement): a QR without them links no phone.
     case noKeys
+    /// The phone's request was replaced while the owner looked at it: its code changed, nothing was linked.
+    case linkCodeChanged
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,7 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
         case .account(.available), .ownerUnknown: return "This Mac couldn't read its iCloud account. Try again."
         case .accountChanged: return "This Mac's iCloud account changed. Show a new code."
         case .noKeys: return "Mobile isn't available on this Mac: its encryption keys are missing."
+        case .linkCodeChanged: return "This iPhone's code changed. Check the new code and choose again."
         }
     }
 }
@@ -461,12 +464,23 @@ final class MobileLinkCenter {
         nudgeKinds([.deviceGrant])
     }
 
-    /// Link: links the waiting phone (the code is re-checked: it may have expired or been used meanwhile, then the
+    /// Link on the request showing `sas` (the code the owner compared): a request replaced meanwhile (another code)
+    /// is not linked and keeps waiting (`MobileLinkError.linkCodeChanged`). Otherwise links the waiting phone (the code is re-checked: it may have expired or been used meanwhile, then the
     /// phone gets that refusal), stores its keys and publishes its keybox with the epoch keys; the post-link close
     /// then refuses every other request with `used_code` (F17).
-    func confirmLink(deviceID: String) async throws {
-        guard let outcome = try sidecar.confirmPendingDevice(deviceID, now: Self.wholeSeconds(now())) else { return }
-        let (pending, decision) = outcome
+    func confirmLink(deviceID: String, sas: String) async throws {
+        let pending: HubSyncState.PendingDevice
+        let decision: HubSyncState.LinkDecision
+        switch try sidecar.confirmPendingDevice(deviceID, sas: sas, now: Self.wholeSeconds(now())) {
+        case .noRequest:
+            return
+        case .codeChanged:
+            logger.notice("link request of \(deviceID, privacy: .public) changed before Link: kept for a fresh decision")
+            reloadPendingLinks()
+            throw MobileLinkError.linkCodeChanged
+        case let .decided(request, outcome):
+            (pending, decision) = (request, outcome)
+        }
         reloadPendingLinks()
         nudgeKinds([.deviceGrant])
         switch decision {

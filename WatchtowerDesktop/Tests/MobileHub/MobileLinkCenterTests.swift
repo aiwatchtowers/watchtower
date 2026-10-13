@@ -267,8 +267,25 @@ final class MobileLinkCenterTests: XCTestCase {
     private func link(_ record: CloudRecord) async throws {
         try await center.handleHello(record)
         let deviceID = String(record.recordName.dropFirst("hello-".count))
-        try await center.confirmLink(deviceID: deviceID)
+        try await confirm(deviceID)
         await center.closeAfterLink?.value
+    }
+
+    /// The owner's Link on the waiting request of `deviceID`, with the code it shows.
+    private func confirm(_ deviceID: String) async throws {
+        let sas = try XCTUnwrap(center.pendingLinks.first { $0.id == deviceID }?.sas, "no request waits for \(deviceID)")
+        try await center.confirmLink(deviceID: deviceID, sas: sas)
+    }
+
+    /// The code `phone` computes from the QR it scanned and its own public keys.
+    private func phoneSAS(_ phone: DeviceIdentityKeys, scanned code: LinkPayload) throws -> String {
+        KeyDerivation.sas(
+            hubID: try WireBytes.hubUUID(code.hubID), linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(code.nonce)),
+            hubSigning: try Curve25519.Signing.PublicKey(
+                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubSigningKey))),
+            hubAgreement: try Curve25519.KeyAgreement.PublicKey(
+                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubAgreementKey))),
+            deviceSigning: phone.signing.publicKey, deviceAgreement: phone.agreement.publicKey)
     }
 
     /// One linked phone's own device record, and the close that may follow.
@@ -347,7 +364,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let code = try await center.issueCode()
         try await handle(try hello(identityA, nonce: code.nonce))
 
-        try await center.confirmLink(deviceID: phoneA)
+        try await confirm(phoneA)
         await center.closeAfterLink?.value
 
         XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
@@ -377,16 +394,20 @@ final class MobileLinkCenterTests: XCTestCase {
         try await handle(try hello(identityA, nonce: code.nonce, name: "Owner iPhone"))
         try await handle(try hello(identityB, nonce: code.nonce, name: "Other iPhone"))
 
-        XCTAssertEqual(Set(center.pendingLinks.map(\.id)), [phoneA, phoneB])
-        let codes = center.pendingLinks.map(\.sas)
-        XCTAssertNotEqual(codes[0], codes[1], "each request shows its own code")
+        XCTAssertEqual(center.pendingLinks.count, 2)
+        XCTAssertEqual(Set(center.pendingLinks.map(\.id)), [phoneA, phoneB], "one row per device")
+        for (phone, id) in [(identityA, phoneA), (identityB, phoneB)] {
+            XCTAssertEqual(
+                center.pendingLinks.first { $0.id == id }?.sas, try phoneSAS(phone, scanned: code),
+                "each row shows the code its own phone computes")
+        }
         for phone in [identityA, identityB] {
             let waiting = try await openedKeybox(phone)
             XCTAssertEqual(waiting.grant.awaitingConfirmation, true)
             XCTAssertNil(waiting.keys)
         }
 
-        try await center.confirmLink(deviceID: phoneA)
+        try await confirm(phoneA)
         await center.closeAfterLink?.value
 
         XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
@@ -488,7 +509,7 @@ final class MobileLinkCenterTests: XCTestCase {
         try await handle(try hello(identityA, nonce: code.nonce))
         clock.advance(601)
 
-        try await center.confirmLink(deviceID: phoneA)
+        try await confirm(phoneA)
 
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertTrue(center.pendingLinks.isEmpty)
@@ -529,15 +550,36 @@ final class MobileLinkCenterTests: XCTestCase {
         let code = try await center.issueCode()
         try await handle(try hello(identityA, nonce: code.nonce))
 
-        // The phone's inputs: the QR it scanned and its own public keys.
-        let phoneSAS = KeyDerivation.sas(
-            hubID: try WireBytes.hubUUID(code.hubID), linkNonce: try XCTUnwrap(WireBytes.fromBase64URL(code.nonce)),
-            hubSigning: try Curve25519.Signing.PublicKey(
-                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubSigningKey))),
-            hubAgreement: try Curve25519.KeyAgreement.PublicKey(
-                rawRepresentation: try XCTUnwrap(WireBytes.fromBase64URL(code.hubAgreementKey))),
-            deviceSigning: identityA.signing.publicKey, deviceAgreement: identityA.agreement.publicKey)
-        XCTAssertEqual(center.pendingLinks.first?.sas, phoneSAS)
+        XCTAssertEqual(center.pendingLinks.first?.sas, try phoneSAS(identityA, scanned: code))
+    }
+
+    /// Link binds the code the owner compared: a request replaced meanwhile (a new code, so a new SAS) is not linked
+    /// and waits for a fresh decision.
+    func testLinkingARequestWhoseCodeChangedLinksNothingAndKeepsTheRequest() async throws {
+        let first = try await center.issueCode()
+        try await handle(try hello(identityA, nonce: first.nonce))
+        let seen = try XCTUnwrap(center.pendingLinks.first?.sas)
+        let second = try await center.issueCode()
+        try await handle(try hello(identityA, nonce: second.nonce))
+        let now = try phoneSAS(identityA, scanned: second)
+        XCTAssertEqual(center.pendingLinks.map(\.sas), [now], "the request was replaced")
+        try XCTSkipIf(now == seen, "the two codes collided (1 in 10 000)")
+
+        do {
+            try await center.confirmLink(deviceID: phoneA, sas: seen)
+            XCTFail("a replaced request must not link")
+        } catch let error as MobileLinkError {
+            XCTAssertEqual(error, .linkCodeChanged)
+        }
+
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(center.pendingLinks.map(\.sas), [now], "kept for a fresh decision")
+        XCTAssertNil(try sidecar.linkCode(second.nonce)?.usedByDevice)
+        XCTAssertNil(try sidecar.deviceKeyRow(phoneA))
+
+        try await center.confirmLink(deviceID: phoneA, sas: now)
+        await center.closeAfterLink?.value
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
     }
 
     func testTheRelayHandsHellosToTheLinkCenter() async throws {
@@ -1206,7 +1248,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let started = Date()
 
         try await center.handleHello(try hello(identityA, nonce: code.nonce))
-        try await center.confirmLink(deviceID: phoneA)
+        try await confirm(phoneA)
 
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
         XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
