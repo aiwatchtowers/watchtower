@@ -35,23 +35,21 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         )
     }
 
-    /// Waits (bounded, by yielding) until `count` push fetches wait on the
-    /// engine's run.
+    /// Waits (bounded) until `count` push fetches wait on the engine's run.
     private func waitForWaiters(_ transport: CloudKitTransport, count: Int = 1) async throws {
-        for _ in 0..<10_000 where await transport.engineRunWaiterCount < count {
-            await Task.yield()
-        }
+        try await eventually { await transport.engineRunWaiterCount >= count }
         let waiting = await transport.engineRunWaiterCount
         XCTAssertEqual(waiting, count, "the push fetch never waited on the engine's run")
     }
 
     /// Waits (bounded, 5 s of wall clock) until `condition` holds.
-    private func eventually(_ condition: () -> Bool) async throws {
+    private func eventually(_ condition: () async -> Bool) async throws {
         let deadline = Date().addingTimeInterval(5)
-        while !condition(), Date() < deadline {
+        while !(await condition()), Date() < deadline {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertTrue(condition(), "condition not met in time")
+        let met = await condition()
+        XCTAssertTrue(met, "condition not met in time")
     }
 
     func testWithoutAnEngineRunAPushFetchesThroughTheEngineWithoutTheZonePoll() async throws {
@@ -163,9 +161,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let first = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
         try await waitForWaiters(transport)
         let second = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        for _ in 0..<10_000 where await transport.pushFetchJoins < 1 {
-            await Task.yield()
-        }
+        try await eventually { await transport.pushFetchJoins >= 1 }
         let joins = await transport.pushFetchJoins
         XCTAssertEqual(joins, 1, "the second push never joined the first")
         await gate.open()
@@ -203,9 +199,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
 
         // The grace has passed: the push fetches at once, held in the engine.
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        for _ in 0..<10_000 where engine.fetchCount < 1 {
-            await Task.yield()
-        }
+        try await eventually { engine.fetchCount >= 1 }
         let pull = Task { try await transport.pull() }
         await fetchGate.open()
         try await push.value
