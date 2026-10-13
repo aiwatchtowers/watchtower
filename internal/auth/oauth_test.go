@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1098,5 +1099,31 @@ func TestLogin_WithExpiresIn(t *testing.T) {
 		assert.Equal(t, "T555", res.result.TeamID)
 	case <-time.After(5 * time.Second):
 		t.Fatal("Login did not complete in time")
+	}
+}
+
+type recordingTransport struct{ hit atomic.Bool }
+
+func (rt *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.hit.Store(true)
+	return nil, errors.New("offline")
+}
+
+// The code exchange goes through a client with a finite timeout — `auth
+// complete` gives it a context with no deadline, so the client is the bound.
+func TestExchangeToken_UsesBoundedClient(t *testing.T) {
+	if slackHTTPClient.Timeout <= 0 || slackHTTPClient.Timeout > 2*time.Minute {
+		t.Fatalf("slackHTTPClient.Timeout = %v, want a finite bound of at most 2m", slackHTTPClient.Timeout)
+	}
+	rt := &recordingTransport{}
+	old := slackHTTPClient
+	slackHTTPClient = &http.Client{Timeout: old.Timeout, Transport: rt}
+	t.Cleanup(func() { slackHTTPClient = old })
+
+	if _, err := exchangeToken(context.Background(), "id", "secret", "code", "https://127.0.0.1/callback"); err == nil {
+		t.Fatal("exchangeToken: want the transport's error, got nil")
+	}
+	if !rt.hit.Load() {
+		t.Error("exchangeToken did not go through slackHTTPClient")
 	}
 }

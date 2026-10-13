@@ -62,10 +62,15 @@ var UserScopes = []string{
 	"chat:write",
 }
 
+// slackHTTPClient makes the code exchange. Its timeout bounds the call on its
+// own: `auth complete` hands Complete a context with no deadline, and a
+// stalled oauth.v2.access must not hang the CLI the Desktop is waiting on.
+var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // exchangeToken is the function used to exchange an OAuth code for a token.
 // Tests replace this to avoid hitting the real Slack API.
 var exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-	return slack.GetOAuthV2ResponseContext(ctx, http.DefaultClient, clientID, clientSecret, code, redirectURI)
+	return slack.GetOAuthV2ResponseContext(ctx, slackHTTPClient, clientID, clientSecret, code, redirectURI)
 }
 
 // openBrowserFunc can be replaced in tests to avoid opening a real browser.
