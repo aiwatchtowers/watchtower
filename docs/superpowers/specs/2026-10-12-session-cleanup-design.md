@@ -131,11 +131,12 @@ watchtower workbench cleanup --workbench N --sweep --apply --item KEY [--item KE
                "name": "x", "branch": "feat/x", "bytes": 11811160064, "bytes_known": true,
                "action": "remove"|"keep", "reason": "" | "<reason code>", "detail": "",
                "done": false, "error": "" } ],
-  "removed_bytes": 0, "summary": "2 worktrees, 4 branches removed (~14 GB); kept 1 worktree — uncommitted changes",
+  "removed_bytes": 0, "removed_bytes_known": true, "summary": "2 worktrees, 4 branches removed (~14 GB); kept 1 worktree — uncommitted changes",
   "result_saved": true, "result_error": "" }
 ```
 
-`items` is never `null` (`[]`). `summary` is one line, English, ready for the finish summary. `result_saved` /
+`items` is never `null` (`[]`). `removed_bytes_known` is false when a removed worktree was not measured
+(`--no-size` or over the size budget): `removed_bytes` is then only what was measured, not 0 freed. `summary` is one line, English, ready for the finish summary. `result_saved` /
 `result_error` is the envelope for the best-effort write of `cleanup_result` (review-rules envelope symmetry).
 
 ## 5. Safety catches (PROJ-16)
@@ -156,9 +157,12 @@ arbitrary path, never `rm -rf`):
 | W6 | Another session is in it: its `agent_cwd` (#565) is inside and it is in `--live-session` or reported within 24 h and is not finished; or the calling session's own `agent_cwd` is inside (caller = `$WATCHTOWER_TERMINAL_SESSION_ID`) | `session_in_it` / `you_are_in_it` |
 | W7 | HEAD (detached or branch tip) not contained in the default branch nor in any `refs/remotes/*` | `unpushed_commits` |
 | W8 | A merge/rebase/cherry-pick/revert/bisect in progress | `operation_in_progress` |
+| W9 | Another listed worktree, or any `.git` file or directory other than its own, lies inside it — `git worktree remove` without `--force` still deletes the whole directory, ignored files included, so a worktree or repository nested under an ignored directory (`.claude/worktrees/<agent>`) would go with its uncommitted work. Found by a walk that does not follow symlinks, 20 s budget; an unreadable entry or a walk over budget keeps it `check_failed`. The walk skips the regenerable dependency and build caches by directory name at any depth — `.build`, `node_modules`, `DerivedData`, `Pods`, `.swiftpm` (`regenerableCaches`) — whose `.git` entries are package-manager checkouts (`.build/checkouts/<pkg>/.git`, `node_modules/**/.git`), not work; a listed worktree inside one still keeps it (the listing check does not walk). In `--apply` the evaluation's walk is reused by the early re-checks and the tree is walked again only in the re-check right before `git worktree remove` (§7 step 4) | `contains_worktree` (detail: the nested path: a listed worktree anywhere, or a `.git` outside the caches) |
 
-A worktree whose directory is already gone (`prunable`) is removed from git's metadata (`git worktree prune`,
-which only drops entries whose directory is gone) and reported `removed`, 0 bytes.
+A worktree whose directory is already gone (`prunable`) is dropped from git's metadata by the same
+`git worktree remove <root>` (no `--force`; never `git worktree prune`, which would drop every prunable entry, not
+only the named one) and reported `removed`, 0 bytes. It meets only the folder, ownership and unpushed catches: its
+directory is gone, so nothing in it can be dirty, locked, in use or nested.
 
 **Branches:**
 
@@ -182,15 +186,21 @@ path that is not a linked worktree is reported `keep / not_a_worktree`.
 ## 7. Removal order and the re-check
 
 Per worktree, in `--apply`:
-1. re-run W3–W8 (fresh `git status`, fresh process scan);
-2. terminate its orphans (S5) and re-scan — a survivor → keep `process_running`;
+1. re-run W1–W9 (fresh `git status`, fresh process scan);
+2. terminate its orphans (S5) — only when the apply named every orphan the re-check finds, each as the same
+   process (pid and start time); one that is not → none is signalled, keep `process_running`. Then only the process
+   scan repeats each poll step until they are gone or the grace runs out (a survivor → keep `process_running`), and
+   one full re-check follows. An orphan of the plan that exited on its own is recorded done, never kept;
 3. `lsregister -u` each `.app` bundle found under it (depth ≤ 6, skipping `node_modules` and `.git`) — best effort,
    a failure is an item `error`, never blocks the removal;
-4. `git worktree remove <root>` without `--force` — git refuses on changes it sees, which ends as keep
-   `git_refused` with git's message in `detail`.
+4. re-run every catch once more, W9's walk included (steps 1–2 reuse the evaluation's walk; no orphan may be left either), then `git worktree remove <root>` without
+   `--force` — git refuses on changes it sees, which ends as keep `git_refused` with git's message in `detail`.
+   When the worktree stays (this re-check or git), its bundles unregistered in step 3 are registered again
+   (`lsregister <bundle>`) and reported kept `worktree_kept`, not removed.
 
 Then branches: re-run B1–B4 (B2 now sees the removed worktrees), and delete with
-`git update-ref -d refs/heads/<name> <checked sha>` — a compare-and-delete: if the tip moved since the check, git
+`git update-ref -d refs/heads/<name> <checked sha>`, right after reading `git worktree list` once more (a branch
+checked out anywhere now is kept `checked_out`) — a compare-and-delete: if the tip moved since the check, git
 refuses and the branch is kept (`moved`). Then `git config --remove-section branch.<name>` (absent section ignored).
 
 **Orphans (S5).** A process is an orphan of this session when its ppid is 1, it runs as the current user, it is
@@ -280,8 +290,8 @@ re-install fixtures (`internal/devpack/testdata/watchtower-workbench-v6.md`).
 > `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 > repository and local branches, and only after every catch passes, checked again immediately before the removal:
 > a worktree with uncommitted or untracked changes, a HEAD not in the default branch nor on a remote, a locked
-> worktree, an operation in progress, a live process in it that is not an orphan of the session, or a session working
-> in it is kept and reported with its reason; a branch whose tip is in neither the default branch nor a remote ref,
+> worktree, an operation in progress, a live process in it that is not an orphan of the session, a session working
+> in it, or another worktree or repository nested inside it is kept and reported with its reason; a branch whose tip is in neither the default branch nor a remote ref,
 > the default branch, or a branch checked out anywhere is kept. Outside the owner's sweep it removes only what the
 > session observed and what was created after the session started. It never removes the main worktree, a workbench
 > folder, anything under `~/.claude`, a path that is not a linked worktree, or a remote ref; never fetches; never
@@ -297,7 +307,8 @@ Guards (Go): `TestProj16_UncommittedWorktreeIsKept`, `TestProj16_UntrackedFileKe
 `TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates`, `TestProj16_ClaudeHistoryAndMainBuildUntouched`,
 `TestProj16_PlanWritesNothing`, `TestProj16_ApplyRechecksAndActsOnlyOnNamedItems`,
 `TestProj16_BranchThatMovedAfterThePlanIsKept`, `TestProj16_OnlyOrphansAreSignalled`,
-`TestProj16_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1).
+`TestProj16_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1),
+`TestProj16_WorktreeHoldingANestedWorktreeIsKept` (W9, review of PR #227).
 Swift: `testProj16_DeleteAppliesOnlyThePlannedItems`, `testProj16_FailedCleanupKeepsTheSessionRow`.
 
 **PROJ-11 amendment** (on top of #565's): add to Observable —
@@ -329,6 +340,8 @@ the report only reads it.
    `~/Desktop` or `~/Downloads`. Fallback in §7.
 3. A `permissions.allow` entry lets the command run in auto mode without a classifier block.
 4. `lsregister -u` on a bundle path that is about to be deleted / already deleted removes the duplicate entry.
+   Owner manual check (plan Task 14): plain `lsregister <bundle>` (no `-f` — the no-force guard forbids it)
+   registers a bundle unregistered with `-u` again, so a kept worktree's bundles come back.
 5. Worktree admin dir birth time is set at `git worktree add` (not touched later).
 
 ## 15. Open questions

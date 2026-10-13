@@ -69,6 +69,13 @@ func (s SystemLaunchServices) Unregister(ctx context.Context, bundle string) err
 	return err
 }
 
+// Register runs `lsregister <bundle>` with the bundle's canonical path. A
+// non-zero exit is an error.
+func (s SystemLaunchServices) Register(ctx context.Context, bundle string) error {
+	_, err := s.runner()(ctx, lsregisterBinary, canonicalPath(bundle))
+	return err
+}
+
 // Stale lists the registered .app paths under `under` (as given or
 // canonical) that no longer exist on disk. A path whose existence cannot be
 // told is not listed.

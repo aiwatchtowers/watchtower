@@ -116,3 +116,23 @@ func TestUnregister_UsesTheFixedBinaryAndTheCanonicalPath(t *testing.T) {
 		t.Fatal("a failing lsregister returned nil")
 	}
 }
+
+func TestRegister_UsesTheFixedBinaryAndTheCanonicalPath(t *testing.T) {
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "Build", "App.app")
+	cmds := &fakeCmds{}
+	if err := (SystemLaunchServices{run: cmds.run}).Register(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{lsregisterBinary, filepath.Join(resolved, "Build", "App.app")}; !slices.Equal(cmds.calls[0], want) {
+		t.Fatalf("ran %q, want %q", cmds.calls[0], want)
+	}
+	failing := &fakeCmds{fail: map[string]error{lsregisterBinary: os.ErrPermission}}
+	if err := (SystemLaunchServices{run: failing.run}).Register(context.Background(), bundle); err == nil {
+		t.Fatal("a failing lsregister returned nil")
+	}
+}
