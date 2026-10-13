@@ -6,8 +6,8 @@
 
 **Architecture:**
 - Today's `AppEnvironment` (one hub's object graph) becomes `HubSession`, almost unchanged. A new, thin `AppEnvironment` owns a `HubRegistry` (`hubs.sqlite`), one `HubSession` per linked hub and the active hub id; it forwards today's per-hub API (`store`, `workbenchReplica`, `recorder`, …) to the active session, so the views keep reading `env.<x>`. A switch rebuilds the tab tree (`.id(activeHubID)`), which resets navigation to the root.
-- Each session lives in its own directory, `hubs/<hub_id>/` (replica, transport store) and `phone-recordings/hubs/<hub_id>/` (audio). The recording hold (`phone-recordings/.held`) stays shared: a session adopts only its own hub's held recordings, as today.
-- Cadence: the active session runs today's loop (5 s / 30 s by tab); an inactive one fetches every 300 s, or every 30 s while it has unsent actions or uploads. A silent push refreshes every session. The app icon badge is the sum of the sessions' open asks.
+- Each session lives in its own directories: `<group>/hubs/<hub_id>/` (replica), `<appSupport>/hubs/<hub_id>/` (transport store, outside the app group since #232) and `phone-recordings/hubs/<hub_id>/` (audio). The recording hold (`phone-recordings/.held`) stays shared: a session adopts only its own hub's held recordings, as today.
+- Cadence (rebased on #232, board #724): every session keeps today's push-driven fetch (`handlePush`, leading edge, one follow-up) and its own safety poll while the app is active: 60 s on the active session, 300 s on an inactive one (60 s while it has unsent actions or uploads); nothing polls in the background. A silent push goes to the sessions of its database scope (all when the scope is unknown) through `PushCompletion`. The app icon badge is the sum of the sessions' open asks.
 - The link flow keeps its steps, but its host stops restarting "the" environment: `prepare` builds (or reuses) the session of the scanned hub, a completed link adds a registry row and activates it, an unlink removes one hub, a Mac-side removal freezes that hub read-only until Forget, and an iCloud account change removes every hub.
 - A one-time migration moves an F1 phone's single link and its files into the registry layout, so a linked test phone stays linked.
 
@@ -18,7 +18,7 @@
 **Scope:** phase F, part 2: spec §5.1–§5.4, §5.5 (only the silent push and the badge), §5.6, §5.7, §6.1–§6.3, §6.5, §6.6, spec §8 steps 4–6, 8 and 9. **Not in F2:** the ask-alert subscription per hub, local notifications and the notification tap (§5.5 bullets 1–3). They do not exist on the phone yet at all: board #17 (A13, "notifications: subscriptions and pushes") builds them, and this plan rewrites #17 to build them per hub from the start (Task 9). Nothing changes on the Mac or in the Kit.
 
 **Execution (owner requirement):**
-- **Base:** start only after the open mobile PRs that rewrite the same phone files are merged into `main`: #200 (phone link tails), #201 (Mac link tails), #203 (B18 session input) and #205 (phone shows Stopped, Settings → Mobile, same-Apple-ID removal #64). Task 4 builds on #205's `LinkRecord.deviceID`/`linkedAt`, `LinkStore.grantMissingSince` and `LinkingViewModel.evaluate(grant:heartbeat:)`. The controller rebases `feature/mobile-multi-hub-f2` onto that `main` before Task 1.
+- **Base:** start only after the open mobile PRs that rewrite the same phone files are merged into `main`: #200 (phone link tails), #201 (Mac link tails), #203 (B18 session input) and #205 (phone shows Stopped, Settings → Mobile, same-Apple-ID removal #64). All four merged on 2026-10-13; `main` then also carried #232 (battery, board #724: push-driven fetch, 60 s safety poll, `BackgroundWork`/`DatabaseSuspension`, the transport store moved out of the app group, `EnergyCounter`), which this revision of the plan builds on. Task 4 builds on #205's `LinkRecord.deviceID`/`linkedAt`, `LinkStore.grantMissingSince` and `LinkingViewModel.evaluate(grant:heartbeat:)`. The controller rebases `feature/mobile-multi-hub-f2` onto that `main` before Task 1.
 - Executed by subagents in the worktree `.claude/worktrees/multi-hub-f2` (branch `feature/mobile-multi-hub-f2`): superpowers:subagent-driven-development. One lane: every task is phone Swift, and the tasks build on each other in order.
 - Each task runs only its task-scope checks (the commands in its steps plus `make lint-diff`). The controller runs `bash scripts/dev-health.sh` before each task and the full gate once at the end (see Phase end).
 - A task that adds or removes a Swift file runs `make mobile-gen` and commits the regenerated `WatchtowerMobile/WatchtowerMobile.xcodeproj` with it.
@@ -32,13 +32,13 @@
 Verbatim from the spec unless marked as this plan's decision:
 
 - **At most 4 linked Macs** (§2, §5.1). "A fifth Mac is refused with a message" (§5.7). Message (this plan's decision): title "You can link up to 4 Macs", hint "Unlink one in Settings → Macs, then scan again".
-- **Registry** (§5.1): `HubRegistry` in `<appGroup>/hubs.sqlite`: one row per linked hub — `hub_id`, `mac_name`, `flavor`, scope (`private` or `shared(owner)`), share URLs, `linked_at`, `sort_order`, `state` (`linked`, `unlinked_by_mac`) — plus the active `hub_id`. The phone's `device_id` (Keychain) is one for all hubs.
-- **Per-hub files** (§5.1): `<appGroup>/hubs/<hub_id>/`: `cloudkit-transport.sqlite`, `replica.sqlite`; the alert watermark stays in `replica_meta`. The app group directory is `<group>/Library/Application Support` (`AppEnvironment.appGroupDirectory()`). Audio (this plan's decision): `Application Support/phone-recordings/hubs/<hub_id>/`; the shared hold stays at `Application Support/phone-recordings/.held`.
+- **Registry** (§5.1; location is this plan's decision after #232): `HubRegistry` in the app's own Application Support, `<appSupport>/hubs.sqlite` — not the app group: it is written after every fetch (heartbeat, flavor), also in the background, and a lock on an app-group file at suspension kills the app (0xdead10cc); no extension reads it in F2: one row per linked hub — `hub_id`, `mac_name`, `flavor`, scope (`private` or `shared(owner)`), share URLs, `linked_at`, `sort_order`, `state` (`linked`, `unlinked_by_mac`) — plus the active `hub_id`. The phone's `device_id` (Keychain) is one for all hubs.
+- **Per-hub files** (§5.1, adapted to #232): `<group>/hubs/<hub_id>/replica.sqlite` (the extensions may read the replica; it observes `DatabaseSuspension` as today) and `<appSupport>/hubs/<hub_id>/cloudkit-transport.sqlite` (outside the group, as #232 moved it); the alert watermark stays in `replica_meta`. `<group>` is `<group container>/Library/Application Support` (`AppEnvironment.appGroupDirectory()`), `<appSupport>` the app's own (`AppEnvironment.applicationSupportDirectory()`). Audio (this plan's decision): `Application Support/phone-recordings/hubs/<hub_id>/`; the shared hold stays at `Application Support/phone-recordings/.held`.
 - **HubSession** (§5.2): today's `AppEnvironment` object graph for one hub. `AppEnvironment` owns the registry, one session per linked hub and `activeSession`; the UI reads the active one. "Switching resets navigation to the root; `AskDraftStore` is keyed by hub so drafts survive a switch" (each session owns its own `AskDraftStore`).
-- **Cadence** (§5.3): an inactive session keeps a full replica; "data fetch on a silent push and every 5 min while the app is in the foreground (the active hub keeps 5 s / 30 s)"; "the relay loop runs only while the session has pending actions or uploads" — this plan reads it as: an inactive session with unsent actions or uploads fetches every 30 s, else every 300 s. Nothing loops in the background.
+- **Cadence** (§5.3, read through #232's owner decisions, ask #221): an inactive session keeps a full replica; "data fetch on a silent push and every 5 min while the app is in the foreground"; "the relay loop runs only while the session has pending actions or uploads". The active hub's "5 s / 30 s" no longer exists: #232 replaced it with pushes plus a 60 s safety poll on every tab, and tab switches no longer fetch. So (this plan's decision): the active session polls every 60 s; an inactive one every 300 s, or every 60 s while it has unsent actions or uploads; every session fetches on a push of its scope; the return to the foreground fetches the active session at once (today's 5 s peek rule) and an inactive one only when its last successful fetch is 300 s old or more. Nothing polls in the background.
 - **Recording** (§5.4): "A recording goes to the Mac that was active when it started; … that session's uploader finishes it even after a switch. The recordings list shows the active hub's recordings. One microphone, so one capture at a time across hubs."
-- **Push and badge** (§5.5): "A silent push refreshes every session." "The app icon badge is the sum of open asks across hubs."
-- **Switcher** (§5.6): "A chip with the active Mac's name at the top of Now and Workbench opens the list of Macs: name, `flavor`, an online dot (heartbeat under 720 s), the open-ask count; at the bottom **Add Mac** (QR scan)." "Settings → Macs: reorder, unlink any Mac, Forget a long-offline or Mac-unlinked one." "Two Macs with the same name also show a short `hub_id` suffix."
+- **Push and badge** (§5.5): "A silent push refreshes every session." "The app icon badge is the sum of open asks across hubs." This plan's narrowing: a push whose `CKNotification` names a database scope (private or shared) refreshes only the sessions in that scope — a push cannot say which zone changed, but a shared-database push never concerns a private hub — and an unparseable one refreshes every session.
+- **Switcher** (§5.6): "A chip with the active Mac's name at the top of Now and Workbench opens the list of Macs: name, `flavor`, an online dot (heartbeat under 720 s; since #232 the phone's threshold is 2100 s, `RelayFeed.isDesktopReachable`, and the plan follows it), the open-ask count; at the bottom **Add Mac** (QR scan)." "Settings → Macs: reorder, unlink any Mac, Forget a long-offline or Mac-unlinked one." "Two Macs with the same name also show a short `hub_id` suffix."
 - **Linking** (§5.7): "Linking runs the base spec §2.3 flow for one hub and adds a registry row; the new Mac becomes active." The switch prompt ("Switch from <old> to <new>?") is dropped (§2).
 - **Unlinking** (§5.7): "deletes its directory and row. If it was active, the next Mac in order becomes active; with none left the app returns to onboarding."
 - **Errors** (§6): 1. hub zones vanish (or, since #64, the Mac deleted this phone's grant) → "that session gets `.unlinked`, its row turns `unlinked_by_mac`, its data stays read-only until Forget, and the phone must scan the QR again. Other hubs are untouched." 2. the phone's Apple ID changes → "every session and the registry are wiped"; onboarding. 3. quota, rate limit, store failure "stay within one hub's transport". 5. a reinstalled Mac → the old row shows "offline N days", Forget. 6. duplicate names → `flavor` + `hub_id` suffix.
@@ -88,7 +88,7 @@ Each removal is listed in its task's commit message.
   - `struct HubRow: Equatable, Sendable { var link: LinkRecord; var flavor: String?; var sortOrder: Int; var state: HubRow.State; var grantMissingSince: Date?; var lastHeartbeatAt: Date?; var linkedOn: Date; enum State: String { case linked, unlinkedByMac = "unlinked_by_mac" }; var hubID: String { link.hubID } }`
   - `final class HubRegistry` — `init(path: String) throws`, `static func inMemory() throws -> HubRegistry`, `static let limit = 4`, `func rows() throws -> [HubRow]` (by `sortOrder`), `func row(_ hubID: String) throws -> HubRow?`, `func upsert(_ link: LinkRecord, now: Date) throws` (a new row goes last and is `linked`; an existing row keeps its order, takes the new link and turns `linked`, `grantMissingSince` cleared), `func remove(_ hubID: String) throws`, `func move(_ hubID: String, to index: Int) throws`, `func setState(_ state: HubRow.State, for hubID: String) throws`, `func setGrantMissingSince(_ date: Date?, for hubID: String) throws`, `func noteHeartbeat(flavor: String, at: Date, for hubID: String) throws`, `var activeHubID: String? { get throws }`, `func setActive(_ hubID: String?) throws`, `func removeAll() throws`, `func isFull(adding hubID: String) throws -> Bool`.
   - `enum HubRegistryError: Error { case full }` — `upsert` of a new hub into a full registry throws `.full`.
-  - `struct HubPaths { let groupDirectory: URL; let recordingsBase: URL; func hubDirectory(_ hubID: String) -> URL; func replicaPath(_ hubID: String) -> String; func transportStorePath(_ hubID: String) -> String; func recordingsDirectory(_ hubID: String) -> URL; var holdDirectory: URL; var registryPath: String; func removeHubFiles(_ hubID: String) throws; func hubIDsOnDisk() throws -> [String] }`.
+  - `struct HubPaths { let groupDirectory: URL; let localDirectory: URL; let recordingsBase: URL; func hubDirectory(_ hubID: String) -> URL; func localHubDirectory(_ hubID: String) -> URL; func replicaPath(_ hubID: String) -> String; func transportStorePath(_ hubID: String) -> String; func recordingsDirectory(_ hubID: String) -> URL; var holdDirectory: URL; var registryPath: String; func removeHubFiles(_ hubID: String) throws; func hubIDsOnDisk() throws -> [String] }`.
   - `enum HubDisplayName { static func names(for rows: [HubRow]) -> [String: String] }` — the name per hub id: `mac_name`; if two rows share a `mac_name`, each of those gets ` · <first 4 of hub_id>`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -185,12 +185,33 @@ final class HubRegistryTests: XCTestCase {
     }
 
     func testPathsAreHubScoped() {
-        let paths = HubPaths(groupDirectory: URL(fileURLWithPath: "/g"), recordingsBase: URL(fileURLWithPath: "/r"))
+        let paths = HubPaths(
+            groupDirectory: URL(fileURLWithPath: "/g"),
+            localDirectory: URL(fileURLWithPath: "/l"),
+            recordingsBase: URL(fileURLWithPath: "/r")
+        )
         XCTAssertEqual(paths.replicaPath("hub-a"), "/g/hubs/hub-a/replica.sqlite")
-        XCTAssertEqual(paths.transportStorePath("hub-a"), "/g/hubs/hub-a/cloudkit-transport.sqlite")
+        XCTAssertEqual(paths.transportStorePath("hub-a"), "/l/hubs/hub-a/cloudkit-transport.sqlite")
         XCTAssertEqual(paths.recordingsDirectory("hub-a").path, "/r/hubs/hub-a")
         XCTAssertEqual(paths.holdDirectory.path, "/r/.held")
-        XCTAssertEqual(paths.registryPath, "/g/hubs.sqlite")
+        XCTAssertEqual(paths.registryPath, "/l/hubs.sqlite")
+    }
+
+    func testRemoveHubFilesDeletesAllThreeDirectoriesAndOrphansAreSeenInEither() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let paths = HubPaths(
+            groupDirectory: base.appendingPathComponent("g"),
+            localDirectory: base.appendingPathComponent("l"),
+            recordingsBase: base.appendingPathComponent("r")
+        )
+        try paths.prepare("hub-a")
+        try FileManager.default.createDirectory(at: paths.localHubDirectory("hub-b"), withIntermediateDirectories: true)
+        XCTAssertEqual(Set(try paths.hubIDsOnDisk()), ["hub-a", "hub-b"])
+        try paths.removeHubFiles("hub-a")
+        for directory in [paths.hubDirectory("hub-a"), paths.localHubDirectory("hub-a"), paths.recordingsDirectory("hub-a")] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), directory.lastPathComponent)
+        }
     }
 }
 ```
@@ -209,49 +230,67 @@ Expected: build failure, `HubRegistry` not found.
 ```swift
 import Foundation
 
-/// Where one hub's files live (multi-hub spec §5.1): the replica and the
-/// transport store under the app group, the audio under the app's own
-/// Application Support. The hold stays shared across hubs.
+/// Where one hub's files live (multi-hub spec §5.1): the replica under the
+/// app group (the extensions may read it), the transport store and the
+/// registry under the app's own Application Support (CKSyncEngine and the
+/// heartbeat write them at any moment, and a lock on an app-group file at
+/// suspension kills the app: 0xdead10cc, #232), the audio under
+/// `phone-recordings`. The hold stays shared across hubs.
 struct HubPaths {
     /// `AppEnvironment.appGroupDirectory()` (or a test directory).
     let groupDirectory: URL
+    /// `AppEnvironment.applicationSupportDirectory()` (or a test directory).
+    let localDirectory: URL
     /// `PhoneRecorderController.defaultDirectory()`: `phone-recordings`.
     let recordingsBase: URL
 
-    var registryPath: String { groupDirectory.appendingPathComponent("hubs.sqlite").path }
+    var registryPath: String { localDirectory.appendingPathComponent("hubs.sqlite").path }
     var holdDirectory: URL { recordingsBase.appendingPathComponent(".held", isDirectory: true) }
 
     func hubDirectory(_ hubID: String) -> URL {
         groupDirectory.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
     }
 
+    func localHubDirectory(_ hubID: String) -> URL {
+        localDirectory.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
+    }
+
     func replicaPath(_ hubID: String) -> String { hubDirectory(hubID).appendingPathComponent("replica.sqlite").path }
-    func transportStorePath(_ hubID: String) -> String { hubDirectory(hubID).appendingPathComponent("cloudkit-transport.sqlite").path }
+
+    func transportStorePath(_ hubID: String) -> String {
+        localHubDirectory(hubID).appendingPathComponent(AppEnvironment.transportStoreFileName).path
+    }
 
     func recordingsDirectory(_ hubID: String) -> URL {
         recordingsBase.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
     }
 
-    /// Creates the hub's two directories.
+    /// Creates the hub's three directories.
     func prepare(_ hubID: String) throws {
-        try FileManager.default.createDirectory(at: hubDirectory(hubID), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: recordingsDirectory(hubID), withIntermediateDirectories: true)
+        for directory in [hubDirectory(hubID), localHubDirectory(hubID), recordingsDirectory(hubID)] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
     }
 
     /// Deletes the hub's directories. Call only after its recordings were
     /// handed to the hold and its session shut down.
     func removeHubFiles(_ hubID: String) throws {
-        for directory in [hubDirectory(hubID), recordingsDirectory(hubID)]
+        for directory in [hubDirectory(hubID), localHubDirectory(hubID), recordingsDirectory(hubID)]
         where FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
         }
     }
 
-    /// Hub directories present on disk (orphans are those without a row).
+    /// Hub directories present on disk, in the group or the local tree
+    /// (orphans are those without a row).
     func hubIDsOnDisk() throws -> [String] {
-        let hubs = groupDirectory.appendingPathComponent("hubs", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: hubs.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(atPath: hubs.path).filter { !$0.hasPrefix(".") }
+        var ids = Set<String>()
+        for base in [groupDirectory, localDirectory] {
+            let hubs = base.appendingPathComponent("hubs", isDirectory: true)
+            guard FileManager.default.fileExists(atPath: hubs.path) else { continue }
+            ids.formUnion(try FileManager.default.contentsOfDirectory(atPath: hubs.path).filter { !$0.hasPrefix(".") })
+        }
+        return ids.sorted()
     }
 }
 ```
@@ -293,7 +332,7 @@ enum HubDisplayName {
 - [ ] **Step 4: Run the tests**
 
 Run: `make mobile-gen && make mobile-test MOBILE_FILTER=HubRegistryTests > /tmp/f2-t1.log 2>&1; echo "exit=$?"`
-Expected: `exit=0`, 7 tests pass.
+Expected: `exit=0`, 8 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -312,17 +351,17 @@ git commit -m "feat(mobile): HubRegistry and per-hub paths (multi-hub F2)"
 - Create: `WatchtowerMobile/Sources/App/Hubs/SessionCadence.swift`
 - Modify: `WatchtowerMobile/Sources/App/DeviceSettings.swift` (per-hub keys)
 - Modify: `WatchtowerMobile/Sources/Features/Recording/RecordingHold.swift` (explicit hold directory)
-- Modify: `WatchtowerMobile/Sources/App/WatchtowerMobileApp.swift` (silent push refreshes every session)
+- Modify: `WatchtowerMobile/Sources/App/WatchtowerMobileApp.swift` (a silent push reaches the sessions of its scope through `PushCompletion`)
 - Modify: every test that builds an `AppEnvironment` through its designated init (`grep -rln "AppEnvironment(" WatchtowerMobile/Tests`) — they build a `HubSession` instead, or an `AppEnvironment` over one session through `AppEnvironment.single(_:)`.
 - Test: `WatchtowerMobile/Tests/MultiHubEnvironmentTests.swift`
 
 **Interfaces:**
 - Consumes: Task 1 (`HubRegistry`, `HubRow`, `HubPaths`, `HubDisplayName`).
 - Produces:
-  - `HubSession` — today's `AppEnvironment` class renamed, with these changes: `navigation` and `recordingsSeen` move to `AppEnvironment` (app-wide); `transportKind` stays; the init takes `hold: RecordingHold?` instead of deriving it from the recordings folder; `DeviceSettings(transport:defaults:hubID:)`; the loop is driven by `func setCadence(_ cadence: SessionCadence)` instead of `setFetchInterval`/`setActive`; new `private(set) var heartbeat: HeartbeatPayload?` (read from the replica after every successful fetch, before `onFetched`); new `private(set) var lastFetchError: String?` (the last failed fetch's `localizedDescription`, cleared by a successful one: §6.3, the row shows the error); new `var hasPendingWork: Bool { get async }` (an outbox row in `.pending`, or an uploader item not yet acknowledged); new `func freeze() async` (stops the loop and the engine for good, sets writes off — `setLinkedDevice(linkedDevice, writesAllowed: false)` — and keeps the replica open for reading); `onLinkSignal` and `onFetched` keep their shapes (the root knows which session it wired).
-  - `enum SessionCadence: Equatable { case active(Duration); case inactive; case paused }` and `static func interval(for cadence: SessionCadence, hasPendingWork: Bool) -> Duration?` in `SessionCadence.swift`: `.active(d)` → `d`; `.inactive` → `hasPendingWork ? .seconds(30) : .seconds(300)`; `.paused` → nil (no loop).
-  - `AppEnvironment` (`@MainActor @Observable final class`): `let transportKind: TransportKind`, `let navigation: AppNavigation`, `let recordingsSeen: RecordingsSeenStore`, `private(set) var sessions: [String: HubSession]`, `private(set) var order: [String]` (registry order of the sessions on screen), `private(set) var activeHubID: String?`, `var active: HubSession?`, `func session(_ hubID: String) -> HubSession?`, `func add(_ session: HubSession)`, `func remove(_ hubID: String)` (drops it from `sessions`/`order`; the caller has shut it down), `func activate(_ hubID: String)` (sets `activeHubID`, persists it through the registry when one is set, then re-applies cadence), `func setTabInterval(_ interval: Duration)` (the active session's 5 s / 30 s), `func setForeground(_ foreground: Bool)`, `func refreshAll() async -> Bool` (refreshes every session concurrently; true when any succeeded), `var openAskTotal: Int` (sum of `workbenchReplica.openAskCount` over sessions), `static func single(_ session: HubSession, defaults: UserDefaults) -> AppEnvironment` (tests and the pre-Task 3 boot: one session, active).
-  - Forwarding, so the views keep compiling: `store`, `outbox`, `reportRequests`, `boardWriter`, `askDrafts`, `askAnswerer`, `sessionStarts`, `sessionInputs`, `deviceSettings`, `workbenchReplica`, `calendarReplica`, `phoneRecordings`, `heldRecordings`, `linkedDevice`, `lastSyncAt`, `refresh()` (active only), `showRecordings()`, `sendNow()`. Each reads `active!` — the root never shows the tabs without an active session (Task 4 holds that invariant; until then `single` guarantees it). `recorder` is `capturingSession?.recorder ?? active!.recorder`, where `capturingSession` is the session whose recorder is capturing (Task 5 fills in the cross-hub rules; here it is just the active one).
+  - `HubSession` — today's `AppEnvironment` class renamed, with these changes: `navigation` and `recordingsSeen` move to `AppEnvironment` (app-wide); `transportKind` stays; the init takes `hold: RecordingHold?` instead of deriving it from the recordings folder; `DeviceSettings(transport:defaults:hubID:)`; `setActive(_:)` (the scene phase: safety poll paused, upload retries, recorder ticker, the foreground-return fetch) stays as it is, and a new `func setRole(_ role: SessionRole)` says whether the session is the one on screen — the safety poll asks `SessionCadence.pollInterval(role:hasPendingWork:)` for its wait each cycle instead of the fixed `safetyPollInterval`, and the foreground return fetches an inactive session only when `SessionCadence.foregroundRefetchAfter(role:)` has passed since `lastSyncAt`; `handlePush`, `PushArrival`, the follow-up coalescing, `BackgroundWork`, `DatabaseSuspension`, `EnergyCounter` and the upload backoff stay per session, unchanged; new `let databaseScope: CloudDatabaseScope?` (the link's scope; nil for the demo) for push routing; new `private(set) var heartbeat: HeartbeatPayload?` (read from the replica after every successful fetch, before `onFetched`); new `private(set) var lastFetchError: String?` (the last failed fetch's `localizedDescription`, cleared by a successful one: §6.3, the row shows the error); new `var hasPendingWork: Bool { get async }` (an outbox row in `.pending`, or an uploader item not yet acknowledged); new `func freeze() async` (stops the safety poll and the engine for good, ignores later pushes, sets writes off — `setLinkedDevice(linkedDevice, writesAllowed: false)` — and keeps the replica open for reading); `onLinkSignal` and `onFetched` keep their shapes (the root knows which session it wired).
+  - `enum SessionRole: Equatable { case active, inactive }` and `enum SessionCadence { static func pollInterval(role: SessionRole, hasPendingWork: Bool) -> Duration; static func foregroundRefetchAfter(role: SessionRole) -> TimeInterval }` in `SessionCadence.swift`: `pollInterval` — `.active` → 60 s (#232's `safetyPollInterval`, which moves here), `.inactive` → `hasPendingWork ? 60 s : 300 s`; `foregroundRefetchAfter` — `.active` → 5 s (#232's peek rule), `.inactive` → 300 s (synchronous, so `setActive` keeps beginning its fetch before it returns; a session with pending work polls at 60 s anyway). The pause while not active stays `HubSession.isActive`'s job.
+  - `AppEnvironment` (`@MainActor @Observable final class`): `let transportKind: TransportKind`, `let navigation: AppNavigation`, `let recordingsSeen: RecordingsSeenStore`, `private(set) var sessions: [String: HubSession]`, `private(set) var order: [String]` (registry order of the sessions on screen), `private(set) var activeHubID: String?`, `var active: HubSession?`, `func session(_ hubID: String) -> HubSession?`, `func add(_ session: HubSession)`, `func remove(_ hubID: String)` (drops it from `sessions`/`order`; the caller has shut it down), `func activate(_ hubID: String)` (sets `activeHubID`, persists it through the registry when one is set, then sets every session's role), `func setActive(_ active: Bool)` (the scene phase, passed to every session's `setActive`), `func refreshAll(_ trigger: FetchTrigger) async -> Bool` (refreshes every session concurrently; true when any succeeded), `func handlePush(at: Date?, inForeground: Bool, scope: CloudDatabaseScope.Kind?) async -> FetchOutcome` (every session whose `databaseScope` matches — `.private` or `.shared`; every session when `scope` is nil, and the demo sessions always — runs its own `handlePush` concurrently; the result is `.newData` if any returned it, else `.failed` if all failed, else `.noData`; no session → `.noData`), `func waitForBoot() async` (every session's), `var transportKind` for `Boot.make`'s push registration, `var openAskTotal: Int` (sum of `workbenchReplica.openAskCount` over sessions), `static func single(_ session: HubSession, defaults: UserDefaults) -> AppEnvironment` (tests and the pre-Task 3 boot: one session, active).
+  - Forwarding, so the views keep compiling: `store`, `outbox`, `reportRequests`, `boardWriter`, `askDrafts`, `askAnswerer`, `sessionStarts`, `sessionInputs`, `deviceSettings`, `workbenchReplica`, `calendarReplica`, `phoneRecordings`, `heldRecordings`, `linkedDevice`, `lastSyncAt`, `refresh(_:)` (active only: pull to refresh), `showRecordings()`, `sendNow()`, `isLooping`/`lastSyncAt` (active). Each reads `active!` — the root never shows the tabs without an active session (Task 4 holds that invariant; until then `single` guarantees it). `recorder` is `capturingSession?.recorder ?? active!.recorder`, where `capturingSession` is the session whose recorder is capturing (Task 5 fills in the cross-hub rules; here it is just the active one).
   - The badge: `AppEnvironment.init(… setBadge: @escaping @MainActor (Int) -> Void)`, default `{ UNUserNotificationCenter.current().setBadgeCount($0) }` (log a thrown error); it is called whenever `openAskTotal` changes (observe with `withObservationTracking`, re-armed after each change, as `WorkbenchReplicaModel` does).
 
 - [ ] **Step 1: Move and rename**
@@ -339,7 +378,11 @@ final class MultiHubEnvironmentTests: XCTestCase {
     private var sleeps: [String: [Duration]] = [:]
 
     private func makeSession(_ hubID: String, base: URL) throws -> HubSession {
-        let paths = HubPaths(groupDirectory: base.appendingPathComponent("g"), recordingsBase: base.appendingPathComponent("r"))
+        let paths = HubPaths(
+            groupDirectory: base.appendingPathComponent("g"),
+            localDirectory: base.appendingPathComponent("l"),
+            recordingsBase: base.appendingPathComponent("r")
+        )
         try paths.prepare(hubID)
         let engine = FakeAudioEngine()
         let clock = FakeClock()
@@ -364,88 +407,68 @@ final class MultiHubEnvironmentTests: XCTestCase {
         return session
     }
 
-    func testTheActiveSessionRunsTheTabCadenceAndTheOthersFiveMinutes() async throws { … }
-    func testAnInactiveSessionWithUnsentActionsFetchesEveryThirtySeconds() async throws { … }
-    func testBackgroundPausesEverySession() async throws { … }
+    func testTheActiveSessionPollsEveryMinuteAndTheOthersEveryFiveMinutes() async throws { … }
+    func testAnInactiveSessionWithUnsentActionsPollsEveryMinute() async throws { … }
+    func testBackgroundPausesEverySessionAndTheReturnFetchesOnlyWhatIsDue() async throws { … }
+    func testAPushReachesTheSessionsOfItsScopeOnly() async throws { … }
     func testActivateSwitchesWhatTheForwardedPropertiesRead() async throws { … }
     func testRefreshAllRefreshesEverySession() async throws { … }
+    func testPushCompletionServesEverySessionOnTheMultiHubEnvironment() async throws { … }
     func testTheBadgeIsTheSumOfOpenAsksAcrossSessions() async throws { … }
     func testEachSessionSweepsOnlyItsOwnRecordingsFolder() async throws { … }
 }
 ```
 
 What each asserts (write them in full in the file):
-- **cadence:** two sessions `hub-a` (active) and `hub-b`; after both boot, `sleeps["hub-a"]?.last == .seconds(30)` (the default tab interval) and `sleeps["hub-b"]?.last == .seconds(300)`; `env.setTabInterval(.seconds(5))` → `hub-a` next sleep is 5 s, `hub-b` still 300 s; `env.activate("hub-b")` → `hub-b` sleeps 5 s, `hub-a` 300 s.
-- **pending work:** queue an action through `hub-b`'s outbox (`session.boardWriter` status change, as `BoardWriteWiringTests` does), then `env.activate("hub-a")` → `hub-b`'s next sleep is 30 s.
-- **background:** `env.setForeground(false)` → no session `isLooping`; `true` → both loop again and each begins one cycle at once (`fetchCycles` +1).
-- **forwarding:** seed a different `WorkbenchSlice` into each transport (`CloudRecordFactory.record(for:)`), `await env.refreshAll()`; `env.workbenchReplica` shows `hub-a`'s workbench; after `env.activate("hub-b")` it shows `hub-b`'s; `env.askDrafts` is `hub-b`'s store (identity, `===`).
-- **refreshAll:** each session's `lastSyncAt` is set after one `refreshAll()`.
-- **badge:** seed one open ask into `hub-a` and two into `hub-b`; the injected `setBadge` was last called with `3`; answer… (simpler: delete one of `hub-b`'s ask records in its transport and `refreshAll()`) → last call `2`.
+- **cadence:** two sessions `hub-a` (active) and `hub-b`; after both boot, `sleeps["hub-a"]?.last == .seconds(60)` and `sleeps["hub-b"]?.last == .seconds(300)`; `env.activate("hub-b")` → `hub-b` next sleeps 60 s, `hub-a` 300 s.
+- **pending work:** queue an action through `hub-b`'s outbox (`session.boardWriter` status change, as `BoardWriteWiringTests` does), then `env.activate("hub-a")` → `hub-b`'s next sleep is 60 s.
+- **background and return:** `env.setActive(false)` → no session `isLooping`; with the injected `now` 10 s later, `env.setActive(true)` → both loop again, `hub-a` begins one `.foreground` cycle at once (`fetchCycles` +1), `hub-b` does not (its last fetch is under 300 s old); with `now` 301 s later, a second background/return makes `hub-b` fetch too.
+- **push routing:** `hub-a` built with `databaseScope: .private`, `hub-b` with `.shared(ownerName: "_owner-acme")`, each with a counting `remoteFetch`; `await env.handlePush(at: nil, inForeground: true, scope: .shared)` → only `hub-b`'s counter moved; `scope: nil` → both moved; the outcome is `.newData` when one session's transport had a new record and the other none.
+- **PushCompletion:** `PushCompletion.serve(env, …)` with a stepping `sleep` and a recording `startWork` completes once with the merged outcome and ends its work after `env.waitForBoot()` (as `FetchCadenceWiringTests` checks it for one environment today).
+- **forwarding:** seed a different `WorkbenchSlice` into each transport (`CloudRecordFactory.record(for:)`), `await env.refreshAll(.pull)`; `env.workbenchReplica` shows `hub-a`'s workbench; after `env.activate("hub-b")` it shows `hub-b`'s; `env.askDrafts` is `hub-b`'s store (identity, `===`).
+- **refreshAll:** each session's `lastSyncAt` is set after one `refreshAll(.pull)`.
+- **badge:** seed one open ask into `hub-a` and two into `hub-b`; the injected `setBadge` was last called with `3`; answer… (simpler: delete one of `hub-b`'s ask records in its transport and `refreshAll(.pull)`) → last call `2`.
 - **sweep (Review Focus 2):** write `orphan.m4a` into `hub-b`'s recordings folder and register a recording row for it in `hub-b`'s replica the way `RecordingsWiringTests` does; boot `hub-a`; after `hub-a`'s bootstrap (`await session.adoption?.value` and its `recoverOnLaunch`), the file in `hub-b`'s folder still exists. Then a file with no row in `hub-a`'s own folder is deleted by `hub-a`'s sweep (today's behaviour, now per folder).
 
 - [ ] **Step 3: Run them to see them fail**
 
 Run: `make mobile-gen && make mobile-test MOBILE_FILTER=MultiHubEnvironmentTests > /tmp/f2-t2.log 2>&1; echo "exit=$?"`
-Expected: build failure (`setCadence`, `AppEnvironment.add`, `RecordingHold(directory:)` missing).
+Expected: build failure (`setRole`, `AppEnvironment.add`, `RecordingHold(directory:)` missing).
 
 - [ ] **Step 4: Implement**
 
 1. `RecordingHold`: `init(directory: URL)` (the `.held` folder itself). Every method that moved audio back into "the recordings folder" (the parent of `.held`) takes the destination as a parameter instead: `recordingsDirectory: URL`. `HubSession` passes its own `uploader.directory`. Keep the old behaviour otherwise; `RecordingHoldTests` updates its init calls only.
 2. `DeviceSettings`: `init(transport:defaults:hubID:)`; `typingRequested` and `startSessions` keys become `"hub.\(hubID).device.typingRequested"` / `"hub.\(hubID).device.startSessions"`; `newAskAlerts` keeps its global key (A13 owns it).
-3. `HubSession`: replace `fetchInterval`/`isActive`/`setFetchInterval`/`setActive` with:
+3. `HubSession`: keep #232's fetch machinery as it is (`handlePush`, `fetch(for:)`, `startFetch`, `performFetch`, `applyBuffered`, `setActive`, `PushArrival`, the boot's `BackgroundWork`); change only where the safety poll gets its wait and when the foreground return fetches:
 
 ```swift
-    /// What the root asks of this session's loop (multi-hub spec §5.3).
-    private(set) var cadence: SessionCadence = .active(.seconds(30))
+    /// Whether this session is the one on screen (multi-hub spec §5.3): it
+    /// sets the safety poll's wait and the foreground-return rule.
+    private(set) var role: SessionRole = .active
 
-    func setCadence(_ cadence: SessionCadence) {
-        guard cadence != self.cadence else { return }
-        let wasPaused = self.cadence == .paused
-        self.cadence = cadence
-        recorder.setForeground(cadence != .paused)
-        restartLoop(fetchFirst: wasPaused)
+    func setRole(_ role: SessionRole) {
+        guard role != self.role else { return }
+        self.role = role
+        // The new wait applies from now; no fetch of its own.
+        restartLoop(firstCycle: nil)
     }
 ```
 
-   and the loop asks for its interval each cycle, so pending work changes the inactive cadence without a restart:
-
-```swift
-    private func restartLoop(fetchFirst: Bool = true) {
-        loopTask?.cancel()
-        loopTask = nil
-        guard isBootstrapped, !stopped, cadence != .paused else { return }
-        let sleep = sleep
-        loopTask = Task { [weak self] in
-            var first = true
-            while !Task.isCancelled {
-                guard let self else { return }
-                if !first || fetchFirst {
-                    self.fetchCycles += 1
-                    await self.refresh()
-                }
-                first = false
-                guard let interval = SessionCadence.interval(for: self.cadence, hasPendingWork: await self.hasPendingWork) else { return }
-                try? await sleep(interval)
-            }
-        }
-    }
-```
-
-   `hasPendingWork`: `(try? store.pendingActions().contains { $0.state == .pending }) == true || (try? store.phoneRecordings().contains { $0.needsUpload }) == true` — use the recording ledger's existing "not acknowledged" predicate (the one `uploadPending()` selects by; name it in a small `PhoneRecording` extension if it is inline today). `heartbeat`: in `refresh()`, after a successful hydrate, decode `HeartbeatPayload` exactly as `AppRoot.checkHeartbeat` does today and store it.
-4. New `AppEnvironment`: holds the app-wide parts and the sessions; `applyCadence()` sets `.active(tabInterval)` on the active session, `.inactive` on the others, `.paused` on all when not in the foreground; `add`/`remove`/`activate`/`setTabInterval`/`setForeground` call it. `refreshAll()` uses a `withTaskGroup` over the sessions' `refresh()` (each is `@MainActor`, so they interleave at their awaits). The live convenience init is reduced to `static func liveSingle(scope:hubID:linkedDevice:) throws -> AppEnvironment` that builds today's one session on the old file paths (`<group>/replica.sqlite`, `<group>/cloudkit-transport.sqlite`, `phone-recordings` with hold `phone-recordings/.held`) and wraps it with `single`; Task 3 replaces it with the registry boot. The demo path likewise wraps one demo session (Task 8 adds the second).
-5. `RootTabView`/`NowView`/… call sites: `env.setFetchInterval` → `env.setTabInterval`; `env.setActive` → `env.setForeground`. `AppRoot` keeps building one environment through `Restarter.make`, which now returns `AppEnvironment.liveSingle(...)`; its `env.onLinkSignal`/`onFetched` wiring moves to `env.active!` (Task 4 replaces it).
-6. `AppDelegate.didReceiveRemoteNotification`: `completionHandler(await root.env.refreshAll() ? .newData : .failed)`.
+   In `restartLoop(firstCycle:)` the loop's `try await sleep(Self.safetyPollInterval)` becomes `try await sleep(SessionCadence.pollInterval(role: self.role, hasPendingWork: await self.hasPendingWork))`, so pending work changes an inactive session's wait without a restart. In `setActive(_:)` the `recent` check reads `SessionCadence.foregroundRefetchAfter(role: role)` instead of `Self.foregroundRefetchAfter`; `fullFetchOwed` still forces the fetch. `hasPendingWork`: `(try? store.pendingActions().contains { $0.state == .pending }) == true || (try? store.phoneRecordings().contains { $0.needsUpload }) == true` — use the recording ledger's existing "not acknowledged" predicate (the one `uploadPending()` selects by; name it in a small `PhoneRecording` extension if it is inline today). `heartbeat`: in `performFetch`, after a successful hydrate, decode `HeartbeatPayload` exactly as `AppRoot.checkHeartbeat` does today and store it before `onFetched`. `freeze()`: `stop()` plus `await (transport as? CloudKitTransport)?.stop()`, writes off; `handlePush` on a stopped session returns `.noData` at once.
+4. New `AppEnvironment`: holds the app-wide parts and the sessions; `applyRoles()` sets `.active` on the active session and `.inactive` on the others; `add`/`remove`/`activate` call it. `setActive(_:)` forwards the scene phase to every session. `refreshAll(_:)` and `handlePush(at:inForeground:scope:)` use a `withTaskGroup` over the sessions (each is `@MainActor`, so they interleave at their awaits). The live convenience init is reduced to `static func liveSingle(scope:hubID:linkedDevice:energy:) throws -> AppEnvironment` that builds today's one session on today's file paths (`<group>/replica.sqlite`, `liveTransportStorePath()`, `phone-recordings` with hold `phone-recordings/.held`) with today's live arguments (`startsActive`, `uploadRetriesAllowed`, `replicaObservesSuspension: true`, `energy`, `startWork: BackgroundWork.starter()`) and wraps it with `single`; Task 3 replaces it with the registry boot. The demo path likewise wraps one demo session (Task 8 adds the second). `liveTransportStorePath()`, `moveTransportStore`, `TransportStorePathResolver`, `appGroupDirectory()`, `applicationSupportDirectory()` and `appGroupID` move to the new `AppEnvironment`; `UploadRetryGate`, `holdReplica(for:)`, `liveRecorder` stay with `HubSession`.
+5. Call sites: `RootTabView`'s `env.setActive(…)` keeps its name (now the environment's forwarder). `AppRoot` keeps building one environment through `Restarter.make`, which now returns `AppEnvironment.liveSingle(...)`; its `env.onLinkSignal`/`onFetched` wiring moves to `env.active!` (Task 4 replaces it); `Restarter.transportStorePath` stays until Task 4.
+6. `AppDelegate.didReceiveRemoteNotification`: read the scope before the hop — `CKNotification(fromRemoteNotificationDictionary: userInfo)?` as `CKDatabaseNotification`, `.databaseScope` `.private` → `.private`, `.shared` → `.shared`, anything else or nil → nil — and pass it through `PushCompletion.serve(env, arrivedAt:inForeground:scope:startWork:completion:)`, which calls `env.handlePush(at:inForeground:scope:)`. The 25 s deadline and the once-completion stay as they are. `CloudDatabaseScope.Kind` is a small phone-side enum (`private`, `shared`) next to `SessionRole` if the Kit has none; the Kit itself does not change.
 
 - [ ] **Step 5: Run the new tests and the suites the rename touches**
 
-Run: `make mobile-gen && make mobile-test MOBILE_FILTER='MultiHubEnvironmentTests|ReplicaWiringTests|AppRootWiringTests|RecordingsWiringTests|RecordingHoldTests|SettingsWiringTests|BoardWriteWiringTests' > /tmp/f2-t2.log 2>&1; echo "exit=$?"`
+Run: `make mobile-gen && make mobile-test MOBILE_FILTER='MultiHubEnvironmentTests|ReplicaWiringTests|AppRootWiringTests|RecordingsWiringTests|RecordingHoldTests|SettingsWiringTests|BoardWriteWiringTests|FetchCadenceWiringTests|BackgroundWorkTests|RecordingUploadWiringTests' > /tmp/f2-t2.log 2>&1; echo "exit=$?"`
 Expected: `exit=0`. Then the whole phone suite once, since every wiring test builds an environment: `make mobile-test > /tmp/f2-t2-all.log 2>&1; echo "exit=$?"`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add -A WatchtowerMobile
-git commit -m "refactor(mobile): HubSession per hub; AppEnvironment holds the sessions, cadence and badge (multi-hub F2)"
+git commit -m "refactor(mobile): HubSession per hub; AppEnvironment holds the sessions, roles, push routing and badge (multi-hub F2)"
 ```
 
 ---
@@ -461,28 +484,29 @@ git commit -m "refactor(mobile): HubSession per hub; AppEnvironment holds the se
 **Interfaces:**
 - Consumes: Tasks 1–2.
 - Produces:
-  - `struct HubSessionFactory { let make: @MainActor (_ row: HubRow?, _ hubID: String, _ scope: CloudDatabaseScope, _ device: LinkedDevice?) throws -> HubSession }` — `row` nil for a hub being linked (Task 4). The live one builds a `CloudKitTransport(store: TransportStore(path: paths.transportStorePath(hubID)), scope:, hubID:, role: .phone)` and a `HubSession` on `paths`.
-  - `enum HubBoot { static func migrateF1(store: LinkStore, registry: HubRegistry, paths: HubPaths, legacyGroupDirectory: URL, legacyRecordings: URL, defaults: UserDefaults, now: Date) throws; static func removeOrphans(registry: HubRegistry, paths: HubPaths, keeping pendingHubID: String?) throws }`
+  - `struct HubSessionFactory { let make: @MainActor (_ row: HubRow?, _ hubID: String, _ scope: CloudDatabaseScope, _ device: LinkedDevice?) throws -> HubSession }` — `row` nil for a hub being linked (Task 4). The live one builds a `CloudKitTransport(store: TransportStore(path: paths.transportStorePath(hubID)), scope:, hubID:, role: .phone, energy: BatteryDiagnostics.shared.counter)` and a `HubSession` on `paths` with #232's live arguments: `startsActive`/`uploadRetriesAllowed` from `UIApplication.shared.applicationState == .active`, `replicaObservesSuspension: true`, the same `energy`, `startWork: BackgroundWork.starter()`, `databaseScope: scope`.
+  - `enum HubBoot { static func migrateF1(store: LinkStore, registry: HubRegistry, paths: HubPaths, legacyGroupDirectory: URL, legacyTransportStorePath: String, legacyRecordings: URL, defaults: UserDefaults, now: Date) throws; static func removeOrphans(registry: HubRegistry, paths: HubPaths, keeping pendingHubID: String?) throws }`
   - `AppEnvironment.live(registry:paths:factory:identity:defaults:) throws -> AppEnvironment` — one session per registry row (frozen rows are built and frozen at once, Task 4's `freeze`), active = the registry's active hub, else the first row.
 
 Migration rules (`migrateF1`, idempotent, runs before any session opens):
 1. Runs only when the registry has no rows and `LinkStore`'s legacy `link.record` key holds a link.
-2. `paths.prepare(hubID)`; move `<legacyGroup>/replica.sqlite`, `-wal`, `-shm` and `cloudkit-transport.sqlite`, `-wal`, `-shm` into `hubs/<hub_id>/` (a missing file is skipped). Move every non-hidden file of `phone-recordings/` into `phone-recordings/hubs/<hub_id>/` (`.held` and `hubs` stay).
+2. `paths.prepare(hubID)`; move `<legacyGroup>/replica.sqlite` with its `-wal`, `-shm`, `-journal` into `paths.hubDirectory(hubID)`, and the legacy transport store — `legacyTransportStorePath`, which the live boot takes from `AppEnvironment.liveTransportStorePath()`, so #232's one-time move out of the group has already run (or failed, and the path still points into the group) — with its side files into `paths.localHubDirectory(hubID)`. Side files first and the database last, as `moveTransportStore` does; a missing file is skipped. The `transport-assets` folder stays where it is (the store refers to its files by absolute path). Move every non-hidden file of `phone-recordings/` into `phone-recordings/hubs/<hub_id>/` (`.held` and `hubs` stay).
 3. Copy `device.typingRequested` / `device.startSessions` into the hub's keys (Task 2) when set.
 4. `registry.upsert(link, now:)`, `setActive(hubID)`, `setGrantMissingSince(store.grantMissingSince, …)`; then remove the `link.record` and `link.grantMissingSince` keys.
-5. With no legacy link: delete the legacy replica and transport files (an unlinked phone's, they hold nothing to keep) and leave the audio folder as is.
+5. With no legacy link: delete the legacy replica and the legacy transport store with their side files (an unlinked phone's, they hold nothing to keep) and leave the audio folder as is.
 A failure in step 2 throws before step 4: the next launch tries again from the same state.
 
 `removeOrphans`: a `hubs/<id>` directory with no row and not the pending link's hub (`LinkStore.pending?.link.hubID`) is a link that never completed: its recordings are handed to the hold first (`HubSession.handOverRecordings` needs a session — build one with the factory, call it with `keep: true`, shut it down), then `paths.removeHubFiles(id)`.
 
 - [ ] **Step 1: Write the failing tests** (`HubBootTests`, temp directories for the legacy group, the recordings base and defaults):
-  - `testF1LinkAndFilesMoveIntoTheRegistryLayoutOnce` (Review Focus 1): legacy `replica.sqlite` (a real `ReplicaStore` with one recording row), `cloudkit-transport.sqlite`, an audio file `rec-1.m4a` and a `.held/manifest.json` → after `migrateF1`: the registry has the one row, active; the files are under `hubs/<hub>/`; `rec-1.m4a` is in `phone-recordings/hubs/<hub>/`; `.held/manifest.json` did not move; the replica opened at the new path still has the recording row; the `link.record` key is gone. A second `migrateF1` call changes nothing.
+  - `testF1LinkAndFilesMoveIntoTheRegistryLayoutOnce` (Review Focus 1): legacy `replica.sqlite` in the group (a real `ReplicaStore` with one recording row), `cloudkit-transport.sqlite` in the local directory (where #232 moved it), an audio file `rec-1.m4a` and a `.held/manifest.json` → after `migrateF1`: the registry has the one row, active; the replica is under `<group>/hubs/<hub>/` and the transport store under `<local>/hubs/<hub>/`; `rec-1.m4a` is in `phone-recordings/hubs/<hub>/`; `.held/manifest.json` did not move; the replica opened at the new path still has the recording row; the `link.record` key is gone. A second `migrateF1` call changes nothing.
   - `testNoLegacyLinkDeletesTheLegacyReplicaAndKeepsAudio`.
+  - `testATransportStoreStillInTheGroupMovesToo` (#232's move failed on an earlier launch: `legacyTransportStorePath` points into the group).
   - `testAFailedFileMoveLeavesTheLegacyLinkForTheNextLaunch` (make the destination unwritable, or inject a `FileManager` seam if simpler).
   - `testOrphanHubDirectoryIsHandedToTheHoldAndRemoved`, and `testThePendingLinksDirectoryIsNotAnOrphan`.
   - `testLiveBootBuildsOneSessionPerRowAndActivatesTheSavedHub` (factory returning in-memory sessions; two rows, active = second).
 - [ ] **Step 2:** `make mobile-gen && make mobile-test MOBILE_FILTER=HubBootTests > /tmp/f2-t3.log 2>&1; echo "exit=$?"` — fails to build.
-- [ ] **Step 3: Implement** `HubBoot` and `AppEnvironment.live`; `AppRoot.live()` calls `HubBoot.migrateF1`, `HubBoot.removeOrphans`, then `AppEnvironment.live(...)` (until Task 4 rewires `AppRoot`, keep its single-link restart path working on top of the active session).
+- [ ] **Step 3: Implement** `HubBoot` and `AppEnvironment.live`; `AppRoot.live()` opens the registry at `paths.registryPath`, calls `HubBoot.migrateF1(…, legacyTransportStorePath: try AppEnvironment.liveTransportStorePath(), …)`, `HubBoot.removeOrphans`, then `AppEnvironment.live(...)` (until Task 4 rewires `AppRoot`, keep its single-link restart path working on top of the active session).
 - [ ] **Step 4:** `make mobile-test MOBILE_FILTER='HubBootTests|MultiHubEnvironmentTests|AppRootWiringTests' > /tmp/f2-t3.log 2>&1; echo "exit=$?"` → `exit=0`.
 - [ ] **Step 5: Commit** `feat(mobile): boot every linked hub from the registry; move an F1 link into it (multi-hub F2)`.
 
@@ -555,6 +579,7 @@ protocol LinkHost: AnyObject {
 - `prepare` keeps candidate sessions in `env` without a row and without activating them; `linked` upserts the row (`HubRegistryError.full` is surfaced as `.tooManyMacs` — the check before the accept makes it a race only), `await session.setLinkedDevice(device)`, `env.activate(hubID)`.
 - `removeHub`: `stopForWipe` → `shutDown` → `handOverRecordings(stoppedCapture:keep:)` → count pending actions → `env.remove(hubID)` → `paths.removeHubFiles(hubID)` → `registry.remove(hubID)` → if it was active, `env.activate(next in order)` when any → then the remaining sessions adopt held recordings again only on their next boot (unchanged).
 - `markRemovedByMac`: `registry.setState(.unlinkedByMac, for:)`, `await session.freeze()`.
+- `removeHub`, `markRemovedByMac` and the account-change wipe each run inside one `BackgroundWork` (`startWork("hub-remove")`, the root's injected starter, nil in tests), as today's `Restarter.startWork` keeps a restart alive: a removal found by a push fetch runs in the background and reads the old replica during the hand-over.
 - `sendFarewell`: the live root builds `CloudKitTransport(store: TransportStore(path: <hubDirectory>/farewell.sqlite), scope:, hubID:, role: .phone)`, `start()`, `save`, `sendNow()`, `stop()`, then deletes the farewell store file; the test root injects a closure that records the record and scope (the existing `SaveLogTransport`).
 
 - [ ] **Step 1: Rewrite the fakes and tests first.** `FakeLinkHost` implements the new protocol over an in-memory list of `HubRow`s and records calls. In `LinkingViewModelTests`: delete the switch-prompt and moved tests (see Guard tests); port every other test to the new names; add:
@@ -593,7 +618,7 @@ protocol LinkHost: AnyObject {
 
 Rules:
 - The recorder chrome and the Record buttons read `env.recorder`. While a capture runs on hub A, switching to hub B keeps showing A's capture (with "Recording for <A name>") and B's Record buttons are disabled (`!env.canStartCapture`).
-- A capture finished on hub A after a switch is uploaded by A's uploader: nothing changes in `HubSession`, which already owns its uploader; the inactive cadence keeps A fetching every 30 s while the upload is pending (Task 2).
+- A capture finished on hub A after a switch is uploaded by A's uploader: nothing changes in `HubSession`, which already owns its uploader; the inactive cadence keeps A polling every 60 s while the upload is pending (Task 2), and #232's per-recording backoff and `macOnline` gate apply per session as they do today.
 - The Recordings list reads `env.phoneRecordings` (the active session's) and `env.heldRecordings`.
 
 - [ ] **Step 1: Write the failing tests** (`MultiHubRecordingTests`, two sessions with fake audio engines):
@@ -621,7 +646,7 @@ Rules:
 - Consumes: Tasks 1–5 (`HubRow`, `HubDisplayName`, `MacStatus` from `Features/Settings/SettingsViewModel.swift`, `AppEnvironment.sessions/order/activeHubID/activate`, `LinkingViewModel.startScan()`, `links`).
 - Produces: `struct HubListItem: Identifiable, Equatable { let id: String; let name: String; let flavor: String?; let online: Bool; let offlineDays: Int?; let openAsks: Int; let isActive: Bool; let removedByMac: Bool; let canForget: Bool; let problem: String? }` and `enum HubListModel { static func items(rows: [HubRow], sessions: [String: HubSession], activeHubID: String?, now: Date) -> [HubListItem] }`.
 
-Rules (§5.6): online = `MacStatus(heartbeat:now:)` is `.online` (heartbeat under 720 s); `offlineDays` = whole days since the last heartbeat (`row.lastHeartbeatAt`, else `linkedOn`) when offline; `flavor` shown only when it is not `"default"`; `canForget` = `removedByMac || offlineDays ?? 0 >= 7`. `problem` = the session's `lastFetchError`, shown as a secondary line under the name. The chip shows the active item's name and a small open-ask total of the other hubs when it is above 0 (accessibility label "<name>, Mac. N asks waiting on other Macs"). The sheet lists the items in registry order (tap = `env.activate(id)` and dismiss; a `removedByMac` row reads "Removed this phone" in place of the online dot), then **Add Mac** (`linking.startScan()`, disabled with the footnote "You can link up to 4 Macs" at the limit). With one linked Mac the chip still shows (it is the way to Add Mac).
+Rules (§5.6): online = `MacStatus(heartbeat:now:)` is `.online` (heartbeat under 2100 s since #232, the same rule as `RelayFeed.isDesktopReachable`); `offlineDays` = whole days since the last heartbeat (`row.lastHeartbeatAt`, else `linkedOn`) when offline; `flavor` shown only when it is not `"default"`; `canForget` = `removedByMac || offlineDays ?? 0 >= 7`. `problem` = the session's `lastFetchError`, shown as a secondary line under the name. The chip shows the active item's name and a small open-ask total of the other hubs when it is above 0 (accessibility label "<name>, Mac. N asks waiting on other Macs"). The sheet lists the items in registry order (tap = `env.activate(id)` and dismiss; a `removedByMac` row reads "Removed this phone" in place of the online dot), then **Add Mac** (`linking.startScan()`, disabled with the footnote "You can link up to 4 Macs" at the limit). With one linked Mac the chip still shows (it is the way to Add Mac).
 
 - [ ] **Step 1: Write the failing tests** (`HubSwitcherTests`, pure `HubListModel` plus one wiring test):
   - online and offline days from heartbeats at `now − 600 s` and `now − 8 d`; `canForget` for the 8-day and the removed rows only.
@@ -679,7 +704,7 @@ Rules (§5.6): Settings' "Your Mac" section becomes "This Mac" (the active hub, 
 ## Task 9: docs and the board
 
 **Files:**
-- Modify: `docs/features/mobile-companion.md` — the phone half: replace the "One link: the transport runs the linked hub's zones (multi-hub F1 bridge)" bullet with a "Several Macs (multi-hub F2)" subsection: registry and paths, `HubSession`/`AppEnvironment`, cadence, recording rules, the switcher and Settings → Macs, the link flow per hub, removal = freeze until Forget, account change, the F1 migration; update the "Onboarding and linking, phone half (A12)" bullets that name the switch prompt, the moved notice, `Restarter` or `retireEnvironment`.
+- Modify: `docs/features/mobile-companion.md` — the phone half: replace the "One link: the transport runs the linked hub's zones (multi-hub F1 bridge)" bullet with a "Several Macs (multi-hub F2)" subsection: registry and paths (replica in the group, transport store and registry outside it), `HubSession`/`AppEnvironment`, roles and safety-poll intervals, push routing by database scope, recording rules, the switcher and Settings → Macs, the link flow per hub, removal = freeze until Forget, account change, the F1 migration; update the "Onboarding and linking, phone half (A12)" bullets that name the switch prompt, the moved notice, `Restarter` or `retireEnvironment`.
 - Modify: `docs/superpowers/specs/2026-10-11-mobile-multi-hub-design.md` — Status line: "F1 and F2 built; §5.5 notifications per hub built with A13".
 - Modify: `CLAUDE.md` — the Mobile companion feature-note line: add "multi-hub F2 (registry, `HubSession`, switcher)".
 
