@@ -506,7 +506,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncDetach(cfg)
 	}
 
-	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o700); err != nil {
+	if err := makePrivateDir(cfg.WorkspaceDir()); err != nil {
 		return fmt.Errorf("creating workspace directory: %w", err)
 	}
 	// Acquire exclusive lock to prevent concurrent syncs. --users-only takes
@@ -1461,4 +1461,14 @@ func printProgressJSON(w io.Writer, snap sync.Snapshot, syncErr error) {
 	}
 	data, _ := json.Marshal(p)
 	fmt.Fprintln(w, string(data))
+}
+
+// makePrivateDir creates dir 0700, and narrows one an older install left
+// 0755 (MkdirAll never changes an existing directory's mode): the
+// workspace holds the database and tokens.
+func makePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
 }

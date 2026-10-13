@@ -181,3 +181,13 @@ func TestNewSyncLogWriter_CreatesAPrivateWorkspace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 }
+
+// An existing workspace an older install created 0755 is narrowed too.
+func TestMakePrivateDir_NarrowsAnExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ws")
+	require.NoError(t, os.Mkdir(dir, 0o755))
+	require.NoError(t, makePrivateDir(dir))
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
