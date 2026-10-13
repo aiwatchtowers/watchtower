@@ -435,7 +435,9 @@ final class HubSession {
             }
             #endif
         case .cloudKit:
-            if let cloud = transport as? CloudKitTransport {
+            // A session stopped before its boot ran (a frozen hub, an
+            // orphan being cleared) never starts its engine.
+            if !stopped, let cloud = transport as? CloudKitTransport {
                 // Before the engine starts, so no signal goes unseen; each
                 // reaches whatever hook the link flow set by then.
                 await cloud.setEventHandler { [weak self] event in

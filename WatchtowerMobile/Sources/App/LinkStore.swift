@@ -84,6 +84,11 @@ final class LinkStore {
         self.defaults = defaults
     }
 
+    /// The single link of F1 (`link.record`). An F1 phone's is read once
+    /// by `HubBoot.migrateF1`, which moves it into the hub registry and
+    /// removes it; until the link flow runs over the registry (F2 Task 4)
+    /// that flow still saves its link here, bridged into the registry at
+    /// launch (`AppRoot.live`).
     var link: LinkRecord? {
         get { read(LinkRecord.self, key: Keys.link) }
         set { write(newValue, key: Keys.link) }

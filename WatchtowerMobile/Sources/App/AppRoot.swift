@@ -18,17 +18,40 @@ import WatchtowerSync
 final class AppRoot {
     /// How a live root builds its next environment.
     struct Restarter {
-        /// The replica file a wipe removes.
-        let replicaPath: String
-        /// The CloudKit transport's store a wipe empties; nil for a
-        /// transport that keeps none.
-        let transportStorePath: String?
+        /// Empties one hub's files before a session opens them again: the
+        /// replica removed, the transport's store emptied.
+        let wipe: @MainActor (_ hubID: String) throws -> Void
         let make: @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment
         /// Keeps a restart running, and the replica usable, when it runs in
         /// the background (a removal or an account change a push fetch
         /// found): the hand-over reads the old replica (`BackgroundWork`).
         /// nil holds nothing (tests).
         var startWork: BackgroundWork.Starter?
+
+        init(
+            wipe: @escaping @MainActor (_ hubID: String) throws -> Void,
+            make: @escaping @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment,
+            startWork: BackgroundWork.Starter? = nil
+        ) {
+            self.wipe = wipe
+            self.make = make
+            self.startWork = startWork
+        }
+
+        /// Every hub on one replica and one transport store (nil: a
+        /// transport that keeps none): the tests.
+        init(
+            replicaPath: String,
+            transportStorePath: String?,
+            make: @escaping @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment,
+            startWork: BackgroundWork.Starter? = nil
+        ) {
+            self.init(
+                wipe: { _ in try AppRoot.wipeFiles(replicaPath: replicaPath, transportStorePath: transportStorePath) },
+                make: make,
+                startWork: startWork
+            )
+        }
     }
 
     private(set) var env: AppEnvironment
@@ -68,8 +91,11 @@ final class AppRoot {
     /// Welcome and the scan instead of the tabs: a live build with no link.
     var showsOnboarding: Bool { !isDemo && linking.link == nil }
 
-    /// The app's root: the demo on an unsigned build, else the saved link's
-    /// database, resuming a link a kill interrupted.
+    /// The app's root: the demo on an unsigned build, else every linked
+    /// hub from the registry (an F1 phone's link moved into it first),
+    /// resuming a link a kill interrupted. Until the link flow runs over
+    /// the registry (F2 Task 4) it still restarts one environment per link
+    /// (`Restarter`), on the hub's own files.
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
@@ -77,29 +103,82 @@ final class AppRoot {
         }
         let store = LinkStore(defaults: defaults)
         let identity = try DeviceIdentity.current(defaults: defaults)
-        // Resolved (and an earlier build's store moved) once, before any
-        // environment opens it; every environment and the wipe share it.
-        let transportStorePath = try AppEnvironment.liveTransportStorePath()
-        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment.liveSingle(scope: scope, hubID: hubID, linkedDevice: device, energy: BatteryDiagnostics.shared.counter)
+        let group = try AppEnvironment.appGroupDirectory()
+        let paths = HubPaths(
+            groupDirectory: group,
+            localDirectory: try AppEnvironment.applicationSupportDirectory(),
+            recordingsBase: try PhoneRecorderController.defaultDirectory()
+        )
+        // Resolved (and an earlier build's store moved out of the group)
+        // once, before the migration moves it into its hub's directory.
+        let legacyTransportStorePath = try AppEnvironment.liveTransportStorePath()
+        let registry = try HubRegistry(path: paths.registryPath)
+        try HubBoot.migrateF1(
+            store: store,
+            registry: registry,
+            paths: paths,
+            legacyGroupDirectory: group,
+            legacyTransportStorePath: legacyTransportStorePath,
+            legacyRecordings: paths.recordingsBase,
+            defaults: defaults,
+            now: Date()
+        )
+        try bridgeSingleLink(store: store, registry: registry)
+        let factory = HubSessionFactory.live(paths: paths)
+        var env = try AppEnvironment.live(registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults)
+        if env.active == nil {
+            // No link yet: one session on the pending link's hub, else on
+            // no hub at all, as before (F2 Task 4 boots none).
+            env = .single(try factory.make(nil, store.bootHubID, store.bootScope, nil), defaults: defaults)
         }
-        let scope = store.bootScope
-        let hubID = store.bootHubID
-        let directory = try AppEnvironment.appGroupDirectory()
+        let active = env.activeSession
+        let unrowed = try registry.row(active.hubID) == nil ? active.hubID : nil
         let root = AppRoot(
-            env: try make(scope, hubID, store.link.map(identity.linkedDevice(for:))),
-            scope: scope,
-            hubID: hubID,
+            env: env,
+            scope: active.databaseScope ?? .private,
+            hubID: active.hubID,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
-                replicaPath: AppEnvironment.liveReplicaPath(in: directory),
-                transportStorePath: transportStorePath,
-                make: make,
+                wipe: { hubID in
+                    try wipeFiles(replicaPath: paths.replicaPath(hubID), transportStorePath: paths.transportStorePath(hubID))
+                    // A wiped hub's link is gone (unlink, account change,
+                    // a new scan): its row too, so the bridge never brings
+                    // it back.
+                    try registry.remove(hubID)
+                },
+                make: { scope, hubID, device in
+                    .single(try factory.make(nil, hubID, scope, device), defaults: defaults)
+                },
                 startWork: BackgroundWork.starter()
             )
         )
-        Task { await root.resumeLink() }
+        let pendingHubID = store.pending?.link.hubID ?? unrowed
+        Task {
+            do {
+                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
+            } catch {
+                logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
+            }
+            await root.resumeLink()
+        }
         return root
+    }
+
+    /// F2 Task 3 bridge until the link flow runs over the registry (Task
+    /// 4), which reads and writes `LinkStore.link`: a link that flow saved
+    /// joins the registry and goes on screen; with none, the registry's
+    /// active link is the one the flow sees.
+    private static func bridgeSingleLink(store: LinkStore, registry: HubRegistry) throws {
+        if let link = store.link {
+            if try registry.row(link.hubID) == nil {
+                try registry.upsert(link, now: Date())
+            }
+            try registry.setActive(link.hubID)
+            return
+        }
+        let rows = try registry.rows()
+        let active = try registry.activeHubID
+        store.link = (rows.first { $0.hubID == active } ?? rows.first)?.link
     }
 
     /// A root that keeps `env` for good: the demo, linked as
@@ -277,9 +356,10 @@ final class AppRoot {
         }
         do {
             if wipe {
-                try Self.removeReplica(at: restarter.replicaPath)
-                if let path = restarter.transportStorePath {
-                    try TransportStore(path: path).wipe()
+                // The outgoing hub's files and the next one's: the next
+                // session starts empty.
+                for wiped in Set([old.hubID, hubID]) {
+                    try restarter.wipe(wiped)
                 }
             }
             let next = try restarter.make(scope, hubID, device)
@@ -299,6 +379,15 @@ final class AppRoot {
             throw error
         }
         return outcome
+    }
+
+    /// A wipe's files: the replica removed (`removeReplica`), the
+    /// transport's store, when it has one on disk, emptied.
+    static func wipeFiles(replicaPath: String, transportStorePath: String?) throws {
+        try removeReplica(at: replicaPath)
+        if let transportStorePath, FileManager.default.fileExists(atPath: transportStorePath) {
+            try TransportStore(path: transportStorePath).wipe()
+        }
     }
 
     /// The replica and its WAL files. The stopped environment's pool may

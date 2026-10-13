@@ -272,38 +272,36 @@ final class AppEnvironment {
 
     // MARK: - Building the app's environment
 
-    /// The live app on a signed build: one session on today's files (the
-    /// replica in the app group, the transport store in the app's own
-    /// Application Support, `phone-recordings` with its hold), running
-    /// `hubID`'s zones in `scope`'s database linked as `linkedDevice`.
-    /// `energy` counts the fetches, the CloudKit requests and the upload
-    /// attempts (nil counts nothing).
-    static func liveSingle(
-        scope: CloudDatabaseScope,
-        hubID: String,
-        linkedDevice: LinkedDevice?,
-        energy: EnergyCounter?
+    /// The live app on a signed build: one session per registry row, in
+    /// the registry's order, each on its own files (`factory`). A row the
+    /// Mac removed (`unlinked_by_mac`) is built frozen: stopped before its
+    /// boot runs (no engine, no fetch, no device to send as), then frozen,
+    /// its replica still readable. The registry's active hub goes on
+    /// screen, else the first row; no rows build no session.
+    static func live(
+        registry: HubRegistry,
+        paths _: HubPaths,
+        factory: HubSessionFactory,
+        identity: DeviceIdentity,
+        defaults: UserDefaults
     ) throws -> AppEnvironment {
-        let directory = try appGroupDirectory()
-        let transportStore = try TransportStore(path: try liveTransportStorePath())
-        let recordings = try PhoneRecorderController.defaultDirectory()
-        let active = UIApplication.shared.applicationState == .active
-        let session = try HubSession(
-            transport: CloudKitTransport(store: transportStore, scope: scope, hubID: hubID, role: .phone, energy: energy),
-            replicaPath: liveReplicaPath(in: directory),
-            transportKind: .cloudKit,
-            hubID: hubID,
-            linkedDevice: linkedDevice,
-            recordingsDirectory: recordings,
-            hold: RecordingHold(directory: recordings.appendingPathComponent(".held", isDirectory: true)),
-            databaseScope: scope,
-            startsActive: active,
-            uploadRetriesAllowed: active,
-            replicaObservesSuspension: true,
-            energy: energy,
-            startWork: BackgroundWork.starter()
-        )
-        return single(session, defaults: .standard)
+        let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry)
+        let rows = try registry.rows()
+        for row in rows {
+            let frozen = row.state == .unlinkedByMac
+            let device = frozen ? nil : identity.linkedDevice(for: row.link)
+            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
+            if frozen {
+                session.stop()
+                Task { await session.freeze() }
+            }
+            env.add(session)
+        }
+        let saved = try registry.activeHubID
+        if let active = rows.first(where: { $0.hubID == saved }) ?? rows.first {
+            env.activate(active.hubID)
+        }
+        return env
     }
 
     /// The demo on an unsigned build (simulator, CI): one session over the
@@ -322,11 +320,6 @@ final class AppEnvironment {
             energy: energy
         )
         return single(session, defaults: .standard)
-    }
-
-    /// The live replica's file in the app group directory.
-    static func liveReplicaPath(in directory: URL) -> String {
-        directory.appendingPathComponent("replica.sqlite").path
     }
 
     /// The CloudKit transport's store file.
