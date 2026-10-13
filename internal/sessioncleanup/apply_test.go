@@ -61,7 +61,9 @@ type fakeLS struct {
 	failWith error
 }
 
-func (l *fakeLS) Bundles(root string) []string { return []string{filepath.Join(root, "Build", "App.app")} }
+func (l *fakeLS) Bundles(root string) []string {
+	return []string{filepath.Join(root, "Build", "App.app")}
+}
 
 func (l *fakeLS) Unregister(_ context.Context, bundle string) error {
 	l.log.add("lsregister -u " + bundle)
@@ -603,14 +605,14 @@ func TestSummarize_Wording(t *testing.T) {
 		want  string
 	}{
 		{"nothing", nil, "nothing to clean up"},
-		{"removed only", []Item{wt(true, 12 * gb, true), wt(true, 2 * gb, true), br, br, br, br},
+		{"removed only", []Item{wt(true, 12*gb, true), wt(true, 2*gb, true), br, br, br, br},
 			"2 worktrees, 4 branches removed (~14 GB)"},
 		{"kept only", []Item{kept}, "kept 1 worktree — uncommitted changes"},
 		{"mixed", []Item{wt(true, 1_500_000_000, true), br, kept,
 			{Kind: KindBranch, Action: ActionKeep, Reason: ReasonCheckedOut}},
 			"1 worktree, 1 branch removed (~1.5 GB); kept 1 worktree, 1 branch — uncommitted changes, checked out"},
 		{"unknown size", []Item{wt(true, 0, false)}, "1 worktree removed (size unknown)"},
-		{"partly unknown", []Item{wt(true, 3 * gb, true), wt(true, 0, false)},
+		{"partly unknown", []Item{wt(true, 3*gb, true), wt(true, 0, false)},
 			"2 worktrees removed (~3.0 GB, some sizes unknown)"},
 		{"plan", []Item{wt(false, 500_000_000, true), {Kind: KindBranch, Action: ActionRemove, BytesKnown: true}},
 			"1 worktree, 1 branch to remove (~500 MB)"},
