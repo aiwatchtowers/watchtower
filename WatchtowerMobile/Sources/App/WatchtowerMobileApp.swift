@@ -102,7 +102,7 @@ enum PushCompletion {
     /// `.failed` after a failed fetch). `sleep` is the deadline's wait
     /// (tests step it).
     static func race(
-        deadline: Duration = PushCompletion.deadline,
+        deadline: Duration = Self.deadline,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         fetch: @escaping @MainActor () async -> FetchOutcome,
         outcomeAtDeadline: @escaping @MainActor () -> FetchOutcome,
