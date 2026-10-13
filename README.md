@@ -51,7 +51,7 @@ Installs the desktop app to `/Applications` and the `watchtower` CLI to your PAT
 
 ### From source
 
-Requires Go 1.25+, a Swift 6+ toolchain (Xcode 16+), macOS 14+.
+Requires Go 1.26+, a Swift 6+ toolchain (Xcode 16+), macOS 14+.
 
 ```bash
 git clone https://github.com/aiwatchtowers/watchtower.git
