@@ -239,9 +239,15 @@ struct OwnerAskCardKeys {
         return true
     }
 
-    /// After Return: nothing has the keyboard, on the next turn (SwiftUI
-    /// lets go of its focus first).
-    static func releaseKeyboard(in window: NSWindow? = NSApplication.shared.keyWindow) {
+    /// After Return: nothing has the key window's keyboard, on the next turn
+    /// (SwiftUI lets go of its focus first). An overload, not a default
+    /// argument: a default value is evaluated outside the main actor.
+    static func releaseKeyboard() {
+        releaseKeyboard(in: NSApplication.shared.keyWindow)
+    }
+
+    /// `releaseKeyboard()` for a given window.
+    static func releaseKeyboard(in window: NSWindow?) {
         DispatchQueue.main.async { window?.makeFirstResponder(nil) }
     }
 }
