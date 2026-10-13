@@ -1192,9 +1192,43 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertNil(try registry.row("hub-acme"))
         XCTAssertTrue(root.env.unopenedHubIDs.isEmpty)
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false])
+        XCTAssertEqual(hubFilesExist("hub-acme"), [true, true, true], "nothing deleted: the orphan pass decides")
         XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-home"])
         XCTAssertEqual(root.env.activeHubID, "hub-home")
+    }
+
+    /// Forget of a hub that could not be opened removes its row and its
+    /// Settings keys only: its audio stays on disk for the next launch's
+    /// orphan pass, which hands it to the hold once a session opens.
+    func testForgettingAnUnopenedHubKeepsItsAudioForTheOrphanPass() async throws {
+        failingHubs = ["hub-acme"]
+        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-home")
+        let recordings = paths.recordingsDirectory("hub-acme")
+        let audio = recordings.appendingPathComponent("rec-1.m4a")
+        try Data(repeating: 0x5A, count: 256).write(to: audio)
+        let uploader = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: try ReplicaStore(path: paths.replicaPath("hub-acme")), directory: recordings
+        )
+        let now = Date()
+        let registered = try await uploader.register(
+            fileURL: audio, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-60), titleHint: "Acme sync"
+        )
+        let recordingID = try XCTUnwrap(registered).id
+        defaults.set(true, forKey: "hub.hub-acme.device.typingRequested")
+
+        await root.linking.forget("hub-acme")
+
+        XCTAssertNil(try registry.row("hub-acme"), "the row is gone")
+        XCTAssertNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"), "its Settings keys are gone")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "its audio is not deleted")
+        XCTAssertTrue(try hold.load().isEmpty, "nothing handed over yet")
+
+        failingHubs = []
+        try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: nil, factory: try makeFactory())
+
+        XCTAssertEqual(try hold.load().map(\.id), [recordingID], "the next launch's orphan pass holds it")
+        XCTAssertEqual(try hold.load().first?.hubID, "hub-acme")
+        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "then its files go")
     }
 
     /// Every hub failing fails the boot (`BootFailureView`), never Welcome:

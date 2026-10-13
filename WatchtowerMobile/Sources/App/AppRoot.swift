@@ -372,7 +372,13 @@ final class AppRoot {
             filesFree = handover.problem == nil
         } else {
             // A hub whose session could not be built at launch: it leaves
-            // the unopened list with its row.
+            // the unopened list with its row, and nothing is deleted. Its
+            // recordings were never handed over, so its files are an orphan
+            // the next launch builds a session on, hands to the hold and
+            // only then deletes (`HubBoot.removeOrphans`).
+            if env.unopenedHubIDs.contains(hubID) {
+                filesFree = false
+            }
             env.remove(hubID)
         }
         linkChecks[hubID] = nil
