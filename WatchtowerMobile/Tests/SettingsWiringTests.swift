@@ -453,6 +453,129 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(other.grant, "another device's grant must not show")
     }
 
+    // MARK: - Macs (multi-hub F2, spec §5.6)
+
+    private var macsRegistry: HubRegistry!
+    private var macsDefaults: UserDefaults!
+    private var farewells: [String] = []
+
+    private func macLink(_ hubID: String, _ macName: String) -> LinkRecord {
+        LinkRecord(
+            hubID: hubID, macName: macName, scope: .private, ownerName: "_user-acme", userRecordName: "_user-acme",
+            nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil, deviceID: "device-acme-1",
+            linkedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+    }
+
+    /// A live-kind root over in-memory hubs `links` (the Mac-removed ones in
+    /// `frozen`), `active` on screen.
+    private func makeMacsRoot(_ links: [LinkRecord], active: String, frozen: Set<String> = []) throws -> AppRoot {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("settings-macs-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let paths = HubPaths(
+            groupDirectory: base.appendingPathComponent("group", isDirectory: true),
+            localDirectory: base.appendingPathComponent("local", isDirectory: true),
+            recordingsBase: base.appendingPathComponent("phone-recordings", isDirectory: true)
+        )
+        for directory in [paths.groupDirectory, paths.localDirectory, paths.recordingsBase] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let defaults = try makeDefaults()
+        macsDefaults = defaults
+        let registry = try HubRegistry(path: paths.registryPath)
+        macsRegistry = registry
+        for link in links {
+            try registry.upsert(link, now: Date())
+            if frozen.contains(link.hubID) { try registry.setState(.unlinkedByMac, for: link.hubID) }
+        }
+        try registry.setActive(active)
+        let engine = FakeAudioEngine()
+        let clock = FakeClock()
+        let factory = HubSessionFactory { _, hubID, scope, device in
+            try paths.prepare(hubID)
+            let session = try HubSession(
+                transport: InMemoryCloudTransport(),
+                replicaPath: paths.replicaPath(hubID),
+                transportKind: .cloudKit,
+                hubID: hubID,
+                linkedDevice: device,
+                defaults: defaults,
+                recordingsDirectory: paths.recordingsDirectory(hubID),
+                hold: RecordingHold(directory: paths.holdDirectory),
+                databaseScope: scope
+            ) { uploader in
+                PhoneRecorderController(
+                    uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
+                )
+            }
+            return session
+        }
+        let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
+        let env = try AppEnvironment.live(
+            registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults
+        ) { _ in }
+        addTeardownBlock { @MainActor in for hubID in env.order { env.session(hubID)?.stop() } }
+        return AppRoot(
+            env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
+            linking: LinkingViewModel(
+                container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity
+            ),
+            startWork: nil,
+            farewellDelivery: AppRoot.FarewellDelivery(
+                isPending: { [weak self] _, record in
+                    self?.farewells.append(record.recordName)
+                    return false
+                },
+                cap: .seconds(1), pause: .milliseconds(20)
+            ) { _ in }
+        )
+    }
+
+    func testReorderingPersistsInTheRegistryAndFollowsOnScreen() throws {
+        let root = try makeMacsRoot(
+            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac"), macLink("hub-lab", "Lab Mac")], active: "hub-acme"
+        )
+
+        root.linking.moveHub("hub-lab", to: 0)
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-lab", "hub-acme", "hub-home"])
+        XCTAssertEqual(root.env.order, ["hub-lab", "hub-acme", "hub-home"])
+        XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-lab", "hub-acme", "hub-home"])
+        XCTAssertEqual(root.env.activeHubID, "hub-acme", "the Mac on screen stays")
+    }
+
+    func testUnlinkingAnInactiveMacRemovesOnlyIt() async throws {
+        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+
+        await root.linking.unlink("hub-home")
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-acme"])
+        XCTAssertEqual(root.env.order, ["hub-acme"])
+        XCTAssertEqual(root.env.activeHubID, "hub-acme")
+        XCTAssertEqual(farewells.count, 1, "a linked Mac hears the farewell")
+    }
+
+    func testForgettingAFrozenMacRemovesItWithNoFarewell() async throws {
+        let root = try makeMacsRoot(
+            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme", frozen: ["hub-home"]
+        )
+
+        await root.linking.forget("hub-home")
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-acme"])
+        XCTAssertTrue(farewells.isEmpty)
+    }
+
+    func testTheTogglesReadTheActiveMacsKeysAfterASwitch() async throws {
+        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+        await root.env.deviceSettings.setTypingRequested(true)
+
+        root.env.activate("hub-home")
+
+        XCTAssertFalse(root.env.deviceSettings.typingRequested, "the new Mac has its own choice")
+        XCTAssertEqual(macsDefaults.object(forKey: "hub.hub-acme.device.typingRequested") as? Bool, true)
+        XCTAssertNil(macsDefaults.object(forKey: "hub.hub-home.device.typingRequested"))
+    }
 }
 
 /// Records every `save` call (one entry per call), fails the calls whose

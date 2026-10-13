@@ -457,6 +457,19 @@ extension AppRoot: LinkHost {
         }
     }
 
+    /// Settings → Macs: `hubID` moves to `index` in the registry; the saved
+    /// links and the sessions' order follow it.
+    func moveHub(_ hubID: String, to index: Int) {
+        do {
+            try registry.move(hubID, to: index)
+        } catch {
+            Self.logger.error("hub not moved: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        linking.refreshLinks()
+        env.reorder(linking.links.map(\.hubID))
+    }
+
     func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
         // A removal of this hub still running decides what is left.

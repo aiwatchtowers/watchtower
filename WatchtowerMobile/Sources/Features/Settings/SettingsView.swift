@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerSync
 
-/// Settings (pushed from Now's gear): Your Mac, read-only accounts, the Workbench
+/// Settings (pushed from Now's gear): This Mac and Macs, read-only accounts, the Workbench
 /// requests to the Mac, notifications, the parked offline chat, and Unlink
 /// this Mac.
 struct SettingsView: View {
@@ -47,7 +47,7 @@ struct SettingsView: View {
     // MARK: - Your Mac
 
     private var yourMacSection: some View {
-        Section("Your Mac") {
+        Section("This Mac") {
             // The status turns offline by the clock alone, so re-evaluate it
             // periodically, not only on replica writes. One row: the Form
             // lays a TimelineView's views out in one cell.
@@ -69,6 +69,13 @@ struct SettingsView: View {
             LabeledContent("Queued", value: "\(model.snapshot.queuedCount)")
             if env.transportKind == .inMemoryDemo {
                 LabeledContent("Sync", value: "Demo")
+            }
+            if env.transportKind == .cloudKit {
+                NavigationLink {
+                    MacsView()
+                } label: {
+                    LabeledContent("Macs", value: "\(linking.links.count)")
+                }
             }
         }
     }
@@ -151,15 +158,21 @@ struct SettingsView: View {
         linking.links.first { $0.hubID == env.activeHubID }?.link
     }
 
+    /// The Mac on screen, named as the switcher names it.
+    private var activeName: String {
+        HubListModel.items(rows: linking.links, sessions: env.sessions, activeHubID: env.activeHubID, now: Date())
+            .first(where: \.isActive)?.name ?? "this Mac"
+    }
+
     @ViewBuilder private var unlinkSection: some View {
         if let link = activeLink, Self.offersUnlink(transportKind: env.transportKind, link: link) {
             Section {
-                Button("Unlink this Mac", role: .destructive) {
+                Button("Unlink \(activeName)", role: .destructive) {
                     confirmingUnlink = true
                 }
                 .frame(minHeight: 44)
                 .disabled(linking.isBusy)
-                .confirmationDialog("Unlink this Mac?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
+                .confirmationDialog("Unlink \(activeName)?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
                     Button("Unlink", role: .destructive) {
                         Task { await linking.unlink(link.hubID) }
                     }

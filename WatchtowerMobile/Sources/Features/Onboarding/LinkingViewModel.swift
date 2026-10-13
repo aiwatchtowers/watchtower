@@ -386,6 +386,12 @@ final class LinkingViewModel {
 
     // MARK: - Unlink and the link's events (spec §9, multi-hub §6)
 
+    /// Settings → Macs: reorders the Macs (the host saves it and the order
+    /// follows on screen).
+    func moveHub(_ hubID: String, to index: Int) {
+        host?.moveHub(hubID, to: index)
+    }
+
     /// Settings → Macs → Unlink: the hub's files and row go, then its Mac
     /// hears `unlinked`, then a shared link leaves the shares.
     func unlink(_ hubID: String) async {

@@ -114,6 +114,14 @@ final class AppEnvironment {
         }
     }
 
+    /// Follows the registry's new order (Settings → Macs): the sessions
+    /// listed, in that order; a hub missing from `hubIDs` keeps its place
+    /// after them.
+    func reorder(_ hubIDs: [String]) {
+        let known = hubIDs.filter { sessions[$0] != nil }
+        order = known + order.filter { !known.contains($0) }
+    }
+
     /// Names every session as the switcher does (`HubDisplayName`), from
     /// the registry's `rows`: the recorder says which Mac a capture is for.
     func nameHubs(_ rows: [HubRow]) {

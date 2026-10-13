@@ -184,6 +184,8 @@ final class FakeLinkHost: LinkHost {
         rows
     }
 
+    func moveHub(_ hubID: String, to index: Int) {}
+
     /// When true, `prepare` waits until its task is cancelled (the app
     /// killed while the sync stack restarts).
     var parksPrepare = false

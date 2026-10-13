@@ -69,7 +69,7 @@ struct HubListSheet: View {
 /// One Mac in the list: the name, then the dot and state with the flavor,
 /// then the last fetch's problem; the open asks and the active mark on the
 /// right.
-private struct HubListRow: View {
+struct HubListRow: View {
     let item: HubListItem
 
     var body: some View {

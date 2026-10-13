@@ -42,6 +42,8 @@ struct SystemLinkClock: LinkClock {
 protocol LinkHost: AnyObject {
     /// The saved links, in registry order (rows of both states).
     func linkedHubs() -> [HubRow]
+    /// Settings → Macs: `hubID` moves to `index` in the registry's order.
+    func moveHub(_ hubID: String, to index: Int)
     /// `hubID`'s transport in `scope`'s database: its session if one runs in
     /// that scope; else a new session in its own directory (a row in another
     /// scope, or frozen, is removed first with its recordings held).
