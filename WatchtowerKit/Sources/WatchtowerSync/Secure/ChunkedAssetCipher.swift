@@ -278,11 +278,13 @@ public enum ChunkedAssetCipher {
         return data
     }
 
-    /// Writes into a temp file beside `destination` and moves it into place only if `body` returns.
+    /// Writes into a temp file beside `destination` and moves it into place only if `body` returns. The temp file
+    /// is created empty and owner-only (0600) before a byte is written, so `decryptFile`'s plaintext is never
+    /// readable by another user, not even mid-write; the move keeps the mode.
     private static func writeAtomically(to destination: URL, _ body: (FileHandle) throws -> Void) throws {
         let fileManager = FileManager.default
         let temp = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
-        guard fileManager.createFile(atPath: temp.path, contents: nil) else {
+        guard fileManager.createFile(atPath: temp.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
         }
         do {

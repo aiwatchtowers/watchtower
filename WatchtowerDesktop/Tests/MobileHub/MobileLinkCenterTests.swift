@@ -462,16 +462,79 @@ final class MobileLinkCenterTests: XCTestCase {
         let code = try await center.issueCode()
         let transport = StubHubTransport()
         // A device record reaches the relay sealed by a phone the hub holds keys for (Task 13 routes hellos).
-        try await transport.save([try TestRelayPhone.seal(try deviceRecord("phone-a", nonce: code.nonce))])
+        try await transport.save([try TestRelayPhone.seal(try deviceRecord(phoneA, nonce: code.nonce))])
+
+        try await relayDeviceRecords(over: transport)
+
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA])
+    }
+
+    /// One relay pass over `transport` whose device records go to the link center.
+    private func relayDeviceRecords(over transport: StubHubTransport) async throws {
         let center = try XCTUnwrap(self.center)
         let processor = RelayProcessor(
             transport: relaySide(transport), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
             deviceRecords: .init { try await center.handleDevice($0) }
         )
-
         _ = try await processor.processOnce()
+        await center.closeAfterLink?.value
+    }
 
-        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a"])
+    /// Both test phones linked through their own codes.
+    private func linkPhonesAAndB() async throws {
+        let first = try await center.issueCode()
+        try await handle(try deviceRecord(phoneA, nonce: first.nonce))
+        clock.advance(30)
+        let second = try await center.issueCode()
+        try await handle(try deviceRecord(phoneB, nonce: second.nonce))
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA, phoneB])
+    }
+
+    /// A sealed device record acts only for the phone whose key opened it: phone A writing phone B's unlink is
+    /// dropped, B stays linked with its grant.
+    func testAPhoneCannotUnlinkAnotherLinkedPhone() async throws {
+        try await linkPhonesAAndB()
+        let before = try grants()[phoneB]
+        let transport = StubHubTransport()
+        try await transport.save([try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, unlinked: true))])
+
+        try await relayDeviceRecords(over: transport)
+
+        XCTAssertEqual(center.devices.map(\.deviceID), [phoneA, phoneB], "B stays linked")
+        XCTAssertEqual(try grants()[phoneB], before, "B's grant is unchanged")
+        XCTAssertNotNil(try sidecar.linkedDevice(phoneB))
+    }
+
+    /// The same for the start-sessions choice: only B's own record changes B's grant.
+    func testAPhoneCannotChangeAnotherPhonesStartSessionsGrant() async throws {
+        try await linkPhonesAAndB()
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true)
+        let transport = StubHubTransport()
+        try await transport.save([try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false))])
+
+        try await relayDeviceRecords(over: transport)
+
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, true, "A's record for B changes nothing")
+
+        try await transport.save([
+            try TestRelayPhone.seal(try deviceRecord(phoneB, nonce: nil, startSessions: false), as: TestE2E.strangerIdentity)
+        ])
+        try await relayDeviceRecords(over: transport)
+
+        XCTAssertEqual(try grants()[phoneB]?.startSessionsAllowed, false, "B's own record is applied")
+    }
+
+    /// Device ids match ignoring case everywhere: removing a phone by a differently spelled id unlinks it.
+    func testRemoveWithADifferentlyCasedIDUnlinksThePhone() async throws {
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord(phoneA.lowercased(), nonce: code.nonce))
+        XCTAssertNotNil(try sidecar.linkedDevice(phoneA))
+
+        try await center.remove(deviceID: phoneA)
+
+        XCTAssertNil(try sidecar.linkedDevice(phoneA.lowercased()))
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty, "no row is left under either spelling")
+        XCTAssertTrue(center.devices.isEmpty)
     }
 
     // MARK: - Closing the link

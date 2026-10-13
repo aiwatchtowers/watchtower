@@ -85,8 +85,11 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     private func makeProcessor(
         ingest: Bool = true,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        clock: (@Sendable () -> Date)? = nil,
         beforeIngest: (@MainActor @Sendable (URL) throws -> Void)? = nil
     ) throws -> RelayProcessor {
+        let fixed = now
+        let current = clock ?? { fixed }
         let jobs = try XCTUnwrap(self.jobs)
         let uploads = RelayProcessor.RecordingUploads(
             ingest: { upload, audio in
@@ -97,8 +100,9 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         )
         return RelayProcessor(
             transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar,
-            dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme", recordingUploads: ingest ? uploads : nil
-        ) { [now] in now }
+            dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme", recordingUploads: ingest ? uploads : nil,
+            now: current
+        )
     }
 
     /// The audio the phone recorded.
@@ -304,6 +308,39 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
     }
 
+    /// Uploads have no age window (Task 12 ruling): a received upload's ledger row outlives the 8-day window
+    /// while the epoch it was sealed in is accepted, so its identical envelope replayed after that is re-echoed
+    /// `received`, never ingested a second time.
+    func testAReceivedUploadReplayedAfterTheLedgerWindowInTheSameEpochIsNotIngestedAgain() async throws {
+        // The hub's current epoch began long before the upload (`hub_epochs` is all the pruning reads).
+        try sidecar.writeKeys { db in
+            try HubSyncState.insertEpoch(
+                HubSyncState.StoredEpoch(
+                    epoch: 1, sealedKeys: Data(count: 32), createdAt: now.addingTimeInterval(-30 * 86_400), firstSeq: 0,
+                    retiredAt: nil),
+                db)
+        }
+        let clock = OSAllocatedUnfairLock(initialState: now)
+        let asset = try makeAsset()
+        let record = try sealedUpload(uploadPayload(), asset: asset)
+        let replay = try refetched(record, asset: asset, as: "replay.bin")
+        try await transport.save([record])
+        let readClock: @Sendable () -> Date = { clock.withLock { $0 } }
+        let processor = try makeProcessor(clock: readClock)
+        _ = try await processor.processOnce()
+        XCTAssertEqual(enqueued.count, 1)
+
+        clock.withLock { $0 = now.addingTimeInterval(RelayProcessor.actionMaxAge + 2 * 86_400) }
+        try await processor.runHygieneIfDue()
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received", "kept while its epoch is accepted")
+
+        try await transport.save([replay])
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(enqueued.count, 1, "never ingested a second time")
+        XCTAssertEqual(try echoes(of: record.recordName).last?.payload.status, .received, "re-echoed received")
+    }
+
     /// The ingest is handed the decrypted audio in a temporary file beside the stash; once the pass ends no
     /// plaintext copy is left, and the sealed stash of a received upload is consumed.
     func testTheIngestReceivesThePlainAudioAndNoPlainCopyIsLeft() async throws {
@@ -311,11 +348,15 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let asset = try makeAsset(bytes: 3 * 1024 * 1024 + 17)
         let record = try await send(uploadPayload(), asset: asset)
 
+        let modes = OSAllocatedUnfairLock<[Int]>(initialState: [])
         _ = try await makeProcessor { audio in
             let bytes = try Data(contentsOf: audio)
             handed.withLock { $0.append((audio, bytes)) }
+            let mode = try FileManager.default.attributesOfItem(atPath: audio.path)[.posixPermissions] as? NSNumber
+            modes.withLock { $0.append(mode?.intValue ?? -1) }
         }.processOnce()
 
+        XCTAssertEqual(modes.withLock { $0 }, [0o600], "the plaintext copy is owner-only")
         let seen = try XCTUnwrap(handed.withLock { $0 }.first)
         XCTAssertEqual(seen.bytes, Self.audio(bytes: 3 * 1024 * 1024 + 17), "the plain audio, not the ciphertext")
         XCTAssertEqual(seen.url.deletingLastPathComponent().standardizedFileURL, assetsDir.standardizedFileURL)
@@ -594,6 +635,9 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:outcome_unknown")
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: assetsDir.path), ["staged.m4a"],
+            "the decrypted copy is gone after the timeout; only the sealed stash is kept")
     }
 
     func testAHubWithoutAnIngestLeavesUploadsPending() async throws {

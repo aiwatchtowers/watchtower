@@ -268,7 +268,7 @@ final class RelayProcessor: Sendable {
                 }, budgeted: false)
             }
         case RelayRecordKind.device.rawValue:
-            guard let deviceRecords else { return nil }
+            guard let deviceRecords, isFromItsOwnPhone(record) else { return nil }
             return Work(run: {
                 // Phone activity: the grant traffic that follows runs at the active cadence.
                 self.lastActivity.withLock { $0 = self.now() }
@@ -278,6 +278,25 @@ final class RelayProcessor: Sendable {
             // Future kinds have no relay work.
             return nil
         }
+    }
+
+    /// A sealed `device` record acts only for the phone whose key opened it:
+    /// its payload's `device_id` is the authenticated sender. Otherwise (one
+    /// linked phone writing another's unlink or start-sessions choice, or a
+    /// payload that does not decode) it is dropped and logged, never echoed.
+    private func isFromItsOwnPhone(_ record: CloudRecord) -> Bool {
+        let payload: DevicePayload
+        do {
+            payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: record.payload)
+        } catch {
+            logger.warning("undecodable device record \(record.recordName, privacy: .public): dropped")
+            return false
+        }
+        guard let sender = record.sealed?.senderID, UUID(uuidString: payload.deviceID) == sender else {
+            logger.warning("device record \(record.recordName, privacy: .public) names another phone than its sender: dropped")
+            return false
+        }
+        return true
     }
 
     private enum PendingAction {
@@ -347,10 +366,10 @@ final class RelayProcessor: Sendable {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else if isExpired(action) {
             outcome = .expired
-        } else if let applied = try await applyAction(action, origin: origin, transport: transport) {
-            outcome = applied
         } else {
-            return
+            try noteSeq(origin)
+            guard let applied = try await applyAction(action, origin: origin, transport: transport) else { return }
+            outcome = applied
         }
         try await writeEcho(action, outcome, origin: origin, transport: transport)
         try sidecar.markRelayDone(
@@ -364,14 +383,18 @@ final class RelayProcessor: Sendable {
 
     /// The device gate (§5.2 rule 4, E2E): the phone whose relay key opened
     /// the record is the payload's `device_id` and a linked phone, and its
-    /// creator check passes (defense in depth). An admitted record raises the
-    /// phone's `last_seq` high-water mark (D4: never a gate).
+    /// creator check passes (defense in depth). No side effects.
     private func admitsDevice(_ deviceID: String?, origin: Origin) throws -> Bool {
         guard let sealed = origin.sealed, let deviceID, UUID(uuidString: deviceID) == sealed.senderID,
-              let device = try sidecar.linkedDevice(sealed.senderID.uuidString),
-              device.accepts(creator: origin.creator) else { return false }
-        try sidecar.raiseDeviceLastSeq(device.deviceID, to: sealed.seq)
-        return true
+              let device = try sidecar.linkedDevice(sealed.senderID.uuidString) else { return false }
+        return device.accepts(creator: origin.creator)
+    }
+
+    /// Raises the sender's `last_seq` high-water mark once a record passed
+    /// every gate (D4: diagnostics, never a gate).
+    private func noteSeq(_ origin: Origin) throws {
+        guard let sealed = origin.sealed else { return }
+        try sidecar.raiseDeviceLastSeq(sealed.senderID.uuidString, to: sealed.seq)
     }
 
     private func isExpired(_ action: ActionRequestPayload) -> Bool {
@@ -517,7 +540,10 @@ final class RelayProcessor: Sendable {
         } else if try !admitsDevice(upload.deviceID, origin: context.origin) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else {
-            // A failed attempt is claimable again: the phone's Retry re-sends the identical envelope (Task 9).
+            // Uploads have no age window: the ledger row outlives the record's accepted epochs instead
+            // (`pruneRelayProcessed`). A failed attempt is claimable again: the phone's Retry re-sends the
+            // identical envelope (Task 9).
+            try noteSeq(context.origin)
             guard try sidecar.claimRelayRetryingFailure(name, at: now()) else { return }
             outcome = await ingestUpload(upload, asset: asset, uploads: context.uploads)
         }
@@ -563,16 +589,19 @@ final class RelayProcessor: Sendable {
               FileManager.default.fileExists(atPath: sealed.path) else {
             return .failed(.notFound, message: Self.missingAudioMessage)
         }
-        // Beside the stash (the same volume, cleaned with it); hidden, owner-only, removed below on every path.
+        // Beside the stash (the same volume, cleaned with it); hidden, created owner-only (0600) before the first
+        // plaintext byte (`ChunkedAssetCipher.decryptFile`), removed below on every path. On an ingest timeout the
+        // abandoned ingest may still be copying it: removing it then fails that copy, the safe direction.
         let plain = sealed.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).m4a")
         defer { removePlaintext(plain) }
         do {
             try ChunkedAssetCipher.decryptFile(at: sealed, to: plain, descriptor: descriptor)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plain.path)
         } catch {
-            // The error is a cipher code (chunk index, length) or a file error, never key material.
-            logger.warning(
-                "recording upload \(upload.recordName, privacy: .public) did not decrypt: \(String(describing: error), privacy: .public)")
+            // Publicly only a code: a cipher case, or a file error's domain and number (its text can hold a path).
+            logger.warning("""
+                recording upload \(upload.recordName, privacy: .public) did not decrypt: \
+                \(Self.errorCode(error), privacy: .public) \(error.localizedDescription, privacy: .private)
+                """)
             return .failed(.notFound, message: Self.missingAudioMessage)
         }
         let size: Int64
@@ -604,8 +633,19 @@ final class RelayProcessor: Sendable {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            logger.error("decrypted recording copy not removed: \(error.localizedDescription, privacy: .public)")
+            logger.error("""
+                decrypted recording copy not removed: \(Self.errorCode(error), privacy: .public) \
+                \(error.localizedDescription, privacy: .private)
+                """)
         }
+    }
+
+    /// A loggable code for an error: an `AssetCipherError` case (no key material, no path), else the error's
+    /// domain and number.
+    static func errorCode(_ error: any Error) -> String {
+        if let cipher = error as? AssetCipherError { return "cipher.\(cipher)" }
+        let ns = error as NSError
+        return "\(ns.domain).\(ns.code)"
     }
 
     // MARK: - Hygiene (relay retention)
@@ -645,7 +685,7 @@ final class RelayProcessor: Sendable {
         }
         let cutoff = current.addingTimeInterval(-(Self.actionMaxAge + Self.retentionMargin))
         await sweepBuffer(olderThan: cutoff, transport: transport)
-        try sidecar.pruneRelayProcessed(olderThan: cutoff)
+        try sidecar.pruneRelayProcessed(olderThan: cutoff, now: current)
         try sidecar.setMetaValue(String(current.timeIntervalSince1970), forKey: Self.hygieneStampKey)
     }
 

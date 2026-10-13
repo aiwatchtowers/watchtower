@@ -129,6 +129,26 @@ final class ChunkedAssetCipherTests: XCTestCase {
         try E2EFixtures.check(AssetVectors(key: key, assetID: assetID), file: "asset")
     }
 
+    /// The decrypted plaintext (and the sealed file) is owner-only: the temp file is created 0600 before a byte is
+    /// written, and the move into place keeps the mode.
+    func testFileOutputsAreOwnerOnly() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        scratch = dir
+        let input = dir.appendingPathComponent("in.bin")
+        let sealedURL = dir.appendingPathComponent("in.sealed")
+        let output = dir.appendingPathComponent("out.bin")
+        try Data(repeating: 7, count: 40).write(to: input)
+
+        let descriptor = try ChunkedAssetCipher.encryptFile(at: input, to: sealedURL, assetID: assetID, key: key, chunkSize: 16)
+        try ChunkedAssetCipher.decryptFile(at: sealedURL, to: output, descriptor: descriptor)
+
+        for url in [sealedURL, output] {
+            let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+            XCTAssertEqual(mode?.intValue, 0o600, url.lastPathComponent)
+        }
+    }
+
     func testFileStreamingMatchesInMemoryAndLeavesNoTempFileOnFailure() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

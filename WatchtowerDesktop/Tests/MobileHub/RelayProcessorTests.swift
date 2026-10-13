@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 import GRDB
@@ -64,7 +65,7 @@ final class RelayProcessorTests: XCTestCase {
     /// active cadence for the grant traffic that follows.
     func testAHandedOverDeviceRecordCountsAsPhoneActivity() async throws {
         let payload = DevicePayload(
-            deviceID: "phone-a", name: "iPhone", model: "iPhone18,1", appVersion: "0.0.0-test", scope: .private,
+            deviceID: testPhoneID, name: "iPhone", model: "iPhone18,1", appVersion: "0.0.0-test", scope: .private,
             userRecordName: "_owner-acme", linkNonce: "nonce-acme", typingRequested: false, startSessions: true,
             updatedAt: Date()
         )
@@ -218,7 +219,8 @@ final class RelayProcessorTests: XCTestCase {
         let freshStranger = try TestRelayPhone.seal(
             try plainProbe("fresh", deviceID: TestE2E.strangerDeviceID.uuidString, created: now),
             as: TestE2E.strangerIdentity)
-        try await transport.save([agedStranger, freshStranger])
+        let freshPending = try pendingActionRecord(kind: .probe, params: ["nonce": .string("fresh")], age: 60, now: now)
+        try await transport.save([agedStranger, freshStranger, freshPending])
 
         try await makeProcessor { now }.runHygieneIfDue()
 
@@ -226,6 +228,135 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertFalse(names.contains(echoWire), "the hub's own aged echo is deleted")
         XCTAssertFalse(names.contains(agedStranger.recordName), "an aged unopenable record is deleted by wire name")
         XCTAssertTrue(names.contains(freshStranger.recordName), "a fresh unopenable record stays")
+        XCTAssertTrue(names.contains(freshPending.recordName), "a fresh pending record from the linked phone stays")
+    }
+
+    /// Uploads have no age window (Task 12 ruling): an upload's ledger row and the rollback-guard rows of an
+    /// accepted epoch outlive the 8-day cutoff until that epoch leaves the D10 grace; actions keep the cutoff.
+    func testPruningKeepsUploadRowsWhileTheirEpochIsAccepted() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let day: TimeInterval = 86_400
+        try sidecar.writeKeys { db in
+            try HubSyncState.insertEpoch(
+                HubSyncState.StoredEpoch(epoch: 1, sealedKeys: Data(count: 32), createdAt: start, firstSeq: 0, retiredAt: nil), db)
+        }
+        let phone = TestE2E.deviceID.uuidString
+        try sidecar.markRelayDone("recupload-R1", outcome: "received", at: start.addingTimeInterval(day))
+        try sidecar.markRelayDone("action-A1", outcome: "applied", at: start.addingTimeInterval(day))
+        try sidecar.recordRelaySeen(wireName: "wire-1", senderID: phone, epoch: 1, seq: 5, at: start.addingTimeInterval(day))
+        let later = start.addingTimeInterval(20 * day)
+
+        try sidecar.pruneRelayProcessed(olderThan: later.addingTimeInterval(-8 * day), now: later)
+
+        XCTAssertEqual(try sidecar.relayPhase("recupload-R1"), .done, "epoch 1 is current: kept")
+        XCTAssertNil(try sidecar.relayPhase("action-A1"), "actions keep the cutoff (their age gate)")
+        XCTAssertNotNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phone))
+
+        // Epoch 2 begins; epoch 1 stays accepted for the 7-day grace, then goes.
+        try sidecar.writeKeys { db in
+            try db.execute(sql: "UPDATE hub_epochs SET retired_at = ? WHERE epoch = 1", arguments: [later.timeIntervalSince1970])
+            try HubSyncState.insertEpoch(
+                HubSyncState.StoredEpoch(epoch: 2, sealedKeys: Data(count: 32), createdAt: later, firstSeq: 0, retiredAt: nil), db)
+        }
+        let inGrace = later.addingTimeInterval(6 * day)
+        try sidecar.pruneRelayProcessed(olderThan: inGrace.addingTimeInterval(-8 * day), now: inGrace)
+        XCTAssertEqual(try sidecar.relayPhase("recupload-R1"), .done, "in the grace: kept")
+        XCTAssertNotNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phone))
+
+        let pastGrace = later.addingTimeInterval(8 * day)
+        try sidecar.pruneRelayProcessed(olderThan: pastGrace.addingTimeInterval(-8 * day), now: pastGrace)
+        XCTAssertNil(try sidecar.relayPhase("recupload-R1"), "its epoch no longer opens: pruned")
+        XCTAssertNil(try sidecar.relaySeen(wireName: "wire-1", senderID: phone))
+    }
+
+    // MARK: - The real keyring (HubKeyring over the sidecar's devices table)
+
+    /// D9 end to end: the hub's real `HubKeyring` derives relay keys from the same `devices` rows the gate reads.
+    /// After Remove, the phone's relay records of the current and the previous epoch get no echo, no ledger
+    /// row and no ingest.
+    func testARemovedPhonesRecordsGetNoEchoAndNoIngestWithTheRealKeyring() async throws {
+        let hubID = try sidecar.ensureHubID()
+        let ring = try HubKeyring(hubID: hubID, sidecar: sidecar, store: InMemoryHubKeyStore())
+        try ring.ensureGroupKeys()
+        let identity = DeviceIdentityKeys(signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey())
+        let phoneID = identity.deviceID.uuidString
+        let nonce = Data(repeating: 0x5A, count: 32)
+        try sidecar.linkTestDevice(phoneID)
+        _ = try sidecar.writeKeys { db in
+            try db.execute(
+                sql: "UPDATE devices SET signing_key = ?, agreement_key = ?, link_nonce = ? WHERE device_id = ?",
+                arguments: [
+                    identity.signing.publicKey.rawRepresentation, identity.agreement.publicKey.rawRepresentation,
+                    WireBytes.base64URL(nonce), phoneID
+                ])
+        }
+        let store = try InMemoryPhoneKeyStore(identity: identity)
+        try store.saveHubLink(HubLinkKeys(
+            hubID: hubID, hubSigningKey: ring.signingPublicKey.rawRepresentation,
+            hubAgreementKey: ring.agreementPublicKey.rawRepresentation, linkNonce: nonce,
+            metaKey: ring.metaKey().withUnsafeBytes { Data($0) },
+            epochs: [EpochKeys(
+                epoch: 1, dataKey: ring.dataKey(epoch: 1).withUnsafeBytes { Data($0) },
+                alertKey: ring.alertKey(epoch: 1).withUnsafeBytes { Data($0) })]))
+        let phone = SecureTransport(
+            inner: transport,
+            keys: try PhoneKeyProvider(store: store, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in })),
+            rollback: InMemoryRollbackGuard())
+        let ingests = OSAllocatedUnfairLock(initialState: 0)
+        let countIngest: RelayProcessor.RecordingIngest = { _, _ in ingests.withLock { $0 += 1 } }
+        let processor = RelayProcessor(
+            transport: MobileHubStorage.sealing(transport, keyring: ring, sidecar: sidecar), sidecar: sidecar,
+            dispatcher: dispatcher, hubID: hubID, recordingUploads: .init(ingest: countIngest))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("relay-ring-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        /// A probe and an upload from the phone; returns their plain names.
+        func send(_ label: String) async throws -> [String] {
+            let probe = ActionRequestPayload(
+                id: "probe-\(label)", kind: .probe, entityID: nil, params: ["nonce": .string(label)], createdAt: Date(),
+                deviceID: phoneID)
+            let audio = dir.appendingPathComponent("\(label).plain")
+            try Data(repeating: 0xCD, count: 64).write(to: audio)
+            let sealedAudio = dir.appendingPathComponent("\(label).sealed")
+            let descriptor = try ChunkedAssetCipher.encryptFile(at: audio, to: sealedAudio)
+            let upload = RecordingUploadPayload(
+                id: "up-\(label)", startedAt: Date(), endedAt: Date(), durationSec: 1, titleHint: nil,
+                sampleFormat: "aac-64k-mono", eventID: nil, deviceID: phoneID, hubID: nil)
+            let plainUpload = try CloudRecordFactory.record(for: upload, modifiedAt: Date(), assetFileURL: sealedAudio)
+            try await phone.save([
+                try CloudRecordFactory.record(for: probe, modifiedAt: Date()),
+                CloudRecord(
+                    recordName: plainUpload.recordName, zone: .relay, kind: plainUpload.kind, modifiedAt: plainUpload.modifiedAt,
+                    payload: plainUpload.payload, assetFileURL: sealedAudio, asset: descriptor)
+            ])
+            return [probe.recordName, upload.recordName]
+        }
+
+        // Control: while linked, both are answered and the upload is ingested.
+        let linked = try await send("linked")
+        _ = try await processor.processOnce()
+        XCTAssertEqual(try linked.map { try sidecar.relayPhase($0) }, [.done, .done])
+        XCTAssertEqual(ingests.withLock { $0 }, 1)
+
+        // Remove: the phone leaves `devices`; the keyring has no relay key for it any more.
+        XCTAssertNotNil(try sidecar.removeLinkedDevice(phoneID))
+        let current = try await send("current-epoch")
+        let savesBefore = transport.saved.count
+        _ = try await processor.processOnce()
+        XCTAssertEqual(transport.saved.count, savesBefore, "no echo for the removed phone")
+
+        // A rotation: its records of the previous epoch (inside the D10 grace) are refused the same way.
+        _ = try ring.beginNextEpoch()
+        let previous = try await send("previous-epoch")
+        let savesBeforePrevious = transport.saved.count
+        _ = try await processor.processOnce()
+        XCTAssertEqual(transport.saved.count, savesBeforePrevious, "no echo for the previous epoch either")
+
+        for name in current + previous {
+            XCTAssertNil(try sidecar.relayPhase(name), "\(name) is never ledgered")
+        }
+        XCTAssertEqual(ingests.withLock { $0 }, 1, "nothing ingested after Remove")
     }
 
     /// The age rule reads the sealed `created_at`: a phone save with a fresh plaintext `modifiedAt` cannot make

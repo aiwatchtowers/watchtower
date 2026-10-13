@@ -402,24 +402,54 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Retention: drops ledger entries last touched before `date`. Safe
-    /// because the cutoff lies past the relay max age: a re-delivered record
-    /// that old fails the age check (`expired`) and is never applied, and an
-    /// already-echoed record is skipped on its echo status first. The relay
-    /// rollback guard (`relay_seen`, F3) goes by the same cutoff on its own
-    /// `at`: its keys are wire names, so it is never joined to the ledger.
-    func pruneRelayProcessed(olderThan date: Date) throws {
+    /// Retention: drops ledger entries last touched before `date`. Safe for
+    /// actions because the cutoff lies past the relay max age: a re-delivered
+    /// record that old fails the age check (`expired`) and is never applied,
+    /// and an already-echoed record is skipped on its echo status first. The
+    /// relay rollback guard (`relay_seen`, F3) goes by the same cutoff on its
+    /// own `at`: its keys are wire names, so it is never joined to the ledger.
+    ///
+    /// Uploads carry no authenticated age (D4 amended, Task 12 ruling): an
+    /// upload's envelope opens as long as the epoch it was sealed in is
+    /// accepted (the current one, and the previous one inside its D10
+    /// grace), so its ledger row (`recupload-…`) and every `relay_seen` row
+    /// of an accepted epoch outlive the cutoff until that epoch is no longer
+    /// accepted. The ledger has no epoch column: an upload handled at or after
+    /// the oldest accepted epoch's creation may have been sealed in it, so it
+    /// is kept (an over-keep, never an under-keep). No `hub_epochs` row (a
+    /// keyless hub): the cutoff alone.
+    func pruneRelayProcessed(olderThan date: Date, now: Date = Date()) throws {
         try queue.write { db in
+            let accepted = try Self.oldestAcceptedRelayEpoch(db, now: now)
             try db.execute(
-                sql: "DELETE FROM relay_processed WHERE updated_at < ?",
-                arguments: [date.timeIntervalSince1970]
+                sql: """
+                    DELETE FROM relay_processed WHERE updated_at < ?
+                        AND NOT (? AND record_name LIKE 'recupload-%' AND updated_at >= ?)
+                    """,
+                arguments: [
+                    date.timeIntervalSince1970, accepted != nil, accepted?.createdAt.timeIntervalSince1970 ?? 0
+                ]
             )
-            try db.execute(sql: "DELETE FROM relay_seen WHERE at < ?", arguments: [date.timeIntervalSince1970])
+            try db.execute(
+                sql: "DELETE FROM relay_seen WHERE at < ? AND NOT (? AND epoch >= ?)",
+                arguments: [date.timeIntervalSince1970, accepted != nil, Int64(accepted?.epoch ?? 0)])
             try db.execute(
                 sql: "DELETE FROM ask_answer_deliveries WHERE at < ?",
                 arguments: [date.timeIntervalSince1970]
             )
         }
+    }
+
+    /// The oldest epoch whose relay envelopes the hub still opens (D10): the
+    /// previous one while its grace runs, else the current one.
+    private static func oldestAcceptedRelayEpoch(_ db: Database, now: Date) throws -> StoredEpoch? {
+        let epochs = try latestEpochs(db)
+        guard let current = epochs.last else { return nil }
+        if epochs.count == 2, let previous = epochs.first, let retired = previous.retiredAt,
+           now.timeIntervalSince(retired) < HubKeyring.previousEpochGrace {
+            return previous
+        }
+        return current
     }
 
     // MARK: - Ask answer deliveries (spec §5.2, §6.2)
@@ -798,9 +828,13 @@ final class HubSyncState: Sendable {
         try queue.write { db in
             let decision = LinkDecision.of(try Self.fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
             guard decision == .valid else { return decision }
+            // A re-link keeps the row's own spelling: ids match ignoring case (`linkedDevice`), the key does not.
+            let deviceID = try String.fetchOne(
+                db, sql: "SELECT device_id FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [device.deviceID]
+            ) ?? device.deviceID
             try db.execute(
                 sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
-                arguments: [device.deviceID, now.timeIntervalSince1970, nonce]
+                arguments: [deviceID, now.timeIntervalSince1970, nonce]
             )
             try db.execute(
                 sql: """
@@ -812,12 +846,12 @@ final class HubSyncState: Sendable {
                         user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
                     """,
                 arguments: [
-                    device.deviceID, device.name, device.scope.rawValue, device.userRecordName,
+                    deviceID, device.name, device.scope.rawValue, device.userRecordName,
                     device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
                     device.decidedAt?.timeIntervalSince1970
                 ]
             )
-            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [device.deviceID])
+            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
             return .valid
         }
     }
@@ -839,12 +873,14 @@ final class HubSyncState: Sendable {
     }
 
     /// Deletes the device's row and refusal; the removed row, nil when it
-    /// was not linked.
+    /// was not linked. Ids match ignoring case, like `linkedDevice`: a
+    /// differently spelled id never leaves a removed phone linked.
     func removeLinkedDevice(_ deviceID: String) throws -> LinkedDevice? {
         try queue.write { db in
-            let row = try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID])
-            try db.execute(sql: "DELETE FROM devices WHERE device_id = ?", arguments: [deviceID])
-            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [deviceID])
+            let row = try Row.fetchOne(
+                db, sql: "SELECT * FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
             return row.map(Self.device)
         }
     }
@@ -860,7 +896,7 @@ final class HubSyncState: Sendable {
     func setDeviceGrant(_ grant: DeviceGrantKind, _ allowed: Bool, deviceID: String, at date: Date) throws -> Bool {
         try queue.write { db in
             try db.execute(
-                sql: "UPDATE devices SET \(grant.rawValue) = ?, decided_at = ? WHERE device_id = ?",
+                sql: "UPDATE devices SET \(grant.rawValue) = ?, decided_at = ? WHERE device_id = ? COLLATE NOCASE",
                 arguments: [allowed, date.timeIntervalSince1970, deviceID]
             )
             return db.changesCount > 0
@@ -869,6 +905,10 @@ final class HubSyncState: Sendable {
 
     func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
         try queue.write { db in
+            // One refusal per phone whatever the id's spelling (the upsert key is case-sensitive).
+            try db.execute(
+                sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE AND device_id != ?",
+                arguments: [refusal.deviceID, refusal.deviceID])
             try db.execute(
                 sql: """
                     INSERT INTO link_refusals (device_id, name, scope, reason, at) VALUES (?, ?, ?, ?, ?)
