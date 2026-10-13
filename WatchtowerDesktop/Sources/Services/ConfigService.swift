@@ -69,6 +69,13 @@ final class ConfigService {
     private let configPath: String
     /// Raw YAML dictionary — preserved for round-trip editing
     private var rawYAML: [String: Any] = [:]
+    /// `calendar.enabled`/`gmail.enabled` as last read from or written to
+    /// disk. `save()` writes a switch only when this instance changed it: the
+    /// CLI turns a switch on when Google connects (`google add`), and a
+    /// Settings window loaded before that must not switch it back off with an
+    /// unrelated Save (#740) — nor materialize `false` on a fresh install.
+    private var diskCalendarEnabled = false
+    private var diskGmailEnabled = false
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -127,12 +134,14 @@ final class ConfigService {
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
+                diskCalendarEnabled = calendarEnabled
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
                 calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
             }
 
             if let gmail = yaml["gmail"] as? [String: Any] {
                 gmailEnabled = (gmail["enabled"] as? Bool) ?? false
+                diskGmailEnabled = gmailEnabled
             }
 
             if let jira = yaml["jira"] as? [String: Any],
@@ -253,14 +262,16 @@ final class ConfigService {
 
         // Calendar section
         var calendarDict = (yaml["calendar"] as? [String: Any]) ?? [:]
-        calendarDict["enabled"] = calendarEnabled
+        if calendarEnabled != diskCalendarEnabled { calendarDict["enabled"] = calendarEnabled }
         calendarDict["sync_days_ahead"] = calendarSyncDaysAhead
         yaml["calendar"] = calendarDict
 
         // Gmail section
-        var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
-        gmailDict["enabled"] = gmailEnabled
-        yaml["gmail"] = gmailDict
+        if gmailEnabled != diskGmailEnabled {
+            var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
+            gmailDict["enabled"] = gmailEnabled
+            yaml["gmail"] = gmailDict
+        }
 
         // Ideas section — `enabled` is deliberately not written, see the
         // `ideasEnabled` property.
@@ -301,6 +312,12 @@ final class ConfigService {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         rawYAML = yaml
+        // Adopt what is on disk now, so a switch the CLI turned on behind this
+        // instance also shows as on.
+        calendarEnabled = ((yaml["calendar"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        gmailEnabled = ((yaml["gmail"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        diskCalendarEnabled = calendarEnabled
+        diskGmailEnabled = gmailEnabled
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without

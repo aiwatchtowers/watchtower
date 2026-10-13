@@ -342,6 +342,58 @@ struct ConfigServiceTests {
         }
     }
 
+    /// #740: `google add` turns `calendar.enabled`/`gmail.enabled` on while a
+    /// Settings window's ConfigService, loaded before the connect, still holds
+    /// `false`. Its next unrelated Save must not switch the sync back off.
+    @Test("Save keeps sync switches the CLI turned on after load")
+    func saveKeepsSyncSwitchesTurnedOnAfterLoad() throws {
+        let path = makeTempConfig("calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+        let stale = ConfigService(configPath: path)
+        #expect(stale.calendarEnabled == false)
+
+        // The CLI's connect writes the switches behind the loaded instance.
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+
+        stale.briefingHour = 10
+        try stale.save()
+
+        #expect(stale.calendarEnabled == true, "the saved instance adopts the switch on disk")
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.calendarEnabled == true)
+        #expect(reloaded.gmailEnabled == true)
+        #expect(reloaded.briefingHour == 10)
+    }
+
+    /// A fresh install's first Save (Goals' Continue writes the history depth)
+    /// must not materialize `calendar.enabled: false` / `gmail.enabled: false`.
+    @Test("Save of an untouched switch writes no enabled key")
+    func saveOfUntouchedSwitchWritesNoKey() throws {
+        let path = makeTempConfig("active_workspace: acme\n")
+        let svc = ConfigService(configPath: path)
+        svc.initialHistoryDays = 3
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect((saved?["calendar"] as? [String: Any])?["enabled"] == nil)
+        #expect((saved?["gmail"] as? [String: Any])?["enabled"] == nil)
+    }
+
+    /// The Settings toggle still turns a switch off: an edit made in this
+    /// instance is written, and a second Save after it stays consistent.
+    @Test("Save writes a switch the owner changed")
+    func saveWritesChangedSwitch() throws {
+        let path = makeTempConfig("calendar:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        svc.calendarEnabled = false
+        try svc.save()
+        #expect(ConfigService(configPath: path).calendarEnabled == false)
+
+        svc.calendarEnabled = true
+        try svc.save()
+        #expect(ConfigService(configPath: path).calendarEnabled == true)
+    }
+
     @Test("Load parses jira features")
     func loadJiraFeatures() {
         let path = makeTempConfig("""
