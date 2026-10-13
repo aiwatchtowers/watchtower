@@ -469,8 +469,7 @@ final class FetchCadenceWiringTests: XCTestCase {
 
         remote.release()
         await env.waitForBoot()
-        try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 },
-                        "the owed full fetch did not run right after the boot")
+        try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 }, "the owed full fetch did not run after the boot")
         XCTAssertEqual(remote.depths.last, .full, "the owed fetch takes the full reach (with the zone poll)")
         XCTAssertEqual(sleeper.requested.count, 1, "the full fetch did not wait on a poll interval")
         try await poll({ completions == [.newData] }, "the push did not get the launch fetch's outcome")
