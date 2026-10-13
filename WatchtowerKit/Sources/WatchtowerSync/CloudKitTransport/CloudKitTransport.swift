@@ -155,17 +155,25 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// When the engine's current or last own fetch run began.
     private(set) var engineRunStartedAt: Date?
     /// `fetchForPush` callers waiting for an own run to begin: resumed with
-    /// true when one begins, with false when their grace ends first or the
-    /// engine goes.
+    /// true when one begins, with false when their grace ends first, a
+    /// `pull()` takes the push over or the engine goes.
     private var engineRunStartWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
-    /// `fetchForPush` callers waiting for the running own run to end.
-    private var engineRunEndWaiters: [CheckedContinuation<Void, Never>] = []
+    /// `fetchForPush` callers waiting for the running own run to end:
+    /// resumed with true when it ends, with false when the wait's bound
+    /// (`engineRunEndWait`) passes first, a `pull()` takes the push over or
+    /// the engine goes.
+    private var engineRunEndWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// Fired when an own fetch run of the engine ends (see
     /// `setEngineFetchedHandler`).
     private var engineFetchedHandler: (@Sendable () -> Void)?
-    /// The running `fetchForPush`; a second one joins it, and a `pull()`
-    /// waits for it (one manual fetch at a time).
+    /// The running `fetchForPush`; a second one joins it. A `pull()` waits
+    /// for it only while it runs its own fallback fetch (one manual fetch
+    /// at a time); while it still waits on the engine, the pull serves it.
     private var pushFetchTask: Task<Void, Error>?
+    /// The running push fetch has stopped waiting and runs its own fetch.
+    private var pushFetchFetching = false
+    /// Push fetches that joined a running one (observable in tests).
+    private(set) var pushFetchJoins = 0
     /// Push fetches an own engine run covered, so they sent no request of
     /// their own (observable in tests).
     private(set) var pushFetchesCoveredByEngine = 0
@@ -384,10 +392,15 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// transport can act on (unlinked, an expired token, throttling) are
     /// handled, not thrown. A successful fetch ends a throttling stretch.
     public func pull() async throws {
-        // One manual fetch at a time: a push fetch running now ends first
-        // (its outcome is the push's), then this pull polls as usual.
-        while let pushFetchTask {
+        // One manual fetch at a time: a push fetch running its own fetch
+        // ends first (its outcome is the push's), then this pull polls as
+        // usual. One still waiting on the engine's run stops waiting and
+        // takes this pull as its fetch, so a pull never waits on the engine.
+        while let pushFetchTask, pushFetchFetching {
             _ = try? await pushFetchTask.value
+        }
+        if pushFetchTask != nil {
+            abandonEngineRunWaits()
         }
         if let pullTask {
             pullJoins += 1
@@ -1381,8 +1394,15 @@ extension CloudKitTransport {
     /// timed and pull-to-refresh paths, which keep its guarantee). Joins a
     /// running push fetch or pull. No-op while the engine is unavailable,
     /// unlinked or throttled; errors are handled as in `pull()`.
-    public func fetchForPush(since: Date, grace: TimeInterval) async throws {
+    ///
+    /// `pollOnFallback`: the fallback fetch also runs the forced zone poll.
+    /// The engine fetches only the zones a delivered push told it about, so
+    /// without the poll the fallback may send no request at all; the
+    /// foreground asks for it (the owner is looking), the background keeps
+    /// the light fetch.
+    public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool = false) async throws {
         if let pushFetchTask {
+            pushFetchJoins += 1
             return try await pushFetchTask.value
         }
         if let pullTask {
@@ -1392,55 +1412,97 @@ extension CloudKitTransport {
         guard let engine, !isUnlinked else { return }
         if let throttledUntil, now() < throttledUntil { return }
         let task = Task {
-            defer { self.pushFetchTask = nil }
-            try await self.performPushFetch(engine: engine, since: since, grace: grace)
+            defer {
+                self.pushFetchTask = nil
+                self.pushFetchFetching = false
+            }
+            try await self.performPushFetch(engine: engine, since: since, grace: grace, poll: pollOnFallback)
         }
         pushFetchTask = task
         try await task.value
     }
 
-    private func performPushFetch(engine: any SyncEngineDriving, since: Date, grace: TimeInterval) async throws {
+    /// How long a push fetch waits for a running own engine run to end
+    /// before fetching itself: a run that never reports its end must not
+    /// stall the push (and the caller's completion) for good.
+    static func engineRunEndWait(grace: TimeInterval) -> TimeInterval {
+        max(grace, 30)
+    }
+
+    private func performPushFetch(
+        engine: any SyncEngineDriving, since: Date, grace: TimeInterval, poll: Bool
+    ) async throws {
         if await engineRunCovers(since: since, grace: grace, engine: engine) {
             pushFetchesCoveredByEngine += 1
             return
         }
+        // A pull that took the push over is its fetch.
+        if let pullTask {
+            pullJoins += 1
+            return try await pullTask.value
+        }
         guard self.engine === engine, !isUnlinked, !isStopped else { return }
         if let throttledUntil, now() < throttledUntil { return }
-        try await performPull(engine: engine, poll: false)
+        pushFetchFetching = true
+        try await performPull(engine: engine, poll: poll)
     }
 
     /// Whether an own engine fetch run that began at or after `since` has
-    /// run (awaiting it if it is running), waiting up to `since + grace`
-    /// for one to begin. False once the engine is stopped or replaced.
+    /// run (awaiting it if it is running, up to `engineRunEndWait`),
+    /// waiting up to `since + grace` for one to begin. False once a wait
+    /// runs out, a `pull()` takes the push over, or the engine is stopped
+    /// or replaced.
     private func engineRunCovers(since: Date, grace: TimeInterval, engine: any SyncEngineDriving) async -> Bool {
         while self.engine === engine, !isStopped {
             if engineRunInFlight {
                 let startedAt = engineRunStartedAt
-                await withCheckedContinuation { engineRunEndWaiters.append($0) }
+                guard await waitForEngineRun(end: true, timeout: Self.engineRunEndWait(grace: grace)) else { return false }
                 if let startedAt, startedAt >= since { return true }
                 continue
             }
             if let startedAt = engineRunStartedAt, startedAt >= since { return true }
             let remaining = since.addingTimeInterval(grace).timeIntervalSince(now())
             guard remaining > 0 else { return false }
-            guard await waitForEngineRunStart(timeout: remaining) else { return false }
+            guard await waitForEngineRun(end: false, timeout: remaining) else { return false }
         }
         return false
     }
 
-    /// True when an own run begins within `timeout`.
-    private func waitForEngineRunStart(timeout: TimeInterval) async -> Bool {
+    /// True when an own run begins (`end` false) or the running one ends
+    /// (`end` true) within `timeout`. The timer stops once the wait ends.
+    private func waitForEngineRun(end: Bool, timeout: TimeInterval) async -> Bool {
         let id = UUID()
         let sleep = sleep
-        Task {
+        // Actor-isolated: the timer's expiry runs after this job suspends
+        // below, so the waiter is registered before it can expire.
+        let timer = Task {
             await sleep(timeout)
-            self.expireEngineRunStartWaiter(id)
+            self.expireEngineRunWaiter(id)
         }
-        return await withCheckedContinuation { engineRunStartWaiters[id] = $0 }
+        defer { timer.cancel() }
+        return await withCheckedContinuation { continuation in
+            if end {
+                engineRunEndWaiters[id] = continuation
+            } else {
+                engineRunStartWaiters[id] = continuation
+            }
+        }
     }
 
-    private func expireEngineRunStartWaiter(_ id: UUID) {
-        engineRunStartWaiters.removeValue(forKey: id)?.resume(returning: false)
+    private func expireEngineRunWaiter(_ id: UUID) {
+        (engineRunStartWaiters.removeValue(forKey: id) ?? engineRunEndWaiters.removeValue(forKey: id))?
+            .resume(returning: false)
+    }
+
+    /// A `pull()` serves the waiting push fetch: it stops waiting on the
+    /// engine (the run state stays as it is).
+    private func abandonEngineRunWaits() {
+        let starts = engineRunStartWaiters
+        let ends = engineRunEndWaiters
+        engineRunStartWaiters = [:]
+        engineRunEndWaiters = [:]
+        starts.values.forEach { $0.resume(returning: false) }
+        ends.values.forEach { $0.resume(returning: false) }
     }
 
     /// `willFetchChanges`. A manual fetch's own event is not a run of the
@@ -1461,8 +1523,8 @@ extension CloudKitTransport {
         guard engineRunInFlight else { return }
         engineRunInFlight = false
         let waiters = engineRunEndWaiters
-        engineRunEndWaiters = []
-        waiters.forEach { $0.resume() }
+        engineRunEndWaiters = [:]
+        waiters.values.forEach { $0.resume(returning: true) }
         engineFetchedHandler?()
     }
 
@@ -1470,12 +1532,7 @@ extension CloudKitTransport {
     private func releaseEngineRunWaiters() {
         engineRunInFlight = false
         engineRunStartedAt = nil
-        let starts = engineRunStartWaiters
-        let ends = engineRunEndWaiters
-        engineRunStartWaiters = [:]
-        engineRunEndWaiters = []
-        starts.values.forEach { $0.resume(returning: false) }
-        ends.forEach { $0.resume() }
+        abandonEngineRunWaits()
     }
 }
 
