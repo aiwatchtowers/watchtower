@@ -201,7 +201,7 @@ final class WorkbenchSliceTests: XCTestCase {
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: sources
         )
         let outcome = try await publisher.publishOnce()
-        XCTAssertEqual(outcome, SlicePublisher.Outcome())
+        XCTAssertEqual(outcome, SlicePublisher.Outcome(completed: true))
     }
 
     // MARK: - Counts and progress
