@@ -61,9 +61,7 @@ struct SessionSwitcherPopover: View {
         }
         // The panel's order (#480): its main list, then a "Finished"
         // divider and every finished session, folded in the panel or not.
-        let sections = vm.panelSections(projectID: project.id)
-        let rows = SessionSwitcherPresentation.matching(sections.main, query: query)
-        let finished = SessionSwitcherPresentation.matching(sections.groupRows, query: query)
+        let (rows, finished) = vm.panelSections(projectID: project.id).switcherRows(matching: query)
         if rows.isEmpty, finished.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("No session matches.").font(.caption).foregroundStyle(.secondary)

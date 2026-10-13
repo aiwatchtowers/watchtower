@@ -97,8 +97,8 @@ package struct SessionPanelSections: Equatable, Sendable {
         var mainSessions: [TerminalSession] = []
         var groupSessions: [TerminalSession] = []
         for session in ordered {
-            let state = SessionSwitcherPresentation.state(of: session.id, liveIDs: liveIDs, statuses: statuses)
-            if heldInGroup(session.id, state: state, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
+            let section = panelSection(of: session.id, liveIDs: liveIDs, statuses: statuses)
+            if heldInGroup(session.id, section: section, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
         }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
@@ -121,10 +121,8 @@ package struct SessionPanelSections: Equatable, Sendable {
     /// (a new prompt, no longer finished) always returns to the main list:
     /// the sticky section never holds a row that is not finished (owner
     /// brief #480 §1).
-    private static func heldInGroup(
-        _ id: Int64, state: SessionSwitcherPresentation.State, sticky: Sticky?
-    ) -> Bool {
-        guard panelSection(of: state) == .finished else { return false }
+    private static func heldInGroup(_ id: Int64, section: Section, sticky: Sticky?) -> Bool {
+        guard section == .finished else { return false }
         return !(sticky?.sessionID == id && sticky?.section == .main)
     }
 
@@ -133,6 +131,26 @@ package struct SessionPanelSections: Equatable, Sendable {
     /// for the owner in the main list.
     package static func panelSection(of state: SessionSwitcherPresentation.State) -> Section {
         state.kind == .finished && state.openAsks == 0 ? .finished : .main
+    }
+
+    /// A session's section by its last read state: the process starting or
+    /// exiting before the states are read again moves no row (a finished
+    /// session opened from the group stays there until its agent takes a
+    /// new prompt). With no state read yet, the liveness decides.
+    package static func panelSection(
+        of id: Int64, liveIDs: Set<Int64>, statuses: [Int64: SessionAgentStatus]
+    ) -> Section {
+        panelSection(of: statuses[id]?.state ?? SessionSwitcherPresentation.state(of: id, liveIDs: liveIDs, statuses: statuses))
+    }
+
+    /// The switcher popover's lists (#480): the main rows and every group
+    /// row (shown under a "Finished" divider), each filtered by `query`
+    /// (`SessionSwitcherPresentation.matching`).
+    package func switcherRows(
+        matching query: String
+    ) -> (main: [SessionSwitcherPresentation.Row], finished: [SessionSwitcherPresentation.Row]) {
+        (SessionSwitcherPresentation.matching(main, query: query),
+         SessionSwitcherPresentation.matching(groupRows, query: query))
     }
 
     /// Where the panel cursor goes after `id` leaves `visible`: the next

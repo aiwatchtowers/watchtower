@@ -178,4 +178,16 @@ final class SessionPanelSectionsTests: XCTestCase {
         let open = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, expanded: true)
         XCTAssertEqual(open.panelScrollPath(to: 2), [header, 2])
     }
+
+    /// A finished session launched before the states are read again keeps
+    /// its stored section: a launch alone is not a resume (#480).
+    func testLaunchBeforeTheStatesAreReadMovesNoRow() {
+        let result = sections([1, 2], saved: [1, 2], statuses: [finished(1)], live: [1], expanded: true)
+        XCTAssertEqual(result.main.map(\.id), [2])
+        XCTAssertEqual(result.finished.map(\.id), [1])
+        let statuses = [Int64(1): finished(1)]
+        XCTAssertEqual(SessionPanelSections.panelSection(of: 1, liveIDs: [1], statuses: statuses), .finished)
+        XCTAssertEqual(SessionPanelSections.panelSection(of: 2, liveIDs: [2], statuses: statuses), .main,
+                       "no state read yet: a running row")
+    }
 }

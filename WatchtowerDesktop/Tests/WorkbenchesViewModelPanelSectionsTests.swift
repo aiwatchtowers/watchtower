@@ -227,4 +227,114 @@ final class WorkbenchesViewModelPanelSectionsTests: XCTestCase {
         XCTAssertEqual(sections.searchRows.map(\.shortcut), [1, 2, nil])
         XCTAssertEqual(vm.panelOrderedSessions(projectID: projectID).map(\.id), [c.id, a.id, b.id])
     }
+
+    // MARK: - Opening a finished session (#480 fix round)
+
+    private let finishStamp = "2026-10-12T10:00:00.000Z"
+
+    private func showBoard(_ vm: WorkbenchesViewModel) {
+        var layout = WorkspaceLayout.default
+        layout.primary = .board
+        vm.setLayout(layout, projectID: projectID)
+    }
+
+    /// A finished session opened from the folded group through `open` —
+    /// launched, as a click on a row not running does — stays in the group,
+    /// pinned under the header, before and after the states are read again.
+    func testOpenLaunchingAFinishedSessionKeepsItPinnedInTheGroup() async throws {
+        try await assertOpeningKeepsItPinned { vm, session in await vm.open(session) }
+    }
+
+    /// The same through `showSession` (a row or pinned-row click, the
+    /// switcher, ⌘K).
+    func testShowSessionLaunchingAFinishedSessionKeepsItPinnedInTheGroup() async throws {
+        try await assertOpeningKeepsItPinned { vm, session in await vm.showSession(id: session.id) }
+    }
+
+    private func assertOpeningKeepsItPinned(
+        _ openIt: (WorkbenchesViewModel, TerminalSession) async -> Void, line: UInt = #line
+    ) async throws {
+        let done = try await insertSession("Session A")
+        let other = try await insertSession("Session B")
+        let vm = makeVM()
+        await page(vm)
+        await setStates([stateRow(done, finishedAt: finishStamp), stateRow(other)])
+        await openIt(vm, done)
+        XCTAssertTrue(center.liveIDs.contains(done.id), "opening launched it", line: line)
+        XCTAssertEqual(onScreen(vm), .session(done.id), line: line)
+        let launched = vm.panelSections(projectID: projectID)
+        XCTAssertEqual(launched.main.map(\.id), [other.id], "a launch is not a resume", line: line)
+        XCTAssertEqual(launched.pinned?.id, done.id, "pinned under the folded header", line: line)
+
+        await agentStates.poll()
+        let reread = vm.panelSections(projectID: projectID)
+        XCTAssertEqual(reread.main.map(\.id), [other.id], "still finished once the states are read", line: line)
+        XCTAssertEqual(reread.pinned?.id, done.id, line: line)
+    }
+
+    /// ⌘N reaches a group row only while the group is open: launched by it,
+    /// the row stays in the open group.
+    func testShortcutLaunchingAnOpenGroupRowKeepsItInTheGroup() async throws {
+        let done = try await insertSession("Session A")
+        let other = try await insertSession("Session B")
+        let vm = makeVM()
+        await page(vm)
+        vm.setFinishedGroupExpanded(true, projectID: projectID)
+        await setStates([stateRow(done, finishedAt: finishStamp), stateRow(other)])
+
+        await vm.openSession(atShortcut: 2)
+        XCTAssertTrue(center.liveIDs.contains(done.id))
+        XCTAssertEqual(onScreen(vm), .session(done.id))
+        await agentStates.poll()
+        let sections = vm.panelSections(projectID: projectID)
+        XCTAssertEqual(sections.main.map(\.id), [other.id])
+        XCTAssertEqual(sections.finished.map(\.id), [done.id], "stays in the open group")
+    }
+
+    /// The kept section lasts while the session stays on screen: A
+    /// finishing on screen keeps its main slot, the owner switches to the
+    /// Board, and A shown again is decided afresh — pinned, not main.
+    func testFinishedOnScreenThenBoardThenBackIsPinned() async throws {
+        let a = try await insertSession("Session A")
+        let b = try await insertSession("Session B")
+        let vm = makeVM()
+        await page(vm)
+        putOnScreen(a, vm)
+        await setStates([stateRow(a), stateRow(b)])
+        await setStates([stateRow(a, finishedAt: finishStamp), stateRow(b)])
+        XCTAssertEqual(vm.panelSections(projectID: projectID).main.map(\.id), [b.id, a.id], "kept while on screen")
+
+        showBoard(vm)
+        XCTAssertNil(vm.stickySection, "no session on screen: nothing kept")
+        XCTAssertEqual(vm.panelSections(projectID: projectID).main.map(\.id), [b.id])
+
+        putOnScreen(a, vm)
+        let back = vm.panelSections(projectID: projectID)
+        XCTAssertEqual(back.main.map(\.id), [b.id])
+        XCTAssertEqual(back.pinned?.id, a.id, "shown again from the folded group: pinned")
+    }
+
+    /// A new prompt (Go clears `finished_at`) brings the pinned on-screen
+    /// session back to its saved main-list slot.
+    func testNewPromptReturnsThePinnedSessionToItsMainSlot() async throws {
+        let a = try await insertSession("Session A")
+        let b = try await insertSession("Session B")
+        let c = try await insertSession("Session C")
+        let vm = makeVM()
+        await page(vm)
+        await setStates([stateRow(b, finishedAt: finishStamp)])
+        await vm.showSession(id: b.id)
+        let pinned = vm.panelSections(projectID: projectID)
+        XCTAssertEqual(pinned.pinned?.id, b.id)
+
+        await setStates([stateRow(b)])
+        let resumed = vm.panelSections(projectID: projectID)
+        // The panel's scroll follows the row to its new place (#561).
+        XCTAssertEqual(PanelSelectionScrollPolicy<Int64>.movedSelection(
+            from: pinned.panelScrollPath(to: b.id), to: resumed.panelScrollPath(to: b.id)
+        ), b.id)
+        XCTAssertEqual(resumed.main.map(\.id), [c.id, b.id, a.id], "back in its own slot")
+        XCTAssertNil(resumed.pinned)
+        XCTAssertEqual(resumed.finishedCount, 0)
+    }
 }

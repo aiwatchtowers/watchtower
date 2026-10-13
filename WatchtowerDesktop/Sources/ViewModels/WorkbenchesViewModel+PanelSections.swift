@@ -71,19 +71,23 @@ extension WorkbenchesViewModel {
 
     /// Keeps the on-screen session's section (§3.3). Called when the page,
     /// the layout or the states change. A session newly on screen takes its
-    /// real section; while it stays on screen a finish does not move it out
-    /// of the main list, and a row back in the main list (resumed) anchors
-    /// there again. Nothing is captured before the session has a state or
-    /// runs: its section is not known yet.
+    /// real section — by its last read state, so opening (launching) a
+    /// finished session does not count as resuming it; while it stays on
+    /// screen a finish does not move it out of the main list, and a row back
+    /// in the main list (a new prompt) anchors there again. Nothing is
+    /// captured before the session has a state or runs: its section is not
+    /// known yet. With no session on screen (Board, Files, another page) the
+    /// kept section is dropped: a session shown again is decided afresh.
     func refreshStickySection() {
         guard let projectID = selectedWorkbenchID,
-              case let .session(id)? = visibleSession(projectID: projectID) else { return }
+              case let .session(id)? = visibleSession(projectID: projectID) else {
+            if stickySection != nil { stickySection = nil }
+            return
+        }
         let liveIDs = terminalCenter?.liveIDs ?? []
         let statuses = sessionStatuses
         guard statuses[id] != nil || liveIDs.contains(id) else { return }
-        let real = SessionPanelSections.panelSection(
-            of: SessionSwitcherPresentation.state(of: id, liveIDs: liveIDs, statuses: statuses)
-        )
+        let real = SessionPanelSections.panelSection(of: id, liveIDs: liveIDs, statuses: statuses)
         guard stickySection?.sessionID != id || real == .main else { return }
         let next = SessionPanelSections.Sticky(sessionID: id, section: real)
         if stickySection != next { stickySection = next }
@@ -94,9 +98,9 @@ extension WorkbenchesViewModel {
     private func panelSticky(projectID: Int64) -> SessionPanelSections.Sticky? {
         guard case let .session(id)? = visibleSession(projectID: projectID) else { return nil }
         if let kept = stickySection, kept.sessionID == id { return kept }
-        let state = SessionSwitcherPresentation.state(
+        let section = SessionPanelSections.panelSection(
             of: id, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses
         )
-        return SessionPanelSections.Sticky(sessionID: id, section: SessionPanelSections.panelSection(of: state))
+        return SessionPanelSections.Sticky(sessionID: id, section: section)
     }
 }
