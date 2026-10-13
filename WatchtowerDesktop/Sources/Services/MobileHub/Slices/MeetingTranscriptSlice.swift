@@ -99,11 +99,25 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     /// nothing").
     var assetBuilds: Int { cache.builds }
 
-    /// Inside the read: the window, the chosen recaps and each row's
-    /// fingerprint (SHA-256 of the raw columns, the chosen recap's id and
-    /// `updated_at`, and the phone recording id). Outside it (the returned
-    /// build): the asset and payload of every row whose fingerprint changed
-    /// or whose staged file no longer holds its asset.
+    /// Rows whose big columns were read and hashed so far (the test seam for
+    /// "an unchanged cycle reads only the light key").
+    var fullReads: Int { cache.fullReads }
+
+    /// A row whose `updated_at` is this recent may still change within the
+    /// same stored second (the column has whole seconds), so its light key
+    /// is not trusted: it takes the full read until it is older.
+    static let settleTime: TimeInterval = 2
+
+    /// Inside the read: the window, the chosen recaps and each row's light
+    /// key (`lightKey`: the small columns, the big columns' lengths, the
+    /// chosen recap's id and `updated_at`, and the phone recording id). A
+    /// row whose light key matches the cached one (and settled), with its
+    /// staged file intact, reuses the cached record without reading its big
+    /// columns. Every other row is read in full and fingerprinted (SHA-256
+    /// of the raw columns): a matching fingerprint still reuses the record.
+    /// Outside the read (the returned build): the asset and payload of every
+    /// row whose fingerprint changed or whose staged file no longer holds
+    /// its asset.
     func assetRecords(
         _ db: Database,
         stagedDigest: @escaping (_ recordName: String, _ fileName: String) -> Data?
@@ -111,49 +125,92 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         let stamp = now()
         let window = try Self.window(db, now: stamp, calendar: calendar())
         let recaps = try Self.recaps(db, window: window)
-        var planned: [Planned] = []
-        for row in try Self.rows(db, ids: window.map(\.id)) {
-            let recap = recaps.byTranscript[row.id] ?? row.eventID.flatMap { recaps.byEvent[$0] }
-            let phone = phoneRecordingID(row.id)
-            let fingerprint = Self.fingerprint(row, recap: recap, phone: phone)
-            let name = kind.recordName(id: String(row.id))
-            if let hit = cache.entry(row.id), hit.fingerprint == fingerprint,
-               stagedDigest(name, Self.assetFileName) == hit.digest {
-                planned.append(.ready(AssetSliceRecord(
-                    record: SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: hit.payload),
-                    asset: SliceAsset(fileName: Self.assetFileName, digest: hit.digest, data: nil)
-                )))
+        let chosen: (Int64, String?) -> ChosenRecap? = { id, eventID in
+            recaps.byTranscript[id] ?? eventID.flatMap { recaps.byEvent[$0] }
+        }
+        var planned: [Int64: Planned] = [:]
+        var unread: [Int64] = []
+        for key in try Self.lightKeys(db, ids: window.map(\.id)) {
+            let phone = phoneRecordingID(key.id)
+            let light = Self.lightFingerprint(key, recap: chosen(key.id, key.eventID), phone: phone)
+            let settled = SliceDate.parse(key.updatedAt).map { stamp.timeIntervalSince($0) >= Self.settleTime } ?? false
+            if let hit = cache.entry(key.id), settled, hit.light == light,
+               let ready = reuse(hit, id: key.id, stamp: stamp, stagedDigest: stagedDigest) {
+                planned[key.id] = .ready(ready)
             } else {
-                planned.append(.build(row, recap: recap?.content, phone: phone, fingerprint: fingerprint))
+                unread.append(key.id)
             }
         }
+        cache.countFullReads(unread.count)
+        for row in try Self.rows(db, ids: unread) {
+            let recap = chosen(row.id, row.eventID)
+            let phone = phoneRecordingID(row.id)
+            let fingerprint = Self.fingerprint(row, recap: recap, phone: phone)
+            // A row still settling keeps no light key: the next cycle reads
+            // it in full again.
+            let settled = SliceDate.parse(row.updatedAt).map { stamp.timeIntervalSince($0) >= Self.settleTime } ?? false
+            let light = settled ? Self.lightFingerprint(LightKey(row), recap: recap, phone: phone) : nil
+            if let hit = cache.entry(row.id), hit.fingerprint == fingerprint,
+               let ready = reuse(hit, id: row.id, stamp: stamp, stagedDigest: stagedDigest) {
+                cache.setLight(light, for: row.id)
+                planned[row.id] = .ready(ready)
+            } else {
+                planned[row.id] = .build(Build(row: row, recap: recap?.content, phone: phone, fingerprint: fingerprint, light: light))
+            }
+        }
+        let ordered = window.compactMap { planned[$0.id] }
         let ids = Set(window.map(\.id))
         return { [self] in
-            let records = try planned.map { try build($0, stamp: stamp) }
+            let records = try ordered.map { try build($0, stamp: stamp) }
             cache.prune(keeping: ids)
             return records
         }
     }
 
+    /// The cached record when its staged file still holds its asset.
+    private func reuse(
+        _ hit: BuildCache.Entry,
+        id: Int64,
+        stamp: Date,
+        stagedDigest: (_ recordName: String, _ fileName: String) -> Data?
+    ) -> AssetSliceRecord? {
+        guard stagedDigest(kind.recordName(id: String(id)), Self.assetFileName) == hit.digest else { return nil }
+        return AssetSliceRecord(
+            record: SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: hit.payload),
+            asset: SliceAsset(fileName: Self.assetFileName, digest: hit.digest, data: nil)
+        )
+    }
+
     private enum Planned {
         case ready(AssetSliceRecord)
-        case build(TranscriptRow, recap: MeetingRecap.Content?, phone: String?, fingerprint: Data)
+        case build(Build)
+    }
+
+    /// A row to decode and encode in the build.
+    private struct Build {
+        let row: TranscriptRow
+        let recap: MeetingRecap.Content?
+        let phone: String?
+        let fingerprint: Data
+        /// The row's light key, nil while it settles.
+        let light: Data?
     }
 
     private func build(_ planned: Planned, stamp: Date) throws -> AssetSliceRecord {
         switch planned {
         case .ready(let record):
             return record
-        case let .build(row, recap, phone, fingerprint):
+        case .build(let job):
+            let row = job.row
             let encoder = RelayCoder.makeEncoder()
             let segments = Self.segments(row)
             let asset = try Self.encodeAsset(segments, encoder: encoder)
             let ownSummary = Self.decodeRecap(row.summaryJSON, what: "summary_json of transcript \(row.id)")
             let payload = try encoder.encode(makePayload(
-                row, recap: recap ?? ownSummary, phone: phone, speakers: Self.speakers(segments), segmentsClipped: asset.clipped
+                row, recap: job.recap ?? ownSummary, phone: job.phone, speakers: Self.speakers(segments), segmentsClipped: asset.clipped
             ))
             let digest = SliceAsset.digest(of: asset.data)
-            cache.store(row.id, BuildCache.Entry(fingerprint: fingerprint, payload: payload, digest: digest))
+            cache.store(row.id, BuildCache.Entry(fingerprint: job.fingerprint, light: job.light, payload: payload, digest: digest))
             return AssetSliceRecord(
                 record: SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: payload),
                 asset: SliceAsset(fileName: Self.assetFileName, digest: digest, data: asset.data)
@@ -165,6 +222,8 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     final class BuildCache: @unchecked Sendable {
         struct Entry {
             let fingerprint: Data
+            /// The row's light key when it had settled; nil: read it in full.
+            var light: Data?
             let payload: Data
             let digest: Data
         }
@@ -172,11 +231,21 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         private let lock = NSLock()
         private var entries: [Int64: Entry] = [:]
         private var buildCount = 0
+        private var fullReadCount = 0
 
         var builds: Int { lock.withLock { buildCount } }
+        var fullReads: Int { lock.withLock { fullReadCount } }
 
         func entry(_ id: Int64) -> Entry? {
             lock.withLock { entries[id] }
+        }
+
+        func setLight(_ light: Data?, for id: Int64) {
+            lock.withLock { entries[id]?.light = light }
+        }
+
+        func countFullReads(_ count: Int) {
+            lock.withLock { fullReadCount += count }
         }
 
         func store(_ id: Int64, _ entry: Entry) {
@@ -203,6 +272,8 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         /// `transcript_text`, read only when `segments_json` is NULL or not
         /// valid JSON (the legacy fallback).
         let legacyText: String?
+        /// The big columns' lengths, as `lightKeys` reads them.
+        let lengths: [Int?]
         let summaryJSON: String?
         let chaptersJSON: String?
         let createdAt: String
@@ -223,12 +294,80 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         return rows.map { (id: $0["id"], eventID: $0["event_id"]) }
     }
 
+    /// What the light key covers: every column the record is derived from,
+    /// the big ones by their length only. A writer that changes a big
+    /// column bumps `updated_at` (Go's `SetMeetingTranscript*` and the
+    /// Desktop's `MeetingTranscriptQueries`), and a same-second rewrite of
+    /// the same length is caught by `settleTime`.
+    private struct LightKey {
+        let id: Int64
+        let eventID: String?
+        let title: String
+        let durationSec: Int
+        let createdAt: String
+        let updatedAt: String
+        let lengths: [Int?]
+
+        init(id: Int64, eventID: String?, title: String, durationSec: Int, createdAt: String, updatedAt: String, lengths: [Int?]) {
+            self.id = id
+            self.eventID = eventID
+            self.title = title
+            self.durationSec = durationSec
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.lengths = lengths
+        }
+
+        /// The same key from a full row.
+        init(_ row: TranscriptRow) {
+            self.init(
+                id: row.id, eventID: row.eventID, title: row.title, durationSec: row.durationSec,
+                createdAt: row.createdAt, updatedAt: row.updatedAt, lengths: row.lengths
+            )
+        }
+    }
+
+    /// The big columns' byte lengths, in `LightKey.lengths`' order.
+    /// `octet_length` (SQLite 3.43+) reads a text's size from its record
+    /// header without loading the text itself; NULL stays NULL.
+    private static let lengthColumns = """
+        octet_length(segments_json) AS segments_length, octet_length(transcript_text) AS text_length,
+        octet_length(summary_json) AS summary_length, octet_length(chapters_json) AS chapters_length
+        """
+
+    private static func lengths(_ row: Row) -> [Int?] {
+        [row["segments_length"], row["text_length"], row["summary_length"], row["chapters_length"]]
+    }
+
+    /// The window rows' light keys: no big column leaves SQLite.
+    private static func lightKeys(_ db: Database, ids: [Int64]) throws -> [LightKey] {
+        guard !ids.isEmpty else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, event_id, title, duration_sec, created_at, updated_at, \(lengthColumns)
+            FROM meeting_transcripts
+            WHERE id IN (\(placeholders(ids.count)))
+            """, arguments: StatementArguments(ids))
+        return rows.map { row in
+            LightKey(
+                id: row["id"], eventID: row["event_id"], title: row["title"], durationSec: row["duration_sec"],
+                createdAt: row["created_at"], updatedAt: row["updated_at"], lengths: lengths(row)
+            )
+        }
+    }
+
+    private static func lightFingerprint(_ key: LightKey, recap: ChosenRecap?, phone: String?) -> Data {
+        digest([
+            String(key.id), key.eventID, key.title, String(key.durationSec), key.createdAt, key.updatedAt
+        ] + key.lengths.map { $0.map(String.init) } + [recap.map { String($0.id) }, recap?.updatedAt, phone])
+    }
+
     /// The columns the projection reads, in the window's order.
     private static func rows(_ db: Database, ids: [Int64]) throws -> [TranscriptRow] {
         guard !ids.isEmpty else { return [] }
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, event_id, title, duration_sec, segments_json, summary_json, chapters_json, created_at, updated_at,
-                   CASE WHEN segments_json IS NULL OR NOT json_valid(segments_json) THEN transcript_text END AS legacy_text
+                   CASE WHEN segments_json IS NULL OR NOT json_valid(segments_json) THEN transcript_text END AS legacy_text,
+                   \(lengthColumns)
             FROM meeting_transcripts
             WHERE id IN (\(placeholders(ids.count)))
             ORDER BY created_at DESC, id DESC
@@ -241,6 +380,7 @@ struct MeetingTranscriptSlice: AssetSliceSource {
                 durationSec: row["duration_sec"],
                 segmentsJSON: row["segments_json"],
                 legacyText: row["legacy_text"],
+                lengths: lengths(row),
                 summaryJSON: row["summary_json"],
                 chaptersJSON: row["chapters_json"],
                 createdAt: row["created_at"],
@@ -252,12 +392,17 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     /// SHA-256 over everything the record is derived from; each field is
     /// tagged (nil vs present) and length-prefixed, so no two inputs collide.
     private static func fingerprint(_ row: TranscriptRow, recap: ChosenRecap?, phone: String?) -> Data {
-        var hasher = SHA256()
-        let fields: [String?] = [
+        digest([
             String(row.id), row.eventID, row.title, String(row.durationSec), row.createdAt, row.updatedAt,
             row.segmentsJSON, row.legacyText, row.summaryJSON, row.chaptersJSON,
             recap.map { String($0.id) }, recap?.updatedAt, phone
-        ]
+        ])
+    }
+
+    /// SHA-256 over `fields`, each tagged (nil vs present) and
+    /// length-prefixed.
+    private static func digest(_ fields: [String?]) -> Data {
+        var hasher = SHA256()
         for field in fields {
             guard let field else {
                 hasher.update(data: Data([0]))

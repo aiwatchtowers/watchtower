@@ -56,8 +56,8 @@ struct AskAlertSlice: SliceSource {
         let stamp = now()
         // The hub's first enable; the heartbeat sets the same value.
         let enabledAt = try HubIdentity(sidecar: sidecar).ensureEnabledAt(stamp)
-        let workbenches = try WorkbenchSlice.publishedWorkbenches(db)
-        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.project.name) })
+        let workbenches = try WorkbenchSlice.publishedWorkbenchRefs(db)
+        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.name) })
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, project_id, session_id, kind, title, payload, created_at
             FROM owner_asks WHERE status = 'open' ORDER BY id

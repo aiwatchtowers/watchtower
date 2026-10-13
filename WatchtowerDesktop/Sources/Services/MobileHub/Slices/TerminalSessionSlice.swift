@@ -162,7 +162,7 @@ struct TerminalSessionSlice: SliceSource {
     /// The window: the published workbenches' agent sessions, every live
     /// one plus the newest 50 per workbench, in `last_active_at` order.
     func publishedSessions(_ db: Database) throws -> [Published] {
-        let workbenches = Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+        let workbenches = Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
         guard !workbenches.isEmpty else { return [] }
         let live = liveness()
         let sessions = try TerminalSessionQueries.fetchAllWorkbenchSessions(db).filter { session in

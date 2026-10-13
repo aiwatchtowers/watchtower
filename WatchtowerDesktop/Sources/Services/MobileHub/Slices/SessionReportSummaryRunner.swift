@@ -63,7 +63,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     struct Workbenches: Sendable {
         /// With a live agent session: the 60 s cadence.
         let live: [Int64]
-        /// Published (`WorkbenchSlice.publishedWorkbenches`): a requested
+        /// Published (`WorkbenchSlice.publishedWorkbenchRefs`): a requested
         /// workbench runs while listed here; one that leaves it is forgotten
         /// with its summaries.
         let published: Set<Int64>
@@ -97,7 +97,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
             return try await dbPool.read { db in
                 Workbenches(
                     live: try TerminalSessionSlice.liveWorkbenchIDs(db, liveIDs: live),
-                    published: Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+                    published: Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
                 )
             }
         }, isActive: isActive)

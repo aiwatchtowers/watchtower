@@ -129,10 +129,37 @@ struct WorkbenchSlice: SliceSource {
     /// order), at most `maxWorkbenches`. The target and comment slices
     /// publish only these workbenches' boards.
     static func publishedWorkbenches(_ db: Database) throws -> [WorkbenchSwitcherSummary] {
-        let all = try WorkbenchQueries.switcherSummaries(db)
-        // No session (or an unparsable stamp) sorts last; ties keep the
-        // switcher's order.
-        let ranked = all.enumerated().map { (order: $0, activity: SliceDate.parse($1.lastSessionActivity), summary: $1) }
+        ranked(try WorkbenchQueries.switcherSummaries(db)) { $0.lastSessionActivity }
+    }
+
+    /// A published workbench's id and name.
+    struct Ref: Equatable, Sendable {
+        let id: Int64
+        let name: String
+    }
+
+    /// `publishedWorkbenches`' set in its order, from one light query: no
+    /// board, ask or comment counts. For the slices and runners that need
+    /// only which workbenches are published (and their names).
+    static func publishedWorkbenchRefs(_ db: Database) throws -> [Ref] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT p.id, p.name, s.last
+            FROM projects p
+            LEFT JOIN (
+                SELECT project_id, MAX(last_active_at) AS last FROM terminal_sessions
+                WHERE project_id IS NOT NULL GROUP BY project_id
+            ) s ON s.project_id = p.id
+            ORDER BY p.name COLLATE NOCASE, p.id
+            """)
+        let refs = rows.map { (ref: Ref(id: $0["id"], name: $0["name"]), last: $0["last"] as String? ?? "") }
+        return ranked(refs) { $0.last }.map(\.ref)
+    }
+
+    /// `items` in the switcher's order, the latest parsed session activity
+    /// first: no session (or an unparsable stamp) sorts last, ties keep the
+    /// switcher's order; at most `maxWorkbenches`.
+    private static func ranked<T>(_ items: [T], activity: (T) -> String) -> [T] {
+        let ranked = items.enumerated().map { (order: $0, activity: SliceDate.parse(activity($1)), item: $1) }
         let sorted = ranked.sorted { lhs, rhs in
             switch (lhs.activity, rhs.activity) {
             case let (left?, right?) where left != right: return left > right
@@ -141,6 +168,6 @@ struct WorkbenchSlice: SliceSource {
             default: return lhs.order < rhs.order
             }
         }
-        return sorted.prefix(maxWorkbenches).map(\.summary)
+        return sorted.prefix(maxWorkbenches).map(\.item)
     }
 }

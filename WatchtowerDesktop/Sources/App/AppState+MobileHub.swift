@@ -57,13 +57,7 @@ extension AppState {
         let hasPhone: @Sendable () -> Bool = { MobileLinkCenter.hasLinkedPhone(sidecar) }
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
-        let gitRefresher = workbenchesViewModel?.cli.map { cli in
-            WorkbenchGitRefresher(
-                fetch: { try await cli.gitStatus(projectID: $0) },
-                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } },
-                isActive: hasPhone
-            )
-        }
+        let gitRefresher = workbenchesViewModel?.cli.map { WorkbenchGitRefresher.live(cli: $0, dbPool: dbPool, isActive: hasPhone) }
         // The terminals' liveness, copied by the fast lane for the session
         // projection's off-main resolution.
         let liveness = SessionLivenessBox()

@@ -45,7 +45,7 @@ struct WorkbenchCommentSlice: SliceSource {
     }
 
     func records(_ db: Database) throws -> [SliceRecord] {
-        let workbenches = Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+        let workbenches = Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
         guard !workbenches.isEmpty else { return [] }
         let published = try WorkbenchTargetWindow.load(db, now: now()).published
         let rows = try Row.fetchAll(db, sql: """

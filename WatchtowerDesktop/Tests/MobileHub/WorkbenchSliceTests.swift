@@ -150,6 +150,34 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(order, [later, earlier, none], "newest activity first, no session last")
     }
 
+    /// Board #724: the light listing the other slices, the git refresher
+    /// and the summary runner use publishes the same workbenches in the same
+    /// order as the switcher-based one: parsed activity, no session last,
+    /// ties in the switcher's name order (case-insensitive, then id), and
+    /// the 100 cap.
+    func testTheLightListingMatchesThePublishedWorkbenches() throws {
+        let now = Date()
+        try dbPool.write { db in
+            for index in 0..<104 {
+                let name = ["acme", "Beta", "beta", "Acme"][index % 4] + " \(index / 4)"
+                let id = try TestDatabase.insertWorkbench(db, name: name, folder: "/tmp/light-\(index)")
+                switch index % 3 {
+                case 0: continue
+                case 1: try SliceSeed.insertSession(db, projectID: id, lastActiveAt: now.addingTimeInterval(Double(-index)))
+                default: try SliceSeed.insertSession(db, projectID: id, lastActiveAt: now.addingTimeInterval(-3600))
+                }
+            }
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = 'not a date' WHERE id = 1")
+        }
+        let (full, light) = try dbPool.read { db in
+            (try WorkbenchSlice.publishedWorkbenches(db), try WorkbenchSlice.publishedWorkbenchRefs(db))
+        }
+
+        XCTAssertEqual(light.count, 100)
+        XCTAssertEqual(light.map(\.id), full.map(\.id))
+        XCTAssertEqual(light.map(\.name), full.map(\.project.name))
+    }
+
     func testAnUnparsableRequiredDateIsLoggedAndPublishedAs1970() {
         let record = "workbench_target-\(UUID().uuidString)"
         XCTAssertEqual(SliceDate.required("not a date", field: "created_at", record: record), Date(timeIntervalSince1970: 0))
@@ -420,6 +448,10 @@ final class WorkbenchSliceTests: XCTestCase {
         let checks = OSAllocatedUnfairLock(initialState: 0)
         let listings = OSAllocatedUnfairLock(initialState: 0)
         let runs = OSAllocatedUnfairLock(initialState: 0)
+        let isActive: @Sendable () -> Bool = {
+            checks.withLock { $0 += 1 }
+            return linked.withLock { $0 }
+        }
         let refresher = WorkbenchGitRefresher(
             fetch: { _ in
                 runs.withLock { $0 += 1 }
@@ -430,10 +462,7 @@ final class WorkbenchSliceTests: XCTestCase {
                 return [7]
             },
             timing: .init(every: .seconds(120), minSpacing: .seconds(30), timeout: .seconds(5), wake: .milliseconds(10)),
-            isActive: {
-                checks.withLock { $0 += 1 }
-                return linked.withLock { $0 }
-            }
+            isActive: isActive
         )
         refresher.start()
         defer { refresher.stop() }

@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import WatchtowerCore
 
@@ -74,6 +75,17 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         self.timing = timing
         self.clock = clock
         self.isActive = isActive
+    }
+
+    /// The hub's refresher: the CLI's `gitStatus` over the published
+    /// workbenches (the light listing); no pass runs while `isActive` is
+    /// false.
+    static func live(cli: WorkbenchCLI, dbPool: DatabasePool, isActive: @escaping @Sendable () -> Bool) -> WorkbenchGitRefresher {
+        WorkbenchGitRefresher(
+            fetch: { try await cli.gitStatus(projectID: $0) },
+            workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenchRefs($0).map(\.id) } },
+            isActive: isActive
+        )
     }
 
     /// The last good status; nil before the first one.
