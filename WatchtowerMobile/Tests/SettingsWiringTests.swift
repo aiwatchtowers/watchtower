@@ -145,6 +145,29 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(snapshot.grant, "no linked device, so no grant to read")
     }
 
+    /// The link flow swaps the environment (a new replica) and may keep the
+    /// device id: the observation restarts on the new replica with an empty
+    /// decode cache, so the old Mac's heartbeat is never served.
+    func testANewReplicaForTheSameDeviceShowsItsOwnHeartbeat() async throws {
+        let now = Date()
+        func replica(_ macName: String) async throws -> ReplicaStore {
+            let store = try makePoolStore()
+            let transport = InMemoryCloudTransport()
+            try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now, macName: macName), modifiedAt: now)])
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+            return store
+        }
+        let old = try await replica("Old Mac")
+        let new = try await replica("New Mac")
+        let model = SettingsViewModel()
+        model.start(store: old, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "Old Mac" }, "the first replica never loaded")
+
+        model.start(store: new, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "New Mac" }, "the old replica's heartbeat is still shown")
+        XCTAssertEqual(model.decodeCache.decodes(HeartbeatPayload.recordName), 1, "decoded afresh from the new replica")
+    }
+
     // MARK: - Your Mac: queued
 
     func testQueuedCountEqualsPendingOutboxRows() async throws {

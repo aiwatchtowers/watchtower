@@ -116,9 +116,12 @@ final class SettingsViewModel {
     /// Settings → Battery; nil until the first `refreshBattery()`.
     private(set) var battery: BatteryReport?
     /// The decoded records between reads (and the tests' decode counter).
-    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
+    @ObservationIgnored private(set) var decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
+    /// The replica observed now: another one (the link flow swapped the
+    /// environment) restarts the observation even for the same device.
+    @ObservationIgnored private var observedStore: ObjectIdentifier?
     @ObservationIgnored private let health: ObservationHealth
     @ObservationIgnored private let batteryDiagnostics: BatteryDiagnostics
 
@@ -151,11 +154,16 @@ final class SettingsViewModel {
         return failure.recovered ? text + " (recovered)" : text
     }
 
-    /// Starts (or, for another device id, restarts) the observation.
+    /// Starts (or, for another replica or device id, restarts) the
+    /// observation. A restart starts an empty decode cache: a value decoded
+    /// from another replica (the old Mac's heartbeat) is never served.
     func start(store: ReplicaStore, deviceID: String?, gate: ReplicaObservationGate? = nil) {
-        if cancellable != nil, observedDeviceID == deviceID { return }
+        let storeID = ObjectIdentifier(store)
+        if cancellable != nil, observedDeviceID == deviceID, observedStore == storeID { return }
         observedDeviceID = deviceID
+        observedStore = storeID
         cancellable?.cancel()
+        decodeCache = ReplicaDecodeCache()
         let cache = decodeCache
         cancellable = ResilientObservation(
             name: "settings",
