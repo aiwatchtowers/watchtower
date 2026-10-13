@@ -324,7 +324,7 @@ final class SaveGate: @unchecked Sendable {
 func testHostInfo(
     macName: String = "Mac acme",
     flavor: HubFlavor = .default,
-    accounts: @escaping @Sendable () throws -> [HeartbeatAccount] = { [] },
+    accounts: @escaping @Sendable () async throws -> [HeartbeatAccount] = { [] },
     ownerUser: String? = "_owner-acme"
 ) -> HubHostInfo {
     HubHostInfo(macName: macName, appVersion: "0.0.0-test", flavor: flavor, accounts: accounts) { ownerUser }

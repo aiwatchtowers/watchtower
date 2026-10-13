@@ -310,6 +310,56 @@ final class HubHeartbeatTests: XCTestCase {
         XCTAssertEqual(try savedHeartbeats(transport).count, 2)
     }
 
+    /// A stop while a tick's accounts read is held: the tick writes
+    /// nothing once the read returns (board #724).
+    func testAStopDuringATicksAccountsReadWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let gate = SaveGate()
+        let holding = OSAllocatedUnfairLock(initialState: false)
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo {
+                if holding.withLock({ $0 }) { await gate.park() }
+                return [HeartbeatAccount(kind: .slack, label: "acme", status: "ok")]
+            }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        holding.withLock { $0 = true }
+        let tick = Task { await hub.heartbeatTick() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        hub.stop()
+        gate.release()
+        await tick.value
+
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "a stopped hub writes no heartbeat")
+    }
+
+    /// A stop while the first heartbeat's accounts read is held: neither
+    /// `enabled_at` nor the heartbeat is written.
+    func testAStopDuringTheFirstHeartbeatsAccountsReadWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let gate = SaveGate()
+        let hub = try makeHub(
+            transport: transport, sidecar: sidecar,
+            host: testHostInfo {
+                await gate.park()
+                return []
+            }
+        )
+        let enabling = Task { await hub.enable() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        hub.stop()
+        gate.release()
+        _ = await enabling.value
+
+        XCTAssertEqual(try savedHeartbeats(transport).count, 0, "a stopped start writes no heartbeat")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.enabledAtKey), "nor enabled_at")
+        XCTAssertEqual(hub.status, .off)
+    }
+
     /// The loop runs the facts check between two heartbeat ticks.
     func testTheHeartbeatLoopWritesChangedAccountsBeforeTheTick() async throws {
         let transport = StubHubTransport()

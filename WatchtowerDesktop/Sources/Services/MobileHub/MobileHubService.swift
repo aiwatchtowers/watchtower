@@ -312,7 +312,10 @@ final class MobileHubService {
         await resolveOwnerUser()
         guard status == .starting, epoch == startEpoch else { return }
         do {
-            try await writeHeartbeat(hubID: try identity.hubID())
+            let wrote = try await writeHeartbeat(hubID: try identity.hubID()) {
+                status == .starting && epoch == startEpoch
+            }
+            guard wrote else { return }
         } catch {
             logger.error("first heartbeat failed: \(error.localizedDescription, privacy: .public)")
             status = .unavailable("Couldn't write the heartbeat: \(error.localizedDescription)")
@@ -708,8 +711,9 @@ final class MobileHubService {
         heartbeatFacts = current
         let checkEpoch = epoch
         do {
-            try await writeHeartbeat(hubID: try identity.hubID(), facts: current)
-            return true
+            return try await writeHeartbeat(hubID: try identity.hubID(), facts: current) {
+                status == .running && epoch == checkEpoch
+            }
         } catch {
             guard status == .running, epoch == checkEpoch else { return false }
             logger.warning("heartbeat rewrite for changed accounts or sharing failed: \(error.localizedDescription, privacy: .public)")
@@ -728,7 +732,8 @@ final class MobileHubService {
             let hubID = try identity.hubID()
             await resolveOwnerUser()
             guard status == .running, epoch == tickEpoch else { return }
-            try await writeHeartbeat(hubID: hubID)
+            let wrote = try await writeHeartbeat(hubID: hubID) { status == .running && epoch == tickEpoch }
+            guard wrote else { return }
             tickFailures = 0
         } catch {
             guard status == .running, epoch == tickEpoch else { return }
@@ -749,12 +754,18 @@ final class MobileHubService {
     /// Writes this hub's heartbeat into its own DataZone, stamped with this
     /// Mac's clock (multi-hub spec §3.2). When the accounts read fails it
     /// carries the accounts the last write carried (none before the first).
-    private func writeHeartbeat(hubID: String, facts: HeartbeatFacts? = nil) async throws {
-        let at = now()
+    /// `isCurrent` is checked after the accounts read: a stop or disable
+    /// meanwhile writes nothing (neither `enabled_at` nor the record), and
+    /// false is returned.
+    private func writeHeartbeat(
+        hubID: String, facts: HeartbeatFacts? = nil, isCurrent: () -> Bool
+    ) async throws -> Bool {
         var read = facts
         if read == nil {
             read = await currentHeartbeatFacts()
         }
+        guard isCurrent() else { return false }
+        let at = now()
         let facts = read ?? HeartbeatFacts(accounts: heartbeatFacts?.accounts ?? [], sharing: sharing)
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
@@ -773,6 +784,7 @@ final class MobileHubService {
         let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
         try await transport.save([record])
         heartbeatFacts = facts
+        return true
     }
 
     /// Looks the iCloud user up once (bounded); retried at the next write
