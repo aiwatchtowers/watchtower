@@ -409,7 +409,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	out := &syncBuffer{}
 	go func() {
 		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out,
-			LoginOptions{SkipBrowserOpen: true})
+			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		if err != nil {
 			errCh <- err
 			return
@@ -451,8 +451,8 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Equal(t, oauthpage.Success("Your Google account", false), string(body),
-		"the callback serves the shared success page")
+	assert.Equal(t, oauthpage.Success("Your Google account", true), string(body),
+		"the callback serves the shared success page with the app link")
 
 	select {
 	case tok := <-resCh:

@@ -242,6 +242,6 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			return
 		}
 
-		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, oauthpage.Success("This connection", p.appReturn))
+		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, oauthpage.Success("The MCP server", p.appReturn))
 	}
 }

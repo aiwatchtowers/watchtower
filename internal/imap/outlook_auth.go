@@ -334,7 +334,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
-		return nil, "", fmt.Errorf("login timed out after %s", outlookLoginTimeout)
+		return nil, "", fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, outlookLoginTimeout)
 	}
 
 	if cb.err != "" {

@@ -310,7 +310,7 @@ func (b *syncTestBuffer) String() string {
 // runLoginCaptureSuccessBody drives a full Login(opts) with a mocked token
 // endpoint and browser, POSTing the OAuth callback back to the loopback server,
 // and returns the HTML body served on the success page. The slack.TestLogin_
-// AppReturn_SuccessPageRedirects analog on Jira's plain-HTTP loopback flow.
+// AppReturn_SuccessPageLinksBack analog on Jira's plain-HTTP loopback flow.
 func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
 	t.Helper()
 	_, body := runLoginCapture(t, opts)

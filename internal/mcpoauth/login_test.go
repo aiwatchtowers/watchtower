@@ -216,7 +216,7 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 	if !strings.Contains(body, "Authorization failed") {
 		t.Errorf("callback body = %q, want the error page for a state mismatch", body)
 	}
-	if strings.Contains(body, "This connection has been signed in") {
+	if strings.Contains(body, "is connected to Watchtower") {
 		t.Errorf("callback body = %q, want NOT the success page on a state mismatch", body)
 	}
 
@@ -344,7 +344,7 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if want := oauthpage.Success("This connection", true); body != want {
+	if want := oauthpage.Success("The MCP server", true); body != want {
 		t.Errorf("callback body = %q, want the shared success page %q", body, want)
 	}
 

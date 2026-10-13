@@ -378,7 +378,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("login timed out after %s", loginTimeout)
+		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
 	if cb.err != "" {

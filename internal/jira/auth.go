@@ -459,7 +459,7 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("login timed out after %s", loginTimeout)
+		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
 	if cb.err != "" {

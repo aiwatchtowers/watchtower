@@ -638,7 +638,7 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 
 	opts := jiraLoginOptionsFromFlags(cmd)
 	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
-	oauthpage.ReturnAfterLogin(cmd.Context(), opts.AppReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -722,7 +722,7 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
 	}
 	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
-	oauthpage.ReturnAfterLogin(cmd.Context(), opts.AppReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}

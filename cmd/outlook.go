@@ -85,7 +85,7 @@ func runOutlookLogin(cmd *cobra.Command, _ []string) error {
 
 	token, email, err := imap.LoginOutlook(cmd.Context(), resolveMicrosoftOAuthConfig(), out,
 		imap.OutlookLoginOptions{SkipBrowserOpen: outlookLoginFlagNoOpen, AppReturn: outlookLoginFlagAppReturn})
-	oauthpage.ReturnAfterLogin(cmd.Context(), outlookLoginFlagAppReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(outlookLoginFlagAppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("outlook login: %w", err)
 	}

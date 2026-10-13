@@ -276,7 +276,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("login timed out after %s", loginTimeout)
+		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
 	if cb.err != "" {

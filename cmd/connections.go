@@ -459,7 +459,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		SkipBrowserOpen: connectionsOAuthFlagNoOpen,
 		AppReturn:       connectionsOAuthFlagAppReturn,
 	})
-	oauthpage.ReturnAfterLogin(cmd.Context(), connectionsOAuthFlagAppReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(connectionsOAuthFlagAppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("oauth sign-in: %w", err)
 	}

@@ -4,16 +4,18 @@
 //
 // The pages never promise that the tab closes itself: browsers only let a
 // script close a tab a script opened, and these tabs are opened by `open URL`
-// (or by the provider's redirect), so window.close() is attempted but is a
-// no-op in practice. The page says so plainly and, for a Desktop-started
-// sign-in, offers a "Back to Watchtower" link to the watchtower-auth://
-// scheme. That link is a user gesture, so browsers honour it; the automatic
-// return is ReturnToApp, run by the CLI, not a scripted redirect (which
-// browsers block or turn into a permission prompt).
+// (or by the provider's redirect), so the success page's window.close() is
+// best effort. The page says so plainly and, for a Desktop-started sign-in,
+// offers a "Back to Watchtower" link to the watchtower-auth:// scheme. That
+// link is a user gesture, so browsers honour it; the automatic return is
+// ReturnAfterLogin, run by the CLI, not a scripted redirect (which browsers
+// block or turn into a permission prompt).
 package oauthpage
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -23,33 +25,39 @@ import (
 	"time"
 )
 
-// AppReturnURL is the custom scheme the desktop app registers
+// appReturnURL is the custom scheme the desktop app registers
 // (CFBundleURLSchemes in scripts/build-app.sh); opening it brings the app to
 // the front.
-const AppReturnURL = "watchtower-auth://connected"
+const appReturnURL = "watchtower-auth://connected"
 
-// closeAttemptMS is when the page tries window.close(). Late enough to read
-// the page if a browser does allow it.
+// closeAttemptMS is when the success page tries window.close(). Late enough
+// to read the page if a browser does allow it.
 const closeAttemptMS = "3000"
 
-// Success renders the page served after the provider redirected back with a
-// code. service names what was connected ("Slack", "Jira", "your Google
+// ErrLoginTimedOut is what every loopback Login wraps when nobody completed
+// the consent in time — ReturnAfterLogin does not pull the app forward for it.
+var ErrLoginTimedOut = errors.New("login timed out")
+
+// Success renders the page served when the provider redirected back with a
+// code. service names what was connected ("Slack", "Jira", "Your Google
 // account"); appReturn adds the "Back to Watchtower" link (set when the
 // Desktop started the sign-in with --app-return).
 func Success(service string, appReturn bool) string {
 	return render(page{
-		title:     "Connected",
-		iconClass: "icon-ok",
-		icon:      "✓",
-		heading:   "Connected",
-		message:   html.EscapeString(service) + " is connected to Watchtower. You can close this tab.",
-		appReturn: appReturn,
+		title:      "Connected",
+		iconClass:  "icon-ok",
+		icon:       "✓",
+		heading:    "Connected",
+		message:    html.EscapeString(service) + " is connected to Watchtower. You can close this tab.",
+		appReturn:  appReturn,
+		tryToClose: true,
 	})
 }
 
 // Error renders the page served when the provider redirected back with an
-// error, or the code could not be turned into a token. reason is shown
-// escaped.
+// error (and, for the MCP flow, when the code exchange failed). reason is
+// shown escaped. The tab never tries to close itself, so the reason stays
+// readable.
 func Error(reason string, appReturn bool) string {
 	return render(page{
 		title:     "Authorization failed",
@@ -64,7 +72,7 @@ func Error(reason string, appReturn bool) string {
 
 type page struct {
 	title, iconClass, icon, heading, message, hint string
-	appReturn                                      bool
+	appReturn, tryToClose                          bool
 }
 
 func render(p page) string {
@@ -88,7 +96,7 @@ func render(p page) string {
 	b.WriteString(`</p>
 `)
 	if p.appReturn {
-		b.WriteString(`<a class="btn" href="` + AppReturnURL + `">Back to Watchtower</a>
+		b.WriteString(`<a class="btn" href="` + appReturnURL + `">Back to Watchtower</a>
 `)
 	}
 	if p.hint != "" {
@@ -97,11 +105,15 @@ func render(p page) string {
 		b.WriteString(`</div>
 `)
 	}
-	// Best effort only: browsers ignore window.close() on a tab no script
-	// opened, which is every tab here — hence the honest text above.
 	b.WriteString(`</div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},` + closeAttemptMS + `);</script>
-</body></html>`)
+`)
+	if p.tryToClose {
+		// Best effort only: browsers ignore window.close() on a tab no script
+		// opened, which is nearly every tab here — hence the honest text.
+		b.WriteString(`<script>setTimeout(function(){try{window.close()}catch(e){}},` + closeAttemptMS + `);</script>
+`)
+	}
+	b.WriteString(`</body></html>`)
 	return b.String()
 }
 
@@ -130,30 +142,39 @@ var openURL = func(ctx context.Context, u string) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	return exec.CommandContext(ctx, "/usr/bin/open", u).Run()
+	out, err := exec.CommandContext(ctx, "/usr/bin/open", u).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("open %s: %w: %s", u, err, bytes.TrimSpace(out))
+	}
+	return nil
 }
 
-// ReturnToApp brings the desktop app to the front by opening AppReturnURL
-// through LaunchServices — the automatic half of app-return, done by the CLI
-// once the sign-in has an outcome, since the browser cannot be relied on to
-// follow a scripted redirect to a custom scheme. A no-op off macOS.
-func ReturnToApp() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return openURL(ctx, AppReturnURL)
+// SetOpenURLForTest swaps what ReturnAfterLogin runs to open the app URL, so
+// a test of a login command never launches the real app.
+func SetOpenURLForTest(fn func(u string) error) (restore func()) {
+	prev := openURL
+	openURL = func(_ context.Context, u string) error { return fn(u) }
+	return func() { openURL = prev }
 }
 
 // ReturnAfterLogin is what a CLI login command runs once its OAuth flow has
 // returned, successfully or not: with appReturn (the Desktop started the
-// sign-in) it brings the app back so the owner sees the outcome there.
-// Skipped when ctx is already done — the Desktop cancelled the sign-in, so
-// the owner is in the app already. A failure to open the app only warns: the
-// sign-in itself is unaffected and the page still has the link.
-func ReturnAfterLogin(ctx context.Context, appReturn bool, warn io.Writer) {
-	if !appReturn || (ctx != nil && ctx.Err() != nil) {
+// sign-in) it opens watchtower-auth:// through LaunchServices, so the app
+// comes back to the front and the owner sees the outcome there. The browser
+// cannot be relied on to follow a scripted redirect to a custom scheme, so
+// this is the automatic half of app-return. Skipped when loginErr is a
+// timeout or a cancel: nobody is waiting on the browser then, and pulling
+// the app forward minutes later would only steal focus. A failure to open
+// the app only warns: the sign-in itself is unaffected and the page still
+// has the link.
+func ReturnAfterLogin(appReturn bool, loginErr error, warn io.Writer) {
+	if !appReturn || errors.Is(loginErr, ErrLoginTimedOut) ||
+		errors.Is(loginErr, context.DeadlineExceeded) || errors.Is(loginErr, context.Canceled) {
 		return
 	}
-	if err := ReturnToApp(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := openURL(ctx, appReturnURL); err != nil {
 		fmt.Fprintf(warn, "warning: could not bring Watchtower to the front: %v\n", err)
 	}
 }

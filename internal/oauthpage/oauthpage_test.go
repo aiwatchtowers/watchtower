@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ func stubOpenURL(t *testing.T, fn func(context.Context, string) error) {
 }
 
 // The services every login flow passes to Success.
-var services = []string{"Slack", "Jira", "Gmail", "Your Google account", "Outlook", "This connection"}
+var services = []string{"Slack", "Jira", "Gmail", "Your Google account", "Outlook", "The MCP server"}
 
 func TestSuccess_HonestCloseText(t *testing.T) {
 	for _, svc := range services {
@@ -64,6 +65,8 @@ func TestError_EscapesReasonAndLinksBack(t *testing.T) {
 	assert.Contains(t, page, `href="watchtower-auth://connected">Back to Watchtower</a>`)
 
 	assert.NotContains(t, Error("access_denied", false), "watchtower-auth://")
+	// The reason stays on screen: no close attempt on a failure.
+	assert.NotContains(t, page, "window.close()")
 }
 
 func TestError_EmptyReason(t *testing.T) {
@@ -73,46 +76,68 @@ func TestError_EmptyReason(t *testing.T) {
 }
 
 func TestReturnAfterLogin_OpensAppURL(t *testing.T) {
-	var got []string
-	stubOpenURL(t, func(_ context.Context, u string) error { got = append(got, u); return nil })
+	// Success and a failed sign-in alike: the owner sees the outcome in the app.
+	for _, loginErr := range []error{nil, errors.New("slack authorization denied: access_denied")} {
+		var got []string
+		stubOpenURL(t, func(_ context.Context, u string) error { got = append(got, u); return nil })
 
-	var warn bytes.Buffer
-	ReturnAfterLogin(context.Background(), true, &warn)
-	assert.Equal(t, []string{AppReturnURL}, got)
-	assert.Empty(t, warn.String())
+		var warn bytes.Buffer
+		ReturnAfterLogin(true, loginErr, &warn)
+		assert.Equal(t, []string{appReturnURL}, got, "loginErr=%v", loginErr)
+		assert.Empty(t, warn.String())
+	}
 }
 
 func TestReturnAfterLogin_SkipsWithoutAppReturn(t *testing.T) {
 	called := false
 	stubOpenURL(t, func(context.Context, string) error { called = true; return nil })
 
-	ReturnAfterLogin(context.Background(), false, &bytes.Buffer{})
+	ReturnAfterLogin(false, nil, &bytes.Buffer{})
 	assert.False(t, called, "a plain CLI login never touches the app")
 }
 
-func TestReturnAfterLogin_SkipsWhenCancelled(t *testing.T) {
+func TestReturnAfterLogin_SkipsTimeoutAndCancel(t *testing.T) {
 	called := false
 	stubOpenURL(t, func(context.Context, string) error { called = true; return nil })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	ReturnAfterLogin(ctx, true, &bytes.Buffer{})
-	assert.False(t, called, "a cancelled sign-in was cancelled from the app — the owner is there already")
-}
-
-func TestReturnAfterLogin_NilContext(t *testing.T) {
-	called := false
-	stubOpenURL(t, func(context.Context, string) error { called = true; return nil })
-
-	//nolint:staticcheck // a command run without a context hands back nil
-	ReturnAfterLogin(nil, true, &bytes.Buffer{})
-	assert.True(t, called)
+	for _, loginErr := range []error{
+		fmt.Errorf("%w after %s", ErrLoginTimedOut, "5m0s"),
+		fmt.Errorf("oauth login: %w", fmt.Errorf("%w after %s", ErrLoginTimedOut, "5m0s")),
+		fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", context.DeadlineExceeded),
+		fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", context.Canceled),
+	} {
+		ReturnAfterLogin(true, loginErr, &bytes.Buffer{})
+		assert.False(t, called, "nobody is at the browser after %v — no focus steal", loginErr)
+	}
 }
 
 func TestReturnAfterLogin_OpenFailureWarns(t *testing.T) {
 	stubOpenURL(t, func(context.Context, string) error { return errors.New("boom") })
 
 	var warn bytes.Buffer
-	ReturnAfterLogin(context.Background(), true, &warn)
+	ReturnAfterLogin(true, nil, &warn)
 	assert.Contains(t, warn.String(), "could not bring Watchtower to the front: boom")
+}
+
+func TestReturnAfterLogin_BoundedOpen(t *testing.T) {
+	var hasDeadline bool
+	stubOpenURL(t, func(ctx context.Context, _ string) error { _, hasDeadline = ctx.Deadline(); return nil })
+
+	ReturnAfterLogin(true, nil, &bytes.Buffer{})
+	assert.True(t, hasDeadline, "a hung open must not hold the CLI's exit")
+}
+
+func TestSetOpenURLForTest_Restores(t *testing.T) {
+	var got string
+	restore := SetOpenURLForTest(func(u string) error { got = u; return nil })
+	ReturnAfterLogin(true, nil, &bytes.Buffer{})
+	restore()
+	assert.Equal(t, appReturnURL, got)
+
+	called := false
+	stubOpenURL(t, func(context.Context, string) error { called = true; return nil })
+	restore2 := SetOpenURLForTest(func(string) error { return nil })
+	restore2()
+	ReturnAfterLogin(true, nil, &bytes.Buffer{})
+	assert.True(t, called, "restore puts the previous opener back")
 }

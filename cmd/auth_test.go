@@ -3,6 +3,7 @@ package cmd
 import (
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -80,4 +81,17 @@ func TestAuthFlags(t *testing.T) {
 	assert.NotNil(t, authCompleteCmd.Flags().Lookup("redirect-uri"))
 	assert.NotNil(t, authPrepareCmd.Flags().Lookup("redirect-uri"))
 	assert.NotNil(t, authLoginCmd.Flags().Lookup("no-open"))
+}
+
+// Every login command the Desktop runs passes --app-return; cobra rejects an
+// unknown flag before RunE, so a dropped flag would break that sign-in.
+func TestLoginCommands_AcceptAppReturn(t *testing.T) {
+	for name, c := range map[string]*cobra.Command{
+		"auth login": authLoginCmd, "slack login": slackLoginCmd, "slack add": slackAddCmd,
+		"jira login": jiraLoginCmd, "jira add": jiraAddCmd, "google login": googleLoginCmd,
+		"google add": googleAddCmd, "gmail login": gmailLoginCmd, "calendar login": calendarLoginCmd,
+		"outlook login": outlookLoginCmd, "connections oauth": connectionsOAuthCmd,
+	} {
+		assert.NotNil(t, c.Flags().Lookup("app-return"), name)
+	}
 }

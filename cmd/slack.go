@@ -431,7 +431,7 @@ func slackOAuthLogin(cmd *cobra.Command, noOpen, appReturn bool) (*auth.OAuthRes
 		return nil, err
 	}
 	result, err := auth.Login(cmd.Context(), oauthCfg, cmd.OutOrStdout(), auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
-	oauthpage.ReturnAfterLogin(cmd.Context(), appReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return nil, fmt.Errorf("oauth login: %w", err)
 	}

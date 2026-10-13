@@ -379,7 +379,7 @@ func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *d
 		Scopes:          scopes,
 		AppReturn:       appReturn,
 	})
-	oauthpage.ReturnAfterLogin(cmd.Context(), appReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())

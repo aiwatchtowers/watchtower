@@ -103,7 +103,7 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
 	result, err := auth.Login(cmd.Context(), oauthCfg, out, auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
-	oauthpage.ReturnAfterLogin(cmd.Context(), appReturn, cmd.ErrOrStderr())
+	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("oauth login: %w", err)
 	}
