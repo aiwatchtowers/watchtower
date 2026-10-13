@@ -57,7 +57,18 @@ struct SettingsView: View {
             if env.transportKind == .inMemoryDemo {
                 LabeledContent("Sync", value: "Demo")
             }
+            if model.waitingForKeys {
+                Text(SettingsViewModel.waitingForKeysNotice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let notice = model.formatNotice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(PhoneTone.red.color)
+            }
         }
+        .onChange(of: env.lastSyncAt) { model.refreshFormatNotice() }
     }
 
     // MARK: - Accounts (read-only)

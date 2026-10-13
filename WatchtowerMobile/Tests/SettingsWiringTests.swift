@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -203,7 +204,7 @@ final class SettingsWiringTests: XCTestCase {
     // MARK: - Workbench toggles
 
     func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
-        let settings = DeviceSettings(transport: InMemoryCloudTransport(), defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults())
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.newAskAlerts)
@@ -213,7 +214,7 @@ final class SettingsWiringTests: XCTestCase {
     /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -222,7 +223,7 @@ final class SettingsWiringTests: XCTestCase {
         let saves = await transport.saves
         XCTAssertEqual(saves.count, 1, "a repeated toggle to the same value must not write again")
         XCTAssertEqual(saves.first?.count, 1)
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         let written = try XCTUnwrap(payloads.first)
         XCTAssertTrue(written.typingRequested)
         XCTAssertTrue(written.startSessions)
@@ -233,12 +234,12 @@ final class SettingsWiringTests: XCTestCase {
 
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setStartSessions(false)
 
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         let written = try XCTUnwrap(payloads.first)
         XCTAssertFalse(written.startSessions)
         XCTAssertFalse(written.typingRequested)
@@ -249,7 +250,7 @@ final class SettingsWiringTests: XCTestCase {
     func testToggleWhileUnlinkedKeepsTheChoiceAndWritesNothing() async throws {
         let transport = SpyTransport()
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults)
 
         await settings.setTypingRequested(true)
 
@@ -257,7 +258,7 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(saves.isEmpty)
         XCTAssertTrue(settings.typingRequested)
         XCTAssertTrue(
-            DeviceSettings(transport: transport, defaults: defaults).typingRequested,
+            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults).typingRequested,
             "the choice must survive a relaunch"
         )
     }
@@ -265,7 +266,7 @@ final class SettingsWiringTests: XCTestCase {
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
         let transport = SpyTransport(failingSaves: [0])
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -279,7 +280,7 @@ final class SettingsWiringTests: XCTestCase {
     /// write reads the choices.
     func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults())
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1) } }
 
@@ -298,7 +299,7 @@ final class SettingsWiringTests: XCTestCase {
 
         let maxInFlight = await transport.maxInFlight
         XCTAssertEqual(maxInFlight, 1, "device-record writes must not overlap")
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         XCTAssertEqual(payloads.map(\.typingRequested), [true, false], "the second write sends the reverted typing choice")
         XCTAssertEqual(payloads.map(\.startSessions), [true, false])
         XCTAssertFalse(settings.typingRequested, "the failed typing write is reverted")
@@ -311,7 +312,7 @@ final class SettingsWiringTests: XCTestCase {
     func testAFailedWriteNeverRevertsANewerToggleOfTheSameSetting() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults)
         settings.linkedDevice = device
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await transport.release(0, 1, 2) } }
@@ -326,16 +327,16 @@ final class SettingsWiringTests: XCTestCase {
         await transport.release(0, 1, 2)
         _ = await (first.value, second.value, third.value)
         XCTAssertTrue(settings.typingRequested, "the newest toggle keeps its value")
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         XCTAssertEqual(payloads.map(\.typingRequested), [true, true, true], "no write sends the stale revert")
-        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults).typingRequested)
+        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults).typingRequested)
     }
 
     /// A-T11 N3: a reverted toggle says why until that setting saves, even
     /// when the other setting's write succeeds right behind it.
     func testARevertedToggleKeepsItsErrorUntilThatSettingSaves() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults())
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1, 2) } }
 
@@ -352,6 +353,85 @@ final class SettingsWiringTests: XCTestCase {
         await transport.release(2)
         await settings.setTypingRequested(true)
         XCTAssertNil(settings.lastError, "a typing save clears it")
+    }
+
+    /// The `device` records the phone sealed into the spy, in save order, each opened by the test hub (the
+    /// in-memory transport keeps one version per name, so each is opened on its own).
+    private func deviceWrites(_ spy: SpyTransport) async throws -> [DevicePayload] {
+        var payloads: [DevicePayload] = []
+        for record in await spy.saves.flatMap({ $0 }) {
+            let mac = InMemoryCloudTransport()
+            try await mac.save([record])
+            let opened = try await TestPhone.hub(over: mac).changes(in: .relay, since: nil).changed
+            XCTAssertEqual(opened.count, 1, "the hub opens every device write")
+            payloads += try opened
+                .filter { $0.kind == RelayRecordKind.device.rawValue }
+                .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        }
+        return payloads
+    }
+
+    /// The environment's toggles go through the secure transport: the Mac gets this device's sealed `device`
+    /// record (the hub drops a plaintext one), its payload naming this device.
+    func testAToggleWritesASealedDeviceRecordForThisDevice() async throws {
+        let transport = InMemoryCloudTransport()
+        let linked = LinkedDevice(
+            deviceID: TestPhone.deviceID(), name: device.name, model: device.model, appVersion: device.appVersion,
+            scope: .private, userRecordName: device.userRecordName
+        )
+        let env = try AppEnvironment(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString,
+            linkedDevice: linked,
+            keys: try TestPhone.keys(),
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+
+        await env.deviceSettings.setStartSessions(false)
+
+        XCTAssertNil(env.deviceSettings.lastError)
+        let raw = try await transport.changes(in: .relay, since: nil).changed
+        XCTAssertFalse(raw.isEmpty)
+        XCTAssertTrue(raw.allSatisfy { $0.kind == WireKind.envelope }, "nothing goes out in the clear")
+        let opened = try await TestPhone.hub(over: transport)
+            .changes(in: .relay, since: nil)
+            .changed
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        XCTAssertEqual(opened.map(\.startSessions), [false])
+        XCTAssertEqual(opened.map(\.deviceID), [TestE2E.deviceID.uuidString], "the payload names this device (the sender)")
+    }
+
+    // MARK: - Newer format
+
+    /// An envelope of a newer format than this build reads is kept unread and Settings asks for an update.
+    func testANewerFormatShowsTheUpdateRow() async throws {
+        let store = try makePoolStore()
+        let model = SettingsViewModel()
+        model.start(store: store, deviceID: nil)
+        try await poll { model.formatNotice == nil && model.snapshot.queuedCount == 0 }
+        XCTAssertNil(model.formatNotice, "no notice while every record reads")
+
+        let scratch = InMemoryCloudTransport()
+        let now = Date()
+        try await TestPhone.hub(over: scratch).save([CloudRecordFactory.record(
+            for: SliceRecord(kind: .workbench, id: "1", modifiedAt: now, payload: Data("{}".utf8)))])
+        let changed = try await scratch.changes(in: .data, since: nil).changed
+        let sealed = try XCTUnwrap(changed.first)
+        var newer = sealed.payload
+        newer[newer.startIndex + 3] &+= 1 // the envelope's `ver` byte, after the "WTE" magic
+        let transport = InMemoryCloudTransport()
+        try await transport.save([CloudRecord(
+            recordName: sealed.recordName, zone: .data, kind: sealed.kind, modifiedAt: now, payload: newer)])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        model.refreshFormatNotice()
+        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your Mac uses a newer format.")
+        XCTAssertEqual(store.newerFormatCount(), 1)
     }
 
     /// Waits (bounded) until the spy has seen `count` save calls.
@@ -427,11 +507,5 @@ private actor SpyTransport: CloudSyncTransport {
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
-    }
-
-    func devicePayloads() throws -> [DevicePayload] {
-        try saves.flatMap { $0 }
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
     }
 }

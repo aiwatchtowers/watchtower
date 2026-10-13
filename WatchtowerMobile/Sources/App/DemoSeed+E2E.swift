@@ -2,9 +2,11 @@ import CryptoKit
 import Foundation
 import WatchtowerSync
 
-/// The demo's pairing (mobile E2E Task 16 Step 0, the smallest change that keeps the demo running): a demo hub and
-/// the demo phone share fixed link material, so the seed reaches the replica sealed and signed the way a Mac's
-/// records do. Every key is derived from a fixed label: the demo holds nothing secret. Task 17 reworks the demo.
+/// The demo's pairing (mobile E2E): a demo hub and the demo phone share fixed link material, so the seed reaches the
+/// replica sealed and signed the way a Mac's records do, and the demo runs every read and write through E2E. Every
+/// key is derived from a fixed label: the demo holds nothing secret. Demo only: `AppEnvironment` picks these keys for
+/// the demo kind over the in-memory transport alone (never over CloudKit), and the hub half, which only the seed
+/// uses, is compiled into DEBUG builds only.
 extension DemoSeed {
     static let pairingHubID = UUID(uuid: (0xDE, 0x30, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0x01))
     static let pairingEpoch: UInt32 = 1
@@ -36,13 +38,27 @@ extension DemoSeed {
             payload: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: nil)))
     }
 
-    /// The demo hub sealing over `inner`. Its seqs start at `firstSeq`, by default the launch time in microseconds,
-    /// so a relaunch's seed is newer than the one a persisted replica holds (the replica refuses an older
-    /// `(epoch, seq)` of a record).
-    static func hubTransport(inner: any CloudSyncTransport & Sendable, firstSeq: UInt64? = nil) -> SecureTransport {
-        let first = firstSeq ?? UInt64(max(0, Date().timeIntervalSince1970 * 1_000_000))
-        return SecureTransport(inner: inner, keys: DemoHubKeys(firstSeq: first), rollback: InMemoryRollbackGuard())
+    #if DEBUG
+    /// The demo hub sealing over `inner`, its seqs from `seq`.
+    static func hubTransport(inner: any CloudSyncTransport & Sendable, seq: SeqAllocator) -> SecureTransport {
+        SecureTransport(inner: inner, keys: DemoHubKeys(seq: seq), rollback: InMemoryRollbackGuard())
     }
+
+    /// The demo hub's seqs: a ceiling persisted in `defaults` (`SeqAllocator` blocks), so each launch's seed is
+    /// newer than what the persisted replica holds (it refuses an older `(epoch, seq)` of a record) whatever the
+    /// clock does. The first launch with no ceiling starts above `now` in microseconds, where the seqs of the
+    /// builds that took them from the clock ended.
+    static func hubSeq(defaults: UserDefaults, now: Date) -> SeqAllocator {
+        nonisolated(unsafe) let defaults = defaults
+        let floor = UInt64(max(0, now.timeIntervalSince1970 * 1_000_000))
+        return SeqAllocator(
+            load: { defaults.string(forKey: hubSeqCeilingKey).flatMap(UInt64.init) ?? floor },
+            store: { defaults.set(String($0), forKey: hubSeqCeilingKey) }
+        )
+    }
+
+    static let hubSeqCeilingKey = "demo.hubSeqCeiling"
+    #endif
 }
 
 /// Fixed demo key material, derived from labels.
@@ -77,14 +93,14 @@ enum DemoPairing {
     }
 }
 
+#if DEBUG
 /// The demo hub's `SecureKeyProvider`: one epoch, the demo phone linked.
 final class DemoHubKeys: SecureKeyProvider, @unchecked Sendable {
     let role: SecureRole = .hub(hubID: DemoSeed.pairingHubID)
-    private let lock = NSLock()
-    private var seq: UInt64
+    private let seq: SeqAllocator
 
-    init(firstSeq: UInt64) {
-        seq = firstSeq
+    init(seq: SeqAllocator) {
+        self.seq = seq
     }
 
     private var phoneID: UUID { DemoPairing.phoneIdentity.deviceID }
@@ -108,12 +124,7 @@ final class DemoHubKeys: SecureKeyProvider, @unchecked Sendable {
 
     func relayDeviceIDs() throws -> [UUID] { [phoneID] }
 
-    func nextSeq() throws -> UInt64 {
-        lock.withLock {
-            defer { seq += 1 }
-            return seq
-        }
-    }
+    func nextSeq() throws -> UInt64 { try seq.next() }
 
     func hubSigner() throws -> Curve25519.Signing.PrivateKey { DemoPairing.hubSigning }
     func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { DemoPairing.hubAgreement }
@@ -126,3 +137,4 @@ final class DemoHubKeys: SecureKeyProvider, @unchecked Sendable {
     func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { throw SecureTransportError.wrongRole }
     func linkNonce() throws -> Data { throw SecureTransportError.wrongRole }
 }
+#endif

@@ -21,16 +21,17 @@ enum PhoneKeychainError: LocalizedError, Equatable {
 /// (`SecItemKeychainBackend`). Every item goes to the app's private access group explicitly (F20): the group
 /// comes from Info.plist's `WTKeychainPrivateGroup` (`$(AppIdentifierPrefix)…`, expanded at build time), never a
 /// hardcoded team prefix; it is the first entry of the entitlements' `keychain-access-groups`. The alerts group
-/// is Task 18's: until then the alert material lands in the private group too.
+/// is Task 18's: until then the alert material lands in the private group too. The app reads it through one
+/// `CachingPhoneKeyStore`: no Keychain query per replica row, nothing served from memory once the phone locks.
 enum PhoneKeychain {
     static let privateGroupKey = "WTKeychainPrivateGroup"
 
-    static func store(bundle: Bundle = .main) throws -> KeychainPhoneKeyStore {
-        KeychainPhoneKeyStore(
+    static func store(bundle: Bundle = .main) throws -> CachingPhoneKeyStore {
+        CachingPhoneKeyStore(wrapping: KeychainPhoneKeyStore(
             backend: SecItemKeychainBackend(),
             privateGroup: try privateGroup(in: bundle.infoDictionary ?? [:]),
             alertGroup: nil
-        )
+        ))
     }
 
     static func privateGroup(in info: [String: Any]) throws -> String {

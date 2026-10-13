@@ -101,9 +101,19 @@ struct ObservationDiagnostic: Identifiable, Equatable {
 @MainActor
 @Observable
 final class SettingsViewModel {
+    static let newerFormatNotice = "Update Watchtower on this iPhone: your Mac uses a newer format."
+    static let waitingForKeysNotice = "Unlock this iPhone to see the latest from your Mac."
+
     private(set) var snapshot = SettingsSnapshot()
+    /// `newerFormatNotice` once the replica kept a record of a newer envelope
+    /// format unread (`ReplicaStore.newerFormatCount`); nil otherwise.
+    private(set) var formatNotice: String?
+    /// The last read was refused for the keys (locked, or an epoch's keys
+    /// not here yet): the snapshot shown is the last one read.
+    private(set) var waitingForKeys = false
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
+    @ObservationIgnored private var store: ReplicaStore?
     @ObservationIgnored private let health: ObservationHealth
 
     init(health: ObservationHealth = .shared) {
@@ -127,10 +137,21 @@ final class SettingsViewModel {
         return failure.recovered ? text + " (recovered)" : text
     }
 
+    /// Re-reads the newer-format count: it grows while rows are indexed,
+    /// which writes nothing when a row stays unread, so Settings checks
+    /// again after every fetch (`AppEnvironment.lastSyncAt`).
+    func refreshFormatNotice() {
+        guard let store else { return }
+        let notice = store.newerFormatCount() > 0 ? Self.newerFormatNotice : nil
+        if notice != formatNotice { formatNotice = notice }
+    }
+
     /// Starts (or, for another device id, restarts) the observation.
     func start(store: ReplicaStore, deviceID: String?) {
         if cancellable != nil, observedDeviceID == deviceID { return }
         observedDeviceID = deviceID
+        self.store = store
+        refreshFormatNotice()
         cancellable?.cancel()
         cancellable = ResilientObservation(
             name: "settings",
@@ -141,7 +162,13 @@ final class SettingsViewModel {
                 }
                 .removeDuplicates()
             },
-            onChange: { [weak self] value in self?.snapshot = value }
+            onWaitingForKeys: { [weak self] in self?.waitingForKeys = true },
+            onChange: { [weak self] value in
+                guard let self else { return }
+                snapshot = value
+                if waitingForKeys { waitingForKeys = false }
+                refreshFormatNotice()
+            }
         )
     }
 }

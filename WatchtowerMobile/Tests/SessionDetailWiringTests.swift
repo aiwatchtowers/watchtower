@@ -242,7 +242,7 @@ final class SessionDetailWiringTests: XCTestCase {
     func testTheDetailModelsHaveNoTranscriptField() throws {
         let store = try TestPhone.replica()
         let viewModel = SessionDetailViewModel(sessionID: 11, store: store, requester: SessionReportRequester(now: { Date() }, send: { _ in }))
-        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "store", "requester", "cancellable"])
+        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "waitingForKeys", "store", "requester", "cancellable"])
         XCTAssertEqual(fieldNames(try model(11)), [
             "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "asks", "asksSince", "report",
             "timeline", "timelineEmptyText", "timelineMoreText"

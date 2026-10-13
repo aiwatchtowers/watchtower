@@ -25,6 +25,9 @@ struct LinkedDevice: Equatable, Sendable {
 /// the phone's `device` record while it is linked. Before linking, the
 /// choice is only kept, and the link flow sends it with the link record.
 /// Every choice is persisted in `UserDefaults`, so it survives a relaunch.
+/// The record goes out sealed (`SecureTransport`, mobile E2E): the hub
+/// drops a plaintext `device` record, and takes a sealed one only when its
+/// payload names the sending device.
 @MainActor
 @Observable
 final class DeviceSettings {
@@ -41,7 +44,7 @@ final class DeviceSettings {
     /// Set by the environment when the phone links or unlinks.
     var linkedDevice: LinkedDevice?
 
-    @ObservationIgnored private let transport: any CloudSyncTransport
+    @ObservationIgnored private let transport: SecureTransport
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The last queued device-record write. Writes run one at a time, in
@@ -66,7 +69,7 @@ final class DeviceSettings {
     }
 
     init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         defaults: UserDefaults,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {

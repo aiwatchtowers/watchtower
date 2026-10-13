@@ -225,9 +225,8 @@ final class AppRootWiringTests: XCTestCase {
         await root.env.deviceSettings.setStartSessions(false)
         XCTAssertFalse(root.env.deviceSettings.startSessions, "the choice is kept")
         XCTAssertNil(root.env.deviceSettings.lastError)
-        let deviceWrites = try await transports[0].changes(in: .relay, since: nil).changed
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-        XCTAssertTrue(deviceWrites.isEmpty, "a moved hub's phone writes no device record")
+        let kept = try await deviceWrites(in: transports[0])
+        XCTAssertTrue(kept.isEmpty, "a moved hub's phone writes no device record")
         do {
             try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
             XCTFail("a moved hub's phone must not send")
@@ -240,9 +239,8 @@ final class AppRootWiringTests: XCTestCase {
 
         await root.setLink(device, writesAllowed: true)
         XCTAssertEqual(root.env.deviceSettings.linkedDevice, device)
-        let resent = try await transports[0].changes(in: .relay, since: nil).changed
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        // Sealed by the phone (mobile E2E Task 17): the hub opens it.
+        let resent = try await deviceWrites(in: transports[0])
         XCTAssertEqual(resent.map(\.startSessions), [false], "review F10: the kept toggle reaches the Mac when writes return")
         try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
     }

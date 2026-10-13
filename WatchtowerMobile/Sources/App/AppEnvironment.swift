@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import UIKit
 @_spi(DemoTransport) import WatchtowerSync
 
 /// Which transport an `AppEnvironment` runs on: probed in `init()`,
@@ -152,6 +153,8 @@ final class AppEnvironment {
     @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
+    /// The demo hub's seq ceiling lives here (`DemoSeed.hubSeq`).
+    @ObservationIgnored private let defaults: UserDefaults
     /// `transport` sealing and opening with the phone's keys: every write of
     /// the outbox, the uploader and the link flow goes through it.
     @ObservationIgnored private let secure: SecureTransport
@@ -171,6 +174,8 @@ final class AppEnvironment {
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
+    /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
+    @ObservationIgnored private var unlockObserver: NotificationToken?
 
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppEnvironment")
 
@@ -193,7 +198,7 @@ final class AppEnvironment {
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
+            let transportStore = try Self.liveTransportStore(in: directory)
             try self.init(
                 transport: CloudKitTransport(
                     store: transportStore, scope: scope, hubID: hubID, role: .phone
@@ -228,6 +233,9 @@ final class AppEnvironment {
     /// hub id is not a UUID, wire no keys either (F14: the identity is never
     /// created here, only read; nothing is sealed or opened). `seqFloor`
     /// raises the phone's seq allocator above a wiped replica's ceiling.
+    /// `notifications` carries the unlock signal
+    /// (`protectedDataDidBecomeAvailable`): rows stored while locked are
+    /// indexed and finished recordings sealed at once (Review Focus 1).
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
@@ -238,6 +246,7 @@ final class AppEnvironment {
         seqFloor: UInt64 = 0,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
+        notifications: NotificationCenter = .default,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) throws {
@@ -250,11 +259,14 @@ final class AppEnvironment {
         self.transport = transport
         self.transportKind = transportKind
         self.hubID = hubID
+        self.defaults = defaults
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
+        // The demo pairing only on the demo path: the demo kind over the in-memory transport.
+        let demoKeys = transportKind == .inMemoryDemo && transport is InMemoryCloudTransport
         let sealed = try Self.sealedStack(
             transport: transport, replicaPath: replicaPath,
-            keys: try keys ?? (transportKind == .inMemoryDemo ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor
+            keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor
         )
         let store = sealed.store
         let secure = sealed.secure
@@ -289,12 +301,10 @@ final class AppEnvironment {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let uploader = RecordingUploader(
-            transport: secure,
-            store: store,
-            directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
-            deviceID: device?.deviceID
-        )
+        // D8: sealed recordings inherit the folder's class C; each capture sets its own class.
+        let recordings = try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+        try FileProtection.protectDirectory(recordings)
+        let uploader = RecordingUploader(transport: secure, store: store, directory: recordings, deviceID: device?.deviceID)
         self.uploader = uploader
         hold = uploader.directory.map(RecordingHold.init(recordingsDirectory:))
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
@@ -305,7 +315,8 @@ final class AppEnvironment {
             uploads: uploader,
             onActionApplied: hydrateAfterEcho
         )
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        // Sealed like every other write: the hub drops a plaintext `device` record.
+        let settings = DeviceSettings(transport: secure, defaults: defaults)
         settings.linkedDevice = device
         deviceSettings = settings
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
@@ -314,6 +325,11 @@ final class AppEnvironment {
         phoneRecordings.start(store: store)
 
         adoption = Task { await adoptHeld() }
+        unlockObserver = NotificationToken(
+            center: notifications, name: UIApplication.protectedDataDidBecomeAvailableNotification
+        ) { [weak self] in
+            Task { @MainActor in await self?.keysBecameAvailable() }
+        }
         let transportStart = Task { await startTransport() }
         transportStartTask = transportStart
         bootstrapTask = Task {
@@ -335,8 +351,9 @@ final class AppEnvironment {
                 // cursor restarts, so the persisted replica's tokens must be
                 // forgotten or the fresh seed never lands.
                 try store.resetSyncTokens()
-                // Sealed by the demo hub, as a Mac's records are (Task 17 reworks the demo).
-                let hub = DemoSeed.hubTransport(inner: transport)
+                // Sealed by the demo hub, as a Mac's records are; its seqs continue from the ceiling the last
+                // launch persisted (a relaunch's seed must be newer than the replica's rows).
+                let hub = DemoSeed.hubTransport(inner: transport, seq: DemoSeed.hubSeq(defaults: defaults, now: Date()))
                 try await DemoSeed.load(into: hub)
                 try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: Date())
             } catch {
@@ -441,7 +458,49 @@ final class AppEnvironment {
         isActive = active
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
+        // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
+        // while the app was suspended), before the loop's first fetch.
+        if active { indexStoredRows() }
         restartLoop()
+    }
+
+    /// The unlock signal: the rows a locked hydrate stored are indexed (they appear at once, no fetch needed),
+    /// recordings finished while locked are sealed (their plain audio goes) and sent, and held recordings the
+    /// locked boot could not read are adopted.
+    func keysBecameAvailable() async {
+        guard !stopped else { return }
+        indexStoredRows()
+        do {
+            try await uploader.sealPending()
+        } catch {
+            Self.logger.error("seal after unlock failed: \(error.localizedDescription, privacy: .public)")
+        }
+        await readoptHeldIfNeeded()
+        await recorder.uploadPending()
+    }
+
+    /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
+    /// by a fetch does. Rows that still cannot open stay for the next pass.
+    private func indexStoredRows() {
+        do {
+            let indexed = try store.indexPending()
+            if indexed.contains(where: { $0.kind == .deviceGrant }) {
+                keyboxSignal.handler?()
+            }
+        } catch {
+            Self.logger.error("indexing stored rows failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// A boot while locked cannot read the hold's manifest (`completeUnlessOpen`, D8): the adoption that failed
+    /// runs again after unlock. Only after the boot, whose launch sweep must not race an adoption.
+    private func readoptHeldIfNeeded() async {
+        guard isBootstrapped, let previous = adoption, await previous.value.problem != nil else { return }
+        let next = Task { await adoptHeld() }
+        adoption = next
+        if let problem = await next.value.problem {
+            Self.logger.error("held recordings still not adopted: \(problem, privacy: .public)")
+        }
     }
 
     /// The recorder's "See recordings": closes the finished recorder and
@@ -468,7 +527,7 @@ final class AppEnvironment {
         deviceSettings.linkedDevice = writesAllowed ? device : nil
         if writesReturn, let payload = deviceSettings.devicePayload() {
             do {
-                try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+                try await secure.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
             } catch {
                 Self.logger.error("device record not rewritten: \(error.localizedDescription, privacy: .public)")
             }
@@ -543,6 +602,7 @@ final class AppEnvironment {
     /// Stops the loop for good (tests' teardown; the app never stops).
     func stop() {
         stopped = true
+        unlockObserver = nil
         transportStartTask?.cancel()
         bootstrapTask?.cancel()
         loopTask?.cancel()
@@ -591,9 +651,24 @@ final class AppEnvironment {
             logger.fault("app group container \(appGroupID, privacy: .public) is unavailable")
             throw AppEnvironmentError.appGroupUnavailable
         }
-        let directory = group.appendingPathComponent("Library/Application Support", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try prepareLiveDirectory(group.appendingPathComponent("Library/Application Support", isDirectory: true))
+    }
+
+    /// Creates the live directory with its class (D8) before any database in it: the replica and the transport
+    /// store hold ciphertext that background hydration and the notification extension reach after the first
+    /// unlock (class C); every file SQLite creates there inherits it.
+    static func prepareLiveDirectory(_ directory: URL) throws -> URL {
+        try FileProtection.protectDirectory(directory)
         return directory
+    }
+
+    /// The live CloudKit transport's store, its incoming asset stash (sealed files) class C too.
+    static func liveTransportStore(in directory: URL) throws -> TransportStore {
+        let store = try TransportStore(path: liveTransportStorePath(in: directory))
+        if let stash = store.stashDirectory {
+            try FileProtection.protectDirectory(stash)
+        }
+        return store
     }
 
     /// Unsigned builds keep the replica in Application Support, which an

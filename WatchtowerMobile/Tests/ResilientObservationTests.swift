@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -17,15 +18,23 @@ final class ResilientObservationTests: XCTestCase {
     private final class FailSwitch: @unchecked Sendable {
         private let lock = NSLock()
         private var on = false
+        private var locked = false
         var isOn: Bool {
             get { lock.withLock { on } }
             set { lock.withLock { on = newValue } }
+        }
+
+        /// The read throws `KeyStoreError.locked`, as a replica read does while the keychain is locked.
+        var isLocked: Bool {
+            get { lock.withLock { locked } }
+            set { lock.withLock { locked = newValue } }
         }
     }
 
     @MainActor
     private final class Received {
         var values: [Int] = []
+        var waitingForKeys = 0
     }
 
     private struct Fixture {
@@ -34,6 +43,7 @@ final class ResilientObservationTests: XCTestCase {
         let health: ObservationHealth
         let sleeper: TickSleeper
         let received: Received
+        let unlocks = NotificationCenter()
     }
 
     private func makeFixture() throws -> Fixture {
@@ -54,13 +64,16 @@ final class ResilientObservationTests: XCTestCase {
             name: name,
             reader: fixture.pool,
             health: fixture.health,
+            unlocks: fixture.unlocks,
             sleep: { try await sleeper.sleep($0) },
             observation: {
                 ValueObservation.tracking { db in
+                    if failing.isLocked { throw KeyStoreError.locked }
                     if failing.isOn { throw ProbeError() }
                     return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM probe") ?? 0
                 }
             },
+            onWaitingForKeys: { received.waitingForKeys += 1 },
             onChange: { received.values.append($0) }
         )
     }
@@ -96,6 +109,28 @@ final class ResilientObservationTests: XCTestCase {
         XCTAssertEqual(failure.count, 1)
         XCTAssertEqual(failure.lastMessage, "probe read failed")
         XCTAssertTrue(failure.recovered)
+        withExtendedLifetime(observation) {}
+    }
+
+    /// Mobile E2E: a read the locked keychain refuses is not a failure. The observation keeps its last value,
+    /// says it waits for the keys, and starts again at the unlock signal, without waiting out its backoff.
+    func testALockedReadWaitsForTheUnlockWithoutAFailure() async throws {
+        let fixture = try makeFixture()
+        let observation = start(fixture)
+        try await poll({ fixture.received.values == [0] }, "the initial value is missing")
+
+        fixture.failing.isLocked = true
+        try insertRow(fixture)
+        try await poll({ fixture.received.waitingForKeys == 1 }, "the locked read was not reported as waiting")
+        XCTAssertNil(fixture.health.failures["probe"], "a locked keychain is not a failure")
+        XCTAssertEqual(fixture.received.values, [0], "the last value stays")
+
+        fixture.failing.isLocked = false
+        fixture.unlocks.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ fixture.received.values == [0, 1] }, "the unlock did not restart the observation")
+        try insertRow(fixture)
+        try await poll({ fixture.received.values == [0, 1, 2] }, "the restarted observation stopped following writes")
+        XCTAssertNil(fixture.health.failures["probe"])
         withExtendedLifetime(observation) {}
     }
 

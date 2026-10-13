@@ -213,7 +213,8 @@ enum TestPhone {
     static func hub(over inner: any CloudSyncTransport & Sendable, _ pairing: Pairing = .test) -> SecureTransport {
         switch pairing {
         case .test: TestE2E.hubTransport(TestE2E.hub(firstSeq: firstSeq()), inner: inner)
-        case .demo: DemoSeed.hubTransport(inner: inner, firstSeq: firstSeq())
+        case .demo:
+            DemoSeed.hubTransport(inner: inner, seq: { first in SeqAllocator(load: { first }, store: { _ in }) }(firstSeq()))
         }
     }
 

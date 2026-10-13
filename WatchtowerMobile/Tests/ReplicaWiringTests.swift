@@ -1,4 +1,6 @@
 import GRDB
+import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -248,6 +250,185 @@ final class ReplicaWiringTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
         XCTAssertEqual(rows, 0, "the cloudKit kind must start empty")
+    }
+
+    // MARK: - E2E (mobile E2E Task 17)
+
+    /// A live-kind environment with the test pairing's keys over `transport`: its fetch loop parked on `sleeper`,
+    /// its unlock signal posted on `notifications`.
+    private func liveEnvironment(
+        transport: InMemoryCloudTransport,
+        keys: PhoneKeys,
+        notifications: NotificationCenter,
+        sleeper: TickSleeper
+    ) throws -> AppEnvironment {
+        managed(try AppEnvironment(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString,
+            keys: keys,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            notifications: notifications
+        ) { try await sleeper.sleep($0) })
+    }
+
+    private func slice(_ kind: SliceKind, id: String, at date: Date) -> CloudRecord {
+        CloudRecordFactory.record(for: SliceRecord(kind: kind, id: id, modifiedAt: date, payload: Data("{}".utf8)))
+    }
+
+    /// Rows whose kind the replica knows: indexed (opened), or a fixed-name row.
+    private func indexedCount(_ kind: SliceKind, in store: ReplicaStore) throws -> Int {
+        try store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records WHERE kind = ?", arguments: [kind.rawValue]) ?? 0
+        }
+    }
+
+    private func rowCount(in store: ReplicaStore) throws -> Int {
+        try store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0 }
+    }
+
+    /// Every read goes through the envelope opener: a plaintext record put straight into the transport (a pre-E2E
+    /// Mac, a forger with zone access) is refused at apply and never shows; the hub's sealed record does.
+    func testTheLiveEnvironmentReadsOnlyThroughTheEnvelopeOpener() async throws {
+        let transport = InMemoryCloudTransport()
+        let env = try liveEnvironment(
+            transport: transport, keys: try TestPhone.keys(), notifications: NotificationCenter(), sleeper: TickSleeper()
+        )
+        try await poll { env.isBootstrapped }
+        let now = Date()
+        try await transport.save([slice(.workbench, id: "1", at: now)])
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "2", at: now)])
+
+        let fetched = await env.refresh()
+
+        XCTAssertTrue(fetched)
+        XCTAssertEqual(try rowCount(in: env.store), 1, "only the sealed record is stored")
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 1)
+        XCTAssertGreaterThanOrEqual(env.store.rejectedCount(), 1, "the plaintext record is refused and counted")
+        let names = try await env.store.reader.read { db in try String.fetchAll(db, sql: "SELECT plain_name FROM slice_records") }
+        XCTAssertEqual(names, [SliceKind.workbench.recordName(id: "2")])
+    }
+
+    /// Review Focus 1: a push hydrates while the keychain is locked. The batch is stored (ciphertext, signature
+    /// checked with the public key) but cannot be opened; the unlock signal indexes it at once, without waiting
+    /// for the next fetch.
+    func testUnlockIndexesRowsHydratedWhileLocked() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let notifications = NotificationCenter()
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: notifications, sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+
+        keychain.isLocked = true
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
+        let fetched = await env.refresh()
+        XCTAssertTrue(fetched, "a locked keychain still stores the batch")
+        XCTAssertEqual(try rowCount(in: env.store), 1, "the ciphertext is stored")
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0, "and cannot be opened while locked")
+
+        keychain.isLocked = false
+        notifications.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+
+        try await poll({ (try? self.indexedCount(.workbench, in: env.store)) == 1 }, "the unlock did not index the row")
+        XCTAssertEqual(sleeper.waitingCount, 1, "no fetch cycle ran: the unlock alone indexed it")
+    }
+
+    /// Review Focus 1, the foreground half: the app coming back to the foreground indexes what a locked
+    /// background hydrate stored (the unlock signal may have passed while the app was suspended).
+    func testForegroundIndexesRowsHydratedWhileLocked() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: NotificationCenter(), sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+        env.setActive(false)
+
+        keychain.isLocked = true
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
+        _ = await env.refresh()
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0)
+
+        keychain.isLocked = false
+        env.setActive(true)
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 1, "the foreground indexes before the first fetch")
+    }
+
+    /// A keybox (a rotation's new epoch, a removal) indexed at unlock reaches the link flow like one indexed by
+    /// a fetch.
+    func testAKeyboxIndexedAtUnlockFiresTheKeyboxSignal() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let notifications = NotificationCenter()
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: notifications, sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+        var signals = 0
+        env.onKeyboxChanged = { signals += 1 }
+
+        keychain.isLocked = true
+        let grant = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: TestE2E.hubID.uuidString, name: "Colleague A's iPhone",
+            scope: .private, linked: true, typingAllowed: false, startSessionsAllowed: true
+        )
+        try await TestPhone.hub(over: transport).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
+        _ = await env.refresh()
+        XCTAssertEqual(signals, 0, "a keybox that cannot be read while locked signals nothing yet")
+
+        keychain.isLocked = false
+        notifications.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ signals == 1 }, "the keybox indexed at unlock did not signal")
+    }
+
+    /// The hub restaged an asset under a new key while the record was on its way: the record that arrives
+    /// carries the old key, so the file does not open. That is a wait for the next version, not poison: nothing
+    /// is counted corrupt, and the hub's next version (key and file together) reads.
+    func testAnAssetRestagedUnderANewKeyMidSendReadsWithTheNextVersion() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
+        let dir = try makeRecordingsDirectory()
+        let body = Data("segments".utf8)
+        let first = try TestPhone.sealAsset(body, to: dir.appendingPathComponent("first.bin"))
+        let restaged = dir.appendingPathComponent("restaged.bin")
+        let second = try TestPhone.sealAsset(body, to: restaged)
+        let name = SliceKind.meetingTranscript.recordName(id: "9")
+        func record(_ descriptor: AssetDescriptor) -> CloudRecord {
+            CloudRecord(
+                recordName: name, zone: .data, kind: SliceKind.meetingTranscript.rawValue, modifiedAt: Date(),
+                payload: Data("{}".utf8), assetFileURL: restaged, asset: descriptor)
+        }
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        func asset() async throws -> SliceAsset? {
+            try await store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) }
+        }
+
+        try await hub.save([record(first)])
+        _ = try await hydrator.hydrateOnce()
+        guard case .unreadable = try await asset() else { return XCTFail("a file sealed under another key must not open") }
+        XCTAssertEqual(store.corruptCount(), 0, "not poison")
+
+        try await hub.save([record(second)])
+        _ = try await hydrator.hydrateOnce()
+        let readable = try await asset()
+        XCTAssertEqual(readable, .data(body), "the next version reads")
+    }
+
+    // MARK: - Demo pairing
+
+    /// The demo hub's seqs come from a ceiling persisted in the defaults, never from the clock: a clock that
+    /// went backwards between two launches still seals above the last launch, so the replica takes the seed.
+    func testTheDemoHubSeqCeilingPersistsAcrossLaunches() throws {
+        let defaults = try makeDefaults()
+        let first = DemoSeed.hubSeq(defaults: defaults, now: Date())
+        let firstValues = try (0..<3).map { _ in try first.next() }
+        let relaunch = DemoSeed.hubSeq(defaults: defaults, now: Date().addingTimeInterval(-86_400))
+        XCTAssertGreaterThan(try relaunch.next(), try XCTUnwrap(firstValues.last))
     }
 
     // MARK: - Test host

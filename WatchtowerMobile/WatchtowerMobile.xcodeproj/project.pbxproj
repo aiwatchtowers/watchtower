@@ -97,6 +97,7 @@
 		9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BDF7C4C729D997505169333 /* WorkbenchListView.swift */; };
 		9C53524DCE6BE567C1061D3D /* Parts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B85A2B36DAACBD5D32F41F6 /* Parts.swift */; };
 		9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */; };
+		9CFADFF306242E96A50A2144 /* FileProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 030693C1BC5C1FF96BA914A7 /* FileProtection.swift */; };
 		9EB2B0C11F51971D49AF4FE1 /* PhoneTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F58018C997D775DD0EAA1 /* PhoneTone.swift */; };
 		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
 		A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */; };
@@ -120,6 +121,8 @@
 		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
 		CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */; };
 		D0BE60B2E23EA10D819C18DA /* ScannedHubKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C5CD25DB0A6F118267E627D /* ScannedHubKeys.swift */; };
+		D4907562792F98A11EA97943 /* CachingPhoneKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 305BFD36C58A1310CA0071B2 /* CachingPhoneKeyStore.swift */; };
+		D4F7DB9F9B82AF8D7EA7E806 /* NotificationToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DEDC3952A0D75EE5C3CD27D /* NotificationToken.swift */; };
 		D68714F514B300CCA34A008D /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08D768F21290828AFDF991CD /* Metrics.swift */; };
 		D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */; };
 		D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */; };
@@ -141,6 +144,7 @@
 		F4923AAF0BE95CB20DA6BFE0 /* SessionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6424A216FEC94930AA9E406 /* SessionDetailView.swift */; };
 		F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAA24B2C4477589205240AF /* RecorderFakes.swift */; };
 		F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */; };
+		FCD29A2F591EE6CBFA85E2E2 /* CachingPhoneKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -187,6 +191,7 @@
 		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
 		02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecorderController.swift; sourceTree = "<group>"; };
+		030693C1BC5C1FF96BA914A7 /* FileProtection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProtection.swift; sourceTree = "<group>"; };
 		04687B6B5C6EC1EFD33A747A /* LinkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStore.swift; sourceTree = "<group>"; };
 		0879174780AFEA40D8A455F2 /* ScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanView.swift; sourceTree = "<group>"; };
 		08D768F21290828AFDF991CD /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
@@ -202,7 +207,9 @@
 		2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Calendar.swift"; sourceTree = "<group>"; };
 		232CD623FB978407C3F5E7DE /* ResilientObservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResilientObservationTests.swift; sourceTree = "<group>"; };
 		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
+		2DEDC3952A0D75EE5C3CD27D /* NotificationToken.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationToken.swift; sourceTree = "<group>"; };
 		30368F9308E6A9844739763B /* ConflictPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictPrompt.swift; sourceTree = "<group>"; };
+		305BFD36C58A1310CA0071B2 /* CachingPhoneKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachingPhoneKeyStore.swift; sourceTree = "<group>"; };
 		31BBAA238E375CC873E317C6 /* ReviewDocumentStylerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewDocumentStylerTests.swift; sourceTree = "<group>"; };
 		321E6860B503B814C29C52CE /* Card.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Card.swift; sourceTree = "<group>"; };
 		33A9A8CE46252B64C968083D /* SendGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendGuard.swift; sourceTree = "<group>"; };
@@ -295,6 +302,7 @@
 		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecordingsModel.swift; sourceTree = "<group>"; };
 		CE8A630A5D409247C5E01A5C /* MacStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacStatusRow.swift; sourceTree = "<group>"; };
+		D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachingPhoneKeyStoreTests.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D576A6CEC011983BF063A3B7 /* AgendaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgendaView.swift; sourceTree = "<group>"; };
 		D88CC35762ED750977196374 /* BoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardView.swift; sourceTree = "<group>"; };
@@ -388,6 +396,7 @@
 				B8929F28520AC73CF61CD217 /* AskFormTests.swift */,
 				51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */,
 				A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */,
+				D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */,
 				4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */,
 				A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */,
 				DE23C9A9206CA7B4CFEC3857 /* KeychainKeyStoreDeviceTests.swift */,
@@ -589,6 +598,7 @@
 				AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */,
 				4F002CAE331C61F2C2A8FB21 /* AppRoot.swift */,
 				EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */,
+				305BFD36C58A1310CA0071B2 /* CachingPhoneKeyStore.swift */,
 				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
 				2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */,
 				969182E81C510D6382CFF39A /* DemoSeed+E2E.swift */,
@@ -596,7 +606,9 @@
 				CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */,
 				C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */,
 				ED010731D72C66201D5B0A4C /* DeviceSettings.swift */,
+				030693C1BC5C1FF96BA914A7 /* FileProtection.swift */,
 				04687B6B5C6EC1EFD33A747A /* LinkStore.swift */,
+				2DEDC3952A0D75EE5C3CD27D /* NotificationToken.swift */,
 				EA88CC67A10A74097B033DF8 /* ObservationHealth.swift */,
 				20344BC6FD6EAD7CEF59003C /* PhoneKeychain.swift */,
 				5F8A9F63CFA3087BCC7DC42B /* ResilientObservation.swift */,
@@ -816,6 +828,7 @@
 				724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */,
 				2F2911983E54E9247F9C839C /* BoardWriteModel.swift in Sources */,
 				C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */,
+				D4907562792F98A11EA97943 /* CachingPhoneKeyStore.swift in Sources */,
 				1E2DBADC13EAC353D9EDED50 /* CalendarReplicaModel.swift in Sources */,
 				978E2301EEB5748A01430CCE /* Card.swift in Sources */,
 				CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */,
@@ -830,6 +843,7 @@
 				27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */,
 				7735F8B89F2AF40CFCE440AA /* EventDetailModel.swift in Sources */,
 				87B5A9169905994CA11D1762 /* EventDetailView.swift in Sources */,
+				9CFADFF306242E96A50A2144 /* FileProtection.swift in Sources */,
 				F2A5A0FA080EB5E3C2F67345 /* FlatRow.swift in Sources */,
 				B4FA44EE0DD4DE0608F96849 /* LinkFailure.swift in Sources */,
 				DC5BBB91476A0A63F73787C6 /* LinkNotice.swift in Sources */,
@@ -842,6 +856,7 @@
 				23AB93367D5B6F57B4BC3EA2 /* MacStatusRow.swift in Sources */,
 				D68714F514B300CCA34A008D /* Metrics.swift in Sources */,
 				50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */,
+				D4F7DB9F9B82AF8D7EA7E806 /* NotificationToken.swift in Sources */,
 				151770A7D2209403DADBD038 /* NowModel.swift in Sources */,
 				9F28AD417086206121616519 /* NowView.swift in Sources */,
 				445E795F75304FAD8372B7B6 /* ObservationHealth.swift in Sources */,
@@ -896,6 +911,7 @@
 				6B53905088D5CF5CBCC67FBA /* AskFormTests.swift in Sources */,
 				3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */,
 				D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */,
+				FCD29A2F591EE6CBFA85E2E2 /* CachingPhoneKeyStoreTests.swift in Sources */,
 				3F6F9974DD5384B247B7FCDD /* CalendarWiringTests.swift in Sources */,
 				A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */,
 				28A8E1AED929497941884440 /* KeychainKeyStoreDeviceTests.swift in Sources */,

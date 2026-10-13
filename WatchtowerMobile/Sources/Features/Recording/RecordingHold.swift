@@ -42,6 +42,13 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
 /// until its hub's environment adopts it (`AppEnvironment.adoptHeld`).
 /// Files that could not be classified (the ledger was unreadable) go to
 /// `.held/unreadable`: kept, never sent.
+///
+/// File protection (mobile E2E D8): the folders are class C like the
+/// recordings folder; the manifest names the held recordings in plaintext
+/// (titles, times, the Mac's name) and is `completeUnlessOpen`, like the
+/// plain audio it describes. Moved audio keeps its own class. A boot while
+/// the phone is locked cannot read the manifest: the adoption fails and runs
+/// again after unlock (`AppEnvironment.keysBecameAvailable`).
 struct RecordingHold {
     let directory: URL
 
@@ -66,8 +73,8 @@ struct RecordingHold {
             }
             return
         }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(held).write(to: manifestURL, options: .atomic)
+        try FileProtection.protectDirectory(directory)
+        try FileProtection.write(try JSONEncoder().encode(held), to: manifestURL, as: FileProtection.plaintext)
     }
 
     /// Adds `recordings` (an entry with a held id is replaced): the
@@ -139,7 +146,7 @@ struct RecordingHold {
             options: [.skipsHiddenFiles]
         )
         guard !files.isEmpty else { return (0, []) }
-        try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+        try FileProtection.protectDirectory(unreadable)
         var moved = 0
         var failures: [String] = []
         for file in files {
