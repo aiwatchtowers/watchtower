@@ -381,6 +381,8 @@ final class MobileLinkCenter {
     nonisolated static let sweepRetryDelays: [Duration] = [.seconds(60), .seconds(300), .seconds(900), .seconds(3600)]
     /// The running retry of a failed close; nil when none. Cancelled when the hub stops (`cancelSweepRetry`).
     @ObservationIgnored private(set) var sweepRetry: Task<Void, Never>?
+    /// Bumped per retry task: only the task that owns `sweepRetry` clears it.
+    @ObservationIgnored private var sweepRetryGeneration = 0
 
     /// Closes the public link and removes the unbound participants while the sweep is pending. false: a share
     /// call failed (logged), the sweep stays pending.
@@ -408,6 +410,8 @@ final class MobileLinkCenter {
     /// QR is on screen (its own close sweeps). One retry runs at a time.
     private func scheduleSweepRetry() {
         guard sweepRetry == nil else { return }
+        sweepRetryGeneration &+= 1
+        let generation = sweepRetryGeneration
         sweepRetry = Task { [weak self, sleep] in
             for delay in Self.sweepRetryDelays {
                 await sleep(delay)
@@ -415,7 +419,8 @@ final class MobileLinkCenter {
                 if self.openCode != nil { break }
                 if await self.sweepShares(reason: .restart) { break }
             }
-            self?.sweepRetry = nil
+            guard let self, self.sweepRetryGeneration == generation else { return }
+            self.sweepRetry = nil
         }
     }
 
