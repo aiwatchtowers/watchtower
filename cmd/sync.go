@@ -404,7 +404,7 @@ func runSyncDetach(cfg *config.Config) error {
 	}
 
 	logPath := logFilePath(cfg)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
@@ -506,7 +506,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncDetach(cfg)
 	}
 
-	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o755); err != nil {
+	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o700); err != nil {
 		return fmt.Errorf("creating workspace directory: %w", err)
 	}
 	// Acquire exclusive lock to prevent concurrent syncs. --users-only takes

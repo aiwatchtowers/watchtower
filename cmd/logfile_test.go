@@ -169,3 +169,15 @@ func TestNewSyncLogWriter_WrapsSyncLogPath(t *testing.T) {
 	assert.NotEqual(t, logFilePath(cfg), w.path, "daemon.log cannot be rotated by the child that inherited it")
 	assert.Equal(t, int64(maxLogSize), w.maxSize, "production uses the shared cap")
 }
+
+// The log directory is the workspace (database, logs): created private.
+func TestNewSyncLogWriter_CreatesAPrivateWorkspace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	w, err := newSyncLogWriter(cfg)
+	require.NoError(t, err)
+	defer func() { _ = w.Close() }()
+	info, err := os.Stat(cfg.WorkspaceDir())
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}

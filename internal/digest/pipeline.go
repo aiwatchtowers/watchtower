@@ -246,7 +246,7 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 // Returns the lock file (caller must defer Close) and unlock func, or error if already locked.
 func (p *Pipeline) acquireDigestLock() (*os.File, func(), error) {
 	lockPath := filepath.Join(p.cfg.WorkspaceDir(), "digest.lock")
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, nil, fmt.Errorf("creating lock dir: %w", err)
 	}
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
