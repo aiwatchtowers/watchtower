@@ -265,6 +265,77 @@ final class FetchCadenceWiringTests: XCTestCase {
 
         XCTAssertEqual(applied, 1, "the fetch's own hydrate, no second apply")
     }
+
+    // MARK: - Push completion deadline
+
+    func testAPushWhoseFetchEndsFirstCompletesOnce() async throws {
+        let wired = try await makeWired()
+        let deadline = TickSleeper()
+        var completions: [FetchOutcome] = []
+
+        PushCompletion.race(
+            sleep: { try await deadline.sleep($0) },
+            fetch: { await wired.env.handlePush(inForeground: false) },
+            outcomeAtDeadline: { .failed },
+            completion: { completions.append($0) }
+        )
+        try await poll({ completions.count == 1 }, "the fetch never completed the push")
+        try await poll({ deadline.waitingCount == 0 }, "the deadline was not cancelled")
+        deadline.tick()
+
+        XCTAssertEqual(deadline.requested, [PushCompletion.deadline])
+        XCTAssertEqual(completions, [.noData], "the fetch's outcome, exactly once")
+    }
+
+    func testAPushPastTheDeadlineCompletesOnceAndTheFetchGoesOn() async throws {
+        let wired = try await makeWired()
+        let deadline = TickSleeper()
+        var completions: [FetchOutcome] = []
+        var fetchEnded = false
+        wired.remote.holding = true
+
+        PushCompletion.race(
+            sleep: { try await deadline.sleep($0) },
+            fetch: {
+                let outcome = await wired.env.handlePush(inForeground: false)
+                fetchEnded = true
+                return outcome
+            },
+            outcomeAtDeadline: { wired.env.lastFetchFailed ? .failed : .noData },
+            completion: { completions.append($0) }
+        )
+        try await poll({ wired.remote.heldCount == 1 && deadline.waitingCount == 1 }, "the race did not start")
+        deadline.tick()
+        try await poll({ completions.count == 1 }, "the deadline never completed the push")
+        XCTAssertEqual(completions, [.noData])
+        wired.remote.release()
+        try await poll({ fetchEnded }, "the fetch was dropped at the deadline")
+
+        XCTAssertEqual(completions, [.noData], "the late fetch completes nothing")
+    }
+
+    func testThePushDeadlineReportsFailedAfterAFailedFetch() async throws {
+        let wired = try await makeWired()
+        wired.remote.failing = true
+        _ = await wired.env.refresh(.pull)
+        XCTAssertTrue(wired.env.lastFetchFailed)
+        let deadline = TickSleeper()
+        var completions: [FetchOutcome] = []
+        wired.remote.holding = true
+
+        PushCompletion.race(
+            sleep: { try await deadline.sleep($0) },
+            fetch: { await wired.env.handlePush(inForeground: false) },
+            outcomeAtDeadline: { wired.env.lastFetchFailed ? .failed : .noData },
+            completion: { completions.append($0) }
+        )
+        try await poll({ wired.remote.heldCount == 1 && deadline.waitingCount == 1 }, "the race did not start")
+        deadline.tick()
+        try await poll({ completions.count == 1 }, "the deadline never completed the push")
+        wired.remote.release()
+
+        XCTAssertEqual(completions, [.failed])
+    }
 }
 
 /// Stands in for an environment's CloudKit reach (`remoteFetch`): records

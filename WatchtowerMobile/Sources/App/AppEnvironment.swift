@@ -177,6 +177,9 @@ final class AppEnvironment {
     private(set) var isActive = true
     /// true while the safety poll runs.
     var isLooping: Bool { loopTask != nil }
+    /// The latest finished fetch failed: a silent push's deadline reports
+    /// `.failed` rather than `.noData` (`PushCompletion`).
+    var lastFetchFailed: Bool { lastFinishedFetch?.outcome == .failed }
     /// Fetch cycles the loop has begun (a cancelled loop begins none).
     @ObservationIgnored private(set) var fetchCycles = 0
 

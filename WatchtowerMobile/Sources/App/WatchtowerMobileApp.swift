@@ -63,9 +63,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         BatteryDiagnostics.shared.counter.record(.silentPush)
         recordColdLaunch(coldLaunch.receivedPush())
         // Fetched at once; pushes landing during a fetch share one follow-up
-        // (`AppEnvironment.handlePush`), and each push still gets its
-        // completion when the fetch serving it ends. In the foreground a
-        // fallback fetch also polls the zones.
+        // (`AppEnvironment.handlePush`), and each push gets its completion
+        // when the fetch serving it ends or at iOS's deadline, whichever
+        // comes first (`PushCompletion`). In the foreground a fallback fetch
+        // also polls the zones.
         let inForeground = application.applicationState == .active
         Task { @MainActor in
             guard let env = Self.root?.env else {
@@ -73,7 +74,62 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completionHandler(.noData)
                 return
             }
-            completionHandler(await env.handlePush(inForeground: inForeground).backgroundFetchResult)
+            PushCompletion.race(
+                fetch: { await env.handlePush(inForeground: inForeground) },
+                outcomeAtDeadline: { env.lastFetchFailed ? .failed : .noData },
+                completion: { completionHandler($0.backgroundFetchResult) }
+            )
+        }
+    }
+}
+
+/// A silent push's completion within iOS's budget (~30 s of background
+/// time): the fetch serving the push races `deadline`, and whichever ends
+/// first completes, exactly once. A fetch past the deadline keeps going;
+/// only its report is dropped.
+@MainActor
+enum PushCompletion {
+    /// Under iOS's ~30 s, with room for the completion itself.
+    static let deadline: Duration = .seconds(25)
+
+    /// `outcomeAtDeadline` is what the deadline reports (`.noData`, or
+    /// `.failed` after a failed fetch). `sleep` is the deadline's wait
+    /// (tests step it).
+    static func race(
+        deadline: Duration = PushCompletion.deadline,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        fetch: @escaping @MainActor () async -> FetchOutcome,
+        outcomeAtDeadline: @escaping @MainActor () -> FetchOutcome,
+        completion: @escaping @MainActor (FetchOutcome) -> Void
+    ) {
+        let once = Once()
+        let timer = Task { @MainActor in
+            do {
+                try await sleep(deadline)
+            } catch {
+                return
+            }
+            if once.claim() {
+                completion(outcomeAtDeadline())
+            }
+        }
+        Task { @MainActor in
+            let outcome = await fetch()
+            timer.cancel()
+            if once.claim() {
+                completion(outcome)
+            }
+        }
+    }
+
+    /// The once-flag: the first `claim()` wins.
+    @MainActor
+    private final class Once {
+        private var claimed = false
+
+        func claim() -> Bool {
+            defer { claimed = true }
+            return !claimed
         }
     }
 }
