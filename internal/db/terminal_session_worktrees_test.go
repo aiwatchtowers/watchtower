@@ -24,9 +24,9 @@ func TestRecordSessionWorktree_InsertsOnceAndIgnoresRepeats(t *testing.T) {
 	if got, err := d.RecordSessionWorktree(ctx, nil, id, "/tmp/example/wt", "feat/y", ledgerAt); err != nil || !got {
 		t.Fatalf("a new branch in the same root = %v, %v; want recorded", got, err)
 	}
-	has, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "feat/x")
-	if err != nil || !has {
-		t.Fatalf("HasSessionWorktree = %v, %v; want true", has, err)
+	has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "feat/x")
+	if err != nil || !has || full {
+		t.Fatalf("HasSessionWorktree = %v, %v, %v; want true, false, nil", has, full, err)
 	}
 	rows, err := d.SessionWorktrees(ctx, id)
 	if err != nil || len(rows) != 2 {
@@ -69,6 +69,9 @@ func TestRecordSessionWorktree_StopsAt64(t *testing.T) {
 	rows, _ := d.SessionWorktrees(ctx, id)
 	if len(rows) != MaxSessionWorktrees {
 		t.Fatalf("%d rows, want %d", len(rows), MaxSessionWorktrees)
+	}
+	if has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/one-too-many", ""); err != nil || has || !full {
+		t.Fatalf("HasSessionWorktree past the cap = %v, %v, %v; want false, true, nil", has, full, err)
 	}
 	other := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f")
 	if got, err := d.RecordSessionWorktree(ctx, nil, other, "/tmp/example/wt0", "", ledgerAt); err != nil || !got {
@@ -158,9 +161,9 @@ func TestHasSessionWorktree_UsesAReadOnlyTx(t *testing.T) {
 	if err := d.SetReadOnly(); err != nil {
 		t.Fatal(err)
 	}
-	has, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "")
-	if err != nil || !has {
-		t.Fatalf("HasSessionWorktree on a query_only handle = %v, %v; want true, nil", has, err)
+	has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "")
+	if err != nil || !has || full {
+		t.Fatalf("HasSessionWorktree on a query_only handle = %v, %v, %v; want true, false, nil", has, full, err)
 	}
 }
 
