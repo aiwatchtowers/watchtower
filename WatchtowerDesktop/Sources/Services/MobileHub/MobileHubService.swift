@@ -431,6 +431,7 @@ final class MobileHubService {
 
     func stop() {
         publisher.stop()
+        linkCenter?.cancelSweepRetry()
         companions.forEach { $0.stop() }
         heartbeatTask?.cancel()
         heartbeatTask = nil

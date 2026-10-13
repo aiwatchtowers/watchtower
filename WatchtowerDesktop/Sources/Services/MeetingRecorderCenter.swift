@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import WatchtowerCore
 
@@ -1892,6 +1893,35 @@ final class MeetingRecorderCenter {
         }
     }
 
+    /// Why a phone recording was refused before anything was written.
+    enum PhoneIngestError: LocalizedError {
+        case notAudio
+
+        var errorDescription: String? { "The file is not an audio recording." }
+    }
+
+    /// A phone recording: an ISO base media file (its first box is `ftyp`,
+    /// whose type sits at offset 4) that AVFoundation reads with at least one
+    /// audio track — so a video, a HEIF image or a bare header is refused, and
+    /// whatever else a linked phone sends never reaches the recordings
+    /// directory or the decoder.
+    nonisolated static func isAudioRecording(_ url: URL) async -> Bool {
+        guard isISOMediaFile(url) else { return false }
+        do {
+            return try await !AVURLAsset(url: url).loadTracks(withMediaType: .audio).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /// The cheap first gate of `isAudioRecording`: the `ftyp` box head.
+    nonisolated static func isISOMediaFile(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 8), head.count == 8 else { return false }
+        return head.suffix(4) == Data("ftyp".utf8)
+    }
+
     /// Ingests a recording made on the phone (AAC `.m4a`, mic only) and
     /// enqueues it for transcription straight away — a phone recording is
     /// transcribed automatically, so it never passes through the opt-in
@@ -1905,8 +1935,9 @@ final class MeetingRecorderCenter {
     /// a Desktop capture of the same second never share a stem (the exclusive
     /// create also guards writers off this actor); only the copy runs off it.
     /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
-    /// report under — without awaiting the job. Throws when the reservation or
-    /// the copy fails (nothing is enqueued and nothing is left behind).
+    /// report under — without awaiting the job. Throws when the source is not
+    /// an audio recording (`PhoneIngestError.notAudio`), or the reservation or the
+    /// copy fails (nothing is enqueued and nothing is left behind).
     @discardableResult
     func ingestPhoneRecording(
         audioURL sourceURL: URL,
@@ -1914,6 +1945,8 @@ final class MeetingRecorderCenter {
         title: String?,
         config: TranscriptionConfig
     ) async throws -> URL {
+        let isAudio = await Task.detached { await Self.isAudioRecording(sourceURL) }.value
+        guard isAudio else { throw PhoneIngestError.notAudio }
         let audioURL = try Self.reservePhoneRecording(eventID: eventID, title: title,
                                                       in: recordingsDirectory, date: clock())
         try await Task.detached {

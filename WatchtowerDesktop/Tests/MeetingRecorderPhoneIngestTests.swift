@@ -162,7 +162,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     // MARK: - Callbacks
 
     func testCallbacksReportProgressAndTheTranscriptID() async throws {
-        let source = try makeDummyAudioFile()
+        let source = try makeDummyPhoneAudioFile()
         defer { try? FileManager.default.removeItem(at: source) }
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         // 12 windows of 0.1 s.
@@ -191,8 +191,8 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// A phone upload arriving mid-capture queues behind it: the capture is
     /// untouched (single-engine invariant) and the job runs only after Stop.
     func testIngestDuringADesktopCaptureQueuesBehindIt() async throws {
-        let source = try makeDummyAudioFile()
-        let desktopAudio = try makeDummyAudioFile()
+        let source = try makeDummyPhoneAudioFile()
+        let desktopAudio = try makeDummyPhoneAudioFile()
         defer {
             for url in [source, desktopAudio] {
                 try? FileManager.default.removeItem(at: url)
@@ -271,8 +271,8 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
     /// Two uploads of one sync batch ingested together, same clock second.
     func testConcurrentIngestsOfTheSameSecondBothLandAndQueue() async throws {
-        let first = try makeDummyAudioFile()
-        let second = try makeDummyAudioFile()
+        let first = try makeDummyPhoneAudioFile()
+        let second = try makeDummyPhoneAudioFile()
         defer { for url in [first, second] { try? FileManager.default.removeItem(at: url) } }
         let fixed = Date()
         // No runner: both jobs fail at the save step, so their sidecars stay
@@ -296,7 +296,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// A Desktop recording of the same second already holds the stem: the
     /// ingest moves to -2 and leaves the Desktop sidecar alone.
     func testIngestSkipsADesktopRecordingOfTheSameSecond() async throws {
-        let source = try makeDummyAudioFile()
+        let source = try makeDummyPhoneAudioFile()
         defer { try? FileManager.default.removeItem(at: source) }
         let fixed = Date()
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
@@ -318,7 +318,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// names on the main actor, so the stems differ and neither sidecar is
     /// overwritten.
     func testIngestRacingADesktopStartGetsADistinctName() async throws {
-        let source = try makeDummyAudioFile()
+        let source = try makeDummyPhoneAudioFile()
         defer { try? FileManager.default.removeItem(at: source) }
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
@@ -368,6 +368,50 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
+    /// A source that is not a media file is refused before anything is
+    /// reserved (target 168): no `rec_*` file, no job.
+    func testANonMediaSourceIsRefusedAndLeavesNothing() async throws {
+        let source = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let center = try makeCenter(runner: nil)
+
+        do {
+            try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Not audio",
+                                                  config: singleWindowConfig())
+            XCTFail("the ingest must throw")
+        } catch MeetingRecorderCenter.PhoneIngestError.notAudio {}
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)
+        XCTAssertFalse(names.contains { $0.hasPrefix("rec_") }, "got \(names)")
+        XCTAssertTrue(center.jobs.isEmpty)
+    }
+
+    /// The phone's AAC `.m4a` passes; a bare `ftyp` header (an ISO file without an audio track), a non-ISO file
+    /// and a missing file do not.
+    func testTheMediaCheckRequiresAnAudioTrack() async throws {
+        let real = try writePhoneAACFixture(durationSec: 1)
+        defer { try? FileManager.default.removeItem(at: real) }
+        let isAudio = await MeetingRecorderCenter.isAudioRecording(real)
+        XCTAssertTrue(isAudio)
+        let header = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).m4a")
+        try (Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypM4A ".utf8) + Data(count: 12)).write(to: header)
+        defer { try? FileManager.default.removeItem(at: header) }
+        XCTAssertTrue(MeetingRecorderCenter.isISOMediaFile(header))
+        let headerIsAudio = await MeetingRecorderCenter.isAudioRecording(header)
+        XCTAssertFalse(headerIsAudio, "an ftyp box alone is no audio")
+        let short = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: short) }
+        let shortIsAudio = await MeetingRecorderCenter.isAudioRecording(short)
+        XCTAssertFalse(shortIsAudio)
+        let missingIsAudio = await MeetingRecorderCenter.isAudioRecording(recordingsDir.appendingPathComponent("missing.m4a"))
+        XCTAssertFalse(missingIsAudio)
+    }
+
+    /// A short real phone `.m4a` (the ingest checks for an audio track).
+    private func makeDummyPhoneAudioFile() throws -> URL {
+        try writePhoneAACFixture(durationSec: 0.2)
+    }
+
     private func sidecarTitle(_ audio: URL) throws -> String? {
         struct Meta: Decodable { let title: String? }
         return try JSONDecoder().decode(Meta.self, from: Data(contentsOf: metaSidecar(audio))).title
@@ -414,7 +458,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// Ingest → batch transcription (3 windows) → fake diarizer → save, with
     /// the registry loader recording the event id it was asked for.
     private func runIngest(eventID: String?) async throws -> IngestOutcome {
-        let source = try makeDummyAudioFile()
+        let source = try makeDummyPhoneAudioFile()
         defer { try? FileManager.default.removeItem(at: source) }
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let notifier = FakeNotifier()

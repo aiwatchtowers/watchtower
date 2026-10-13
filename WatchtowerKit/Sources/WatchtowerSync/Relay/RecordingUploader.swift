@@ -62,6 +62,9 @@ public actor RecordingUploader: RecordingUploadAcking {
     public static let sampleFormat = "aac-64k-mono"
     /// The asset cap (spec §3): 3 h of 64 kbps AAC is about 86 MB.
     public static let maximumAssetBytes: Int64 = 90_000_000
+    /// `maximumAssetBytes` sealed (`ChunkedAssetCipher`): the largest upload
+    /// asset a hub accepts.
+    public static let maximumSealedAssetBytes = ChunkedAssetCipher.sealedLength(forPlaintext: maximumAssetBytes)
     /// The ledger message for a file over the asset cap.
     public static let tooLargeMessage = "This recording is over 90 MB, too large to send to your Mac."
     /// The ledger message for a row whose audio file is gone.
