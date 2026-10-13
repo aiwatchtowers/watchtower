@@ -388,6 +388,30 @@ extension HubSyncState {
         }
     }
 
+    /// Stores the refusal of a hello under the code `codeNonce` within the flood bounds (target 168): a phone that
+    /// already has a refusal row is rewritten in place (no growth); a new one draws from the code's answer counter
+    /// (`confirm_nonces_drawn`, shared with the confirm nonces: a refusing code draws no more nonces, it is spent,
+    /// used or expired) up to `maxAnswersPerCode`, and only while fewer than `maxRefusals` rows exist. false:
+    /// nothing written, the hello stays unanswered.
+    func saveBoundedLinkRefusal(
+        _ refusal: LinkRefusalRecord, codeNonce: String, maxAnswersPerCode: Int, maxRefusals: Int
+    ) throws -> Bool {
+        try queue.write { db in
+            let known = try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM link_refusals WHERE device_id = ? COLLATE NOCASE)",
+                arguments: [refusal.deviceID]) ?? false
+            if !known {
+                guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM link_refusals") ?? 0 < maxRefusals else { return false }
+                try db.execute(
+                    sql: "UPDATE link_codes SET confirm_nonces_drawn = confirm_nonces_drawn + 1 WHERE nonce = ? AND confirm_nonces_drawn < ?",
+                    arguments: [codeNonce, maxAnswersPerCode])
+                guard db.changesCount > 0 else { return false }
+            }
+            try Self.saveLinkRefusal(refusal, db)
+            return true
+        }
+    }
+
     /// Every pending request, oldest first.
     func pendingDevices() throws -> [PendingDevice] {
         try queue.read { db in

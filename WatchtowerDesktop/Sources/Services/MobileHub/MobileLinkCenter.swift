@@ -108,6 +108,11 @@ final class MobileLinkCenter {
     /// device's key change included; every later hello for it is refused `too_many_requests` and the owner shows a
     /// new code. So guessing the owner's code online costs at most this many tries per code.
     nonisolated static let maxNoncesPerCode = 3
+    /// Refusals one code may publish on top of its nonces (spent, used or expired code): a hello carries a fresh
+    /// key at will, and each refused one would otherwise be a new keybox record. Later ones go unanswered.
+    nonisolated static let maxRefusalsPerCode = 10
+    /// At most this many phones hold a refusal at once (`link_refusals` rows), whatever the code.
+    nonisolated static let maxLinkRefusals = 50
 
     /// The hub's confirm nonce for one accepted hello: fresh random bytes.
     nonisolated static func randomConfirmNonce() -> Data {
@@ -619,15 +624,22 @@ final class MobileLinkCenter {
     }
 
     /// Publishes the refusal sealed to the hello's key (F5), unless the phone is linked already: a linked phone
-    /// keeps its link whatever code it sends later.
+    /// keeps its link whatever code it sends later. Bounded per code and in total (`maxRefusalsPerCode`,
+    /// `maxLinkRefusals`): past them the hello is logged and left unanswered.
     private func refuse(_ opened: OpenedHello, _ reason: LinkRefusal, at date: Date) throws {
         let deviceID = opened.deviceID.uuidString
         guard try sidecar.linkedDevice(deviceID) == nil else { return }
         let payload = opened.hello.device
-        try sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
-            deviceID: deviceID, name: Self.displayName(payload.name), scope: payload.scope,
-            reason: reason, at: date, agreementKey: opened.agreementKey.rawRepresentation
-        ))
+        let saved = try sidecar.saveBoundedLinkRefusal(
+            HubSyncState.LinkRefusalRecord(
+                deviceID: deviceID, name: Self.displayName(payload.name), scope: payload.scope,
+                reason: reason, at: date, agreementKey: opened.agreementKey.rawRepresentation),
+            codeNonce: opened.code.nonce, maxAnswersPerCode: Self.maxNoncesPerCode + Self.maxRefusalsPerCode,
+            maxRefusals: Self.maxLinkRefusals)
+        guard saved else {
+            logger.notice("link request from phone \(deviceID, privacy: .public): refusal cap reached, unanswered")
+            return
+        }
         nudgeKinds([.deviceGrant])
     }
 

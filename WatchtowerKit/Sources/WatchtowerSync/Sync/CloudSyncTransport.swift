@@ -59,6 +59,13 @@ public struct CloudRecord: Equatable, Sendable {
     /// for a record this device built, in the in-memory fake unless a test
     /// sets it, and for an event buffered before the field existed.
     public let creatorUserRecordName: String?
+    /// `CKRecord.modificationDate` of a fetched record: when the server last
+    /// stored it. Unlike `modifiedAt` (the writer's own claim), no client
+    /// sets it, so relay hygiene ages records by it. Read-only server
+    /// metadata like `creatorUserRecordName`: nil for a record this device
+    /// built, in the in-memory fake unless a test sets it, and for an event
+    /// buffered before the field existed.
+    public let serverModifiedAt: Date?
     /// The descriptor of a sealed asset: on save, the caller's descriptor of the ciphertext `assetFileURL`
     /// (`SecureTransport` puts it in the inner frame); on read, taken from the opened frame. Never on the
     /// wire record itself (the sealed file is header-less, mobile E2E spec §2.5).
@@ -75,6 +82,7 @@ public struct CloudRecord: Equatable, Sendable {
         notifyLevel: String? = nil,
         assetFileURL: URL? = nil,
         creatorUserRecordName: String? = nil,
+        serverModifiedAt: Date? = nil,
         asset: AssetDescriptor? = nil,
         sealed: SealedInfo? = nil
     ) {
@@ -86,6 +94,7 @@ public struct CloudRecord: Equatable, Sendable {
         self.notifyLevel = notifyLevel
         self.assetFileURL = assetFileURL
         self.creatorUserRecordName = creatorUserRecordName
+        self.serverModifiedAt = serverModifiedAt
         self.asset = asset
         self.sealed = sealed
     }

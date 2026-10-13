@@ -57,8 +57,8 @@ import WatchtowerSync
 /// The authenticated `created_at` then decides the age. The sender's
 /// `devices.last_seq` is raised as a high-water mark for diagnostics only
 /// (D4: no ordering gate, CloudKit delivers out of order). A `device` record
-/// and a sealed `hello` (a link request, F4) go to `deviceRecords`, the link
-/// center, unbudgeted.
+/// (unbudgeted) and a sealed `hello` (a link request, F4; budgeted, so a
+/// flood of them spreads over passes) go to `deviceRecords`, the link center.
 ///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
@@ -87,8 +87,8 @@ final class RelayProcessor: Sendable {
     }
 
     struct Pass: Equatable, Sendable {
-        /// Records handled (applied or ingested, and echoed) in this pass;
-        /// re-echoes are not counted.
+        /// Records handled (applied or ingested, and echoed, or hellos
+        /// handed to the link center) in this pass; re-echoes are not counted.
         let handled: Int
         /// Records still waiting; > 0 means "run again now".
         let remaining: Int
@@ -100,6 +100,8 @@ final class RelayProcessor: Sendable {
     static let actionMaxAge: TimeInterval = 7 * 86_400
     /// Session input, finish and start requests go stale sooner (§5.2 rule 5).
     static let sessionRequestMaxAge: TimeInterval = 86_400
+    /// How far ahead of the Mac's clock a phone's `created_at` may be before the action counts as expired.
+    static let maxClockSkew: TimeInterval = 300
     private static let hygieneInterval: TimeInterval = 86_400
     /// The buffer sweep and the ledger prune sit one day past the longest
     /// record window, so hygiene has had a full window of daily scans first.
@@ -234,7 +236,7 @@ final class RelayProcessor: Sendable {
 
     private struct Work {
         let run: @Sendable () async throws -> Void
-        /// Counts toward `batchLimit`: an apply or an ingest, not a re-echo.
+        /// Counts toward `batchLimit`: an apply, an ingest or a hello, not a re-echo.
         let budgeted: Bool
     }
 
@@ -281,12 +283,13 @@ final class RelayProcessor: Sendable {
                 try await deviceRecords.handle(record)
             }, budgeted: false)
         case RelayRecordKind.hello.rawValue:
-            // A link request, unbudgeted like a device record; the link center opens it.
+            // A link request; the link center opens it. Budgeted (target 168): anyone holding a code can write
+            // hellos at will, and each costs public-key work, so a flood waits for the next pass.
             guard let hello = deviceRecords?.hello else { return nil }
             return Work(run: {
                 self.lastActivity.withLock { $0 = self.now() }
                 try await hello(record)
-            }, budgeted: false)
+            }, budgeted: true)
         default:
             // Future kinds have no relay work.
             return nil
@@ -416,9 +419,12 @@ final class RelayProcessor: Sendable {
         try sidecar.raiseDeviceLastSeq(sealed.senderID.uuidString, to: sealed.seq)
     }
 
+    /// Past its window, or dated more than `maxClockSkew` ahead: a future `created_at` would otherwise stretch the
+    /// window at will.
     private func isExpired(_ action: ActionRequestPayload) -> Bool {
         let maxAge = Self.sessionRequestKinds.contains(action.kind) ? Self.sessionRequestMaxAge : Self.actionMaxAge
-        return now().timeIntervalSince(action.createdAt) > maxAge
+        let age = now().timeIntervalSince(action.createdAt)
+        return age > maxAge || age < -Self.maxClockSkew
     }
 
     /// nil when another pass already claimed the record (it echoes it).
@@ -733,8 +739,10 @@ final class RelayProcessor: Sendable {
     /// its `expired` echo. The scan opens the hub's own echoes too (F2);
     /// records nobody here can open (a removed phone's, a stranger's, another
     /// hub's leftovers, an older version the rollback guard refused) are
-    /// deleted by wire name once their plaintext `modifiedAt` is older than
-    /// 7 days. Then the local event buffer is swept (strictly
+    /// deleted by wire name once older than 7 days. Age is the server's
+    /// `serverModifiedAt` (`CKRecord.modificationDate`), never the sender's
+    /// own `modifiedAt` claim, which falls in only for an event buffered
+    /// before the server date was kept. Then the local event buffer is swept (strictly
     /// after the record pass, and never past the stored token, so an
     /// unconsumed event survives) and the ledger is pruned.
     func runHygieneIfDue() async throws {
@@ -755,7 +763,7 @@ final class RelayProcessor: Sendable {
             record.sealed?.wireName ?? (record.kind == RelayRecordKind.hello.rawValue ? record.recordName : nil)
         }
         let staleUnopenable = scan.unopenable
-            .filter { current.timeIntervalSince($0.modifiedAt) > Self.actionMaxAge }
+            .filter { current.timeIntervalSince($0.serverModifiedAt ?? $0.modifiedAt) > Self.actionMaxAge }
             .map(\.wireName)
         let stale = staleOpened + staleUnopenable
         if !stale.isEmpty {
@@ -769,7 +777,7 @@ final class RelayProcessor: Sendable {
     }
 
     private func isStale(_ record: CloudRecord, at current: Date) throws -> Bool {
-        guard current.timeIntervalSince(record.modifiedAt) > Self.actionMaxAge else { return false }
+        guard current.timeIntervalSince(record.serverModifiedAt ?? record.modifiedAt) > Self.actionMaxAge else { return false }
         switch record.kind {
         case RelayRecordKind.action.rawValue:
             let action = try? RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)

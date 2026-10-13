@@ -34,9 +34,31 @@ struct CloudKitLinkContainer: LinkContainer {
         try await container.userRecordID().recordName
     }
 
-    func acceptShares(_ urls: [URL]) async throws {
+    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
         let metadatas = try await fetchMetadata(urls)
+        try Self.checkShares(
+            metadatas.map { (owner: $0.ownerIdentity.userRecordID?.recordName, recordID: $0.share.recordID) },
+            ownerName: ownerName, hubID: hubID)
         try await accept(metadatas)
+    }
+
+    /// The code's share URLs named something else than the hub's two zones.
+    enum ShareCheckError: Error, Equatable {
+        case unexpectedShares
+    }
+
+    /// Before anything is accepted: the shares are exactly the zone-wide
+    /// shares of `hubID`'s two zones, and the code's owner owns each, so a
+    /// code carrying other URLs cannot make the phone join another user's
+    /// zones (or another hub's).
+    static func checkShares(
+        _ shares: [(owner: String?, recordID: CKRecord.ID)], ownerName: String, hubID: String
+    ) throws {
+        let expected = shareRecordIDs(ownerName: ownerName, hubID: hubID)
+        guard shares.count == expected.count, shares.allSatisfy({ $0.owner == ownerName }),
+              Set(shares.map(\.recordID)) == Set(expected) else {
+            throw ShareCheckError.unexpectedShares
+        }
     }
 
     /// A zone-wide share's record lives in its zone under

@@ -595,7 +595,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         let pass = try await processor.processOnce()
 
-        XCTAssertEqual(pass, .init(handled: 0, remaining: 0), "unbudgeted, like a device record")
+        XCTAssertEqual(pass, .init(handled: 1, remaining: 0), "budgeted (target 168), unlike a device record")
         XCTAssertEqual(center.pendingLinks.map(\.id), [phoneA])
         XCTAssertNotNil(processor.lastActivityAt)
     }

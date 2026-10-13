@@ -256,6 +256,58 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertTrue(names.contains(freshPending.recordName), "a fresh pending record from the linked phone stays")
     }
 
+    /// Hygiene ages records by the server's date, not the sender's `modifiedAt` claim (target 168): a stranger's
+    /// record that claims to be fresh is still deleted once the server stored it more than a week ago, and one
+    /// that claims to be ancient but just arrived stays.
+    func testHygieneAgesRecordsByTheServersDate() async throws {
+        let now = Date()
+        let old = now.addingTimeInterval(-(RelayProcessor.actionMaxAge + 3600))
+        func stranger(_ nonce: String, claims: Date, server: Date) throws -> CloudRecord {
+            let sealed = try TestRelayPhone.seal(
+                try plainProbe(nonce, deviceID: TestE2E.strangerDeviceID.uuidString, created: claims),
+                as: TestE2E.strangerIdentity)
+            return CloudRecord(
+                recordName: sealed.recordName, zone: sealed.zone, kind: sealed.kind, modifiedAt: sealed.modifiedAt,
+                payload: sealed.payload, serverModifiedAt: server)
+        }
+        let claimsFresh = try stranger("claims-fresh", claims: now.addingTimeInterval(365 * 86_400), server: old)
+        let claimsAged = try stranger("claims-aged", claims: Date(timeIntervalSince1970: 1), server: now)
+        try await transport.save([claimsFresh, claimsAged])
+
+        try await makeProcessor { now }.runHygieneIfDue()
+
+        let names = Set(try await transport.changes(in: .relay, since: nil).changed.map(\.recordName))
+        XCTAssertFalse(names.contains(claimsFresh.recordName), "the server's date says it is aged")
+        XCTAssertTrue(names.contains(claimsAged.recordName), "the server's date says it is fresh")
+    }
+
+    /// Hellos count toward the pass budget (target 168): anyone holding a code can write them at will, so a flood
+    /// spreads over passes instead of holding one pass for its whole length.
+    func testHellosCountTowardTheBatchLimit() async throws {
+        let hellos = try (0 ..< 3).map { _ -> CloudRecord in
+            let phone = TestHello.newPhone()
+            let name = "hello-\(phone.deviceID.uuidString)"
+            let envelope = try SealedBox.seal(
+                InnerFrame(kind: RelayRecordKind.hello.rawValue, id: name, payload: Data("{}".utf8)), envelopeClass: .hello,
+                to: Curve25519.KeyAgreement.PrivateKey().publicKey,
+                info: SealedBox.helloInfo(hubID: TestE2E.hubID, linkNonce: Data(repeating: 1, count: 16)),
+                hubID: TestE2E.hubID, senderID: phone.deviceID, epoch: 0, seq: 1,
+                context: EnvelopeContext(zone: .relay, wireName: name), signer: phone.signing)
+            return CloudRecord(recordName: name, zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: envelope)
+        }
+        try await transport.save(hellos)
+        let seen = OSAllocatedUnfairLock(initialState: 0)
+        let processor = RelayProcessor(
+            transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar, dispatcher: dispatcher,
+            hubID: "hub-acme", batchLimit: 1,
+            deviceRecords: .init(handle: { _ in }, hello: { _ in seen.withLock { $0 += 1 } }))
+
+        let pass = try await processor.processOnce()
+
+        XCTAssertEqual(pass, RelayProcessor.Pass(handled: 1, remaining: 2))
+        XCTAssertEqual(seen.withLock { $0 }, 1)
+    }
+
     /// Uploads have no age window (Task 12 ruling): an upload's ledger row and the rollback-guard rows of an
     /// accepted epoch outlive the 8-day cutoff until that epoch leaves the D10 grace; actions keep the cutoff.
     func testPruningKeepsUploadRowsWhileTheirEpochIsAccepted() throws {
@@ -403,6 +455,32 @@ final class RelayProcessorTests: XCTestCase {
 
         XCTAssertEqual(calls, 0)
         XCTAssertEqual(try echoes(of: record.recordName).map(\.status), [.expired])
+    }
+
+    /// A `created_at` more than `maxClockSkew` ahead of the Mac expires (target 168): a far-future date would
+    /// otherwise keep a request inside its age window forever. A small skew is tolerated.
+    func testAFutureCreatedAtBeyondTheSkewExpires() async throws {
+        let now = Date()
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied()
+        }
+        func record(createdIn offset: TimeInterval) throws -> CloudRecord {
+            let action = ActionRequestPayload(
+                id: UUID().uuidString, kind: .boardCommentAdd, entityID: "7",
+                createdAt: now.addingTimeInterval(offset), deviceID: testPhoneID)
+            return try TestRelayPhone.seal(try CloudRecordFactory.record(for: action, modifiedAt: now))
+        }
+        let future = try record(createdIn: RelayProcessor.maxClockSkew + 60)
+        let skewed = try record(createdIn: RelayProcessor.maxClockSkew - 60)
+        try await transport.save([future, skewed])
+
+        _ = try await makeProcessor { now }.processOnce()
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(try echoes(of: future.recordName).map(\.status), [.expired])
+        XCTAssertEqual(try echoes(of: skewed.recordName).map(\.status), [.applied])
     }
 
     /// D4: CloudKit does not order deliveries, so a lower seq after a higher one from the same phone (another

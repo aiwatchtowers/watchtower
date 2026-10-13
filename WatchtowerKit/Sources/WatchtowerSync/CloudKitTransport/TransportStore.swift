@@ -64,7 +64,8 @@ public final class TransportStore: Sendable {
                     deleted INTEGER NOT NULL DEFAULT 0,
                     notify_level TEXT,
                     asset_path TEXT,
-                    creator TEXT
+                    creator TEXT,
+                    server_modified_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS pending (
                     record_name TEXT NOT NULL,
@@ -110,6 +111,10 @@ public final class TransportStore: Sendable {
             // creator (the hub's device gate) is fetched metadata: events only.
             if try !db.columns(in: "events").contains(where: { $0.name == "creator" }) {
                 try db.execute(sql: "ALTER TABLE events ADD COLUMN creator TEXT")
+            }
+            // server_modified_at (target 168, relay hygiene's clock) is fetched metadata too: events only.
+            if try !db.columns(in: "events").contains(where: { $0.name == "server_modified_at" }) {
+                try db.execute(sql: "ALTER TABLE events ADD COLUMN server_modified_at REAL")
             }
             // hub_id (multi-hub spec §4.4): the hub this store's state belongs to.
             if try !db.columns(in: "scope").contains(where: { $0.name == "hub_id" }) {
@@ -304,13 +309,15 @@ public final class TransportStore: Sendable {
                 try db.execute(
                     sql: """
                         INSERT INTO events
-                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator)
-                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator,
+                             server_modified_at)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
                         """,
                     arguments: [
                         record.zone.rawValue, record.recordName, record.kind,
                         record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName
+                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName,
+                        record.serverModifiedAt?.timeIntervalSince1970
                     ]
                 )
             }
@@ -364,7 +371,8 @@ public final class TransportStore: Sendable {
                         payload: row["payload"] ?? Data(),
                         notifyLevel: row["notify_level"],
                         assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:)),
-                        creatorUserRecordName: row["creator"]
+                        creatorUserRecordName: row["creator"],
+                        serverModifiedAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:))
                     ))
                 }
             }
@@ -668,8 +676,10 @@ public final class TransportStore: Sendable {
         }
     }
 
-    /// Drops buffered events that are BOTH older than `cutoff` (by `modified_at`)
-    /// AND at or below the consumer floor `token`. Returns the number of rows deleted.
+    /// Drops buffered events that are BOTH older than `cutoff` (by the server's
+    /// `server_modified_at`, else the writer's `modified_at` for an event buffered
+    /// before it was kept) AND at or below the consumer floor `token`. Returns the
+    /// number of rows deleted.
     ///
     /// Why AGE-based and not purely token-based (the Plan 3 final-review argument):
     /// sweeping everything ≤ the consumer token is `compactEvents` — it deletes
@@ -706,7 +716,7 @@ public final class TransportStore: Sendable {
     public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) throws -> Int {
         try queue.write { db in
             try db.execute(
-                sql: "DELETE FROM events WHERE zone = ? AND modified_at < ? AND seq <= ?",
+                sql: "DELETE FROM events WHERE zone = ? AND COALESCE(server_modified_at, modified_at) < ? AND seq <= ?",
                 arguments: [zone.rawValue, cutoff.timeIntervalSince1970, token.value]
             )
             return db.changesCount
