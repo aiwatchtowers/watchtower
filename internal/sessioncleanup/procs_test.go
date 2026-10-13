@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-const psFixture = `  501     1   501 Mon Oct 12 10:00:00 2026     /bin/sleep
-  502   501   501 Fri Oct  2 09:05:01 2026     /Applications/Foo Bar.app/Contents/MacOS/Foo Bar
-    1     0     0 Thu Oct  1 08:00:00 2026     /sbin/launchd
+const psFixture = `  501     1   501 S    Mon Oct 12 10:00:00 2026     /bin/sleep
+  502   501   501 Ss+  Fri Oct  2 09:05:01 2026     /Applications/Foo Bar.app/Contents/MacOS/Foo Bar
+    1     0     0 Ss   Thu Oct  1 08:00:00 2026     /sbin/launchd
 
 `
 
@@ -35,13 +35,24 @@ func TestPsParse_FixtureLines(t *testing.T) {
 		{PID: 502, PPID: 501, UID: 501, Start: "Fri Oct 2 09:05:01 2026", Name: "/Applications/Foo Bar.app/Contents/MacOS/Foo Bar"},
 		{PID: 1, PPID: 0, UID: 0, Start: "Thu Oct 1 08:00:00 2026", Name: "/sbin/launchd"},
 	}
-	if !slices.Equal(procs, want) {
-		t.Fatalf("parsePs = %+v, want %+v", procs, want)
+	got := make([]Proc, len(procs))
+	for i, r := range procs {
+		got[i] = r.Proc
+		if r.zombie {
+			t.Errorf("pid %d parsed as a zombie", r.PID)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("parsePs = %+v, want %+v", got, want)
+	}
+	if rows, err := parsePs([]byte("503 1 501 Z+ Mon Oct 12 10:00:00 2026 (clang)\n")); err != nil || len(rows) != 1 || !rows[0].zombie {
+		t.Fatalf("zombie line = %+v, %v; want one zombie row", rows, err)
 	}
 	for _, bad := range []string{
-		"501 1 501 Mon Oct 12 10:00:00",              // short
-		"x 1 501 Mon Oct 12 10:00:00 2026 /bin/ls",   // pid not a number
-		"501 1 501 12 Oct Mon 10:00:00 2026 /bin/ls", // locale-shaped start time
+		"501 1 501 S Mon Oct 12 10:00:00",              // short
+		"x 1 501 S Mon Oct 12 10:00:00 2026 /bin/ls",   // pid not a number
+		"501 1 501 S 12 Oct Mon 10:00:00 2026 /bin/ls", // locale-shaped start time
+		"501 1 501 Mon Oct 12 10:00:00 2026 /bin/ls",   // no stat column
 	} {
 		if _, err := parsePs([]byte(bad + "\n")); err == nil {
 			t.Errorf("parsePs(%q) = nil error, want a failure (fail closed)", bad)
@@ -151,6 +162,91 @@ func TestScan_AnyToolFailureIsAnError(t *testing.T) {
 	}
 }
 
+// unknownCmds answers the full ps with all, lsof with lsof, and the
+// re-check ps (`-o ... -p <pids>`) with recheck (or recheckErr).
+type unknownCmds struct {
+	all, lsof, recheck string
+	recheckErr         error
+	rechecked          []string // the -p lists the re-check asked for
+}
+
+func (u *unknownCmds) run(_ context.Context, bin string, args ...string) ([]byte, error) {
+	switch {
+	case bin == lsofBinary:
+		return []byte(u.lsof), nil
+	case bin == psBinary && args[0] == "-axo":
+		return []byte(u.all), nil
+	case bin == psBinary && args[len(args)-2] == "-p":
+		u.rechecked = append(u.rechecked, args[len(args)-1])
+		return []byte(u.recheck), u.recheckErr
+	}
+	return nil, fmt.Errorf("unexpected run %s %q", bin, args)
+}
+
+// TestScan_UnknownCwdIsRechecked: a current-user process lsof did not
+// report blocks every worktree only while it is still the same live,
+// non-zombie process; one that exited or was replaced in between is
+// dropped, and any doubt keeps it.
+func TestScan_UnknownCwdIsRechecked(t *testing.T) {
+	uid := os.Getuid()
+	line := func(pid int, stat, start string) string {
+		return fmt.Sprintf("%d 1 %d %s %s /bin/x\n", pid, uid, stat, start)
+	}
+	t0, t1 := "Mon Oct 12 10:00:00 2026", "Mon Oct 12 10:00:05 2026"
+	all := line(601, "S", t0) + line(602, "S", t0) + line(603, "S", t0) + line(604, "S", t0) + line(605, "Z", t0)
+	esrch := func(pid int, sig syscall.Signal) error {
+		if sig != 0 {
+			t.Errorf("signal %d sent to %d during a scan", sig, pid)
+		}
+		if pid == 602 {
+			return syscall.ESRCH
+		}
+		return nil
+	}
+	// 601 alive and the same; 602 gone per kill; 603 gone per ps; 604 pid
+	// reused (new start); 605 a zombie in the first scan.
+	cmds := &unknownCmds{all: all, recheck: line(601, "S", t0) + line(604, "S", t1)}
+	procs, err := SystemProcs{run: cmds.run, kill: esrch}.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pids(procs); !slices.Equal(got, []int{601}) {
+		t.Fatalf("Scan kept %v, want only the live unknown 601", got)
+	}
+	if !slices.Equal(cmds.rechecked, []string{"601,603,604"}) {
+		t.Fatalf("re-check asked for %q, want the unknowns kill did not rule out", cmds.rechecked)
+	}
+	if _, blockers := OrphansIn(procs, []string{"/private/tmp/acme/wt"}, 0); len(blockers) != 1 {
+		t.Fatalf("a live unknown process must still block every worktree: %+v", blockers)
+	}
+
+	// A zombie in the re-check is gone too.
+	cmds = &unknownCmds{all: line(601, "S", t0), recheck: line(601, "Z", t0)}
+	if procs, err = (SystemProcs{run: cmds.run, kill: esrch}).Scan(context.Background()); err != nil || len(procs) != 0 {
+		t.Fatalf("a process that became a zombie: Scan = %+v, %v; want it dropped", procs, err)
+	}
+}
+
+func TestScan_UnknownRecheckDoubtKeepsTheProcess(t *testing.T) {
+	uid := os.Getuid()
+	all := fmt.Sprintf("601 1 %d S Mon Oct 12 10:00:00 2026 /bin/x\n", uid)
+	alive := func(int, syscall.Signal) error { return nil }
+	for name, s := range map[string]SystemProcs{
+		"ps fails":     {run: (&unknownCmds{all: all, recheckErr: errors.New("exit status 1")}).run, kill: alive},
+		"ps malformed": {run: (&unknownCmds{all: all, recheck: "garbage\n"}).run, kill: alive},
+		"kill EPERM": {run: (&unknownCmds{all: all, recheckErr: errors.New("exit status 1")}).run,
+			kill: func(int, syscall.Signal) error { return syscall.EPERM }},
+	} {
+		procs, err := s.Scan(context.Background())
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := pids(procs); !slices.Equal(got, []int{601}) {
+			t.Errorf("%s: Scan kept %v, want 601 kept as unknown (fail closed)", name, got)
+		}
+	}
+}
+
 func TestProj16_OnlyOrphansAreSignalled(t *testing.T) {
 	root := "/private/tmp/acme/wt"
 	uid := os.Getuid()
@@ -251,7 +347,7 @@ func psFor(procs map[int]Proc) cmdRunner {
 		if !ok {
 			return nil, errors.New("exit status 1")
 		}
-		return []byte(fmt.Sprintf("%d %d %d %s /bin/sleep\n", p.PID, p.PPID, p.UID, p.Start)), nil
+		return []byte(fmt.Sprintf("%d %d %d S %s /bin/sleep\n", p.PID, p.PPID, p.UID, p.Start)), nil
 	}
 }
 

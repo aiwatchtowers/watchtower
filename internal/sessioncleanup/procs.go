@@ -59,15 +59,21 @@ type SystemProcs struct {
 	pids []int                                   // tests: limit lsof to these pids instead of the user
 }
 
-// Scan lists every process; any failure of ps or lsof is an error, so the
-// plan keeps everything rather than missing a process.
+// psColumns are the columns every ps run prints (parsePs reads them).
+const psColumns = "pid=,ppid=,uid=,stat=,lstart=,comm="
+
+// Scan lists every live process; any failure of ps or lsof is an error, so
+// the plan keeps everything rather than missing a process. Zombies are
+// skipped (they hold no cwd and no files). A current-user process lsof did
+// not report is re-checked (dropUnknownGone): one that exited or was
+// replaced in between is dropped, so it does not keep every worktree.
 func (s SystemProcs) Scan(ctx context.Context) ([]Proc, error) {
 	run := s.runner()
-	out, err := run(ctx, psBinary, "-axo", "pid=,ppid=,uid=,lstart=,comm=")
+	out, err := run(ctx, psBinary, "-axo", psColumns)
 	if err != nil {
 		return nil, err
 	}
-	procs, err := parsePs(out)
+	rows, err := parsePs(out)
 	if err != nil {
 		return nil, err
 	}
@@ -79,12 +85,86 @@ func (s SystemProcs) Scan(ctx context.Context) ([]Proc, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range procs {
-		if f, ok := files[procs[i].PID]; ok {
-			procs[i].Cwd, procs[i].Exe = f.cwd, f.exe
+	procs := make([]Proc, 0, len(rows))
+	for _, r := range rows {
+		if r.zombie {
+			continue
+		}
+		p := r.Proc
+		if f, ok := files[p.PID]; ok {
+			p.Cwd, p.Exe = f.cwd, f.exe
+		}
+		procs = append(procs, p)
+	}
+	return s.dropUnknownGone(ctx, procs), nil
+}
+
+// dropUnknownGone drops the current user's unknown-cwd processes that are
+// gone now: kill(pid, 0) says ESRCH, or a second ps no longer lists the pid
+// with the same start time, or lists it as a zombie. Any doubt — a kill
+// error other than ESRCH, a failing or malformed second ps — keeps the
+// process as unknown (fail closed).
+func (s SystemProcs) dropUnknownGone(ctx context.Context, procs []Proc) []Proc {
+	uid := os.Getuid()
+	var ask []int
+	gone := map[int]bool{}
+	for _, p := range procs {
+		if p.UID != uid || !ProcUnknown(p) {
+			continue
+		}
+		if errors.Is(s.signal(p.PID, 0), syscall.ESRCH) {
+			gone[p.PID] = true
+			continue
+		}
+		ask = append(ask, p.PID)
+	}
+	if len(ask) > 0 {
+		s.markReplaced(ctx, procs, ask, gone)
+	}
+	kept := procs[:0]
+	for _, p := range procs {
+		if !gone[p.PID] {
+			kept = append(kept, p)
 		}
 	}
-	return procs, nil
+	return kept
+}
+
+// markReplaced runs one ps over pids and marks gone each one that ps no
+// longer lists alive with the start time the scan saw. A failing or
+// malformed ps marks nothing.
+func (s SystemProcs) markReplaced(ctx context.Context, procs []Proc, pids []int, gone map[int]bool) {
+	out, err := s.runner()(ctx, psBinary, "-o", psColumns, "-p", joinPids(pids))
+	if err != nil {
+		return
+	}
+	rows, err := parsePs(out)
+	if err != nil {
+		return
+	}
+	alive := map[int]string{}
+	for _, r := range rows {
+		if !r.zombie {
+			alive[r.PID] = r.Start
+		}
+	}
+	asked := map[int]bool{}
+	for _, pid := range pids {
+		asked[pid] = true
+	}
+	for _, p := range procs {
+		if start, ok := alive[p.PID]; asked[p.PID] && (!ok || start != p.Start) {
+			gone[p.PID] = true
+		}
+	}
+}
+
+func joinPids(pids []int) string {
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	return strings.Join(list, ",")
 }
 
 func (s SystemProcs) lsofArgs() []string {
@@ -92,11 +172,7 @@ func (s SystemProcs) lsofArgs() []string {
 	if len(s.pids) == 0 {
 		return append(args, "-u", strconv.Itoa(os.Getuid()))
 	}
-	list := make([]string, len(s.pids))
-	for i, pid := range s.pids {
-		list[i] = strconv.Itoa(pid)
-	}
-	return append(args, "-p", strings.Join(list, ","))
+	return append(args, "-p", joinPids(s.pids))
 }
 
 // Terminate sends SIGTERM to p after re-reading its start time and uid: a
@@ -104,7 +180,7 @@ func (s SystemProcs) lsofArgs() []string {
 func (s SystemProcs) Terminate(p Proc) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := s.runner()(ctx, psBinary, "-o", "pid=,ppid=,uid=,lstart=,comm=", "-p", strconv.Itoa(p.PID))
+	out, err := s.runner()(ctx, psBinary, "-o", psColumns, "-p", strconv.Itoa(p.PID))
 	if err != nil {
 		return fmt.Errorf("re-reading pid %d: %w", p.PID, err)
 	}
@@ -115,11 +191,14 @@ func (s SystemProcs) Terminate(p Proc) error {
 	if len(now) != 1 || now[0].PID != p.PID || now[0].Start != p.Start || now[0].UID != p.UID {
 		return fmt.Errorf("pid %d: %w", p.PID, errPidReused)
 	}
-	kill := s.kill
-	if kill == nil {
-		kill = syscall.Kill
+	return s.signal(p.PID, syscall.SIGTERM)
+}
+
+func (s SystemProcs) signal(pid int, sig syscall.Signal) error {
+	if s.kill != nil {
+		return s.kill(pid, sig)
 	}
-	return kill(p.PID, syscall.SIGTERM)
+	return syscall.Kill(pid, sig)
 }
 
 func (s SystemProcs) runner() cmdRunner {
@@ -129,11 +208,17 @@ func (s SystemProcs) runner() cmdRunner {
 	return runCommand
 }
 
-// parsePs reads `ps -o pid=,ppid=,uid=,lstart=,comm=` lines. lstart is five
-// fields in the C locale ("Mon Oct 12 10:00:00 2026"); comm, the rest of the
-// line, is ignored. A malformed line fails the whole parse (fail closed).
-func parsePs(out []byte) ([]Proc, error) {
-	var procs []Proc
+// psRow is one ps line: the process and whether it is a zombie (stat Z).
+type psRow struct {
+	Proc
+	zombie bool
+}
+
+// parsePs reads `ps -o psColumns` lines. stat is one field; lstart is five
+// fields in the C locale ("Mon Oct 12 10:00:00 2026"); comm is the rest of
+// the line. A malformed line fails the whole parse (fail closed).
+func parsePs(out []byte) ([]psRow, error) {
+	var procs []psRow
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -153,24 +238,25 @@ func parsePs(out []byte) ([]Proc, error) {
 	return procs, nil
 }
 
-func parsePsLine(line string) (Proc, error) {
+func parsePsLine(line string) (psRow, error) {
 	f := strings.Fields(line)
-	if len(f) < 8 {
-		return Proc{}, fmt.Errorf("unexpected ps line %q", line)
+	if len(f) < 9 {
+		return psRow{}, fmt.Errorf("unexpected ps line %q", line)
 	}
 	var nums [3]int
 	for i := range nums {
 		n, err := strconv.Atoi(f[i])
 		if err != nil {
-			return Proc{}, fmt.Errorf("unexpected ps line %q", line)
+			return psRow{}, fmt.Errorf("unexpected ps line %q", line)
 		}
 		nums[i] = n
 	}
-	start := strings.Join(f[3:8], " ")
+	start := strings.Join(f[4:9], " ")
 	if _, err := time.Parse("Mon Jan 2 15:04:05 2006", start); err != nil {
-		return Proc{}, fmt.Errorf("unexpected ps start time %q", start)
+		return psRow{}, fmt.Errorf("unexpected ps start time %q", start)
 	}
-	return Proc{PID: nums[0], PPID: nums[1], UID: nums[2], Start: start, Name: strings.Join(f[8:], " ")}, nil
+	p := Proc{PID: nums[0], PPID: nums[1], UID: nums[2], Start: start, Name: strings.Join(f[9:], " ")}
+	return psRow{Proc: p, zombie: strings.HasPrefix(f[3], "Z")}, nil
 }
 
 type procFiles struct{ cwd, exe string }

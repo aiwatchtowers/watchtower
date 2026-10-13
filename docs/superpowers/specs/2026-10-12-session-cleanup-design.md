@@ -144,7 +144,7 @@ arbitrary path, never `rm -rf`):
 | W2 | Not the session's (§2), outside the sweep | `not_this_session` / `existed_before_session` |
 | W3 | Locked (`git worktree lock`) | `locked` |
 | W4 | `git status --porcelain` non-empty (modified, staged or untracked; ignored files do not count) | `uncommitted_changes` |
-| W5 | A process has its cwd or executable inside it and is not an orphan of this session (§7) — Watchtower's own binaries and the caller included | `process_running` |
+| W5 | A process has its cwd or executable inside it and is not an orphan of this session (§7) — Watchtower's own binaries and the caller included; a live current-user process whose cwd the scan could not read blocks every worktree | `process_running` / `process_unknown` |
 | W6 | Another session is in it: its `agent_cwd` (#565) is inside and it is in `--live-session` or reported within 24 h and is not finished; or the calling session's own `agent_cwd` is inside (caller = `$WATCHTOWER_TERMINAL_SESSION_ID`) | `session_in_it` / `you_are_in_it` |
 | W7 | HEAD (detached or branch tip) not contained in the default branch nor in any `refs/remotes/*` | `unpushed_commits` |
 | W8 | A merge/rebase/cherry-pick/revert/bisect in progress | `operation_in_progress` |
@@ -196,9 +196,11 @@ whose cwd is inside the worktree but whose executable is outside it — a tmux o
 npm-installed `claude`/`codex` (a `node` executable), a GUI app, the SPM dev binary built elsewhere — is never
 signalled, whatever its ppid: it is a blocker, the worktree is kept `process_running` with detail
 `process in use: <name> pid N`. A process of the current user whose cwd the scan could not see is a blocker for
-every worktree under consideration (`process_unknown`): it could be working in any of them.
+every worktree under consideration (`process_unknown`): it could be working in any of them. Zombies are skipped,
+and each unknown-cwd process is re-checked after lsof (`kill(pid, 0)`, then one `ps -p` over the rest): one that
+exited or whose pid now has another start time is dropped; any doubt in the re-check keeps it unknown.
 
-**Process scan.** One `ps -axo pid=,ppid=,uid=,lstart=,comm=` (executable path) and one
+**Process scan.** One `ps -axo pid=,ppid=,uid=,stat=,lstart=,comm=` (executable path) and one
 `lsof -a -d cwd -n -P -w -F pn -u <uid>` per evaluation. The process key carries the start time so a reused pid is
 never signalled. Must raise no TCC prompt (memory rule "No TCC prompts from Watchtower"): verified in plan Task 0;
 fallback if lsof is not clean — executable paths only plus the Desktop's live-session facts, and the cwd catch
