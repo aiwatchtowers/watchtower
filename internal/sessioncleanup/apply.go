@@ -111,11 +111,12 @@ type applier struct {
 	items  []Item
 	tips   map[string]string // branch -> the tip the apply's evaluation saw
 	halt   error             // set by a failure that stops the apply
+	self   int               // this process: never an orphan
 }
 
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
-		tips: map[string]string{}}
+		tips: map[string]string{}, self: b.self}
 	a.req.NoSize = true
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
@@ -225,16 +226,24 @@ func (a *applier) fail(it *Item, err error) {
 	a.halt = err
 }
 
+// removeWorktree clears the worktree's orphans, unregisters its bundles,
+// re-checks it once more and only then runs `git worktree remove`. When it
+// stays, the bundles unregistered for it are registered again.
 func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 	root := strings.TrimPrefix(it.Key, "worktree:")
 	if !a.clearOrphans(ctx, it, root) {
 		return
 	}
 	a.unregisterBundles(ctx, root)
-	rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
-	defer cancel()
-	_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
-	a.settleGit(it, code, err)
+	if a.recheckClear(ctx, it, root, "process in use: ") {
+		rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
+		_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
+		cancel()
+		a.settleGit(it, code, err)
+	}
+	if !it.Done {
+		a.reregisterBundles(ctx, root)
+	}
 }
 
 // settleGit records a git removal: done, refused (kept with git's words,
@@ -274,35 +283,65 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string) (*
 }
 
 // clearOrphans re-checks the worktree and, in session mode, stops its
-// orphans: SIGTERM to each named orphan, then re-checks until none is left
-// or the grace runs out. True when the worktree may be removed now.
+// orphans: only when the plan named every one of them, SIGTERM to each,
+// then process scans alone until none is left or the grace runs out, then
+// one full re-check. True when the worktree may be removed now.
 func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool {
-	var deadline time.Time
+	b, ok := a.recheckWorktree(ctx, it, root)
+	if !ok {
+		return false
+	}
+	orphans, _ := OrphansIn(b.procs, []string{root}, a.self)
+	if len(orphans) == 0 {
+		a.markGone(root, b.procs)
+		return true
+	}
+	if a.req.Sweep {
+		// The sweep never signals (its catch keeps such a worktree).
+		keepItem(it, ReasonProcessRunning, "process in use: "+procText(orphans[0]))
+		return false
+	}
+	if !a.terminate(it, orphans) || !a.awaitExit(ctx, it, root) {
+		return false
+	}
+	return a.recheckClear(ctx, it, root, "survived SIGTERM: ")
+}
+
+// recheckClear is a full re-check of root that also wants no orphan left
+// (prefix words the keep detail of one that is); the process items of
+// root that are gone are marked done.
+func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string) bool {
+	b, ok := a.recheckWorktree(ctx, it, root)
+	if !ok {
+		return false
+	}
+	if orphans, _ := OrphansIn(b.procs, []string{root}, a.self); len(orphans) > 0 {
+		keepItem(it, ReasonProcessRunning, prefix+procText(orphans[0]))
+		return false
+	}
+	a.markGone(root, b.procs)
+	return true
+}
+
+// awaitExit re-runs the process scan alone each poll step until no orphan
+// of root is left (true) or the grace runs out (kept, false).
+func (a *applier) awaitExit(ctx context.Context, it *Item, root string) bool {
+	deadline := time.Now().Add(a.grace())
 	for {
-		b, ok := a.recheckWorktree(ctx, it, root)
-		if !ok {
+		if !a.pause(ctx, it) {
 			return false
 		}
-		orphans, _ := OrphansIn(b.procs, []string{root}, b.self)
+		procs, err := a.deps.Procs.Scan(ctx)
+		if err != nil {
+			a.fail(it, fmt.Errorf("re-scanning processes: %w", err))
+			return false
+		}
+		orphans, _ := OrphansIn(procs, []string{root}, a.self)
 		if len(orphans) == 0 {
-			a.markStopped(root, !deadline.IsZero())
 			return true
 		}
-		if a.req.Sweep {
-			// The sweep never signals (its catch keeps such a worktree).
-			keepItem(it, ReasonProcessRunning, "process in use: "+procText(orphans[0]))
-			return false
-		}
-		if deadline.IsZero() {
-			if !a.terminate(it, orphans) {
-				return false
-			}
-			deadline = time.Now().Add(a.grace())
-		} else if time.Now().After(deadline) {
+		if time.Now().After(deadline) {
 			keepItem(it, ReasonProcessRunning, "survived SIGTERM: "+procText(orphans[0]))
-			return false
-		}
-		if !a.pause(ctx, it) {
 			return false
 		}
 	}
@@ -329,17 +368,19 @@ func procKey(p Proc) string { return fmt.Sprintf("process:%d:%s", p.PID, p.Start
 
 func procText(p Proc) string { return fmt.Sprintf("%s pid %d", procLabel(p), p.PID) }
 
-// terminate signals each orphan, only when the apply's evaluation listed
-// it and it is selected; anything else keeps the worktree.
+// terminate signals the orphans only when the apply's evaluation listed
+// every one of them, as the same process (the key carries the start time),
+// and it is selected; otherwise none is signalled and the worktree stays.
 func (a *applier) terminate(it *Item, orphans []Proc) bool {
 	for _, p := range orphans {
-		pi := a.find(procKey(p))
-		if pi == nil || pi.Action != ActionRemove {
+		if pi := a.find(procKey(p)); pi == nil || pi.Action != ActionRemove {
 			keepItem(it, ReasonProcessRunning, "orphan not named by the plan: "+procText(p))
 			return false
 		}
+	}
+	for _, p := range orphans {
 		if err := a.deps.Procs.Terminate(p); err != nil && !errors.Is(err, errPidReused) {
-			pi.Error = err.Error()
+			a.find(procKey(p)).Error = err.Error()
 			keepItem(it, ReasonProcessRunning, "stopping "+procText(p)+": "+err.Error())
 			return false
 		}
@@ -347,15 +388,16 @@ func (a *applier) terminate(it *Item, orphans []Proc) bool {
 	return true
 }
 
-// markStopped marks the process items of root done once no orphan is
-// left after signalling.
-func (a *applier) markStopped(root string, signalled bool) {
-	if !signalled {
-		return
+// markGone marks done the selected process items of root that the scan
+// no longer lists: stopped by the apply or exited on their own.
+func (a *applier) markGone(root string, procs []Proc) {
+	alive := map[string]bool{}
+	for _, p := range procs {
+		alive[procKey(p)] = true
 	}
 	for i := range a.items {
 		it := &a.items[i]
-		if it.Kind == KindProcess && it.Action == ActionRemove && a.ownerRoot(*it) == root {
+		if it.Kind == KindProcess && it.Action == ActionRemove && !alive[it.Key] && a.ownerRoot(*it) == root {
 			it.Done = true
 		}
 	}
@@ -400,6 +442,21 @@ func (a *applier) unregisterBundles(ctx context.Context, root string) {
 			continue
 		}
 		it.Done = true
+	}
+}
+
+// reregisterBundles registers again the bundles unregistered for root
+// when root stays: they are reported kept, not removed.
+func (a *applier) reregisterBundles(ctx context.Context, root string) {
+	for i := range a.items {
+		it := &a.items[i]
+		if it.Kind != KindLsreg || !it.Done || !pathWithin(it.Detail, root) {
+			continue
+		}
+		keepItem(it, ReasonWorktreeKept, it.Detail)
+		if err := a.deps.LS.Register(ctx, it.Detail); err != nil {
+			it.Error = "unregistered; registering it again failed: " + err.Error()
+		}
 	}
 }
 

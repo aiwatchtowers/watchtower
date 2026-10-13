@@ -184,11 +184,16 @@ path that is not a linked worktree is reported `keep / not_a_worktree`.
 
 Per worktree, in `--apply`:
 1. re-run W1–W9 (fresh `git status`, fresh process scan);
-2. terminate its orphans (S5) and re-scan — a survivor → keep `process_running`;
+2. terminate its orphans (S5) — only when the apply named every orphan the re-check finds, each as the same
+   process (pid and start time); one that is not → none is signalled, keep `process_running`. Then only the process
+   scan repeats each poll step until they are gone or the grace runs out (a survivor → keep `process_running`), and
+   one full re-check follows. An orphan of the plan that exited on its own is recorded done, never kept;
 3. `lsregister -u` each `.app` bundle found under it (depth ≤ 6, skipping `node_modules` and `.git`) — best effort,
    a failure is an item `error`, never blocks the removal;
-4. `git worktree remove <root>` without `--force` — git refuses on changes it sees, which ends as keep
-   `git_refused` with git's message in `detail`.
+4. re-run every catch once more (no orphan may be left either), then `git worktree remove <root>` without
+   `--force` — git refuses on changes it sees, which ends as keep `git_refused` with git's message in `detail`.
+   When the worktree stays (this re-check or git), its bundles unregistered in step 3 are registered again
+   (`lsregister <bundle>`) and reported kept `worktree_kept`, not removed.
 
 Then branches: re-run B1–B4 (B2 now sees the removed worktrees), and delete with
 `git update-ref -d refs/heads/<name> <checked sha>` — a compare-and-delete: if the tip moved since the check, git

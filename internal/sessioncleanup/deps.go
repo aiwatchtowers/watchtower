@@ -124,6 +124,9 @@ type Sizer interface {
 type LaunchServices interface {
 	Bundles(root string) []string
 	Unregister(ctx context.Context, bundle string) error
+	// Register adds a bundle back (an apply whose worktree stayed after
+	// its bundles were unregistered).
+	Register(ctx context.Context, bundle string) error
 	Stale(ctx context.Context, under string) ([]string, error)
 }
 

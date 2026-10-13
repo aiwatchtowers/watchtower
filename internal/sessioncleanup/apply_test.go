@@ -55,10 +55,12 @@ func (g *loggingGit) RunGit(ctx context.Context, dir, bin string, args ...string
 	return g.SystemGit.RunGit(ctx, dir, bin, args...)
 }
 
-// fakeLS lists one bundle per worktree root and logs each unregister.
+// fakeLS lists one bundle per worktree root and logs each unregister and
+// register; onUnregister, when set, runs after an unregister.
 type fakeLS struct {
-	log      *opLog
-	failWith error
+	log          *opLog
+	failWith     error
+	onUnregister func(bundle string)
 }
 
 func (l *fakeLS) Bundles(root string) []string {
@@ -67,13 +69,21 @@ func (l *fakeLS) Bundles(root string) []string {
 
 func (l *fakeLS) Unregister(_ context.Context, bundle string) error {
 	l.log.add("lsregister -u " + bundle)
+	if l.onUnregister != nil {
+		l.onUnregister(bundle)
+	}
 	return l.failWith
+}
+
+func (l *fakeLS) Register(_ context.Context, bundle string) error {
+	l.log.add("lsregister " + bundle)
+	return nil
 }
 
 func (l *fakeLS) Stale(context.Context, string) ([]string, error) { return nil, nil }
 
 // dyingProcs is a scan whose signalled processes exit when dies is set;
-// onScan runs before the n-th scan returns (1-based).
+// onScan runs before the n-th scan reads the list (1-based).
 type dyingProcs struct {
 	mu         sync.Mutex
 	list       []Proc
@@ -87,12 +97,13 @@ func (p *dyingProcs) Scan(context.Context) ([]Proc, error) {
 	p.mu.Lock()
 	p.scans++
 	n, hook := p.scans, p.onScan
-	list := slices.Clone(p.list)
 	p.mu.Unlock()
 	if hook != nil {
 		hook(n)
 	}
-	return list, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.list), nil
 }
 
 func (p *dyingProcs) Terminate(pr Proc) error {
@@ -253,8 +264,8 @@ func TestProj16_ApplyRechecksAndActsOnlyOnNamedItems(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(roots["1"], "new.txt"), "between plan and apply\n")
 	procs := &dyingProcs{onScan: func(n int) {
-		if n == 2 { // the apply's first re-check, after its own evaluation
-			writeFile(t, filepath.Join(roots["2"], "late.txt"), "right before the removal\n")
+		if n == 2 { // the scan of the apply's first re-check, before its git status
+			writeFile(t, filepath.Join(roots["2"], "late.txt"), "during the re-check\n")
 		}
 	}}
 	only := []string{"worktree:" + roots["1"], "worktree:" + roots["2"], "worktree:" + roots["3"],
