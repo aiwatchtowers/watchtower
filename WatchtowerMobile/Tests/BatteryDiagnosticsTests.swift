@@ -148,7 +148,10 @@ final class BatteryDiagnosticsTests: XCTestCase {
     // MARK: - Fetch counting
 
     func testFetchesAreCountedByTrigger() async throws {
-        let counter = EnergyCounter(defaults: try makeDefaults())
+        // A fixed mid-day instant: the real clock could cross midnight
+        // between two reads of "today".
+        let noon = Calendar.autoupdatingCurrent.startOfDay(for: Date()).addingTimeInterval(12 * 3_600)
+        let counter = EnergyCounter(defaults: try makeDefaults()) { noon }
         let sleeper = TickSleeper()
         let clock = MutableClock()
         let env = try AppEnvironment(
