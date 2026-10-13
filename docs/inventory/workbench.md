@@ -232,7 +232,7 @@ owner fix a line by hand.
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156)
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
@@ -306,6 +306,23 @@ come from one function (`devpack.CodexHookSet`). `--remove` never touches
 `hooks.state` (one trust key covers every folder). `integrate claude-code` and
 `integrate remove` are unchanged.
 
+Symlinks (2026-10-14, target 156, owner approved in ask #109): a
+`settings.local.json`, or an imported `.codex/hooks.json` /
+`.codex/config.toml`, that is a symlink is written through to its target —
+the link itself is kept, and a removal that leaves nothing writes `{}` to the
+target instead of deleting the link — only while that target resolves inside
+the folder. A link whose target lies outside it (e.g. to
+`~/.claude/settings.json`, which would make our hooks global) is refused by
+the install and the removal alike (`ErrSymlinkOutsideFolder`), before any
+write: the error names the link and its target and says to replace the link
+with a regular file or point it inside the folder, and nothing is written
+anywhere — the target stays byte-identical, the link untouched. For the
+settings file the install refuses even when nothing would change and the
+removal whenever the file resolves; the `.codex` cleanup refuses only when it
+has an entry of ours to take out. A dangling link is refused as before. The
+git `info/exclude` file is not held to the folder: it lives in the git dir,
+often outside the folder anyway, and only our marked block is written there.
+
 **Why locked:** The workbench folder is the owner's repository. An installer
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
 skill, would make every later `integrate` a risk to the owner's own setup.
@@ -317,7 +334,9 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
 - `internal/devpack/workbench_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
 - `internal/devpack/workbench_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
-- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
+- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget` (since 2026-10-14 the link's target lies inside the folder)
+- `internal/devpack/workbench_settings_test.go::TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink` (since 2026-10-14 the link's target lies inside the folder)
+- `internal/devpack/workbench_settings_test.go::TestProj04_SymlinkOutsideTheFolderIsRefused` (since 2026-10-14: install, the Stop and state installs and both removals refuse a link leaving the folder, with and without our hook in its target; the error names the link, its target and the fix; the target stays byte-identical, the link untouched) and its `.codex` twin `internal/devpack/codex_install_test.go::TestProj04_DedupeRefusesASymlinkOutsideTheFolder` (a link inside the folder is still written through)
 - `internal/devpack/workbench_legacy_test.go::TestProj04_ResyncKeepsAnEditedLegacySkill` (an edited legacy skill and its sidecar stay byte-identical, reported `drifted`, its exclude line kept; a later removal keeps it too)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_StateHooksKeepOwnerHooksAndKeys` (the owner's own entries under the state events — a matcher, `async`, unknown keys and number literals — stay as they were next to exactly one entry of ours; remove takes only ours)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_MalformedStateEventLeavesTheFileByteIdentical` (each state event of the wrong type leaves the file byte-identical; since 2026-10-11 `SubagentStart` too, and `TestProj04_StateHooksKeepOwnerHooksAndKeys` keeps an owner `SubagentStart` entry)
@@ -1604,6 +1623,7 @@ could be read as an answer to a dialog that appears meanwhile.
 
 ## Changelog
 
+- 2026-10-14 (target 156, security review group 146; **approved by the owner 2026-10-14, ask #109**, "refuse with an error"): **PROJ-04 amended** — a `settings.local.json` (or imported `.codex` hook file) symlink is followed only while its target stays inside the workbench folder; one leaving it (e.g. to `~/.claude/settings.json`, which made our hooks global) is refused by install and removal before any write, with an error naming the link, its target and the fix (`devpack.ErrSymlinkOutsideFolder`). The two symlink guards `TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink` and `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget` had their link target moved inside the folder — the intended change, their assertions unchanged (a link is kept and written through); new guards `TestProj04_SymlinkOutsideTheFolderIsRefused` and `TestProj04_DedupeRefusesASymlinkOutsideTheFolder`. The git `info/exclude` file keeps following its link (it lives in the git dir). No other guard changed.
 - 2026-10-13 (mobile E2E final review, **owner approved, ask #96**): **PROJ-16 condition (0) gains a dated note**, heading, guarantee and guards unchanged. Under E2E every relay record is sealed to a linked phone's key, so a record that opens under no linked phone's key (an unknown or a removed key) is dropped with no answer — the Mac cannot seal a reply to a key it does not know (D9) — instead of being answered `device_not_linked`; a record that opens under a linked phone's key but names another `device_id` still gets `device_not_linked`. Nothing unlinked is typed either way.
 - 2026-10-12 (B18 review round 1, same task; within the OD-1/OD-2 approval): **PROJ-16 tightened**, heading and guards unchanged, supporting tests added. A held line is no longer retried by the state reads its own tries make (`SessionLineDelivery` counts its own reads and `statesRead()` ignores them; the app wires it through `SessionLineDelivery.follow`) — before, a line held by its gate retried itself in a tight read loop while the agent worked. A session counts as busy right after the app submitted a line into it until a hook reports after the submit (30 s cap). A retry types only after claiming its sidecar row and only while its hub runs (`SessionLineDelivery.GateAnswer.drop`), so a cancel or a hub stop during a retry's read types nothing and a quick stop and start types at most once. Only the phone that sent a line may cancel it. The phone's toggle revokes the grant only on its own on→off change. The text rule is `SessionInputText` (Kit), shared with the phone: a CRLF is one space and format characters stay (`TerminalCenter.submitPrompt`/`sendPrompt` and `WorkbenchCommentPrompt.terminalPayload` gain `keepingFormatCharacters`, default false — answers and hand-offs unchanged). **PROJ-12 wording and guards unchanged**: a delivery's own reads no longer set off a retry of the held answers either; a held answer still goes on the next successful read of the state center.
 - 2026-10-12 (mobile POC plan B, Task 18, spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11; **owner approved 2026-10-07, OD-1 and OD-2**): **PROJ-16 added** — a line from the owner's phone (`session_input`, `session_finish_request`) reaches a Claude Code session only from a device linked by a QR scan and allowed to type on the Mac, only while the agent is idle and the prompt holds no draft, and only through `SessionLineDelivery` under PROJ-12; held lines are echoed with their reason, retried on state reads, expire after 24 h, survive a hub restart, fail on a revoke and can be cancelled; nothing from the phone answers a permission prompt. Code: `WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift`, the sidecar's `held_session_lines` and `devices.typing_requested`, `MobileLinkCenter`'s typing request and revoke hooks. **PROJ-12 unchanged in wording and guards**: `SessionLineDelivery.deliverLine` gains an optional per-line gate asked right before the paste (an ask's answer passes none), and a held line is tried again at the end of another line's delivery only when it was queued behind that line — a line held at a permission prompt or after a failed read still goes on the next successful state read, as PROJ-12 says (the old retry after every delivery could spin while two lines stayed held).

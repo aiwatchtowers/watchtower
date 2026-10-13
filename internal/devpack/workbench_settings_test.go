@@ -336,10 +336,11 @@ func TestProj04_InstallAndRemovePreserveTheSettingsFileMode(t *testing.T) {
 
 // PROJ-04: a settings file managed as a symlink (e.g. by a dotfiles tool)
 // must stay a symlink after install/remove — the write lands on its target,
-// never replacing the link with a plain file.
+// never replacing the link with a plain file. The target lies inside the
+// folder; one outside it is refused (TestProj04_SymlinkOutsideTheFolderIsRefused).
 func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
 	dir := t.TempDir()
-	realSettings := filepath.Join(t.TempDir(), "real-settings.json")
+	realSettings := filepath.Join(dir, "dotfiles", "real-settings.json")
 	writeTestFile(t, realSettings, `{"model": "sonnet"}`)
 	link := settingsFile(dir)
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
@@ -377,10 +378,11 @@ func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
 
 // A symlinked settings file left with nothing but our hooks keeps its link:
 // removing the link would leave the hooks in its (dotfiles) target, firing in
-// every folder linking it. The target is emptied to {} instead.
+// every folder linking it. The target is emptied to {} instead. The target
+// lies inside the folder, the only kind of link followed since 2026-10-14.
 func TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget(t *testing.T) {
 	dir := t.TempDir()
-	realSettings := filepath.Join(t.TempDir(), "real-settings.json")
+	realSettings := filepath.Join(dir, "dotfiles", "real-settings.json")
 	writeTestFile(t, realSettings, `{}`)
 	link := settingsFile(dir)
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
@@ -406,6 +408,49 @@ func TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget(t *testing.T
 	}
 	if got := strings.TrimSpace(readTestFile(t, realSettings)); got != "{}" {
 		t.Fatalf("the linked target must be emptied of our hooks, got %s", got)
+	}
+}
+
+// PROJ-04 (owner decision 2026-10-14, ask #109): a settings symlink whose
+// target lies outside the folder — e.g. ~/.claude/settings.json, which
+// would make our hooks global — is refused by install and remove alike,
+// with an error naming the link and its target; the target stays
+// byte-identical and the link untouched.
+func TestProj04_SymlinkOutsideTheFolderIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	ours := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + testHookCmd + `"}]}]},"model":"sonnet"}`
+	for _, content := range []string{`{"model": "sonnet"}`, ours} {
+		writeTestFile(t, outside, content)
+		ops := map[string]func() (bool, error){
+			"install":       func() (bool, error) { return InstallSessionStartHook(dir, testHookCmd, 7) },
+			"install stop":  func() (bool, error) { return InstallStopHook(dir, testHookCmd, 7) },
+			"install state": func() (bool, error) { return InstallStateHooks(dir, "/tmp/acme/watchtower", 7) },
+			"remove":        func() (bool, error) { return RemoveSessionStartHook(dir, 7) },
+			"remove state":  func() (bool, error) { return RemoveStateHooks(dir, 7) },
+		}
+		for name, op := range ops {
+			changed, err := op()
+			if !errors.Is(err, ErrSymlinkOutsideFolder) || changed {
+				t.Fatalf("%s through a link leaving the folder: changed=%v err=%v", name, changed, err)
+			}
+			if msg := err.Error(); !strings.Contains(msg, link) || !strings.Contains(msg, "settings.json") || !strings.Contains(msg, "regular file") {
+				t.Fatalf("%s: the error must name the link, its target and the fix: %s", name, msg)
+			}
+			if got := readTestFile(t, outside); got != content {
+				t.Fatalf("%s: the outside target must stay byte-identical, got %s", name, got)
+			}
+			if target, err := os.Readlink(link); err != nil || target != outside {
+				t.Fatalf("%s: the link must be untouched: target=%q err=%v", name, target, err)
+			}
+		}
 	}
 }
 

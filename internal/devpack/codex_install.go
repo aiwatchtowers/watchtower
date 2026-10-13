@@ -353,10 +353,11 @@ func isOurImportedHook(h any, workbenchID int64) bool {
 // (and .codex with it once empty). A malformed file is never written
 // (ErrMalformedSettings); config.toml is edited in place, line by line, so
 // the owner's comments and layout survive, or not at all
-// (ErrCodexHooksNotEditable).
+// (ErrCodexHooksNotEditable). A file that is a symlink leaving the folder is
+// neither written nor removed (ErrSymlinkOutsideFolder).
 func dedupeImportedHooks(folder string, workbenchID int64) (changed bool, err error) {
-	jsonChanged, jsonErr := dedupeCodexHooksJSON(codexHooksJSONPath(folder), workbenchID)
-	tomlChanged, tomlErr := dedupeCodexConfigTOML(codexConfigTOMLPath(folder), workbenchID)
+	jsonChanged, jsonErr := dedupeCodexHooksJSON(folder, codexHooksJSONPath(folder), workbenchID)
+	tomlChanged, tomlErr := dedupeCodexConfigTOML(folder, codexConfigTOMLPath(folder), workbenchID)
 	if jsonChanged || tomlChanged {
 		removeIfEmpty(filepath.Join(folder, ".codex"))
 	}
@@ -484,7 +485,7 @@ func withoutOurImportedHooks(hooks map[string]any, workbenchID int64) bool {
 	return changed
 }
 
-func dedupeCodexHooksJSON(file string, workbenchID int64) (bool, error) {
+func dedupeCodexHooksJSON(folder, file string, workbenchID int64) (bool, error) {
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -506,16 +507,20 @@ func dedupeCodexHooksJSON(file string, workbenchID int64) (bool, error) {
 	if len(hooks) == 0 {
 		delete(doc, "hooks")
 	}
+	target, err := resolveSymlinkInside(file, folder)
+	if err != nil {
+		return false, err
+	}
 	if len(doc) == 0 {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
 		return true, nil
 	}
-	return true, writeSettings(file, doc, filePerm(file, 0o644))
+	return true, writeSettings(target, doc, filePerm(file, 0o644))
 }
 
-func dedupeCodexConfigTOML(file string, workbenchID int64) (bool, error) {
+func dedupeCodexConfigTOML(folder, file string, workbenchID int64) (bool, error) {
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -546,15 +551,15 @@ func dedupeCodexConfigTOML(file string, workbenchID int64) (bool, error) {
 	if !reflect.DeepEqual(normalizeHooksDoc(got), normalizeHooksDoc(expect)) {
 		return false, fmt.Errorf("%w (%s)", ErrCodexHooksNotEditable, file)
 	}
+	target, err := resolveSymlinkInside(file, folder)
+	if err != nil {
+		return false, err
+	}
 	if onlyEmptyHooksTable(edited) {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
 		return true, nil
-	}
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return false, err
 	}
 	return true, atomicWriteFile(target, []byte(edited), filePerm(file, 0o644))
 }

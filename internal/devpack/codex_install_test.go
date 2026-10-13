@@ -499,6 +499,45 @@ func TestProj04_DedupeDeletesAFileThatWasOursAlone(t *testing.T) {
 	assert.JSONEq(t, `{"x":true}`, readTestFile(t, filepath.Join(folder, ".codex", "hooks.json")))
 }
 
+// An imported .codex hook file that is a symlink leaving the folder is never
+// written or removed through (PROJ-04, ask #109): the dedupe refuses it and
+// both the target and the link stay as they were. One inside the folder is
+// still written through.
+func TestProj04_DedupeRefusesASymlinkOutsideTheFolder(t *testing.T) {
+	ours := `{"x":true,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + ourClaudeStart + `"}]}]}}`
+	oursTOML := "[hooks]\n\n[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"" + ourClaudeStart + "\"\n"
+	for name, content := range map[string]string{"hooks.json": ours, "config.toml": oursTOML} {
+		folder := t.TempDir()
+		outside := filepath.Join(t.TempDir(), name)
+		writeTestFile(t, outside, content)
+		link := filepath.Join(folder, ".codex", name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o755))
+		require.NoError(t, os.Symlink(outside, link))
+
+		changed, err := dedupeImportedHooks(folder, 7)
+		require.ErrorIs(t, err, ErrSymlinkOutsideFolder, name)
+		assert.False(t, changed, name)
+		assert.Equal(t, content, readTestFile(t, outside), "%s: the outside target stays byte-identical", name)
+		got, err := os.Readlink(link)
+		require.NoError(t, err, name)
+		assert.Equal(t, outside, got, "%s: the link is untouched", name)
+	}
+
+	folder := t.TempDir()
+	inside := filepath.Join(folder, "dotfiles", "hooks.json")
+	writeTestFile(t, inside, ours)
+	link := filepath.Join(folder, ".codex", "hooks.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o755))
+	require.NoError(t, os.Symlink(inside, link))
+	changed, err := dedupeImportedHooks(folder, 7)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.JSONEq(t, `{"x":true}`, readTestFile(t, inside))
+	info, err := os.Lstat(link)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "a link inside the folder is kept")
+}
+
 const importedConfigTOML = `# owner's codex settings
 model = "gpt-5" # keep this comment
 

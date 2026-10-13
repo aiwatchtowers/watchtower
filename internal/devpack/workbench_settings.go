@@ -22,6 +22,14 @@ import (
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
+// ErrSymlinkOutsideFolder means a file the installer writes in the workbench
+// folder is a symlink whose target lies outside that folder (a link to
+// ~/.claude/settings.json would make our hooks global). Install and removal
+// refuse it before any write (PROJ-04, owner decision 2026-10-14, ask #109):
+// the owner replaces the link with a regular file or points it inside the
+// folder.
+var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench folder")
+
 // hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
 // workbench (after the watchtower binary), and the entry's timeout.
@@ -196,6 +204,10 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 // fresh one takes the prompt's over its defaults (PROJ-04).
 func installHook(dir string, spec hookSpec, command string, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
 		return false, err
@@ -220,7 +232,7 @@ func installHook(dir string, spec hookSpec, command string, workbenchID int64) (
 	}
 	hooks[spec.event] = updated
 	settings["hooks"] = hooks
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // RemoveSessionStartHook removes every hook object recognised as ours for
@@ -270,6 +282,10 @@ func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	if err != nil || !existed {
 		return false, err
 	}
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	hooks, groups, err := eventGroupsOf(settings, file, spec.event)
 	if err != nil {
 		return false, err
@@ -283,17 +299,13 @@ func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	pruneEmpty(settings, hooks, spec.event, kept)
 	// A symlinked file (dotfiles-managed) is never removed: that would drop
 	// the link and leave our hook in its target. Its target gets {} instead.
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return false, err
-	}
 	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
 		return true, nil
 	}
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for
@@ -798,9 +810,9 @@ func pruneEmpty(settings, hooks map[string]any, event string, kept []any) {
 }
 
 // writeSettings replaces file atomically, keeping its mode. Keys come out
-// sorted (encoding/json), HTML characters unescaped, two-space indented. When
-// file is a symlink (e.g. dotfiles-managed), the write lands on its resolved
-// target so the link itself survives.
+// sorted (encoding/json), HTML characters unescaped, two-space indented. file
+// is already resolved past a symlink (resolveSymlinkInside), so a link
+// (e.g. dotfiles-managed) keeps pointing at the target the write lands on.
 func writeSettings(file string, settings map[string]any, mode os.FileMode) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -809,11 +821,7 @@ func writeSettings(file string, settings map[string]any, mode os.FileMode) error
 	if err := enc.Encode(settings); err != nil {
 		return fmt.Errorf("encoding %s: %w", file, err)
 	}
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(target, buf.Bytes(), mode)
+	return atomicWriteFile(file, buf.Bytes(), mode)
 }
 
 // resolveSymlink returns the path an atomic write to file should target:
@@ -835,6 +843,28 @@ func resolveSymlink(file string) (string, error) {
 	target, err := filepath.EvalSymlinks(file)
 	if err != nil {
 		return "", fmt.Errorf("%s is a symlink to a missing file: %w", file, err)
+	}
+	return target, nil
+}
+
+// resolveSymlinkInside is resolveSymlink for a file of the workbench folder
+// root: a symlink whose resolved target lies outside root is refused with
+// ErrSymlinkOutsideFolder, naming the link, its target and the fix first (the
+// Desktop shows the start of the CLI's stderr), so the caller writes nothing
+// anywhere. A link that stays inside root is followed as
+// before.
+func resolveSymlinkInside(file, root string) (string, error) {
+	target, err := resolveSymlink(file)
+	if err != nil || target == file {
+		return target, err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", root, err)
+	}
+	if rel, err := filepath.Rel(realRoot, target); err != nil || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%w)",
+			file, target, ErrSymlinkOutsideFolder)
 	}
 	return target, nil
 }
@@ -1093,7 +1123,10 @@ func readExclude(file string) (excludeDoc, error) {
 // writeExclude writes the owner's lines first, verbatim and in order, then
 // our block — or no block at all once it is empty. Like writeSettings, a
 // symlinked exclude file is written through to its target, atomically, and
-// its existing permission bits (or 0o644 for a brand-new file) are kept.
+// its existing permission bits (or 0o644 for a brand-new file) are kept. It
+// is not held to the folder (resolveSymlinkInside): info/exclude lives in the
+// git dir, often outside the folder anyway, and only our marked block of
+// ignore lines is ever written there.
 func writeExclude(file string, d excludeDoc) error {
 	out := slices.Clone(d.outside)
 	if len(d.block) > 0 {
