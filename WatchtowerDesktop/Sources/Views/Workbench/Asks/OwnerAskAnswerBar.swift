@@ -38,7 +38,7 @@ struct OwnerAskAnswerBar: View {
                 if ask.isOpen {
                     Button("Dismiss") { asks.dismiss(ask) }
                         .disabled(answering)
-                        .help("Close this ask without answering; the agent goes on without it")
+                        .help("Close this ask without answering; the agent goes on without it. Your note goes with it")
                     Spacer()
                     if answering { ProgressView().controlSize(.small) }
                     ForEach(actions, id: \.verdict) { action in

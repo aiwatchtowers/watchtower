@@ -177,8 +177,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id], "nothing left for the owner to do")
     }
 
-    /// Board #223: Dismiss closes the ask with a dismissal, ignoring the
-    /// draft, and types the line so the agent goes on without it.
+    /// Board #223: Dismiss closes the ask with a dismissal carrying only the
+    /// draft's note, and types the line so the agent goes on without it.
     func testDismissStoresADismissalAndTellsTheSession() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
@@ -186,12 +186,14 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let ask = try await openAsk(vm, project: p, id: askID)
         vm.asks.openDrawer(askID: askID, projectID: p)
         pick(vm, askID)
+        vm.asks.drafts.update(askID) { $0.note = " Not now " }
 
         await vm.asks.dismiss(ask)?.value
 
         let stored = try await status(askID)
         XCTAssertEqual(stored.status, "answered")
-        XCTAssertEqual(try OwnerAskAnswer.decode(stored.answer), .dismissal, "the draft's picks are not sent")
+        XCTAssertEqual(try OwnerAskAnswer.decode(stored.answer), OwnerAskAnswer(note: "Not now", dismissed: true),
+                       "the draft's note goes trimmed, its picks do not")
         XCTAssertTrue(String(bytes: typed[0], encoding: .utf8)?.contains("Ask #\(askID) answered (question: dismissed)") == true)
         XCTAssertEqual(typed[1], [0x0D])
         XCTAssertNil(vm.asks.drawerAskIDs[p])
