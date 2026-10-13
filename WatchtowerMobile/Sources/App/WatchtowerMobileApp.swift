@@ -84,11 +84,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completionHandler(.noData)
                 return
             }
-            PushCompletion.serve(
-                env, arrivedAt: arrivedAt, inForeground: inForeground,
-                startWork: BackgroundWork.starter(),
-                completion: { completionHandler($0.backgroundFetchResult) }
-            )
+            PushCompletion.serve(env, arrivedAt: arrivedAt, inForeground: inForeground, startWork: BackgroundWork.starter()) {
+                completionHandler($0.backgroundFetchResult)
+            }
         }
     }
 }

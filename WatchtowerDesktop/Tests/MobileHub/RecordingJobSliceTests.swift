@@ -282,7 +282,6 @@ private final class FakeJobEvents: PhoneRecordingJobEvents {
     var onJobFinished: ((_ audioURL: URL, _ transcriptID: Int64) -> Void)?
 }
 
-
 /// A settable wall clock.
 private final class TestClock: @unchecked Sendable {
     private let lock = NSLock()

@@ -353,9 +353,7 @@ final class FetchCadenceWiringTests: XCTestCase {
 
     /// A demo environment built in the background (`startsActive: false`)
     /// whose CloudKit reach is held until released.
-    private func makeBackgroundLaunch(
-        startWork: BackgroundWork.Starter? = nil
-    ) throws -> (AppEnvironment, TickSleeper, MutableClock, RemoteFetchRecorder, EnergyCounter) {
+    private func makeBackgroundLaunch() throws -> Wired {
         let sleeper = TickSleeper()
         let clock = MutableClock()
         let remote = RemoteFetchRecorder()
@@ -372,21 +370,21 @@ final class FetchCadenceWiringTests: XCTestCase {
             now: { clock.now },
             remoteFetch: { try await remote.fetch($0) },
             sleep: { try await sleeper.sleep($0) },
-            energy: counter,
-            startWork: startWork
+            energy: counter
         )
         addTeardownBlock { @MainActor in
             env.stop()
             remote.release()
         }
-        return (env, sleeper, clock, remote, counter)
+        return Wired(env: env, sleeper: sleeper, clock: clock, remote: remote, counter: counter)
     }
 
     /// Built in the background: no safety poll after the boot or after a
     /// push; the scene's first active phase makes it active and starts the
     /// poll with a full fetch.
     func testAnEnvironmentBuiltInTheBackgroundPollsOnlyOnceActive() async throws {
-        let (env, sleeper, _, remote, _) = try makeBackgroundLaunch()
+        let launch = try makeBackgroundLaunch()
+        let (env, sleeper, remote) = (launch.env, launch.sleeper, launch.remote)
         XCTAssertFalse(env.isActive)
         try await poll({ remote.heldCount == 1 }, "the launch fetch never began")
         XCTAssertEqual(remote.depths, [.full], "no push: the launch keeps the full reach")
@@ -413,7 +411,8 @@ final class FetchCadenceWiringTests: XCTestCase {
     func testAPushBeforeTheBootIsServedByALightLaunchFetch() async throws {
         let tasks = FakeBackgroundTasks()
         let suspension = DatabaseSuspension { _ in }
-        let (env, sleeper, clock, remote, counter) = try makeBackgroundLaunch()
+        let launch = try makeBackgroundLaunch()
+        let (env, sleeper, clock, remote, counter) = (launch.env, launch.sleeper, launch.clock, launch.remote, launch.counter)
         let arrivedAt = clock.now
         var completions: [FetchOutcome] = []
         PushCompletion.serve(

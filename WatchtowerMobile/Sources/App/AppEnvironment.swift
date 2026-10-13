@@ -425,9 +425,13 @@ final class AppEnvironment {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
-        // The boot writes the replica (the held recordings' adoption, the
-        // launch fetch, the outbox sweep, launch recovery): held from here,
-        // before a push can end its own work, until the boot is done.
+        startBoot(startWork)
+    }
+
+    /// Starts the boot. It writes the replica (the held recordings'
+    /// adoption, the launch fetch, the outbox sweep, launch recovery): held
+    /// from here, before a push can end its own work, until it is done.
+    private func startBoot(_ startWork: BackgroundWork.Starter?) {
         endBootWork = startWork?("app-boot")
         adoption = Task { await adoptHeld() }
         let transportStart = Task {
@@ -711,9 +715,8 @@ final class AppEnvironment {
             applyOwed = false
         }
         if let remoteError {
-            Self.logger.error(
-                "CloudKit fetch failed (\(String(describing: trigger), privacy: .public), \(Self.describe(depth), privacy: .public)): \(remoteError.localizedDescription, privacy: .public)"
-            )
+            let what = "\(trigger), \(Self.describe(depth))"
+            Self.logger.error("CloudKit fetch failed (\(what, privacy: .public)): \(remoteError.localizedDescription, privacy: .public)")
             if owed {
                 await applyBuffered()
             }
@@ -722,9 +725,8 @@ final class AppEnvironment {
         do {
             hydrated = try await hydrator.hydrateOnce()
         } catch {
-            Self.logger.error(
-                "replica hydrate failed (\(String(describing: trigger), privacy: .public), \(Self.describe(depth), privacy: .public)): \(error.localizedDescription, privacy: .public)"
-            )
+            let what = "\(trigger), \(Self.describe(depth))"
+            Self.logger.error("replica hydrate failed (\(what, privacy: .public)): \(error.localizedDescription, privacy: .public)")
             return .failed
         }
         lastSyncAt = now()

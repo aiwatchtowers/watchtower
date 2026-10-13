@@ -417,6 +417,10 @@ final class TerminalSessionSliceTests: XCTestCase {
         let checks = OSAllocatedUnfairLock(initialState: 0)
         let listings = OSAllocatedUnfairLock(initialState: 0)
         let calls = OSAllocatedUnfairLock(initialState: 0)
+        let isActive: @Sendable () -> Bool = {
+            checks.withLock { $0 += 1 }
+            return linked.withLock { $0 }
+        }
         let summaries = SessionReportSummaryRunner(
             fetch: { _ in
                 calls.withLock { $0 += 1 }
@@ -427,10 +431,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 return .init(live: [7], published: [7])
             },
             timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(5), wake: .milliseconds(10)),
-            isActive: {
-                checks.withLock { $0 += 1 }
-                return linked.withLock { $0 }
-            }
+            isActive: isActive
         )
         summaries.start()
         defer { summaries.stop() }
