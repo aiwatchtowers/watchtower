@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -51,5 +53,42 @@ final class PersistedInspectorWidthTests: XCTestCase {
         PersistedInspectorWidth.store(410, key: "w", range: range, defaults: defaults)
         PersistedInspectorWidth.store(0, key: "w", range: range, defaults: defaults)
         XCTAssertEqual(defaults.object(forKey: "w") as? Double, 410, "closing keeps the last settled width")
+    }
+
+    /// The column has to stay draggable through the range (#735): with the
+    /// width probe wrapped around `.inspectorColumnWidth` SwiftUI dropped the
+    /// range and pinned the column at its default width.
+    @MainActor
+    func testTheHostedColumnTakesTheRangeAndCanBeDraggedWider() throws {
+        let key = "w"
+        let root = Color.clear
+            .inspector(isPresented: .constant(true)) {
+                Color.clear.modifier(PersistedInspectorWidth(key: key, range: range, ideal: 300, defaults: defaults))
+            }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: root)
+        window.orderFront(nil)
+        defer { window.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+
+        let split = try XCTUnwrap(Self.splitView(in: try XCTUnwrap(window.contentView)), "no inspector split")
+        let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
+        let column = try XCTUnwrap(controller.splitViewItems.last)
+        XCTAssertEqual(column.minimumThickness, 220)
+        XCTAssertEqual(column.maximumThickness, 560)
+        XCTAssertEqual(split.arrangedSubviews.last?.frame.width, 300, "opens at the ideal")
+
+        split.setPosition(split.frame.width - 500, ofDividerAt: 0)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(split.arrangedSubviews.last?.frame.width ?? 0, 500, accuracy: 1, "dragged wider")
+    }
+
+    private static func splitView(in view: NSView) -> NSSplitView? {
+        if let split = view as? NSSplitView { return split }
+        return view.subviews.lazy.compactMap { splitView(in: $0) }.first
     }
 }
