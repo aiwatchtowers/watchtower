@@ -81,13 +81,21 @@ the table to `TestAllTablesExist`, regenerate the golden and `TestDatabase+Schem
 ### 3.2 Write rule
 
 On every session-state hook event of a resolved session (main agent **and** subagents/teammates — unlike #565's
-column, which follows the main agent only): resolve `cwd` with #565's resolver to `(root, branch)` — a walk up for
-`.git` and a read of the worktree's `HEAD` file; no git process, no network. Then:
+column, which follows the main agent only): resolve `cwd` to `(root, branch)` — symlinks of the cwd (or its nearest
+existing ancestor) resolved, then a walk up for `.git` (`internal/gitdir`, shared with devpack's info/exclude upkeep;
+a `.git` it cannot read stops the walk — fail closed) and a read of the worktree's `HEAD` file; no git process, no
+network. The branch is `""` when unknown — a detached HEAD, or a reftable repository's `refs/heads/.invalid` stub —
+and the pair is still recorded with `""`. Then:
 
 - cwd absent, unresolvable, or outside any repository → nothing.
 - `(session, root, branch)` already recorded → nothing (one read-only `SELECT`; no write).
-- otherwise `INSERT OR IGNORE`, in the same transaction as the event's state write when there is one, else alone.
-- at most **64** rows per session; further new pairs are dropped silently (a stderr line once per run).
+- the session already holds **64** rows → nothing (the same read says so; no write lock); the new pair is dropped
+  with a stderr line at most once per run (one hook process).
+- otherwise `INSERT OR IGNORE` in its **own** transaction, after the event's state write has committed. Not in the
+  state write's transaction, deliberately: the state write is the hook's job and the ledger an extra — a ledger
+  failure (a missing table, a lock timeout, the cap) must never roll back, delay or fail the state write, and a
+  separate transaction gives that without savepoint bookkeeping across the several state-write paths. The cost is
+  one more short write transaction, only on the rare event that meets a new pair.
 
 The hook still prints nothing, never blocks, never fails the event on a ledger error (a stderr line, exit 0).
 The main folder's own root is recorded too (its branches can be the session's), but the main worktree itself is

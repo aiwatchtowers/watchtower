@@ -89,7 +89,7 @@ Answers spec §14. Output: a short appendix "Observed (Claude Code <version>, 20
 **Interfaces:**
 ```go
 type SessionWorktree struct{ Root, Branch, FirstAt string }
-func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, branch string) (bool, error) // read-only tx
+func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, branch string) (has, full bool, err error) // one read in a read-only tx; full = already at 64 rows
 func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (recorded bool, err error) // INSERT OR IGNORE; refuses past 64 rows (recorded=false, nil)
 func (db *DB) SessionWorktrees(ctx context.Context, sessionID int64) ([]SessionWorktree, error) // never nil
 func (db *DB) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error) // root -> session ids (sweep owner hint)
@@ -104,7 +104,7 @@ func (db *DB) SaveCleanupResult(ctx context.Context, sessionID int64, resultJSON
 
 **Files:** modify `cmd/workbench_session_state.go` (+ `_test.go`).
 
-**Behaviour:** spec §3.2. Every event of a resolved session (main and subagent): resolve `cwd` with #565's resolver → `(root, branch)`; `HasSessionWorktree` → if new, `RecordSessionWorktree` inside the event's state-write tx when it has one, else its own tx. Ledger errors: one stderr line, exit 0, state write unaffected (insert after the state write's statements, error swallowed only for the ledger statement — use a savepoint so a ledger failure does not roll back the state).
+**Behaviour:** spec §3.2. Every event of a resolved session (main and subagent): resolve `cwd` with #565's resolver → `(root, branch)`; `HasSessionWorktree` (one read-only read: known pair or full session → no write lock) → if new, `RecordSessionWorktree` in its **own** transaction after the state write has committed — deliberately not inside the state-write tx: a ledger failure (missing table, lock timeout, cap) must never roll back or fail the state write, and a separate tx gives that across all state-write paths without savepoints. Ledger errors: one stderr line, exit 0, state write unaffected; the "session full" line at most once per run.
 
 **Tests:**
 - `TestProj11_LedgerRecordsANewWorktreeOnce` — two events in the same worktree → one row; a third on a new branch → second row.

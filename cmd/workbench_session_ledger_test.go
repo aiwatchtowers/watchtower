@@ -81,6 +81,7 @@ func TestSessionStateLedger_Resolver(t *testing.T) {
 	main := ledgerRepo(t)
 	wt := ledgerWorktree(t, main, ".claude/worktrees/agent-x", "ref: refs/heads/feat/x")
 	detached := ledgerWorktree(t, main, "wt-detached", "0123456789abcdef0123456789abcdef01234567")
+	reftable := ledgerWorktree(t, main, "wt-reftable", "ref: refs/heads/.invalid")
 	relative := filepath.Join(main, "wt-relative")
 	require.NoError(t, os.MkdirAll(filepath.Join(relative, "sub"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(relative, ".git"), []byte("gitdir: ../.git/worktrees/agent-x\n"), 0o644))
@@ -100,6 +101,7 @@ func TestSessionStateLedger_Resolver(t *testing.T) {
 		{"a missing dir inside it", filepath.Join(main, "gone", "deeper"), main, "main", true},
 		{"linked work tree", wt, wt, "feat/x", true},
 		{"detached HEAD", detached, detached, "", true},
+		{"reftable HEAD stub: branch unknown", reftable, reftable, "", true},
 		{"relative gitdir", filepath.Join(relative, "sub"), relative, "feat/x", true},
 		{"a .git that is no pointer", broken, "", "", false},
 		{"outside any repository", outside, "", "", false},
@@ -119,6 +121,23 @@ func TestSessionStateLedger_ResolvesSymlinks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, main, root, "the root is stored symlink-resolved")
 	assert.Equal(t, "main", branch)
+}
+
+// A symlink to a repository's SUBDIRECTORY: walking up the link's own path
+// would never meet .git, so the cwd is resolved before the walk — also
+// when the cwd itself is gone (its nearest existing ancestor is resolved).
+func TestSessionStateLedger_ResolvesASymlinkIntoASubdirectory(t *testing.T) {
+	main := ledgerRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(main, "src", "pkg"), 0o755))
+	link := filepath.Join(t.TempDir(), "pkg-link")
+	require.NoError(t, os.Symlink(filepath.Join(main, "src", "pkg"), link))
+
+	for _, dir := range []string{link, filepath.Join(link, "gone", "deeper")} {
+		root, branch, ok := sessionWorktreeAt(dir)
+		require.True(t, ok, dir)
+		assert.Equal(t, main, root, dir)
+		assert.Equal(t, "main", branch, dir)
+	}
 }
 
 // PROJ-11 (amended, owner approved 2026-10-12, ask #193): a (root, branch)
@@ -175,19 +194,24 @@ func TestProj11_SubagentCwdIsRecordedButNeverMovesTheSessionPlace(t *testing.T) 
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	stepClock(t)
 	main := ledgerRepo(t)
-	wt := ledgerWorktree(t, main, ".claude/worktrees/agent-x", "ref: refs/heads/worktree-agent-x")
+	wtStart := ledgerWorktree(t, main, ".claude/worktrees/agent-x", "ref: refs/heads/worktree-agent-x")
+	wtTool := ledgerWorktree(t, main, ".claude/worktrees/agent-y", "ref: refs/heads/worktree-agent-y")
 
 	runLedgerEvent(t, pid, withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), main))
 	place := storedCwd(t, database, row)
 	require.Equal(t, main, place.Path)
 
-	sub := withCwd(t, fixtureInput(t, "subagentstart_teammate.json"), wt)
+	// Each subagent path gets its own worktree, so each is seen recording.
+	sub := withCwd(t, fixtureInput(t, "subagentstart_teammate.json"), wtStart)
 	runLedgerEvent(t, pid, sub)
-	tool := withCwd(t, statePayload("PostToolUse", briefLaunchID, ""), wt)
+	assert.ElementsMatch(t, []string{main + "@main", wtStart + "@worktree-agent-x"},
+		ledgerPairs(ledgerRows(t, database, row)), "SubagentStart records its cwd")
+	tool := withCwd(t, statePayload("PostToolUse", briefLaunchID, ""), wtTool)
 	tool = strings.Replace(tool, `{`, `{"agent_id":"aworktree-1","agent_type":"general-purpose",`, 1)
 	runLedgerEvent(t, pid, tool)
 
-	assert.ElementsMatch(t, []string{main + "@main", wt + "@worktree-agent-x"}, ledgerPairs(ledgerRows(t, database, row)))
+	assert.ElementsMatch(t, []string{main + "@main", wtStart + "@worktree-agent-x", wtTool + "@worktree-agent-y"},
+		ledgerPairs(ledgerRows(t, database, row)), "a subagent's PostToolUse records its cwd")
 	assert.Equal(t, place, storedCwd(t, database, row), "a subagent never moves the session's place")
 }
 
@@ -237,6 +261,9 @@ func TestSessionStateLedger_StopsAtTheCap(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	sessionLedgerFullReported.Store(false)
+	t.Cleanup(func() { sessionLedgerFullReported.Store(false) })
+
 	out, errOut, err := runSessionState(t, pid,
 		strings.NewReader(withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), main)))
 	require.NoError(t, err)
@@ -245,6 +272,30 @@ func TestSessionStateLedger_StopsAtTheCap(t *testing.T) {
 	assert.Contains(t, errOut, "already records")
 	assert.Len(t, ledgerRows(t, database, row), db.MaxSessionWorktrees)
 	assert.Equal(t, "working", storedAgentState(t, database, row))
+
+	// Within the same run a further new pair is dropped without a line.
+	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/x")
+	out, errOut, err = runSessionState(t, pid,
+		strings.NewReader(withCwd(t, statePayload("PostToolUse", briefLaunchID, ""), wt)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Empty(t, errOut, "the full line is printed once per run")
+	assert.Len(t, ledgerRows(t, database, row), db.MaxSessionWorktrees)
+}
+
+// A full session is known from one read: no write transaction is opened to
+// find out (a query_only handle refuses any BEGIN IMMEDIATE).
+func TestSessionStateLedger_AFullSessionTakesNoWriteLock(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	for i := range db.MaxSessionWorktrees {
+		_, err := database.RecordSessionWorktree(context.Background(), nil, row,
+			fmt.Sprintf("/tmp/acme/wt-%d", i), "b", db.AgentStateStamp(hookNow()))
+		require.NoError(t, err)
+	}
+	require.NoError(t, database.SetReadOnly())
+
+	err := writeSessionLedger(database, row, pid, briefLaunchID, "/tmp/acme/new", "b", hookNow())
+	assert.ErrorIs(t, err, errSessionLedgerFull)
 }
 
 // The captured shape of a worktree-isolated subagent's PostToolUse (owner
@@ -270,7 +321,7 @@ func TestCodexSessionStateLedger_RecordsTheCwd(t *testing.T) {
 	main := ledgerRepo(t)
 	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/codex")
 
-	runCodexState(t, codexPayload(t, "post_tool_use.json", map[string]any{"cwd": wt}))
-	runCodexState(t, codexPayload(t, "post_tool_use.json", map[string]any{"cwd": wt}))
+	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{"cwd": wt}))
+	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{"cwd": wt}))
 	assert.Equal(t, []string{wt + "@feat/codex"}, ledgerPairs(ledgerRows(t, database, row)))
 }
