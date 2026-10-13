@@ -64,10 +64,15 @@ func Build(ctx context.Context, d Deps, r Request) (Plan, error) {
 	if err != nil {
 		return Plan{Items: []Item{}}, err
 	}
+	return b.evaluate(ctx), nil
+}
+
+// evaluate lists and evaluates every candidate of the builder's facts.
+func (b *builder) evaluate(ctx context.Context) Plan {
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
-	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch}, nil
+	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch}
 }
 
 func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {

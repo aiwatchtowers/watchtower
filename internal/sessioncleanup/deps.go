@@ -1,4 +1,4 @@
-// Package sessioncleanup plans (and, from Task 6 on, applies) the removal of
+// Package sessioncleanup plans and applies the removal of
 // what a workbench session left behind: the linked worktrees and local
 // branches it created once their work is merged or pushed, its orphan
 // processes and the LaunchServices entries of builds inside those worktrees.
@@ -144,6 +144,12 @@ type Deps struct {
 	// WorktreeBirth is the birth time of a worktree's admin dir; false =
 	// unknown, which keeps the worktree (created_unknown).
 	WorktreeBirth func(adminDir string) (time.Time, bool)
+	// Results stores a session-mode apply's result (cleanup_result); nil
+	// leaves it unsaved and says so in Result.ResultError.
+	Results ResultStore
+	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
+	// before it keeps the worktree; 0 = 5 s (spec §7).
+	OrphanGrace time.Duration
 }
 
 // OrphansIn splits the processes inside one of roots into orphans and
