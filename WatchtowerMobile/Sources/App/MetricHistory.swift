@@ -70,15 +70,16 @@ final class MetricHistory: @unchecked Sendable {
 
     /// Merges new reports: one per period start (a redelivered report
     /// replaces its earlier copy), oldest first, the newest
-    /// `retainedDays` kept. Persists when anything was added.
+    /// `retainedDays` kept. Persists when anything was added, under the
+    /// lock, so two concurrent deliveries cannot write the file out of
+    /// order (an older merge overwriting a newer one).
     func add(days: [MetricDaySummary], diagnostics: [MetricDiagnosticSummary] = []) {
         guard !days.isEmpty || !diagnostics.isEmpty else { return }
-        let merged = lock.withLock { contents -> Contents in
+        lock.withLock { contents in
             contents.days = Self.merge(contents.days, days, begin: \.begin)
             contents.diagnostics = Self.merge(contents.diagnostics, diagnostics, begin: \.begin)
-            return contents
+            save(contents)
         }
-        save(merged)
     }
 
     private static func merge<T>(_ old: [T], _ new: [T], begin: KeyPath<T, Date>) -> [T] {
