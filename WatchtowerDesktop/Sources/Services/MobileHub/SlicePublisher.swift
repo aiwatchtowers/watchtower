@@ -115,8 +115,13 @@ final class SlicePublisher: Sendable {
         var firstNudgeAt: ContinuousClock.Instant?
         var lastFastSendAt: ContinuousClock.Instant?
         /// The next full and urgent ticks; nil: due now (before the first).
+        /// Taking a tick sets it from the take; the cycle's end resets it
+        /// from the end, so a slow cycle never runs back to back.
         var nextTick: ContinuousClock.Instant?
         var nextUrgentTick: ContinuousClock.Instant?
+        /// Which ticks the cycle being run took (reset by its end).
+        var tookTick = false
+        var tookUrgentTick = false
         /// The loop's current sleep; a nudge cancels it so the loop
         /// recomputes its deadline. Under the same lock as the nudge state,
         /// so a nudge can never land between "deadline computed" and
@@ -486,6 +491,8 @@ final class SlicePublisher: Sendable {
             if lane.nextTick.map({ now >= $0 }) ?? true {
                 lane.nextTick = now + timing.tick
                 lane.nextUrgentTick = now + timing.urgentTick
+                lane.tookTick = true
+                lane.tookUrgentTick = true
                 lane.pendingKinds = []
                 lane.firstNudgeAt = nil
                 return .full
@@ -503,8 +510,20 @@ final class SlicePublisher: Sendable {
             if urgentDue {
                 kinds.formUnion(Self.urgentKinds)
                 lane.nextUrgentTick = now + timing.urgentTick
+                lane.tookUrgentTick = true
             }
             return .urgent(kinds)
+        }
+    }
+
+    /// The end of a cycle: the ticks it took count from now.
+    private func cycleEnded() {
+        let end = clock()
+        lane.withLock { [timing] lane in
+            if lane.tookTick { lane.nextTick = end + timing.tick }
+            if lane.tookUrgentTick { lane.nextUrgentTick = end + timing.urgentTick }
+            lane.tookTick = false
+            lane.tookUrgentTick = false
         }
     }
 
@@ -598,13 +617,17 @@ final class SlicePublisher: Sendable {
             await sendAtOnce()
         }
         if let first { outcome?.absorb(first) }
+        cycleEnded()
         if case .urgent = cycle { fastCycles.withLock { $0 += 1 } }
         return outcome
     }
 
-    /// The transport's immediate send.
+    /// The transport's immediate send. Stamped as a fast send, so the fast
+    /// lane keeps its ≥ 2 s spacing after any cycle's send.
     private func sendAtOnce() async {
         await sendNow()
+        let sentAt = clock()
+        lane.withLock { $0.lastFastSendAt = sentAt }
     }
 
     /// The kinds a cycle diffs (nil: every kind). Without a linked phone

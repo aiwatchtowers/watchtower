@@ -283,6 +283,31 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(publisher.takeDueCycle(now: clock.origin + .seconds(30)), .full)
     }
 
+    /// A slow cycle: the ticks it took count from its end, and its
+    /// immediate send holds the fast lane's 2 s spacing like a fast send.
+    func testTicksCountFromACyclesEndAndAnySendSpacesTheFastLane() async throws {
+        let clock = FakeClock()
+        let ask = StubSliceSource(kind: .ownerAsk)
+        ask.setPayload(Data(#"{"v":1}"#.utf8))
+        // The send takes 5 s of the fabricated clock.
+        let publisher = makeLanePublisher(clock, sources: [ask]) { clock.set(.seconds(5)) }
+
+        let full = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin))
+        XCTAssertEqual(full, .full)
+        await publisher.run(full)
+
+        publisher.nudge(kinds: [.ownerAsk])
+        XCTAssertEqual(publisher.fastDeadline, clock.origin + .seconds(7), "2 s after the full tick's send")
+        XCTAssertNil(publisher.takeDueCycle(now: clock.origin + .milliseconds(6_999)))
+        XCTAssertEqual(
+            publisher.takeDueCycle(now: clock.origin + .seconds(10)), .urgent([.ownerAsk]),
+            "the urgent tick counts from the cycle's end (15 s), so only the nudge is due"
+        )
+        XCTAssertEqual(publisher.takeDueCycle(now: clock.origin + .seconds(15)), .urgent(SlicePublisher.urgentKinds))
+        XCTAssertNotEqual(publisher.takeDueCycle(now: clock.origin + .seconds(34)), .full)
+        XCTAssertEqual(publisher.takeDueCycle(now: clock.origin + .seconds(35)), .full, "the full tick too (5 s + 30 s)")
+    }
+
     /// Owner decision Q3: a normal kind changing every 250 ms for two
     /// minutes, nudging each time, is saved at most once per 30 s and never
     /// asks for an immediate send.
