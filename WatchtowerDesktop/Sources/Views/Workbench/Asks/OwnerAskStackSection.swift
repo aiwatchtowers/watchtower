@@ -159,6 +159,9 @@ private struct OwnerAskStackRow: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
         .help(ask.title)
+        .contextMenu {
+            Button("Dismiss Ask") { Task { await vm.answerQuick(ask, with: .dismissal) } }
+        }
     }
 
     private var caption: String {

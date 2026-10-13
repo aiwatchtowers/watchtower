@@ -24,10 +24,15 @@ const (
 // fields of every type here are declared in key order, so json.Marshal emits
 // the canonical form (sorted keys) that testdata/answers pins and the Swift
 // encoder reproduces byte for byte. Keep them sorted.
+//
+// Dismissed is the owner closing the ask without answering it (board #223):
+// no verdict, answers, marks or comments, an optional note. It is written
+// only when true, so every other answer keeps its canonical form.
 type Answer struct {
 	Answers   []QuestionAnswer `json:"answers"`
 	Checklist []CheckAnswer    `json:"checklist"`
 	Comments  []Comment        `json:"comments"`
+	Dismissed bool             `json:"dismissed,omitempty"`
 	Note      string           `json:"note"`
 	Verdict   string           `json:"verdict"`
 }
@@ -102,8 +107,15 @@ func ParseAnswer(raw []byte) (Answer, error) {
 
 // ValidateAnswer checks a parsed answer against the ask it answers: a
 // verdict exactly on a review, comments only there, one non-empty answer
-// per question with known labels, and every check item marked once.
+// per question with known labels, and every check item marked once. A
+// dismissal carries none of them, whatever the kind.
 func ValidateAnswer(kind string, p Payload, a Answer) error {
+	if a.Dismissed {
+		if a.Verdict != "" || len(a.Answers) > 0 || len(a.Checklist) > 0 || len(a.Comments) > 0 {
+			return fmt.Errorf("dismissed: a dismissal carries no answer")
+		}
+		return nil
+	}
 	switch {
 	case kind == KindReview && a.Verdict == "":
 		return fmt.Errorf("verdict: required for a review")

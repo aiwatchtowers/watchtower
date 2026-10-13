@@ -18,6 +18,8 @@ func DeliveryLine(id int64, kind string, a Answer) string {
 
 func short(kind string, a Answer) string {
 	switch {
+	case a.Dismissed:
+		return "dismissed"
 	case kind == KindReview && a.Verdict == VerdictApproved:
 		return "approved"
 	case kind == KindReview && a.Verdict == VerdictChanges:
