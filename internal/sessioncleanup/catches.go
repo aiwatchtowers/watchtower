@@ -9,11 +9,14 @@ import (
 
 // Catch reasons (spec §5, §6, §9). The ownership reasons are in ownership.go.
 const (
-	ReasonMainFolder          = "main_folder"
-	ReasonWorkbenchFolder     = "workbench_folder"
-	ReasonLocked              = "locked"
-	ReasonUncommittedChanges  = "uncommitted_changes"
-	ReasonProcessRunning      = "process_running"
+	ReasonMainFolder         = "main_folder"
+	ReasonWorkbenchFolder    = "workbench_folder"
+	ReasonLocked             = "locked"
+	ReasonUncommittedChanges = "uncommitted_changes"
+	ReasonProcessRunning     = "process_running"
+	// ReasonProcessUnknown: a process of the current user whose cwd the
+	// scan could not see; it may be working inside, so the worktree stays.
+	ReasonProcessUnknown      = "process_unknown"
 	ReasonSessionInIt         = "session_in_it"
 	ReasonYouAreInIt          = "you_are_in_it"
 	ReasonUnpushedCommits     = "unpushed_commits"
@@ -151,7 +154,22 @@ func catchProcesses(_ context.Context, b *builder, w worktree) (string, string, 
 		return "", "", nil
 	}
 	p := blockers[0]
-	return ReasonProcessRunning, fmt.Sprintf("pid %d %s", p.PID, filepath.Base(p.Exe)), nil
+	detail := fmt.Sprintf("process in use: %s pid %d", procLabel(p), p.PID)
+	if ProcUnknown(p) {
+		return ReasonProcessUnknown, detail, nil
+	}
+	return ReasonProcessRunning, detail, nil
+}
+
+// procLabel names p for a message: its executable's base name, else ps's
+// comm, else "unknown".
+func procLabel(p Proc) string {
+	for _, name := range []string{p.Exe, p.Name} {
+		if name != "" {
+			return filepath.Base(name)
+		}
+	}
+	return "unknown"
 }
 
 // catchSessionInIt is W6: the caller works inside, or another session whose
