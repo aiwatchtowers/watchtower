@@ -13,12 +13,25 @@ import (
 // looks at the clock and the context.
 const nestedClockEvery = 1024
 
+// regenerableCaches names the dependency and build caches W9's walk skips
+// at any depth: a `.git` inside them is a package manager's checkout
+// (`.build/checkouts/<pkg>/.git`, `node_modules/**/.git`), rebuilt on
+// demand, not someone's work. A listed worktree placed inside one is still
+// found by catchNested's listing check, which does not walk.
+var regenerableCaches = map[string]bool{
+	".build":       true,
+	"node_modules": true,
+	"DerivedData":  true,
+	"Pods":         true,
+	".swiftpm":     true,
+}
+
 // errNestedFound ends the walk at the first nested repository.
 var errNestedFound = errors.New("nested repository found")
 
 // findNestedRepository walks root, not following symlinks, for a `.git`
-// file or directory other than root's own and returns its parent ("" for
-// none). An unreadable entry, a cancelled context or a walk over budget is
+// file or directory other than root's own, outside the regenerable caches,
+// and returns its parent ("" for none). An unreadable entry, a cancelled context or a walk over budget is
 // an error: the caller keeps the worktree (fail closed).
 func findNestedRepository(ctx context.Context, root string, budget time.Duration) (string, error) {
 	deadline := time.Now().Add(budget)
@@ -32,7 +45,7 @@ func findNestedRepository(ctx context.Context, root string, budget time.Duration
 			found = filepath.Dir(path)
 			return errNestedFound
 		}
-		if path == own && d.IsDir() {
+		if d.IsDir() && path != root && (path == own || regenerableCaches[d.Name()]) {
 			return filepath.SkipDir
 		}
 		seen++

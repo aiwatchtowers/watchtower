@@ -50,6 +50,11 @@ type builder struct {
 	activity   map[int64]SessionActivity
 	live       map[int64]bool
 	rootOwners map[string][]int64 // sweep
+	// walked caches W9's walk per worktree root (nil = walk every time).
+	// Apply shares one map between its evaluation and the early re-checks,
+	// so a worktree is walked once there and once more right before
+	// `git worktree remove`.
+	walked map[string]string
 
 	// After the worktree pass: where each branch is checked out, and the
 	// subset of worktrees that stay.

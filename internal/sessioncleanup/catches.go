@@ -231,11 +231,24 @@ func catchNested(ctx context.Context, b *builder, w worktree) (string, string, e
 			return ReasonContainsWorktree, o.Root, nil
 		}
 	}
-	nested, err := findNestedRepository(ctx, w.Root, nestedScanBudget)
+	nested, err := b.nestedIn(ctx, w.Root)
 	if err != nil || nested == "" {
 		return "", "", err
 	}
 	return ReasonContainsWorktree, nested, nil
+}
+
+// nestedIn is W9's walk of root, served from b.walked when it has root; a
+// failed walk is not cached.
+func (b *builder) nestedIn(ctx context.Context, root string) (string, error) {
+	if nested, ok := b.walked[root]; ok {
+		return nested, nil
+	}
+	nested, err := findNestedRepository(ctx, root, nestedScanBudget)
+	if err == nil && b.walked != nil {
+		b.walked[root] = nested
+	}
+	return nested, err
 }
 
 // branchCatch returns the reason a branch is kept, "" to let it pass.

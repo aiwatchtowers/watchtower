@@ -98,6 +98,7 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 	if err != nil {
 		return res, err
 	}
+	b.walked = map[string]string{}
 	a := newApplier(b, b.evaluate(ctx), only)
 	a.run(ctx)
 	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch}
@@ -118,11 +119,12 @@ type applier struct {
 	tips   map[string]string // branch -> the tip the apply's evaluation saw
 	halt   error             // set by a failure that stops the apply
 	self   int               // this process: never an orphan
+	walked map[string]string // W9 walks of the evaluation, reused until the final re-check
 }
 
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
-		tips: map[string]string{}, self: b.self}
+		tips: map[string]string{}, self: b.self, walked: b.walked}
 	a.req.NoSize = true
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
@@ -241,7 +243,7 @@ func (a *applier) removeWorktree(ctx context.Context, it *Item) {
 		return
 	}
 	a.unregisterBundles(ctx, root)
-	if a.recheckClear(ctx, it, root, "process in use: ") {
+	if a.recheckClear(ctx, it, root, "process in use: ", true) {
 		rctx, cancel := context.WithTimeout(ctx, worktreeRemoveTimeout)
 		_, code, err := a.git.run.RunGit(rctx, a.folder, a.git.bin, "worktree", "remove", root)
 		cancel()
@@ -266,12 +268,17 @@ func (a *applier) settleGit(it *Item, code int, err error) {
 	}
 }
 
-// recheckWorktree re-evaluates root with fresh facts; false keeps it.
-func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string) (*builder, bool) {
+// recheckWorktree re-evaluates root with fresh facts; false keeps it. W9's
+// walk is the evaluation's unless walk asks for a new one (the final
+// re-check); `git worktree list` is always read afresh.
+func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string, walk bool) (*builder, bool) {
 	b, err := a.fresh(ctx)
 	if err != nil {
 		a.fail(it, err)
 		return nil, false
+	}
+	if !walk {
+		b.walked = a.walked
 	}
 	for _, w := range b.repo.worktrees {
 		if w.Root != root || w.Bare {
@@ -293,7 +300,7 @@ func (a *applier) recheckWorktree(ctx context.Context, it *Item, root string) (*
 // then process scans alone until none is left or the grace runs out, then
 // one full re-check. True when the worktree may be removed now.
 func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool {
-	b, ok := a.recheckWorktree(ctx, it, root)
+	b, ok := a.recheckWorktree(ctx, it, root, false)
 	if !ok {
 		return false
 	}
@@ -310,14 +317,14 @@ func (a *applier) clearOrphans(ctx context.Context, it *Item, root string) bool 
 	if !a.terminate(it, orphans) || !a.awaitExit(ctx, it, root) {
 		return false
 	}
-	return a.recheckClear(ctx, it, root, "survived SIGTERM: ")
+	return a.recheckClear(ctx, it, root, "survived SIGTERM: ", false)
 }
 
 // recheckClear is a full re-check of root that also wants no orphan left
 // (prefix words the keep detail of one that is); the process items of
-// root that are gone are marked done.
-func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string) bool {
-	b, ok := a.recheckWorktree(ctx, it, root)
+// root that are gone are marked done; walk as in recheckWorktree.
+func (a *applier) recheckClear(ctx context.Context, it *Item, root, prefix string, walk bool) bool {
+	b, ok := a.recheckWorktree(ctx, it, root, walk)
 	if !ok {
 		return false
 	}
