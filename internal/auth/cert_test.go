@@ -518,3 +518,19 @@ func TestEnsureCert_InvalidCertOnDisk(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, loaded.Certificate, 1)
 }
+
+// IsCertTrusted asks the system's /usr/bin/security, never a "security"
+// found first on PATH: a fake there answering "trusted" changes nothing.
+func TestIsCertTrusted_IgnoresSecurityOnPATH(t *testing.T) {
+	if _, err := os.Stat(securityBin); err != nil {
+		t.Skip("no " + securityBin)
+	}
+	t.Setenv("HOME", t.TempDir())
+	_, err := EnsureCert()
+	require.NoError(t, err)
+	fakeDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeDir, "security"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	assert.False(t, IsCertTrusted(), "a freshly generated, never trusted cert must not read as trusted")
+}

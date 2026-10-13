@@ -97,7 +97,7 @@ const PidFileFormatTag = pidFileFormatTag
 // looser compatibility check on read, which is the conservative choice for
 // a value this function isn't confident about.
 func WritePID(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating pid directory: %w", err)
 	}
 

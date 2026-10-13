@@ -18,6 +18,26 @@ var repositoryEnv = []string{
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
 }
 
+// The workbench folder is the owner's to bind, not ours to trust: its
+// .git/config may name commands git runs on its own (core.fsmonitor on
+// every status-like read, core.hooksPath, a gpg.program behind
+// log.showSignature). A command-line -c outranks the repository's config
+// and reaches git's own child processes (submodules) too.
+var (
+	ownerConfig = []string{"-c", "core.fsmonitor=false"}
+	readConfig  = []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"}
+)
+
+// ReadArgs is a background read's argv: no fsmonitor command, no hook, no
+// signature check. Callers producing a diff also pass --no-ext-diff and
+// --no-textconv themselves.
+func ReadArgs(args ...string) []string { return append(slices.Clone(readConfig), args...) }
+
+// OwnerArgs is the argv of a command the owner asked for (a branch switch):
+// the repository's hooks run, as they would from a terminal; the fsmonitor
+// command, which no command needs, never does.
+func OwnerArgs(args ...string) []string { return append(slices.Clone(ownerConfig), args...) }
+
 // Exec runs name (git at the path Locate found, or another tool such as gh
 // from PATH) in dir, feeding it stdin (nil = none), and returns its stdout,
 // its trimmed stderr and exec's error (an *exec.ExitError for a non-zero exit). The process is

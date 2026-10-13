@@ -62,7 +62,7 @@ func newRotatingFile(path string, maxSize int64) (*rotatingFile, error) {
 // file it names is the one that gets bounded.
 func newSyncLogWriter(cfg *config.Config) (*rotatingFile, error) {
 	syncLog := syncLogFilePath(cfg)
-	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(syncLog), 0o700); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
 	return newRotatingFile(syncLog, maxLogSize)

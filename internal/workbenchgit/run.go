@@ -63,9 +63,15 @@ func (e *runError) Unwrap() error { return e.err }
 
 // execRunner runs a real process through gitbin.Exec (non-interactive, no
 // inherited repository variables) and keeps git's stderr apart in a
-// runError.
+// runError. The owner's own writes (a switch, its stash and restore) run
+// the repository's hooks as a terminal would; every other call is a
+// background read that runs none (gitbin.ReadArgs).
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, name, args...)
+	argv := gitbin.ReadArgs(args...)
+	if ownerWrite(args) {
+		argv = gitbin.OwnerArgs(args...)
+	}
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, name, argv...)
 	var exitErr *exec.ExitError
 	switch {
 	case err != nil && ctx.Err() != nil: // killed or never started: say why
@@ -77,6 +83,20 @@ func execRunner(ctx context.Context, dir string, stdin []byte, name string, args
 	default:
 		return nil, -1, err
 	}
+}
+
+// ownerWrite: the call is part of a branch switch or create the owner
+// confirmed (PROJ-10) — `switch`, `stash push`, `stash apply`.
+func ownerWrite(args []string) bool {
+	switch {
+	case len(args) == 0:
+		return false
+	case args[0] == "switch":
+		return true
+	case args[0] == "stash" && len(args) > 1:
+		return args[1] == "push" || args[1] == "apply"
+	}
+	return false
 }
 
 // repo is a folder whose git binary was found and which sits inside a

@@ -11,9 +11,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 )
+
+// claudeFindBinary resolves the claude CLI the way every other spawn does
+// (claude.FindBinary: PATH, the login shell, the well-known install dirs);
+// a bare "claude" is its not-found answer. A seam so no test depends on a
+// claude install.
+var claudeFindBinary = func() string { return claude.FindBinary("") }
 
 var integrateCmd = &cobra.Command{
 	Use:   "integrate",
@@ -221,7 +228,8 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if _, err := exec.LookPath("claude"); err != nil {
+	claudeBin := claudeFindBinary()
+	if _, err := exec.LookPath(claudeBin); err != nil {
 		// The skill pack removal above already happened; the absence of the
 		// claude CLI just means we cannot also unregister the MCP server
 		// ourselves. Report and continue rather than failing the command.
@@ -229,7 +237,7 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 		fmt.Println("  claude mcp remove watchtower")
 		return nil //nolint:nilerr
 	}
-	out, err := exec.Command("claude", "mcp", "remove", "watchtower").CombinedOutput()
+	out, err := exec.Command(claudeBin, "mcp", "remove", "watchtower").CombinedOutput()
 	if err != nil {
 		fmt.Printf("\nCould not unregister the MCP server (%v). Remove it with:\n", err)
 		fmt.Println("  claude mcp remove watchtower")
@@ -332,7 +340,8 @@ func registerMCPWithClaudeCode() error {
 	if err != nil {
 		return fmt.Errorf("determining the watchtower binary path: %w", err)
 	}
-	if _, err := exec.LookPath("claude"); err != nil {
+	claudeBin := claudeFindBinary()
+	if _, err := exec.LookPath(claudeBin); err != nil {
 		// The skills are already installed and useful on their own, and the
 		// user may be configuring a different client — report the command
 		// they'd need instead of failing the whole integrate step.
@@ -340,7 +349,7 @@ func registerMCPWithClaudeCode() error {
 		fmt.Printf("  claude mcp add watchtower -- %s mcp\n", bin)
 		return nil //nolint:nilerr
 	}
-	out, err := exec.Command("claude", "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
+	out, err := exec.Command(claudeBin, "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
