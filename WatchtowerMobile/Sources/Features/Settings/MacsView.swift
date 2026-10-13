@@ -12,7 +12,7 @@ struct MacsView: View {
     var body: some View {
         // Online turns offline by the clock alone.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            list(HubListModel.items(rows: linking.links, sessions: env.sessions, activeHubID: env.activeHubID, now: context.date))
+            list(env.hubListItems(linking.links, now: context.date))
         }
         .navigationTitle("Macs")
         .toolbar {

@@ -99,6 +99,12 @@ final class AppRoot {
             }
         }
         linking.host = self
+        // A switch re-evaluates the stale notice for the hub it puts on
+        // screen: the old hub's never shows over a healthy Mac.
+        env.onActivate = { [weak self] session in
+            guard let self, !self.isDemo else { return }
+            self.linking.activated(hubID: session.hubID, heartbeat: session.heartbeat)
+        }
     }
 
     var isDemo: Bool { env.transportKind == .inMemoryDemo }
@@ -364,6 +370,10 @@ final class AppRoot {
             // Audio the hold could not take may still be in the hub's
             // folder: its files stay for the next launch's orphan pass.
             filesFree = handover.problem == nil
+        } else {
+            // A hub whose session could not be built at launch: it leaves
+            // the unopened list with its row.
+            env.remove(hubID)
         }
         linkChecks[hubID] = nil
         unreadableGrants[hubID] = nil

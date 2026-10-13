@@ -413,6 +413,42 @@ final class MultiHubEnvironmentTests: XCTestCase {
         XCTAssertEqual(zip(badges, badges.dropFirst()).filter { $0 == $1 }.count, 0, "never set to the same total twice: \(badges)")
     }
 
+    /// A hub the Mac removed (frozen, writes off) cannot answer its asks:
+    /// they leave the badge, and the chip's other-Macs count, at the freeze.
+    func testAFrozenHubsAsksLeaveTheBadgeAndTheChip() async throws {
+        let base = try makeBase()
+        let transportA = InMemoryCloudTransport()
+        let transportB = InMemoryCloudTransport()
+        try await transportA.save([try openAsk(11)])
+        try await transportB.save([try openAsk(21), try openAsk(22)])
+        var badges: [Int] = []
+        let hubA = try makeSession("hub-a", base: base, transport: transportA)
+        let hubB = try makeSession("hub-b", base: base, transport: transportB)
+        let env = try makeEnvironment([hubA, hubB]) { badges.append($0) }
+        try await bootAll(env)
+        try await poll({ badges.last == 3 }, "the badge is not the sum: \(badges)")
+
+        await hubB.freeze(as: device)
+
+        try await poll({ badges.last == 1 }, "the frozen hub's asks still count: \(badges)")
+        XCTAssertEqual(env.openAskTotal, 1)
+        XCTAssertEqual(hubB.workbenchReplica.openAskCount, 2, "its replica still holds them, readable")
+        func row(_ hubID: String, _ order: Int, _ state: HubRow.State) -> HubRow {
+            HubRow(
+                link: LinkRecord(
+                    hubID: hubID, macName: "Mac \(hubID)", scope: .private, ownerName: "_owner-acme", userRecordName: "_owner-acme",
+                    nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil, deviceID: device.deviceID, linkedAt: nil
+                ),
+                flavor: nil, sortOrder: order, state: state, grantMissingSince: nil, lastHeartbeatAt: nil, linkedOn: Date()
+            )
+        }
+        let linked = row("hub-a", 0, .linked)
+        let removed = row("hub-b", 1, .unlinkedByMac)
+        let items = HubListModel.items(rows: [linked, removed], sessions: env.sessions, activeHubID: "hub-a", now: Date())
+        XCTAssertEqual(items.map(\.openAsks), [1, 2], "each row still shows its own")
+        XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 0, "the chip leaves the removed Mac out")
+    }
+
     // MARK: - Recordings
 
     /// Review Focus 2: a session's launch sweep reaches its own folder

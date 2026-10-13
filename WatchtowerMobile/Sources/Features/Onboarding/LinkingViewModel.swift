@@ -398,7 +398,7 @@ final class LinkingViewModel {
     func unlink(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
         phase = .unlinking
-        notice = LinkNotice.after(await unlinkHub(row))
+        notice = LinkNotice.after(await unlinkHub(row), macName: row.link.macName)
         phase = .idle
     }
 
@@ -416,7 +416,7 @@ final class LinkingViewModel {
         let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
         ending.remove(hubID)
         refreshLinks()
-        notice = LinkNotice.after(wipe)
+        notice = LinkNotice.after(wipe, macName: row.link.macName)
         phase = .idle
     }
 
@@ -520,10 +520,30 @@ final class LinkingViewModel {
     /// gone (stale), for the hub on screen only (`isActive`).
     func evaluate(hubID: String, heartbeat: HeartbeatPayload?, isActive: Bool) async {
         guard isActive, let heartbeat, row(hubID)?.state == .linked else { return }
-        let stale = clock.now().timeIntervalSince(heartbeat.updatedAt) >= Self.staleAfter
+        setStaleNotice(staleNotice(hubID: hubID, heartbeat: heartbeat))
+    }
+
+    /// A switch put `hubID` on screen: the stale notice is the new hub's,
+    /// from its session's last heartbeat (none read yet, or a hub the Mac
+    /// removed: no stale notice), never the old hub's carried over.
+    func activated(hubID: String, heartbeat: HeartbeatPayload?) {
+        setStaleNotice(staleNotice(hubID: hubID, heartbeat: heartbeat))
+    }
+
+    /// `hubID`'s stale notice: a linked hub whose `heartbeat` is a day old
+    /// or more, named by its Mac; nil otherwise.
+    private func staleNotice(hubID: String, heartbeat: HeartbeatPayload?) -> LinkNotice? {
+        guard let heartbeat, let row = row(hubID), row.state == .linked,
+              clock.now().timeIntervalSince(heartbeat.updatedAt) >= Self.staleAfter else { return nil }
+        return .stale(macName: row.link.macName)
+    }
+
+    /// Sets the stale notice, or clears it, unless a report of what a link
+    /// lost is showing (that stays until read).
+    private func setStaleNotice(_ stale: LinkNotice?) {
         switch notice {
         case .stale, nil:
-            notice = stale ? .stale : nil
+            notice = stale
         case .removed, .notSent, .recordingKept, .recordingsProblem:
             break
         }

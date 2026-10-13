@@ -154,6 +154,37 @@ final class MultiHubRecordingTests: XCTestCase {
         XCTAssertTrue(uploadsB.isEmpty, "never sent to the hub on screen")
     }
 
+    /// "See recordings" after a capture for another Mac opens that Mac's
+    /// Recordings list, the one that holds the new recording: its hub goes
+    /// on screen first.
+    func testSeeRecordingsAfterAnotherHubsCaptureOpensThatHubsList() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub("hub-a", base: base)
+        let hubB = try makeHub("hub-b", base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate("hub-b")
+        hubA.clock.advance(30)
+        await env.recorder.stop()
+        let id = try XCTUnwrap(hubA.session.recorder.savedRecording?.id)
+
+        env.showRecordings()
+
+        XCTAssertEqual(env.activeHubID, "hub-a", "the Mac the recording is for")
+        XCTAssertEqual(env.navigation.tab, .calendar)
+        XCTAssertEqual(env.navigation.calendarPath, [.recordings])
+        XCTAssertFalse(hubA.session.recorder.holdsMicrophoneOrScreen, "the recorder is closed")
+        XCTAssertNotNil(try env.store.phoneRecording(id: id), "the list on screen holds it")
+
+        // The active hub's own capture opens its own list, no switch.
+        await env.recorder.recordVoiceNote()
+        hubA.clock.advance(10)
+        await env.recorder.stop()
+        env.showRecordings()
+        XCTAssertEqual(env.activeHubID, "hub-a")
+    }
+
     func testOneCaptureAtATimeAcrossHubs() async throws {
         let base = try makeBase()
         let hubA = try makeHub("hub-a", base: base)

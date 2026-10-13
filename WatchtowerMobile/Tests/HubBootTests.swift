@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -323,6 +324,27 @@ final class HubBootTests: XCTestCase {
         XCTAssertEqual(built, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-pending").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.localHubDirectory("hub-pending").path))
+    }
+
+    /// A registry row that does not decode is skipped by the boot, but its
+    /// hub's files are not an orphan's: nothing is handed over or deleted.
+    func testAnUndecodableRowsFilesAreNotAnOrphans() async throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        try paths.prepare("hub-acme")
+        let registry = try HubRegistry(path: paths.registryPath)
+        try registry.upsert(link("hub-acme"), now: Date())
+        try await DatabaseQueue(path: paths.registryPath).write { db in
+            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = 'hub-acme'", arguments: [Data("{not json".utf8)])
+        }
+        XCTAssertTrue(try registry.rows().isEmpty)
+
+        try await HubBoot.removeOrphans(
+            registry: registry, paths: paths, keeping: nil, factory: testFactory(paths, defaults: defaults)
+        )
+
+        XCTAssertEqual(built, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-acme").path))
     }
 
     // MARK: - The live boot

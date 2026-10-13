@@ -11,7 +11,7 @@ struct HubSwitcherChip: View {
 
     var body: some View {
         // Names and asks only: no clock-driven field is read here.
-        let items = HubListModel.items(rows: linking.links, sessions: env.sessions, activeHubID: env.activeHubID, now: .now)
+        let items = env.hubListItems(linking.links, now: .now)
         let name = items.first(where: \.isActive)?.name ?? env.active?.hubName ?? "Mac"
         let otherAsks = HubListModel.otherHubsOpenAsks(items)
         Button(action: action) {
@@ -69,7 +69,7 @@ private struct HubSwitcherModifier: ViewModifier {
         pending = nil
         switch choice {
         case let .activate(hubID):
-            if hubID != env.activeHubID {
+            if hubID != env.activeHubID, env.session(hubID) != nil {
                 env.activate(hubID)
             }
         case .addMac:

@@ -21,7 +21,7 @@ struct HubListSheet: View {
         NavigationStack {
             // Online turns offline by the clock alone.
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                list(HubListModel.items(rows: linking.links, sessions: env.sessions, activeHubID: env.activeHubID, now: context.date))
+                list(env.hubListItems(linking.links, now: context.date))
             }
             .navigationTitle("Macs")
             .navigationBarTitleDisplayMode(.inline)
@@ -45,6 +45,9 @@ struct HubListSheet: View {
                         HubListRow(item: item)
                     }
                     .listRowInsets(RowInsets.flat)
+                    // A Mac whose data could not be opened never goes on
+                    // screen: Forget it in Settings → Macs.
+                    .disabled(item.unopened)
                     .accessibilityAddTraits(item.isActive ? .isSelected : [])
                 }
             }

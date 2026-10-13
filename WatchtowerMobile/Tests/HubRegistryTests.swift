@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import WatchtowerMobile
 import WatchtowerSync
@@ -52,6 +53,28 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(try reopened.activeHubID, "hub-b")
         XCTAssertEqual(try reopened.row("hub-b")?.flavor, "corp")
         XCTAssertEqual(try reopened.row("hub-b")?.lastHeartbeatAt, now)
+    }
+
+    /// A row that does not decode (a newer build's link, a damaged value)
+    /// is skipped by `rows()`, never fails the read for the others; its hub
+    /// id stays in `hubIDs()` and it still counts toward the limit.
+    func testAnUndecodableRowIsSkippedAndTheOthersRead() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite").path
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        let now = Date(timeIntervalSince1970: 1_000)
+        let registry = try HubRegistry(path: path)
+        try registry.upsert(link("hub-a"), now: now)
+        try registry.upsert(link("hub-b"), now: now)
+        try registry.upsert(link("hub-c"), now: now)
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = 'hub-b'", arguments: [Data("{not json".utf8)])
+        }
+
+        XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-a", "hub-c"])
+        XCTAssertNil(try? registry.row("hub-b"))
+        XCTAssertEqual(try registry.hubIDs(), ["hub-a", "hub-b", "hub-c"])
+        try registry.upsert(link("hub-d"), now: now)
+        XCTAssertTrue(try registry.isFull(adding: "hub-e"), "the unreadable row still takes a place")
     }
 
     func testRemovingTheActiveHubClearsActive() throws {

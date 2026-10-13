@@ -43,6 +43,9 @@ final class AppRootWiringTests: XCTestCase {
     private var farewellSendHangs = false
     /// The hung sends, resumed at teardown so no task outlives the test.
     private var hungSends: [CheckedContinuation<Void, Never>] = []
+    /// Hubs whose session the factory cannot build (a replica that will
+    /// not open): it throws after preparing their directories.
+    private var failingHubs: Set<String> = []
     /// Background work the root began and ended, by name.
     private var workBegun: [String] = []
     private var workEnded: [String] = []
@@ -86,6 +89,9 @@ final class AppRootWiringTests: XCTestCase {
         let clock = clock
         return HubSessionFactory { [weak self] _, hubID, scope, device in
             try paths.prepare(hubID)
+            if self?.failingHubs.contains(hubID) == true {
+                throw CocoaError(.fileReadCorruptFile)
+            }
             let transport: any CloudSyncTransport
             var memory: InMemoryCloudTransport?
             if persistentTransport {
@@ -1156,6 +1162,125 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         XCTAssertTrue(try hold.load().isEmpty)
+    }
+
+    // MARK: - One hub's failure (spec §6.3)
+
+    /// A hub whose session cannot be built leaves the others booting: the
+    /// first one that opened goes on screen, the broken one is listed with
+    /// its problem, never activated, and Forget removes its row and files.
+    func testOneHubsFailedSessionLeavesTheOthersBootingAndCanBeForgotten() async throws {
+        failingHubs = ["hub-acme"]
+        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+
+        XCTAssertEqual(root.env.activeHubID, "hub-home", "the saved active hub would not open: the first that did")
+        XCTAssertFalse(root.showsOnboarding)
+        XCTAssertNil(root.env.session("hub-acme"))
+        XCTAssertEqual(root.env.unopenedHubIDs, ["hub-acme"])
+        try await poll { root.env.activeSession.isLooping }
+        let items = root.env.hubListItems(root.linking.links, now: Date())
+        let broken = try XCTUnwrap(items.first { $0.id == "hub-acme" }, "listed in the switcher and Settings → Macs")
+        XCTAssertTrue(broken.unopened)
+        XCTAssertEqual(broken.problem, "Couldn't open this Mac's data on this iPhone")
+        XCTAssertEqual(MacsModel.action(for: broken), .forget)
+        XCTAssertNil(items.first { $0.id == "hub-home" }?.problem)
+
+        root.env.activate("hub-acme")
+        XCTAssertEqual(root.env.activeHubID, "hub-home", "a hub with no session is never put on screen")
+
+        await root.linking.forget("hub-acme")
+
+        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertTrue(root.env.unopenedHubIDs.isEmpty)
+        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false])
+        XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-home"])
+        XCTAssertEqual(root.env.activeHubID, "hub-home")
+    }
+
+    /// Every hub failing fails the boot (`BootFailureView`), never Welcome:
+    /// the links still exist.
+    func testEveryHubFailingFailsTheBoot() throws {
+        failingHubs = ["hub-acme", "hub-home"]
+
+        XCTAssertThrowsError(try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])) { error in
+            guard case .noHubOpened = error as? AppEnvironmentError else {
+                return XCTFail("expected noHubOpened, got \(error)")
+            }
+        }
+        XCTAssertEqual(try registry.hubIDs(), ["hub-acme", "hub-home"], "the links are kept")
+    }
+
+    // MARK: - The last hub's removal (the forwarders)
+
+    /// Removing the only hub while its recorder shows a result leaves every
+    /// forwarder readable: the views still on screen while the root turns to
+    /// Welcome read the removed session, never a trap.
+    func testRemovingTheLastHubLeavesEveryForwarderReadable() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+        try await poll { root.env.activeSession.isBootstrapped }
+        _ = try await saveVoiceNote(root)
+        let removed = root.env.activeSession
+        XCTAssertNotNil(removed.recorder.savedRecording, "the result is on screen")
+
+        await root.linking.unlink("hub-acme")
+
+        let env = root.env
+        XCTAssertNil(env.activeHubID)
+        XCTAssertTrue(env.sessions.isEmpty)
+        XCTAssertTrue(root.showsOnboarding)
+        XCTAssertTrue(env.activeSession === removed, "the removed session, until another hub activates")
+        XCTAssertTrue(env.store === removed.store)
+        XCTAssertTrue(env.outbox === removed.outbox)
+        XCTAssertTrue(env.reportRequests === removed.reportRequests)
+        XCTAssertTrue(env.boardWriter === removed.boardWriter)
+        XCTAssertTrue(env.askDrafts === removed.askDrafts)
+        XCTAssertTrue(env.askAnswerer === removed.askAnswerer)
+        XCTAssertTrue(env.sessionStarts === removed.sessionStarts)
+        XCTAssertTrue(env.sessionInputs === removed.sessionInputs)
+        XCTAssertTrue(env.deviceSettings === removed.deviceSettings)
+        XCTAssertTrue(env.workbenchReplica === removed.workbenchReplica)
+        XCTAssertTrue(env.calendarReplica === removed.calendarReplica)
+        XCTAssertTrue(env.phoneRecordings === removed.phoneRecordings)
+        XCTAssertTrue(env.recorder === removed.recorder)
+        _ = env.workbenchReplica.openAskCount
+        _ = env.recorder.isPresented
+        _ = env.heldRecordings
+        _ = env.linkedDevice
+        _ = env.lastSyncAt
+        XCTAssertFalse(env.isLooping)
+        XCTAssertNil(env.captureHubName)
+        _ = env.canStartCapture
+        let fetched = await env.refresh(.pull)
+        XCTAssertFalse(fetched, "no hub on screen: nothing is fetched")
+        await env.sendNow()
+        env.recorder.close()
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-home")
+        try await root.linked(linkRecord("hub-home", macName: "Home Mac"), device: device)
+        XCTAssertEqual(env.activeHubID, "hub-home")
+        XCTAssertTrue(env.activeSession === env.session("hub-home"), "a new hub on screen ends the retained one")
+    }
+
+    // MARK: - The stale notice on a switch
+
+    /// A switch re-evaluates the stale notice for the new hub at once, with
+    /// no fetch (`AppEnvironment.onActivate`).
+    func testASwitchReevaluatesTheStaleNoticeWithoutAFetch() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let hubA = try session(root, "hub-acme")
+        await root.env.waitForBoot()
+        try await transport("hub-acme").save([
+            try CloudRecordFactory.record(for: heartbeat(updatedAt: Date().addingTimeInterval(-2 * 86_400)), modifiedAt: Date())
+        ])
+        try await fetch(root, "hub-acme")
+        try await poll { root.linking.notice == .stale(macName: "Acme Mac") }
+
+        root.env.activate("hub-home")
+
+        XCTAssertNil(root.linking.notice, "no heartbeat of Home Mac read yet: Acme Mac's notice does not carry over")
+        root.env.activate("hub-acme")
+        XCTAssertEqual(root.linking.notice, .stale(macName: "Acme Mac"), "from its session's last heartbeat")
+        XCTAssertNotNil(hubA.heartbeat)
     }
 
     // MARK: - The demo

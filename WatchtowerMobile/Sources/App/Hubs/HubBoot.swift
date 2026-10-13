@@ -79,7 +79,7 @@ enum HubBoot {
         now: Date,
         fileManager: FileManager = .default
     ) throws {
-        guard try registry.rows().isEmpty else {
+        guard try registry.hubIDs().isEmpty else {
             // A kill between an earlier run's registry write and its key
             // removal left the keys: the registry has the link.
             if store.legacyLink != nil || store.holdsUnreadableLink || store.legacyGrantMissingSince != nil {
@@ -140,7 +140,7 @@ enum HubBoot {
         keeping pendingHubID: String?,
         factory: HubSessionFactory
     ) async throws {
-        let linked = Set(try registry.rows().map(\.hubID))
+        let linked = Set(try registry.hubIDs())
         for hubID in try paths.hubIDsOnDisk() where !linked.contains(hubID) && hubID != pendingHubID {
             let session = try factory.make(nil, hubID, .private, nil)
             // Stopped before its boot runs: no engine starts, no fetch.

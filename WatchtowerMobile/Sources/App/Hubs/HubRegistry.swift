@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// One linked Mac as the phone's registry holds it (multi-hub spec §5.2).
 struct HubRow: Equatable, Sendable {
@@ -35,6 +36,7 @@ final class HubRegistry {
 
     private let queue: DatabaseQueue
     private static let activeKey = "active_hub_id"
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "HubRegistry")
 
     init(path: String) throws {
         queue = try DatabaseQueue(path: path)
@@ -72,9 +74,29 @@ final class HubRegistry {
 
     // MARK: Reads
 
+    /// The readable rows in order. A row that does not decode (a newer
+    /// build's link, a damaged value) is logged and skipped: one bad row
+    /// never hides the others (multi-hub spec §6.3). It still counts
+    /// towards `limit`, and its hub id stays in `hubIDs()`.
     func rows() throws -> [HubRow] {
         try queue.read { db in
-            try Row.fetchAll(db, sql: "SELECT * FROM hubs ORDER BY sort_order").map(Self.hubRow)
+            try Row.fetchAll(db, sql: "SELECT * FROM hubs ORDER BY sort_order").compactMap { row in
+                do {
+                    return try Self.hubRow(row)
+                } catch {
+                    Self.logger.error("unreadable hub row skipped: \(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
+            }
+        }
+    }
+
+    /// Every row's hub id in order, readable or not: what the files on disk
+    /// are checked against (`HubBoot`), so an unreadable row's files are
+    /// never taken for an orphan's.
+    func hubIDs() throws -> [String] {
+        try queue.read { db in
+            try Self.orderedIDs(db)
         }
     }
 

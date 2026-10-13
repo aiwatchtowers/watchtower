@@ -610,15 +610,16 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.unlink("hub-acme")
 
-        XCTAssertEqual(model.notice, .recordingKept(notSent: 2))
+        XCTAssertEqual(model.notice, .recordingKept(macName: "Acme Mac", notSent: 2), "names the Mac whose link ended")
         XCTAssertEqual(
-            LinkNotice.recordingKept(notSent: 2).message,
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again. "
+            LinkNotice.recordingKept(macName: "Acme Mac", notSent: 2).message,
+            "The link to Acme Mac ended during a recording. It's saved on this iPhone and goes to Acme Mac after you link it again. "
                 + "Not sent: 2 items were still waiting for your Mac"
         )
         XCTAssertEqual(
-            LinkNotice.recordingKept(notSent: 0).message,
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again"
+            LinkNotice.recordingKept(macName: nil, notSent: 0).message,
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again",
+            "several links ended (an account change): no one Mac to name"
         )
         model.startScan()
         XCTAssertNil(model.notice, "read by the next scan")
@@ -1153,8 +1154,11 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(model.notice, "under a day is only offline")
 
         await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_400)), isActive: true)
-        XCTAssertEqual(model.notice, .stale)
-        XCTAssertEqual(LinkNotice.stale.message, "Your Mac hasn't synced for a day — if it changed iCloud account, link again")
+        XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"))
+        XCTAssertEqual(
+            LinkNotice.stale(macName: "Acme Mac").message,
+            "Acme Mac hasn't synced for a day — if it changed iCloud account, link again"
+        )
         XCTAssertTrue(host.markedRemoved.isEmpty && host.removals.isEmpty, "a stale Mac keeps its link and its queue")
 
         await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start), isActive: true)
@@ -1169,10 +1173,42 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(model.notice, "an inactive hub's heartbeat says nothing about the hub on screen")
 
         await model.evaluate(hubID: "hub-acme", heartbeat: stale, isActive: true)
-        XCTAssertEqual(model.notice, .stale)
+        XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"))
 
         await model.evaluate(hubID: "hub-acme", heartbeat: heartbeat(updatedAt: start), isActive: false)
-        XCTAssertEqual(model.notice, .stale, "only the active hub's fetch clears it")
+        XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"), "only the active hub's fetch clears it")
+    }
+
+    /// A switch re-evaluates the stale notice for the hub it puts on screen,
+    /// with no fetch: one Mac's notice never shows over another, a stale
+    /// one is named, and a hub with no heartbeat read yet clears it. A
+    /// report of what a link lost is left alone.
+    func testASwitchReevaluatesTheStaleNoticeForTheNewHub() async throws {
+        let model = try await linkedModel(code())
+        let home = code(hubID: "hub-home", macName: "Home Mac")
+        macLinks(home)
+        await model.open(home.url())
+        await model.finish()
+        let staleAcme = heartbeat(updatedAt: start.addingTimeInterval(-86_400))
+        await model.evaluate(hubID: "hub-acme", heartbeat: staleAcme, isActive: true)
+        XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"))
+
+        model.activated(hubID: "hub-home", heartbeat: heartbeat(hubID: "hub-home", macName: "Home Mac", updatedAt: start))
+        XCTAssertNil(model.notice, "the healthy Mac on screen shows no stale notice")
+
+        model.activated(
+            hubID: "hub-home", heartbeat: heartbeat(hubID: "hub-home", macName: "Home Mac", updatedAt: start.addingTimeInterval(-90_000))
+        )
+        XCTAssertEqual(model.notice, .stale(macName: "Home Mac"), "named for the Mac on screen")
+
+        model.activated(hubID: "hub-acme", heartbeat: nil)
+        XCTAssertNil(model.notice, "no heartbeat read yet: nothing to say")
+
+        host.notSentCount = 1
+        await model.unlink("hub-home")
+        XCTAssertEqual(model.notice, .notSent(1))
+        model.activated(hubID: "hub-acme", heartbeat: staleAcme)
+        XCTAssertEqual(model.notice, .notSent(1), "a report of what a link lost stays until read")
     }
 
     private func heartbeat(hubID: String = "hub-acme", macName: String = "Acme Mac", updatedAt: Date) -> HeartbeatPayload {

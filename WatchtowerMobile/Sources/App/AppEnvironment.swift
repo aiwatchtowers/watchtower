@@ -11,11 +11,16 @@ enum AppEnvironmentError: LocalizedError {
     /// extensions could never read the replica, so the app refuses to boot
     /// instead of silently keeping it somewhere else.
     case appGroupUnavailable
+    /// The registry holds Macs and not one of their sessions could be
+    /// built (`AppEnvironment.live`): the first failure's description.
+    case noHubOpened(String)
 
     var errorDescription: String? {
         switch self {
         case .appGroupUnavailable:
             "The shared app group container is not available. Reinstall Watchtower."
+        case let .noHubOpened(reason):
+            reason
         }
     }
 }
@@ -46,6 +51,17 @@ final class AppEnvironment {
     private(set) var order: [String] = []
     /// The hub on screen; nil before one is activated.
     private(set) var activeHubID: String?
+    /// Registry hubs whose session could not be built at launch (`live`):
+    /// listed with their problem, offered Forget, never put on screen.
+    private(set) var unopenedHubIDs: Set<String> = []
+
+    /// The last active session after `remove` took it off screen with no
+    /// hub left to activate: the forwarders read it (shut down, its data
+    /// as it was) until another hub activates. Never synced or written.
+    @ObservationIgnored private var retained: HubSession?
+    /// Told of the hub a switch puts on screen (`activate`): the root
+    /// re-evaluates the stale notice for it.
+    @ObservationIgnored var onActivate: (@MainActor (HubSession) -> Void)?
 
     /// Persists the active hub; nil persists nothing (tests, the demo).
     @ObservationIgnored private let registry: HubRegistry?
@@ -90,10 +106,17 @@ final class AppEnvironment {
 
     func session(_ hubID: String) -> HubSession? { sessions[hubID] }
 
+    /// The switcher's and Settings → Macs' rows for the registry's `rows`
+    /// (`HubListModel.items`), over these sessions.
+    func hubListItems(_ rows: [HubRow], now: Date) -> [HubListItem] {
+        HubListModel.items(rows: rows, sessions: sessions, unopened: unopenedHubIDs, activeHubID: activeHubID, now: now)
+    }
+
     /// Adds (or replaces) `session` at the end of the order, with the
     /// scene phase the others have and its role.
     func add(_ session: HubSession) {
         sessions[session.hubID] = session
+        unopenedHubIDs.remove(session.hubID)
         if !order.contains(session.hubID) {
             order.append(session.hubID)
         }
@@ -105,13 +128,18 @@ final class AppEnvironment {
 
     /// Drops a session the caller has already shut down. The caller
     /// activates another hub first when this one is on screen; otherwise
-    /// no hub is active afterwards (never a dangling id).
+    /// no hub is active afterwards (never a dangling id), and the removed
+    /// session is kept as `retained` until another hub activates: views
+    /// still on screen while the root turns to onboarding read it through
+    /// the forwarders instead of trapping.
     func remove(_ hubID: String) {
-        sessions[hubID] = nil
-        order.removeAll { $0 == hubID }
         if activeHubID == hubID {
+            retained = sessions[hubID]
             activeHubID = nil
         }
+        sessions[hubID] = nil
+        unopenedHubIDs.remove(hubID)
+        order.removeAll { $0 == hubID }
     }
 
     /// Follows the registry's new order (Settings → Macs): the sessions
@@ -133,12 +161,23 @@ final class AppEnvironment {
 
     /// Puts `hubID`'s session on screen and keeps it as the active hub. A
     /// switch to another hub resets navigation to the root (multi-hub spec
-    /// §5.6): no screen of the old hub stays pushed over the new one.
+    /// §5.6): no screen of the old hub stays pushed over the new one, and
+    /// `onActivate` hears of the new hub. A hub with no session here (one
+    /// whose session could not be built at launch) is never put on screen.
     func activate(_ hubID: String) {
-        if activeHubID != hubID {
+        guard let session = sessions[hubID] else {
+            Self.logger.error("a hub with no session was not activated")
+            return
+        }
+        retained = nil
+        let switched = activeHubID != hubID
+        if switched {
             navigation.resetStacks()
         }
         activeHubID = hubID
+        if switched {
+            onActivate?(session)
+        }
         if let registry {
             do {
                 try registry.setActive(hubID)
@@ -219,9 +258,11 @@ final class AppEnvironment {
 
     // MARK: - The badge
 
-    /// The open asks across every hub: the app icon's badge.
+    /// The open asks across every hub that can still answer them: the app
+    /// icon's badge. A hub the Mac removed (frozen, writes off) cannot, so
+    /// its asks are not counted.
     var openAskTotal: Int {
-        sessions.values.reduce(0) { $0 + $1.workbenchReplica.openAskCount }
+        sessions.values.filter(\.writesAllowed).reduce(0) { $0 + $1.workbenchReplica.openAskCount }
     }
 
     /// Sets the badge to `openAskTotal` when it changed from the last known
@@ -253,11 +294,18 @@ final class AppEnvironment {
 
     // MARK: - The active session, for the views
 
-    /// `active` where one must exist: the root never shows the tabs, nor
-    /// runs the link flow, without an active session.
+    /// What the forwarders below read: the active session, else the one
+    /// `remove` took off screen last (`retained`, while the root turns to
+    /// onboarding), else the first session (a link being made before any
+    /// hub is active). Total once the environment has held a session: the
+    /// last hub's removal never traps a view still reading it. Only an
+    /// environment that never held one traps, and the root shows no tabs
+    /// for it (onboarding reads none of these).
     var activeSession: HubSession {
-        guard let active else { preconditionFailure("no active hub session") }
-        return active
+        if let session = active ?? retained ?? order.first.flatMap({ sessions[$0] }) {
+            return session
+        }
+        preconditionFailure("no hub session")
     }
 
     var store: ReplicaStore { activeSession.store }
@@ -317,22 +365,31 @@ final class AppEnvironment {
         return capturing.hubName ?? "another Mac"
     }
 
-    /// Pull to refresh: the session on screen.
+    /// Pull to refresh: the session on screen; with none (the last hub just
+    /// removed), nothing is fetched.
     @discardableResult
     func refresh(_ trigger: FetchTrigger) async -> Bool {
-        await activeSession.refresh(trigger)
+        guard let active else { return false }
+        return await active.refresh(trigger)
     }
 
     /// The recorder's "See recordings": closes the finished recorder and
-    /// opens the Recordings list on the Calendar tab.
+    /// opens the Recordings list on the Calendar tab, of the hub the
+    /// recording is for: a capture made for another Mac puts that Mac on
+    /// screen first, as its list is the one that holds it.
     func showRecordings() {
+        let owner = capturingSession
         recorder.close()
+        if let owner, owner.hubID != activeHubID, sessions[owner.hubID] != nil {
+            activate(owner.hubID)
+        }
         navigation.showRecordings()
     }
 
-    /// The active session's queue, sent now (`HubSession.sendNow`).
+    /// The active session's queue, sent now (`HubSession.sendNow`); with
+    /// no hub on screen, nothing.
     func sendNow() async {
-        await activeSession.sendNow()
+        await active?.sendNow()
     }
 
     // MARK: - Building the app's environment
@@ -342,9 +399,15 @@ final class AppEnvironment {
     /// Mac removed (`unlinked_by_mac`) is built frozen: stopped before its
     /// boot runs (no engine, no fetch, and no device until the freeze sets
     /// it with writes off), then frozen as a live removal freezes it
-    /// (`HubSession.freeze(as:)`), its replica still readable. The
-    /// registry's active hub goes on screen, else the first row; no rows
-    /// build no session.
+    /// (`HubSession.freeze(as:)`), its replica still readable. A row whose
+    /// session cannot be built (its replica or transport store will not
+    /// open) is logged and gets no session: the other hubs boot, and the
+    /// switcher and Settings → Macs list it with its problem and offer
+    /// Forget (multi-hub spec §6.3). The registry's active hub goes on
+    /// screen when it has a session, else the first row that has one; no
+    /// rows build no session. Rows of which none could be built throw
+    /// (`noHubOpened`): the boot fails rather than onboarding, since the
+    /// links still exist.
     static func live(
         registry: HubRegistry,
         paths _: HubPaths,
@@ -355,23 +418,38 @@ final class AppEnvironment {
     ) throws -> AppEnvironment {
         let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry, setBadge: setBadge)
         let rows = try registry.rows()
+        var firstFailure: (any Error)?
         for row in rows {
-            let device = identity.linkedDevice(for: row.link)
-            if row.state == .unlinkedByMac {
-                let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
-                session.stop()
-                Task { await session.freeze(as: device) }
-                env.add(session)
-            } else {
-                env.add(try factory.make(row, row.hubID, row.link.databaseScope, device))
+            do {
+                env.add(try makeSession(for: row, factory: factory, identity: identity))
+            } catch {
+                logger.error("hub session not built, the hub left unopened: \(error.localizedDescription, privacy: .public)")
+                env.unopenedHubIDs.insert(row.hubID)
+                firstFailure = firstFailure ?? error
             }
+        }
+        if let firstFailure, env.sessions.isEmpty {
+            throw AppEnvironmentError.noHubOpened(firstFailure.localizedDescription)
         }
         env.nameHubs(rows)
         let saved = try registry.activeHubID
-        if let active = rows.first(where: { $0.hubID == saved }) ?? rows.first {
+        let opened = rows.filter { env.sessions[$0.hubID] != nil }
+        if let active = opened.first(where: { $0.hubID == saved }) ?? opened.first {
             env.activate(active.hubID)
         }
         return env
+    }
+
+    /// One registry row's session (see `live`).
+    private static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
+        let device = identity.linkedDevice(for: row.link)
+        guard row.state == .unlinkedByMac else {
+            return try factory.make(row, row.hubID, row.link.databaseScope, device)
+        }
+        let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
+        session.stop()
+        Task { await session.freeze(as: device) }
+        return session
     }
 
     /// The demo on an unsigned build (simulator, CI): one session over the
