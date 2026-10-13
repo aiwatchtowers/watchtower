@@ -131,23 +131,6 @@ extension WorkbenchesViewModel {
         panelVisible = true
     }
 
-    /// ⌘1…⌘9: the n-th numbered session of the workbench on screen
-    /// (`SessionPanelSections.shortcutOrder`), opened like a panel click. Out of range, or no workbench
-    /// page: nothing happens.
-    func openSession(atShortcut n: Int) async {
-        guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
-        let ticket = beginSwitch(projectID: projectID)
-        // With the panel hidden nothing may have read the list yet.
-        if terminalSessions[projectID] == nil {
-            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
-        }
-        // The panel's numbering: the main list, then the group only while
-        // it is open (#480) — the same order as the rows' ⌘N hints.
-        let numbered = panelSections(projectID: projectID).shortcutOrder
-        guard n <= numbered.count else { return }
-        await showSession(id: numbered[n - 1], ticket: ticket)
-    }
-
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
     func liveSessionCount(workbenchID: Int64) -> Int {
         guard let terminalCenter else { return 0 }
