@@ -444,7 +444,14 @@ final class AppEnvironment {
     private static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
         let device = identity.linkedDevice(for: row.link)
         guard row.state == .unlinkedByMac else {
-            return try factory.make(row, row.hubID, row.link.databaseScope, device)
+            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
+            // A hub without stored link keys (made before E2E) is built
+            // stopped, before its boot runs: no engine, no fetch, no send;
+            // the launch's `dropUnencryptedLinks` removes it.
+            if session.transportKind == .cloudKit, !session.startsEngine {
+                session.stop()
+            }
+            return session
         }
         let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
         session.stop()

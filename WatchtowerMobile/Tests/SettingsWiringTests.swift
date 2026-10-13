@@ -22,7 +22,7 @@ final class SettingsWiringTests: XCTestCase {
         HeartbeatPayload(
             updatedAt: updatedAt,
             appVersion: "1.0",
-            hubID: "hub-acme",
+            hubID: TestHub.acme,
             macName: macName,
             flavor: .default,
             lastPublishAt: updatedAt,
@@ -228,7 +228,7 @@ final class SettingsWiringTests: XCTestCase {
     // MARK: - Workbench toggles
 
     func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
-        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: TestHub.acme)
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.newAskAlerts)
@@ -238,7 +238,7 @@ final class SettingsWiringTests: XCTestCase {
     /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -258,7 +258,7 @@ final class SettingsWiringTests: XCTestCase {
 
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setStartSessions(false)
@@ -274,7 +274,7 @@ final class SettingsWiringTests: XCTestCase {
     func testToggleWhileUnlinkedKeepsTheChoiceAndWritesNothing() async throws {
         let transport = SpyTransport()
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
 
         await settings.setTypingRequested(true)
 
@@ -282,7 +282,7 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(saves.isEmpty)
         XCTAssertTrue(settings.typingRequested)
         XCTAssertTrue(
-            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme").typingRequested,
+            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested,
             "the choice must survive a relaunch"
         )
     }
@@ -292,17 +292,17 @@ final class SettingsWiringTests: XCTestCase {
     func testTheWorkbenchChoicesAreKeptPerHub() async throws {
         let transport = SpyTransport()
         let defaults = try makeDefaults()
-        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme")
+        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
 
         await acme.setTypingRequested(true)
         await acme.setStartSessions(false)
         acme.newAskAlerts = false
 
-        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-home")
+        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
         XCTAssertFalse(home.typingRequested, "another hub keeps its own default")
         XCTAssertTrue(home.startSessions)
         XCTAssertFalse(home.newAskAlerts, "the alerts choice is the phone's")
-        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme").typingRequested)
+        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
     }
 
     /// A choice made while unlinked goes to the first hub with no value of
@@ -315,21 +315,21 @@ final class SettingsWiringTests: XCTestCase {
         let unlinked = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: DeviceSettings.unlinkedHubID)
         await unlinked.setTypingRequested(true)
         await unlinked.setStartSessions(false)
-        let own = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-home")
+        let own = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
         await own.setTypingRequested(false)
 
-        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-home")
+        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
         XCTAssertFalse(home.typingRequested, "the hub's own value wins")
         XCTAssertFalse(home.startSessions, "a key it never had comes from the unlinked choice")
-        let candidate = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-studio")
+        let candidate = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.studio)
         XCTAssertTrue(candidate.typingRequested, "read by every hub until a link completes")
         XCTAssertNotNil(defaults.object(forKey: "hub.unlinked.device.startSessions"), "reading uses nothing up")
 
         home.adoptUnlinkedChoices()
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-home.device.startSessions") as? Bool, false, "the hub's own now")
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-home.device.typingRequested") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.home).device.startSessions") as? Bool, false, "the hub's own now")
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.home).device.typingRequested") as? Bool, false)
 
-        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme")
+        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
         XCTAssertFalse(acme.typingRequested, "used up by the first hub: defaults again")
         XCTAssertTrue(acme.startSessions)
         let again = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: DeviceSettings.unlinkedHubID)
@@ -340,7 +340,7 @@ final class SettingsWiringTests: XCTestCase {
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
         let transport = SpyTransport(failingSaves: [0])
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -354,7 +354,7 @@ final class SettingsWiringTests: XCTestCase {
     /// write reads the choices.
     func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1) } }
 
@@ -386,7 +386,7 @@ final class SettingsWiringTests: XCTestCase {
     func testAFailedWriteNeverRevertsANewerToggleOfTheSameSetting() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
         settings.linkedDevice = device
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await transport.release(0, 1, 2) } }
@@ -403,14 +403,14 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(settings.typingRequested, "the newest toggle keeps its value")
         let payloads = try await deviceWrites(transport)
         XCTAssertEqual(payloads.map(\.typingRequested), [true, true, true], "no write sends the stale revert")
-        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: "hub-acme").typingRequested)
+        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
     }
 
     /// A-T11 N3: a reverted toggle says why until that setting saves, even
     /// when the other setting's write succeeds right behind it.
     func testARevertedToggleKeepsItsErrorUntilThatSettingSaves() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: "hub-acme")
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1, 2) } }
 
@@ -584,7 +584,7 @@ final class SettingsWiringTests: XCTestCase {
                 transportKind: .cloudKit,
                 hubID: hubID,
                 linkedDevice: device,
-                keys: try TestPhone.keys(),
+                keys: try TestHub.keys(hubID),
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
@@ -621,39 +621,39 @@ final class SettingsWiringTests: XCTestCase {
 
     func testReorderingPersistsInTheRegistryAndFollowsOnScreen() throws {
         let root = try makeMacsRoot(
-            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac"), macLink("hub-lab", "Lab Mac")], active: "hub-acme"
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac"), macLink(TestHub.lab, "Lab Mac")], active: TestHub.acme
         )
 
-        root.linking.moveHub("hub-lab", to: 0)
+        root.linking.moveHub(TestHub.lab, to: 0)
 
-        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-lab", "hub-acme", "hub-home"])
-        XCTAssertEqual(root.env.order, ["hub-lab", "hub-acme", "hub-home"])
-        XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-lab", "hub-acme", "hub-home"])
-        XCTAssertEqual(root.env.activeHubID, "hub-acme", "the Mac on screen stays")
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.env.order, [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the Mac on screen stays")
     }
 
     func testUnlinkingAnInactiveMacRemovesOnlyIt() async throws {
-        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
 
-        await root.linking.unlink("hub-home")
+        await root.linking.unlink(TestHub.home)
 
-        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-acme"])
-        XCTAssertEqual(root.env.order, ["hub-acme"])
-        XCTAssertEqual(root.env.activeHubID, "hub-acme")
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.acme])
+        XCTAssertEqual(root.env.order, [TestHub.acme])
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
         XCTAssertEqual(farewells.count, 1, "a linked Mac hears the farewell")
     }
 
     /// Spec §5.7: the active Mac's unlink from Settings activates the next
     /// Mac in order; the last one returns to onboarding.
     func testUnlinkingTheActiveMacActivatesTheNextAndTheLastShowsOnboarding() async throws {
-        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
-        XCTAssertEqual(root.env.activeHubID, "hub-home")
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
         XCTAssertFalse(root.showsOnboarding)
 
-        await root.linking.unlink("hub-home")
+        await root.linking.unlink(TestHub.home)
 
         XCTAssertNil(root.env.activeHubID)
         XCTAssertTrue(root.showsOnboarding)
@@ -662,41 +662,41 @@ final class SettingsWiringTests: XCTestCase {
     /// A reorder during an unlink in flight does nothing.
     func testReorderingWhileAnUnlinkIsInFlightDoesNothing() async throws {
         let root = try makeMacsRoot(
-            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac"), macLink("hub-lab", "Lab Mac")], active: "hub-acme"
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac"), macLink(TestHub.lab, "Lab Mac")], active: TestHub.acme
         )
         farewellStuck = true
-        let unlinking = Task { await root.linking.unlink("hub-lab") }
+        let unlinking = Task { await root.linking.unlink(TestHub.lab) }
         for _ in 0 ..< 1000 where !root.linking.isBusy { await Task.yield() }
         XCTAssertTrue(root.linking.isBusy)
 
-        root.linking.moveHub("hub-home", to: 0)
-        XCTAssertEqual(try macsRegistry.rows().map(\.hubID).filter { $0 != "hub-lab" }, ["hub-acme", "hub-home"])
+        root.linking.moveHub(TestHub.home, to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID).filter { $0 != TestHub.lab }, [TestHub.acme, TestHub.home])
         await unlinking.value
 
-        root.linking.moveHub("hub-home", to: 0)
-        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-home", "hub-acme"], "idle again: the move goes through")
+        root.linking.moveHub(TestHub.home, to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.home, TestHub.acme], "idle again: the move goes through")
     }
 
     func testForgettingAFrozenMacRemovesItWithNoFarewell() async throws {
         let root = try makeMacsRoot(
-            [macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme", frozen: ["hub-home"]
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme, frozen: [TestHub.home]
         )
 
-        await root.linking.forget("hub-home")
+        await root.linking.forget(TestHub.home)
 
-        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), ["hub-acme"])
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.acme])
         XCTAssertTrue(farewells.isEmpty)
     }
 
     func testTheTogglesReadTheActiveMacsKeysAfterASwitch() async throws {
-        let root = try makeMacsRoot([macLink("hub-acme", "Acme Mac"), macLink("hub-home", "Home Mac")], active: "hub-acme")
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
         await root.env.deviceSettings.setTypingRequested(true)
 
-        root.env.activate("hub-home")
+        root.env.activate(TestHub.home)
 
         XCTAssertFalse(root.env.deviceSettings.typingRequested, "the new Mac has its own choice")
-        XCTAssertEqual(macsDefaults.object(forKey: "hub.hub-acme.device.typingRequested") as? Bool, true)
-        XCTAssertNil(macsDefaults.object(forKey: "hub.hub-home.device.typingRequested"))
+        XCTAssertEqual(macsDefaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested") as? Bool, true)
+        XCTAssertNil(macsDefaults.object(forKey: "hub.\(TestHub.home).device.typingRequested"))
     }
 }
 

@@ -118,7 +118,7 @@ final class HubBootTests: XCTestCase {
                 transportKind: .cloudKit,
                 hubID: hubID,
                 linkedDevice: device,
-                keys: try TestPhone.keys(),
+                keys: try TestHub.keys(hubID),
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
@@ -143,7 +143,7 @@ final class HubBootTests: XCTestCase {
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
         let missingSince = Date(timeIntervalSince1970: 500)
-        store.legacyLink = link("hub-acme")
+        store.legacyLink = link(TestHub.acme)
         store.legacyGrantMissingSince = missingSince
         defaults.set(true, forKey: "device.typingRequested")
         defaults.set(false, forKey: "device.startSessions")
@@ -157,24 +157,24 @@ final class HubBootTests: XCTestCase {
         try migrate(store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults)
 
         let rows = try registry.rows()
-        XCTAssertEqual(rows.map(\.hubID), ["hub-acme"])
-        XCTAssertEqual(try registry.activeHubID, "hub-acme")
+        XCTAssertEqual(rows.map(\.hubID), [TestHub.acme])
+        XCTAssertEqual(try registry.activeHubID, TestHub.acme)
         XCTAssertEqual(rows.first?.grantMissingSince, missingSince, "the removal check's first look is kept")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath("hub-acme")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.acme)))
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyReplica(paths).path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath("hub-acme")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath(TestHub.acme)))
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyLocalTransport(paths).path))
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: paths.recordingsDirectory("hub-acme").appendingPathComponent("rec-1.m4a").path
+            atPath: paths.recordingsDirectory(TestHub.acme).appendingPathComponent("rec-1.m4a").path
         ))
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.recordingsBase.appendingPathComponent("rec-1.m4a").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path), "the hold stays where it is")
-        let moved = try TestPhone.replica(path: paths.replicaPath("hub-acme"))
+        let moved = try TestPhone.replica(path: paths.replicaPath(TestHub.acme))
         XCTAssertEqual(try moved.phoneRecordings().map(\.id), [recordingID], "the replica keeps its recording")
         XCTAssertNil(defaults.object(forKey: "link.record"), "the legacy link is gone")
         XCTAssertNil(defaults.object(forKey: "link.grantMissingSince"))
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-acme.device.typingRequested") as? Bool, true)
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-acme.device.startSessions") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested") as? Bool, true)
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.acme).device.startSessions") as? Bool, false)
         XCTAssertNil(defaults.object(forKey: "device.typingRequested"))
         XCTAssertNil(defaults.object(forKey: "device.startSessions"))
 
@@ -207,7 +207,7 @@ final class HubBootTests: XCTestCase {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
-        store.legacyLink = link("hub-acme")
+        store.legacyLink = link(TestHub.acme)
         let inGroup = paths.groupDirectory.appendingPathComponent(AppEnvironment.transportStoreFileName)
         try makeTransportStore(at: inGroup)
         try Data("side".utf8).write(to: URL(fileURLWithPath: inGroup.path + "-journal"))
@@ -215,19 +215,19 @@ final class HubBootTests: XCTestCase {
 
         try migrate(store, registry, paths, transport: inGroup, defaults: defaults)
 
-        let target = paths.transportStorePath("hub-acme")
+        let target = paths.transportStorePath(TestHub.acme)
         XCTAssertTrue(FileManager.default.fileExists(atPath: target))
         XCTAssertTrue(FileManager.default.fileExists(atPath: target + "-journal"), "its side files go with it")
         XCTAssertFalse(FileManager.default.fileExists(atPath: inGroup.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: inGroup.path + "-journal"))
-        XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-acme"])
+        XCTAssertEqual(try registry.rows().map(\.hubID), [TestHub.acme])
     }
 
     func testAFailedFileMoveLeavesTheLegacyLinkForTheNextLaunch() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
-        store.legacyLink = link("hub-acme")
+        store.legacyLink = link(TestHub.acme)
         let recordingID = try await seedRecording(replicaPath: legacyReplica(paths).path, recordings: paths.recordingsBase)
         try makeTransportStore(at: legacyLocalTransport(paths))
         let registry = try HubRegistry.inMemory()
@@ -236,13 +236,13 @@ final class HubBootTests: XCTestCase {
             store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults, fileManager: FailingMoveFileManager()
         ))
         XCTAssertEqual(try registry.rows(), [], "nothing reaches the registry")
-        XCTAssertEqual(store.legacyLink, link("hub-acme"), "the legacy link stays for the next launch")
+        XCTAssertEqual(store.legacyLink, link(TestHub.acme), "the legacy link stays for the next launch")
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacyLocalTransport(paths).path), "the store did not move")
 
         try migrate(store, registry, paths, transport: legacyLocalTransport(paths), defaults: defaults)
-        XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-acme"], "the next launch moves it")
-        XCTAssertEqual(try TestPhone.replica(path: paths.replicaPath("hub-acme")).phoneRecordings().map(\.id), [recordingID])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath("hub-acme")))
+        XCTAssertEqual(try registry.rows().map(\.hubID), [TestHub.acme], "the next launch moves it")
+        XCTAssertEqual(try TestPhone.replica(path: paths.replicaPath(TestHub.acme)).phoneRecordings().map(\.id), [recordingID])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath(TestHub.acme)))
         XCTAssertNil(store.legacyLink)
     }
 
@@ -270,33 +270,33 @@ final class HubBootTests: XCTestCase {
     func testOrphanHubDirectoryIsHandedToTheHoldAndRemoved() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
-        try paths.prepare("hub-orphan")
+        try paths.prepare(TestHub.orphan)
         let recordingID = try await seedRecording(
-            replicaPath: paths.replicaPath("hub-orphan"), recordings: paths.recordingsDirectory("hub-orphan")
+            replicaPath: paths.replicaPath(TestHub.orphan), recordings: paths.recordingsDirectory(TestHub.orphan)
         )
         let registry = try HubRegistry.inMemory()
-        try registry.upsert(link("hub-acme"), now: Date())
-        try paths.prepare("hub-acme")
+        try registry.upsert(link(TestHub.acme), now: Date())
+        try paths.prepare(TestHub.acme)
 
         try await HubBoot.removeOrphans(
             registry: registry, paths: paths, keeping: nil, factory: testFactory(paths, defaults: defaults)
         )
 
-        XCTAssertEqual(built, ["hub-orphan"], "only the orphan gets a session")
+        XCTAssertEqual(built, [TestHub.orphan], "only the orphan gets a session")
         let held = try RecordingHold(directory: paths.holdDirectory).load()
         XCTAssertEqual(held.map(\.id), [recordingID], "its unsent recording is held")
-        XCTAssertEqual(held.first?.hubID, "hub-orphan")
-        for directory in [paths.hubDirectory("hub-orphan"), paths.localHubDirectory("hub-orphan"), paths.recordingsDirectory("hub-orphan")] {
+        XCTAssertEqual(held.first?.hubID, TestHub.orphan)
+        for directory in [paths.hubDirectory(TestHub.orphan), paths.localHubDirectory(TestHub.orphan), paths.recordingsDirectory(TestHub.orphan)] {
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), directory.path)
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-acme").path), "a linked hub stays")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.acme).path), "a linked hub stays")
     }
 
     func testAnOrphanWhoseHandOverFailedKeepsItsFiles() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
-        try paths.prepare("hub-orphan")
-        _ = try await seedRecording(replicaPath: paths.replicaPath("hub-orphan"), recordings: paths.recordingsDirectory("hub-orphan"))
+        try paths.prepare(TestHub.orphan)
+        _ = try await seedRecording(replicaPath: paths.replicaPath(TestHub.orphan), recordings: paths.recordingsDirectory(TestHub.orphan))
         // A file where the hold folder goes: the hold can take nothing.
         try Data("blocked".utf8).write(to: paths.holdDirectory)
         let registry = try HubRegistry.inMemory()
@@ -305,26 +305,26 @@ final class HubBootTests: XCTestCase {
             registry: registry, paths: paths, keeping: nil, factory: testFactory(paths, defaults: defaults)
         )
 
-        XCTAssertEqual(built, ["hub-orphan"])
+        XCTAssertEqual(built, [TestHub.orphan])
         XCTAssertTrue(FileManager.default.fileExists(
-            atPath: paths.recordingsDirectory("hub-orphan").appendingPathComponent("rec-1.m4a").path
+            atPath: paths.recordingsDirectory(TestHub.orphan).appendingPathComponent("rec-1.m4a").path
         ), "audio the hold could not take is not deleted")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath("hub-orphan")), "the next launch tries again")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.orphan)), "the next launch tries again")
     }
 
     func testThePendingLinksDirectoryIsNotAnOrphan() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
-        try paths.prepare("hub-pending")
+        try paths.prepare(TestHub.pending)
         let registry = try HubRegistry.inMemory()
 
         try await HubBoot.removeOrphans(
-            registry: registry, paths: paths, keeping: "hub-pending", factory: testFactory(paths, defaults: defaults)
+            registry: registry, paths: paths, keeping: TestHub.pending, factory: testFactory(paths, defaults: defaults)
         )
 
         XCTAssertEqual(built, [])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-pending").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.localHubDirectory("hub-pending").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.pending).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.localHubDirectory(TestHub.pending).path))
     }
 
     /// A registry row that does not decode is skipped by the boot, but its
@@ -332,11 +332,11 @@ final class HubBootTests: XCTestCase {
     func testAnUndecodableRowsFilesAreNotAnOrphans() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
-        try paths.prepare("hub-acme")
+        try paths.prepare(TestHub.acme)
         let registry = try HubRegistry(path: paths.registryPath)
-        try registry.upsert(link("hub-acme"), now: Date())
+        try registry.upsert(link(TestHub.acme), now: Date())
         try await DatabaseQueue(path: paths.registryPath).write { db in
-            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = 'hub-acme'", arguments: [Data("{not json".utf8)])
+            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = '\(TestHub.acme)'", arguments: [Data("{not json".utf8)])
         }
         XCTAssertTrue(try registry.rows().isEmpty)
 
@@ -345,7 +345,7 @@ final class HubBootTests: XCTestCase {
         )
 
         XCTAssertEqual(built, [])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory("hub-acme").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.hubDirectory(TestHub.acme).path))
     }
 
     // MARK: - The live boot
@@ -354,39 +354,39 @@ final class HubBootTests: XCTestCase {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let registry = try HubRegistry.inMemory()
-        try registry.upsert(link("hub-acme"), now: Date())
-        try registry.upsert(link("hub-home", mac: "Home Mac"), now: Date())
-        try registry.setActive("hub-home")
+        try registry.upsert(link(TestHub.acme), now: Date())
+        try registry.upsert(link(TestHub.home, mac: "Home Mac"), now: Date())
+        try registry.setActive(TestHub.home)
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
 
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: testFactory(paths, defaults: defaults), identity: identity, defaults: defaults
         )
 
-        XCTAssertEqual(env.order, ["hub-acme", "hub-home"])
-        XCTAssertEqual(env.activeHubID, "hub-home")
-        XCTAssertEqual(env.session("hub-acme")?.linkedDevice, device)
-        XCTAssertEqual(env.session("hub-home")?.databaseScope, .private)
-        XCTAssertEqual(try registry.activeHubID, "hub-home")
+        XCTAssertEqual(env.order, [TestHub.acme, TestHub.home])
+        XCTAssertEqual(env.activeHubID, TestHub.home)
+        XCTAssertEqual(env.session(TestHub.acme)?.linkedDevice, device)
+        XCTAssertEqual(env.session(TestHub.home)?.databaseScope, .private)
+        XCTAssertEqual(try registry.activeHubID, TestHub.home)
     }
 
     func testARowTheMacRemovedBootsFrozen() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
         let registry = try HubRegistry.inMemory()
-        try registry.upsert(link("hub-acme"), now: Date())
-        try registry.upsert(link("hub-home", mac: "Home Mac"), now: Date())
-        try registry.setState(.unlinkedByMac, for: "hub-home")
+        try registry.upsert(link(TestHub.acme), now: Date())
+        try registry.upsert(link(TestHub.home, mac: "Home Mac"), now: Date())
+        try registry.setState(.unlinkedByMac, for: TestHub.home)
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
 
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: testFactory(paths, defaults: defaults), identity: identity, defaults: defaults
         )
-        let frozen = try XCTUnwrap(env.session("hub-home"))
+        let frozen = try XCTUnwrap(env.session(TestHub.home))
         await env.waitForBoot()
         try await poll({ !frozen.writesAllowed }, "the removed hub's session froze")
 
-        XCTAssertEqual(env.activeHubID, "hub-acme", "with no saved active hub, the first row")
+        XCTAssertEqual(env.activeHubID, TestHub.acme, "with no saved active hub, the first row")
         XCTAssertFalse(frozen.isLooping)
         XCTAssertEqual(frozen.linkedDevice, device, "ruling 4: the link stands, as a live freeze keeps it")
         XCTAssertNil(frozen.deviceSettings.linkedDevice, "a toggle writes no device record")
@@ -396,7 +396,7 @@ final class HubBootTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ActionOutboxError, .notLinked)
         }
-        try await poll({ env.session("hub-acme")?.isLooping == true }, "the linked hub runs")
+        try await poll({ env.session(TestHub.acme)?.isLooping == true }, "the linked hub runs")
     }
 }
 
@@ -411,9 +411,9 @@ extension HubBootTests {
         let defaults = try makeDefaults()
         let store = LinkStore(defaults: defaults)
         let registry = try HubRegistry.inMemory()
-        try registry.upsert(link("hub-acme"), now: Date())
-        try registry.setActive("hub-acme")
-        store.legacyLink = link("hub-acme")
+        try registry.upsert(link(TestHub.acme), now: Date())
+        try registry.setActive(TestHub.acme)
+        store.legacyLink = link(TestHub.acme)
         store.legacyGrantMissingSince = Date(timeIntervalSince1970: 500)
         let rowsBefore = try registry.rows()
 
@@ -422,7 +422,7 @@ extension HubBootTests {
         XCTAssertNil(defaults.object(forKey: "link.record"))
         XCTAssertNil(defaults.object(forKey: "link.grantMissingSince"))
         XCTAssertEqual(try registry.rows(), rowsBefore, "the rows are left as they are")
-        XCTAssertEqual(try registry.activeHubID, "hub-acme")
+        XCTAssertEqual(try registry.activeHubID, TestHub.acme)
     }
 }
 

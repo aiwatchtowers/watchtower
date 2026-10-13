@@ -93,6 +93,27 @@ struct PhoneKeys {
     }
 }
 
+/// Why a hub session could not be built (mobile E2E).
+enum HubSessionError: LocalizedError, Equatable {
+    /// The session was handed another hub's keys: it would seal for, and
+    /// open with, the wrong hub.
+    case keysOfAnotherHub
+
+    var errorDescription: String? {
+        switch self {
+        case .keysOfAnotherHub: "This Mac's keys do not belong to it. Scan its code again."
+        }
+    }
+}
+
+/// Whether a hub's link keys are in the Keychain (its public signing key copy, readable after the first unlock).
+enum HubLinkPresence: Equatable {
+    case present
+    case absent
+    /// The Keychain could not say (a read error): nothing is decided.
+    case unknown
+}
+
 /// The handler of the keybox signal (`HubSession.onKeyboxChanged`), set after the hydrator that fires it.
 @MainActor
 private final class KeyboxSignal {
@@ -194,6 +215,14 @@ final class HubSession {
     /// The environment seals and opens with this device's keys for its hub;
     /// false: the key-less wiring (no device keys yet, or no hub).
     @ObservationIgnored let hasDeviceKeys: Bool
+    /// Whether this hub's link keys are stored (the demo always has them).
+    @ObservationIgnored let hubLink: HubLinkPresence
+    /// The CloudKit engine may start: only for a hub whose link keys are
+    /// stored. A hub without them (a link made before E2E, kept by an
+    /// earlier build) never sends its transport store's persisted queue,
+    /// which may hold plaintext saves of that build; the queue is wiped at
+    /// init and the link flow drops the hub (`dropUnencryptedLinks`).
+    var startsEngine: Bool { hubLink == .present }
 
     /// When the phone last fetched from the Mac successfully (Settings →
     /// Your Mac → Last sync); nil before the first successful fetch.
@@ -350,6 +379,7 @@ final class HubSession {
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
             "a CloudKitTransport must not run under the demo kind"
         )
+        let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: transportKind, transportStore: transportStore)
         self.sleep = sleep
         self.now = now
         self.energy = energy
@@ -375,6 +405,7 @@ final class HubSession {
         self.store = store
         self.secure = secure
         hasDeviceKeys = sealed.hasDeviceKeys
+        self.hubLink = hubLink
 
         // Each fetch reaches CloudKit once (`remoteFetch`); the hydrator and
         // the feed then read what that buffered, so neither pulls on its own.
@@ -567,7 +598,12 @@ final class HubSession {
         case .cloudKit:
             // A session stopped before its boot ran (a frozen hub, an
             // orphan being cleared) never starts its engine.
-            if !stopped, let cloud = transport as? CloudKitTransport {
+            // Nor does a hub without stored link keys (`startsEngine`): its
+            // queue may hold an earlier build's plaintext saves.
+            if !startsEngine {
+                Self.logger.notice("no link keys for this hub: its CloudKit engine is not started")
+            }
+            if !stopped, startsEngine, let cloud = transport as? CloudKitTransport {
                 // Before the engine starts, so no signal goes unseen; each
                 // reaches whatever hook the link flow set by then.
                 await cloud.setEventHandler { [weak self] event in
@@ -1059,6 +1095,45 @@ final class HubSession {
         }
         if stored < seqFloor {
             try store.setEnvelopeSeqCeiling(seqFloor)
+        }
+    }
+
+    /// Each session seals for, and opens with, its own hub's keys only (the demo runs its Macs on the demo
+    /// pairing): another hub's keys throw. Returns whether the hub's link keys are stored; a hub without them
+    /// has its transport store's queue wiped here, before anything could start its engine.
+    private static func ownHubLink(
+        _ keys: PhoneKeys?, hubID: String, kind: TransportKind, transportStore: TransportStore?
+    ) throws -> HubLinkPresence {
+        guard kind == .cloudKit else { return .present }
+        if let keys, keys.hubID != hubID {
+            throw HubSessionError.keysOfAnotherHub
+        }
+        let presence = linkPresence(keys)
+        if presence == .absent {
+            dropUnsentQueue(of: transportStore)
+        }
+        return presence
+    }
+
+    /// Whether `keys`' hub has its link keys stored; nil keys have none.
+    private static func linkPresence(_ keys: PhoneKeys?) -> HubLinkPresence {
+        guard let keys else { return .absent }
+        do {
+            return try keys.store.hubSigningKey(keys.hubID) != nil ? .present : .absent
+        } catch {
+            logger.warning("hub link keys unreadable: \(String(describing: error), privacy: .public)")
+            return .unknown
+        }
+    }
+
+    /// Empties a key-less hub's transport store before anything could start
+    /// its engine: nothing it holds may reach CloudKit.
+    private static func dropUnsentQueue(of transportStore: TransportStore?) {
+        guard let transportStore else { return }
+        do {
+            try transportStore.wipe()
+        } catch {
+            logger.error("key-less hub's send queue not wiped: \(error.localizedDescription, privacy: .public)")
         }
     }
 

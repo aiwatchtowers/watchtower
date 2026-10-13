@@ -166,6 +166,9 @@ enum TestPhone {
     private static let seqLock = NSLock()
     nonisolated(unsafe) private static var nextFirstSeq: UInt64 = 1
 
+    /// A fresh block of seqs above every earlier one (`TestHub`'s hubs and phones take theirs here too).
+    static func nextSeqBlock() -> UInt64 { firstSeq() }
+
     private static func firstSeq() -> UInt64 {
         seqLock.withLock {
             defer { nextFirstSeq += seqBlock }
@@ -305,4 +308,143 @@ final class MutableClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) {
         lock.withLock { current += seconds }
     }
+}
+
+/// Test hubs for several Macs (multi-hub F2 under E2E): the Kit's test hub (`TestE2E`, `acme`) and others, each with
+/// its own key material derived from its id, all linked to the test pairing's phone. A session gets only its own
+/// hub's keys (`HubSession` refuses another hub's), so a test of two Macs uses two of these.
+enum TestHub {
+    static let acme = TestE2E.hubID.uuidString
+    static let home = "40E00000-0000-4000-8000-000000000004"
+    static let studio = "5D0D1000-0000-4000-8000-000000000002"
+    static let lab = "1AB00000-0000-4000-8000-000000000006"
+    static let work = "C0DE0000-0000-4000-8000-000000000007"
+    static let fresh = "A1E90000-0000-4000-8000-000000000008"
+    static let fifth = "F1F70000-0000-4000-8000-000000000005"
+    static let orphan = "0E5A0000-0000-4000-8000-000000000009"
+    static let pending = "BE4D0000-0000-4000-8000-00000000000A"
+    static let gone = "D0E50000-0000-4000-8000-00000000000B"
+    static let remove = "DE1E0000-0000-4000-8000-00000000000C"
+    static let hubA = "AAAA0000-0000-4000-8000-00000000000D"
+    static let hubB = "BBBB0000-0000-4000-8000-00000000000E"
+
+    /// The phone's keys for `hubID` in a fresh test-pairing store that holds that hub's link; nil for an id that
+    /// is not a UUID (no hub of E2E has one: the session runs key-less).
+    static func keys(_ hubID: String) throws -> PhoneKeys? {
+        let store = try TestE2E.phoneStore()
+        return try keys(hubID, store: store)
+    }
+
+    /// The phone's keys for `hubID` over `store`, its link saved there when missing.
+    static func keys(_ hubID: String, store: InMemoryPhoneKeyStore) throws -> PhoneKeys? {
+        guard UUID(uuidString: hubID) != nil else { return nil }
+        try link(hubID, into: store)
+        return PhoneKeys(store: store, hubID: hubID)
+    }
+
+    /// Saves `hubID`'s link (epoch 1) into `store` unless it holds one.
+    static func link(_ hubID: String, into store: InMemoryPhoneKeyStore) throws {
+        guard try store.hubLink(hubID) == nil else { return }
+        let keys = HubKeys(hubID)
+        try store.saveHubLink(HubLinkKeys(
+            hubID: hubID,
+            hubSigningKey: keys.signing.publicKey.rawRepresentation,
+            hubAgreementKey: keys.agreement.publicKey.rawRepresentation,
+            linkNonce: keys.linkNonce,
+            metaKey: HubKeys.raw(keys.metaKey),
+            epochs: [EpochKeys(epoch: 1, dataKey: HubKeys.raw(keys.dataKey(1)), alertKey: HubKeys.raw(keys.alertKey(1)))]
+        ))
+    }
+
+    /// `hubID`'s hub sealing over `inner` (what a test saves reaches the transport as that Mac's envelopes).
+    static func hub(over inner: any CloudSyncTransport & Sendable, _ hubID: String) -> SecureTransport {
+        guard hubID != acme else { return TestPhone.hub(over: inner) }
+        return SecureTransport(inner: inner, keys: TestHubKeys(HubKeys(hubID), firstSeq: TestPhone.nextSeqBlock()),
+                               rollback: InMemoryRollbackGuard())
+    }
+
+    /// The paired phone sealing and opening for `hubID` over `inner`.
+    static func phone(over inner: any CloudSyncTransport & Sendable, _ hubID: String) throws -> SecureTransport {
+        guard hubID != acme else { return try TestPhone.transport(over: inner) }
+        let keys = try XCTUnwrap(try keys(hubID))
+        let first = TestPhone.nextSeqBlock()
+        let provider = try PhoneKeyProvider(store: keys.store, hubID: hubID, seq: SeqAllocator(load: { first }, store: { _ in }))
+        return SecureTransport(inner: inner, keys: provider, rollback: InMemoryRollbackGuard())
+    }
+
+    /// One hub's key material, derived from its id (the Kit's test hub keeps `TestE2E`'s).
+    struct HubKeys {
+        let uuid: UUID
+        let signing: Curve25519.Signing.PrivateKey
+        let agreement: Curve25519.KeyAgreement.PrivateKey
+        let linkNonce: Data
+        let metaKey: SymmetricKey
+        private let label: String
+
+        init(_ hubID: String) {
+            // swiftlint:disable:next force_unwrapping
+            uuid = UUID(uuidString: hubID)!
+            label = hubID
+            // 32 bytes by construction: any 32-byte seed is a valid key.
+            // swiftlint:disable force_try
+            signing = try! Curve25519.Signing.PrivateKey(rawRepresentation: Self.bytes("\(hubID)/sig"))
+            agreement = try! Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Self.bytes("\(hubID)/kx"))
+            // swiftlint:enable force_try
+            linkNonce = Data(Self.bytes("\(hubID)/nonce").prefix(16))
+            metaKey = SymmetricKey(data: Self.bytes("\(hubID)/meta"))
+        }
+
+        func dataKey(_ epoch: UInt32) -> SymmetricKey { SymmetricKey(data: Self.bytes("\(label)/data/\(epoch)")) }
+        func alertKey(_ epoch: UInt32) -> SymmetricKey { SymmetricKey(data: Self.bytes("\(label)/alert/\(epoch)")) }
+
+        static func bytes(_ label: String) -> Data { Data(SHA256.hash(data: Data("wt-test-hub/\(label)".utf8))) }
+        static func raw(_ key: SymmetricKey) -> Data { key.withUnsafeBytes { Data($0) } }
+    }
+}
+
+/// A test hub's `SecureKeyProvider` (hub role): epoch 1, the test pairing's phone linked.
+private final class TestHubKeys: SecureKeyProvider, @unchecked Sendable {
+    private let keys: TestHub.HubKeys
+    private let lock = NSLock()
+    private var seq: UInt64
+
+    init(_ keys: TestHub.HubKeys, firstSeq: UInt64) {
+        self.keys = keys
+        seq = firstSeq
+    }
+
+    var role: SecureRole { .hub(hubID: keys.uuid) }
+    private var phone: DeviceIdentityKeys { TestE2E.deviceIdentity }
+
+    func metaKey() throws -> SymmetricKey { keys.metaKey }
+    func currentEpoch() throws -> UInt32 { 1 }
+    func dataKey(epoch: UInt32) throws -> SymmetricKey { keys.dataKey(epoch) }
+    func alertKey(epoch: UInt32) throws -> SymmetricKey { keys.alertKey(epoch) }
+
+    func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        guard deviceID == phone.deviceID else { throw KeyStoreError.corrupt("no relay key") }
+        return try KeyDerivation.relayKey(
+            agreementPrivate: keys.agreement, peerPublic: phone.agreement.publicKey, linkNonce: keys.linkNonce,
+            hubID: keys.uuid, deviceID: deviceID, epoch: epoch, direction: direction)
+    }
+
+    func acceptsRelayEpoch(_ epoch: UInt32, deviceID: UUID) throws -> Bool { deviceID == phone.deviceID && epoch == 1 }
+    func relayDeviceIDs() throws -> [UUID] { [phone.deviceID] }
+
+    func nextSeq() throws -> UInt64 {
+        lock.withLock {
+            defer { seq += 1 }
+            return seq
+        }
+    }
+
+    func hubSigner() throws -> Curve25519.Signing.PrivateKey { keys.signing }
+    func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { keys.agreement }
+    func keyboxRecipient(deviceID: UUID) throws -> Curve25519.KeyAgreement.PublicKey? {
+        deviceID == phone.deviceID ? phone.agreement.publicKey : nil
+    }
+
+    func deviceSigner() throws -> Curve25519.Signing.PrivateKey { throw SecureTransportError.wrongRole }
+    func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { throw SecureTransportError.wrongRole }
+    func linkNonce() throws -> Data { throw SecureTransportError.wrongRole }
 }

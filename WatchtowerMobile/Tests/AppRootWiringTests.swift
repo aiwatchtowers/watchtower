@@ -31,6 +31,8 @@ final class AppRootWiringTests: XCTestCase {
     /// Every session the factory built, with its database, hub and
     /// in-memory transport (nil over a persistent store).
     private var built: [(session: HubSession, scope: CloudDatabaseScope, hubID: String, transport: InMemoryCloudTransport?)] = []
+    /// The factory gives sessions no keys (a test of a link made before E2E).
+    private var withholdKeys = false
     /// Every session's recorder runs on this engine and clock: no audio.
     private let engine = FakeAudioEngine()
     private let clock = FakeClock()
@@ -77,7 +79,7 @@ final class AppRootWiringTests: XCTestCase {
 
     /// A saved link of this phone (`device`), granted at `linkedAt`.
     private func linkRecord(
-        _ hubID: String = "hub-acme",
+        _ hubID: String = TestHub.acme,
         macName: String = "Acme Mac",
         deviceID: String? = TestPhone.deviceID(),
         linkedAt: Date? = Date(timeIntervalSince1970: 1_800_000_000)
@@ -92,8 +94,8 @@ final class AppRootWiringTests: XCTestCase {
     /// Sessions as the live factory lays them out (`paths`), each over a
     /// fresh in-memory transport, or a `CloudKitTransport` on the hub's
     /// persistent store (`persistentTransport`; no engine starts in the
-    /// unsigned test host). Every session gets the test hub's keys whatever
-    /// its hub id: tests seal through the test hub.
+    /// unsigned test host). Every session gets its own hub's keys
+    /// (`TestHub`); a hub id that is not a UUID gets none (key-less).
     private func makeFactory(persistentTransport: Bool = false) throws -> HubSessionFactory {
         let paths = try XCTUnwrap(paths)
         let defaults = try XCTUnwrap(defaults)
@@ -107,10 +109,11 @@ final class AppRootWiringTests: XCTestCase {
             }
             let transport: any CloudSyncTransport
             var memory: InMemoryCloudTransport?
+            var transportStore: TransportStore?
             if persistentTransport {
-                transport = CloudKitTransport(
-                    store: try TransportStore(path: paths.transportStorePath(hubID)), scope: scope, hubID: hubID, role: .phone
-                )
+                let store = try TransportStore(path: paths.transportStorePath(hubID))
+                transportStore = store
+                transport = CloudKitTransport(store: store, scope: scope, hubID: hubID, role: .phone)
             } else {
                 let created = InMemoryCloudTransport()
                 memory = created
@@ -120,9 +123,12 @@ final class AppRootWiringTests: XCTestCase {
                 transport: transport,
                 replicaPath: paths.replicaPath(hubID),
                 transportKind: .cloudKit,
+                transportStore: transportStore,
                 hubID: hubID,
                 linkedDevice: device,
-                keys: PhoneKeys(store: keyStore, hubID: TestE2E.hubID.uuidString),
+                // Each hub's own keys (`TestHub`), linked in the shared store; none while a test withholds them
+                // (a link made before E2E).
+                keys: try (self?.withholdKeys ?? false) ? nil : TestHub.keys(hubID, store: keyStore),
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
@@ -147,11 +153,13 @@ final class AppRootWiringTests: XCTestCase {
         frozen: Set<String> = [],
         linkClock: any LinkClock = SystemLinkClock(),
         persistentTransport: Bool = false,
-        keyStore given: InMemoryPhoneKeyStore? = nil
+        keyStore given: InMemoryPhoneKeyStore? = nil,
+        beforeLaunch: ((HubPaths) throws -> Void)? = nil
     ) throws -> AppRoot {
         let keyStore = try given ?? TestE2E.phoneStore()
         self.keyStore = keyStore
         paths = try makePaths()
+        try beforeLaunch?(paths)
         defaults = try makeDefaults()
         registry = try HubRegistry(path: paths.registryPath)
         for link in links {
@@ -227,9 +235,10 @@ final class AppRootWiringTests: XCTestCase {
 
     func testRemovalEmptiesTheHubsReplicaAndOutboxAndCountsWhatWasNotSent() async throws {
         let root = try makeRoot(links: [linkRecord()])
-        let first = try session(root, "hub-acme")
+        let first = try session(root, TestHub.acme)
         let now = Date()
-        try await TestPhone.hub(over: transport("hub-acme")).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
+            [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         // The safety poll waits a minute after the boot (board #724), and a refresh joins a hydration in flight
         // (sealing makes the launch fetch long enough to miss the save): fetch once the boot is done.
         await root.env.waitForBoot()
@@ -240,13 +249,13 @@ final class AppRootWiringTests: XCTestCase {
         }
         XCTAssertEqual(try first.store.pendingActions().count, 3)
 
-        let notSent = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let notSent = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3), "the three pending items are reported Not sent")
-        XCTAssertNil(root.env.session("hub-acme"), "the session is gone")
+        XCTAssertNil(root.env.session(TestHub.acme), "the session is gone")
         XCTAssertFalse(first.isLooping, "and stopped")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.replicaPath("hub-acme")), "the replica is deleted")
-        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.acme)), "the replica is deleted")
+        XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertNil(root.env.activeHubID)
         XCTAssertTrue(root.showsOnboarding, "no hub left: onboarding")
     }
@@ -257,30 +266,30 @@ final class AppRootWiringTests: XCTestCase {
     /// the removed hub's queue never goes out.
     func testRemovalAlsoDeletesThePersistentTransportStore() async throws {
         let root = try makeRoot(links: [linkRecord()], persistentTransport: true)
-        let first = try session(root, "hub-acme")
+        let first = try session(root, TestHub.acme)
         try await poll { first.isBootstrapped }
         for id in 1...3 {
             try await first.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-\(id)")
         }
-        let transportPath = paths.transportStorePath("hub-acme")
+        let transportPath = paths.transportStorePath(TestHub.acme)
         let before = try await transportCounts(try DatabaseQueue(path: transportPath))
         XCTAssertEqual(before.pending, 3, "the outbox's sends wait in the transport queue")
 
-        let notSent = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let notSent = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3))
         for suffix in ["", "-wal", "-shm"] {
             XCTAssertFalse(FileManager.default.fileExists(atPath: transportPath + suffix), "the transport store\(suffix) is deleted")
         }
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false])
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
     /// Ruling 2: the row goes before the removal's first wait, so a kill
     /// anywhere in it (here: held in the hand-over, a save running) never
     /// brings the hub back at the next launch.
     func testARemovalTakesTheRowBeforeItsFirstWait() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])
-        let first = try session(root, "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
+        let first = try session(root, TestHub.acme)
         try await poll { first.isBootstrapped }
         await first.recorder.recordVoiceNote()
         clock.advance(15)
@@ -288,16 +297,16 @@ final class AppRootWiringTests: XCTestCase {
         let ownerStop = Task { await first.recorder.stop() }
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
-        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true, farewell: nil) }
-        try await poll { (try? self.registry.row("hub-acme")) == nil }
+        let removal = Task { await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil) }
+        try await poll { (try? self.registry.row(TestHub.acme)) == nil }
 
-        XCTAssertTrue(root.env.session("hub-acme") === first, "the hand-over is still waiting for the save")
+        XCTAssertTrue(root.env.session(TestHub.acme) === first, "the hand-over is still waiting for the save")
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
         let relaunched = try AppEnvironment.live(
             registry: registry, paths: paths, factory: try makeFactory(), identity: identity, defaults: defaults
         ) { _ in }
-        XCTAssertEqual(relaunched.order, ["hub-home"], "a launch now would not bring the hub back")
-        XCTAssertEqual(relaunched.activeHubID, "hub-home")
+        XCTAssertEqual(relaunched.order, [TestHub.home], "a launch now would not bring the hub back")
+        XCTAssertEqual(relaunched.activeHubID, TestHub.home)
         engine.releaseFinish()
         _ = await removal.value
         await ownerStop.value
@@ -307,75 +316,75 @@ final class AppRootWiringTests: XCTestCase {
     /// the second finds the first running and counts nothing; a waiting
     /// recording is held once, for its hub.
     func testTwoRemovalsOfOneHubRemoveItOnceAndAWaitingRecordingSurvives() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
 
-        async let one = root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
-        async let two = root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        async let one = root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
+        async let two = root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
         let wipes = await [one, two]
 
         XCTAssertEqual(wipes, [LocalWipe(), LocalWipe()], "nothing lost, no capture running")
-        XCTAssertEqual(built.map(\.hubID).filter { $0 == "hub-acme" }.count, 1, "no session is rebuilt")
-        XCTAssertEqual(root.env.activeHubID, "hub-home")
+        XCTAssertEqual(built.map(\.hubID).filter { $0 == TestHub.acme }.count, 1, "no session is rebuilt")
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
         let held = try XCTUnwrap(root.env.heldRecordings.first)
         XCTAssertEqual(held.id, id)
-        XCTAssertEqual(held.hubID, "hub-acme")
+        XCTAssertEqual(held.hubID, TestHub.acme)
         XCTAssertEqual(try hold.load().count, 1, "held once")
-        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory("hub-acme")))
+        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory(TestHub.acme)))
     }
 
     func testUnlinkingTheActiveHubActivatesTheNextAndTheLastReturnsToOnboarding() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
         XCTAssertFalse(root.showsOnboarding)
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
-        XCTAssertEqual(root.env.activeHubID, "hub-home", "the next Mac in order")
-        XCTAssertEqual(try registry.activeHubID, "hub-home")
-        XCTAssertEqual(root.env.order, ["hub-home"])
-        XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-home"])
+        XCTAssertEqual(root.env.activeHubID, TestHub.home, "the next Mac in order")
+        XCTAssertEqual(try registry.activeHubID, TestHub.home)
+        XCTAssertEqual(root.env.order, [TestHub.home])
+        XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.home])
         XCTAssertFalse(root.showsOnboarding)
 
-        await root.linking.unlink("hub-home")
+        await root.linking.unlink(TestHub.home)
 
         XCTAssertNil(root.env.activeHubID, "ruling 6: no active hub left dangling")
         XCTAssertNil(root.env.active)
         XCTAssertTrue(root.env.sessions.isEmpty)
         XCTAssertTrue(try registry.rows().isEmpty)
         XCTAssertTrue(root.showsOnboarding)
-        XCTAssertEqual(farewellChecks.map(\.hubID), ["hub-acme", "hub-home"], "each unlink waited for its farewell")
+        XCTAssertEqual(farewellChecks.map(\.hubID), [TestHub.acme, TestHub.home], "each unlink waited for its farewell")
     }
 
     /// An inactive hub's unlink leaves the hub on screen where it is.
     func testUnlinkingAnInactiveHubKeepsTheActiveOne() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
 
-        await root.linking.unlink("hub-home")
+        await root.linking.unlink(TestHub.home)
 
-        XCTAssertEqual(root.env.activeHubID, "hub-acme")
-        XCTAssertEqual(root.env.order, ["hub-acme"])
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertEqual(root.env.order, [TestHub.acme])
     }
 
     func testUnlinkDeletesTheHubsFilesAndHoldsItsRecordings() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
         try await poll { root.env.activeSession.isBootstrapped }
         await root.env.deviceSettings.setTypingRequested(true)
-        XCTAssertNotNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"))
+        XCTAssertNotNil(defaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested"))
         let id = try await saveVoiceNote(root)
         try await poll { root.env.activeSession.isLooping }
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "its replica, transport and audio folders are gone")
-        XCTAssertEqual(hubFilesExist("hub-home"), [true, true, true], "the other hub's stay")
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "its replica, transport and audio folders are gone")
+        XCTAssertEqual(hubFilesExist(TestHub.home), [true, true, true], "the other hub's stay")
         let held = try XCTUnwrap(try hold.load().first, "the hold manifest names the unsent recording")
         XCTAssertEqual(held.id, id)
-        XCTAssertEqual(held.hubID, "hub-acme")
-        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory("hub-acme")))
-        XCTAssertNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"), "ruling 5: its Workbench choices go")
+        XCTAssertEqual(held.hubID, TestHub.acme)
+        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory(TestHub.acme)))
+        XCTAssertNil(defaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested"), "ruling 5: its Workbench choices go")
         XCTAssertEqual(root.linking.notice, nil, "nothing was lost")
-        try await assertTheFarewellWentThroughTheHubsOwnTransport("hub-acme")
+        try await assertTheFarewellWentThroughTheHubsOwnTransport(TestHub.acme)
     }
 
     /// Fix round 1, I1: the `unlinked` record goes through the removed
@@ -398,11 +407,11 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         await root.env.waitForBoot()
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
         XCTAssertGreaterThan(farewellChecks.count, 1, "it asked again while the record waited")
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the removal finished")
-        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "the removal finished")
+        XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertTrue(root.showsOnboarding)
         XCTAssertEqual(root.linking.phase, .idle)
     }
@@ -420,13 +429,13 @@ final class AppRootWiringTests: XCTestCase {
         await root.env.waitForBoot()
         let started = ContinuousClock.now
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
         XCTAssertLessThan(started.duration(to: .now), .seconds(3), "the cap, not the hung send, ended the wait")
         XCTAssertEqual(hungSends.count, 1, "the send was still hanging when the removal went on")
         XCTAssertTrue(farewellChecks.isEmpty, "it never returned to look at the queue")
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the removal finished")
-        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "the removal finished")
+        XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertEqual(root.linking.phase, .idle)
     }
 
@@ -438,32 +447,32 @@ final class AppRootWiringTests: XCTestCase {
         let wipe = await root.removeHub("../hub-acme", keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe())
-        XCTAssertEqual(hubFilesExist("hub-acme"), [true, true, true])
-        XCTAssertNotNil(try registry.row("hub-acme"))
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [true, true, true])
+        XCTAssertNotNil(try registry.row(TestHub.acme))
     }
 
     /// A hub the Mac removed is forgotten with no farewell.
     func testForgettingAFrozenHubSendsNoFarewell() async throws {
-        let root = try makeRoot(links: [linkRecord()], frozen: ["hub-acme"])
+        let root = try makeRoot(links: [linkRecord()], frozen: [TestHub.acme])
 
-        await root.linking.forget("hub-acme")
+        await root.linking.forget(TestHub.acme)
 
         XCTAssertTrue(farewellChecks.isEmpty)
-        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertNil(try registry.row(TestHub.acme))
     }
 
     // MARK: - The Mac's removal (spec §6.1, Review Focus 4)
 
     func testRemovalOfAnInactiveHubFreezesOnlyThatHub() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
-        let hubA = try session(root, "hub-acme")
-        let hubB = try session(root, "hub-home")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+        let hubA = try session(root, TestHub.acme)
+        let hubB = try session(root, TestHub.home)
         await root.env.waitForBoot()
         try await poll { hubA.isLooping && hubB.isLooping }
 
         hubB.onLinkSignal?(.unlinked)
 
-        try await poll { (try? self.registry.row("hub-home"))?.state == .unlinkedByMac && !hubB.writesAllowed }
+        try await poll { (try? self.registry.row(TestHub.home))?.state == .unlinkedByMac && !hubB.writesAllowed }
         XCTAssertFalse(hubB.isLooping, "the removed hub stops syncing")
         XCTAssertEqual(hubB.linkedDevice, device, "its link stands, read-only")
         do {
@@ -472,13 +481,13 @@ final class AppRootWiringTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ActionOutboxError, .notLinked)
         }
-        XCTAssertTrue(root.env.session("hub-home") === hubB, "its data stays readable until Forget")
+        XCTAssertTrue(root.env.session(TestHub.home) === hubB, "its data stays readable until Forget")
         XCTAssertTrue(hubA.isLooping, "the other hub keeps syncing")
-        XCTAssertEqual(root.env.activeHubID, "hub-acme")
-        XCTAssertEqual(try registry.row("hub-acme")?.state, .linked)
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertEqual(try registry.row(TestHub.acme)?.state, .linked)
         try await hubA.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-2")
         XCTAssertEqual(root.linking.notice, .removed(macName: "Home Mac"))
-        XCTAssertEqual(hubFilesExist("hub-home"), [true, true, true], "nothing is wiped")
+        XCTAssertEqual(hubFilesExist(TestHub.home), [true, true, true], "nothing is wiped")
     }
 
     /// Ruling 4: a row in `unlinked_by_mac` booted from the registry ends as
@@ -486,12 +495,12 @@ final class AppRootWiringTests: XCTestCase {
     /// the replica readable.
     func testAFrozenBootEndsAsALiveFreezeDoes() async throws {
         let live = try makeRoot(links: [linkRecord()])
-        let liveSession = try session(live, "hub-acme")
+        let liveSession = try session(live, TestHub.acme)
         await live.env.waitForBoot()
-        await live.markRemovedByMac("hub-acme")
+        await live.markRemovedByMac(TestHub.acme)
 
-        let booted = try makeRoot(links: [linkRecord()], frozen: ["hub-acme"])
-        let bootedSession = try session(booted, "hub-acme")
+        let booted = try makeRoot(links: [linkRecord()], frozen: [TestHub.acme])
+        let bootedSession = try session(booted, TestHub.acme)
         try await poll { !bootedSession.writesAllowed && bootedSession.linkedDevice != nil }
 
         for (name, frozen) in [("live", liveSession), ("boot", bootedSession)] {
@@ -507,7 +516,7 @@ final class AppRootWiringTests: XCTestCase {
                 XCTAssertEqual(error as? ActionOutboxError, .notLinked, name)
             }
         }
-        XCTAssertEqual(try registry.row("hub-acme")?.state, .unlinkedByMac)
+        XCTAssertEqual(try registry.row(TestHub.acme)?.state, .unlinkedByMac)
     }
 
     func testTheTransportsUnlinkedSignalFreezesTheHub() async throws {
@@ -525,7 +534,7 @@ final class AppRootWiringTests: XCTestCase {
     }
 
     func testAnAccountChangeSignalForAnotherAccountEndsTheLink() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
         let first = root.env.activeSession
         container.userRecordNameValue = "_colleague-b"
 
@@ -535,19 +544,19 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(root.linking.notice)
         XCTAssertTrue(try registry.rows().isEmpty, "spec §6.2: the registry is wiped")
         XCTAssertTrue(root.showsOnboarding)
-        XCTAssertEqual(hubFilesExist("hub-acme") + hubFilesExist("hub-home"), Array(repeating: false, count: 6))
+        XCTAssertEqual(hubFilesExist(TestHub.acme) + hubFilesExist(TestHub.home), Array(repeating: false, count: 6))
     }
 
     /// Ruling 8: a removal, a freeze and the account-change wipe each run
     /// inside background work, so a push that found them finishes them.
     func testRemovalsFreezesAndTheAccountWipeRunInsideBackgroundWork() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac"), linkRecord("hub-studio")])
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac"), linkRecord(TestHub.studio)])
 
-        _ = await root.removeHub("hub-studio", keepRecordings: true, farewell: nil)
+        _ = await root.removeHub(TestHub.studio, keepRecordings: true, farewell: nil)
         XCTAssertEqual(workBegun, ["hub-remove"])
         XCTAssertEqual(workEnded, ["hub-remove"])
 
-        await root.markRemovedByMac("hub-home")
+        await root.markRemovedByMac(TestHub.home)
         XCTAssertEqual(workBegun.count, 2)
         XCTAssertEqual(workEnded.count, 2)
 
@@ -570,8 +579,8 @@ final class AppRootWiringTests: XCTestCase {
         let linkedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let clock = FakeLinkClock(now: linkedAt)
         let root = try makeRoot(
-            links: [linkRecord(linkedAt: linkedAt), linkRecord("hub-home", macName: "Home Mac", linkedAt: linkedAt)],
-            active: "hub-acme",
+            links: [linkRecord(linkedAt: linkedAt), linkRecord(TestHub.home, macName: "Home Mac", linkedAt: linkedAt)],
+            active: TestHub.acme,
             linkClock: clock
         )
         // Booted before the Mac's records land: no launch fetch reads half
@@ -579,31 +588,31 @@ final class AppRootWiringTests: XCTestCase {
         await root.env.waitForBoot()
         let later = linkedAt.addingTimeInterval(60)
         let homeGrant = DeviceGrant(
-            deviceID: device.deviceID, hubID: "hub-home", name: device.name, scope: .private,
+            deviceID: device.deviceID, hubID: TestHub.home, name: device.name, scope: .private,
             linked: true, linkedAt: linkedAt, typingAllowed: false, startSessionsAllowed: true
         )
-        try await TestPhone.hub(over: transport("hub-home")).save([
-            try CloudRecordFactory.record(for: heartbeat(updatedAt: later, hubID: "hub-home", macName: "Home Mac"), modifiedAt: later),
+        try await TestHub.hub(over: transport(TestHub.home), TestHub.home).save([
+            try CloudRecordFactory.record(for: heartbeat(updatedAt: later, hubID: TestHub.home, macName: "Home Mac"), modifiedAt: later),
             try TestPhone.grantRecord(homeGrant, keys: TestPhone.keyboxKeys(), modifiedAt: later)
         ])
         // hub-acme's replica holds its heartbeat and no grant at all: its
         // own check would read a removal, but only hub-home is fetched.
-        try await TestPhone.hub(over: transport("hub-acme")).save(
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
             [try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later)])
 
-        try await fetch(root, "hub-home")
-        XCTAssertNil(try registry.row("hub-home")?.grantMissingSince, "granted in its own replica")
+        try await fetch(root, TestHub.home)
+        XCTAssertNil(try registry.row(TestHub.home)?.grantMissingSince, "granted in its own replica")
 
-        try await TestPhone.hub(over: transport("hub-home")).delete(recordNames: [homeGrant.recordName], in: .data)
-        try await fetch(root, "hub-home")
-        XCTAssertEqual(try registry.row("hub-home")?.grantMissingSince, linkedAt, "the first look, on hub-home's row")
-        XCTAssertNil(try registry.row("hub-acme")?.grantMissingSince)
+        try await TestHub.hub(over: transport(TestHub.home), TestHub.home).delete(recordNames: [homeGrant.recordName], in: .data)
+        try await fetch(root, TestHub.home)
+        XCTAssertEqual(try registry.row(TestHub.home)?.grantMissingSince, linkedAt, "the first look, on hub-home's row")
+        XCTAssertNil(try registry.row(TestHub.acme)?.grantMissingSince)
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
-        try await fetch(root, "hub-home")
+        try await fetch(root, TestHub.home)
 
-        XCTAssertEqual(try registry.row("hub-home")?.state, .unlinkedByMac)
-        XCTAssertEqual(try registry.row("hub-acme")?.state, .linked, "the active hub is untouched")
-        XCTAssertEqual(root.env.activeHubID, "hub-acme")
+        XCTAssertEqual(try registry.row(TestHub.home)?.state, .unlinkedByMac)
+        XCTAssertEqual(try registry.row(TestHub.acme)?.state, .linked, "the active hub is untouched")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
         XCTAssertEqual(root.linking.notice, .removed(macName: "Home Mac"))
     }
 
@@ -617,18 +626,18 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord(linkedAt: linkedAt)], linkClock: clock)
         await root.env.waitForBoot()
         // E2E: the grant is this phone's sealed keybox (the replica keeps only this phone's own, F13).
-        let transport = TestPhone.hub(over: try transport("hub-acme"))
+        let transport = TestHub.hub(over: try transport(TestHub.acme), TestHub.acme)
         let later = linkedAt.addingTimeInterval(60)
         let grant = DeviceGrant(
-            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
+            deviceID: device.deviceID, hubID: TestHub.acme, name: device.name, scope: .private,
             linked: true, linkedAt: linkedAt, typingAllowed: false, startSessionsAllowed: true
         )
         try await transport.save([
             try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later),
             try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: later)
         ])
-        let linked = { (try? self.registry.row("hub-acme"))?.state == .linked }
-        try await fetch(root, "hub-acme")
+        let linked = { (try? self.registry.row(TestHub.acme))?.state == .linked }
+        try await fetch(root, TestHub.acme)
         XCTAssertTrue(linked(), "granted under the id it linked with")
 
         let reshaped = CloudRecord(
@@ -636,16 +645,16 @@ final class AppRootWiringTests: XCTestCase {
             modifiedAt: later.addingTimeInterval(1), payload: Data(#"{"linked":"maybe"}"#.utf8)
         )
         try await transport.save([reshaped])
-        try await fetch(root, "hub-acme")
+        try await fetch(root, TestHub.acme)
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
-        try await fetch(root, "hub-acme")
+        try await fetch(root, TestHub.acme)
         XCTAssertTrue(linked(), "an unreadable keybox is not a removed one")
 
         try await transport.delete(recordNames: [grant.recordName], in: .data)
-        try await fetch(root, "hub-acme")
+        try await fetch(root, TestHub.acme)
         XCTAssertTrue(linked(), "one look is not enough")
         clock.advance(by: LinkingViewModel.removalConfirmAfter)
-        try await fetch(root, "hub-acme")
+        try await fetch(root, TestHub.acme)
         XCTAssertEqual(root.linking.links.first?.state, .unlinkedByMac, "the Mac's Remove freezes the hub")
         XCTAssertEqual(root.linking.notice, .removed(macName: "Acme Mac"))
     }
@@ -653,19 +662,19 @@ final class AppRootWiringTests: XCTestCase {
     /// Every fetch notes the hub's heartbeat on its row (the list's flavor
     /// and offline days read it).
     func testAFetchedHeartbeatIsNotedOnItsHubsRow() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
         await root.env.waitForBoot()
         let now = Date(timeIntervalSince1970: 1_900_000_000)
-        try await TestPhone.hub(over: transport("hub-home")).save([
-            try CloudRecordFactory.record(for: heartbeat(updatedAt: now, hubID: "hub-home", macName: "Home Mac", flavor: .corp), modifiedAt: now)
+        try await TestHub.hub(over: transport(TestHub.home), TestHub.home).save([
+            try CloudRecordFactory.record(for: heartbeat(updatedAt: now, hubID: TestHub.home, macName: "Home Mac", flavor: .corp), modifiedAt: now)
         ])
 
-        try await fetch(root, "hub-home")
+        try await fetch(root, TestHub.home)
 
-        let row = try XCTUnwrap(try registry.row("hub-home"))
+        let row = try XCTUnwrap(try registry.row(TestHub.home))
         XCTAssertEqual(row.flavor, "corp")
         XCTAssertEqual(row.lastHeartbeatAt, now)
-        XCTAssertNil(try registry.row("hub-acme")?.lastHeartbeatAt, "only the fetched hub's row")
+        XCTAssertNil(try registry.row(TestHub.acme)?.lastHeartbeatAt, "only the fetched hub's row")
     }
 
     // MARK: - Transport store location (0xdead10cc)
@@ -808,22 +817,23 @@ final class AppRootWiringTests: XCTestCase {
 
     func testPreparingAnotherScopeRebuildsTheCandidateOnAnEmptyReplica() async throws {
         let root = try makeRoot()
-        let candidate = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
-        let first = try session(root, "hub-acme")
+        let candidate = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let first = try session(root, TestHub.acme)
         XCTAssertTrue((candidate as? SecureTransport) === (first.linkTransport as? SecureTransport), "the session's sealed transport")
         XCTAssertNil(root.env.activeHubID, "a candidate is not on screen")
         XCTAssertTrue(root.showsOnboarding, "and not a link")
         let now = Date()
-        try await TestPhone.hub(over: transport("hub-acme")).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
+            [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCount(first)) == 1 }
 
-        let samePrivate = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
-        XCTAssertTrue(root.env.session("hub-acme") === first, "the running scope needs no new session")
+        let samePrivate = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        XCTAssertTrue(root.env.session(TestHub.acme) === first, "the running scope needs no new session")
         XCTAssertTrue((samePrivate as? SecureTransport) === (first.linkTransport as? SecureTransport))
 
-        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: "hub-acme", fresh: false)
+        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: TestHub.acme, fresh: false)
 
-        let second = try session(root, "hub-acme")
+        let second = try session(root, TestHub.acme)
         XCTAssertFalse(second === first)
         XCTAssertFalse(first.isLooping, "the other scope's session is shut down")
         XCTAssertEqual(built.last?.scope, .shared(ownerName: "_owner-acme"))
@@ -834,53 +844,54 @@ final class AppRootWiringTests: XCTestCase {
 
     func testPreparingAnotherHubAddsItsOwnSessionOnItsOwnReplica() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
-        let acme = try session(root, "hub-acme")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let acme = try session(root, TestHub.acme)
         let now = Date()
-        try await TestPhone.hub(over: transport("hub-acme")).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
+            [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCount(acme)) == 1 }
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-home", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
 
-        let home = try session(root, "hub-home")
+        let home = try session(root, TestHub.home)
         XCTAssertFalse(home === acme, "another hub is another pair of zones")
         XCTAssertEqual(try sliceCount(home), 0, "another hub's data is not shared")
-        XCTAssertTrue(root.env.session("hub-acme") === acme, "the first one is left alone")
+        XCTAssertTrue(root.env.session(TestHub.acme) === acme, "the first one is left alone")
         XCTAssertEqual(try sliceCount(acme), 1)
-        _ = try await root.prepare(scope: .private, hubID: "hub-home", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
         XCTAssertEqual(built.count, 2, "the running hub needs no new session")
     }
 
     /// A rescan of a hub the Mac removed starts it again from empty files.
     func testPreparingAFrozenHubRemovesItFirst() async throws {
-        let root = try makeRoot(links: [linkRecord()], frozen: ["hub-acme"])
-        let frozen = try session(root, "hub-acme")
+        let root = try makeRoot(links: [linkRecord()], frozen: [TestHub.acme])
+        let frozen = try session(root, TestHub.acme)
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
 
-        XCTAssertFalse(root.env.session("hub-acme") === frozen)
-        XCTAssertNil(try registry.row("hub-acme"), "removed first, with its recordings held")
+        XCTAssertFalse(root.env.session(TestHub.acme) === frozen)
+        XCTAssertNil(try registry.row(TestHub.acme), "removed first, with its recordings held")
         XCTAssertEqual(built.count, 2)
     }
 
     func testFetchKeyboxReadsThisPhonesHydratedKeyboxOfThatHub() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
         // The boot's own first fetch done: a fetch coalesced into it would not see the save below.
-        try await poll { (try? self.session(root, "hub-acme"))?.isBootstrapped == true }
+        try await poll { (try? self.session(root, TestHub.acme))?.isBootstrapped == true }
         let grant = DeviceGrant(
-            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
+            deviceID: device.deviceID, hubID: TestHub.acme, name: device.name, scope: .private,
             linked: true, typingAllowed: false, startSessionsAllowed: true
         )
         let keys = TestPhone.keyboxKeys(epoch: 1)
-        try await TestPhone.hub(over: transport("hub-acme")).save([try TestPhone.grantRecord(grant, keys: keys, modifiedAt: Date())])
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save([try TestPhone.grantRecord(grant, keys: keys, modifiedAt: Date())])
 
-        let fetched = await root.fetchKeybox(hubID: "hub-acme", deviceID: device.deviceID)
+        let fetched = await root.fetchKeybox(hubID: TestHub.acme, deviceID: device.deviceID)
 
         XCTAssertEqual(fetched, Keybox(grant: grant, keys: keys), "the grant and the epoch keys")
-        let other = await root.fetchKeybox(hubID: "hub-acme", deviceID: UUID().uuidString)
+        let other = await root.fetchKeybox(hubID: TestHub.acme, deviceID: UUID().uuidString)
         XCTAssertNil(other)
-        let noSession = await root.fetchKeybox(hubID: "hub-home", deviceID: device.deviceID)
+        let noSession = await root.fetchKeybox(hubID: TestHub.home, deviceID: device.deviceID)
         XCTAssertNil(noSession)
     }
 
@@ -893,23 +904,23 @@ final class AppRootWiringTests: XCTestCase {
         let unlinked = DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: DeviceSettings.unlinkedHubID)
         await unlinked.setTypingRequested(true)
         await unlinked.setStartSessions(false)
-        try paths.prepare("hub-orphan")
+        try paths.prepare(TestHub.orphan)
         try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: nil, factory: try makeFactory())
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
-        let payload = root.devicePayload(hubID: "hub-acme", for: device, linkNonce: "nonce-acme", unlinked: false, now: Date())
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let payload = root.devicePayload(hubID: TestHub.acme, for: device, linkNonce: "nonce-acme", unlinked: false, now: Date())
 
         XCTAssertTrue(payload.typingRequested)
         XCTAssertFalse(payload.startSessions)
         XCTAssertNotNil(defaults.object(forKey: "hub.unlinked.device.typingRequested"), "the orphan and the candidate left it")
 
         try await root.linked(linkRecord(), device: device)
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-acme.device.typingRequested") as? Bool, true, "the hub's own now")
-        XCTAssertEqual(defaults.object(forKey: "hub.hub-acme.device.startSessions") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested") as? Bool, true, "the hub's own now")
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.acme).device.startSessions") as? Bool, false)
         XCTAssertNil(defaults.object(forKey: "hub.unlinked.device.typingRequested"), "used up by the link")
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-home", fresh: false)
-        let next = root.devicePayload(hubID: "hub-home", for: device, linkNonce: "nonce-home", unlinked: false, now: Date())
+        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        let next = root.devicePayload(hubID: TestHub.home, for: device, linkNonce: "nonce-home", unlinked: false, now: Date())
         XCTAssertFalse(next.typingRequested, "the unlinked choice went to the first link only")
         XCTAssertTrue(next.startSessions)
     }
@@ -918,15 +929,15 @@ final class AppRootWiringTests: XCTestCase {
     /// puts it on screen.
     func testLinkedAddsTheRowAndActivatesTheHub() async throws {
         let root = try makeRoot(links: [linkRecord()])
-        _ = try await root.prepare(scope: .private, hubID: "hub-home", fresh: false)
-        let home = try session(root, "hub-home")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        let home = try session(root, TestHub.home)
         XCTAssertNil(home.linkedDevice)
 
-        try await root.linked(linkRecord("hub-home", macName: "Home Mac"), device: device)
+        try await root.linked(linkRecord(TestHub.home, macName: "Home Mac"), device: device)
 
-        XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-acme", "hub-home"])
-        XCTAssertEqual(root.env.activeHubID, "hub-home")
-        XCTAssertEqual(try registry.activeHubID, "hub-home")
+        XCTAssertEqual(try registry.rows().map(\.hubID), [TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(try registry.activeHubID, TestHub.home)
         XCTAssertEqual(home.linkedDevice, device)
         XCTAssertTrue(home.writesAllowed)
         try await home.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
@@ -936,16 +947,16 @@ final class AppRootWiringTests: XCTestCase {
     /// the registry.
     func testLinkedRefusesAFifthHub() async throws {
         let root = try makeRoot(links: (1...HubRegistry.limit).map { linkRecord("hub-\($0)") })
-        _ = try await root.prepare(scope: .private, hubID: "hub-fifth", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.fifth, fresh: false)
 
         do {
-            try await root.linked(linkRecord("hub-fifth"), device: device)
+            try await root.linked(linkRecord(TestHub.fifth), device: device)
             XCTFail("a fifth hub must be refused")
         } catch {
             XCTAssertTrue(error is HubRegistryError)
         }
         XCTAssertEqual(try registry.rows().count, HubRegistry.limit)
-        XCTAssertNotEqual(root.env.activeHubID, "hub-fifth")
+        XCTAssertNotEqual(root.env.activeHubID, TestHub.fifth)
     }
 
     // MARK: - Recordings across a removal (board #63)
@@ -967,7 +978,7 @@ final class AppRootWiringTests: XCTestCase {
     /// stopped and saved, held for its hub, listed as waiting for that Mac,
     /// and sent only once this phone is linked to that hub again.
     func testARemovalDuringACaptureHoldsItForItsHubAndSendsItAfterRelinkingThatHub() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
         let first = root.env.activeSession
         try await poll { first.isBootstrapped }
         let event = MeetingEvent(id: "event-1", title: "Design sync", start: clock.now, end: clock.now.addingTimeInterval(1_800))
@@ -976,17 +987,17 @@ final class AppRootWiringTests: XCTestCase {
         clock.advance(30)
         first.recorder.markMoment()
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let wipe = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 0, stoppedRecording: true), "held, so not reported Not sent")
         XCTAssertEqual(engine.finishCount, 1, "the file was finalised, not cut off")
-        XCTAssertEqual(root.env.activeHubID, "hub-home")
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
         try await poll { root.env.activeSession.isBootstrapped }
         XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty, "another hub does not adopt it")
         let held = try XCTUnwrap(root.env.heldRecordings.first, "listed as waiting for its Mac")
-        XCTAssertEqual(held.hubID, "hub-acme")
+        XCTAssertEqual(held.hubID, TestHub.acme)
         XCTAssertEqual(held.marks, [30])
-        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory("hub-acme")))
+        XCTAssertNotNil(hold.audioURL(of: held, recordingsDirectory: paths.recordingsDirectory(TestHub.acme)))
         let list = RecordingsListModel(
             recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
             seen: RecordingsSeen(baseline: .distantPast, opened: []), now: clock.now, calendar: .current,
@@ -994,10 +1005,10 @@ final class AppRootWiringTests: XCTestCase {
         )
         XCTAssertEqual(list.inProgress.map(\.state), [.heldForMac(nil)])
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
         try await root.linked(linkRecord(), device: device)
 
-        XCTAssertEqual(root.env.activeHubID, "hub-acme")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
         let row = try XCTUnwrap(try root.env.store.phoneRecordings().first)
         XCTAssertEqual(row.id, held.id)
         XCTAssertEqual(row.durationSec, 30)
@@ -1005,24 +1016,24 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(try root.env.store.phoneRecordingMarks(id: row.id), [30])
         XCTAssertTrue(root.env.heldRecordings.isEmpty)
         XCTAssertTrue(try hold.load().isEmpty, "adopted, out of the hold")
-        let uploads = try await relayUploads(in: try transport("hub-acme"))
+        let uploads = try await relayUploads(in: try transport(TestHub.acme), hub: TestHub.acme)
         XCTAssertEqual(uploads.map(\.id), [row.id], "sent after relinking its Mac")
     }
 
     /// Multi-hub spec §5.4: the recorder names the Mac a capture is for as
     /// the switcher does, from the registry at boot and after each link.
     func testTheRootNamesEachHubFromTheRegistry() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])
-        XCTAssertEqual(try session(root, "hub-acme").hubName, "Acme Mac")
-        XCTAssertEqual(try session(root, "hub-home").hubName, "Home Mac")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
+        XCTAssertEqual(try session(root, TestHub.acme).hubName, "Acme Mac")
+        XCTAssertEqual(try session(root, TestHub.home).hubName, "Home Mac")
         await root.env.waitForBoot()
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-work", fresh: false)
-        try await root.linked(linkRecord("hub-work", macName: "Acme Mac"), device: device)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.work, fresh: false)
+        try await root.linked(linkRecord(TestHub.work, macName: "Acme Mac"), device: device)
 
-        XCTAssertEqual(try session(root, "hub-acme").hubName, "Acme Mac · hub-")
-        XCTAssertEqual(try session(root, "hub-work").hubName, "Acme Mac · hub-")
-        XCTAssertEqual(try session(root, "hub-home").hubName, "Home Mac")
+        XCTAssertEqual(try session(root, TestHub.acme).hubName, "Acme Mac · \(TestHub.acme.prefix(4))")
+        XCTAssertEqual(try session(root, TestHub.work).hubName, "Acme Mac · \(TestHub.work.prefix(4))")
+        XCTAssertEqual(try session(root, TestHub.home).hubName, "Home Mac")
     }
 
     /// Review F6: a recording held for one Mac never goes to another.
@@ -1030,12 +1041,12 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        _ = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        _ = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-studio", fresh: false)
-        try await root.linked(linkRecord("hub-studio", macName: "Acme Studio"), device: device)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.studio, fresh: false)
+        try await root.linked(linkRecord(TestHub.studio, macName: "Acme Studio"), device: device)
 
-        let uploads = try await relayUploads(in: try transport("hub-studio"))
+        let uploads = try await relayUploads(in: try transport(TestHub.studio), hub: TestHub.studio)
         XCTAssertTrue(uploads.isEmpty, "the other Mac gets nothing")
         XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty)
         XCTAssertEqual(root.env.heldRecordings.map(\.id), [id], "still waiting for its own Mac")
@@ -1047,9 +1058,9 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory("hub-acme"))
+        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory(TestHub.acme))
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: false, farewell: nil)
+        let wipe = await root.removeHub(TestHub.acme, keepRecordings: false, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         XCTAssertTrue(try hold.load().isEmpty)
@@ -1065,10 +1076,10 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        let recordings = paths.recordingsDirectory("hub-acme")
+        let recordings = paths.recordingsDirectory(TestHub.acme)
         let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id))
         let file = row.fileURL(in: recordings)
-        try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)], from: recordings)
+        try hold.hold([HeldRecording(row, marks: [], hubID: TestHub.acme, macName: nil)], from: recordings)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the audio is in the hold")
         root.env.activeSession.stop()
 
@@ -1080,9 +1091,9 @@ final class AppRootWiringTests: XCTestCase {
             [try CloudRecordFactory.record(for: heartbeat(updatedAt: relaunchAt), modifiedAt: relaunchAt)])
         let relaunched = try HubSession(
             transport: transport,
-            replicaPath: paths.replicaPath("hub-acme"),
+            replicaPath: paths.replicaPath(TestHub.acme),
             transportKind: .cloudKit,
-            hubID: "hub-acme",
+            hubID: TestHub.acme,
             linkedDevice: device,
             keys: try TestPhone.keys(),
             defaults: try makeDefaults(),
@@ -1112,7 +1123,7 @@ final class AppRootWiringTests: XCTestCase {
     func testACaptureLeftForLaunchRecoveryIsFinalizedAndHeld() async throws {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
-        let directory = paths.recordingsDirectory("hub-acme")
+        let directory = paths.recordingsDirectory(TestHub.acme)
         // Another process's uploader: the capture is not live in this one.
         let earlier = RecordingUploader(transport: try TestPhone.transport(), store: root.env.store, directory: directory)
         let file = directory.appendingPathComponent("cut-short.m4a")
@@ -1120,7 +1131,7 @@ final class AppRootWiringTests: XCTestCase {
         let stranded = try await earlier.beginCapture(fileURL: file, startedAt: clock.now, titleHint: "Cut short", eventID: nil)
         engine.fileDuration = 20
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let wipe = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(), "not lost")
         let held = try XCTUnwrap(try hold.load().first)
@@ -1142,9 +1153,9 @@ final class AppRootWiringTests: XCTestCase {
         let ownerStop = Task { await first.recorder.stop() }
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
-        let removal = Task { await root.removeHub("hub-acme", keepRecordings: true, farewell: nil) }
+        let removal = Task { await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil) }
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(root.env.session("hub-acme") === first, "the removal waits for the save")
+        XCTAssertTrue(root.env.session(TestHub.acme) === first, "the removal waits for the save")
         engine.releaseFinish()
         let wipe = await removal.value
         await ownerStop.value
@@ -1160,21 +1171,21 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory("hub-acme"))
+        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory(TestHub.acme))
         // A manifest that cannot be read: holding fails.
         try FileManager.default.createDirectory(
             at: hold.directory.appendingPathComponent("manifest.json"), withIntermediateDirectories: true
         )
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let wipe = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         let problem = try XCTUnwrap(wipe.problem)
         XCTAssertTrue(problem.hasPrefix("Some recordings couldn't be read"), problem)
         let kept = hold.directory.appendingPathComponent("unreadable").appendingPathComponent(file.lastPathComponent)
         XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "the audio is kept")
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
-        XCTAssertNil(try registry.row("hub-acme"), "the hub is unlinked all the same")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath("hub-acme")), "its files wait for the next launch's retry")
+        XCTAssertNil(try registry.row(TestHub.acme), "the hub is unlinked all the same")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.acme)), "its files wait for the next launch's retry")
         if case .recordingsProblem = LinkNotice.after(wipe) {} else {
             XCTFail("the notice reports the problem")
         }
@@ -1187,10 +1198,10 @@ final class AppRootWiringTests: XCTestCase {
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
         try FileManager.default.removeItem(
-            at: try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory("hub-acme"))
+            at: try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: paths.recordingsDirectory(TestHub.acme))
         )
 
-        let wipe = await root.removeHub("hub-acme", keepRecordings: true, farewell: nil)
+        let wipe = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         XCTAssertTrue(try hold.load().isEmpty)
@@ -1202,56 +1213,56 @@ final class AppRootWiringTests: XCTestCase {
     /// first one that opened goes on screen, the broken one is listed with
     /// its problem, never activated, and Forget removes its row and files.
     func testOneHubsFailedSessionLeavesTheOthersBootingAndCanBeForgotten() async throws {
-        failingHubs = ["hub-acme"]
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
+        failingHubs = [TestHub.acme]
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
 
-        XCTAssertEqual(root.env.activeHubID, "hub-home", "the saved active hub would not open: the first that did")
+        XCTAssertEqual(root.env.activeHubID, TestHub.home, "the saved active hub would not open: the first that did")
         XCTAssertFalse(root.showsOnboarding)
-        XCTAssertNil(root.env.session("hub-acme"))
-        XCTAssertEqual(root.env.unopenedHubIDs, ["hub-acme"])
+        XCTAssertNil(root.env.session(TestHub.acme))
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme])
         try await poll { root.env.activeSession.isLooping }
         let items = root.env.hubListItems(root.linking.links, now: Date())
-        let broken = try XCTUnwrap(items.first { $0.id == "hub-acme" }, "listed in the switcher and Settings → Macs")
+        let broken = try XCTUnwrap(items.first { $0.id == TestHub.acme }, "listed in the switcher and Settings → Macs")
         XCTAssertTrue(broken.unopened)
         XCTAssertEqual(broken.problem, "Couldn't open this Mac's data on this iPhone")
         XCTAssertEqual(MacsModel.action(for: broken), .forget)
-        XCTAssertNil(items.first { $0.id == "hub-home" }?.problem)
+        XCTAssertNil(items.first { $0.id == TestHub.home }?.problem)
 
-        root.env.activate("hub-acme")
-        XCTAssertEqual(root.env.activeHubID, "hub-home", "a hub with no session is never put on screen")
+        root.env.activate(TestHub.acme)
+        XCTAssertEqual(root.env.activeHubID, TestHub.home, "a hub with no session is never put on screen")
 
-        await root.linking.forget("hub-acme")
+        await root.linking.forget(TestHub.acme)
 
-        XCTAssertNil(try registry.row("hub-acme"))
+        XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertTrue(root.env.unopenedHubIDs.isEmpty)
-        XCTAssertEqual(hubFilesExist("hub-acme"), [true, true, true], "nothing deleted: the orphan pass decides")
-        XCTAssertEqual(root.linking.links.map(\.hubID), ["hub-home"])
-        XCTAssertEqual(root.env.activeHubID, "hub-home")
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [true, true, true], "nothing deleted: the orphan pass decides")
+        XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.home])
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
     }
 
     /// Forget of a hub that could not be opened removes its row and its
     /// Settings keys only: its audio stays on disk for the next launch's
     /// orphan pass, which hands it to the hold once a session opens.
     func testForgettingAnUnopenedHubKeepsItsAudioForTheOrphanPass() async throws {
-        failingHubs = ["hub-acme"]
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-home")
-        let recordings = paths.recordingsDirectory("hub-acme")
+        failingHubs = [TestHub.acme]
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.home)
+        let recordings = paths.recordingsDirectory(TestHub.acme)
         let audio = recordings.appendingPathComponent("rec-1.m4a")
         try Data(repeating: 0x5A, count: 256).write(to: audio)
         let uploader = RecordingUploader(
-            transport: try TestPhone.transport(), store: try TestPhone.replica(path: paths.replicaPath("hub-acme")), directory: recordings
+            transport: try TestPhone.transport(), store: try TestPhone.replica(path: paths.replicaPath(TestHub.acme)), directory: recordings
         )
         let now = Date()
         let registered = try await uploader.register(
             fileURL: audio, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-60), titleHint: "Acme sync"
         )
         let recordingID = try XCTUnwrap(registered).id
-        defaults.set(true, forKey: "hub.hub-acme.device.typingRequested")
+        defaults.set(true, forKey: "hub.\(TestHub.acme).device.typingRequested")
 
-        await root.linking.forget("hub-acme")
+        await root.linking.forget(TestHub.acme)
 
-        XCTAssertNil(try registry.row("hub-acme"), "the row is gone")
-        XCTAssertNil(defaults.object(forKey: "hub.hub-acme.device.typingRequested"), "its Settings keys are gone")
+        XCTAssertNil(try registry.row(TestHub.acme), "the row is gone")
+        XCTAssertNil(defaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested"), "its Settings keys are gone")
         XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "its audio is not deleted")
         XCTAssertTrue(try hold.load().isEmpty, "nothing handed over yet")
 
@@ -1259,21 +1270,21 @@ final class AppRootWiringTests: XCTestCase {
         try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: nil, factory: try makeFactory())
 
         XCTAssertEqual(try hold.load().map(\.id), [recordingID], "the next launch's orphan pass holds it")
-        XCTAssertEqual(try hold.load().first?.hubID, "hub-acme")
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "then its files go")
+        XCTAssertEqual(try hold.load().first?.hubID, TestHub.acme)
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "then its files go")
     }
 
     /// Every hub failing fails the boot (`BootFailureView`), never Welcome:
     /// the links still exist.
     func testEveryHubFailingFailsTheBoot() throws {
-        failingHubs = ["hub-acme", "hub-home"]
+        failingHubs = [TestHub.acme, TestHub.home]
 
-        XCTAssertThrowsError(try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")])) { error in
+        XCTAssertThrowsError(try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])) { error in
             guard case .noHubOpened = error as? AppEnvironmentError else {
                 return XCTFail("expected noHubOpened, got \(error)")
             }
         }
-        XCTAssertEqual(try registry.hubIDs(), ["hub-acme", "hub-home"], "the links are kept")
+        XCTAssertEqual(try registry.hubIDs(), [TestHub.acme, TestHub.home], "the links are kept")
     }
 
     // MARK: - The last hub's removal (the forwarders)
@@ -1288,7 +1299,7 @@ final class AppRootWiringTests: XCTestCase {
         let removed = root.env.activeSession
         XCTAssertNotNil(removed.recorder.savedRecording, "the result is on screen")
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
         let env = root.env
         XCTAssertNil(env.activeHubID)
@@ -1321,10 +1332,10 @@ final class AppRootWiringTests: XCTestCase {
         await env.sendNow()
         env.recorder.close()
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-home", fresh: false)
-        try await root.linked(linkRecord("hub-home", macName: "Home Mac"), device: device)
-        XCTAssertEqual(env.activeHubID, "hub-home")
-        XCTAssertTrue(env.activeSession === env.session("hub-home"), "a new hub on screen ends the retained one")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        try await root.linked(linkRecord(TestHub.home, macName: "Home Mac"), device: device)
+        XCTAssertEqual(env.activeHubID, TestHub.home)
+        XCTAssertTrue(env.activeSession === env.session(TestHub.home), "a new hub on screen ends the retained one")
     }
 
     // MARK: - The stale notice on a switch
@@ -1332,19 +1343,19 @@ final class AppRootWiringTests: XCTestCase {
     /// A switch re-evaluates the stale notice for the new hub at once, with
     /// no fetch (`AppEnvironment.onActivate`).
     func testASwitchReevaluatesTheStaleNoticeWithoutAFetch() async throws {
-        let root = try makeRoot(links: [linkRecord(), linkRecord("hub-home", macName: "Home Mac")], active: "hub-acme")
-        let hubA = try session(root, "hub-acme")
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+        let hubA = try session(root, TestHub.acme)
         await root.env.waitForBoot()
-        try await TestPhone.hub(over: transport("hub-acme")).save([
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save([
             try CloudRecordFactory.record(for: heartbeat(updatedAt: Date().addingTimeInterval(-2 * 86_400)), modifiedAt: Date())
         ])
-        try await fetch(root, "hub-acme")
+        try await fetch(root, TestHub.acme)
         try await poll { root.linking.notice == .stale(macName: "Acme Mac") }
 
-        root.env.activate("hub-home")
+        root.env.activate(TestHub.home)
 
         XCTAssertNil(root.linking.notice, "no heartbeat of Home Mac read yet: Acme Mac's notice does not carry over")
-        root.env.activate("hub-acme")
+        root.env.activate(TestHub.acme)
         XCTAssertEqual(root.linking.notice, .stale(macName: "Acme Mac"), "from its session's last heartbeat")
         XCTAssertNotNil(hubA.heartbeat)
     }
@@ -1379,7 +1390,7 @@ final class AppRootWiringTests: XCTestCase {
         let demo = try makeDemoRoot()
         let iat = Int64(Date().timeIntervalSince1970)
         let code = LinkPayload(
-            hubID: "hub-acme", macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600,
+            hubID: TestHub.acme, macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600,
             hubSigningKey: LinkPayload.makeNonce(), hubAgreementKey: LinkPayload.makeNonce()
         )
 
@@ -1467,11 +1478,11 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: active))
         XCTAssertFalse(SettingsView.offersUnlink(transportKind: .inMemoryDemo, link: linkRecord()), "the demo has no link to end")
 
-        await root.linking.unlink("hub-acme")
+        await root.linking.unlink(TestHub.acme)
 
         XCTAssertTrue(root.linking.links.isEmpty)
         XCTAssertFalse(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: root.linking.links.first?.link))
-        try await assertTheFarewellWentThroughTheHubsOwnTransport("hub-acme")
+        try await assertTheFarewellWentThroughTheHubsOwnTransport(TestHub.acme)
         XCTAssertEqual(root.linking.phase, .idle)
         XCTAssertTrue(root.showsOnboarding)
     }
@@ -1486,7 +1497,7 @@ final class AppRootWiringTests: XCTestCase {
     /// revoked; the next fetch reads it and that hub freezes (multi-hub spec
     /// §6.1), its keys kept so its replica stays readable until Forget.
     func testARevokedKeyboxFreezesThatHubAndKeepsItsKeys() async throws {
-        let root = try makeRoot(links: [linkRecord(e2eHub), linkRecord("hub-home", macName: "Home Mac")], active: e2eHub)
+        let root = try makeRoot(links: [linkRecord(e2eHub), linkRecord(TestHub.home, macName: "Home Mac")], active: e2eHub)
         let hub = try session(root, e2eHub)
         await root.env.waitForBoot()
         let revoked = DeviceGrant(
@@ -1502,7 +1513,7 @@ final class AppRootWiringTests: XCTestCase {
         try await poll { root.linking.notice == .removed(macName: "Acme Mac") }
         XCTAssertTrue(root.env.session(e2eHub) === hub, "frozen, readable")
         XCTAssertNotNil(try keyStore.hubLink(e2eHub), "its keys stay until Forget")
-        XCTAssertEqual(try registry.row("hub-home")?.state, .linked, "the other hub is untouched")
+        XCTAssertEqual(try registry.row(TestHub.home)?.state, .linked, "the other hub is untouched")
 
         await root.linking.forget(e2eHub)
         XCTAssertNil(try keyStore.hubLink(e2eHub), "Forget deletes them")
@@ -1512,6 +1523,7 @@ final class AppRootWiringTests: XCTestCase {
     /// migration) has no hub keys: the launch drops that hub and asks for a
     /// new scan.
     func testALinkWithoutKeysIsDroppedAtLaunchWithTheReScanNotice() async throws {
+        withholdKeys = true
         let root = try makeRoot(links: [linkRecord()], keyStore: try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity))
         XCTAssertFalse(root.showsOnboarding)
 
@@ -1519,10 +1531,51 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertTrue(root.linking.links.isEmpty)
         XCTAssertEqual(root.linking.notice, .encryptionReScan)
-        XCTAssertNil(root.env.session("hub-acme"))
-        XCTAssertEqual(hubFilesExist("hub-acme"), [false, false, false], "the old link's replica is removed")
+        XCTAssertNil(root.env.session(TestHub.acme))
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "the old link's replica is removed")
         XCTAssertTrue(farewellChecks.isEmpty, "nothing can be sealed for it")
         XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// Port review I-1: a phone upgrading from a build before E2E (F2 on main) may hold a hub whose transport store
+    /// is bound and still queues an unacknowledged plaintext save (a recording upload with its plain audio, an
+    /// action). That hub has no link keys: its session is built stopped, its engine never starts and its send queue
+    /// is wiped before anything could start it; the launch then drops the hub with the re-scan notice.
+    func testAPreE2EHubsQueuedPlaintextSaveIsNeverSentAtTheUpgrade() async throws {
+        withholdKeys = true
+        let queued = CloudRecord(
+            recordName: "recupload-1", zone: .relay, kind: RelayRecordKind.recordingUpload.rawValue,
+            modifiedAt: Date(), payload: Data(#"{"id":"1","title":"plaintext"}"#.utf8)
+        )
+        let root = try makeRoot(
+            links: [linkRecord()], persistentTransport: true,
+            keyStore: try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        ) { paths in
+            try paths.prepare(TestHub.acme)
+            let path = paths.transportStorePath(TestHub.acme)
+            _ = try TransportStore(path: path)
+            try DatabaseQueue(path: path).write { db in
+                try db.execute(
+                    sql: "INSERT INTO pending (record_name, zone, kind, modified_at, payload) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [queued.recordName, CloudZoneID.relay.rawValue, queued.kind, 0, queued.payload]
+                )
+            }
+            XCTAssertTrue(try TransportStore(path: path).isPending(recordName: queued.recordName, zone: .relay))
+        }
+        let hub = try session(root, TestHub.acme)
+
+        XCTAssertFalse(hub.startsEngine, "no link keys: the engine never starts")
+        XCTAssertFalse(hub.isLooping, "built stopped, before its boot")
+        XCTAssertFalse(
+            try TransportStore(path: paths.transportStorePath(TestHub.acme)).isPending(recordName: queued.recordName, zone: .relay),
+            "the plaintext save is gone from the send queue"
+        )
+
+        await root.resumeLink()
+
+        XCTAssertTrue(root.linking.links.isEmpty)
+        XCTAssertEqual(root.linking.notice, .encryptionReScan)
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
     /// F14: a background launch while the phone is locked (after the first
@@ -1631,15 +1684,16 @@ final class AppRootWiringTests: XCTestCase {
     /// hub and database on an empty replica.
     func testAFreshPrepareRebuildsTheSessionOnAnEmptyReplica() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: false)
-        let first = try session(root, "hub-acme")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let first = try session(root, TestHub.acme)
         let now = Date()
-        try await TestPhone.hub(over: transport("hub-acme")).save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
+            [try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCount(first)) == 1 }
 
-        _ = try await root.prepare(scope: .private, hubID: "hub-acme", fresh: true)
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
 
-        let second = try session(root, "hub-acme")
+        let second = try session(root, TestHub.acme)
         XCTAssertFalse(second === first)
         XCTAssertEqual(try sliceCount(second), 0, "data_seen and the rows go with the replica")
     }
@@ -1702,7 +1756,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isBootstrapped }
         let id = try await saveVoiceNote(root)
-        let recordings = paths.recordingsDirectory("hub-acme")
+        let recordings = paths.recordingsDirectory(TestHub.acme)
         let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id))
         let sealed = try XCTUnwrap(row.sealedFileURL(in: recordings), "sealed at once")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
@@ -1710,7 +1764,7 @@ final class AppRootWiringTests: XCTestCase {
     }
 
     private func heartbeat(
-        updatedAt: Date, hubID: String = "hub-acme", macName: String = "Acme Mac", flavor: HubFlavor = .default
+        updatedAt: Date, hubID: String = TestHub.acme, macName: String = "Acme Mac", flavor: HubFlavor = .default
     ) -> HeartbeatPayload {
         HeartbeatPayload(
             updatedAt: updatedAt,

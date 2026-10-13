@@ -200,9 +200,10 @@ extension XCTestCase {
     /// The `recording_upload` records in the relay zone, opened as the
     /// paired phone and decoded.
     func relayUploads(
-        in transport: any CloudSyncTransport & Sendable, _ pairing: TestPhone.Pairing = .test
+        in transport: any CloudSyncTransport & Sendable, _ pairing: TestPhone.Pairing = .test, hub: String? = nil
     ) async throws -> [RecordingUploadPayload] {
-        let batch = try await TestPhone.transport(over: transport, pairing).changes(in: .relay, since: nil)
+        let opener = try hub.map { try TestHub.phone(over: transport, $0) } ?? TestPhone.transport(over: transport, pairing)
+        let batch = try await opener.changes(in: .relay, since: nil)
         return try batch.changed
             .filter { $0.kind == RelayRecordKind.recordingUpload.rawValue }
             .map { try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: $0.payload) }

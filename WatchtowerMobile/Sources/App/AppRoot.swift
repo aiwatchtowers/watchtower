@@ -168,8 +168,11 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
-        let pendingHubID = store.pending?.link.hubID
         Task {
+            // Links made before E2E go first (their sessions were built
+            // stopped), so the orphan pass sees the pending link that is left.
+            await root.linking.dropUnencryptedLinks()
+            let pendingHubID = store.pending?.link.hubID
             do {
                 try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
             } catch {
