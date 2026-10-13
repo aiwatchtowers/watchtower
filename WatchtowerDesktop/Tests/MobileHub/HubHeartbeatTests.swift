@@ -1,12 +1,14 @@
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerSync
 import WatchtowerTestSupport
 
 /// The heartbeat (multi-hub spec §3.2): written into the hub's own DataZone
-/// every 300 s; another Mac's heartbeat changes nothing.
+/// every 15 min, and at once when its accounts or sharing change; another
+/// Mac's heartbeat changes nothing.
 @MainActor
 final class HubHeartbeatTests: XCTestCase {
     private var dbPath: String!
@@ -38,7 +40,8 @@ final class HubHeartbeatTests: XCTestCase {
         sidecar: HubSyncState,
         host: HubHostInfo = testHostInfo(),
         now: Date? = nil,
-        reprobeEvery: Duration = .seconds(3600)
+        reprobeEvery: Duration = .seconds(3600),
+        factsCheckEvery: Duration = .seconds(3600)
     ) throws -> MobileHubService {
         let instant = now ?? self.now
         let publisher = SlicePublisher(
@@ -55,6 +58,7 @@ final class HubHeartbeatTests: XCTestCase {
             relayIdleInterval: .seconds(3600), relayActiveInterval: .seconds(3600),
             availabilityReprobeInterval: reprobeEvery,
             heartbeatInterval: .seconds(3600),
+            heartbeatFactsCheckInterval: factsCheckEvery,
             now: { instant }, isEnabled: { true }
         )
         hubs.append(hub)
@@ -177,6 +181,55 @@ final class HubHeartbeatTests: XCTestCase {
         await hub.enable()
 
         try await awaitHubCondition("the loop writes the heartbeat again") { try savedHeartbeats(transport).count >= 3 }
+    }
+
+    /// Board #724: the heartbeat now waits 15 min, so a changed account
+    /// status or sharing is written at the next facts check instead; an
+    /// unchanged check writes nothing.
+    func testChangedAccountsOrSharingRewriteTheHeartbeatAtOnce() async throws {
+        let transport = StubHubTransport()
+        let accounts = OSAllocatedUnfairLock(initialState: [HeartbeatAccount(kind: .slack, label: "acme", status: "ok")])
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo { accounts.withLock { $0 } }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        let unchanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(unchanged)
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "unchanged facts write nothing")
+
+        accounts.withLock { $0 = [HeartbeatAccount(kind: .slack, label: "acme", status: "revoked")] }
+        let statusChanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertTrue(statusChanged)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.accounts.map(\.status), ["revoked"])
+
+        hub.sharing = .available
+        let sharingChanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertTrue(sharingChanged)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.sharing, .available)
+
+        let again = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(again)
+        XCTAssertEqual(try savedHeartbeats(transport).count, 3, "one write per change")
+    }
+
+    /// The loop runs the facts check between two heartbeat ticks.
+    func testTheHeartbeatLoopWritesChangedAccountsBeforeTheTick() async throws {
+        let transport = StubHubTransport()
+        let accounts = OSAllocatedUnfairLock(initialState: [HeartbeatAccount(kind: .jira, label: "acme", status: "ok")])
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo { accounts.withLock { $0 } }, factsCheckEvery: .milliseconds(10)
+        )
+        await hub.enable()
+
+        accounts.withLock { $0 = [HeartbeatAccount(kind: .jira, label: "acme", status: "error")] }
+        try await awaitHubCondition("the loop writes the changed status") {
+            try savedHeartbeats(transport).last?.accounts.map(\.status) == ["error"]
+        }
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
     }
 
     // MARK: - enabled_at
