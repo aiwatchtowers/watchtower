@@ -274,9 +274,11 @@ struct WatchtowerMobileApp: App {
             .onChange(of: scenePhase, initial: true) {
                 if scenePhase == .active { appDelegate.sceneBecameActive() }
                 if !boot.isTestHost {
-                    ReplicaObservationGate.shared.setSuspended(scenePhase == .background)
-                    // The replica's file locks rest too (0xdead10cc).
+                    // The replica's file locks rest too (0xdead10cc). On the
+                    // return the database resumes first, so the observations
+                    // the gate then delivers read a usable replica.
                     DatabaseSuspension.shared.setBackground(scenePhase == .background)
+                    ReplicaObservationGate.shared.setSuspended(scenePhase == .background)
                 }
             }
         }
