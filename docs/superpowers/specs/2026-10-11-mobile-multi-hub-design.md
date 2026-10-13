@@ -1,6 +1,6 @@
 # Mobile companion — one phone, several Macs (multi-hub) — design
 
-Date: 2026-10-11. Status: F1 and F2 built; §5.5 notifications per hub built with A13. Phase F of the mobile POC (after A–E).
+Date: 2026-10-11. Status: F1 and F2 built; §5.5 notifications per hub to be built with A13 (board #17). Phase F of the mobile POC (after A–E).
 Builds on `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` (the POC spec, "the base spec") and `docs/features/mobile-companion.md`.
 
 ## 1. Goal
