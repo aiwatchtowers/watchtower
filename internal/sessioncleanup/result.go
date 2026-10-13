@@ -200,13 +200,15 @@ func keptPart(items []Item) string {
 	for _, it := range items {
 		if kept(it) && !seen[it.Reason] {
 			seen[it.Reason] = true
-			reasons = append(reasons, reasonPhrase(it.Reason))
+			reasons = append(reasons, ReasonPhrase(it.Reason))
 		}
 	}
 	return "kept " + counts + " — " + strings.Join(reasons, ", ")
 }
 
-func reasonPhrase(code string) string {
+// ReasonPhrase is a reason code in the summary's words; a code without
+// a phrase reads as itself with spaces.
+func ReasonPhrase(code string) string {
 	if p, ok := reasonPhrases[code]; ok {
 		return p
 	}

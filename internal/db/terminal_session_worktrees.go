@@ -174,3 +174,71 @@ func (db *DB) TerminalSessionStart(ctx context.Context, sessionID int64) (time.T
 	}
 	return at, nil
 }
+
+// SessionTargetBranches is the trimmed, non-empty `branch` of every target
+// session sessionID linked (terminal_session_targets, PROJ-14), each once,
+// in name order; empty, never nil, when there is none.
+func (db *DB) SessionTargetBranches(ctx context.Context, sessionID int64) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT DISTINCT TRIM(t.branch) FROM terminal_session_targets st
+		JOIN targets t ON t.id = st.target_id
+		WHERE st.session_id = ? AND TRIM(t.branch) != '' ORDER BY 1`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("reading terminal session %d target branches: %w", sessionID, err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, fmt.Errorf("reading terminal session %d target branches: %w", sessionID, err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading terminal session %d target branches: %w", sessionID, err)
+	}
+	return out, nil
+}
+
+// TerminalSessionActivity is one terminal_sessions row as the session
+// cleanup's in-use and recent-owner catches read it. The stamps are as
+// stored ("" = NULL): the caller decides what an unreadable one means.
+type TerminalSessionActivity struct {
+	ID           int64
+	WorkbenchID  int64 // 0 = a standalone terminal
+	Title        string
+	AgentCwd     string // agent_cwd (board #565); "" = unknown
+	AgentStateAt string // agent_state_at
+	LastActiveAt string // last_active_at
+	Finished     bool   // finished_at is set
+}
+
+// ListTerminalSessionActivity is every terminal session of every workbench
+// and every standalone one, in id order, read in a read-only transaction.
+func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessionActivity, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("reading terminal session activity: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
+		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL
+		FROM terminal_sessions ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading terminal session activity: %w", err)
+	}
+	defer rows.Close()
+	out := []TerminalSessionActivity{}
+	for rows.Next() {
+		var a TerminalSessionActivity
+		if err := rows.Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd, &a.AgentStateAt,
+			&a.LastActiveAt, &a.Finished); err != nil {
+			return nil, fmt.Errorf("reading terminal session activity: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading terminal session activity: %w", err)
+	}
+	return out, nil
+}
