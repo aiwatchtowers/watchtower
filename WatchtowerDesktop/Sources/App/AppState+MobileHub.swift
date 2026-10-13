@@ -75,7 +75,10 @@ extension AppState {
         let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
         if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
         let sources: [any SliceSource] = [
-            WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
+            WorkbenchSlice(
+                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
+                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
+            ),
             WorkbenchTargetSlice(),
             WorkbenchCommentSlice(),
             sessions,
@@ -115,9 +118,9 @@ extension AppState {
         )
     }
 
-    /// The last step of `buildMobileHub`: the link center (when the storage
-    /// has a share service), the relay processor that hands it the phones'
-    /// `device` records, and the hub it hangs on.
+    /// The last step of `buildMobileHub`: the run's link center (when the
+    /// storage has a share service), the relay processor that hands it the
+    /// phones' `device` records, and the hub it hangs on.
     func assembleMobileHub(
         storage: MobileHubStorage,
         dbPool: DatabasePool,
@@ -127,7 +130,8 @@ extension AppState {
         recordingUploads: RelayProcessor.RecordingUploads
     ) throws -> MobileHubService {
         let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
-        let linkCenter = MobileLinkCenter.forHub(storage: storage, macName: hostInfo.macName, publisher: publisher)
+        let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
+        mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,

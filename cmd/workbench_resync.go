@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/kb"
@@ -70,12 +71,31 @@ type workbenchResyncJSON struct {
 	Suggestions      []string `json:"suggestions"`
 	SuggestionsError string   `json:"suggestions_error"` // the suggestions may be incomplete
 
+	// Codex is the codex part's refresh (spec §4.1): run when a codex binary
+	// is found or the folder already has the codex skill copy; absent
+	// otherwise.
+	Codex *resyncCodexJSON `json:"codex,omitempty"`
+
 	install    devpack.WorkbenchInstallReport // for the text report
 	installErr error
+	codex      devpack.CodexStatus
+	codexErr   error
+}
+
+// resyncCodexJSON: ok/error as the other steps; found, skill (a devpack
+// state), hooks_trusted (null: codex could not be asked) and
+// duplicates_removed as the codex install reported them.
+type resyncCodexJSON struct {
+	OK                bool   `json:"ok"`
+	Error             string `json:"error"`
+	Found             bool   `json:"found"`
+	Skill             string `json:"skill"`
+	HooksTrusted      *bool  `json:"hooks_trusted"`
+	DuplicatesRemoved bool   `json:"duplicates_removed"`
 }
 
 func (r workbenchResyncJSON) failed() bool {
-	return !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != ""
+	return !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != "" || (r.Codex != nil && !r.Codex.OK)
 }
 
 func runWorkbenchResync(cmd *cobra.Command, args []string) error {
@@ -116,6 +136,9 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		errs = append(errs, fmt.Errorf("installing the Claude Code integration: %w", err))
 	} else {
 		res.IntegrationOK = true
+	}
+	if err := resyncCodex(ctx, p, &res); err != nil {
+		errs = append(errs, fmt.Errorf("installing the codex integration: %w", err))
 	}
 
 	// The folder's files are searchable at once rather than after the daemon's
@@ -160,6 +183,47 @@ func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyn
 	res.LegacyPermissionRules = rep.LegacyPermissionRules
 	if !rep.MCPRegistered {
 		res.MCPCommand = rep.MCPCommand
+	}
+	return err
+}
+
+// resyncCodex refreshes the codex part when codex is found or the folder
+// already has it (D5). With neither, res.Codex stays nil, unless the config
+// did not load: codex may then be reachable only through the ignored
+// codex_path, so res.Codex carries the config error.
+func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
+	// A missing binary path or folder: the Claude step already reported it.
+	if !isExistingDir(p.FolderPath) {
+		return nil
+	}
+	o, err := workbenchInstallOptions(p)
+	if err != nil {
+		return err
+	}
+	cfg, cfgErr := config.Load(flagConfig)
+	if cfgErr != nil {
+		// The lookup still finds codex on PATH, but codex_path is ignored,
+		// so the run reports the config error too.
+		cfg = &config.Config{}
+		cfgErr = fmt.Errorf("loading config (codex_path ignored, codex looked up on PATH): %w", cfgErr)
+	}
+	if !devpack.CodexFound(cfg, codexFindBinary) && !devpack.CodexSkillInstalled(p.FolderPath) {
+		if cfgErr != nil { // codex may be reachable only through the ignored codex_path
+			res.codexErr = cfgErr
+			res.Codex = &resyncCodexJSON{Error: cfgErr.Error()}
+			return cfgErr
+		}
+		return nil
+	}
+	ctx, cancel := codexShutdownContext(ctx)
+	defer cancel()
+	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))
+	err = errors.Join(cfgErr, err)
+	res.codex, res.codexErr = st, err
+	res.Codex = &resyncCodexJSON{OK: err == nil, Found: st.Found, Skill: string(st.SkillState),
+		HooksTrusted: st.HooksTrusted, DuplicatesRemoved: st.DuplicatesRemoved}
+	if err != nil {
+		res.Codex.Error = err.Error()
 	}
 	return err
 }
@@ -232,6 +296,13 @@ func printResyncReport(w io.Writer, p *db.Workbench, res workbenchResyncJSON) {
 	}
 	if !res.IntegrationOK {
 		fmt.Fprintf(w, "  FAILED — %s\n", res.IntegrationError)
+	}
+	if res.Codex != nil {
+		fmt.Fprintln(w, "Codex integration:")
+		printCodexInstallBody(w, res.codex, res.codexErr)
+		if !res.Codex.OK {
+			fmt.Fprintf(w, "  FAILED — %s\n", res.Codex.Error)
+		}
 	}
 	if len(res.Suggestions) > 0 || res.SuggestionsError != "" {
 		fmt.Fprintln(w, "Suggestions:")

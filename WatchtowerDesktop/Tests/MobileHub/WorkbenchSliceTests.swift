@@ -65,6 +65,15 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(payload["changes"] as? Int, 3)
     }
 
+    /// Board #399, D6: every record names the Mac's default agent, the
+    /// agent a phone start runs, in the session slice's wire spelling.
+    func testDefaultAgentFollowsTheSetting() throws {
+        try dbPool.write { db in _ = try TestDatabase.insertWorkbench(db, name: "Acme", folder: home + "/Projects/acme") }
+        XCTAssertEqual(try onlyPayload(slice())["default_agent"] as? String, "claude_code")
+        let codex = WorkbenchSlice(home: home) { .codex }
+        XCTAssertEqual(try onlyPayload(codex)["default_agent"] as? String, "codex_cli")
+    }
+
     // MARK: - Hidden columns
 
     func testHiddenColumnsAreNeverPublished() throws {

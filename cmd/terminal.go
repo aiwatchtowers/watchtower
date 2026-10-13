@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -50,6 +51,31 @@ func defaultTerminalClaudeDir() string {
 	return filepath.Join(home, ".claude")
 }
 
+// terminalCodexHome is the seam tests point at a temp dir: Codex's home,
+// under which rollouts live in sessions/YYYY/MM/DD/rollout-*-<id>.jsonl.
+var terminalCodexHome = defaultTerminalCodexHome
+
+// defaultTerminalCodexHome is `$CODEX_HOME` when it is set to an absolute
+// path, else `~/.codex` (Codex's own rule).
+func defaultTerminalCodexHome() string {
+	if dir := os.Getenv("CODEX_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+// terminalAgentHome is the home dir under which kind's transcripts live.
+func terminalAgentHome(kind agentkind.Kind) string {
+	if kind == agentkind.Codex {
+		return terminalCodexHome()
+	}
+	return terminalClaudeDir()
+}
+
 const terminalTitleOwnerChars = 2000
 
 var terminalTitleFlagDBPath string
@@ -61,11 +87,12 @@ var terminalCmd = &cobra.Command{
 
 var terminalTitleCmd = &cobra.Command{
 	Use:   "title <session-id>",
-	Short: "Name an embedded Claude Code session from the owner's first messages",
-	Long: `Generates a short name for a Claude Code terminal session from the owner's
-first messages in its transcript and stores it with title_source='ai'. A shell
-session, an owner-chosen title or an earlier AI title is left alone, and a
-session with no owner message yet makes no AI call: the command prints
+	Short: "Name an embedded coding-agent session from the owner's first messages",
+	Long: `Generates a short name for a Claude Code or Codex terminal session from the
+owner's first messages in its transcript and stores it with title_source='ai'.
+A shell session, an owner-chosen title or an earlier AI title is left alone,
+and a session with no owner message yet (or a transcript in a format this
+reader does not parse) makes no AI call: the command prints
 {"title":"","written":false} and exits 0.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTerminalTitle,
@@ -99,11 +126,12 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
-	if sess.Kind != "claude" || sess.TitleSource != "auto" || !sess.ClaudeSessionID.Valid {
+	kind, isAgent := agentkind.Parse(sess.Kind)
+	if !isAgent || sess.TitleSource != "auto" || !sess.ClaudeSessionID.Valid {
 		return enc.Encode(terminalTitleResult{Title: sess.Title, Written: false})
 	}
 
-	owner, err := terminalOwnerText(sess.ClaudeSessionID.String)
+	owner, err := terminalOwnerText(cmd, kind, sess.ClaudeSessionID.String, sess.TranscriptPath.String)
 	if err != nil {
 		return err
 	}
@@ -169,19 +197,25 @@ func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.
 }
 
 // terminalOwnerText reads the owner's typed messages from the session's
-// transcript; a transcript Claude Code has not written yet reads as empty.
-func terminalOwnerText(sessionID string) (string, error) {
-	path, err := terminal.FindTranscript(terminalClaudeDir(), sessionID)
-	if errors.Is(err, terminal.ErrNoTranscript) {
+// transcript. A transcript the agent has not written yet, or one in a format
+// the reader does not parse (a compressed Codex rollout), reads as empty: no
+// title change.
+func terminalOwnerText(cmd *cobra.Command, kind agentkind.Kind, sessionID, storedPath string) (string, error) {
+	owner, err := readTerminalOwnerText(kind, sessionID, storedPath)
+	switch {
+	case errors.Is(err, terminal.ErrNoTranscript):
+		return "", nil
+	case errors.Is(err, terminal.ErrUnsupportedTranscript):
+		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: %v\n", err)
 		return "", nil
 	}
+	return owner, err
+}
+
+func readTerminalOwnerText(kind agentkind.Kind, sessionID, storedPath string) (string, error) {
+	tr, err := terminal.OpenTranscript(kind, sessionID, storedPath, terminalAgentHome(kind))
 	if err != nil {
 		return "", err
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("opening transcript: %w", err)
-	}
-	defer f.Close()
-	return terminal.OwnerMessages(f, terminalTitleOwnerChars)
+	return tr.OwnerText(terminalTitleOwnerChars)
 }

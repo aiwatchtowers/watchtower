@@ -323,4 +323,168 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["workbench", "git", "create", "--workbench", "5", "--name", "new/one", "--json"]])
         XCTAssertTrue(result.created)
     }
+
+    // MARK: - Codex part (board #399)
+
+    private func status(_ codex: String?) throws -> WorkbenchInstallStatus {
+        let codexKey = codex.map { #","codex":\#($0)"# } ?? ""
+        let json = #"{"skill":"unchanged","hook":true,"mcp":true,"claude_found":true"# + codexKey + "}"
+        return try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(json.utf8))
+    }
+
+    /// A CLI older than Codex support sends no `codex` key: the status still
+    /// decodes, nothing about Codex needs repair, and Codex reads as absent.
+    func testInstallStatusDecodesWithoutCodexKey() throws {
+        let older = try status(nil)
+        XCTAssertNil(older.codex)
+        XCTAssertFalse(older.needsRepair)
+        XCTAssertFalse(older.codexNeedsRepair)
+        XCTAssertTrue(older.agentFound(.claude))
+        XCTAssertFalse(older.agentFound(.codex), "no codex part, no codex launch-args")
+        XCTAssertFalse(older.repairHelp.contains("Codex"))
+
+        let current = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertEqual(current.codex, .init(found: true, skill: true, hooksTrusted: true))
+        XCTAssertTrue(current.agentFound(.codex))
+        XCTAssertFalse(current.needsRepair)
+        XCTAssertTrue(current.repairHelp.contains("Codex: skill on · hooks trusted"), current.repairHelp)
+    }
+
+    func testNeedsRepairWhenCodexUntrustedOrSkillMissing() throws {
+        let untrusted = try status(#"{"found":true,"skill":true,"hooks_trusted":false,"imported_duplicates":false}"#)
+        XCTAssertTrue(untrusted.needsRepair)
+        XCTAssertTrue(untrusted.codexNeedsRepair)
+        XCTAssertFalse(untrusted.claudeNeedsRepair, "the Claude Code part is whole")
+        XCTAssertTrue(untrusted.repairHelp.contains("hooks not trusted"))
+
+        XCTAssertEqual(untrusted.codex?.state, .broken)
+
+        // Never set up: a neutral "Set up Codex", not Repair (controller ruling).
+        let noSkill = try status(#"{"found":true,"skill":false,"hooks_trusted":false,"imported_duplicates":true}"#)
+        XCTAssertEqual(noSkill.codex?.state, .notSetUp)
+        XCTAssertFalse(noSkill.needsRepair, "no orange icon for a part never set up")
+        XCTAssertFalse(noSkill.codexNeedsRepair)
+        XCTAssertTrue(noSkill.codexNeedsSetup)
+        XCTAssertTrue(noSkill.repairHelp.contains("Codex: not set up"), noSkill.repairHelp)
+
+        let duplicates = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":true}"#)
+        XCTAssertTrue(duplicates.codexNeedsRepair)
+        XCTAssertTrue(duplicates.repairHelp.contains("imported duplicate hooks"))
+
+        // Without codex nothing is offered, whatever the rest says.
+        let missing = try status(#"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":true}"#)
+        XCTAssertFalse(missing.needsRepair)
+        XCTAssertFalse(missing.codexNeedsSetup)
+        XCTAssertEqual(missing.codex?.state, .absent)
+        XCTAssertFalse(missing.agentFound(.codex))
+        XCTAssertFalse(missing.repairHelp.contains("Codex"), "D5: quiet without codex")
+    }
+
+    /// Spec §4.5: `hooks_trusted: null` (codex could not be asked) shows no
+    /// Repair; only a log line.
+    func testNoRepairWhenTrustUnknown() throws {
+        let unknown = try status(#"{"found":true,"skill":true,"hooks_trusted":null,"imported_duplicates":false}"#)
+        XCTAssertNil(unknown.codex?.hooksTrusted)
+        XCTAssertFalse(unknown.needsRepair)
+        XCTAssertTrue(unknown.repairHelp.contains("trust unknown"))
+    }
+
+    /// An outdated skill copy is set up and broken (Repair), never the
+    /// neutral "not set up"; an older CLI without `skill_state` keeps its
+    /// reading.
+    func testOutdatedCodexSkillIsRepair() throws {
+        let outdated = try status(#"{"found":true,"skill":true,"skill_state":"updated","hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertEqual(outdated.codex?.state, .broken)
+        XCTAssertTrue(outdated.codexNeedsRepair)
+        XCTAssertFalse(outdated.codexNeedsSetup)
+        XCTAssertTrue(outdated.repairHelp.contains("Codex: skill outdated"), outdated.repairHelp)
+
+        let edited = try status(#"{"found":true,"skill":true,"skill_state":"drifted","hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertEqual(edited.codex?.state, .ready, "an owner-edited copy is theirs")
+
+        let older = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertNil(older.codex?.skillState)
+        XCTAssertEqual(older.codex?.state, .ready)
+    }
+
+    /// The CLI's `trust_error` reaches the tooltip — also when the config
+    /// did not load and codex reads as not found — and an older CLI without
+    /// the key decodes as nil.
+    func testTrustErrorShowsInTheHelp() throws {
+        let failed = try status(#"{"found":true,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"#
+            + #""trust_error":"codex hook trust unavailable: no answer within 10s"}"#)
+        XCTAssertEqual(failed.codex?.trustError, "codex hook trust unavailable: no answer within 10s")
+        XCTAssertFalse(failed.needsRepair)
+        XCTAssertTrue(failed.repairHelp.contains("Codex trust check failed: codex hook trust unavailable"), failed.repairHelp)
+
+        let unresolved = try status(#"{"found":false,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"#
+            + #""trust_error":"could not resolve the codex binary: loading config: bad"}"#)
+        XCTAssertEqual(unresolved.codex?.state, .absent)
+        XCTAssertTrue(unresolved.repairHelp.contains("loading config: bad"), unresolved.repairHelp)
+
+        let older = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertNil(older.codex?.trustError)
+        XCTAssertFalse(older.repairHelp.contains("trust check failed"))
+    }
+
+    /// The header's Codex control: only for a part never set up; neutral,
+    /// orange only after a failed setup; nothing for absent, whole or broken
+    /// parts (broken is Repair's orange icon).
+    func testCodexNotSetUpIsANeutralNoticeUntilASetupFails() throws {
+        let notSetUp = try status(#"{"found":true,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#)
+        let neutral = try XCTUnwrap(notSetUp.codexSetupNotice(failure: nil))
+        XCTAssertEqual(neutral.title, "Codex: not set up")
+        XCTAssertFalse(neutral.isWarning)
+        XCTAssertTrue(neutral.help.contains("Set up Codex"))
+
+        let failed = try XCTUnwrap(notSetUp.codexSetupNotice(failure: "Setting up Codex failed: timed out"))
+        XCTAssertEqual(failed.title, "Codex setup failed")
+        XCTAssertTrue(failed.isWarning)
+        XCTAssertTrue(failed.help.hasPrefix("Setting up Codex failed: timed out"))
+
+        for codex in [nil, #"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#,
+                      #"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#,
+                      #"{"found":true,"skill":true,"hooks_trusted":false,"imported_duplicates":false}"#] {
+            XCTAssertNil(try status(codex).codexSetupNotice(failure: "x"), codex ?? "no codex key")
+        }
+    }
+
+    func testInstallCodexArguments() async throws {
+        let runner = FakeCLIRunner()
+        try await WorkbenchCLI(runner: runner).installCodex(projectID: 7)
+        XCTAssertEqual(runner.invocations, [["integrate", "codex", "--workbench", "7"]])
+    }
+
+    private func resynced(_ codex: String?) throws -> WorkbenchResynced {
+        let codexKey = codex.map { #","codex":\#($0)"# } ?? ""
+        let json = #"{"integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,"excluded":[],"#
+            + #""mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":""\#(codexKey)}"#
+        return try JSONDecoder().decode(WorkbenchResynced.self, from: Data(json.utf8))
+    }
+
+    /// Re-run Setup's Codex lines; a failed Codex step is its own problem
+    /// line and leaves the Claude Code part's lines alone.
+    func testResyncSummaryReportsTheCodexPart() throws {
+        XCTAssertEqual(try resynced(nil).summaryLines.map(\.text), ["Everything was already up to date."])
+
+        let installed = try resynced(
+            #"{"ok":true,"error":"","found":true,"skill":"installed","hooks_trusted":true,"duplicates_removed":true}"#
+        )
+        XCTAssertEqual(installed.summaryLines, [
+            .init(text: "Installed the watchtower-workbench skill for Codex", problem: false),
+            .init(text: "Removed the Watchtower hooks Codex had imported into .codex", problem: false)
+        ])
+
+        let failed = try resynced(
+            #"{"ok":false,"error":"codex app-server timed out","found":true,"skill":"unchanged","hooks_trusted":null,"#
+                + #""duplicates_removed":false}"#
+        )
+        XCTAssertEqual(failed.summaryLines, [.init(text: "Setting up Codex failed: codex app-server timed out", problem: true)])
+        XCTAssertTrue(failed.integrationOK, "the Claude Code part did not fail")
+
+        let untrusted = try resynced(
+            #"{"ok":true,"error":"","found":true,"skill":"unchanged","hooks_trusted":false,"duplicates_removed":false}"#
+        )
+        XCTAssertEqual(untrusted.summaryLines.map(\.problem), [true])
+    }
 }

@@ -86,6 +86,15 @@ final class AppEnvironment {
     let recordingsSeen: RecordingsSeenStore
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
+    /// The hub whose zones this environment syncs (`unlinkedHubID` while
+    /// unlinked): held recordings of this hub are adopted here.
+    let hubID: String
+    /// Recordings a wipe carried over (board #63), outside the replica; nil
+    /// when the uploader has no recordings folder.
+    @ObservationIgnored let hold: RecordingHold?
+    /// Held recordings waiting for another hub than this one (the
+    /// Recordings list shows them).
+    var heldRecordings: [HeldRecording] = []
 
     /// This phone's link, nil until the link flow sets one. The demo
     /// transport is linked to `DemoSeed.device`.
@@ -115,11 +124,17 @@ final class AppEnvironment {
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
-    @ObservationIgnored private let uploader: RecordingUploader
+    @ObservationIgnored let uploader: RecordingUploader
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     /// The loop's wait between cycles; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    /// The boot's first part: the applied observer set and the CloudKit
+    /// engine started (the demo seeded), before the first fetch.
+    @ObservationIgnored private var transportStartTask: Task<Void, Never>?
+    /// Adopts the held recordings of this environment's hub
+    /// (`adoptHeld`), started by the init; the launch sweep waits for it.
+    @ObservationIgnored private(set) var adoption: Task<HeldAdoption, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
@@ -148,6 +163,7 @@ final class AppEnvironment {
                 ),
                 replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
+                hubID: hubID,
                 linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory
             )
@@ -172,6 +188,7 @@ final class AppEnvironment {
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
+        hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
@@ -185,6 +202,7 @@ final class AppEnvironment {
         self.sleep = sleep
         self.transport = transport
         self.transportKind = transportKind
+        self.hubID = hubID
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
         // Compile-only placeholder (mobile E2E Task 8, F6): the replica now keeps the hub's envelopes and needs
@@ -239,6 +257,7 @@ final class AppEnvironment {
             deviceID: device?.deviceID
         )
         self.uploader = uploader
+        hold = uploader.directory.map(RecordingHold.init(recordingsDirectory:))
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
         feed = RelayFeed(
             transport: secure,
@@ -255,12 +274,17 @@ final class AppEnvironment {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
-        bootstrapTask = Task { await bootstrap() }
+        adoption = Task { await adoptHeld() }
+        let transportStart = Task { await startTransport() }
+        transportStartTask = transportStart
+        bootstrapTask = Task {
+            await transportStart.value
+            await bootstrap()
+        }
     }
 
-    /// Demo seed or engine start, a first fetch so the screens have content
-    /// at once, then the fetch loop.
-    private func bootstrap() async {
+    /// Demo seed or engine start: everything before the first fetch.
+    private func startTransport() async {
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
         await outbox.setAppliedObserver(Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts))
@@ -292,6 +316,11 @@ final class AppEnvironment {
                 await cloud.start()
             }
         }
+    }
+
+    /// After `startTransport`: a first fetch so the screens have content
+    /// at once, the launch sweeps, then the fetch loop.
+    private func bootstrap() async {
         await refresh()
         // An action the Mac never answered within 24 h is failed locally, so
         // the queued count never counts it forever.
@@ -300,6 +329,9 @@ final class AppEnvironment {
         } catch {
             Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
         }
+        // Held recordings of this hub get their rows first; the rest sit in
+        // the hidden hold folder, which the sweep below never reaches.
+        _ = await adoption?.value
         // A capture cut short by a kill is finalized from its file, and
         // files without a ledger row are deleted. Then the relaunch retry:
         // recordings saved but not yet acknowledged go out again (the hub's
@@ -382,11 +414,24 @@ final class AppEnvironment {
     /// Settings, the action outbox and the recording uploader all take the
     /// new device id, then waiting recordings go out at once. With
     /// `writesAllowed: false` the link stands (Settings still shows it) but
-    /// the outbox and the uploader get no device id, so nothing is sent.
+    /// the outbox, the uploader and the Settings toggles get no device, so
+    /// nothing is sent: a toggle meanwhile is only kept, like one made
+    /// before linking.
+    /// When writes come back for the same link (the moved hub returned),
+    /// the current device record is written once, so a toggle kept
+    /// meanwhile reaches the Mac.
     func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
+        let writesReturn = writesAllowed && !self.writesAllowed && device != nil && device == linkedDevice
         linkedDevice = device
         self.writesAllowed = writesAllowed
-        deviceSettings.linkedDevice = device
+        deviceSettings.linkedDevice = writesAllowed ? device : nil
+        if writesReturn, let payload = deviceSettings.devicePayload() {
+            do {
+                try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+            } catch {
+                Self.logger.error("device record not rewritten: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)
         await uploader.setDeviceID(sendingID)
@@ -398,15 +443,17 @@ final class AppEnvironment {
     var linkTransport: any CloudSyncTransport { transport }
 
     /// Asks a CloudKit transport to send its queue now (the unlinked record
-    /// before a stop), once the boot has started its engine.
+    /// before a stop), once the boot has started its engine: it does not
+    /// wait for the first fetch, which a slow network can hold for long.
     func sendNow() async {
-        await bootstrapTask?.value
+        await transportStartTask?.value
         await (transport as? CloudKitTransport)?.sendNow()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).
     func stop() {
         stopped = true
+        transportStartTask?.cancel()
         bootstrapTask?.cancel()
         loopTask?.cancel()
         loopTask = nil

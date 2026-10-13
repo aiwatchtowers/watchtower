@@ -20,6 +20,9 @@ extension TargetExtractCenter {
         if lower.contains("install claude code") || (lower.contains("claude") && lower.contains("not found")) {
             return ("Claude Code isn't installed. Install it and try again.", false)
         }
+        if lower.contains("codex") && lower.contains("not found") {
+            return ("Codex isn't installed. Install it and try again.", false)
+        }
         if lower.contains("not found") {
             return ("Watchtower CLI not found in PATH.", false)
         }

@@ -149,6 +149,16 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertTrue(confirmation.message.contains("the agent's files will be swapped"))
     }
 
+    /// Board #399: Go counts any agent session (Claude Code or Codex) as
+    /// running, so the warning names neither.
+    func testConfirmationForARunningAgentIsAgentNeutral() throws {
+        let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.agentRunning])
+        let message = try XCTUnwrap(Pres.confirmation(for: result, stashing: false)).message
+        XCTAssertTrue(message.hasPrefix("An agent session is running in this folder"), message)
+        XCTAssertFalse(message.contains("Claude"), message)
+        XCTAssertFalse(message.contains("Codex"), message)
+    }
+
     func testConfirmationForBoth() throws {
         let result = WorkbenchGitSwitchResult(branch: "b", needsConfirmation: [.uncommittedChanges, .agentRunning], changes: 1)
         let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))

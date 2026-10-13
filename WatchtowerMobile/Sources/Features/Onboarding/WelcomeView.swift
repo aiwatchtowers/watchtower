@@ -36,8 +36,8 @@ private struct LinkStepsScreen: View {
     let macName: String?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            LinkStepsView(model: LinkStepsModel(waitingFor: macName, startedAt: linking.phaseStartedAt, now: context.date))
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            LinkStepsView(model: LinkStepsModel(waitingFor: macName, waited: linking.phaseElapsed()))
         }
     }
 }
@@ -61,57 +61,74 @@ struct WelcomeView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: Spacing.page) {
-                Spacer()
-                Image("AppIconImage")
-                    .resizable()
-                    .frame(width: 72, height: 72)
-                    // The app icon's own corner (O1), not a card radius.
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(spacing: Spacing.regular) {
-                    Text("Watchtower")
-                        .font(.largeTitle.bold())
-                    Text("Your Mac's Watchtower on this iPhone: asks, sessions, the board and your meetings.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                // Scrolls at accessibility text sizes; the buttons stay pinned.
+                ScrollView {
+                    content
+                        .padding(.horizontal, Spacing.page)
+                        .padding(.top, Spacing.large)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(WelcomeFeature.all, id: \.text) { feature in
-                        FlatRow(icon: .symbol(feature.symbol, tone: .accent), title: feature.text, insets: EdgeInsets()) {
-                            EmptyView()
-                        }
+                .scrollBounceBehavior(.basedOnSize)
+                buttons
+                    .padding(.horizontal, Spacing.page)
+                    .padding(.vertical, Spacing.large)
+            }
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: Spacing.page) {
+            Image("AppIconImage")
+                .resizable()
+                .frame(width: 72, height: 72)
+                // The app icon's own corner (O1), not a card radius.
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(spacing: Spacing.regular) {
+                Text("Watchtower")
+                    .font(.largeTitle.bold())
+                Text("Your Mac's Watchtower on this iPhone: asks, sessions, the board and your meetings.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(WelcomeFeature.all, id: \.text) { feature in
+                    FlatRow(icon: .symbol(feature.symbol, tone: .accent), title: feature.text, insets: EdgeInsets()) {
+                        EmptyView()
                     }
-                }
-                if let notice = linking.notice {
-                    Text(notice.message)
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                        .card(.plain)
-                }
-                Spacer()
-                VStack(spacing: Spacing.medium) {
-                    Text("On your Mac: Settings → Mobile → Use Watchtower on iPhone.")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                    Button {
-                        linking.startScan()
-                    } label: {
-                        Label("Scan the code on your Mac", systemImage: "qrcode.viewfinder")
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    NavigationLink {
-                        MacNotShowingView()
-                    } label: {
-                        Text("The Mac doesn't show up")
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
-            .padding(.horizontal, Spacing.page)
-            .padding(.vertical, Spacing.large)
+            if let notice = linking.notice {
+                Text(notice.message)
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .card(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var buttons: some View {
+        VStack(spacing: Spacing.medium) {
+            Text("On your Mac: Settings → Mobile → Use Watchtower on iPhone.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button {
+                linking.startScan()
+            } label: {
+                Label("Scan the code on your Mac", systemImage: "qrcode.viewfinder")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            NavigationLink {
+                MacNotShowingView()
+            } label: {
+                Text("The Mac doesn't show up")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
         }
     }
 }

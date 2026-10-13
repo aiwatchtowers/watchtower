@@ -46,6 +46,16 @@ struct ThinProgressBar: View {
 struct StepRow: View {
     enum State: Equatable {
         case done, current, waiting, todo, failed
+
+        /// What VoiceOver reads after the step's text.
+        var accessibilityValue: String {
+            switch self {
+            case .done: "Done"
+            case .current, .waiting: "In progress"
+            case .todo: "Not started"
+            case .failed: "Failed"
+            }
+        }
     }
 
     let state: State
@@ -59,6 +69,9 @@ struct StepRow: View {
                 .foregroundStyle(state == .todo ? Color.secondary : Color.primary)
         }
         .frame(minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityValue(state.accessibilityValue)
     }
 
     @ViewBuilder private var icon: some View {

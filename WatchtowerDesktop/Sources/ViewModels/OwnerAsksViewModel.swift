@@ -53,12 +53,16 @@ final class OwnerAsksViewModel {
         /// Not written: the ask was no longer open (withdrawn, superseded).
         case withdrawn
 
-        var text: String {
+        /// The text for a Claude Code session (`text(agent:)`).
+        var text: String { text(agent: .claude) }
+
+        /// The text, naming the agent the line went to (nil: not known).
+        func text(agent: AgentKind?) -> String {
             switch self {
-            case .delivered(.submitted): OwnerAsksViewModel.answerSentNote
+            case .delivered(.submitted): OwnerAsksViewModel.answerSentNote(to: agent)
             case .delivered(.typed): OwnerAsksViewModel.answerTypedNote
             case .delivered(.copied): OwnerAsksViewModel.answerCopiedNote
-            case .delivered(.held): OwnerAsksViewModel.answerHeldNote
+            case .delivered(.held): OwnerAsksViewModel.answerHeldNote(for: agent)
             case .delivered(.queued): OwnerAsksViewModel.answerQueuedNote
             case .delivered(.noSession): OwnerAsksViewModel.noSessionNote
             case .withdrawn: OwnerAsksViewModel.withdrawnNote
@@ -66,17 +70,39 @@ final class OwnerAsksViewModel {
         }
     }
 
+    /// The agent's name in the notes that name it (board #399): Codex by its
+    /// display name; Claude Code — or an agent not known — as "Claude", the
+    /// notes' wording before Codex.
+    nonisolated static func agentNoteName(_ agent: AgentKind?) -> String {
+        switch agent {
+        case .codex?: AgentKind.codex.displayName
+        case .claude?, nil: "Claude"
+        }
+    }
+
     /// The session pane's paste and clipboard hints of a comment's Send or a
     /// hand-off (`TerminalCenter.pasteHints`/`clipboardHints`).
-    nonisolated static let sentNote = "Pasted into Claude — press Return to send"
+    nonisolated static func sentNote(into agent: AgentKind?) -> String {
+        "Pasted into \(agentNoteName(agent)) — press Return to send"
+    }
+    nonisolated static let sentNote = sentNote(into: .claude)
     /// The paste hint when the line shares the prompt with other text not
     /// sent — an answer left typed, a draft (`TerminalCenter.sharedPrompts`).
-    nonisolated static let sentBesideTextNote = "Pasted into Claude next to text not sent yet — press Return to send them together"
+    nonisolated static func sentBesideTextNote(into agent: AgentKind?) -> String {
+        "Pasted into \(agentNoteName(agent)) next to text not sent yet — press Return to send them together"
+    }
+    nonisolated static let sentBesideTextNote = sentBesideTextNote(into: .claude)
     nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
-    nonisolated static let answerSentNote = "Answer sent to Claude"
+    nonisolated static func answerSentNote(to agent: AgentKind?) -> String {
+        "Answer sent to \(agentNoteName(agent))"
+    }
+    nonisolated static let answerSentNote = answerSentNote(to: .claude)
     /// An answer's line not sent yet (boards #364, #379): the drawer's
     /// notice and the session pane's hint (`TerminalCenter.answerHints`).
-    nonisolated static let answerHeldNote = "Answer saved — it goes to Claude once the permission prompt is resolved"
+    nonisolated static func answerHeldNote(for agent: AgentKind?) -> String {
+        "Answer saved — it goes to \(agentNoteName(agent)) once the permission prompt is resolved"
+    }
+    nonisolated static let answerHeldNote = answerHeldNote(for: .claude)
     nonisolated static let answerStillHeldNote =
         "Still waiting for the permission prompt — Dismiss to send the answer through the session's brief instead"
     nonisolated static let answerQueuedNote = "Answer saved — sending after the previous answer"
@@ -481,6 +507,12 @@ final class OwnerAsksViewModel {
 
     static func clampDrawerWidth(_ width: Double) -> Double {
         min(max(width, drawerWidthRange.lowerBound), drawerWidthRange.upperBound)
+    }
+
+    /// An answer notice's text, naming the agent of the session the ask
+    /// came from (board #399).
+    func noticeText(_ notice: AnswerNotice, ask: OwnerAsk) -> String {
+        notice.text(agent: ask.sessionID.flatMap { terminalCenter?.agent(of: $0) })
     }
 
     func dismissNotice(askID: Int64) {

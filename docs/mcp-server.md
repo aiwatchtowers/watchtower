@@ -62,6 +62,14 @@ command = "watchtower"
 args = ["mcp"]
 ```
 
+This registers the read-only server. A **workbench** session does not need it:
+when the Desktop launches Codex in a workbench terminal, it passes the writable
+`watchtower-workbench` server (`watchtower mcp --workbench N --agent codex`)
+and the workbench hooks as launch flags, and `watchtower integrate codex
+--workbench N` installs the skill and trusts those hooks. Nothing is written to
+the folder's or your own Codex MCP config. See "Codex as a Workbench agent" in
+[`docs/features/workbench.md`](features/workbench.md).
+
 The server reads the same SQLite database the CLI uses (the active workspace's
 `watchtower.db`); pass `--workspace <name>` after `mcp` to target a specific
 workspace.

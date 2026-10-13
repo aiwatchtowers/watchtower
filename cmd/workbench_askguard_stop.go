@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -73,14 +74,6 @@ const (
 	askRequestChat = "chat"
 	askRequestFull = "full"
 )
-
-// askGuardStopInput is the part of Claude Code's Stop hook input the guard
-// reads.
-type askGuardStopInput struct {
-	SessionID            string `json:"session_id"`
-	StopHookActive       bool   `json:"stop_hook_active"`
-	LastAssistantMessage string `json:"last_assistant_message"`
-}
 
 // askGuardVerdict is the classifier's answer after normalisation (Part 4.3).
 type askGuardVerdict struct {
@@ -347,7 +340,51 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 		return // a deleted workbench's leftover hook: nothing to say, no model call
 	}
 	rowID, inSession := askGuardSessionRow(stderr, in.SessionID)
-	if in.StopHookActive && !inSession {
+	decideAskGuardStop(ctx, stdout, stderr, cfg, in, at,
+		askGuardTarget{workbenchID: workbenchID, rowID: rowID, inSession: inSession, kind: agentkind.Claude})
+}
+
+// askGuardTarget is the session a Stop guard decides for: workbench
+// workbenchID, Desktop terminal row rowID of agent kind when inSession.
+type askGuardTarget struct {
+	workbenchID, rowID int64
+	inSession          bool
+	kind               agentkind.Kind
+}
+
+// runCodexAskGuardStop is `workbench ask-guard --agent codex --stop`:
+// runAskGuardStop on the Codex row the hook runs in, classifying the Codex
+// Stop's last_assistant_message with the same classifier and table (spec
+// 2026-10-12 §6.4). No row, no input or a broken config prints nothing.
+func runCodexAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.Writer) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", r)
+		}
+	}()
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	at := hookNow().Truncate(time.Millisecond)
+	row, in, ok := readCodexHook(stdin, stderr, "ask guard skipped", askGuardInputWait, sessionStateStdinLimit, openAskGuardDB)
+	if !ok {
+		return
+	}
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
+		return
+	}
+	decideAskGuardStop(ctx, stdout, stderr, cfg, in, at, askGuardTarget{
+		workbenchID: row.WorkbenchID.Int64, rowID: row.ID, inSession: in.SessionID != "", kind: agentkind.Codex,
+	})
+}
+
+// decideAskGuardStop is the Stop guard after its input: the model's verdict
+// on the final message, the session's resolution, decideStop, then the
+// record or clear and the block output.
+func decideAskGuardStop(ctx context.Context, stdout, stderr io.Writer, cfg *config.Config, in hookEvent, at time.Time,
+	target askGuardTarget) {
+	if in.StopHookActive && !target.inSession {
 		return // a continued turn with nothing to record or clear: no model call
 	}
 	empty := strings.TrimSpace(in.LastAssistantMessage) == ""
@@ -356,7 +393,7 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 		return
 	}
 
-	g := openAskGuardSession(stderr, cfg.DBPath(), workbenchID, in.SessionID, rowID, inSession)
+	g := openAskGuardSession(stderr, cfg.DBPath(), target, in.SessionID)
 	defer g.close()
 	r, gone := g.resolution(stderr, hookNow())
 	if gone {
@@ -376,7 +413,7 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 // askGuardVerdictFor classifies the Stop's message (nil verdict for an
 // empty one, which calls no model); false after a model failure, reported in
 // one stderr line.
-func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Config, in askGuardStopInput, empty bool) (*askGuardVerdict, bool) {
+func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Config, in hookEvent, empty bool) (*askGuardVerdict, bool) {
 	if empty {
 		return nil, true
 	}
@@ -404,9 +441,9 @@ func askGuardCancelled(ctx context.Context, stderr io.Writer) bool {
 // askGuardStopSetup reads the hook input (at most askGuardInputWait), the
 // workbench id and the config; false when any of them fails, which ends the
 // turn (a config failure is one stderr line; a bad input or id is silent).
-func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, rawID string) (askGuardStopInput, int64, *config.Config, bool) {
+func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, rawID string) (hookEvent, int64, *config.Config, bool) {
 	inCtx, cancel := context.WithTimeout(ctx, askGuardInputWait)
-	in, err := readHookInputLimit[askGuardStopInput](inCtx, stdin, sessionStateStdinLimit)
+	in, err := readHookEvent(inCtx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancel()
 	if err != nil {
 		return in, 0, nil, false
@@ -434,7 +471,9 @@ type askGuardSession struct {
 	readFailed         bool
 	rowID, workbenchID int64
 	claudeID           string
-	matched            bool
+	// kind is the agent the row must run (the hook's own).
+	kind    agentkind.Kind
+	matched bool
 }
 
 // askGuardWorkbenchGone reports whether workbench id certainly no longer
@@ -464,12 +503,12 @@ func askGuardSessionRow(stderr io.Writer, claudeID string) (int64, bool) {
 }
 
 // openAskGuardSession opens the database (never creating or migrating it,
-// reads under askGuardBusyTimeout) when the hook runs in Desktop terminal
-// row rowID (inSession), and checks the columns the guard needs by schema
+// reads under askGuardBusyTimeout) when the hook runs in target's Desktop
+// terminal row (inSession), and checks the columns the guard needs by schema
 // lookup. A failure is one stderr line and reads as absent.
-func openAskGuardSession(stderr io.Writer, dbPath string, workbenchID int64, claudeID string, rowID int64, inSession bool) *askGuardSession {
-	g := &askGuardSession{workbenchID: workbenchID, claudeID: claudeID, rowID: rowID}
-	if !inSession {
+func openAskGuardSession(stderr io.Writer, dbPath string, target askGuardTarget, claudeID string) *askGuardSession {
+	g := &askGuardSession{workbenchID: target.workbenchID, claudeID: claudeID, rowID: target.rowID, kind: target.kind}
+	if !target.inSession {
 		return g
 	}
 	database, err := db.OpenExistingRW(dbPath, askGuardBusyTimeout)
@@ -514,8 +553,8 @@ func (g *askGuardSession) close() {
 	}
 }
 
-// resolution resolves the session (a claude row of the workbench running
-// this conversation: the PROJ-11 nested-session rule), the core state hooks
+// resolution resolves the session (a row of the hook's agent kind in the
+// workbench running this conversation: the PROJ-11 nested-session rule), the core state hooks
 // and the presence at now. gone: the workbench no longer exists (a leftover
 // hook), so the guard has nothing to say. A read failure is one stderr line,
 // and the owner reads as away.
@@ -546,12 +585,12 @@ func (g *askGuardSession) resolve(now time.Time) (askGuardResolution, error) {
 	if err != nil {
 		return askGuardResolution{}, err
 	}
-	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != g.workbenchID || row.Kind != "claude" ||
+	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != g.workbenchID || row.Kind != string(g.kind) ||
 		row.ClaudeSessionID.String != g.claudeID {
 		return askGuardResolution{}, nil
 	}
 	g.matched = true
-	hooks, err := workbenchHasStateHooks(g.database, g.workbenchID)
+	hooks, err := g.hasStateHooks()
 	if err != nil {
 		return askGuardResolution{Matched: true}, err
 	}
@@ -560,6 +599,16 @@ func (g *askGuardSession) resolve(now time.Time) (askGuardResolution, error) {
 		return askGuardResolution{Matched: true}, err
 	}
 	return askGuardResolution{Matched: true, Recordable: hooks, Present: present}, nil
+}
+
+// hasStateHooks reports whether the session's folder has the core state
+// hooks: read from the folder for Claude Code; true by construction for
+// Codex, whose whole hook set arrives in one launch (spec 2026-10-12 §6.3).
+func (g *askGuardSession) hasStateHooks() (bool, error) {
+	if g.kind == agentkind.Codex {
+		return true, nil
+	}
+	return workbenchHasStateHooks(g.database, g.workbenchID)
 }
 
 // apply carries out d for the Stop of time at and returns the block reason

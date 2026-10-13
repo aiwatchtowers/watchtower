@@ -160,7 +160,8 @@ package enum WorkbenchBranchPresentation {
         let agent = result.needsConfirmation.contains(.agentRunning)
         var parts: [String] = []
         if agent {
-            parts.append("A Claude Code session is running in this folder — the agent's files will be swapped "
+            // Any agent session counts (Claude Code or Codex, board #399).
+            parts.append("An agent session is running in this folder — the agent's files will be swapped "
                           + "under it to the ones on \(result.branch).")
         }
         if dirty {
