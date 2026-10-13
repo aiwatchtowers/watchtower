@@ -113,6 +113,31 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayPhase(record.plainName), .done)
     }
 
+    /// The payload's id must name the record the envelope authenticated (target 148): a frame `action-X` whose
+    /// payload is `action-Y` is dropped, so it can neither claim, ledger nor echo Y.
+    func testAnActionWhosePayloadNamesAnotherRecordIsIgnored() async throws {
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied(["comment_id": .integer(1)])
+        }
+        let action = ActionRequestPayload(
+            id: "Y", kind: .boardCommentAdd, entityID: "7", params: [:], createdAt: Date(), deviceID: testPhoneID)
+        let plain = try CloudRecordFactory.record(for: action, modifiedAt: Date())
+        let record = try TestRelayPhone.seal(CloudRecord(
+            recordName: "action-X", zone: plain.zone, kind: plain.kind, modifiedAt: plain.modifiedAt,
+            payload: plain.payload))
+        try await transport.save([record])
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(calls, 0)
+        XCTAssertTrue(try echoes(of: record.recordName).isEmpty)
+        XCTAssertTrue(try echoes(of: try TestRelayPhone.wireName("action-Y")).isEmpty)
+        XCTAssertNil(try sidecar.relayPhase("action-X"))
+        XCTAssertNil(try sidecar.relayPhase("action-Y"))
+    }
+
     /// D9: a record sealed under a key the hub does not hold is dropped by the transport and reported; the
     /// processor never sees it, so nothing is echoed (the hub could not seal an answer) or ledgered. The
     /// sidecar even lists the stranger's id: the key decides, not the payload.

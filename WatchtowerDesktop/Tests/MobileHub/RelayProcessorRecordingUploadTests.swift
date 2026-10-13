@@ -430,6 +430,22 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
             "nothing was decrypted beside the stash")
     }
 
+    /// An upload whose payload names another record than its envelope is dropped (target 148).
+    func testAnUploadWhosePayloadNamesAnotherRecordIsIgnored() async throws {
+        let plain = try CloudRecordFactory.record(for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: nil)
+        let record = try TestRelayPhone.seal(CloudRecord(
+            recordName: "recupload-R1", zone: plain.zone, kind: plain.kind, modifiedAt: plain.modifiedAt,
+            payload: plain.payload))
+        try await transport.save([record])
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertTrue(try echoes(of: record.recordName).isEmpty)
+        XCTAssertNil(try sidecar.relayPhase("recupload-R1"))
+        XCTAssertNil(try sidecar.relayPhase("recupload-R2"))
+        XCTAssertTrue(enqueued.isEmpty)
+    }
+
     // MARK: - Missing asset
 
     func testMissingAssetFailsAndThePhoneKeepsItsFile() async throws {

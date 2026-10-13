@@ -106,7 +106,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit is 
   - that phone is in `devices`;
   - `LinkedDevice.accepts(creator:)` holds. The creator check stays as defense in depth (spec §5).
   
-  Otherwise the record fails `device_not_linked`, echoed to the authenticated sender. A sealed `device` record acts only for the phone whose key opened it (`device_id` equal to the sender), so one phone can never unlink or regrant another. A mismatch is dropped and logged, never echoed.
+  Otherwise the record fails `device_not_linked`, echoed to the authenticated sender. A sealed `device` record acts only for the phone whose key opened it (`device_id` equal to the sender), so one phone can never unlink or regrant another. A mismatch is dropped and logged, never echoed. Likewise an action or upload whose payload id does not give the record name the envelope authenticated (`action.recordName`/`upload.recordName` ≠ the frame's name) is dropped and logged before any ledger read, claim or echo (target 148): the ledger and the echo key on that name.
 
 ### Pairing with the code (E2E4, E2E13, E2E16)
 

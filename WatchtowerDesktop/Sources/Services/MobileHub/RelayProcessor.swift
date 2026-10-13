@@ -335,6 +335,12 @@ final class RelayProcessor: Sendable {
             logger.warning("undecodable action record \(record.recordName, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
+        // The ledger, the claim and the echo key on the payload's name: it must be the name the envelope
+        // authenticated, or one record could claim, answer or re-echo another.
+        guard action.recordName == record.recordName else {
+            logger.warning("action record \(record.recordName, privacy: .public) names another record: dropped")
+            return nil
+        }
         guard action.status == .pending || action.status == .received else { return nil }
         guard try sidecar.relayPhase(action.recordName) == .done else { return .apply(action) }
         guard try await phoneChanged(action.recordName, transport: transport, window: &window),
@@ -534,6 +540,11 @@ final class RelayProcessor: Sendable {
             upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
         } catch {
             logger.warning("undecodable recording upload \(record.recordName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        // Same binding as an action's: the ledger and the echo key on the authenticated name.
+        guard upload.recordName == record.recordName else {
+            logger.warning("recording upload \(record.recordName, privacy: .public) names another record: dropped")
             return nil
         }
         guard upload.status == .pending else { return nil }
