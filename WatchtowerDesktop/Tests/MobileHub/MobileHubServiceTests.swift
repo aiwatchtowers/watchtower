@@ -684,6 +684,218 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
     }
 
+    // MARK: - E2E hard cut (Task 15, spec §2.8, D13)
+
+    /// The real link center on `service`: the cut forgets the phones through it (`hubZonesDeleted`).
+    private func attachLinkCenter(to service: MobileHubService, keyring: HubKeyring) -> MobileLinkCenter {
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: keyring,
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: service)
+        return center
+    }
+
+    /// A hub already on the E2E build: group keys under the identity in `store` and the marker set.
+    private func migratedHub(store: InMemoryHubKeyStore) throws -> HubKeyring {
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        try keyring.ensureGroupKeys()
+        try sidecar.setMetaValue("1", forKey: HubIdentity.e2eMigrationKey)
+        return keyring
+    }
+
+    private func sliceStateRows() async throws -> Int {
+        try await sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM slice_state") ?? -1 }
+    }
+
+    /// The pre-E2E hub (a linked phone, a legacy hash, a plaintext staged file) meets the E2E build: its zones go
+    /// through the pending-delete path before the engine runs, the phones are forgotten, the hub starts on fresh
+    /// keys, and the marker makes it happen once.
+    func testFirstStartOnTheE2EBuildDeletesTheZonesForgetsPhonesAndSetsTheMarkerOnce() async throws {
+        try sidecar.setMetaValue(String(Date().timeIntervalSince1970), forKey: HubIdentity.enabledAtKey)
+        XCTAssertTrue(try sidecar.setHashes(["device_grant-x": "legacy"], ifGeneration: try sidecar.generation()))
+        let store = try stagedAssetStore()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        XCTAssertTrue(keyring.identityWasRecreated, "a new identity over pre-E2E phones")
+        let service = makeService(transport: transport, assets: store, keyring: keyring)
+        let center = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(Array(transport.lifecycle.prefix(2)), ["deleteZones", "start"], "the cut runs before the engine")
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty, "every phone re-pairs")
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertFalse(store.isStaged(recordName: "meeting_transcript-1", fileName: "segments.json"), "no plaintext stays")
+        XCTAssertFalse(keyring.identityWasRecreated)
+        XCTAssertEqual(try keyring.currentEpoch(), 1, "fresh group keys")
+        XCTAssertNoThrow(try keyring.metaKey())
+        let slices = try await sliceStateRows()
+        XCTAssertEqual(slices, 0, "no legacy hash survives")
+
+        service.stop()
+        await service.waitUntilStopped()
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1, "the cut runs once")
+        service.stop()
+    }
+
+    func testAFailedMigrationDeleteKeepsTheMarkerPendingAndRetriesNextStart() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeleteError(CKError(.networkUnavailable))
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+        _ = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(transport.starts, 0, "no engine on the pre-E2E zones")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "pending")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty, "nothing forgotten before the zones are gone")
+        XCTAssertThrowsError(try keyring.currentEpoch(), "nothing is sealed before the cut")
+
+        transport.setZoneDeleteError(nil)
+        await awaitHubCondition("the reprobe retries the cut and starts") { service.status == .running }
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try keyring.currentEpoch(), 1)
+        service.stop()
+    }
+
+    func testARecreatedIdentityTriggersTheSameCut() async throws {
+        _ = try migratedHub(store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        let recreated = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        XCTAssertTrue(recreated.identityWasRecreated)
+        let service = makeService(transport: transport, keyring: recreated)
+        _ = attachLinkCenter(to: service, keyring: recreated)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNoThrow(try recreated.metaKey(), "the new keys open under the new identity")
+        XCTAssertNoThrow(try recreated.epochKeys(try recreated.currentEpoch()))
+        service.stop()
+    }
+
+    func testAMigratedHubDoesNotCutAgain() async throws {
+        let store = InMemoryHubKeyStore()
+        let first = try migratedHub(store: store)
+        let meta = try first.metaKey()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        let service = makeService(transport: transport, keyring: keyring)
+        _ = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 0)
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty, "the phones stay")
+        XCTAssertEqual(try keyring.metaKey(), meta, "the keys stay")
+        service.stop()
+    }
+
+    /// Crash-resume: the app dies after the zones were deleted and the phones forgotten, before the marker was
+    /// written. The next start sees `pending` and runs the cut again (a missing zone counts as deleted).
+    func testACutKilledBeforeTheMarkerIsFinishedAtTheNextStart() async throws {
+        let store = InMemoryHubKeyStore()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        try sidecar.clearLinkState()
+        try keyring.resetGroupKeys()
+        try sidecar.setMetaValue("pending", forKey: HubIdentity.e2eMigrationKey)
+        let transport = StubHubTransport()
+        let restarted = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        XCTAssertFalse(restarted.identityWasRecreated)
+        let service = makeService(transport: transport, keyring: restarted)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertEqual(try restarted.currentEpoch(), 1)
+        service.stop()
+    }
+
+    /// Crash-resume: the delete went through but forgetting the phones failed (as if killed there). Both markers
+    /// stay, and the next start finishes the cut.
+    func testACutWhosePhonesWereNotForgottenIsRedoneAtTheNextStart() async throws {
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, keyring: keyring)
+        service.onZonesDeleted = { throw URLError(.cannotWriteToFile) }
+
+        await service.start()
+        XCTAssertEqual(service.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "pending")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        service.stop()
+        await service.waitUntilStopped()
+
+        _ = attachLinkCenter(to: service, keyring: keyring)
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertGreaterThanOrEqual(transport.zoneDeletes, 2, "the cut ran again")
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    /// The crash window between creating an identity and marking the cut: the marker says migrated, the flag is
+    /// gone with the relaunch, but the stored keys no longer open. They cannot be used, so the hub cuts.
+    func testKeysSealedUnderALostIdentityTriggerTheCut() async throws {
+        let survivor = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        try survivor.resetGroupKeys()
+        _ = try migratedHub(store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, keyring: survivor)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertNoThrow(try survivor.metaKey())
+        service.stop()
+    }
+
+    func testAFreshHubSetsTheMarkerWithoutACut() async throws {
+        sidecar = try HubSyncState.inMemoryPerHub()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 0, "a hub that never ran has no zones to cut")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    func testAHubWithoutKeysNeverCuts() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+
+        await service.start()
+
+        XCTAssertEqual(transport.zoneDeletes, 0, "nothing is published without keys")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey))
+        service.stop()
+    }
+
     /// Spec §2.2: the 90-day (or 2^28-message) rotation runs at the next relay cycle once due, exactly once.
     func testRotationRunsWhenDueAtCycleStart() async throws {
         let transport = StubHubTransport()

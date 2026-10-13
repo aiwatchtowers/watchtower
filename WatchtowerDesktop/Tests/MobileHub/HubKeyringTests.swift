@@ -492,6 +492,61 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try keyring(withEpochs, store: InMemoryHubKeyStore()).identityWasRecreated)
     }
 
+    /// Task 15: a crash between the three Keychain adds leaves a partial identity. It is deleted and recreated
+    /// (never `.corrupt` on every launch); with a pairing in the sidecar that is a recreated identity (the hard cut).
+    func testAPartialIdentityIsDeletedAndRecreated() throws {
+        let backend = InMemoryKeychainBackend()
+        _ = try backend.add(
+            Data(repeating: 1, count: 32), account: "hubid.\(hubID).sig", access: .afterFirstUnlock, group: nil,
+            dataProtection: true)
+        let sidecar = try HubSyncState.inMemory()
+        try linkPhone(sidecar, identity: newIdentity())
+
+        let ring = try keyring(sidecar, store: KeychainHubKeyStore(backend: backend))
+
+        XCTAssertTrue(ring.identityWasRecreated, "the old pairing cannot be used")
+        let again = try keyring(sidecar, store: KeychainHubKeyStore(backend: backend))
+        XCTAssertFalse(again.identityWasRecreated, "the recreated identity is whole")
+        XCTAssertEqual(again.signingPublicKey.rawRepresentation, ring.signingPublicKey.rawRepresentation)
+    }
+
+    func testAnUnparseableIdentityWithoutAPairingIsRecreatedQuietly() throws {
+        let backend = InMemoryKeychainBackend()
+        for (suffix, size) in [("sig", 32), ("kx", 32), ("wrap", 5)] {
+            _ = try backend.add(
+                Data(repeating: 2, count: size), account: "hubid.\(hubID).\(suffix)", access: .afterFirstUnlock,
+                group: nil, dataProtection: true)
+        }
+        let ring = try keyring(try HubSyncState.inMemory(), store: KeychainHubKeyStore(backend: backend))
+        XCTAssertFalse(ring.identityWasRecreated, "nothing was paired under the damaged identity")
+        try ring.ensureGroupKeys()
+        XCTAssertNoThrow(try ring.metaKey())
+    }
+
+    /// The flag holds until the old pairing is gone: `resetGroupKeys` (the cut's forget) clears it, so a second
+    /// start in the same run does not cut again.
+    func testResettingTheGroupKeysClearsTheRecreatedFlag() throws {
+        let sidecar = try HubSyncState.inMemory()
+        try linkPhone(sidecar, identity: newIdentity())
+        let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
+        XCTAssertTrue(ring.identityWasRecreated)
+        try ring.resetGroupKeys()
+        XCTAssertFalse(ring.identityWasRecreated)
+    }
+
+    /// The probe behind the cut's crash window: group keys sealed under another identity do not open.
+    func testStoredGroupKeysUnreadableUnderAnotherIdentity() throws {
+        let sidecar = try HubSyncState.inMemory()
+        let later = try keyring(sidecar, store: InMemoryHubKeyStore())
+        XCTAssertFalse(try later.storedGroupKeysUnreadable(), "no keys stored yet")
+        let first = try keyring(sidecar, store: InMemoryHubKeyStore())
+        try first.ensureGroupKeys()
+        XCTAssertFalse(try first.storedGroupKeysUnreadable())
+        XCTAssertTrue(try later.storedGroupKeysUnreadable())
+        try later.resetGroupKeys()
+        XCTAssertFalse(try later.storedGroupKeysUnreadable())
+    }
+
     func testALockedKeychainPropagatesFromInit() throws {
         let backend = InMemoryKeychainBackend()
         backend.isBeforeFirstUnlock = true

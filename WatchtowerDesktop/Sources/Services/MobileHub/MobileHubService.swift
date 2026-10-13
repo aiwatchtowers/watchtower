@@ -299,6 +299,14 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        do {
+            try markE2ECutIfDue()
+        } catch {
+            logger.error("E2E cut check failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
         let zonesSettled = await finishPendingZoneDelete()
         guard status == .starting, epoch == startEpoch else { return }
         guard zonesSettled else {
@@ -315,7 +323,9 @@ final class MobileHubService {
             return
         }
         do {
-            // Before anything seals: K_meta and the first epoch (idempotent; Task 15 handles a recreated identity).
+            // The zones are gone: the cut, if one ran, is done. Then, before anything seals: K_meta and the first
+            // epoch (idempotent).
+            try finishE2ECut()
             try keyring?.ensureGroupKeys()
         } catch {
             logger.error("hub group keys unavailable: \(String(describing: error), privacy: .public)")
@@ -567,6 +577,46 @@ final class MobileHubService {
             logger.error("zones deleted: phones or sync state not cleared: \(error.localizedDescription, privacy: .public)")
             return false
         }
+    }
+
+    /// The E2E hard cut (spec §2.8, D13): a hub that published before the E2E build (or whose pairing a recreated
+    /// identity voided) deletes its two zones once, through the pending zone delete that `finishPendingZoneDelete`
+    /// runs next, which forgets the phones (`onZonesDeleted`, keys included) and wipes the sync state. Due when the
+    /// marker is absent on a hub that ran before, `pending` (a cut a failure, a timeout or a crash interrupted),
+    /// or `1` with a recreated identity or stored keys that no longer open. A hub that never ran, or one without
+    /// keys (nothing is published), cuts nothing.
+    private func markE2ECutIfDue() throws {
+        guard let keyring else { return }
+        switch try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) {
+        case HubIdentity.e2eCutDone?:
+            if keyring.identityWasRecreated {
+                logger.notice("E2E cut due: the hub identity was recreated")
+            } else if try keyring.storedGroupKeysUnreadable() {
+                logger.error("E2E cut due: the stored hub keys do not open under this identity; phones must re-pair")
+            } else {
+                return
+            }
+        case nil:
+            guard try keyring.identityWasRecreated || sidecar.ranBeforeE2E() else {
+                try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+                return
+            }
+            logger.notice("E2E cut due: first start on the E2E build; linked phones re-pair once")
+        default:
+            logger.notice("E2E cut due: finishing an interrupted cut")
+        }
+        try sidecar.markE2ECutPending()
+    }
+
+    /// After the cut's zone delete settled: the pre-E2E staged files (plaintext, no `.desc`) go, the group keys are
+    /// fresh even without a link center, and only then is the marker `1`. A crash before it reruns the cut.
+    private func finishE2ECut() throws {
+        guard let keyring,
+              try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) == HubIdentity.e2eCutPending else { return }
+        publisher.removeStagedAssets()
+        try keyring.resetGroupKeys()
+        try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+        logger.notice("E2E cut done: this Mac's zones start empty on fresh keys")
     }
 
     /// First start on the per-hub build: the transport store, bound to no

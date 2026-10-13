@@ -20,6 +20,12 @@ struct HubIdentity: Sendable {
     /// timed out, or the sync state wipe after it failed): the next start
     /// deletes again before the engine runs (multi-hub spec §3.3).
     static let zonesDeletePendingKey = "hub_zones_delete_pending"
+    /// The E2E hard cut (mobile E2E spec §2.8, D13): `1` once this hub deleted its pre-E2E zones, forgot its phones
+    /// and started on fresh keys; `pending` while that cut is under way (it rides `zonesDeletePendingKey`, so a
+    /// failure, a timeout or a crash leaves the next start to finish it).
+    static let e2eMigrationKey = "e2e_v1"
+    static let e2eCutDone = "1"
+    static let e2eCutPending = "pending"
 
     let sidecar: HubSyncState
 

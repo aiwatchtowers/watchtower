@@ -56,8 +56,10 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
 
     let role: SecureRole
     /// True when the Keychain identity was created now while the sidecar already had linked phones or epochs:
-    /// the old pairing is unusable, so the hub must delete its zones and forget phones (Task 15 acts on it).
-    let identityWasRecreated: Bool
+    /// the old pairing is unusable, so the hub must delete its zones and forget phones (the hard cut,
+    /// `MobileHubService.start()`). Holds until `resetGroupKeys` forgets that pairing, so a later start in the same
+    /// run does not cut again.
+    var identityWasRecreated: Bool { lock.withLock { recreatedPairingPending } }
 
     private let hubUUID: UUID
     private let identity: HubIdentityKeys
@@ -66,6 +68,7 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     private let seq: SeqAllocator
     private let lock = NSLock()
     private var relayMaterial: [UUID: RelayMaterial] = [:]
+    private var recreatedPairingPending: Bool
 
     /// One phone's relay inputs, checked once (the public key parses, ECDH succeeds, the nonce decodes), and the
     /// keys derived from them so far.
@@ -82,18 +85,45 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     ) throws {
         let hubUUID = try WireBytes.hubUUID(hubID)
         let hadPairing = try sidecar.hasPairingState()
-        let loaded = try store.hubIdentity(hubID: hubID)
+        // Sealed under the identity, so lost for good if it is recreated; a pre-E2E sidecar has phones but none of these.
+        let hadGroupKeys = try !sidecar.latestEpochs().isEmpty || sidecar.metaValue(forKey: Self.metaKeySealedKey) != nil
+        let loaded = try Self.loadIdentity(hubID: hubID, store: store, hadPairing: hadPairing)
         self.hubUUID = hubUUID
         self.identity = loaded.keys
         self.sidecar = sidecar
         self.now = now
         self.role = .hub(hubID: hubUUID)
-        self.identityWasRecreated = loaded.created && hadPairing
+        self.recreatedPairingPending = loaded.created && hadPairing
         self.seq = SeqAllocator(
             load: { [sidecar] in try Self.seqCeiling(sidecar.metaValue(forKey: Self.seqCeilingKey)) },
             store: { [sidecar] in try sidecar.setMetaValue(String($0), forKey: Self.seqCeilingKey) })
-        if identityWasRecreated {
-            Self.logger.error("hub identity was recreated while the sidecar held a pairing: phones must re-pair")
+        if loaded.created && hadGroupKeys {
+            Self.logger.error("hub identity was recreated while the sidecar held sealed keys: phones must re-pair")
+        } else if loaded.created && hadPairing {
+            // The first E2E start of a hub with pre-E2E phones: the expected hard cut, not a loss.
+            Self.logger.notice("hub identity created over pre-E2E phones: they re-pair once")
+        }
+    }
+
+    /// The store's identity, created when none exists. A damaged one (`KeyStoreError.corrupt`: a crash between the
+    /// three Keychain adds, or an item that does not parse) can never open the sealed keys or match what phones
+    /// pinned, and would otherwise fail every launch: it is deleted and recreated, logged once (the next launch
+    /// loads it whole), and the caller treats it as created. One hub process owns the identity (one keyring per
+    /// sidecar, the store serializes creation), so the concurrent-creation `.corrupt` cannot be another live creator.
+    private static func loadIdentity(
+        hubID: String, store: any HubKeyStore, hadPairing: Bool
+    ) throws -> (keys: HubIdentityKeys, created: Bool) {
+        do {
+            return try store.hubIdentity(hubID: hubID)
+        } catch KeyStoreError.corrupt(let reason) {
+            if hadPairing {
+                logger.error("hub identity damaged (\(reason, privacy: .public)): recreated, phones must re-pair")
+            } else {
+                logger.notice("hub identity damaged (\(reason, privacy: .public)): recreated, nothing was paired")
+            }
+            try store.deleteHubIdentity(hubID: hubID)
+            let fresh = try store.hubIdentity(hubID: hubID)
+            return (fresh.keys, true)
         }
     }
 
@@ -101,6 +131,20 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     var agreementPublicKey: Curve25519.KeyAgreement.PublicKey { identity.agreement.publicKey }
 
     // MARK: - Group keys
+
+    /// True when a stored `K_meta` or current epoch does not open under this identity: keys sealed by an identity
+    /// that is gone (recreated in an earlier launch that died before the hard cut was marked). False when none is
+    /// stored. A sidecar read failure throws.
+    func storedGroupKeysUnreadable() throws -> Bool {
+        do {
+            if try sidecar.metaValue(forKey: Self.metaKeySealedKey) != nil { _ = try metaKey() }
+            if let current = try sidecar.latestEpochs().last { _ = try epochKeys(current.epoch) }
+            return false
+        } catch HubKeyringError.sealedKeyUnreadable {
+            // The expected failure this probe looks for; the caller cuts.
+            return true
+        }
+    }
 
     /// Creates K_meta and epoch 1 when none exists (idempotent).
     func ensureGroupKeys() throws {
@@ -116,13 +160,17 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     }
 
     /// Clears K_meta and every epoch (hub turned off / zones deleted): the next pairing starts fresh. The seq
-    /// ceiling stays, so seqs never repeat. The cached relay keys go too.
+    /// ceiling stays, so seqs never repeat. The cached relay keys go too, and `identityWasRecreated` clears: the old
+    /// pairing it reported is gone.
     func resetGroupKeys() throws {
         try sidecar.writeKeys { db in
             try db.execute(sql: "DELETE FROM hub_epochs")
             try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [Self.metaKeySealedKey])
         }
-        lock.withLock { relayMaterial = [:] }
+        lock.withLock {
+            relayMaterial = [:]
+            recreatedPairingPending = false
+        }
     }
 
     /// Rotates to a new epoch (spec §2.2, Task 14): fresh `K_data`/`K_alert`, sealed here, committed with the

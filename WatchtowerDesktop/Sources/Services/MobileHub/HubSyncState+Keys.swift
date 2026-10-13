@@ -96,6 +96,25 @@ extension HubSyncState {
         }
     }
 
+    /// True when a hub ran on this sidecar before the E2E build could have: it was enabled (its heartbeat went out,
+    /// so its zones and records exist) or a phone is linked. A sidecar with neither has nothing to cut.
+    func ranBeforeE2E() throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS (SELECT 1 FROM devices) OR EXISTS (SELECT 1 FROM hub_meta WHERE key = ?)
+                """, arguments: [HubIdentity.enabledAtKey]) ?? false
+        }
+    }
+
+    /// The E2E hard cut is due (D13): it rides the pending zone delete, both markers in one transaction, so a crash
+    /// never leaves one without the other.
+    func markE2ECutPending() throws {
+        try writeKeys { db in
+            try Self.setMetaValue("1", HubIdentity.zonesDeletePendingKey, db)
+            try Self.setMetaValue(HubIdentity.e2eCutPending, HubIdentity.e2eMigrationKey, db)
+        }
+    }
+
     static func metaValue(_ key: String, _ db: Database) throws -> String? {
         try String.fetchOne(db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [key])
     }
