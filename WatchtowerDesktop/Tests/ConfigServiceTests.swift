@@ -405,6 +405,53 @@ struct ConfigServiceTests {
         #expect(ConfigService(configPath: path).gmailEnabled == false)
     }
 
+    /// #740: the Calendar tab reads the switch through `calendarSyncReadsOff`.
+    /// A config.yaml that is present but not a YAML mapping is unknown, never
+    /// "off" — or the tab would offer to fix a switch it cannot read.
+    @Test("A present but undecodable config reads the switch as unknown")
+    func undecodableConfigSwitchIsUnknown() throws {
+        let notMapping = ConfigService(configPath: makeTempConfig("- just\n- a list\n"))
+        #expect(notMapping.parseError != nil)
+        #expect(notMapping.calendarSyncReadsOff == false)
+
+        let badSyntax = ConfigService(configPath: makeTempConfig("calendar: [unclosed\n"))
+        #expect(badSyntax.calendarSyncReadsOff == false)
+
+        let path = makeTempConfig("")
+        try Data([0xFF, 0xFE, 0x00]).write(to: URL(fileURLWithPath: path))
+        #expect(ConfigService(configPath: path).calendarSyncReadsOff == false)
+    }
+
+    /// Degenerate: an empty file is a fresh install, not a broken one.
+    @Test("An empty config reads the switch as off, without an error")
+    func emptyConfigSwitchIsOff() {
+        let svc = ConfigService(configPath: makeTempConfig(""))
+        #expect(svc.parseError == nil)
+        #expect(svc.calendarSyncReadsOff == true)
+    }
+
+    @Test("Turn on calendar sync writes the switch and keeps other keys")
+    func turnOnCalendarSyncWritesSwitch() throws {
+        let path = makeTempConfig("active_workspace: acme\ncalendar:\n  enabled: false\n")
+        try ConfigService(configPath: path).turnOnCalendarSync()
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.calendarSyncReadsOff == false)
+        #expect(reloaded.calendarEnabled == true)
+        #expect(reloaded.activeWorkspace == "acme")
+    }
+
+    /// Saving over an unreadable file would fall back to the last good
+    /// snapshot and drop every section the Desktop does not own.
+    @Test("Turn on calendar sync refuses an unreadable config and leaves it untouched")
+    func turnOnCalendarSyncRefusesUnreadableConfig() throws {
+        let body = "calendar: [unclosed\njira:\n  token: keep\n"
+        let path = makeTempConfig(body)
+        #expect(throws: ConfigUnreadableError.self) {
+            try ConfigService(configPath: path).turnOnCalendarSync()
+        }
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == body)
+    }
+
     @Test("Load parses jira features")
     func loadJiraFeatures() {
         let path = makeTempConfig("""

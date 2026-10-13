@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"testing"
@@ -161,4 +164,55 @@ func TestRecordGoogleConnection_SwitchWriteFailureWarnsButSucceeds(t *testing.T)
 	acct, err := database.GetGoogleAccount(id)
 	require.NoError(t, err)
 	assert.True(t, acct.CalendarEnabled, "the connection is recorded regardless")
+}
+
+// TestConnectGoogleAccount_RecordsTheGrantedFlags pins the one call that
+// makes #740's fix reach every connect surface: connectGoogleAccount hands
+// recordGoogleConnection the GRANTED flags (calEnabled/gmEnabled, from the
+// token), not the requested ones. Pinned statically because the OAuth flow
+// before it has no seam.
+func TestConnectGoogleAccount_RecordsTheGrantedFlags(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "google.go", nil, 0)
+	require.NoError(t, err)
+
+	var connect *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "connectGoogleAccount" {
+			connect = fd
+		}
+	}
+	require.NotNil(t, connect, "connectGoogleAccount not found in google.go")
+
+	var fields map[string]string
+	ast.Inspect(connect.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); !ok || ident.Name != "recordGoogleConnection" {
+			return true
+		}
+		for _, arg := range call.Args {
+			lit, ok := arg.(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			fields = map[string]string{}
+			for _, elt := range lit.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, _ := kv.Key.(*ast.Ident)
+				val, _ := kv.Value.(*ast.Ident)
+				if key != nil && val != nil {
+					fields[key.Name] = val.Name
+				}
+			}
+		}
+		return false
+	})
+	require.NotNil(t, fields, "connectGoogleAccount must call recordGoogleConnection with a googleConnectResult literal")
+	assert.Equal(t, "calEnabled", fields["calEnabled"], "the granted calendar flag, never wantCalendar")
+	assert.Equal(t, "gmEnabled", fields["gmEnabled"], "the granted Gmail flag, never wantGmail")
 }

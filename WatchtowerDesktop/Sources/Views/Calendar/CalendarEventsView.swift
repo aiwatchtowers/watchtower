@@ -89,17 +89,19 @@ struct CalendarEventsView: View {
             let (accounts, counts) = try await db.dbPool.read { conn in
                 (try GoogleAccountQueries.fetchAll(conn), try CalendarQueries.calendarCountsBySource(conn))
             }
-            let config = ConfigService()
-            syncHealth = CalendarSyncHealth.evaluate(
+            let health = CalendarSyncHealth.evaluate(
                 accounts: accounts,
                 hasCalDAVSource: appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false,
                 // An unreadable config.yaml says nothing about the switch —
                 // never diagnose (and offer to "fix") a switch we cannot read.
-                syncSwitchOn: config.parseError == nil ? config.calendarEnabled : true,
+                syncSwitchOn: !ConfigService().calendarSyncReadsOff,
                 googleCalendarCount: counts.google,
                 calDAVCalendarCount: counts.calDAV,
-                daemonRunning: DaemonManager.checkDaemonRunning()
+                daemonRunning: DaemonManager.checkActiveWorkspaceDaemonRunning()
             )
+            // An action's error belongs to the state it was raised in.
+            if health != syncHealth { syncHealthError = nil }
+            syncHealth = health
             syncHealthReadFailed = false
         } catch {
             // Keep the last known state; log once per failure streak, not
@@ -115,14 +117,8 @@ struct CalendarEventsView: View {
     /// itself: write `calendar.enabled`, then restart the daemon so it wires
     /// the calendar syncer and syncs it right at startup.
     private func turnOnCalendarSync() async {
-        let config = ConfigService()
-        if let parseError = config.parseError {
-            syncHealthError = "config.yaml can't be read (\(parseError)) — fix the file, then try again."
-            return
-        }
-        config.calendarEnabled = true
         do {
-            try config.save()
+            try ConfigService().turnOnCalendarSync()
         } catch {
             syncHealthError = "Couldn't turn calendar sync on: \(error.localizedDescription)"
             return

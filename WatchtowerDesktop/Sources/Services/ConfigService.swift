@@ -87,14 +87,33 @@ final class ConfigService {
         reload()
     }
 
-    func reload() {
-        guard let data = FileManager.default.contents(atPath: configPath),
-              let str = String(data: data, encoding: .utf8) else {
-            return
+    /// The config file's text, or nil when there is nothing to load. A
+    /// missing file keeps the defaults; one that is present but unreadable is
+    /// a third state, recorded in `parseError` (#740).
+    private func readConfigText() -> String? {
+        guard let data = FileManager.default.contents(atPath: configPath) else {
+            if FileManager.default.fileExists(atPath: configPath) {
+                parseError = "config.yaml can't be read"
+            }
+            return nil
         }
+        guard let str = String(data: data, encoding: .utf8) else {
+            parseError = "config.yaml is not UTF-8 text"
+            return nil
+        }
+        return str
+    }
+
+    func reload() {
+        guard let str = readConfigText() else { return }
 
         do {
-            guard let yaml = try Yams.load(yaml: str) as? [String: Any] else { return }
+            guard let yaml = try Yams.load(yaml: str) as? [String: Any] else {
+                if !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    parseError = "config.yaml is not a YAML mapping"
+                }
+                return
+            }
             rawYAML = yaml
 
             activeWorkspace = yaml["active_workspace"] as? String
@@ -174,6 +193,21 @@ final class ConfigService {
         } catch {
             parseError = error.localizedDescription
         }
+    }
+
+    /// `calendar.enabled` is known to be off. False when config.yaml is
+    /// present but unreadable — then the switch is unknown, never "off".
+    var calendarSyncReadsOff: Bool {
+        parseError == nil && !calendarEnabled
+    }
+
+    /// Turns `calendar.enabled` on and saves. Refuses over an unreadable
+    /// config.yaml: `save()` would fall back to the last good snapshot and
+    /// drop every section it does not own.
+    func turnOnCalendarSync() throws {
+        if let parseError { throw ConfigUnreadableError(reason: parseError) }
+        calendarEnabled = true
+        try save()
     }
 
     /// Writes the ai: block (provider, legacy model, per-tier models, ollama
@@ -341,4 +375,10 @@ final class ConfigService {
         let url = URL(fileURLWithPath: configPath)
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
+}
+
+/// config.yaml is present but cannot be read or parsed.
+struct ConfigUnreadableError: LocalizedError {
+    let reason: String
+    var errorDescription: String? { "config.yaml can't be read (\(reason)) — fix the file, then try again." }
 }

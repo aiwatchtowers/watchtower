@@ -228,6 +228,12 @@ package final class DaemonManager {
         isDaemonRunning()
     }
 
+    /// Whether the active workspace's own daemon runs — not just any
+    /// workspace's (see `activeWorkspaceDaemonPID()`).
+    package nonisolated static func checkActiveWorkspaceDaemonRunning() -> Bool {
+        activeWorkspaceDaemonPID() != nil
+    }
+
     /// Restart the detached daemon. Source syncers (Calendar, Gmail, Jira) are
     /// wired only at daemon startup, and the daemon runs an immediate sync +
     /// pipeline cycle on start — so a restart right after connecting a source

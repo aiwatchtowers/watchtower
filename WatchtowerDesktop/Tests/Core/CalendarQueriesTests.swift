@@ -81,6 +81,9 @@ final class CalendarQueriesCountsBySourceTests: XCTestCase {
             try TestDatabase.ensureCalendar(db, id: "work-cal", accountID: accountID)
             try TestDatabase.ensureCalendar(db, id: "caldav:personal", accountID: nil)
             try TestDatabase.ensureCalendar(db, id: "ics:holidays", accountID: nil)
+            // A removed Google account's calendar kept for its recordings is
+            // detached to a NULL account_id; it is neither kind.
+            try TestDatabase.ensureCalendar(db, id: "kept-for-recordings", accountID: nil)
         }
         let counts = try db.read { try CalendarQueries.calendarCountsBySource($0) }
         XCTAssertEqual(counts.google, 1)
