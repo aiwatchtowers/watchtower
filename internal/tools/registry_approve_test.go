@@ -223,3 +223,51 @@ func TestApprove_EditRaceIsRefused(t *testing.T) {
 	assert.Equal(t, "pending", row.Status)
 	assert.JSONEq(t, `{"text":"other","reason":"r"}`, row.ArgsJSON)
 }
+
+// AGENT-07 (owner decision 2026-10-14, ask #106): an approval is bound to the
+// args the approver was shown. A digest that does not match the stored args
+// is refused, and even without one the approval lands only on the args the
+// call read — a no-patch approve never approves args rewritten in between.
+func TestAgent07_ApproveBindsToTheArgsTheOwnerSaw(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	var executed []Call
+	reg := New(d)
+	tool := editableEchoTool(t, &executed)
+	rewrite := ""
+	inner := tool.Ready
+	tool.Ready = func(args json.RawMessage) error {
+		if rewrite != "" {
+			// Another writer changes the row between Approve's read and its update.
+			_, err := d.Exec(`UPDATE agent_actions SET args_json = ? WHERE tool = 'echo' AND status = 'pending'`, rewrite)
+			require.NoError(t, err)
+		}
+		return inner(args)
+	}
+	require.NoError(t, reg.Register(tool))
+	shown := `{"text":"shown","reason":"r"}`
+	id := proposeEcho(t, reg, shown)
+
+	// The args changed after the card rendered them: the shown digest no longer matches.
+	_, err := d.Exec(`UPDATE agent_actions SET args_json = '{"text":"swapped","reason":"r"}' WHERE id = ?`, id)
+	require.NoError(t, err)
+	_, err = reg.ApproveSeen(ctx, id, nil, ArgsSHA256(shown))
+	require.ErrorIs(t, err, ErrBadTransition)
+	row, _ := d.GetAgentAction(id)
+	assert.Equal(t, "pending", row.Status, "a refused approve leaves the row pending")
+
+	// A no-patch approve whose read is overtaken by a rewrite is refused too.
+	rewrite = `{"text":"late","reason":"r"}`
+	_, err = reg.ApproveSeen(ctx, id, nil, "")
+	require.ErrorIs(t, err, ErrBadTransition)
+	row, _ = d.GetAgentAction(id)
+	assert.Equal(t, "pending", row.Status)
+	assert.JSONEq(t, rewrite, row.ArgsJSON)
+
+	// The digest of what is stored now approves, case-insensitively.
+	rewrite = ""
+	ok, err := reg.ApproveSeen(ctx, id, nil, strings.ToUpper(ArgsSHA256(row.ArgsJSON)))
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Empty(t, executed, "Approve only decides")
+}
