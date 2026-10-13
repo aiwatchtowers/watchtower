@@ -7,11 +7,11 @@ import WatchtowerCore
 import WatchtowerSync
 import WatchtowerTestSupport
 
-/// The hub's fast lane (mobile POC spec §4.5): the session state center's
-/// changes and the Desktop's own table writes nudge the publisher; asks go
-/// out within one coalescing window plus one send, every other kind rides
-/// the 30 s full tick (board #724, owner decision Q3); the center's
-/// existing closures keep firing (PROJ-12 wiring).
+/// The hub's change triggers (mobile POC spec §4.5): the Desktop's own ask
+/// writes nudge the publisher's fast lane; session state changes drive the
+/// git, summary and report runners and reach the phone on the 30 s full
+/// tick (board #724, owner decision Q3); the center's existing closures
+/// keep firing (PROJ-12 wiring).
 @MainActor
 final class FastLaneTests: XCTestCase {
     private var pool: DatabasePool!
@@ -68,12 +68,13 @@ final class FastLaneTests: XCTestCase {
     private func makeLane(
         _ center: SessionAgentStateCenter?,
         liveness: SessionLivenessBox = SessionLivenessBox(),
+        sessionStatesChanged: @escaping () -> Void = {},
         nudge: @escaping @Sendable (Set<SliceKind>) -> Void,
         sessionStateChanged: @escaping (Int64) -> Void = { _ in }
     ) -> FastLane {
         let lane = FastLane(
             dbPool: pool, agentStates: center, terminalCenter: terminals, liveness: liveness,
-            nudge: nudge, sessionStateChanged: sessionStateChanged
+            nudge: nudge, sessionStateChanged: sessionStateChanged, sessionStatesChanged: sessionStatesChanged
         )
         lanes.append(lane)
         return lane
@@ -235,8 +236,7 @@ final class FastLaneTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state.kind, .background)
 
-        XCTAssertTrue(log.nudges.contains { $0.contains(.terminalSession) }, "the state change nudged its kind")
-        XCTAssertFalse(log.nudges.contains { $0.contains(.askAlert) }, "a session state never nudges an alert")
+        XCTAssertEqual(log.nudges, [], "a session state nudges nothing; it rides the full tick")
         try await publisher.publishOnce(kinds: [.terminalSession, .askAlert])
         let record = SliceKind.terminalSession.recordName(id: String(row.id))
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
@@ -265,7 +265,7 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(changed, [bench.project], "an unchanged read asks for nothing")
     }
 
-    func testStartCopiesTheLivenessAndNudgesTheSessionKinds() async throws {
+    func testStartCopiesTheLivenessAndNudgesNothing() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)
         let center = makeCenter()
@@ -276,7 +276,7 @@ final class FastLaneTests: XCTestCase {
         lane.start()
         XCTAssertEqual(liveness.current.liveIDs, [row.id])
         XCTAssertEqual(liveness.current.startedAt[row.id], started)
-        XCTAssertEqual(log.nudges.first, [.terminalSession, .workbench])
+        XCTAssertEqual(log.nudges, [], "the session kinds ride the full tick")
     }
 
     // MARK: - Closure chaining
@@ -289,15 +289,14 @@ final class FastLaneTests: XCTestCase {
         var reads = 0
         center.onChange = { changes += 1 }
         center.onRead = { reads += 1 }
-        let log = NudgeLog()
-        let lane = makeLane(center) { log.record($0) }
+        var laneSaw = 0
+        let lane = makeLane(center, sessionStatesChanged: { laneSaw += 1 }, nudge: { _ in })
         lane.start()
-        let atStart = log.nudges.count
 
         await center.poll()
         XCTAssertEqual(changes, 1, "the existing onChange fires")
         XCTAssertEqual(reads, 1, "the existing onRead fires")
-        XCTAssertEqual(log.nudges.count, atStart + 1, "and the fast lane nudges")
+        XCTAssertEqual(laneSaw, 1, "and the lane sees the change")
 
         lane.stop()
         terminals.start(row, fresh: true)
@@ -305,7 +304,7 @@ final class FastLaneTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(changes, 2)
         XCTAssertEqual(reads, 2)
-        XCTAssertEqual(log.nudges.count, atStart + 1, "a stopped lane is unhooked")
+        XCTAssertEqual(laneSaw, 1, "a stopped lane is unhooked")
     }
 
     /// The PROJ-12 held-answer wiring `WorkbenchesViewModel` sets on the
@@ -319,8 +318,8 @@ final class FastLaneTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: bench.project, sessionID: row.id, payload: questions)
         }
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults, terminalCenter: terminals, agentStates: center)
-        let log = NudgeLog()
-        let lane = makeLane(center) { log.record($0) }
+        var laneSaw = 0
+        let lane = makeLane(center, sessionStatesChanged: { laneSaw += 1 }, nudge: { _ in })
         lane.start()
         terminals.start(row, fresh: true)
         let process = try XCTUnwrap(processes.last)
@@ -333,39 +332,36 @@ final class FastLaneTests: XCTestCase {
         let delivery = await vm.asks.answer(ask)
         XCTAssertEqual(delivery, .held)
 
-        let before = log.nudges.count
+        let before = laneSaw
         try hookWrites([row.id], "working", at: 2)
         await center.poll()
         await awaitHubCondition("the held line goes") { process.inputs.count == 2 }
         XCTAssertEqual(process.inputs.last, [0x0D])
-        XCTAssertGreaterThan(log.nudges.count, before, "the fast lane nudged too")
+        XCTAssertGreaterThan(laneSaw, before, "the lane saw the change too")
     }
 
     // MARK: - Table observation
 
-    func testTheDesktopsOwnTableWritesNudgeTheirKinds() async throws {
+    /// Only the asks are observed: every other table's writes publish on
+    /// the full tick, which a nudge could not bring forward.
+    func testTheDesktopsOwnAskWritesNudgeTheAskKinds() async throws {
+        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks"])
+        XCTAssertTrue(
+            FastLane.observedTables.allSatisfy { $0.kinds.isSubset(of: SlicePublisher.urgentKinds) },
+            "an observation nudges only kinds the fast lane keeps"
+        )
         let bench = try await workbench()
         let log = NudgeLog()
         let lane = makeLane(nil) { log.record($0) }
         lane.start()
         await awaitHubCondition("every table is observed") { lane.observedTables == FastLane.observedTables.count }
-        let baseline = log.nudges.count
 
-        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: bench.project) }
-        await awaitHubCondition("a target write nudges") { log.nudges.dropFirst(baseline).contains { $0.contains(.workbenchTarget) } }
         _ = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: bench.project) }
         await awaitHubCondition("an ask write nudges") { log.nudges.contains { $0.contains(.ownerAsk) } }
         XCTAssertTrue(
             log.nudges.contains { $0.isSuperset(of: [.ownerAsk, .askAlert]) },
             "a new or closed ask nudges its alert with it"
         )
-        _ = try await pool.write { try TestDatabase.insertWorkbenchComment($0, projectID: bench.project, targetID: target) }
-        await awaitHubCondition("a comment write nudges") { log.nudges.contains { $0.contains(.workbenchComment) } }
-        let beforeSession = log.nudges.count
-        _ = try await session(in: bench)
-        await awaitHubCondition("a session write nudges") {
-            log.nudges.dropFirst(beforeSession).contains { $0.contains(.terminalSession) }
-        }
 
         lane.stop()
         XCTAssertEqual(lane.observedTables, 0)
