@@ -31,6 +31,19 @@ package struct SessionPanelSections: Equatable, Sendable {
     package let pinned: SessionSwitcherPresentation.Row?
     /// Whether the group is open (the remembered fold).
     package let expanded: Bool
+    /// Every group row, folded or not (numbered only while open): the
+    /// session switcher and ⌘K list them all — they are search surfaces.
+    package let groupRows: [SessionSwitcherPresentation.Row]
+
+    /// The group header's scroll id in the panel's list (a session id is a
+    /// rowid, never negative), so the selection scroll (#561) can bring the
+    /// header into view with the group row under it.
+    package static let groupHeaderScrollID: Int64 = -1
+
+    /// The switcher's and ⌘K's order: the main list, then every group row.
+    package var searchRows: [SessionSwitcherPresentation.Row] {
+        main + groupRows
+    }
 
     /// ⌘1…⌘9 follow this: the main ids, then the group's only while open
     /// (the pinned row gets no number).
@@ -47,9 +60,28 @@ package struct SessionPanelSections: Equatable, Sendable {
         main.map(\.id) + finished.map(\.id) + (pinned.map { [$0.id] } ?? [])
     }
 
+    /// The panel list's scroll ids top to bottom: the main rows, the group
+    /// header (while the group has rows), then the open group or the pinned
+    /// row.
+    package var panelScrollIDs: [Int64] {
+        let header = finishedCount > 0 ? [Self.groupHeaderScrollID] : []
+        return main.map(\.id) + header + finished.map(\.id) + (pinned.map { [$0.id] } ?? [])
+    }
+
+    /// What the panel scrolls to, in turn, to show `id` (a
+    /// `PanelSelectionScrollPolicy` target): a row under the group header
+    /// (open group or pinned) brings the header in first, so the row is
+    /// never shown cut off from its group; any other id alone.
+    package func panelScrollPath(to id: Int64?) -> [Int64] {
+        guard let id else { return [] }
+        let underHeader = finished.contains { $0.id == id } || pinned?.id == id
+        return underHeader ? [Self.groupHeaderScrollID, id] : [id]
+    }
+
     /// The split of a workbench's `sessions` (pending deletes already
     /// dropped). `savedOrder` is the panel's saved drag order; `sticky` the
-    /// on-screen session's kept section, if any. Only rows that are really
+    /// on-screen session's kept section, if any; `places` labels the agent
+    /// rows (`Row.place`, #565). Only rows that are really
     /// finished fold, so `finishedCount` counts finished sessions only.
     package static func grouping(
         sessions: [TerminalSession],
@@ -58,7 +90,8 @@ package struct SessionPanelSections: Equatable, Sendable {
         liveIDs: Set<Int64>,
         now: Date,
         expanded: Bool,
-        sticky: Sticky?
+        sticky: Sticky?,
+        places: [Int64: SessionPlacePresentation.PlaceLabel] = [:]
     ) -> Self {
         let ordered = TerminalSessionOrder.apply(sessions, saved: savedOrder)
         var mainSessions: [TerminalSession] = []
@@ -70,14 +103,15 @@ package struct SessionPanelSections: Equatable, Sendable {
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
         let rows = SessionSwitcherPresentation.rows(
-            mainSessions + groupSessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: numbered
+            mainSessions + groupSessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: numbered,
+            places: places
         )
         let mainRows = Array(rows.prefix(mainSessions.count))
         let groupRows = Array(rows.dropFirst(mainSessions.count))
         let pinned = expanded ? nil : groupRows.first { $0.id == sticky?.sessionID }
         return Self(
             main: mainRows, finished: expanded ? groupRows : [], finishedCount: groupRows.count,
-            pinned: pinned, expanded: expanded
+            pinned: pinned, expanded: expanded, groupRows: groupRows
         )
     }
 

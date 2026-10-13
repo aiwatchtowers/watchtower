@@ -23,18 +23,9 @@ extension WorkbenchesViewModel {
         return TerminalSessionOrder.apply(rows, saved: sessionOrder(projectID: projectID))
     }
 
-    /// A drag in a session list; the new order is saved for that list.
-    /// `displayed` is the list the drag's offsets index — the one the view
-    /// rendered, not a re-read that a reload may have changed meanwhile.
-    func moveSessions(_ displayed: [TerminalSession], projectID: Int64?, from source: IndexSet, to destination: Int) {
-        let order = TerminalSessionOrder.move(displayed, from: source, to: destination)
-        sessionOrders[projectID] = order
-        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(workbenchID: projectID))
-    }
-
     /// Cached once dragged: UserDefaults is not observed, the cache is what
     /// re-renders the list after a drag.
-    private func sessionOrder(projectID: Int64?) -> [Int64] {
+    func sessionOrder(projectID: Int64?) -> [Int64] {
         if let cached = sessionOrders[projectID] { return cached }
         let key = TerminalSessionOrder.key(workbenchID: projectID)
         guard let raw = defaults.array(forKey: key) else { return [] }
@@ -97,7 +88,7 @@ extension WorkbenchesViewModel {
         return activeSessionID(projectID: projectID).flatMap { session($0, projectID: projectID) }
     }
 
-    private func visibleSession(projectID: Int64) -> WorkspacePane? {
+    func visibleSession(projectID: Int64) -> WorkspacePane? {
         let layout = layout(projectID: projectID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
         return candidates.first { if case .session = $0 { true } else { false } }
@@ -145,8 +136,8 @@ extension WorkbenchesViewModel {
         panelVisible = true
     }
 
-    /// ⌘1…⌘9: the n-th session of the workbench on screen, in the panel's
-    /// order, opened like a panel click. Out of range, or no workbench
+    /// ⌘1…⌘9: the n-th numbered session of the workbench on screen
+    /// (`SessionPanelSections.shortcutOrder`), opened like a panel click. Out of range, or no workbench
     /// page: nothing happens.
     func openSession(atShortcut n: Int) async {
         guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
@@ -155,9 +146,11 @@ extension WorkbenchesViewModel {
         if terminalSessions[projectID] == nil {
             guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
         }
-        let rows = orderedSessions(projectID: projectID)
-        guard n <= rows.count else { return }
-        await showSession(id: rows[n - 1].id, ticket: ticket)
+        // The panel's numbering: the main list, then the group only while
+        // it is open (#480) — the same order as the rows' ⌘N hints.
+        let numbered = panelSections(projectID: projectID).shortcutOrder
+        guard n <= numbered.count else { return }
+        await showSession(id: numbered[n - 1], ticket: ticket)
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).

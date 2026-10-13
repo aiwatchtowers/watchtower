@@ -139,4 +139,43 @@ final class SessionPanelSectionsTests: XCTestCase {
         XCTAssertEqual(result.main.map(\.id), [2, 3, 1, 4], "never placed on top, then the saved order")
         XCTAssertEqual(result.finished.map(\.id), [5])
     }
+
+    /// The switcher and ⌘K list every group row even while the panel's
+    /// group is folded; their shortcuts still follow the fold.
+    func testSearchRowsListEveryGroupRowEvenFolded() {
+        let statuses = [finished(1, at: "2026-10-12T09:00:00.000Z"), finished(2, at: "2026-10-12T10:00:00.000Z")]
+        let folded = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses)
+        XCTAssertEqual(folded.searchRows.map(\.id), [3, 2, 1], "main, then the group newest first")
+        XCTAssertEqual(folded.searchRows.map(\.shortcut), [1, nil, nil], "a folded group's rows get no number")
+        let open = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, expanded: true)
+        XCTAssertEqual(open.searchRows.map(\.shortcut), [1, 2, 3])
+    }
+
+    /// #561's scroll covers the group: the header has its own scroll id,
+    /// listed between the main rows and the group's.
+    func testScrollIDsListTheHeaderBetweenMainAndGroup() {
+        let header = SessionPanelSections.groupHeaderScrollID
+        let statuses = [finished(1), finished(2)]
+        let open = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, expanded: true)
+        XCTAssertEqual(open.panelScrollIDs, [3, header, 2, 1])
+        let pinned = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses,
+                              sticky: .init(sessionID: 1, section: .finished))
+        XCTAssertEqual(pinned.panelScrollIDs, [3, header, 1])
+        let none = sections([1, 2], saved: [1, 2], statuses: [])
+        XCTAssertEqual(none.panelScrollIDs, [1, 2], "no group, no header")
+    }
+
+    /// A row under the header (open group or pinned) scrolls the header in
+    /// first; a main row, alone; nothing for no target.
+    func testScrollPathBringsTheHeaderInForAGroupRow() {
+        let header = SessionPanelSections.groupHeaderScrollID
+        let statuses = [finished(1), finished(2)]
+        let pinned = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses,
+                              sticky: .init(sessionID: 1, section: .finished))
+        XCTAssertEqual(pinned.panelScrollPath(to: 1), [header, 1])
+        XCTAssertEqual(pinned.panelScrollPath(to: 3), [3])
+        XCTAssertEqual(pinned.panelScrollPath(to: nil), [])
+        let open = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, expanded: true)
+        XCTAssertEqual(open.panelScrollPath(to: 2), [header, 2])
+    }
 }

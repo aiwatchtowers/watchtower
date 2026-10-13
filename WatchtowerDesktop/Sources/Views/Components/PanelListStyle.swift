@@ -121,4 +121,11 @@ extension ScrollViewProxy {
         guard let id else { return }
         DispatchQueue.main.async { scrollTo(id) }
     }
+
+    /// `followSelection` over each id in turn (a minimal scroll each), so
+    /// the last one is surely in view and the earlier ones as far as they
+    /// fit — a group header above its row (`SessionPanelSections.panelScrollPath`).
+    func followSelection(along ids: [Int64]) {
+        for id in ids { followSelection(id) }
+    }
 }

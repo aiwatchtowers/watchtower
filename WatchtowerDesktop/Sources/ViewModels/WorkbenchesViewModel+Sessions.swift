@@ -96,6 +96,8 @@ extension WorkbenchesViewModel {
            !layout.visiblePanes.contains(.session(sessionID)) {
             asks.hideDrawer(projectID: projectID)
         }
+        // A session came on screen: its panel section is kept (#480).
+        refreshStickySection()
         do {
             defaults.set(try JSONEncoder().encode(layout), forKey: WorkspaceLayout.key(workbenchID: projectID))
         } catch {
