@@ -4,6 +4,7 @@ import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
@@ -103,8 +104,8 @@ final class SessionInputHandlersTests: XCTestCase {
         delivery.needsApproval = { [weak self] in self?.statuses[$0]?.state.kind == .needsApproval }
         delivery.hasHookState = { [weak self] in self?.statuses[$0]?.hooksReported == true }
         sidecar = try HubSyncState.inMemory()
-        try sidecar.linkTestDevice("device-a")
-        _ = try sidecar.setDeviceGrant(.typing, true, deviceID: "device-a", at: Date())
+        try sidecar.linkTestDevice(testPhoneID)
+        _ = try sidecar.setDeviceGrant(.typing, true, deviceID: testPhoneID, at: Date())
     }
 
     override func tearDown() {
@@ -159,7 +160,7 @@ final class SessionInputHandlersTests: XCTestCase {
         )
     }
 
-    private func input(_ sessionID: Int64, _ text: String, device: String = "device-a") -> ActionRequestPayload {
+    private func input(_ sessionID: Int64, _ text: String, device: String = testPhoneID) -> ActionRequestPayload {
         ActionRequestPayload(
             id: UUID().uuidString, kind: .sessionInput, entityID: String(sessionID), params: ["text": .string(text)],
             createdAt: clock.now, deviceID: device
@@ -169,14 +170,14 @@ final class SessionInputHandlersTests: XCTestCase {
     private func finish(_ sessionID: Int64) -> ActionRequestPayload {
         ActionRequestPayload(
             id: UUID().uuidString, kind: .sessionFinishRequest, entityID: String(sessionID), params: [:],
-            createdAt: clock.now, deviceID: "device-a"
+            createdAt: clock.now, deviceID: testPhoneID
         )
     }
 
     private func cancel(_ original: ActionRequestPayload) -> ActionRequestPayload {
         ActionRequestPayload(
             id: UUID().uuidString, kind: .sessionInputCancel, entityID: original.id, params: [:],
-            createdAt: clock.now, deviceID: "device-a"
+            createdAt: clock.now, deviceID: testPhoneID
         )
     }
 
@@ -207,7 +208,7 @@ final class SessionInputHandlersTests: XCTestCase {
     func testProj16_AnUnallowedDeviceTypesNothing() async throws {
         let session = try await liveSession()
         setState(session, .stopped)
-        _ = try sidecar.setDeviceGrant(.typing, false, deviceID: "device-a", at: Date())
+        _ = try sidecar.setDeviceGrant(.typing, false, deviceID: testPhoneID, at: Date())
         let handlers = try makeHandlers()
 
         let line = try await handlers.handle(input(session, "Rebase onto main"))
@@ -223,20 +224,34 @@ final class SessionInputHandlersTests: XCTestCase {
     }
 
     /// Condition (0): a device not linked by a QR scan never reaches the
-    /// handler — the relay fails it `device_not_linked`, nothing typed.
+    /// handler — nothing typed. E2E: a phone whose relay key the hub does not
+    /// hold is dropped unanswered (D9); a linked phone's record naming
+    /// another device fails `device_not_linked` (the key-authenticated gate).
     func testProj16_AnUnlinkedDeviceTypesNothing() async throws {
         let session = try await liveSession()
         setState(session, .stopped)
         let transport = StubHubTransport()
         let dispatcher = MobileHubCommandDispatcher()
         try makeHandlers().register(on: dispatcher)
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
-        let stranger = input(session, "Delete the tests", device: "device-x")
-        try await transport.save([try CloudRecordFactory.record(for: stranger, modifiedAt: Date())])
+        let processor = RelayProcessor(
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme"
+        )
+        let stranger = input(session, "Delete the tests", device: TestE2E.strangerDeviceID.uuidString)
+        let strangerWire = try TestRelayPhone.seal(
+            try CloudRecordFactory.record(for: stranger, modifiedAt: Date()), as: TestE2E.strangerIdentity
+        )
+        let misnamed = input(session, "Delete the docs", device: "device-x")
+        let misnamedWire = try TestRelayPhone.seal(try CloudRecordFactory.record(for: misnamed, modifiedAt: Date()))
+        try await transport.save([strangerWire, misnamedWire])
 
         _ = try await processor.processOnce()
 
-        let echo = try decodeAction(try XCTUnwrap(transport.saved.last { $0.record.recordName == stranger.recordName }).record)
+        XCTAssertEqual(
+            transport.saved.filter { $0.record.recordName == strangerWire.recordName }.count, 1,
+            "an unlinked key is never answered: only the stranger's own save"
+        )
+        XCTAssertNil(try sidecar.relayPhase(stranger.recordName))
+        let echo = try decodeAction(try XCTUnwrap(transport.saved.last { $0.record.recordName == misnamedWire.recordName }).record)
         XCTAssertEqual(echo.status, .failed)
         XCTAssertEqual(echo.reason, .deviceNotLinked)
         XCTAssertTrue(typed.isEmpty)
@@ -345,7 +360,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// A `session_start` brief edited on the phone is used only from a
     /// device allowed to type: otherwise the Mac's own work-on prompt goes.
     func testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored() async throws {
-        _ = try sidecar.setDeviceGrant(.typing, false, deviceID: "device-a", at: Date())
+        _ = try sidecar.setDeviceGrant(.typing, false, deviceID: testPhoneID, at: Date())
         let acme = folder.path
         let (project, target) = try await pool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
@@ -366,7 +381,7 @@ final class SessionInputHandlersTests: XCTestCase {
                 "workbench_id": .integer(project), "mode": .string("new"), "plan_first": .bool(false),
                 "bring_forward": .bool(false), "brief": .string("Delete the tests")
             ],
-            createdAt: Date(), deviceID: "device-a"
+            createdAt: Date(), deviceID: testPhoneID
         )
 
         let outcome = try await starts.handle(start)
@@ -392,7 +407,7 @@ final class SessionInputHandlersTests: XCTestCase {
         _ = try await handlers.handle(first)
         _ = try await handlers.handle(second)
 
-        try link.setTypingAllowed(false, deviceID: "device-a")
+        try link.setTypingAllowed(false, deviceID: testPhoneID)
 
         await handlers.echoesSettled()
         for action in [first, second] {
@@ -795,29 +810,46 @@ final class SessionInputHandlersTests: XCTestCase {
 
     /// The relay echoes `received`, then `held`; the line's later outcome is
     /// echoed into the same record and replaces the ledger's stored echo.
+    /// E2E: every echo, the late one included, is sealed `.relayToPhone` to
+    /// the sending phone (never a plaintext write).
     func testTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let transport = StubHubTransport()
         let dispatcher = MobileHubCommandDispatcher()
-        let handlers = try makeHandlers(lateEcho: RelayProcessor.lateEcho(transport: transport, sidecar: sidecar))
+        let handlers = try makeHandlers(lateEcho: RelayProcessor.lateEcho(transport: transport.sealing(), sidecar: sidecar))
         handlers.register(on: dispatcher)
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
+        let processor = RelayProcessor(
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme"
+        )
         let action = input(session, "Through the relay")
-        try await transport.save([try CloudRecordFactory.record(for: action, modifiedAt: Date())])
+        let wire = try TestRelayPhone.seal(try CloudRecordFactory.record(for: action, modifiedAt: Date()))
+        try await transport.save([wire])
 
         _ = try await processor.processOnce()
         setState(session, .stopped)
         await delivery.deliverHeld()
         await handlers.echoesSettled()
 
-        let statuses = try transport.saved
-            .filter { $0.record.recordName == action.recordName }
-            .map { try decodeAction($0.record) }
-            .map(\.status)
+        let saves = transport.saved.filter { $0.record.recordName == wire.recordName }
+        XCTAssertTrue(saves.allSatisfy { $0.record.kind == WireKind.envelope }, "nothing in the clear")
+        let statuses = try saves.map { try decodeAction($0.record) }.map(\.status)
         XCTAssertEqual(statuses, [.pending, .received, .held, .applied])
+        XCTAssertEqual(transport.openedEchoes().filter { $0.sealed?.wireName == wire.recordName }.count, 3, "the phone opens every echo")
         let stored = try XCTUnwrap(try sidecar.relayEcho(action.recordName))
         XCTAssertEqual(try JSONDecoder().decode(ActionOutcome.self, from: stored), .applied(["delivery": .string("submitted")]))
         XCTAssertEqual(pastes, ["Through the relay"])
+    }
+
+    /// No hub keys (nil transport): the late echo writes nothing and throws.
+    func testALateEchoWithoutKeysWritesNothing() async throws {
+        let lateEcho = RelayProcessor.lateEcho(transport: nil, sidecar: sidecar)
+        let action = input(1, "Never in the clear")
+        do {
+            try await lateEcho(action, .applied())
+            XCTFail("a keyless late echo must throw")
+        } catch {
+            XCTAssertEqual(error as? SecureTransportError, .keysUnavailable)
+        }
     }
 }

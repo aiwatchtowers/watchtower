@@ -170,6 +170,11 @@ struct SessionDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(detail)
+                if viewModel.waitingForKeys {
+                    Text("Unlock this iPhone to see the latest report.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 if let actions = actions(now: now) {
                     ForEach(actions.stopRows) { StopRowView(row: $0, onDismiss: dismissStop) }
                 }

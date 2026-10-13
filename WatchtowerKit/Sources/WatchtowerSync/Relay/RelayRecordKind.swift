@@ -11,6 +11,8 @@ public enum RelayRecordKind: String, CaseIterable {
     /// The phone's link record (`device-<device_id>`, spec §5.1). Only the
     /// phone writes it; the Mac answers through the `device_grant` slice.
     case device
+    /// The phone's link record sealed to `hub_kx` (`hello-<device_id>`, mobile E2E spec §2.3).
+    case hello
 }
 
 /// Cross-platform CloudKit constants.

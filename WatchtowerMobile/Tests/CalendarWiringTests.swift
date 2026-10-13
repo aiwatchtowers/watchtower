@@ -122,11 +122,13 @@ final class CalendarWiringTests: XCTestCase {
 
     func testMakeTargetIsNotShownAnywhere() async throws {
         let now = now
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
-        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
-        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: now)
+        let uploader = RecordingUploader(
+            transport: try TestPhone.transport(over: transport, .demo), store: store, deviceID: DemoSeed.device.deviceID)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let calendarSnapshot = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
         let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
@@ -156,10 +158,12 @@ final class CalendarWiringTests: XCTestCase {
 
     func testATranscribingCardShowsThePercentFromRecordingJob() async throws {
         let now = now
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
-        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: 37)
+        let uploader = RecordingUploader(
+            transport: try TestPhone.transport(over: transport, .demo), store: store, deviceID: DemoSeed.device.deviceID)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: now, percent: 37)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
         XCTAssertEqual(recordings.recordings.map(\.eventID), [DemoSeed.recordedEventID])
@@ -181,10 +185,12 @@ final class CalendarWiringTests: XCTestCase {
     /// 0…100 on the row.
     func testTheTranscribingRowClampsThePercent() async throws {
         for (sent, shown) in [(140, 100), (-5, 0)] {
-            let store = try makePoolStore()
+            let store = try makePoolStore(.demo)
             let transport = InMemoryCloudTransport()
-            let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
-            try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: sent)
+            let uploader = RecordingUploader(
+                transport: try TestPhone.transport(over: transport, .demo), store: store, deviceID: DemoSeed.device.deviceID)
+            let hub = TestPhone.hub(over: transport, .demo)
+            try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: now, percent: sent)
             _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
             let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
             let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
@@ -220,10 +226,12 @@ final class CalendarWiringTests: XCTestCase {
     /// The demo phone recording of `DemoSeed.recordedEventID` (received by
     /// the Mac, its job transcribing at 37%), as the replica reads it.
     private func demoRecordings() async throws -> PhoneRecordingsSnapshot {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
-        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: 37)
+        let uploader = RecordingUploader(
+            transport: try TestPhone.transport(over: transport, .demo), store: store, deviceID: DemoSeed.device.deviceID)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: now, percent: 37)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         return try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
     }
@@ -491,7 +499,7 @@ final class CalendarWiringTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         let bad = SliceRecord(kind: .calendarEvent, id: "bad", modifiedAt: now, payload: Data("{}".utf8))
         let good = try RelayCoder.makeEncoder().encode(event("good", start: now))
-        try await transport.save([
+        try await TestPhone.hub(over: transport).save([
             CloudRecordFactory.record(for: bad),
             CloudRecordFactory.record(for: SliceRecord(kind: .calendarEvent, id: "good", modifiedAt: now, payload: good))
         ])

@@ -33,6 +33,11 @@ public final class TransportStore: Sendable {
         try createSchema()
     }
 
+    /// The fetched-asset stash directory (`transport-assets/` next to the
+    /// database); nil for an in-memory store. The phone sets its file
+    /// protection class (mobile E2E D8); the store creates it on demand.
+    public var stashDirectory: URL? { assetsDirectory }
+
     public static func inMemory() throws -> TransportStore {
         try TransportStore(queue: DatabaseQueue())
     }

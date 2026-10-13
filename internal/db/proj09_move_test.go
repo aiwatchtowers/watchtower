@@ -12,9 +12,9 @@ import (
 // workbench or to the top level, never into a cycle or across workbenches,
 // and both parents re-derive their status (PROJ-05) and progress.
 
-func moveTarget(t *testing.T, d *DB, projectID, id int64, parent sql.NullInt64) error {
+func moveTarget(t *testing.T, d *DB, workbenchID, id int64, parent sql.NullInt64) error {
 	t.Helper()
-	return d.WithTx(func(tx *sql.Tx) error { return d.MoveWorkbenchTargetTx(tx, projectID, id, parent) })
+	return d.WithTx(func(tx *sql.Tx) error { return d.MoveWorkbenchTargetTx(tx, workbenchID, id, parent) })
 }
 
 func targetParent(t *testing.T, d *DB, id int64) sql.NullInt64 {

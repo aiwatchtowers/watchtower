@@ -105,7 +105,7 @@ func TestProj02_ProjectDeleteRunsTheFolderRemoval(t *testing.T) {
 	}
 
 	if err := workbenchRemoveInstall(context.Background(), nil, p); err != nil {
-		t.Fatalf("projectRemoveInstall: %v", err)
+		t.Fatalf("workbenchRemoveInstall: %v", err)
 	}
 	for _, path := range []string{skill, filepath.Join(p.FolderPath, ".claude", "settings.local.json")} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

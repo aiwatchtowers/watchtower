@@ -37,10 +37,10 @@ type board struct {
 	order []int64
 }
 
-func loadBoard(d *db.DB, projectID int64) (*board, error) {
-	nodes, err := d.GetWorkbenchBoard(projectID)
+func loadBoard(d *db.DB, workbenchID int64) (*board, error) {
+	nodes, err := d.GetWorkbenchBoard(workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("reading workbench %d board: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d board: %w", workbenchID, err)
 	}
 	b := &board{byID: map[int64]*boardEntry{}}
 	b.add(nodes, 0)
@@ -194,23 +194,23 @@ func branchRef(branch string) string { return "branch:" + branch }
 // SessionRefs is the PR-cache keys ('pr:<n>' | 'branch:<name>') of the PRs
 // and branches session sessionID's in-scope targets carry: the refs a refresh
 // of its report checks.
-func SessionRefs(ctx context.Context, d *db.DB, projectID, sessionID int64) ([]string, error) {
-	_, sc, err := loadScope(ctx, d, projectID, sessionID)
+func SessionRefs(ctx context.Context, d *db.DB, workbenchID, sessionID int64) ([]string, error) {
+	_, sc, err := loadScope(ctx, d, workbenchID, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	return sc.refs(), nil
 }
 
-// loadScope reads session sessionID of workbench projectID and its scope. A
+// loadScope reads session sessionID of workbench workbenchID and its scope. A
 // missing session, or one of another workbench, is
 // db.ErrTerminalSessionNotFound.
-func loadScope(ctx context.Context, d *db.DB, projectID, sessionID int64) (Session, scope, error) {
-	sess, target, err := loadSession(ctx, d, projectID, sessionID)
+func loadScope(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Session, scope, error) {
+	sess, target, err := loadSession(ctx, d, workbenchID, sessionID)
 	if err != nil {
 		return Session{}, scope{}, err
 	}
-	b, err := loadBoard(d, projectID)
+	b, err := loadBoard(d, workbenchID)
 	if err != nil {
 		return Session{}, scope{}, err
 	}
@@ -221,7 +221,7 @@ func loadScope(ctx context.Context, d *db.DB, projectID, sessionID int64) (Sessi
 	return sess, newScope(b, target, linked), nil
 }
 
-func loadSession(ctx context.Context, d *db.DB, projectID, sessionID int64) (Session, sql.NullInt64, error) {
+func loadSession(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Session, sql.NullInt64, error) {
 	var s Session
 	var workbench, target sql.NullInt64
 	var state, stateAt, finishedAt sql.NullString
@@ -230,9 +230,9 @@ func loadSession(ctx context.Context, d *db.DB, projectID, sessionID int64) (Ses
 		FROM terminal_sessions WHERE id = ?`, sessionID).
 		Scan(&s.ID, &workbench, &s.Title, &target, &s.Kind, &s.CreatedAt, &s.LastActiveAt,
 			&state, &stateAt, &finishedAt, &s.FinishSummary)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && workbench.Int64 != projectID) {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && workbench.Int64 != workbenchID) {
 		return Session{}, sql.NullInt64{}, fmt.Errorf("session %d of workbench %d: %w",
-			sessionID, projectID, db.ErrTerminalSessionNotFound)
+			sessionID, workbenchID, db.ErrTerminalSessionNotFound)
 	}
 	if err != nil {
 		return Session{}, sql.NullInt64{}, fmt.Errorf("reading terminal session %d: %w", sessionID, err)
@@ -243,25 +243,25 @@ func loadSession(ctx context.Context, d *db.DB, projectID, sessionID int64) (Ses
 }
 
 // workbenchLinks is the linked target ids of every session of workbench
-// projectID, by session.
-func workbenchLinks(ctx context.Context, d *db.DB, projectID int64) (map[int64][]int64, error) {
+// workbenchID, by session.
+func workbenchLinks(ctx context.Context, d *db.DB, workbenchID int64) (map[int64][]int64, error) {
 	rows, err := d.QueryContext(ctx, `SELECT l.session_id, l.target_id FROM terminal_session_targets l
 		JOIN terminal_sessions s ON s.id = l.session_id
-		WHERE s.project_id = ? ORDER BY l.session_id, l.target_id`, projectID)
+		WHERE s.project_id = ? ORDER BY l.session_id, l.target_id`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("reading workbench %d session targets: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d session targets: %w", workbenchID, err)
 	}
 	defer rows.Close()
 	out := map[int64][]int64{}
 	for rows.Next() {
 		var sessionID, targetID int64
 		if err := rows.Scan(&sessionID, &targetID); err != nil {
-			return nil, fmt.Errorf("reading workbench %d session targets: %w", projectID, err)
+			return nil, fmt.Errorf("reading workbench %d session targets: %w", workbenchID, err)
 		}
 		out[sessionID] = append(out[sessionID], targetID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading workbench %d session targets: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d session targets: %w", workbenchID, err)
 	}
 	return out, nil
 }

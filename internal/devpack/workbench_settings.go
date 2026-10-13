@@ -144,20 +144,20 @@ func settingsLocalPath(dir string) string {
 }
 
 // InstallSessionStartHook adds or repairs one SessionStart command hook for
-// projectID, running command, in dir's .claude/settings.local.json. An
+// workbenchID, running command, in dir's .claude/settings.local.json. An
 // existing entry is recognised by looksLikeOurHook — a stale entry from a
 // different watchtower binary path is updated in place (a bin change is an
 // update, not a second entry: I2/PROJ-04), and an exact match is a no-op.
 // Every other key, event and hook is preserved; the group omits a matcher so
 // it fires on startup, resume, clear and compact alike.
-func InstallSessionStartHook(dir, command string, projectID int64) (bool, error) {
-	return installHook(dir, sessionStartSpec, command, projectID)
+func InstallSessionStartHook(dir, command string, workbenchID int64) (bool, error) {
+	return installHook(dir, sessionStartSpec, command, workbenchID)
 }
 
 // InstallStopHook is InstallSessionStartHook for the Stop hook that runs the
 // board drift check (PROJ-07), under the same PROJ-04 rules.
-func InstallStopHook(dir, command string, projectID int64) (bool, error) {
-	return installHook(dir, stopSpec, command, projectID)
+func InstallStopHook(dir, command string, workbenchID int64) (bool, error) {
+	return installHook(dir, stopSpec, command, workbenchID)
 }
 
 // InstallStateHooks installs the session state hooks (stateHookSpecs) for
@@ -190,13 +190,13 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 	return guarded || blocked, err
 }
 
-// installHook sets spec's entry for projectID to command, replacing the
+// installHook sets spec's entry for workbenchID to command, replacing the
 // marker prompt it supersedes (hookSpec.replacesMarkerPrompt): the prompt
 // entry goes and its keys other than type, prompt and command (the owner's timeout
 // among them) are carried onto our command entry. A command entry already
 // there keeps the keys it holds — the in-place rule of upsertOurHook; a
 // fresh one takes the prompt's over its defaults (PROJ-04).
-func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
+func installHook(dir string, spec hookSpec, command string, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
@@ -209,13 +209,13 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 	var carried map[string]any
 	dropped := false
 	if spec.replacesMarkerPrompt {
-		isMarker := func(h any) bool { return isOurMarkerPrompt(h, projectID) }
+		isMarker := func(h any) bool { return isOurMarkerPrompt(h, workbenchID) }
 		carried = carriedKeys(groups, isMarker)
 		groups, dropped = withoutHooks(groups, isMarker)
 	}
-	held := anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
-	updated, changed := upsertOurHook(groups, spec, projectID, command)
-	updated = withKeysOnOurHook(updated, spec, projectID, carried, !held)
+	held := anyHook(groups, func(h any) bool { return isOurHook(h, spec, workbenchID) })
+	updated, changed := upsertOurHook(groups, spec, workbenchID, command)
+	updated = withKeysOnOurHook(updated, spec, workbenchID, carried, !held)
 	changed = changed || dropped
 	if !changed {
 		return false, nil
@@ -226,18 +226,18 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 }
 
 // RemoveSessionStartHook removes every hook object recognised as ours for
-// projectID (looksLikeOurHook), regardless of which watchtower binary wrote
+// workbenchID (looksLikeOurHook), regardless of which watchtower binary wrote
 // it. A group left with no hooks is dropped, then an empty SessionStart, an
 // empty hooks object, and — when nothing at all is left — the file itself
 // (a symlinked file keeps its link, its target emptied to {}).
 // Anything else in the file stays.
-func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
-	return removeHook(dir, sessionStartSpec, projectID)
+func RemoveSessionStartHook(dir string, workbenchID int64) (bool, error) {
+	return removeHook(dir, sessionStartSpec, workbenchID)
 }
 
 // RemoveStopHook is RemoveSessionStartHook for the Stop hook (PROJ-02/04).
-func RemoveStopHook(dir string, projectID int64) (bool, error) {
-	return removeHook(dir, stopSpec, projectID)
+func RemoveStopHook(dir string, workbenchID int64) (bool, error) {
+	return removeHook(dir, stopSpec, workbenchID)
 }
 
 // RemoveStateHooks removes every session state hook of workbenchID
@@ -266,7 +266,7 @@ func RemoveAskGuardHooks(dir string, workbenchID int64) (bool, error) {
 	return guarded || blocked, err
 }
 
-func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
+func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, existed, err := readSettings(file)
 	if err != nil || !existed {
@@ -277,7 +277,7 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 		return false, err
 	}
 	kept, changed := withoutHooks(groups, func(h any) bool {
-		return isOurHook(h, spec, projectID) || spec.replacesMarkerPrompt && isOurMarkerPrompt(h, projectID)
+		return isOurHook(h, spec, workbenchID) || spec.replacesMarkerPrompt && isOurMarkerPrompt(h, workbenchID)
 	})
 	if !changed {
 		return false, nil
@@ -299,15 +299,15 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for
-// projectID (looksLikeOurHook) is installed in dir's
+// workbenchID (looksLikeOurHook) is installed in dir's
 // .claude/settings.local.json.
-func HasSessionStartHook(dir string, projectID int64) (bool, error) {
-	return hasHook(dir, sessionStartSpec, projectID)
+func HasSessionStartHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, sessionStartSpec, workbenchID)
 }
 
 // HasStopHook is HasSessionStartHook for the Stop hook.
-func HasStopHook(dir string, projectID int64) (bool, error) {
-	return hasHook(dir, stopSpec, projectID)
+func HasStopHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, stopSpec, workbenchID)
 }
 
 // HasStateHooks reports whether every session state hook of workbenchID is
@@ -359,7 +359,7 @@ func HasAskToolBlockHook(dir string, workbenchID int64) (bool, error) {
 	return hasHook(dir, askToolBlockSpec, workbenchID)
 }
 
-func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
+func hasHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, _, existed, err := readSettings(file)
 	if err != nil || !existed {
@@ -369,7 +369,7 @@ func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return hasOurHook(groups, spec, projectID), nil
+	return hasOurHook(groups, spec, workbenchID), nil
 }
 
 // readSettings decodes file as one JSON object. A missing or whitespace-only
@@ -452,23 +452,23 @@ func groupHooks(g any) (map[string]any, []any, bool) {
 }
 
 // looksLikeOurHook reports whether cmd is spec's hook command for
-// projectID, recognised independent of which watchtower binary wrote it
+// workbenchID, recognised independent of which watchtower binary wrote it
 // (I2/PROJ-04): a stale entry installed from the CLI-store path and a fresh
 // one installed from PATH must both be recognised as ours, or an install
 // from a second binary duplicates the hook and a delete orphans the first
 // entry. After stripping an optional single-quoted binary token
 // (hookSpec.command's only quoting style — see unquoteShellSingle), the
 // command must end in exactly spec's suffix — e.g.
-// " workbench brief --workbench <projectID>", or its pre-rename form
-// " project brief --project <projectID>" (looksLikeLegacyHook) — and the
+// " workbench brief --workbench <workbenchID>", or its pre-rename form
+// " project brief --project <workbenchID>" (looksLikeLegacyHook) — and the
 // binary's basename must be "watchtower".
-func looksLikeOurHook(cmd string, spec hookSpec, projectID int64) bool {
-	return endsInOurCommand(cmd, spec.suffix(projectID)) || looksLikeLegacyHook(cmd, spec, projectID)
+func looksLikeOurHook(cmd string, spec hookSpec, workbenchID int64) bool {
+	return endsInOurCommand(cmd, spec.suffix(workbenchID)) || looksLikeLegacyHook(cmd, spec, workbenchID)
 }
 
 // looksLikeLegacyHook is looksLikeOurHook for the pre-rename command only.
-func looksLikeLegacyHook(cmd string, spec hookSpec, projectID int64) bool {
-	return endsInOurCommand(cmd, spec.legacySuffix(projectID))
+func looksLikeLegacyHook(cmd string, spec hookSpec, workbenchID int64) bool {
+	return endsInOurCommand(cmd, spec.legacySuffix(workbenchID))
 }
 
 func endsInOurCommand(cmd, suffix string) bool {
@@ -492,17 +492,17 @@ func unquoteShellSingle(s string) string {
 	return strings.ReplaceAll(s[1:len(s)-1], `'\''`, "'")
 }
 
-func isOurHook(h any, spec hookSpec, projectID int64) bool {
+func isOurHook(h any, spec hookSpec, workbenchID int64) bool {
 	cmd, ok := hookCommand(h)
-	return ok && looksLikeOurHook(cmd, spec, projectID)
+	return ok && looksLikeOurHook(cmd, spec, workbenchID)
 }
 
 // isOurMarkerPrompt reports whether h is the old Stop prompt hook of
-// projectID: a prompt whose first line is exactly its marker, whatever the
+// workbenchID: a prompt whose first line is exactly its marker, whatever the
 // rest says (v1–v3, or an owner's edit — ours all the same, PROJ-04).
-func isOurMarkerPrompt(h any, projectID int64) bool {
+func isOurMarkerPrompt(h any, workbenchID int64) bool {
 	text, ok := hookString(h, "prompt")
-	return ok && opensWithLine(text, askGuardMarker(projectID))
+	return ok && opensWithLine(text, askGuardMarker(workbenchID))
 }
 
 // opensWithLine reports whether text's first line (a trailing "\r"
@@ -512,9 +512,9 @@ func opensWithLine(text, line string) bool {
 	return trimCR(first) == line
 }
 
-func isLegacyHook(h any, spec hookSpec, projectID int64) bool {
+func isLegacyHook(h any, spec hookSpec, workbenchID int64) bool {
 	cmd, ok := hookCommand(h)
-	return ok && looksLikeLegacyHook(cmd, spec, projectID)
+	return ok && looksLikeLegacyHook(cmd, spec, workbenchID)
 }
 
 // hookCommand is a hook object's command string.
@@ -535,10 +535,10 @@ func hookString(h any, key string) (string, bool) {
 // hasOurHook counts our entry only in a group whose matcher is spec's: in
 // another group it is not the hook we install (one under matcher "" would
 // fire for every tool), and an install repairs it.
-func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
+func hasOurHook(groups []any, spec hookSpec, workbenchID int64) bool {
 	for _, g := range groups {
 		m, hs, ok := groupHooks(g)
-		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
+		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, workbenchID) }) {
 			return true
 		}
 	}
@@ -611,7 +611,7 @@ func LegacyPermissionRules(dir string) (int, error) {
 	return n, nil
 }
 
-// upsertOurHook returns groups with our hook for projectID set to command.
+// upsertOurHook returns groups with our hook for workbenchID set to command.
 // The first entry recognised by isOurHook is kept and, if it differs,
 // updated in place with its other keys kept; any further one (there should
 // never be more than one, but a hand-edited file could hold a leftover) is
@@ -619,7 +619,7 @@ func LegacyPermissionRules(dir string) (int, error) {
 // is dropped too, so it is re-added in a group of its own. Absent any
 // match, a new group is appended, carrying spec's matcher. changed is false
 // only when exactly one matching entry already held command.
-func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string) ([]any, bool) {
+func upsertOurHook(groups []any, spec hookSpec, workbenchID int64, command string) ([]any, bool) {
 	found := false
 	changed := false
 	out := make([]any, 0, len(groups))
@@ -632,7 +632,7 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string)
 		rest := make([]any, 0, len(hs))
 		groupChanged := false
 		for _, h := range hs {
-			if !isOurHook(h, spec, projectID) {
+			if !isOurHook(h, spec, workbenchID) {
 				rest = append(rest, h)
 				continue
 			}
@@ -706,16 +706,16 @@ func carriedKeys(groups []any, match func(h any) bool) map[string]any {
 	return keys
 }
 
-// withKeysOnOurHook returns groups with keys set on our hook for projectID:
+// withKeysOnOurHook returns groups with keys set on our hook for workbenchID:
 // with override every key, else only those it does not hold yet.
-func withKeysOnOurHook(groups []any, spec hookSpec, projectID int64, keys map[string]any, override bool) []any {
+func withKeysOnOurHook(groups []any, spec hookSpec, workbenchID int64, keys map[string]any, override bool) []any {
 	if len(keys) == 0 {
 		return groups
 	}
 	out := slices.Clone(groups)
 	for i, g := range out {
 		m, hs, ok := groupHooks(g)
-		j := slices.IndexFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) })
+		j := slices.IndexFunc(hs, func(h any) bool { return isOurHook(h, spec, workbenchID) })
 		if !ok || j < 0 {
 			continue
 		}

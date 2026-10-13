@@ -198,7 +198,7 @@ final class WorkbenchSliceTests: XCTestCase {
             XCTAssertTrue(try records(source).isEmpty, "\(source.kind)")
         }
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: sources
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(), sources: sources
         )
         let outcome = try await publisher.publishOnce()
         XCTAssertEqual(outcome, SlicePublisher.Outcome(completed: true))
@@ -501,7 +501,7 @@ final class WorkbenchSliceTests: XCTestCase {
         let state = try HubSyncState.inMemory()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: state, transport: transport,
+            dbPool: dbPool, state: state, transport: transport.sealing(names: state),
             sources: [slice(), WorkbenchTargetSlice(), WorkbenchCommentSlice()]
         )
         let first = try await publisher.publishOnce()
@@ -513,7 +513,9 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(second.deleted, 4, "the workbench, its target and both comments")
         XCTAssertEqual(second.pushed, 0)
         let zone = try await transport.changes(in: .data, since: nil)
-        XCTAssertEqual(zone.deletedRecordNames.filter { $0.hasPrefix("workbench-") }, ["workbench-\(gone)"])
+        let goneWire = try testSecureTransport(InMemoryCloudTransport()).wireName(plain: "workbench-\(gone)", zone: .data)
+        XCTAssertTrue(zone.deletedRecordNames.contains(goneWire), "the workbench is deleted under its opaque name")
+        XCTAssertEqual(zone.deletedRecordNames.count, 4)
         XCTAssertEqual(try state.hashes(forKind: .workbench).keys.sorted(), ["workbench-\(kept)"])
         XCTAssertEqual(try state.hashes(forKind: .workbenchComment).count, 0)
     }

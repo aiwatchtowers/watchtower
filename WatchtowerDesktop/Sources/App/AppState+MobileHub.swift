@@ -70,11 +70,12 @@ extension AppState {
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
             RecordingJobSlice(sidecar: storage.sidecar),
             SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
+        // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
             isLinked: hasPhone,
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
@@ -150,7 +151,7 @@ extension AppState {
                 dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
                 status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
                 deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-                lateEcho: RelayProcessor.lateEcho(transport: storage.transport, sidecar: storage.sidecar)
+                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar)
             )
         }
     }
@@ -181,13 +182,13 @@ extension AppState {
         let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
         mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            transport: storage.secure, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
             deviceRecords: linkCenter?.relayRoute
         )
         let hub = MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, companions: companions
+            hostInfo: hostInfo, keyring: storage.keyring, companions: companions
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
         linkCenter?.attach(to: hub)
         return hub

@@ -38,14 +38,14 @@ func TestMCPModeOptions_WritableModesGetTheOwnerWriteBusyTimeout(t *testing.T) {
 	assert.Equal(t, ownerWriteBusyTimeout.Milliseconds(), busyTimeoutMS(t, chatDB))
 
 	resetMCPFlags(t)
-	projectDB := openMCPTestDB(t)
+	workbenchDB := openMCPTestDB(t)
 	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	mcpFlagWorkbench, err = projectDB.CreateWorkbench("acme", folder)
+	mcpFlagWorkbench, err = workbenchDB.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	_, err = mcpModeOptions(cfg, projectDB, "", nil)
+	_, err = mcpModeOptions(cfg, workbenchDB, "", nil)
 	require.NoError(t, err)
-	assert.Equal(t, ownerWriteBusyTimeout.Milliseconds(), busyTimeoutMS(t, projectDB))
+	assert.Equal(t, ownerWriteBusyTimeout.Milliseconds(), busyTimeoutMS(t, workbenchDB))
 }
 
 func TestOpenActionsCmd_UsesTheOwnerWriteBusyTimeout(t *testing.T) {

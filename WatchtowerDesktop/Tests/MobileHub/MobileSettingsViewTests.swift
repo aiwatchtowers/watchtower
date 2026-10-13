@@ -147,6 +147,43 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertFalse(fixture.shares.isLinkOpen)
     }
 
+    func testTwoPendingRowsWithOneNameShowTheDuplicateWarning() async throws {
+        let clock = fixture.clock
+        let sheet = MobileLinkSheetViewModel(
+            center: fixture.center, now: { clock.now }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        await sheet.start()
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+
+        let view = MobileLinkSheet(model: sheet) {}
+
+        let warning = "Two iPhones named \"Acme iPhone\" are waiting — link only the one whose screen shows this code."
+        XCTAssertEqual(try view.inspect().findAll(ViewType.Text.self) { try $0.string() == warning }.count, 2)
+        await sheet.close()
+    }
+
+    func testThePendingRowShowsNameCodeAndBothButtons() async throws {
+        let clock = fixture.clock
+        let sheet = MobileLinkSheetViewModel(
+            center: fixture.center, now: { clock.now }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        await sheet.start()
+        let phone = try await fixture.pendingHello(name: "Acme iPhone")
+        let sas = try XCTUnwrap(fixture.center.pendingLinks.first?.sas)
+
+        let view = MobileLinkSheet(model: sheet) {}
+
+        XCTAssertNoThrow(try view.inspect().find(text: "Link \"Acme iPhone\"?"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Code \(sas) — check that your iPhone shows the same code"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Refuse"))
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Image.self), "the QR is replaced")
+        try view.inspect().find(button: "Link").tap()
+        await awaitHubCondition("Link reaches the center") { self.fixture.center.devices.count == 1 }
+        XCTAssertEqual(fixture.center.devices.map(\.deviceID), [phone.deviceID.uuidString])
+        await sheet.close()
+    }
+
     func testDoneOnTheSheetDismissesIt() throws {
         let clock = fixture.clock
         let sheet = MobileLinkSheetViewModel(center: fixture.center, now: { clock.now }, sleep: { _ in })

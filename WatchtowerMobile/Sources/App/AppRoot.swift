@@ -10,7 +10,9 @@ import WatchtowerSync
 /// scan builds the scanned hub's session in its own directories; a link
 /// adds its row and puts it on screen; an unlink removes one hub; the
 /// Mac's removal freezes that hub read-only until Forget; an iCloud
-/// account change removes every hub.
+/// account change removes every hub. Each session seals and opens with
+/// this phone's keys for its hub (mobile E2E); the link flow keeps those
+/// keys in step with the hub's keybox.
 ///
 /// The demo (unsigned builds) keeps its one environment, linked as
 /// `DemoSeed.device`, and never shows onboarding.
@@ -69,8 +71,13 @@ final class AppRoot {
     /// The link check of each hub's last fetch (`checkLink`); a test awaits
     /// it.
     @ObservationIgnored private(set) var linkChecks: [String: Task<Void, Never>] = [:]
-    /// The last undecodable grant payload per hub, logged once.
-    @ObservationIgnored private var unreadableGrants: [String: Data] = [:]
+    /// Hubs whose unreadable keybox was logged; a readable one resets it.
+    @ObservationIgnored private var loggedUnreadableGrants: Set<String> = []
+    /// The seq ceiling (F29) of each hub a removal took off this phone in
+    /// this process: a new session for the same hub (a rescan) starts its
+    /// seqs above it. A relaunch forgets it; the hub's re-link absorbs a
+    /// restart (`HubSyncState.linkDevice`).
+    @ObservationIgnored private var seqFloors: [String: UInt64] = [:]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -115,14 +122,19 @@ final class AppRoot {
 
     /// The app's root: the demo on an unsigned build, else every linked
     /// hub from the registry (an F1 phone's link moved into it first), then
-    /// the orphans' clean-up and a link a kill interrupted.
+    /// the orphans' clean-up and a link a kill interrupted. Throws
+    /// `KeyStoreError.locked` before the first unlock since a restart (the
+    /// boot waits for it).
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
             return try demo(try AppEnvironment.demo(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
-        let identity = try DeviceIdentity.current(defaults: defaults)
+        let keys = try PhoneKeychain.store()
+        // F14: reads the device id (works while locked), never creates it.
+        let identity = try DeviceIdentity.current(keys: keys)
+        LegacyDeviceID.remove(defaults: defaults)
         let group = try AppEnvironment.appGroupDirectory()
         let paths = HubPaths(
             groupDirectory: group,
@@ -143,7 +155,7 @@ final class AppRoot {
             defaults: defaults,
             now: Date()
         )
-        let factory = HubSessionFactory.live(paths: paths)
+        let factory = HubSessionFactory.live(paths: paths, keys: keys)
         let env = try AppEnvironment.live(registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults)
         let root = AppRoot(
             env: env,
@@ -152,12 +164,15 @@ final class AppRoot {
             factory: factory,
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
+            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity, keys: keys),
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
-        let pendingHubID = store.pending?.link.hubID
         Task {
+            // Links made before E2E go first (their sessions were built
+            // stopped), so the orphan pass sees the pending link that is left.
+            await root.linking.dropUnencryptedLinks()
+            let pendingHubID = store.pending?.link.hubID
             do {
                 try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
             } catch {
@@ -193,15 +208,20 @@ final class AppRoot {
             factory: HubSessionFactory { _, _, _, _ in throw CocoaError(.featureUnsupported) },
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
+            linking: LinkingViewModel(
+                container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity,
+                keys: InMemoryPhoneKeyStore()
+            ),
             startWork: nil,
             farewellDelivery: FarewellDelivery { _, _ in false }
         )
     }
 
-    /// At launch: a link a kill left waiting, then the account check (the
+    /// At launch: links saved before encryption are dropped (scan again),
+    /// a link a kill left waiting resumes, then the account check (the
     /// account may have changed while the app was not running).
     func resumeLink() async {
+        await linking.dropUnencryptedLinks()
         await linking.resumePendingLink()
         await accountCheck()
     }
@@ -218,11 +238,24 @@ final class AppRoot {
 
     // MARK: - Sessions
 
-    /// The link flow's hooks on one hub's session.
+    /// The link flow's hooks on one hub's session: its link signals, the
+    /// checks after each fetch, its keybox indexed (a rotation, a removal)
+    /// and the unlock (the keybox's epoch keys reconciled with the Keychain,
+    /// final review Phone I-1).
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
         session.onFetched = { [weak self] in self?.checkLink(hubID: hubID) }
+        session.onKeyboxChanged = { [weak self] in
+            guard let self, !self.isDemo else { return }
+            let linking = self.linking
+            Task { await linking.keyboxChanged(hubID: hubID) }
+        }
+        session.onKeysAvailable = { [weak self] in
+            guard let self, !self.isDemo else { return }
+            let linking = self.linking
+            Task { await linking.reconcileKeyboxKeys(hubID: hubID) }
+        }
     }
 
     private func handle(_ signal: LinkSignal, hubID: String) {
@@ -248,7 +281,11 @@ final class AppRoot {
     /// the device id the link was made with (`LinkRecord.deviceID`), never
     /// the Keychain's current id; a link without it is judged on the
     /// heartbeat only. A hub with no `linked` row (a candidate, a frozen
-    /// hub) is not judged.
+    /// hub) is not judged. E2E: the grant rides in this phone's keybox
+    /// (`ReplicaStore.keybox(deviceID:from:)`, opened with the device's
+    /// key), whose epoch keys are reconciled with the Keychain first (final
+    /// review Phone I-1); a revoked keybox (D9) reads `linked: false` here
+    /// too, though `keyboxChanged` acts on it first.
     private func checkLink(hubID: String) {
         guard !isDemo, let session = env.session(hubID) else { return }
         if let heartbeat = session.heartbeat {
@@ -260,24 +297,26 @@ final class AppRoot {
         }
         guard let row = linking.links.first(where: { $0.hubID == hubID }), row.state == .linked else { return }
         let store = session.store
-        let grantName = row.link.deviceID.map { SliceKind.deviceGrant.recordName(id: $0) }
+        let deviceID = row.link.deviceID.flatMap(UUID.init(uuidString:))
         let heartbeat: HeartbeatPayload?
-        let grantPayload: Data?
+        let reading: Result<Keybox?, Error>?
         do {
-            (heartbeat, grantPayload) = try store.reader.read { db in
+            (heartbeat, reading) = try store.reader.read { db in
                 (
                     try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db),
-                    try grantName.flatMap { try store.payload(forRecordName: $0, from: db) }
+                    deviceID.map { id in Result { try store.keybox(deviceID: id, from: db) } }
                 )
             }
         } catch {
             Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        let grant = grantName == nil ? .unreadable : readGrant(grantPayload, hubID: hubID)
+        let grant = reading.map { readGrant($0, hubID: hubID) } ?? .unreadable
+        let keybox: Keybox? = if case let .success(stored)? = reading { stored } else { nil }
         let isActive = env.activeHubID == hubID
         let linking = linking
         linkChecks[hubID] = Task {
+            if let keybox { await linking.reconcileKeyboxKeys(hubID: hubID, keybox: keybox) }
             await linking.evaluate(hubID: hubID, heartbeat: heartbeat, isActive: isActive)
             switch grant {
             case .absent: await linking.evaluate(hubID: hubID, grant: nil, heartbeat: heartbeat)
@@ -291,23 +330,24 @@ final class AppRoot {
     private enum GrantReading {
         case absent
         case decoded(DeviceGrant)
-        /// Stored but undecodable (a newer Mac's), or no device id to read
-        /// it by: never judged — unreadable is not absent.
+        /// Stored but not readable (a newer Mac's format, an envelope that
+        /// does not open, keys locked), or no device id to read it by: never
+        /// judged — unreadable is not absent.
         case unreadable
     }
 
-    /// Reads the grant's payload. An undecodable one is logged once per
-    /// payload and hub, not on every fetch.
-    private func readGrant(_ payload: Data?, hubID: String) -> GrantReading {
-        guard let payload else { return .absent }
-        do {
-            let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: payload)
-            unreadableGrants[hubID] = nil
-            return .decoded(grant)
-        } catch {
-            if unreadableGrants[hubID] != payload {
-                unreadableGrants[hubID] = payload
-                Self.logger.warning("undecodable device grant kept, not judged: \(error.localizedDescription, privacy: .public)")
+    /// The keybox read as a grant reading. An unreadable one is logged once
+    /// per hub until a readable one comes, not on every fetch.
+    private func readGrant(_ reading: Result<Keybox?, Error>, hubID: String) -> GrantReading {
+        switch reading {
+        case .success(nil):
+            return .absent
+        case .success(let keybox?):
+            loggedUnreadableGrants.remove(hubID)
+            return .decoded(keybox.grant)
+        case .failure(let error):
+            if loggedUnreadableGrants.insert(hubID).inserted {
+                Self.logger.warning("unreadable device keybox kept, not judged: \(String(describing: error), privacy: .public)")
             }
             return .unreadable
         }
@@ -353,6 +393,8 @@ final class AppRoot {
         if let session = env.session(hubID) {
             session.onLinkSignal = nil
             session.onFetched = nil
+            session.onKeyboxChanged = nil
+            session.onKeysAvailable = nil
             if let farewell {
                 await deliver(farewell, through: session)
             }
@@ -360,6 +402,12 @@ final class AppRoot {
             // After the shutdown the boot (and its launch recovery) has
             // ended: the hand-over never races it.
             await session.shutDown()
+            do {
+                seqFloors[hubID] = max(seqFloors[hubID] ?? 0, try session.envelopeSeqCeiling())
+            } catch {
+                // Unreadable: a new session restarts its own ceiling (logged; the hub's re-link absorbs it).
+                Self.logger.error("seq ceiling unreadable at the removal: \(error.localizedDescription, privacy: .public)")
+            }
             let handover = await session.handOverRecordings(stoppedCapture: stoppedCapture, keep: keepRecordings)
             outcome = LocalWipe(
                 notSent: Self.pendingActionCount(session) + handover.lost,
@@ -382,7 +430,7 @@ final class AppRoot {
             env.remove(hubID)
         }
         linkChecks[hubID] = nil
-        unreadableGrants[hubID] = nil
+        loggedUnreadableGrants.remove(hubID)
         DeviceSettings.removeChoices(of: hubID, defaults: defaults)
         if filesFree {
             do {
@@ -498,45 +546,59 @@ extension AppRoot: LinkHost {
         env.reorder(linking.links.map(\.hubID))
     }
 
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
+    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
         // A removal of this hub still running decides what is left.
         _ = await removals[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
         if let session = env.session(hubID) {
-            if session.databaseScope == scope, !frozen {
+            if session.databaseScope == scope, !frozen, !fresh {
                 return session.linkTransport
             }
-            // Another database's zones, or a hub the Mac removed: it starts
-            // again from empty files, its recordings held.
+            // Another database's zones, a hub the Mac removed, or a new
+            // pairing: it starts again from empty files, its recordings held.
             let wipe = await removeHub(hubID, keepRecordings: true, farewell: nil)
             if let problem = wipe.problem {
                 Self.logger.error("recordings at a rescan: \(problem, privacy: .public)")
             }
         }
         let session = try factory.make(nil, hubID, scope, nil)
+        // Before anything is sealed (no await since the build): the seqs a
+        // removal of this hub left in this process are never reused (F29).
+        if let floor = seqFloors[hubID] {
+            do {
+                try session.raiseSeqFloor(floor)
+            } catch {
+                Self.logger.error("seq floor not carried: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         wire(session)
         env.add(session)
         return session.linkTransport
     }
 
-    func fetchGrant(hubID: String, deviceID: String) async -> DeviceGrant? {
+    func fetchKeybox(hubID: String, deviceID: String) async -> Keybox? {
         guard let session = env.session(hubID) else { return nil }
         await session.refresh(.link)
-        let store = session.store
-        do {
-            return try await store.reader.read { db in
-                try SettingsSnapshot.decode(
-                    DeviceGrant.self,
-                    recordName: SliceKind.deviceGrant.recordName(id: deviceID),
-                    store: store,
-                    from: db
-                )
-            }
-        } catch {
-            Self.logger.error("grant read failed: \(error.localizedDescription, privacy: .public)")
+        return await storedKeybox(hubID: hubID, deviceID: deviceID)
+    }
+
+    func storedKeybox(hubID: String, deviceID: String) async -> Keybox? {
+        guard let session = env.session(hubID) else { return nil }
+        guard let id = UUID(uuidString: deviceID) else {
+            Self.logger.error("keybox read for a device id that is not a UUID")
             return nil
         }
+        do {
+            return try session.keybox(deviceID: id)
+        } catch {
+            Self.logger.error("keybox read failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    func keysMerged(hubID: String) {
+        env.session(hubID)?.indexStoredRows()
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {

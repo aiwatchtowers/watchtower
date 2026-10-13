@@ -20,23 +20,40 @@ public protocol RecordingUploadAcking: Sendable {
 /// Durability rules (the plan's invariants):
 /// - a recording registers ONLY after its file is final on disk — the ledger
 ///   row plus the file survive an app kill;
-/// - the local file is deleted ONLY on a `received` echo from the hub
-///   (ack-then-delete);
-/// - a new `waiting` row goes out on the next pass. Every save counts an
-///   attempt (`upload_attempts`, `last_attempt_at`); a row saved before is
-///   saved again only when its backoff is due (`retryDelays` after its
-///   latest attempt), only while `retriesAllowed` holds (the app is in the
-///   foreground — never on a launch into the background), and at most
+/// - mobile E2E: a finalized recording is sealed ONCE (`sealPending`): the
+///   audio is encrypted to `<id>.enc` (a re-seal: `<id>-<n>.enc`) under a
+///   fresh asset key, the upload record (asset descriptor inside) is sealed
+///   by `SecureTransport`, the envelope, its wire name and the sealed file
+///   are stored in one row update. Only ciphertext ever leaves the phone; the plain audio stays
+///   on the phone (under its `completeUnlessOpen` file protection) until
+///   the Mac confirms receipt — owner ruling ask #89, option A — so the
+///   hold across a wipe (board #63) can carry it to a new link, where it is
+///   sealed fresh. A locked keychain leaves the row `waiting` with its
+///   plain file; it is sealed after unlock;
+/// - every send — the first, the relaunch retry, Retry after a failed echo —
+///   saves the STORED envelope and the same sealed file (`saveSealed`), never
+///   a re-seal, so the hub sees one record version (Review Focus 2);
+/// - the plain and the sealed file are deleted ONLY on a `received` echo
+///   from the hub (ack-then-delete) or the owner's discard; a `failed` echo
+///   keeps both;
+/// - a new `waiting` row goes out on the next pass once it is sealed (see
+///   Sealing). Every save counts an attempt (`upload_attempts`,
+///   `last_attempt_at`); a row saved before is saved again only when its
+///   backoff is due (`retryDelays` after its latest attempt), only while
+///   `retriesAllowed` holds (the app is in the foreground — never on a
+///   launch into the background), and at most
 ///   `PhoneRecording.uploadAttemptCap` times: past it the row reads "Upload
-///   stuck" until the owner's Retry, which resets the backoff;
+///   stuck" until the owner's Retry, which resets the backoff. Every save
+///   of a row sends its stored envelope byte for byte (mobile E2E);
 /// - an `uploading` row already sits in the transport's durable send
-///   queue, so it is re-saved (the relaunch retry: the same recordName
-///   upserts, and the hub's processed-set absorbs true duplicates) only by
-///   the first foreground pass of a process that finds the Mac online
-///   (`macOnline`), when due — or by the next foreground pass after
-///   `resendInFlightAfterWipe()`, due or not and whatever the Mac. While
-///   the Mac sleeps the queue holds the row for it: a re-save would only
-///   spend attempts toward "Upload stuck", so none is made or counted.
+///   queue, so it is re-saved (the relaunch retry: the same envelope
+///   upserts the same record, and the hub's ledger absorbs true
+///   duplicates) only by the first foreground pass of a process that finds
+///   the Mac online (`macOnline`), when due — or by the next foreground
+///   pass after `resendInFlightAfterWipe()`, due or not and whatever the
+///   Mac. While the Mac sleeps the queue holds the row for it: a re-save
+///   would only spend attempts toward "Upload stuck", so none is made or
+///   counted.
 public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings shorter than this are degenerate (a tap on Record followed
     /// by an immediate stop) and are discarded without a ledger row.
@@ -81,7 +98,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// orphan sweep off).
     nonisolated public let directory: URL?
 
-    private let transport: any CloudSyncTransport
+    private let transport: SecureTransport
     private let store: ReplicaStore
     private let maxAssetBytes: Int64
     private let now: @Sendable () -> Date
@@ -103,6 +120,12 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// never touches them, however recovery and a Record tap interleave.
     /// A new process starts empty, so a capture cut short is recovered.
     private var liveCaptureIDs: Set<String> = []
+    /// Recordings being sealed now (the actor suspends inside `sealRow`): a
+    /// second seal of one recording would write the same next seal file.
+    private var sealingIDs: Set<String> = []
+    /// Recordings whose save is in flight (the actor suspends inside `send`): a seal pass that runs meanwhile
+    /// leaves them alone, so the send never resumes onto a seal it did not save.
+    private var sendingIDs: Set<String> = []
     private var ledgerPrepared = false
     /// Whether the next foreground pass re-saves `uploading` rows: true
     /// for the first pass of a process (the relaunch retry) and after a
@@ -119,7 +142,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RecordingUploader")
 
     public init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         store: ReplicaStore,
         directory: URL? = nil,
         deviceID: String? = nil,
@@ -223,8 +246,15 @@ public actor RecordingUploader: RecordingUploadAcking {
     ) throws -> PhoneRecording? {
         let duration = activeDuration ?? endedAt.timeIntervalSince(startedAt)
         guard isUsableCapture(fileURL, duration: duration) else { return nil }
+        let recordingID = id ?? UUID().uuidString
+        // A held recording registered again after a re-link (board #63) is
+        // sealed fresh: a copy sealed under the old pairing is dropped. A
+        // row still holding the id keeps its copy (the insert below fails).
+        if try store.phoneRecording(id: recordingID) == nil {
+            removeSealedLeftovers(id: recordingID, plain: fileURL)
+        }
         let recording = PhoneRecording(
-            id: id ?? UUID().uuidString,
+            id: recordingID,
             storedPath: storedPath(for: fileURL),
             startedAt: startedAt,
             endedAt: endedAt,
@@ -399,7 +429,18 @@ public actor RecordingUploader: RecordingUploadAcking {
     public func sweepOrphanFiles() throws -> [URL] {
         guard let directory else { return [] }
         try prepareLedger()
-        let known = Set(try store.phoneRecordings().filter { $0.state != .delivered }.map { fileURL($0).standardizedFileURL.path })
+        // An undelivered row owns its plain file (kept until the Mac
+        // confirms it, ask #89 A) AND its sealed copy: the stored one (also
+        // while a re-seal is due: an older queued save may point at it),
+        // and, for a row without an envelope, the next seal file that a seal
+        // in progress (suspended in `transport.seal`, before `sealed_path`
+        // is stored) has already written.
+        var known: Set<String> = []
+        for row in try store.phoneRecordings() where row.state != .delivered {
+            known.insert(fileURL(row).standardizedFileURL.path)
+            if let sealed = row.sealedFileURL(in: directory) { known.insert(sealed.standardizedFileURL.path) }
+            if row.envelope == nil { known.insert(sealTarget(for: row).standardizedFileURL.path) }
+        }
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -430,18 +471,19 @@ public actor RecordingUploader: RecordingUploadAcking {
 
     // MARK: - Upload
 
-    /// Saves every `waiting` row that is due (see the type's rules) into
-    /// the relay zone as a pending `recording_upload` record with the audio
-    /// attached; a successful save flips the row to `uploading`. The first
-    /// foreground pass of a process (and the first after
-    /// `resendInFlightAfterWipe()`) re-sends due `uploading` rows too — the
-    /// relaunch retry: the save upserts the same recordName and the hub's
-    /// processed-set absorbs duplicates — once the Mac reads online (a
+    /// Seals what is not sealed yet (`sealPending`, on every pass, the
+    /// background ones included), then saves every sealed row that is due
+    /// (see the type's rules) into the relay zone as its stored envelope
+    /// with the sealed audio attached; a successful save flips the row to
+    /// `uploading`. The first foreground pass of a process (and the first
+    /// after `resendInFlightAfterWipe()`) re-sends due `uploading` rows too
+    /// — the relaunch retry: the same envelope upserts the same record and
+    /// the hub's ledger absorbs duplicates — once the Mac reads online (a
     /// wipe's re-send does not wait). Each save counts an attempt. A
     /// transport throw leaves the row for its next due pass; a vanished
-    /// local file, or one over the asset cap, fails the row locally (it can
-    /// never be sent).
-    /// Without a linked device nothing is sent and every row keeps waiting.
+    /// local file, or audio over the asset cap, fails the row locally (it
+    /// can never be sent). Without a linked device nothing is sealed or sent
+    /// and every row keeps waiting.
     /// A call while a pass is sending waits for it and runs one more pass,
     /// shared by every caller that arrived meanwhile.
     /// Returns how many rows were handed to the transport.
@@ -498,10 +540,17 @@ public actor RecordingUploader: RecordingUploadAcking {
             resendIgnoresBackoff = false
         }
         do {
+            // A non-lock seal error is per row (logged in `sealRows`): rows
+            // already sealed are still sent below.
+            let justSealed = try await sealRows(deviceID: deviceID).sealedInFlight
             let rows = try store.phoneRecordings().filter {
-                isDue($0, retrying: retrying, includeInFlight: includeInFlight, ignoreBackoff: ignoreBackoff)
+                guard $0.isSealed else { return false }
+                // A pre-E2E `uploading` row sealed by this pass was never
+                // sent sealed: it goes out like a new row.
+                if $0.state == .uploading, justSealed.contains($0.id) { return true }
+                return isDue($0, retrying: retrying, includeInFlight: includeInFlight, ignoreBackoff: ignoreBackoff)
             }
-            return try await send(rows, deviceID: deviceID)
+            return try await send(rows)
         } catch {
             // A pass that exits by throwing (a store read or write) has not
             // finished its re-send: keep it armed for the next pass instead
@@ -536,42 +585,30 @@ public actor RecordingUploader: RecordingUploadAcking {
         return ignoreBackoff || due.timeIntervalSince(now()) <= 0.001
     }
 
-    private func send(_ rows: [PhoneRecording], deviceID: String) async throws -> Int {
+    /// Saves each sealed row's stored envelope, unchanged.
+    private func send(_ rows: [PhoneRecording]) async throws -> Int {
         var sent = 0
         for row in rows {
-            let file = fileURL(row)
-            guard let size = try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64 else {
+            guard let envelope = row.envelope, let wireName = row.wireName, let sealed = row.sealedFileURL(in: directory)
+            else { continue }
+            guard FileManager.default.fileExists(atPath: sealed.path) else {
                 try failLocally(row.id, .missingFile)
                 continue
             }
-            guard size <= maxAssetBytes else {
-                try failLocally(row.id, .tooLarge)
-                continue
-            }
-            // Marks are deliberately absent: they stay on the phone.
-            let payload = RecordingUploadPayload(
-                id: row.id,
-                startedAt: row.startedAt,
-                endedAt: row.endedAt,
-                durationSec: row.durationSec,
-                titleHint: row.titleHint,
-                sampleFormat: row.sampleFormat,
-                eventID: row.eventID,
-                deviceID: deviceID
-            )
             let attemptAt = now()
             // Counted before the save, so an attempt the process dies in
             // still spends its backoff step. A store failure ends the pass.
             try store.recordPhoneRecordingUploadAttempt(id: row.id, at: attemptAt)
+            let record = CloudRecord(
+                recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: attemptAt, payload: envelope,
+                assetFileURL: sealed)
+            sendingIDs.insert(row.id)
+            defer { sendingIDs.remove(row.id) }
             do {
-                let record = try CloudRecordFactory.record(
-                    for: payload, modifiedAt: attemptAt, assetFileURL: file
-                )
                 energy?.record(.uploadAttempt)
-                try await transport.save([record])
+                try await transport.saveSealed([record])
             } catch {
-                // Transient (or encoding — unreachable for our own payloads)
-                // failure: keep the row for its next due pass.
+                // Transient failure: keep the row for its next due pass.
                 logger.warning("""
                     recording upload save failed for \(row.id, privacy: .public): \
                     \(error.localizedDescription, privacy: .public)
@@ -581,17 +618,233 @@ public actor RecordingUploader: RecordingUploadAcking {
                 }
                 continue
             }
-            try store.setPhoneRecordingState(id: row.id, state: .uploading)
+            // A `received` echo may have marked it delivered while the save was in flight: that stays.
+            try store.setPhoneRecordingUploading(id: row.id)
+            // The save above replaced any queued save of this record (by name), so an older seal's file is no
+            // longer pointed at. The row's seal is read again: whatever it stores now is kept too.
+            let current = try store.phoneRecording(id: row.id)?.sealedFileURL(in: directory)
+            removeSealedLeftovers(id: row.id, plain: fileURL(row), keeping: [sealed, current].compactMap { $0 })
             sent += 1
         }
         return sent
     }
 
+    // MARK: - Sealing (mobile E2E)
+
+    /// Seals every finalized recording that has no envelope yet (`waiting`,
+    /// and an `uploading` row a pre-E2E build sent in the clear): the audio
+    /// is encrypted to a fresh seal file (`sealTarget`) with a fresh asset key, the upload record
+    /// is sealed once, and the envelope, wire name and sealed file are
+    /// stored in one row update; the plain audio stays until the Mac
+    /// confirms it (`applyEcho`, ask #89 A). The asset cap is
+    /// checked on the plain size first. A locked keychain (or keys not here
+    /// yet) stops the pass with the remaining rows untouched — plain file
+    /// kept, retried by a later pass — and is not an error. Without a linked
+    /// device nothing is sealed (the payload carries the device id).
+    /// Returns how many recordings this call sealed. `uploadPending` runs it
+    /// first.
+    @discardableResult
+    public func sealPending() async throws -> Int {
+        guard let deviceID else {
+            logger.notice("recording seals wait: this phone is not linked")
+            return 0
+        }
+        try prepareLedger()
+        return try await sealRows(deviceID: deviceID).sealed
+    }
+
+    /// `sealed`: how many rows this call sealed; `sealedInFlight`: the
+    /// `uploading` rows (pre-E2E uploads) among them, which this pass sends
+    /// although it may not be the launch pass. A locked keychain
+    /// stops the loop; any other error is the row's, logged, and leaves that
+    /// row unsealed for the next pass while the others go on.
+    private func sealRows(deviceID: String) async throws -> (sealed: Int, sealedInFlight: Set<String>) {
+        try unsealStaleEpochs()
+        let rows = try store.phoneRecordings().filter {
+            ($0.state == .waiting || $0.state == .uploading) && $0.envelope == nil
+        }
+        var sealedCount = 0
+        var sealedInFlight: Set<String> = []
+        for row in rows {
+            do {
+                guard try await sealRow(row, deviceID: deviceID) else { continue }
+                sealedCount += 1
+                if row.state == .uploading { sealedInFlight.insert(row.id) }
+            } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+                logger.notice("recording seals wait for the keychain (\(rows.count - sealedCount) left)")
+                break
+            } catch {
+                logger.error("""
+                    recording not sealed, retried next pass: \(row.id, privacy: .public): \
+                    \(String(describing: error), privacy: .public)
+                    """)
+            }
+        }
+        return (sealedCount, sealedInFlight)
+    }
+
+    /// Final review Kit I1: byte identity matters only within an epoch. A
+    /// `waiting` or `uploading` row whose stored envelope was sealed under an
+    /// epoch older than the phone's current one (rotations while it was
+    /// away; the hub accepts the previous epoch for 7 days only) loses its
+    /// seal here, so `sealRows` seals it again under the current epoch: the
+    /// same wire name (`K_meta` does not rotate, so the hub's ledger still
+    /// dedupes), a new envelope and a fresh asset key. Keys that cannot be
+    /// read now leave every row as it is.
+    private func unsealStaleEpochs() throws {
+        let current: UInt32
+        do {
+            current = try transport.currentEpoch()
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            return
+        }
+        let rows = try store.phoneRecordings().filter {
+            ($0.state == .waiting || $0.state == .uploading) && $0.envelope != nil && !sealingIDs.contains($0.id)
+                && !sendingIDs.contains($0.id)
+        }
+        for row in rows {
+            guard let envelope = row.envelope else { continue }
+            let epoch: UInt32
+            do {
+                epoch = try Envelope.parse(envelope).header.epoch
+            } catch {
+                logger.error("stored recording envelope unreadable: \(row.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                continue
+            }
+            guard epoch < current, try store.clearPhoneRecordingSeal(id: row.id, envelope: envelope) else { continue }
+            logger.notice("recording \(row.id, privacy: .public) sealed under epoch \(epoch) is sealed again under \(current)")
+        }
+    }
+
+    /// true when this call sealed the row; false when another call sealed
+    /// (or is sealing) it, the row failed locally, could not be encrypted
+    /// (retried next pass), or went away while it was being sealed.
+    private func sealRow(_ snapshot: PhoneRecording, deviceID: String) async throws -> Bool {
+        // Re-read and claim in one actor turn: the list was read before
+        // earlier rows' suspensions, so an overlapping call may have sealed
+        // this one meanwhile.
+        guard !sealingIDs.contains(snapshot.id), !sendingIDs.contains(snapshot.id),
+              let row = try store.phoneRecording(id: snapshot.id),
+              row.envelope == nil, row.state == .waiting || row.state == .uploading
+        else { return false }
+        sealingIDs.insert(row.id)
+        defer { sealingIDs.remove(row.id) }
+        let plain = fileURL(row)
+        guard let size = try? FileManager.default.attributesOfItem(atPath: plain.path)[.size] as? Int64 else {
+            try failLocally(row.id, .missingFile)
+            return false
+        }
+        guard size <= maxAssetBytes else {
+            try failLocally(row.id, .tooLarge)
+            return false
+        }
+        // Marks are deliberately absent: they stay on the phone.
+        let payload = RecordingUploadPayload(
+            id: row.id,
+            startedAt: row.startedAt,
+            endedAt: row.endedAt,
+            durationSec: row.durationSec,
+            titleHint: row.titleHint,
+            sampleFormat: row.sampleFormat,
+            eventID: row.eventID,
+            deviceID: deviceID
+        )
+        let unsealed = try CloudRecordFactory.record(for: payload, modifiedAt: now(), assetFileURL: nil)
+        // The opaque name needs `K_meta`: a locked keychain throws here,
+        // before a large file is encrypted for nothing.
+        _ = try transport.wireName(for: unsealed)
+        let sealedFile = sealTarget(for: row)
+        let descriptor: AssetDescriptor
+        do {
+            // A fresh asset key per call (`encryptFile`'s default).
+            descriptor = try ChunkedAssetCipher.encryptFile(at: plain, to: sealedFile)
+        } catch {
+            logger.warning("""
+                recording not sealed, retried next pass: \(row.id, privacy: .public): \
+                \(String(describing: error), privacy: .public)
+                """)
+            removeSealedLeftover(sealedFile)
+            return false
+        }
+        let wire: CloudRecord
+        do {
+            wire = try await transport.seal(CloudRecord(
+                recordName: unsealed.recordName, zone: unsealed.zone, kind: unsealed.kind,
+                modifiedAt: unsealed.modifiedAt, payload: unsealed.payload, assetFileURL: sealedFile, asset: descriptor))
+        } catch {
+            // Never keep a sealed file without its envelope: its key is gone with this call.
+            removeSealedLeftover(sealedFile)
+            throw error
+        }
+        let stored: Bool
+        do {
+            stored = try store.setPhoneRecordingSealed(
+                id: row.id, envelope: wire.payload, wireName: wire.recordName, sealedPath: storedPath(for: sealedFile))
+        } catch {
+            // No row holds the envelope: the sealed file goes, the plain file stays for the retry.
+            removeSealedLeftover(sealedFile)
+            throw error
+        }
+        guard stored else {
+            // The row was discarded while this call encrypted it.
+            removeSealedLeftover(sealedFile)
+            return false
+        }
+        // The superseded file stays: the transport's queued save may still point at it until this seal's save
+        // replaces it (`send`), or the launch sweep finds it unknown.
+        return true
+    }
+
+    /// Where `sealRow` writes a row's next sealed audio, in the recordings
+    /// folder or next to a plain file kept elsewhere: `<id>.enc` for the
+    /// first seal, `<id>-<n>.enc` for the n-th re-seal. A fresh name per
+    /// seal: a re-seal never rewrites the file an older queued save still
+    /// points at.
+    private func sealTarget(for row: PhoneRecording) -> URL {
+        let first = sealTarget(id: row.id, plain: fileURL(row))
+        guard let current = row.sealedFileURL(in: directory) else { return first }
+        let generation = Self.sealGeneration(of: current, id: row.id) + 1
+        return first.deletingLastPathComponent().appendingPathComponent("\(row.id)-\(generation).enc")
+    }
+
+    private func sealTarget(id: String, plain: URL) -> URL {
+        (directory ?? plain.deletingLastPathComponent()).appendingPathComponent("\(id).enc")
+    }
+
+    /// 0 for `<id>.enc` (or a name this build did not write), n for `<id>-<n>.enc`.
+    private static func sealGeneration(of file: URL, id: String) -> Int {
+        let name = file.deletingPathExtension().lastPathComponent
+        guard name.hasPrefix("\(id)-"), let generation = Int(name.dropFirst(id.count + 1)), generation > 0 else { return 0 }
+        return generation
+    }
+
+    /// Every seal file of `id` (`<id>.enc` and `<id>-<n>.enc`) beside its plain file, but those in `keeping`.
+    private func removeSealedLeftovers(id: String, plain: URL, keeping: [URL] = []) {
+        let first = sealTarget(id: id, plain: plain)
+        let folder = first.deletingLastPathComponent()
+        let kept = Set(keeping.map(\.standardizedFileURL.path))
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        for file in files where !kept.contains(file.standardizedFileURL.path) && (file.lastPathComponent == first.lastPathComponent
+            || (file.pathExtension == "enc" && Self.sealGeneration(of: file, id: id) > 0)) {
+            removeSealedLeftover(file)
+        }
+    }
+
+    private func removeSealedLeftover(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            logger.warning("sealed leftover not removed (the orphan sweep retries): \(url.lastPathComponent, privacy: .public)")
+        }
+    }
+
     // MARK: - Echoes (via RelayFeed)
 
     /// Resolves the ledger from a hub echo. `received` deletes the local
-    /// audio (ack-then-delete) and marks the row delivered; `failed` keeps
-    /// the file and surfaces the hub's message. Unknown ids are no-ops
+    /// audio, sealed and plain (ack-then-delete), and marks the row
+    /// delivered; `failed` keeps both files (the next Retry re-sends the
+    /// sealed one with the stored envelope) and surfaces the hub's message. Unknown ids are no-ops
     /// (redelivery after the row was removed); a still-`pending` payload is
     /// our own save reflecting back: inert. Idempotent — a replayed batch
     /// re-applies the same terminal state and the file removal no-ops.
@@ -603,7 +856,9 @@ public actor RecordingUploader: RecordingUploadAcking {
         case .received:
             guard let row = try store.phoneRecording(id: upload.id) else { return }
             try store.setPhoneRecordingState(id: upload.id, state: .delivered)
+            // Already gone (a replayed echo) is a no-op for either file.
             try? FileManager.default.removeItem(at: fileURL(row))
+            if let sealed = row.sealedFileURL(in: directory) { try? FileManager.default.removeItem(at: sealed) }
         case .failed:
             // Never downgrade a delivered row — a late duplicate failed echo
             // after a successful re-upload must not resurrect the failure.
@@ -626,7 +881,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         _ = try await uploadPending()
     }
 
-    /// Removes a ledger row and its local file (the user's delete). The
+    /// Removes a ledger row and its local files, plain and sealed (the
+    /// user's delete). The
     /// relay record, if any, is left for the hub's hygiene.
     public func discard(id: String) throws {
         liveCaptureIDs.remove(id)
@@ -634,5 +890,6 @@ public actor RecordingUploader: RecordingUploadAcking {
         guard let row = try store.phoneRecording(id: id) else { return }
         try store.removePhoneRecording(id: id)
         try? FileManager.default.removeItem(at: fileURL(row))
+        if let sealed = row.sealedFileURL(in: directory) { try? FileManager.default.removeItem(at: sealed) }
     }
 }

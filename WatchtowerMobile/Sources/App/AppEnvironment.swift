@@ -444,7 +444,14 @@ final class AppEnvironment {
     private static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
         let device = identity.linkedDevice(for: row.link)
         guard row.state == .unlinkedByMac else {
-            return try factory.make(row, row.hubID, row.link.databaseScope, device)
+            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
+            // A hub without stored link keys (made before E2E) is built
+            // stopped, before its boot runs: no engine, no fetch, no send;
+            // the launch's `dropUnencryptedLinks` removes it.
+            if session.transportKind == .cloudKit, !session.startsEngine {
+                session.stop()
+            }
+            return session
         }
         let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
         session.stop()
@@ -566,9 +573,26 @@ final class AppEnvironment {
             logger.fault("app group container \(appGroupID, privacy: .public) is unavailable")
             throw AppEnvironmentError.appGroupUnavailable
         }
-        let directory = group.appendingPathComponent("Library/Application Support", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try prepareLiveDirectory(group.appendingPathComponent("Library/Application Support", isDirectory: true))
+    }
+
+    /// Creates the live directory with its class (D8) before any database in it: the replica and the transport
+    /// store hold ciphertext that background hydration and the notification extension reach after the first
+    /// unlock (class C); every file SQLite creates there inherits it.
+    nonisolated static func prepareLiveDirectory(_ directory: URL) throws -> URL {
+        try FileProtection.protectDirectory(directory)
         return directory
+    }
+
+    /// A live CloudKit transport's store at `path` (`HubPaths.transportStorePath`): its folder and its incoming
+    /// asset stash (sealed files) take class C (D8) before the store opens, wherever the store lives.
+    static func liveTransportStore(path: String) throws -> TransportStore {
+        try FileProtection.protectDirectory(URL(fileURLWithPath: path).deletingLastPathComponent())
+        let store = try TransportStore(path: path)
+        if let stash = store.stashDirectory {
+            try FileProtection.protectDirectory(stash)
+        }
+        return store
     }
 
     /// Unsigned builds keep the replica in Application Support, which an

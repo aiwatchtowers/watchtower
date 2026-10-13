@@ -104,13 +104,13 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	// tools, the Slack pair and the surface-less read tools — no other write
 	// tool, nothing External but the propose-only Slack send — and no
 	// workbench tool leaks onto another surface.
-	projectTools := []string{
+	workbenchTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
 		"ask_owner", "get_ask", "list_asks", "withdraw_ask", "finish_session",
 	}
 	project := names("project")
-	for _, p := range projectTools {
+	for _, p := range workbenchTools {
 		assert.True(t, project[p], "%s missing on the project surface", p)
 		assert.False(t, main[p] || target[p] || reaction[p], "%s is project-surface only", p)
 	}
@@ -129,7 +129,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, rt := range tools.ReadTools() {
 		assert.NotEqual(t, "get_writing_style", rt.Name, "dev-mode MCP is unchanged (DEV-01)")
 	}
-	assert.Len(t, project, len(projectTools)+len(slackTools)+len(tools.ReadTools()), "nothing else on the project surface")
+	assert.Len(t, project, len(workbenchTools)+len(slackTools)+len(tools.ReadTools()), "nothing else on the project surface")
 	for _, tool := range reg.List("project") {
 		if tool.Name == "send_slack_message" {
 			assert.True(t, tool.External, "a Slack send leaves the machine (AGENT-03)")

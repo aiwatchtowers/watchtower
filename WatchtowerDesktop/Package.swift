@@ -112,6 +112,8 @@ let package = Package(
                 .product(name: "ViewInspector", package: "ViewInspector"),
                 // The hub tests drive it on the Kit's InMemoryCloudTransport.
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                // F25: the test hub and phone (fixed pairing) that seal and open what the hub publishes.
+                .product(name: "WatchtowerE2ETesting", package: "WatchtowerKit"),
             ],
             path: "Tests",
             exclude: ["Core", "Support", "OCRHelperTests"]

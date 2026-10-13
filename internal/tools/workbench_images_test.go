@@ -35,9 +35,9 @@ func fakeImage(t *testing.T, name, payload string) string {
 	return p
 }
 
-func storedFiles(t *testing.T, store workbenchfiles.Store, projectID int64) []string {
+func storedFiles(t *testing.T, store workbenchfiles.Store, workbenchID int64) []string {
 	t.Helper()
-	entries, err := os.ReadDir(store.Dir(projectID))
+	entries, err := os.ReadDir(store.Dir(workbenchID))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -61,10 +61,10 @@ type targetImagesView struct {
 	Images []db.WorkbenchTargetImage `json:"images"`
 }
 
-func targetImages(t *testing.T, reg *Registry, projectID, targetID int64) []db.WorkbenchTargetImage {
+func targetImages(t *testing.T, reg *Registry, workbenchID, targetID int64) []db.WorkbenchTargetImage {
 	t.Helper()
 	var v targetImagesView
-	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, projectID, "get_target", fmt.Sprintf(`{"id":%d}`, targetID))), &v))
+	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, workbenchID, "get_target", fmt.Sprintf(`{"id":%d}`, targetID))), &v))
 	return v.Images
 }
 

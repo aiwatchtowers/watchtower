@@ -113,22 +113,22 @@ type PR struct {
 }
 
 // Build reads session sessionID's report from the DB and the PR cache of
-// workbench projectID. A missing session, or one of another workbench, is
+// workbench workbenchID. A missing session, or one of another workbench, is
 // db.ErrTerminalSessionNotFound.
-func Build(ctx context.Context, d *db.DB, projectID, sessionID int64, opts Options) (Report, error) {
-	sess, sc, err := loadScope(ctx, d, projectID, sessionID)
+func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Options) (Report, error) {
+	sess, sc, err := loadScope(ctx, d, workbenchID, sessionID)
 	if err != nil {
 		return Report{}, err
 	}
-	states, err := d.PRStates(projectID)
+	states, err := d.PRStates(workbenchID)
 	if err != nil {
 		return Report{}, err
 	}
-	spans, err := statusSpans(ctx, d, projectID)
+	spans, err := statusSpans(ctx, d, workbenchID)
 	if err != nil {
 		return Report{}, err
 	}
-	asks, err := d.ListOwnerAsks(projectID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID})
+	asks, err := d.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID})
 	if err != nil {
 		return Report{}, err
 	}

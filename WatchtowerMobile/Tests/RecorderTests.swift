@@ -195,7 +195,7 @@ final class RecorderTests: XCTestCase {
     func testAnAutoFinishInTheBackgroundHoldsTheReplicaForTheSave() async throws {
         let dir = try makeRecordingsDirectory()
         addTeardownBlock { NotificationCenter.default.post(name: Database.resumeNotification, object: nil) }
-        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path, observesSuspension: true)
+        let store = try TestPhone.replica(path: dir.appendingPathComponent("replica.sqlite").path, observesSuspension: true)
         let sleeper = TickSleeper()
         let rig = try makeRecorderRig(store: store) { try await sleeper.sleep($0) }
         let suspension = DatabaseSuspension { NotificationCenter.default.post(name: $0, object: nil) }
@@ -369,7 +369,7 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(row.durationSec, 21, "the paused 100 s are not audio")
         XCTAssertEqual(try rig.store.phoneRecordingMarks(id: row.id), [12, 17])
 
-        let batch = try await rig.transport.changes(in: .relay, since: nil)
+        let batch = try await rig.secure.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.payload) as? [String: Any])
         XCTAssertFalse(object.keys.contains { $0.contains("mark") }, "marks never travel: \(object.keys)")
@@ -411,7 +411,7 @@ final class RecorderTests: XCTestCase {
         rig.clock.advance(30)
         await rig.controller.stop()
 
-        let batch = try await rig.transport.changes(in: .relay, since: nil)
+        let batch = try await rig.secure.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.payload) as? [String: Any])
         XCTAssertNil(object["event_id"], "No meeting leaves event_id absent")
@@ -606,10 +606,11 @@ final class RecorderTests: XCTestCase {
         await relaunched.controller.uploadPending()
 
         let files = try FileManager.default.contentsOfDirectory(atPath: moved.path)
-        XCTAssertEqual(files.count, 2, "nothing is swept: \(files)")
+        // Each recording keeps its plain audio and its sealed copy until the Mac confirms it (ask #89 A).
+        XCTAssertEqual(files.count, 4, "nothing is swept: \(files)")
         XCTAssertEqual(try relaunched.store.phoneRecording(id: strandedID)?.state, .uploading)
         XCTAssertEqual(try relaunched.store.phoneRecording(id: saved.id)?.state, .uploading)
-        let batch = try await relaunched.transport.changes(in: .relay, since: nil)
+        let batch = try await relaunched.secure.changes(in: .relay, since: nil)
         let assets = batch.changed.compactMap(\.assetFileURL)
         XCTAssertEqual(assets.count, 2)
         XCTAssertTrue(assets.allSatisfy { $0.path.hasPrefix(moved.path) && FileManager.default.fileExists(atPath: $0.path) })

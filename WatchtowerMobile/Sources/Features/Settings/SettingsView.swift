@@ -77,7 +77,18 @@ struct SettingsView: View {
                     LabeledContent("Macs", value: "\(linking.links.count)")
                 }
             }
+            if model.waitingForKeys {
+                Text(SettingsViewModel.waitingForKeysNotice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let notice = model.formatNotice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(PhoneTone.red.color)
+            }
         }
+        .onChange(of: env.lastSyncAt) { model.refreshFormatNotice() }
     }
 
     // MARK: - Accounts (read-only)

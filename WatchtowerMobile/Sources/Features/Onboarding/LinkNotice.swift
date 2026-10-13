@@ -19,13 +19,18 @@ enum LinkNotice: Equatable {
     /// with the wipe's "Not sent" count.
     case recordingsProblem(String, notSent: Int)
 
+    /// The saved link predates encryption (mobile E2E spec §2.8): it was
+    /// dropped at launch, and the phone pairs again with a new code.
+    case encryptionReScan
+
     /// What a removal reports: a recording problem first, then a capture
     /// it stopped and kept (for the Mac named `macName`, when one hub's
-    /// link ended), else the "Not sent" count, or nil when nothing was
-    /// lost.
-    static func after(_ wipe: LocalWipe, macName: String? = nil) -> Self? {
+    /// link ended), else `otherwise` (by default the "Not sent" count, or
+    /// nil when nothing was lost).
+    static func after(_ wipe: LocalWipe, macName: String? = nil, otherwise: Self? = nil) -> Self? {
         if let problem = wipe.problem { return .recordingsProblem(problem, notSent: wipe.notSent) }
         if wipe.stoppedRecording { return .recordingKept(macName: macName, notSent: wipe.notSent) }
+        if let otherwise { return otherwise }
         return wipe.notSent > 0 ? .notSent(wipe.notSent) : nil
     }
 
@@ -42,6 +47,8 @@ enum LinkNotice: Equatable {
                 + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case let .recordingsProblem(problem, notSent):
             problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
+        case .encryptionReScan:
+            "Watchtower now encrypts your data. Scan the code on your Mac again."
         }
     }
 

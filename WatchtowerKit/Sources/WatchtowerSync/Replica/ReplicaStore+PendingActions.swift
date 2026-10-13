@@ -6,6 +6,9 @@ import GRDB
 extension ReplicaStore {
     /// All overlay rows, oldest first (stable: created_at, then action_id).
     /// Failed rows stay visible until the user retries or dismisses them.
+    /// Each row holds the sealed envelope the outbox sent (mobile E2E) and
+    /// opens on read: a locked keychain throws `KeyStoreError.locked` (locked
+    /// is its own state, never "no pending actions").
     public func pendingActions() throws -> [PendingAction] {
         try writer.read { db in try pendingActions(from: db) }
     }
@@ -14,7 +17,7 @@ extension ReplicaStore {
     /// ValueObservation tracking closures, where a nested `writer.read` would
     /// trap on DatabasePool reentrancy (same rule as `fetchAll(_:kind:from:)`).
     public func pendingActions(from db: Database) throws -> [PendingAction] {
-        decodePendingActions(try Row.fetchAll(
+        try decodePendingActions(try Row.fetchAll(
             db,
             sql: "SELECT * FROM pending_actions ORDER BY created_at, action_id"
         ))
@@ -23,7 +26,7 @@ extension ReplicaStore {
     /// Overlay rows targeting one slice record (`target-42`), oldest first.
     public func pendingActions(forEntity recordName: String) throws -> [PendingAction] {
         try writer.read { db in
-            decodePendingActions(try Row.fetchAll(
+            try decodePendingActions(try Row.fetchAll(
                 db,
                 sql: """
                     SELECT * FROM pending_actions WHERE entity_record_name = ?
@@ -46,20 +49,21 @@ extension ReplicaStore {
     }
 
     /// ActionOutbox's write path (internal: the app enqueues via the outbox,
-    /// never by inserting rows directly). Stores the wire-encoded payload so
-    /// the overlay can re-surface the full request (retry re-enqueues it).
-    func insertPendingAction(_ action: ActionRequestPayload, entityRecordName: String?) throws {
-        let payload = try RelayCoder.makeEncoder().encode(action)
+    /// never by inserting rows directly). Stores the sealed record exactly as
+    /// it was sent (`sealed.payload` under `sealed.recordName`), so the overlay
+    /// can re-surface the full request (retry re-enqueues it) without keeping
+    /// a plaintext copy at rest.
+    func insertPendingAction(_ action: ActionRequestPayload, entityRecordName: String?, sealed: CloudRecord) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO pending_actions
-                        (action_id, kind, entity_record_name, payload, created_at, state)
-                    VALUES (?, ?, ?, ?, ?, 'pending')
+                        (action_id, kind, entity_record_name, payload, wire_name, created_at, state)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending')
                     """,
                 arguments: [
                     action.id, action.kind.rawValue, entityRecordName,
-                    payload, action.createdAt.timeIntervalSince1970
+                    sealed.payload, sealed.recordName, action.createdAt.timeIntervalSince1970
                 ]
             )
         }
@@ -119,17 +123,20 @@ extension ReplicaStore {
         }
     }
 
-    /// Maps rows to PendingAction, skipping (and logging once, keyed by
-    /// action_id) any whose payload no longer decodes. These blobs are written
-    /// by this module from a just-encoded payload, so a failure here is a
-    /// programmer error — but one bad row must never take down the overlay.
-    private func decodePendingActions(_ rows: [Row]) -> [PendingAction] {
+    /// Maps rows to PendingAction, opening each sealed payload with the
+    /// phone's own p2h key (`opener.openOwnRelay`). A locked keychain or keys
+    /// not here throw (the whole read is "cannot tell now"); a row whose
+    /// envelope does not open or whose payload no longer decodes is skipped
+    /// and logged once, keyed by action_id. These blobs are written by this
+    /// module from a just-sealed record, so a failure here is a programmer
+    /// error (or a re-pair) — but one bad row must never take down the overlay.
+    private func decodePendingActions(_ rows: [Row]) throws -> [PendingAction] {
         let decoder = RelayCoder.makeDecoder()
         var decoded: [PendingAction] = []
         var badIDs: [String] = []
         for row in rows {
             let id: String = row["action_id"]
-            guard let action = try? decoder.decode(ActionRequestPayload.self, from: row["payload"] as Data),
+            guard let action = try openPendingAction(row, decoder: decoder),
                   let state = PendingAction.State(rawValue: row["state"]) else {
                 badIDs.append(id)
                 continue
@@ -157,6 +164,22 @@ extension ReplicaStore {
             logger.warning("undecodable pending_actions row skipped: \(id, privacy: .public)")
         }
         return decoded
+    }
+}
+
+extension ReplicaStore {
+    /// nil when the envelope does not open (another link's key, a damaged row)
+    /// or the frame is not an action; throws on a locked keychain or missing keys.
+    fileprivate func openPendingAction(_ row: Row, decoder: JSONDecoder) throws -> ActionRequestPayload? {
+        guard let wireName: String = row["wire_name"] else { return nil }
+        let frame: InnerFrame
+        do {
+            frame = try opener.openOwnRelay(wireName: wireName, envelope: row["payload"])
+        } catch is EnvelopeError {
+            return nil
+        }
+        guard frame.kind == RelayRecordKind.action.rawValue else { return nil }
+        return try? decoder.decode(ActionRequestPayload.self, from: frame.payload)
     }
 }
 

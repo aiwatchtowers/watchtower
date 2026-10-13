@@ -498,8 +498,8 @@ func TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession(t *testing.T) {
 	_, err := Run(ctx, d, Options{Now: testNow()})
 	require.NoError(t, err)
 
-	search := func(projectID int64, sources ...string) []string {
-		res, err := Search(ctx, d, Request{Queries: []string{"роадмап"}, Sources: sources, WorkbenchID: projectID, Limit: MaxLimit, Now: testNow()})
+	search := func(workbenchID int64, sources ...string) []string {
+		res, err := Search(ctx, d, Request{Queries: []string{"роадмап"}, Sources: sources, WorkbenchID: workbenchID, Limit: MaxLimit, Now: testNow()})
 		require.NoError(t, err)
 		return hitRefs(res)
 	}
@@ -509,15 +509,15 @@ func TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession(t *testing.T) {
 	assert.Equal(t, []string{"wbdoc:2:plan.md"}, search(2), "another workbench sees only its own")
 
 	for _, tc := range []struct {
-		projectID int64
-		ref       string
-		visible   bool
+		workbenchID int64
+		ref         string
+		visible     bool
 	}{{0, fixturePlanRef, false}, {2, fixturePlanRef, false}, {1, fixturePlanRef, true}, {2, "wbdoc:2:plan.md", true}} {
-		_, err := GetDocument(ctx, d, tc.ref, DocOptions{WorkbenchID: tc.projectID})
+		_, err := GetDocument(ctx, d, tc.ref, DocOptions{WorkbenchID: tc.workbenchID})
 		if tc.visible {
-			assert.NoError(t, err, "%s from workbench %d", tc.ref, tc.projectID)
+			assert.NoError(t, err, "%s from workbench %d", tc.ref, tc.workbenchID)
 		} else {
-			assert.ErrorIs(t, err, ErrNotFound, "%s from workbench %d", tc.ref, tc.projectID)
+			assert.ErrorIs(t, err, ErrNotFound, "%s from workbench %d", tc.ref, tc.workbenchID)
 		}
 	}
 }

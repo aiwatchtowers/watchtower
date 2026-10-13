@@ -512,12 +512,12 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 }
 
 // discardTargetImages removes the stored copies of images (rows of a target
-// already deleted) that no remaining row of project projectID names.
-func discardTargetImages(cfg *config.Config, database *db.DB, projectID int64, images []db.WorkbenchTargetImage) error {
+// already deleted) that no remaining row of workbench workbenchID names.
+func discardTargetImages(cfg *config.Config, database *db.DB, workbenchID int64, images []db.WorkbenchTargetImage) error {
 	if len(images) == 0 {
 		return nil
 	}
-	keep, err := database.WorkbenchImagePaths(projectID)
+	keep, err := database.WorkbenchImagePaths(workbenchID)
 	if err != nil {
 		return err
 	}

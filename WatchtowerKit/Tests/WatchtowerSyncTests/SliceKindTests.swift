@@ -1,5 +1,6 @@
 import GRDB
 import os
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -40,13 +41,12 @@ final class SliceKindTests: XCTestCase {
     func testUnknownKindIsStoredButNotSurfaced() async throws {
         let stamp = Date(timeIntervalSince1970: 1_700_000_000)
         let transport = InMemoryCloudTransport()
-        try await transport.save([
-            CloudRecord(recordName: "future_kind-1", zone: .data, kind: "future_kind",
-                        modifiedAt: stamp, payload: Data("{}".utf8)),
-            CloudRecord(recordName: "device_grant-D1", zone: .data, kind: SliceKind.deviceGrant.rawValue,
-                        modifiedAt: stamp, payload: Data("{}".utf8))
-        ])
-        let store = try ReplicaStore.inMemory()
+        // The hub's transport refuses to seal a kind it does not know, so the future kind is sealed directly.
+        let future = try TestE2E.sealedDataRecord(
+            CloudRecord(recordName: "future_kind-1", zone: .data, kind: "future_kind", modifiedAt: stamp, payload: Data("{}".utf8)),
+            seq: 1)
+        try await transport.save([future, try await TestE2E.hubTransport().seal(TestE2E.keyboxRecord(modifiedAt: stamp))])
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let surfaced = OSAllocatedUnfairLock(initialState: [AppliedSliceRecord]())
         let hook: @Sendable ([AppliedSliceRecord]) -> Void = { records in
             surfaced.withLock { $0.append(contentsOf: records) }
@@ -57,9 +57,9 @@ final class SliceKindTests: XCTestCase {
 
         XCTAssertEqual(result.applied, 2)
         let storedKinds = try await store.reader.read { db in
-            try String.fetchAll(db, sql: "SELECT kind FROM slice_records ORDER BY record_name")
+            try String.fetchAll(db, sql: "SELECT kind FROM slice_records ORDER BY plain_name")
         }
         XCTAssertEqual(storedKinds, ["device_grant", "future_kind"])
-        XCTAssertEqual(surfaced.withLock { $0.map(\.recordName) }, ["device_grant-D1"])
+        XCTAssertEqual(surfaced.withLock { $0.map(\.recordName) }, [SliceKind.deviceGrant.recordName(id: TestE2E.deviceID.uuidString)])
     }
 }
