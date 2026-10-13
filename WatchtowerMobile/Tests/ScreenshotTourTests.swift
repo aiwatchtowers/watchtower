@@ -60,22 +60,25 @@ final class ScreenshotTourTests: XCTestCase {
 
     private func makeDemoRoot() throws -> AppRoot {
         let defaults = try makeDefaults()
-        let root = AppRoot.demo(
-            try AppEnvironment(
+        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
+        for hub in DemoSeed.hubs {
+            let session = try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: try makeReplicaPath(),
                 transportKind: .inMemoryDemo,
+                hubID: hub.hubID,
                 defaults: defaults,
                 recordingsDirectory: try makeRecordingsDirectory()
-            ),
-            defaults: defaults
-        )
-        addTeardownBlock { @MainActor in root.env.stop() }
-        return root
+            )
+            addTeardownBlock { @MainActor in session.stop() }
+            env.add(session)
+        }
+        env.activate(DemoSeed.primary.hubID)
+        return try AppRoot.demo(env, defaults: defaults)
     }
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
-        env.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
+        env.activeSession.isBootstrapped && !env.workbenchReplica.snapshot.workbenches.isEmpty
             && !env.calendarReplica.snapshot.events.isEmpty && !env.phoneRecordings.snapshot.recordings.isEmpty
     }
 
@@ -85,11 +88,12 @@ final class ScreenshotTourTests: XCTestCase {
     private func captureRecorder(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let env = try AppEnvironment(
+        let defaults = try makeDefaults()
+        let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
-            defaults: try makeDefaults(),
+            defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         ) { uploader in
             PhoneRecorderController(
@@ -97,8 +101,9 @@ final class ScreenshotTourTests: XCTestCase {
                 now: { clock.now }, tickInterval: nil
             )
         }
-        addTeardownBlock { @MainActor in env.stop() }
-        try await poll(timeout: 20, { env.isBootstrapped }, "the recorder environment booted")
+        addTeardownBlock { @MainActor in session.stop() }
+        try await poll(timeout: 20, { session.isBootstrapped }, "the recorder environment booted")
+        let env = AppEnvironment.single(session, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         let recorder = env.recorder
         await recorder.recordVoiceNote()
@@ -254,13 +259,16 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "31b", slug: "waiting-hint", source: source + "LinkSteps.swift", reached: .leaf, make: leaf { _ in
                 LinkStepsView(model: LinkStepsModel(waitingFor: mac, startedAt: Date().addingTimeInterval(-25), now: Date()))
             }),
-            Shot(number: "32", slug: "switch-mac", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
-                SwitchMacView(old: mac, new: "Acme Studio")
+            Shot(number: "32", slug: "too-many-macs", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
+                LinkFailureView(failure: .tooManyMacs)
             }),
             Shot(number: "33", slug: "failure", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
                 LinkFailureView(failure: .expired)
             }),
             Shot(number: "34", slug: "linked", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in LinkedView(macName: mac) }),
+            Shot(number: "36", slug: "mac-switcher", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheet { _ in }
+            }),
             Shot(number: "35", slug: "mac-not-showing", source: source + "MacNotShowingView.swift", reached: .bareStack, make: stack { _ in
                 MacNotShowingView()
             })

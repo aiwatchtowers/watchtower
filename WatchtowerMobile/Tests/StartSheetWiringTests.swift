@@ -19,14 +19,14 @@ final class StartSheetWiringTests: XCTestCase {
         let answerer: AskAnswerer
     }
 
-    /// The app's wiring: `AppEnvironment.appliedObserver` hands the
+    /// The app's wiring: `HubSession.appliedObserver` hands the
     /// outbox's applied echoes to the starter and the ask answerer.
     private func makeFixture() async throws -> Fixture {
         let store = try ReplicaStore.inMemory()
         let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
         let starter = SessionStarter.sending(through: outbox, store: store)
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
-        await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
+        await outbox.setAppliedObserver(HubSession.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
         return Fixture(store: store, outbox: outbox, starter: starter, answerer: answerer)
     }
 

@@ -15,6 +15,8 @@ enum LinkFailure: Equatable {
     /// This iPhone could not set its sync up (the local replica or the
     /// transport's store): nothing reached iCloud.
     case local(String)
+    /// `HubRegistry.limit` Macs are linked and the code is another one's.
+    case tooManyMacs
 
     /// What went wrong, as the failure screen's title (design pass O3).
     var title: String {
@@ -28,6 +30,7 @@ enum LinkFailure: Equatable {
         case .updateMac: "Update Watchtower on this Mac"
         case .iCloud: "Couldn't reach iCloud"
         case .local: "Couldn't set up sync on this iPhone"
+        case .tooManyMacs: "You can link up to \(HubRegistry.limit) Macs"
         }
     }
 
@@ -38,6 +41,7 @@ enum LinkFailure: Equatable {
         case .signIn: "Watchtower uses iCloud to reach your Mac"
         case .noAnswer: "Keep Settings → Mobile open on the Mac and scan again"
         case .updateApp, .updateMac: nil
+        case .tooManyMacs: "Unlink one in Settings → Macs, then scan again"
         case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
@@ -53,10 +57,10 @@ enum LinkFailure: Equatable {
     }
 
     /// Scanning another code can help (it cannot while iCloud is signed
-    /// out or the app is too old).
+    /// out, the app is too old, or every Mac slot is taken).
     var offersScan: Bool {
         switch self {
-        case .signIn, .updateApp: false
+        case .signIn, .updateApp, .tooManyMacs: false
         default: true
         }
     }

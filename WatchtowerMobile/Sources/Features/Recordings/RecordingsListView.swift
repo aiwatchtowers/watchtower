@@ -62,7 +62,9 @@ struct RecordingsListView: View {
                     .accessibilityLabel(entry.accessibilityLabel)
                 if entry.offersRetry, let id = entry.phoneRecordingID {
                     Button("Retry") {
-                        Task { await env.recorder.retry(id: id) }
+                        // The list is the active hub's: its own recorder,
+                        // even while another hub's capture is on screen.
+                        Task { await env.activeSession.recorder.retry(id: id) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)

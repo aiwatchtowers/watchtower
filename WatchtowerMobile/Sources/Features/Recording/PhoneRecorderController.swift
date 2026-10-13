@@ -251,6 +251,15 @@ final class PhoneRecorderController {
         }
     }
 
+    /// The recorder owns the microphone or the recorder screen until it is
+    /// closed (multi-hub spec §5.4: one capture at a time across hubs): it
+    /// is presented (a start waiting on permission or the ledger, a capture,
+    /// or a result on screen), capturing (minimized too), or saving (the
+    /// engine's finish still holds the audio session).
+    var holdsMicrophoneOrScreen: Bool {
+        isPresented || isCapturing || phase == .saving
+    }
+
     /// Whether the ticker runs (off while paused and when nothing captures).
     var isTicking: Bool { tickTask != nil }
 

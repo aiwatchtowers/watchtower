@@ -125,10 +125,10 @@ final class BackgroundWorkTests: XCTestCase {
     private func makeBootingEnvironment(
         tasks: FakeBackgroundTasks,
         suspension: DatabaseSuspension
-    ) throws -> (AppEnvironment, RemoteFetchRecorder) {
+    ) throws -> (HubSession, RemoteFetchRecorder) {
         let remote = RemoteFetchRecorder()
         remote.holding = true
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             defaults: try makeDefaults(),

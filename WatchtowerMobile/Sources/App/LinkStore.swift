@@ -67,52 +67,51 @@ struct PendingLink: Codable, Equatable, Sendable {
     }
 }
 
-/// The phone's link, persisted in `UserDefaults`: the one record the link
-/// flow writes and the app boots from (which database to sync, which
-/// device to be).
+/// The link flow's state in `UserDefaults`: a link waiting for its grant,
+/// which a relaunch resumes. The saved links are the hub registry's
+/// (`HubRegistry`); an F1 phone's single link is read here once, by
+/// `HubBoot.migrateF1`, which moves it into the registry and clears it.
 final class LinkStore {
     private let defaults: UserDefaults
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LinkStore")
 
     private enum Keys {
-        static let link = "link.record"
+        static let legacyLink = "link.record"
         static let pending = "link.pending"
-        static let grantMissingSince = "link.grantMissingSince"
+        static let legacyGrantMissingSince = "link.grantMissingSince"
     }
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
     }
 
-    var link: LinkRecord? {
-        get { read(LinkRecord.self, key: Keys.link) }
-        set { write(newValue, key: Keys.link) }
+    /// The single link of F1 (`link.record`), for the migration only.
+    var legacyLink: LinkRecord? {
+        get { read(LinkRecord.self, key: Keys.legacyLink) }
+        set { write(newValue, key: Keys.legacyLink) }
+    }
+
+    /// `link.record` holds data that does not decode: a link is saved, but
+    /// `legacyLink` reads nil.
+    var holdsUnreadableLink: Bool {
+        defaults.object(forKey: Keys.legacyLink) != nil && legacyLink == nil
+    }
+
+    /// F1's first look of the removal check (#64), for the migration only.
+    var legacyGrantMissingSince: Date? {
+        get { defaults.object(forKey: Keys.legacyGrantMissingSince) as? Date }
+        set { defaults.set(newValue, forKey: Keys.legacyGrantMissingSince) }
+    }
+
+    /// Removes F1's link keys.
+    func clearLegacyLink() {
+        defaults.removeObject(forKey: Keys.legacyLink)
+        defaults.removeObject(forKey: Keys.legacyGrantMissingSince)
     }
 
     var pending: PendingLink? {
         get { read(PendingLink.self, key: Keys.pending) }
         set { write(newValue, key: Keys.pending) }
-    }
-
-    /// When a fetch first found the linked hub without this phone's grant
-    /// (the phone's clock); nil while the grant is there. Kept across a
-    /// relaunch, so the second look of the removal check (#64) is not reset.
-    var grantMissingSince: Date? {
-        get { defaults.object(forKey: Keys.grantMissingSince) as? Date }
-        set { defaults.set(newValue, forKey: Keys.grantMissingSince) }
-    }
-
-    /// The database the app syncs at boot: the link's, else a pending
-    /// link's, else the phone's own private database.
-    var bootScope: CloudDatabaseScope {
-        link?.databaseScope ?? pending?.link.databaseScope ?? .private
-    }
-
-    /// The hub whose zones the app syncs at boot: the link's, else a pending
-    /// link's, else `AppEnvironment.unlinkedHubID` (F1's single-link bridge
-    /// until F2's `HubRegistry`).
-    var bootHubID: String {
-        link?.hubID ?? pending?.link.hubID ?? AppEnvironment.unlinkedHubID
     }
 
     /// Plain JSON (local state, not wire format: RelayCoder's snake-case

@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class RecordingUploadWiringTests: XCTestCase {
     private struct Wired {
-        let env: AppEnvironment
+        let env: HubSession
         let transport: InMemoryCloudTransport
         let engine: FakeAudioEngine
         let clock: FakeClock
@@ -22,7 +22,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let directory = try makeRecordingsDirectory()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: transport,
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
@@ -100,8 +100,8 @@ final class RecordingUploadWiringTests: XCTestCase {
         let directory = try makeRecordingsDirectory()
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let launch: (Date) throws -> AppEnvironment = { now in
-            let env = try AppEnvironment(
+        let launch: (Date) throws -> HubSession = { now in
+            let env = try HubSession(
                 transport: transport,
                 replicaPath: path,
                 transportKind: .inMemoryDemo,
@@ -229,7 +229,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         // The Mac is online: the relaunch retry does not wait for it.
         try await transport.save(try DemoSeed.records(now: clock.now).filter { $0.recordName == HeartbeatPayload.recordName })
         let engine = FakeAudioEngine()
-        let env = try AppEnvironment(
+        let env = try HubSession(
             transport: transport,
             replicaPath: replicaPath,
             transportKind: .cloudKit,

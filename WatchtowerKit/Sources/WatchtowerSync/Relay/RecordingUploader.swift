@@ -402,11 +402,14 @@ public actor RecordingUploader: RecordingUploadAcking {
         let known = Set(try store.phoneRecordings().filter { $0.state != .delivered }.map { fileURL($0).standardizedFileURL.path })
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: nil,
+            includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         )) ?? []
         var removed: [URL] = []
-        for file in files where !known.contains(file.standardizedFileURL.path) {
+        // Regular files only: a folder inside (the phone's per-hub folders
+        // under `hubs/`) is never this sweep's.
+        for file in files where !known.contains(file.standardizedFileURL.path)
+            && (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
             do {
                 try FileManager.default.removeItem(at: file)
                 removed.append(file)

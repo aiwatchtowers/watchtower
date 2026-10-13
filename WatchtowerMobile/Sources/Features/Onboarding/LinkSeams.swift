@@ -35,34 +35,42 @@ struct SystemLinkClock: LinkClock {
     }
 }
 
-/// The app side of the link flow (`AppRoot`): the sync stack per database,
-/// the replica's view of this phone's grant, and the one place the link
-/// lands.
+/// The app side of the link flow (`AppRoot`), addressed by hub: the saved
+/// links (the hub registry), one session per hub, and where a link lands
+/// or ends (multi-hub spec §5.7, §6).
 @MainActor
 protocol LinkHost: AnyObject {
-    /// The transport of `scope`'s database for `hubID`'s zones. Another
-    /// scope or hub restarts the sync stack with an empty replica.
+    /// The saved links, in registry order (rows of both states).
+    func linkedHubs() -> [HubRow]
+    /// Settings → Macs: `hubID` moves to `index` in the registry's order.
+    func moveHub(_ hubID: String, to index: Int)
+    /// `hubID`'s transport in `scope`'s database: its session if one runs in
+    /// that scope; else a new session in its own directory (a row in another
+    /// scope, or frozen, is removed first with its recordings held).
     func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
-    /// One fetch, then this phone's `device_grant` as the replica holds it.
-    func fetchGrant(deviceID: String) async -> DeviceGrant?
-    /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
-    /// keeps the link but sends nothing (the hub moved).
-    func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async
-    /// This phone's `device` record with the current Settings choices.
-    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
-    /// Asks the transport to send what is queued now (before a stop).
-    func flushSends() async
-    /// The running environment's link has ended and it syncs nothing more
-    /// (a `shared` link whose shares were left): it stays until the next
-    /// launch, and the next `prepare` restarts even on its database and hub.
-    func retireEnvironment()
-    /// Stops sync, wipes the replica, the outbox and the transport's store
-    /// (buffer, send queue, engine state), and restarts unlinked on
-    /// `hubID`'s zones in `scope`'s database. A running capture is stopped
-    /// and saved first, and recordings still on their way to the Mac are
-    /// held for their hub (`keepRecordings`; false on an iCloud account
-    /// change, when they are lost and counted). Returns what the wipe lost.
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe
+    /// One fetch of `hubID`'s session, then this phone's grant there.
+    func fetchGrant(hubID: String, deviceID: String) async -> DeviceGrant?
+    /// The link completed: adds or updates the row, sets the device on the
+    /// session (writes on) and activates it. Throws `HubRegistryError.full`
+    /// for a new hub when every slot is taken.
+    func linked(_ record: LinkRecord, device: LinkedDevice) async throws
+    /// This phone's `device` record for `hubID` with that hub's Settings
+    /// choices.
+    func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
+    /// Removes `hubID`: deletes its row, then sends `farewell` (the
+    /// `unlinked` device record of an unlink; nil sends nothing) through
+    /// the hub's own transport and waits, bounded, for it to leave the send
+    /// queue; then stops its session (a running capture stopped and saved),
+    /// hands its recordings to the hold (`keepRecordings`; false on an
+    /// iCloud account change, when they are lost and counted) and deletes
+    /// its files; the next hub in order becomes active. Returns what was
+    /// lost. Also drops a session that never got a row (a failed link).
+    func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe
+    /// The Mac removed this phone: the row turns `unlinked_by_mac` and the
+    /// session freezes (no sync, no writes, data readable).
+    func markRemovedByMac(_ hubID: String) async
+    /// The removal check's first look at `hubID` (#64), kept on its row.
+    func setGrantMissingSince(_ date: Date?, hubID: String)
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()

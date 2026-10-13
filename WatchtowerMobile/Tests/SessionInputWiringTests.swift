@@ -24,7 +24,7 @@ final class SessionInputWiringTests: XCTestCase {
         let starter = SessionStarter.sending(through: outbox, store: store)
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
         await outbox.setAppliedObserver(
-            AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter, sessionInputs: inputs)
+            HubSession.appliedObserver(askAnswerer: answerer, sessionStarts: starter, sessionInputs: inputs)
         )
         return Fixture(store: store, outbox: outbox, inputs: inputs)
     }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The link flow's screens by phase (spec §2.3): Welcome, the camera, the
-/// checks and the grant wait, the switch prompt, a failure, Linked.
+/// checks and the grant wait, a failure, Linked.
 struct OnboardingView: View {
     @Environment(LinkingViewModel.self) private var linking
 
@@ -20,8 +20,6 @@ struct OnboardingView: View {
             LinkStepsScreen(macName: macName)
         case .unlinking:
             LinkProgressView(text: "Unlinking…")
-        case let .confirmSwitch(old, new):
-            SwitchMacView(old: old, new: new)
         case let .failed(failure):
             LinkFailureView(failure: failure)
         case let .linked(macName):

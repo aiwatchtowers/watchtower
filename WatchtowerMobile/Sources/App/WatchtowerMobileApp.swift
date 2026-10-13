@@ -70,21 +70,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         BatteryDiagnostics.shared.counter.record(.silentPush)
         recordColdLaunch(coldLaunch.receivedPush())
-        // Fetched at once; pushes landing during a fetch share one follow-up
-        // (`AppEnvironment.handlePush`), and each push gets its completion
+        // Fetched at once by every session of the push's database; pushes
+        // landing during a fetch share one follow-up per session
+        // (`HubSession.handlePush`), and each push gets its completion
         // when the fetch serving it ends or at iOS's deadline, whichever
         // comes first (`PushCompletion`). In the foreground a fallback fetch
         // also polls the zones. The arrival is stamped here, before any
         // hop, so the CloudKit run that covers it is one begun after it.
         let arrivedAt = Date()
         let inForeground = application.applicationState == .active
+        // Read before the hop: the payload is not Sendable.
+        let scope = PushScope(remoteNotification: userInfo)
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
                 completionHandler(.noData)
                 return
             }
-            PushCompletion.serve(env, arrivedAt: arrivedAt, inForeground: inForeground, startWork: BackgroundWork.starter()) {
+            PushCompletion.serve(
+                env, arrivedAt: arrivedAt, inForeground: inForeground, scope: scope, startWork: BackgroundWork.starter()
+            ) {
                 completionHandler($0.backgroundFetchResult)
             }
         }
@@ -130,7 +135,8 @@ enum PushCompletion {
         }
     }
 
-    /// One silent push on `env`: a background task keeps the app running
+    /// One silent push on `env`, for the sessions of `scope`'s database
+    /// (nil: every session): a background task keeps the app running
     /// until the fetch returns, past a completion sent at the deadline, and
     /// the replica is held usable meanwhile (`BackgroundWork`). A push that
     /// launched the app may be served before the boot's own writes ran: the
@@ -141,6 +147,7 @@ enum PushCompletion {
         _ env: AppEnvironment,
         arrivedAt: Date,
         inForeground: Bool,
+        scope: PushScope? = nil,
         startWork: BackgroundWork.Starter,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         completion: @escaping @MainActor (FetchOutcome) -> Void
@@ -149,7 +156,7 @@ enum PushCompletion {
         race(
             sleep: sleep,
             fetch: {
-                let outcome = await env.handlePush(at: arrivedAt, inForeground: inForeground)
+                let outcome = await env.handlePush(at: arrivedAt, inForeground: inForeground, scope: scope)
                 Task { @MainActor in
                     await env.waitForBoot()
                     endWork()

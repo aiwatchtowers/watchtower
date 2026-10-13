@@ -17,10 +17,16 @@ enum MacStatus: Equatable {
             self = .notConnected
             return
         }
-        let age = Duration.seconds(now.timeIntervalSince(heartbeat.updatedAt))
-        self = age < RelayFeed.heartbeatStaleAfter
+        self = Self.isOnline(lastHeartbeat: heartbeat.updatedAt, now: now)
             ? .online(macName: heartbeat.macName)
             : .offline(macName: heartbeat.macName, lastSeen: heartbeat.updatedAt)
+    }
+
+    /// Online while the Mac's last heartbeat is under
+    /// `RelayFeed.heartbeatStaleAfter` old (2100 s, the phone's rule since
+    /// #232): Settings and the Mac switcher read it alike.
+    static func isOnline(lastHeartbeat: Date, now: Date) -> Bool {
+        Duration.seconds(now.timeIntervalSince(lastHeartbeat)) < RelayFeed.heartbeatStaleAfter
     }
 
     var title: String {

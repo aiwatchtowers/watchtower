@@ -8,14 +8,14 @@ final class RecordingHoldTests: XCTestCase {
     /// file still moves.
     func testProtectingUnreadableAudioNeverStopsAtANameClash() throws {
         let directory = try makeRecordingsDirectory()
-        let hold = RecordingHold(recordingsDirectory: directory)
+        let hold = RecordingHold(directory: directory.appendingPathComponent(".held", isDirectory: true))
         let unreadable = hold.directory.appendingPathComponent("unreadable", isDirectory: true)
         try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
         try Data("earlier".utf8).write(to: unreadable.appendingPathComponent("a.m4a"))
         try Data("a".utf8).write(to: directory.appendingPathComponent("a.m4a"))
         try Data("b".utf8).write(to: directory.appendingPathComponent("b.m4a"))
 
-        let result = try hold.protectUnreadable()
+        let result = try hold.protectUnreadable(in: directory)
 
         XCTAssertEqual(result.moved, 2)
         XCTAssertTrue(result.failures.isEmpty)
