@@ -100,27 +100,45 @@ final class BackgroundWorkTests: XCTestCase {
         XCTAssertEqual(tasks.ended.count, 1, "ended once")
     }
 
-    /// iOS expires the task: the replica is suspended at once — whatever
-    /// else holds it — before the task ends; the fetch's own end later is
-    /// a no-op.
+    /// iOS expires the task: the push's own hold goes and the replica rests
+    /// in the background before the task ends — suspended when nothing else
+    /// holds it; the fetch's own end later is a no-op.
     func testAnExpiredTaskSuspendsTheReplicaFirst() {
+        let tasks = FakeTasks()
+        let (suspension, posts) = makeSuspension()
+        let work = PushWork(runner: tasks, suspension: suspension) { true }
+        work.begin()
+        XCTAssertFalse(suspension.isSuspended)
+
+        tasks.expire()
+        XCTAssertTrue(suspension.isSuspended, "nothing else holds it: suspended")
+        XCTAssertEqual(posts.names.last, Database.suspendNotification)
+        XCTAssertEqual(tasks.ended.count, 1)
+
+        work.end()
+        XCTAssertEqual(tasks.ended.count, 1, "no second end")
+        XCTAssertTrue(suspension.isSuspended)
+    }
+
+    /// A running capture's hold survives the push's expiration: the replica
+    /// stays usable for the rest of the capture, and rests once it releases.
+    func testAnExpiredTaskKeepsACaptureHold() {
         let tasks = FakeTasks()
         let (suspension, posts) = makeSuspension()
         suspension.setBackground(true)
         let capture = suspension.hold()
         let work = PushWork(runner: tasks, suspension: suspension) { true }
         work.begin()
-        XCTAssertFalse(suspension.isSuspended)
 
         tasks.expire()
-        XCTAssertTrue(suspension.isSuspended)
-        XCTAssertEqual(posts.names.last, Database.suspendNotification)
+        XCTAssertFalse(suspension.isSuspended, "the capture still holds it")
         XCTAssertEqual(tasks.ended.count, 1)
 
         work.end()
+        XCTAssertFalse(suspension.isSuspended, "the push's late end takes nothing from the capture")
         capture()
-        XCTAssertEqual(tasks.ended.count, 1, "no second end")
         XCTAssertTrue(suspension.isSuspended)
+        XCTAssertEqual(posts.names.last, Database.suspendNotification)
     }
 
     /// In the foreground the end of the push leaves the replica as it was.

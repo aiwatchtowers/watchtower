@@ -48,14 +48,6 @@ final class DatabaseSuspension {
         }
     }
 
-    /// iOS is about to suspend the app (a background task expired): suspend
-    /// now, whatever still holds it.
-    func suspendNow() {
-        inBackground = true
-        holds = 0
-        apply()
-    }
-
     private func apply() {
         let suspend = inBackground && holds == 0
         guard suspend != isSuspended else { return }
@@ -94,8 +86,10 @@ final class UIKitBackgroundTasks: BackgroundTaskRunning {
 /// completion went out at the deadline (`PushCompletion`) — and the replica
 /// stays usable meanwhile. When the fetch returns the task ends and the
 /// replica is suspended again if the app is still in the background; if
-/// iOS expires the task first, the replica is suspended (its open
-/// transaction rolled back) before the task ends, so no lock outlives it.
+/// iOS expires the task first, the push's hold is released and the replica
+/// rests in the background before the task ends: suspended (its open
+/// transaction rolled back) unless other work holds it — a running capture
+/// keeps the app alive on its own and keeps its hold.
 @MainActor
 final class PushWork {
     private let runner: any BackgroundTaskRunning
@@ -134,10 +128,14 @@ final class PushWork {
         task = .invalid
     }
 
+    /// iOS ends the extra time: the push's own hold goes and the replica
+    /// rests in the background — suspended unless other work (a running
+    /// capture) still holds it — before the task ends.
     private func expire() {
         guard task != .invalid else { return }
+        release?()
         release = nil
-        suspension.suspendNow()
+        suspension.setBackground(true)
         runner.end(task)
         task = .invalid
     }
