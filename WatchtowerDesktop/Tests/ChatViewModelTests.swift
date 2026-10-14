@@ -793,6 +793,36 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.inspectorMode)
     }
 
+    /// The inspector can take the chat's whole width (#786): expanded while a
+    /// panel stays open, back to the column once the inspector closes.
+    func testTheInspectorExpandsToTheChatWidthUntilItCloses() throws {
+        let vm = try makeViewModel()
+        XCTAssertNotNil(vm.newConversation())
+        let source = ChatSource(kind: "jira", title: "PAY-1: A", url: nil, ref: "jira:PAY-1", group: "PAY")
+        vm.toggleInspectorExpanded()
+        XCTAssertFalse(vm.isInspectorExpanded, "nothing to expand while the inspector is closed")
+
+        vm.openArtifact(key: "q3")
+        vm.openSources(messageID: 7, sources: [source])
+        vm.toggleInspectorExpanded()
+        XCTAssertTrue(vm.isInspectorExpanded)
+        vm.closeSourcesPanel()
+        XCTAssertTrue(vm.isInspectorExpanded, "the artifact still open keeps the expanded panel")
+        vm.toggleInspectorExpanded()
+        XCTAssertFalse(vm.isInspectorExpanded, "the button collapses it back")
+
+        vm.toggleInspectorExpanded()
+        vm.closeArtifactPanel()
+        XCTAssertFalse(vm.isInspectorExpanded)
+        vm.openSources(messageID: 7, sources: [source])
+        XCTAssertFalse(vm.isInspectorExpanded, "a panel opened after a close starts in the column")
+
+        vm.toggleInspectorExpanded()
+        XCTAssertNotNil(vm.newConversation())
+        vm.openSources(messageID: 8, sources: [source])
+        XCTAssertFalse(vm.isInspectorExpanded, "a conversation switch closes the expanded panel too")
+    }
+
     func testOpeningASearchHitShowsItsBranchAndScrollsToIt() async throws {
         let vm = try makeViewModel()
         let convID = try XCTUnwrap(vm.newConversation())

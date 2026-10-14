@@ -58,7 +58,10 @@ struct ChatSplitView: View {
                 VStack(spacing: 0) {
                     toolbar
                     Divider()
-                    if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
+                    if chatVM.isInspectorExpanded {
+                        // The open panel in place of the conversation (#786).
+                        ChatInspectorContent(chatVM: chatVM)
+                    } else if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
                         ProjectDetailView(
                             projectID: projectID,
                             dbPool: dbPool,
@@ -126,8 +129,9 @@ struct ChatSplitView: View {
             Button("Cancel", role: .cancel) {}
         }
         .inspector(isPresented: Binding(
-            get: { chatVM.inspectorMode != nil },
-            set: { if !$0 { chatVM.closeInspector() } }
+            get: { chatVM.inspectorMode != nil && !chatVM.isInspectorExpanded },
+            // Expanding hides the column without closing the panel.
+            set: { if !$0 && !chatVM.isInspectorExpanded { chatVM.closeInspector() } }
         )) {
             ChatInspectorContent(chatVM: chatVM)
                 .persistedInspectorColumnWidth(key: "chat.inspectorWidth", range: 320...900, ideal: 460)

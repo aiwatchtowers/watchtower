@@ -94,13 +94,20 @@ final class ChatViewModel {
     /// Survives navigation only within the same conversation — switching or
     /// forgetting a conversation closes it (CHAT-05 storage has no notion of
     /// "panel for a conversation not on screen").
-    private(set) var artifactPanel: ArtifactPanelModel?
+    private(set) var artifactPanel: ArtifactPanelModel? {
+        didSet { collapseInspectorIfClosed() }
+    }
     /// The sources panel (one finished answer's sources); nil = closed. It
     /// shares the inspector with `artifactPanel` under `ChatInspectorPolicy`
     /// and closes with it on a conversation switch.
-    private(set) var sourcesPanel: ChatSourcesSelection?
+    private(set) var sourcesPanel: ChatSourcesSelection? {
+        didSet { collapseInspectorIfClosed() }
+    }
     /// The inspector tab opened last; see `inspectorMode` for what shows.
     var preferredInspectorMode: ChatInspectorMode = .artifacts
+    /// The open panel takes the chat's whole width in place of the
+    /// conversation (#786); it falls back to the column once both panels close.
+    private(set) var isInspectorExpanded = false
     /// Non-edited version numbers per message, for the card badges — reloaded
     /// with the thread (`reload()`).
     private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
@@ -537,6 +544,16 @@ final class ChatViewModel {
     func closeInspector() {
         closeArtifactPanel()
         closeSourcesPanel()
+    }
+
+    /// The panel's expand button: the open panel takes the chat's width, or
+    /// goes back to the inspector column.
+    func toggleInspectorExpanded() {
+        isInspectorExpanded = inspectorMode != nil && !isInspectorExpanded
+    }
+
+    private func collapseInspectorIfClosed() {
+        if inspectorMode == nil { isInspectorExpanded = false }
     }
 
     /// Fed by the thread view whenever `liveTurn?.text` changes (the view
