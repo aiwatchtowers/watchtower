@@ -71,6 +71,10 @@ struct RecordingEntry: Identifiable, Equatable {
     /// A ready recap the owner has not opened.
     let isNew: Bool
     let sortDate: Date
+    /// A held recording for a Mac this phone no longer links: the row
+    /// offers Share and Delete (board #171). nil for every other row,
+    /// a held one of a linked hub included (that hub adopts it).
+    var heldForUnlinkedMac: HeldRecording?
 
     var statusText: String { state.label }
     var tone: PhoneTone { state.tone }
@@ -140,6 +144,9 @@ struct RecordingsListModel {
     let inProgress: [RecordingEntry]
     let earlier: [RecordingEntry]
     let emptyText: String?
+    /// "2 recordings couldn't be read": the row opening the unreadable
+    /// audio (`.held/unreadable`); nil when there is none.
+    let unreadableText: String?
 
     var newCount: Int { earlier.filter(\.isNew).count }
 
@@ -165,7 +172,9 @@ struct RecordingsListModel {
         seen: RecordingsSeen,
         now: Date,
         calendar: Calendar,
-        held: [HeldRecording] = []
+        held: [HeldRecording] = [],
+        linkedHubIDs: Set<String> = [],
+        unreadableCount: Int = 0
     ) {
         let format = RecordingsFormat(calendar: calendar, now: now)
         var byPhoneID: [String: MeetingTranscript] = [:]
@@ -194,7 +203,8 @@ struct RecordingsListModel {
                 transcriptID: nil,
                 phoneRecordingID: nil,
                 isNew: false,
-                sortDate: recording.startedAt
+                sortDate: recording.startedAt,
+                heldForUnlinkedMac: linkedHubIDs.contains(recording.hubID) ? nil : recording
             ))
         }
         for transcript in replica.transcripts where !claimed.contains(transcript.id) {
@@ -208,7 +218,12 @@ struct RecordingsListModel {
         }
         inProgress = entries.filter { !$0.state.isReady }.sorted(by: newestFirst)
         earlier = entries.filter(\.state.isReady).sorted(by: newestFirst)
-        emptyText = entries.isEmpty ? "No recordings yet" : nil
+        emptyText = entries.isEmpty && unreadableCount == 0 ? "No recordings yet" : nil
+        unreadableText = switch unreadableCount {
+        case 0: nil
+        case 1: "1 recording couldn't be read"
+        default: "\(unreadableCount) recordings couldn't be read"
+        }
     }
 
     private static func entry(

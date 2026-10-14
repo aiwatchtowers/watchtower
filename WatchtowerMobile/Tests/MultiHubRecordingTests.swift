@@ -331,6 +331,76 @@ final class MultiHubRecordingTests: XCTestCase {
         XCTAssertEqual(env.heldRecordings.map(\.id), [forGone.id])
     }
 
+    // MARK: - Board #171
+
+    /// A recording held for a Mac this phone no longer links offers Share
+    /// and Delete; Delete removes its audio and manifest entry. One held
+    /// for a linked hub offers neither, and a Delete of it removes nothing.
+    func testOnlyARecordingHeldForAnUnlinkedMacCanBeDeleted() async throws {
+        let base = try makeBase()
+        let forB = try await holdRecording(for: TestHub.hubB, base: base)
+        let forGone = try await holdRecording(for: TestHub.gone, base: base)
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        // Hub B is linked, on a hold of its own, so forB stays in hub A's.
+        let hubB = try makeHub(TestHub.hubB, base: try makeBase())
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        let hold = RecordingHold(directory: paths(base).holdDirectory)
+        XCTAssertEqual(env.heldRecordings.map(\.id), [forGone.id])
+
+        let list = RecordingsListModel(
+            recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
+            seen: RecordingsSeen(baseline: .distantPast, opened: []), now: Date(), calendar: .current,
+            held: [forB, forGone], linkedHubIDs: env.linkedHubIDs
+        )
+        let offered = list.inProgress.compactMap(\.heldForUnlinkedMac).map(\.id)
+        XCTAssertEqual(offered, [forGone.id], "a linked hub's held recording offers no Share or Delete")
+        XCTAssertNotNil(env.heldAudioURL(forGone))
+
+        try await env.deleteHeld(forB)
+        XCTAssertEqual(Set(try hold.load().map(\.id)), [forB.id, forGone.id], "a linked hub's recording stays held")
+
+        try await env.deleteHeld(forGone)
+        XCTAssertEqual(try hold.load().map(\.id), [forB.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: hold.directory.appendingPathComponent(forGone.fileName).path))
+        XCTAssertNil(env.heldAudioURL(forGone))
+        XCTAssertTrue(env.heldRecordings.isEmpty, "the list reads the hold again")
+    }
+
+    /// Audio a wipe could not read shows as one Recordings row while files
+    /// are there; deleting them clears it.
+    func testUnreadableAudioIsListedUntilDeleted() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let env = try makeEnvironment([hubA])
+        await env.waitForBoot()
+        func list() -> RecordingsListModel {
+            RecordingsListModel(
+                recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
+                seen: RecordingsSeen(baseline: .distantPast, opened: []), now: Date(), calendar: .current,
+                unreadableCount: env.unreadableAudio.count
+            )
+        }
+        XCTAssertNil(list().unreadableText)
+        XCTAssertEqual(list().emptyText, "No recordings yet")
+
+        let orphaned = try makeRecordingsDirectory()
+        try Data("a".utf8).write(to: orphaned.appendingPathComponent("a.m4a"))
+        try Data("b".utf8).write(to: orphaned.appendingPathComponent("b.m4a"))
+        try RecordingHold(directory: paths(base).holdDirectory).protectUnreadable(in: orphaned)
+        env.activeSession.reloadHeldRecordings()
+
+        XCTAssertEqual(env.unreadableAudio.map(\.name), ["a.m4a", "b.m4a"])
+        XCTAssertEqual(list().unreadableText, "2 recordings couldn't be read")
+        XCTAssertNil(list().emptyText)
+
+        try await env.deleteUnreadable(["a.m4a"])
+        XCTAssertEqual(list().unreadableText, "1 recording couldn't be read")
+        try await env.deleteUnreadable(["b.m4a"])
+        XCTAssertTrue(env.unreadableAudio.isEmpty)
+        XCTAssertNil(list().unreadableText)
+    }
+
     // MARK: - Review Focus 3
 
     /// Both sessions adopt their own held recording from one manifest at

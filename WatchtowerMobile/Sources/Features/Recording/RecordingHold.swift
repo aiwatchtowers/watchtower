@@ -35,6 +35,18 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// An audio file in `.held/unreadable` (`RecordingHold.protectUnreadable`):
+/// its ledger could not be read, so it is never sent; Recordings lists it
+/// for the owner to share or delete (board #171).
+struct UnreadableAudio: Equatable, Identifiable, Sendable {
+    let url: URL
+    let byteCount: Int?
+    let modifiedAt: Date?
+
+    var id: String { url.lastPathComponent }
+    var name: String { url.lastPathComponent }
+}
+
 /// The hold: recordings carried across a wipe, kept outside the replica in
 /// a hidden `.held` folder with a JSON manifest, shared by every hub
 /// (`HubPaths.holdDirectory`). A hidden folder is out of the launch sweep's
@@ -121,6 +133,46 @@ struct RecordingHold {
         try save(try load().filter { !ids.contains($0.id) })
     }
 
+    /// Deletes a held recording the owner gave up on (its Mac is no longer
+    /// linked, board #171): its audio in the hold first, then its manifest
+    /// entry, so a failed delete leaves it listed. Audio a crash left
+    /// mid-move in a removed hub's folder goes with that folder.
+    func discard(id: String) throws {
+        guard let recording = try load().first(where: { $0.id == id }) else { return }
+        let audio = directory.appendingPathComponent(recording.fileName)
+        if FileManager.default.fileExists(atPath: audio.path) {
+            try FileManager.default.removeItem(at: audio)
+        }
+        try remove(ids: [id])
+    }
+
+    private var unreadableDirectory: URL { directory.appendingPathComponent("unreadable", isDirectory: true) }
+
+    /// The audio in `.held/unreadable`, by name; empty when there is none.
+    func unreadableAudio() throws -> [UnreadableAudio] {
+        guard FileManager.default.fileExists(atPath: unreadableDirectory.path) else { return [] }
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        return try FileManager.default.contentsOfDirectory(
+            at: unreadableDirectory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        )
+        .map { url in
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            return UnreadableAudio(url: url, byteCount: values?.fileSize, modifiedAt: values?.contentModificationDate)
+        }
+        .sorted { $0.name < $1.name }
+    }
+
+    /// Deletes one file from `.held/unreadable`; a name that is not a plain
+    /// file name there deletes nothing.
+    func deleteUnreadable(named name: String) throws {
+        guard !name.isEmpty, !name.hasPrefix("."), URL(fileURLWithPath: name).lastPathComponent == name else { return }
+        let file = unreadableDirectory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        try FileManager.default.removeItem(at: file)
+    }
+
     /// Deletes every held recording and its audio (an iCloud account
     /// change: the recordings were made for the old account's Macs); audio
     /// a crash left mid-move is looked for in `recordingsDirectory`.
@@ -144,7 +196,7 @@ struct RecordingHold {
     /// failures.
     @discardableResult
     func protectUnreadable(in recordingsDirectory: URL) throws -> (moved: Int, failures: [String]) {
-        let unreadable = directory.appendingPathComponent("unreadable", isDirectory: true)
+        let unreadable = unreadableDirectory
         let files = try FileManager.default.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: nil,

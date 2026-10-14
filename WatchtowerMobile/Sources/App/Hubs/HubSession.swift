@@ -185,6 +185,9 @@ final class HubSession {
     /// Recordings list reads `AppEnvironment.heldRecordings`, which keeps
     /// none of another linked hub's.
     var heldRecordings: [HeldRecording] = []
+    /// The audio in the hold's `unreadable` folder as this session last
+    /// read it (with `heldRecordings`): shared by every hub, never sent.
+    var unreadableAudio: [UnreadableAudio] = []
     /// The hub's name as the switcher shows it (`HubDisplayName`), set by
     /// the root from the registry; nil before (tests, the demo).
     var hubName: String?

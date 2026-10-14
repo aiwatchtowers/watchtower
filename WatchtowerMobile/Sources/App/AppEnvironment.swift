@@ -345,6 +345,51 @@ final class AppEnvironment {
         let active = activeSession
         return active.heldRecordings.filter { $0.hubID == active.hubID || sessions[$0.hubID] == nil }
     }
+    /// The hubs this phone links: one with a session, or one whose session
+    /// could not be opened. A held recording for any other hub waits for a
+    /// Mac the phone no longer has: Recordings offers Share and Delete for
+    /// it, never sending it elsewhere (board #171, ask #132).
+    var linkedHubIDs: Set<String> { Set(sessions.keys).union(unopenedHubIDs) }
+    /// Audio a wipe could not classify (`.held/unreadable`), never sent:
+    /// Recordings lists it for Share and Delete.
+    var unreadableAudio: [UnreadableAudio] { activeSession.unreadableAudio }
+
+    /// Where a held recording's audio is in the hold, for Share; nil when
+    /// it is not there.
+    func heldAudioURL(_ recording: HeldRecording) -> URL? {
+        guard let hold = activeSession.hold else { return nil }
+        let url = hold.directory.appendingPathComponent(recording.fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Deletes a held recording whose Mac is no longer linked, its audio
+    /// and its manifest entry; one for a linked hub stays (that hub's
+    /// session adopts it).
+    func deleteHeld(_ recording: HeldRecording) async throws {
+        guard !linkedHubIDs.contains(recording.hubID), let hold = activeSession.hold else { return }
+        defer { reloadHold() }
+        try await HoldGate.shared.run { try hold.discard(id: recording.id) }
+    }
+
+    /// Deletes files from `.held/unreadable` by name; the first failure
+    /// stops the rest.
+    func deleteUnreadable(_ names: [String]) async throws {
+        guard let hold = activeSession.hold else { return }
+        defer { reloadHold() }
+        try await HoldGate.shared.run {
+            for name in names {
+                try hold.deleteUnreadable(named: name)
+            }
+        }
+    }
+
+    /// Every session reads the shared hold again.
+    private func reloadHold() {
+        activeSession.reloadHeldRecordings()
+        for session in sessions.values {
+            session.reloadHeldRecordings()
+        }
+    }
     var linkedDevice: LinkedDevice? { activeSession.linkedDevice }
     var lastSyncAt: Date? { activeSession.lastSyncAt }
     var isLooping: Bool { activeSession.isLooping }
