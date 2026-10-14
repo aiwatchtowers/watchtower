@@ -550,6 +550,18 @@ func registerCurrentMCP(ctx context.Context, o WorkbenchInstallOptions) (bool, e
 	return true, nil
 }
 
+// UnregisterWorkbenchMCP removes the folder's local registration of the
+// workbench MCP server. A removed session worktree uses it instead of
+// RemoveWorkbench: the worktree's files went with the worktree, and
+// RemoveWorkbench would also drop exclude lines that every worktree of the
+// repository shares (info/exclude lives in the common git dir).
+func UnregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
+	return unregisterWorkbenchMCP(ctx, o)
+}
+
 // unregisterWorkbenchMCP removes both registrations, the current and the
 // pre-rename one, whichever are there.
 func unregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error {
