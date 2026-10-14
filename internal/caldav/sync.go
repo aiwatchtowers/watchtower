@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/netsec"
 
 	"github.com/emersion/go-ical"
 )
@@ -177,7 +178,9 @@ func (s *Syncer) recordAuthResult(err error) {
 		}
 		return
 	}
-	if dbErr := s.db.SetCalendarAccountAuthState(s.account.ID, "error", err.Error()); dbErr != nil {
+	// A cleartext refusal carries netsec.StatusPrefix: the Desktop shows
+	// it as "Stopped syncing" with what to do.
+	if dbErr := s.db.SetCalendarAccountAuthState(s.account.ID, "error", netsec.StatusMessage(err)); dbErr != nil {
 		s.logger.Printf("caldav account %d: record auth state: %v", s.account.ID, dbErr)
 	}
 }

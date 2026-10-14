@@ -339,3 +339,13 @@ func TestDialWrongPasswordFails(t *testing.T) {
 		t.Fatal("want error for wrong password, got nil")
 	}
 }
+
+// Security "none" authenticates in cleartext: refused for a remote host
+// before any connection is made, allowed for loopback (the test server).
+func TestDialRefusesCleartextToRemoteHost(t *testing.T) {
+	_, _, err := Dial(AccountConfig{Host: "imap.example.com", Port: 143, Security: SecurityNone},
+		PasswordAuth{Username: testUsername, Password: testPassword})
+	if err == nil || !strings.Contains(err.Error(), "cleartext") || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("Dial with security none to a remote host: err = %v, want a cleartext refusal", err)
+	}
+}

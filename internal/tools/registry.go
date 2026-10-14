@@ -214,8 +214,10 @@ var (
 	ErrNotReadable     = errors.New("tool is not a read tool")
 	ErrExternalExecute = errors.New("an external tool can never be trusted to execute without approval")
 	ErrAlwaysAsk       = errors.New("this tool always needs the owner's approval and can never be trusted to execute")
-	ErrBadTransition   = errors.New("action is not in an applicable state")
-	ErrNotFound        = errors.New("action not found")
+	// ErrSurfaceNotOffered: a trust setting names a surface the tool is not on.
+	ErrSurfaceNotOffered = errors.New("tool is not offered on that surface")
+	ErrBadTransition     = errors.New("action is not in an applicable state")
+	ErrNotFound          = errors.New("action not found")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -277,12 +279,23 @@ func (r *Registry) List(surface string) []*Tool {
 	var out []*Tool
 	for _, name := range r.order {
 		t := r.tools[name]
-		if len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface) {
+		if visibleOn(t, surface) {
 			out = append(out, t)
 		}
 	}
 	return out
 }
+
+// visibleOn reports whether surface may see t; a surface-less tool is visible
+// everywhere.
+func visibleOn(t *Tool, surface string) bool {
+	return len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface)
+}
+
+// VisibleOn reports whether surface may see t (a surface-less tool is
+// visible everywhere) — the check Propose makes, for a caller that wants it
+// before paying for the call's arguments.
+func (t *Tool) VisibleOn(surface string) bool { return visibleOn(t, surface) }
 
 // All returns every registered tool in registration order.
 func (r *Registry) All() []*Tool {
@@ -293,21 +306,25 @@ func (r *Registry) All() []*Tool {
 	return out
 }
 
-// Trust returns the tool's trust level ("ask" when never set).
-func (r *Registry) Trust(name string) (Trust, error) {
+// Trust returns the tool's trust level on one chat surface ("ask" when never
+// set). Trust is per (tool, surface): an execute granted for the reaction
+// path never covers the main chat (target 167, owner ask #109).
+func (r *Registry) Trust(name, surface string) (Trust, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return "", ErrUnknownTool
 	}
-	s, err := r.db.GetToolTrust(t.Name)
+	s, err := r.db.GetToolTrust(t.Name, surface)
 	if err != nil {
 		return "", err
 	}
 	return Trust(s), nil
 }
 
-// SetTrust changes the trust level; execute is refused for External tools.
-func (r *Registry) SetTrust(name string, trust Trust) error {
+// SetTrust changes the trust level on one surface the tool names; execute is
+// refused for External and AlwaysAsk tools, and the workbench surface is no
+// trust place at all (TrustSurfaces).
+func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	t, ok := r.Get(name)
 	if !ok {
 		return ErrUnknownTool
@@ -321,7 +338,26 @@ func (r *Registry) SetTrust(name string, trust Trust) error {
 	if t.AlwaysAsk && trust == TrustExecute {
 		return ErrAlwaysAsk
 	}
-	return r.db.SetToolTrust(t.Name, string(trust))
+	if surface == WorkbenchSurface {
+		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
+	}
+	if strings.TrimSpace(surface) == "" || !visibleOn(t, surface) {
+		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
+	}
+	return r.db.SetToolTrust(t.Name, surface, string(trust))
+}
+
+// TrustSurfaces is the surfaces of t a trust level is kept for: every one
+// but the workbench, whose write tools apply under DirectApply and never
+// read trust (DEV-06, target 167).
+func TrustSurfaces(t *Tool) []string {
+	out := make([]string, 0, len(t.Surfaces))
+	for _, s := range t.Surfaces {
+		if s != WorkbenchSurface {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // reasonOf extracts the mandatory "reason" argument every write tool carries.
@@ -383,6 +419,16 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 // error) means the row was not pending; a Revise/Ready refusal is a
 // *ValidationError and leaves the row pending.
 func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage) (bool, error) {
+	return r.ApproveSeen(ctx, id, patch, "")
+}
+
+// ApproveSeen is Approve bound to what the approver was shown (AGENT-07):
+// seenArgsSHA256, when given, must equal ArgsSHA256 of the row's stored args,
+// else the approve is refused with ErrBadTransition and the row stays
+// pending. With or without it, the approval lands only while the row still
+// holds the args this call read — a no-patch approve never approves args
+// rewritten in between.
+func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMessage, seenArgsSHA256 string) (bool, error) {
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
 		return false, err
@@ -392,6 +438,9 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 	}
 	if row.Status != "pending" {
 		return false, nil
+	}
+	if seenArgsSHA256 != "" && !strings.EqualFold(seenArgsSHA256, ArgsSHA256(row.ArgsJSON)) {
+		return false, fmt.Errorf("%w: #%d changed since it was shown; reload it and approve again", ErrBadTransition, id)
 	}
 	t, known := r.Get(row.Tool)
 	hasPatch := len(bytes.TrimSpace(patch)) > 0
@@ -404,10 +453,7 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 			return false, err
 		}
 	}
-	if !hasPatch {
-		return r.db.TransitionAgentAction(id, []string{"pending"}, "approved", "", "")
-	}
-	return r.approveEdited(row, args)
+	return r.approveWithArgs(row, args)
 }
 
 // revisedArgs is a pending row's args after the owner's patch (unchanged
@@ -430,11 +476,12 @@ func (r *Registry) revisedArgs(ctx context.Context, row *db.AgentAction, t *Tool
 	return args, nil
 }
 
-// approveEdited lands the edited args and the approval in one conditional
-// update; a lost race on a still-pending row means another edit landed after
-// this one read the row — refused rather than approving what the owner did
-// not see.
-func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (bool, error) {
+// approveWithArgs lands the (possibly edited) args and the approval in one
+// conditional update; a lost race on a still-pending row means another edit
+// landed after this one read the row — refused rather than approving what the
+// owner did not see. Without a patch args are the row's own, so the update
+// only pins them.
+func (r *Registry) approveWithArgs(row *db.AgentAction, args json.RawMessage) (bool, error) {
 	ok, err := r.db.ApproveAgentActionWithArgs(row.ID, row.ArgsJSON, string(args))
 	if err != nil || ok {
 		return ok, err
@@ -450,11 +497,18 @@ func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (boo
 }
 
 // admitProposal runs every gate a write call passes before a row is written:
-// the bound workbench is alive, the direct-apply gate, the args checks, the
-// mandatory reason, then the tool's Scope. Any failure writes nothing.
+// the bound workbench is alive, the surface gate, the direct-apply gate, the
+// args checks, the mandatory reason, then the tool's Scope. Any failure
+// writes nothing.
 func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
 	if err := r.WorkbenchAlive(ctx, b); err != nil {
 		return nil, err
+	}
+	if !visibleOn(t, b.Surface) {
+		// Get is surface-blind: a caller that dispatches by name (a reaction
+		// mapping, a model naming a tool it was never offered) must not reach a
+		// tool its surface does not list.
+		return nil, &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
 	if err := directApplyGate(t, b); err != nil {
 		return nil, err
@@ -499,7 +553,9 @@ func directApplyGate(t *Tool, b Binding) error {
 // not, and a trust row keyed by tool NAME outlives a tool later being marked
 // External — the read side decides too (AGENT-03). DirectApply is execute for
 // this call only; the stored trust row is not consulted or changed. An
-// AlwaysAsk tool is ask on the same grounds as External.
+// AlwaysAsk tool is ask on the same grounds as External. Otherwise the row
+// for the binding's own surface decides: an execute set for another surface
+// does not apply here.
 func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 	if t.External || t.AlwaysAsk {
 		return TrustAsk, nil
@@ -507,7 +563,7 @@ func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 	if b.DirectApply {
 		return TrustExecute, nil
 	}
-	return r.Trust(t.Name)
+	return r.Trust(t.Name, b.Surface)
 }
 
 // newProposalRow is the agent_actions row a proposal records. A workbench-bound

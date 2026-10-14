@@ -624,6 +624,19 @@ final class WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// The create flow's note for a failed folder install. A symlink the CLI
+    /// refuses to write through fails Repair the same way, so that note is the
+    /// CLI's own message, which says how to fix the link. The two texts are
+    /// Go's `devpack.ErrSymlinkOutsideFolder` and `devpack.ErrSymlinkInPlace`,
+    /// pinned by `TestInstallErrorTextsTheDesktopMatches`.
+    nonisolated static func createInstallNote(_ detail: String) -> String {
+        let linkRefusals = ["outside the workbench folder", "is a symlink; not writing through it"]
+        if linkRefusals.contains(where: detail.contains) {
+            return "The workbench was created, but installing into the folder failed: " + detail
+        }
+        return "The workbench was created, but installing into the folder failed — use Repair. " + detail
+    }
+
     /// New Workbench… → `workbench create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
     /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
@@ -649,8 +662,7 @@ final class WorkbenchesViewModel {
             try await cli.install(projectID: created.id)
         } catch {
             installed = false
-            installNotes[created.id] = "The workbench was created, but installing into the folder failed — use Repair. "
-                + error.localizedDescription
+            installNotes[created.id] = Self.createInstallNote(error.localizedDescription)
         }
         await reload()
         selectedWorkbenchID = created.id

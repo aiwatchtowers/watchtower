@@ -86,6 +86,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         ingest: Bool = true,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         clock: (@Sendable () -> Date)? = nil,
+        maxSealedBytes: Int64 = RecordingUploader.maximumSealedAssetBytes,
         beforeIngest: (@MainActor @Sendable (URL) throws -> Void)? = nil
     ) throws -> RelayProcessor {
         let fixed = now
@@ -96,7 +97,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
                 try beforeIngest?(audio)
                 try await jobs.ingest(upload, audio: audio)
             },
-            sleep: sleep
+            sleep: sleep,
+            maxSealedBytes: maxSealedBytes
         )
         return RelayProcessor(
             transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar,
@@ -408,6 +410,40 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(atPath: assetsDir.path), [asset.sealed.lastPathComponent],
             "no plaintext left; the sealed copy is kept until an ingest succeeds")
+    }
+
+    /// A sealed asset over the phone's own cap is refused before it is decrypted (target 149): no plaintext, no
+    /// ingest, and the phone is told why.
+    func testAnOversizedSealedAssetIsRefusedUndecrypted() async throws {
+        let asset = try makeAsset(bytes: 4_096)
+        let record = try await send(uploadPayload(), asset: asset)
+
+        _ = try await makeProcessor(maxSealedBytes: 1_024).processOnce()
+
+        let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
+        XCTAssertEqual(echo.payload.status, .failed)
+        XCTAssertEqual(echo.payload.errorMessage, RelayProcessor.tooLargeMessage)
+        XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:invalid_params")
+        XCTAssertTrue(enqueued.isEmpty)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: assetsDir.path), [asset.sealed.lastPathComponent],
+            "nothing was decrypted beside the stash")
+    }
+
+    /// An upload whose payload names another record than its envelope is dropped (target 148).
+    func testAnUploadWhosePayloadNamesAnotherRecordIsIgnored() async throws {
+        let plain = try CloudRecordFactory.record(for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: nil)
+        let record = try TestRelayPhone.seal(CloudRecord(
+            recordName: "recupload-R1", zone: plain.zone, kind: plain.kind, modifiedAt: plain.modifiedAt,
+            payload: plain.payload))
+        try await transport.save([record])
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertTrue(try echoes(of: record.recordName).isEmpty)
+        XCTAssertNil(try sidecar.relayPhase("recupload-R1"))
+        XCTAssertNil(try sidecar.relayPhase("recupload-R2"))
+        XCTAssertTrue(enqueued.isEmpty)
     }
 
     // MARK: - Missing asset

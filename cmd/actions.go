@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,6 +25,7 @@ var (
 	actionsFlagSurface      string
 	actionsFlagForce        bool
 	actionsFlagPatch        string
+	actionsFlagArgsSHA256   string
 )
 
 // externalRetryWarning is what the card shows on a failed external row, said
@@ -48,7 +51,16 @@ var actionsShowCmd = &cobra.Command{Use: "show <id>", Short: "Show one action", 
 var actionsApproveCmd = &cobra.Command{Use: "approve <id>", Short: "Approve a pending action and execute it", Args: cobra.ExactArgs(1), RunE: runActionsApprove}
 var actionsRejectCmd = &cobra.Command{Use: "reject <id>", Short: "Reject a pending action", Args: cobra.ExactArgs(1), RunE: runActionsReject}
 var actionsApplyCmd = &cobra.Command{Use: "apply <id>", Short: "Retry an approved or failed action", Args: cobra.ExactArgs(1), RunE: runActionsApply}
-var actionsTrustCmd = &cobra.Command{Use: "trust <tool> ask|execute", Short: "Set a tool's trust level", Args: cobra.ExactArgs(2), RunE: runActionsTrust}
+var actionsTrustCmd = &cobra.Command{
+	Use:   "trust <tool> ask|execute",
+	Short: "Set a tool's trust level, per chat surface",
+	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
+covers another. Without --surface the level is set on every surface the tool
+is offered on; with --surface it is set on that surface only (what
+Settings → Assistant tools passes, one switch per surface).`,
+	Args: cobra.ExactArgs(2),
+	RunE: runActionsTrust,
+}
 var actionsToolsCmd = &cobra.Command{Use: "tools", Short: "List the registry's write tools", RunE: runActionsTools}
 
 func init() {
@@ -62,9 +74,13 @@ func init() {
 		"reclaim a row stranded in 'executing' by an interrupted apply")
 	actionsApproveCmd.Flags().StringVar(&actionsFlagPatch, "patch", "",
 		"the owner's edits as a JSON object, merged into the pending row before it is approved (e.g. a Slack message's text)")
+	actionsApproveCmd.Flags().StringVar(&actionsFlagArgsSHA256, "args-sha256", "",
+		"sha256 (hex) of the args_json the owner was shown; the approve is refused if the stored args differ")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
-	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target)")
+	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target|reaction|project)")
+	actionsTrustCmd.Flags().StringVar(&actionsFlagSurface, "surface", "",
+		"set the trust on this surface only (default: every surface the tool is on)")
 }
 
 // actionJSON is the wire shape of one row. Field names are load-bearing:
@@ -325,6 +341,29 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	return nil
 }
 
+// agentEnvMarkers are the variables an AI coding agent's shell carries:
+// Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
+// it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
+// workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
+// terminal does not get it).
+var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv}
+
+// refuseUnderAgent keeps the owner's decision the owner's (AGENT-07): an
+// agent that can run `watchtower` could otherwise approve or apply its own
+// proposal (a prompt-injected send_slack_message, then `actions approve` on
+// the id its receipt names). The approve, the apply and an execute trust
+// grant are refused when any marker is set; the Desktop's Approve/Retry
+// buttons are the path. Reject and the read verbs stay open.
+func refuseUnderAgent(verb string) error {
+	for _, name := range agentEnvMarkers {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner decides in Watchtower Desktop "+
+				"(or runs this from a plain Terminal)", verb, name)
+		}
+	}
+	return nil
+}
+
 // decide records the owner's decision. An approval goes through the
 // registry, which merges --patch and checks the tool is ready to run; a
 // rejection is the plain conditional transition.
@@ -332,7 +371,7 @@ func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to st
 	if to != "approved" {
 		return database.TransitionAgentAction(id, from, to, "", "")
 	}
-	ok, err := reg.Approve(context.Background(), id, json.RawMessage(actionsFlagPatch))
+	ok, err := reg.ApproveSeen(context.Background(), id, json.RawMessage(actionsFlagPatch), actionsFlagArgsSHA256)
 	if errors.Is(err, tools.ErrNotFound) {
 		return false, nil // reported below as "no action #N", like any other miss
 	}
@@ -340,6 +379,9 @@ func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to st
 }
 
 func runActionsApprove(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent("approve an action"); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
 }
 
@@ -348,19 +390,43 @@ func runActionsReject(cmd *cobra.Command, args []string) error {
 }
 
 func runActionsApply(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent("apply an action"); err != nil {
+		return err
+	}
 	return decideAndMaybeApply(cmd, args[0], nil, "", true)
 }
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
+	if tools.Trust(args[1]) == tools.TrustExecute {
+		if err := refuseUnderAgent("grant execute trust"); err != nil {
+			return err
+		}
+	}
 	_, database, reg, err := openActionsCmd()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	if err := reg.SetTrust(args[0], tools.Trust(args[1])); err != nil {
-		return err
+	t, ok := reg.Get(args[0])
+	if !ok {
+		return tools.ErrUnknownTool
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s: trust = %s\n", args[0], args[1])
+	surfaces := tools.TrustSurfaces(t)
+	if actionsFlagSurface != "" {
+		surfaces = []string{actionsFlagSurface}
+	}
+	if len(surfaces) == 0 {
+		if len(t.Surfaces) > 0 {
+			return fmt.Errorf("%s: workbench tools always apply in their own workbench", t.Name)
+		}
+		return fmt.Errorf("%s names no surface; pass --surface", t.Name)
+	}
+	for _, s := range surfaces {
+		if err := reg.SetTrust(t.Name, s, tools.Trust(args[1])); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: trust = %s on %s\n", t.Name, args[1], strings.Join(surfaces, ", "))
 	return nil
 }
 
@@ -371,7 +437,12 @@ type toolJSON struct {
 	External    bool     `json:"external"`
 	AlwaysAsk   bool     `json:"always_ask"`
 	Surfaces    []string `json:"surfaces"`
-	Trust       string   `json:"trust"`
+	// Trust is the level on --surface when given; otherwise the one level
+	// every surface shares, or "mixed" when they differ. TrustBySurface is
+	// the per-surface truth (target 167); the workbench surface is not in
+	// it — its tools always apply there (DEV-06).
+	Trust          string            `json:"trust"`
+	TrustBySurface map[string]string `json:"trust_by_surface"`
 }
 
 func runActionsTools(cmd *cobra.Command, _ []string) error {
@@ -388,22 +459,58 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	}
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
-		trust, err := reg.Trust(t.Name)
-		if err != nil {
-			return err
-		}
 		surfaces := t.Surfaces
 		if surfaces == nil {
 			surfaces = []string{}
 		}
+		trustSurfaces := tools.TrustSurfaces(t)
+		bySurface := make(map[string]string, len(trustSurfaces))
+		for _, s := range trustSurfaces {
+			trust, err := reg.Trust(t.Name, s)
+			if err != nil {
+				return err
+			}
+			bySurface[s] = string(trust)
+		}
 		out = append(out, toolJSON{Name: t.Name, Description: t.Description, Access: string(t.Access),
-			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces, Trust: string(trust)})
+			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces,
+			Trust: summarizeTrust(trustSurfaces, bySurface, actionsFlagSurface), TrustBySurface: bySurface})
 	}
 	if actionsFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
 	for _, t := range out {
-		fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-6s external=%-5v trust=%s\n", t.Name, t.Access, t.External, t.Trust)
+		perSurface := make([]string, 0, len(t.Surfaces))
+		for _, s := range t.Surfaces {
+			if trust, ok := t.TrustBySurface[s]; ok {
+				perSurface = append(perSurface, s+":"+trust)
+			} else {
+				perSurface = append(perSurface, s+":direct")
+			}
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-6s external=%-5v trust=%s %s\n",
+			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))
 	}
 	return nil
+}
+
+// summarizeTrust is toolJSON.Trust: the level on the filtered surface, else
+// the level all surfaces share, "mixed" when they differ, "ask" for a tool
+// that names no surface.
+func summarizeTrust(surfaces []string, bySurface map[string]string, filter string) string {
+	if filter != "" {
+		if s, ok := bySurface[filter]; ok {
+			return s
+		}
+		return string(tools.TrustAsk)
+	}
+	summary := string(tools.TrustAsk)
+	for i, s := range surfaces {
+		if i == 0 {
+			summary = bySurface[s]
+		} else if bySurface[s] != summary {
+			return "mixed"
+		}
+	}
+	return summary
 }

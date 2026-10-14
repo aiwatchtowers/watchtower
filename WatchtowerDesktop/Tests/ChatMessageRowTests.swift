@@ -41,6 +41,19 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertNoThrow(try row.inspect().find(text: ChatErrorPresentation.message(for: "auth")))
     }
 
+    /// A chat folder that isn't private: the card names the folder (the
+    /// session's message) and offers no Retry, which would meet it again.
+    func testUnsafeWorkDirNamesTheFolderAndHasNoRetry() throws {
+        let reason = "Watchtower's chat folder /tmp/watchtower-chat-cwd isn't private (it is a symlink, not a folder); "
+            + "delete it and try again."
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "error", errorCode: "workdir_unsafe",
+                                                errorMessage: reason),
+                                 isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertThrowsError(try row.inspect().find(text: "Retry"))
+        XCTAssertNoThrow(try row.inspect().find(text: ChatErrorPresentation.message(for: "workdir_unsafe")))
+        XCTAssertNoThrow(try row.inspect().find(text: reason))
+    }
+
     /// The card keeps the session's own reason under the generic phrase —
     /// the one fix ("pick one in Settings → AI") is otherwise never shown.
     func testErrorCardShowsTheSessionMessage() throws {

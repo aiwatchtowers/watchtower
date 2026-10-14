@@ -108,9 +108,17 @@ extension GitStatusSnapshot {
         guard prefix.exitCode == 0 else {
             return prefix.stderr.contains("not a git repository") ? .noRepository : .failed(Self.describe(prefix))
         }
-        let status = await run(git, [
-            "--no-optional-locks", "-C", folder.path, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."
-        ])
+        // Status hashes edited files through their filter driver: the
+        // folder's own drivers are blanked (MemoryVaultGit.readArgs(git:folder:)).
+        guard let statusArgs = await MemoryVaultGit.readArgs(git: git, folder: folder, [
+            // A submodule's own config and drivers are never listed: status
+            // does not recurse into one.
+            "--no-optional-locks", "-C", folder.path, "status", "--porcelain=v2", "-z", "--untracked-files=all",
+            "--ignore-submodules=all", "--", "."
+        ]) else {
+            return .failed("could not list the folder's git filter drivers, so its status was not read")
+        }
+        let status = await run(git, statusArgs, configured: true)
         guard status.exitCode == 0 else { return .failed(Self.describe(status)) }
         // Only the newline: a folder name may end in a space.
         return .snapshot(parse(status.stdout, prefix: prefix.stdout.trimmingCharacters(in: .newlines)))
@@ -120,10 +128,12 @@ extension GitStatusSnapshot {
         "git exited \(output.exitCode): \(CLILog.detail(output.stderr))"
     }
 
-    private static func run(_ git: String, _ arguments: [String]) async -> ProcessOutput {
+    /// `configured`: the arguments already carry the read options.
+    private static func run(_ git: String, _ arguments: [String], configured: Bool = false) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = arguments
+        // The bound folder is the agent's: its .git/config runs nothing here.
+        process.arguments = configured ? arguments : MemoryVaultGit.readArgs(arguments)
         // English messages: "not a git repository" is matched below.
         var environment = ProcessInfo.processInfo.environment
         environment["LC_ALL"] = "C"

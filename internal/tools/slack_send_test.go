@@ -83,7 +83,8 @@ func newSlackSendEnv(t *testing.T) *slackSendEnv {
 	user := func(acct int64, id, name, display, email string) {
 		require.NoError(t, d.UpsertUser(db.User{ID: slack.Namespace(acct, id), Name: name, DisplayName: display, Email: email}))
 	}
-	user(env.acme, "UALICE", "alice", "Alice", "alice@example.com")
+	require.NoError(t, d.UpsertUser(db.User{ID: slack.Namespace(env.acme, "UALICE"), Name: "alice", DisplayName: "Alice",
+		RealName: "Alice Example", Email: "alice@example.com"}))
 	user(env.acme, "UBOB", "bob", "Bob", "")
 	user(env.beta, "USAM1", "sam", "Sam", "")
 	user(env.beta, "USAM2", "sam.k", "Sam", "")
@@ -132,11 +133,11 @@ func TestSendSlackMessage_ResolvesAndPinsTheRecipient(t *testing.T) {
 		{"explicit thread_ts", `{"channel":"#ops","thread_ts":"1700000000.000001"}`,
 			slackRecipient{ChannelID: "COPS", Label: "#ops", ThreadTS: "1700000000.000001"}},
 		{"DM by email uses the synced IM", `{"user":"Alice@Example.com"}`,
-			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice"}},
+			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice", Handle: "alice", RealName: "Alice Example"}},
 		{"DM by handle without an IM opens one later", `{"user":"@bob"}`,
-			slackRecipient{UserID: "UBOB", Label: "@Bob"}},
+			slackRecipient{UserID: "UBOB", Label: "@Bob", Handle: "bob"}},
 		{"DM by its channel id names the person", `{"channel":"DALICE"}`,
-			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice"}},
+			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice", Handle: "alice", RealName: "Alice Example"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,8 +409,8 @@ func TestSendSlackMessage_RetryThatCannotTellDoesNotRepost(t *testing.T) {
 // without the owner's click.
 func TestSendSlackMessage_ExternalCannotBeExecuteTrust(t *testing.T) {
 	env := newSlackSendEnv(t)
-	assert.ErrorIs(t, env.reg.SetTrust("send_slack_message", TrustExecute), ErrExternalExecute)
-	require.NoError(t, env.d.SetToolTrust("send_slack_message", "execute")) // a stale row
+	assert.ErrorIs(t, env.reg.SetTrust("send_slack_message", "main", TrustExecute), ErrExternalExecute)
+	require.NoError(t, env.d.SetToolTrust("send_slack_message", "main", "execute")) // a stale row
 	rc, err := env.propose(t, `{"channel":"#ops","text":"hi","reason":"r"}`)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", rc.Status)

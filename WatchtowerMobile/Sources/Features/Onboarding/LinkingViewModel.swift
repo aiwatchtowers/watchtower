@@ -266,7 +266,7 @@ final class LinkingViewModel {
                 return
             }
             do {
-                try await container.acceptShares([data, relay])
+                try await container.acceptShares([data, relay], ownerName: payload.ownerUser, hubID: payload.hubID)
             } catch {
                 Self.logger.error("share accept failed: \(error.localizedDescription, privacy: .public)")
                 phase = .failed(.cannotShare)

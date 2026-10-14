@@ -261,11 +261,14 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             switch try open(record) {
             case .opened(let plain): opened.append(plain)
             case .unopenable(let reason):
-                unopenable.append(UnopenableRecord(wireName: record.recordName, modifiedAt: record.modifiedAt, reason: reason))
+                unopenable.append(UnopenableRecord(
+                    wireName: record.recordName, modifiedAt: record.modifiedAt, reason: reason,
+                    serverModifiedAt: record.serverModifiedAt))
             case .rolledBack:
                 // The server holds an older version than one already seen: hygiene must still be able to age it out.
                 unopenable.append(UnopenableRecord(
-                    wireName: record.recordName, modifiedAt: record.modifiedAt, reason: Self.rolledBackReason))
+                    wireName: record.recordName, modifiedAt: record.modifiedAt, reason: Self.rolledBackReason,
+                    serverModifiedAt: record.serverModifiedAt))
             }
         }
         return (opened, unopenable)
@@ -334,7 +337,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             return .passThrough(CloudRecord(
                 recordName: record.recordName, zone: .relay, kind: RelayRecordKind.hello.rawValue,
                 modifiedAt: record.modifiedAt, payload: record.payload, assetFileURL: record.assetFileURL,
-                creatorUserRecordName: record.creatorUserRecordName))
+                creatorUserRecordName: record.creatorUserRecordName, serverModifiedAt: record.serverModifiedAt))
         case (.hub, .relayToHub):
             opened = try openSymmetric(record, header: header, context: context, direction: .phoneToHub, device: header.senderID)
         case let (.hub(hubID), .relayToPhone):
@@ -372,7 +375,8 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         return .opened(CloudRecord(
             recordName: frame.id, zone: .relay, kind: frame.kind, modifiedAt: record.modifiedAt, payload: frame.payload,
             notifyLevel: frame.notifyLevel, assetFileURL: record.assetFileURL,
-            creatorUserRecordName: record.creatorUserRecordName, asset: frame.asset,
+            creatorUserRecordName: record.creatorUserRecordName, serverModifiedAt: record.serverModifiedAt,
+            asset: frame.asset,
             sealed: SealedInfo(
                 wireName: record.recordName, senderID: header.senderID, epoch: header.epoch, seq: header.seq,
                 envelopeClass: header.envelopeClass)))

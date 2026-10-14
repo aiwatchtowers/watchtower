@@ -37,10 +37,16 @@ package enum ReactionDictionaryQueries {
         try db.execute(sql: "DELETE FROM reaction_command_map WHERE emoji = ?", arguments: [emoji])
     }
 
-    /// The owner's standing trust decision for `tool` (`"ask"`/`"execute"`),
-    /// or nil when the row doesn't exist yet — Go's default is "ask" until
-    /// `watchtower actions trust` writes a row (`internal/tools.SetTrust`).
+    /// The owner's standing trust decision for `tool` on the reaction path
+    /// (`"ask"`/`"execute"`), or nil when the row doesn't exist yet — Go's
+    /// default is "ask" until `watchtower actions trust` writes a row
+    /// (`internal/tools.SetTrust`). Trust is per (tool, surface) since
+    /// migration 00112; this dictionary only ever runs on `reaction`.
     package static func trustFor(_ db: Database, tool: String) throws -> String? {
-        try String.fetchOne(db, sql: "SELECT trust FROM tool_trust WHERE tool = ?", arguments: [tool])
+        try String.fetchOne(
+            db,
+            sql: "SELECT trust FROM tool_trust WHERE tool = ? AND surface = 'reaction'",
+            arguments: [tool]
+        )
     }
 }

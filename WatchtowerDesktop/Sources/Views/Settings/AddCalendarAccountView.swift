@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for connecting a new calendar source, presented from the Settings →
 /// Calendar Accounts section and the Calendar tab's not-connected screen.
@@ -40,7 +41,8 @@ struct AddCalendarAccountView: View {
     @State private var assistantFilledNoteToken = 0
 
     private var canConnectCalDAV: Bool {
-        !caldavURL.trimmingCharacters(in: .whitespaces).isEmpty
+        !CleartextRefusal.refusesCalDAV(url: caldavURL)
+            && !caldavURL.trimmingCharacters(in: .whitespaces).isEmpty
             && !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
     }
@@ -146,6 +148,11 @@ struct AddCalendarAccountView: View {
 
                 TextField("Server URL", text: $caldavURL, prompt: Text("https://caldav.icloud.com"))
                     .textFieldStyle(.roundedBorder)
+                if CleartextRefusal.refusesCalDAV(url: caldavURL) {
+                    Text(CleartextRefusal.caldavCaption)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
                 TextField("Username", text: $username, prompt: Text("you@example.com"))
                     .textFieldStyle(.roundedBorder)
