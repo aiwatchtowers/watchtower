@@ -171,6 +171,10 @@ final class AppState {
     /// `wireMeetingRecorderLoaders` (same wiring moment as the registry
     /// loader/writer below, which need the same pool).
     let voiceRegistryCenter = VoiceRegistryCenter()
+    /// The launch catch-up `wireMeetingRecorderLoaders` starts: it closes
+    /// queue tasks whose cluster is gone, so a test that queues one awaits it
+    /// first instead of racing it.
+    @ObservationIgnored private(set) var voiceCatchUp: Task<Void, Never>?
     /// Embedded Claude Code terminals, one per project. No DB needed; closed
     /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
     let terminalCenter = TerminalCenter()
@@ -599,7 +603,7 @@ final class AppState {
         // Launch catch-up: the one full retro pass (spec §4.1), skipped with
         // "Voice recognition" off (spec §6).
         let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
-        Task { await voiceRegistryCenter.catchUp(voiceRecognition: voiceRecognition) }
+        voiceCatchUp = Task { await voiceRegistryCenter.catchUp(voiceRecognition: voiceRecognition) }
         observeVoiceRegistryCatchUp()
     }
 

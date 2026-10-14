@@ -97,6 +97,9 @@ final class AppStateTests: XCTestCase {
     func testRegistryWriterPersistsTasksAndSamples() async throws {
         let appState = AppState.isolated()
         appState.wireMeetingRecorderLoaders(dbPool: dbManager.dbPool)
+        // The launch catch-up closes a task whose transcript has no such
+        // cluster (this one's has none): let it finish before queueing.
+        await appState.voiceCatchUp?.value
         let (transcriptID, personID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             try TestDatabase.insertMeetingTranscript(db, title: "Sync")
             let tid = db.lastInsertedRowID
