@@ -470,9 +470,7 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.Hook || !st.StopHook || !st.StateHooks || !st.AskGuard || !st.AskToolBlock {
-		t.Fatalf("fixture: every hook must be installed before the removal: %+v err=%v", st, err)
-	}
+	assertEverySettingInstalled(t, o)
 
 	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
@@ -493,8 +491,23 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if len(f.registered) != 0 {
 		t.Fatalf("PROJ-02: the MCP registration survived: %v", f.registered)
 	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || st.CleanupPermission {
+		t.Fatalf("PROJ-02: the cleanup permission survived the removal: %+v err=%v", st, err)
+	}
 	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("a second removal must be a clean no-op: %v", err)
+	}
+}
+
+// assertEverySettingInstalled is the removal tests' fixture check: every
+// hook and the cleanup allow rule are in place before anything is removed.
+func assertEverySettingInstalled(t *testing.T, o WorkbenchInstallOptions) {
+	t.Helper()
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.Hook || !st.StopHook || !st.StateHooks || !st.AskGuard || !st.AskToolBlock {
+		t.Fatalf("fixture: every hook must be installed before the removal: %+v err=%v", st, err)
+	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.CleanupPermission {
+		t.Fatalf("fixture: the cleanup permission must be installed before the removal: %+v err=%v", st, err)
 	}
 }
 
