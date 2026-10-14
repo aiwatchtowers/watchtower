@@ -166,6 +166,10 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		// session it is recorded pending for the Desktop's Approve (DEV-06).
 		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
 		tools.NewGetWritingStyle(),
+		// Automations (spec 2026-10-14 §6.1, D2): local-store email reads on
+		// the automation surface only, never in tools.ReadTools() (DEV-01).
+		tools.NewListEmails(),
+		tools.NewGetEmail(),
 	)
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
 	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
