@@ -147,3 +147,36 @@ func TestWithoutHinted_KeepsOnlyUnhintedFailures(t *testing.T) {
 	gone := &OutsideFolderError{Outside: filepath.Join(t.TempDir(), "missing.json"), leftover: leftoverHooks, msg: "gone"}
 	assert.Equal(t, gone, WithoutHinted(gone), "a refusal with no hint stays an error")
 }
+
+// A settings.local.json linking outside the folder is refused by the hook
+// and the cleanup-rule removals alike; the owner gets one line for that file,
+// the hooks one, which already says to clean it by hand.
+func TestOutsideFolderHints_OneLinePerRefusedSettingsFile(t *testing.T) {
+	folder := fakeRepo(t)
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"permissions": {"allow": ["x"]}}`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, ".claude"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(folder, ".claude", "settings.local.json")))
+	err := RemoveWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
+	require.ErrorIs(t, err, ErrSymlinkOutsideFolder)
+	realOutside, evalErr := filepath.EvalSymlinks(outside)
+	require.NoError(t, evalErr)
+	assert.Equal(t, []string{"Watchtower's hooks stay in " + realOutside + " — remove the entries marked watchtower by hand"},
+		OutsideFolderHints(err))
+}
+
+// When only the cleanup rule is refused for a file — no hooks refusal names
+// it — its own allow-rule line is kept.
+func TestRefusedFileReported_KeepsARuleOnlyRefusal(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{}`), 0o600))
+	rule := &OutsideFolderError{Outside: outside, leftover: leftoverAllowRule}
+	other := &OutsideFolderError{Outside: filepath.Join(t.TempDir(), "other.json"), leftover: leftoverHooks}
+
+	assert.False(t, refusedFileReported(nil, rule))
+	assert.False(t, refusedFileReported([]error{errors.New("unrelated"), other}, rule))
+	assert.True(t, refusedFileReported([]error{&OutsideFolderError{Outside: outside, leftover: leftoverHooks}}, rule))
+	assert.False(t, refusedFileReported([]error{other}, errors.New("not a refusal")))
+	assert.Equal(t, []string{"Watchtower's cleanup allow rule stays in " + outside +
+		" — remove the \"workbench cleanup\" entry from permissions.allow by hand"}, OutsideFolderHints(rule))
+}

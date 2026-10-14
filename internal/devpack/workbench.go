@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -354,10 +355,25 @@ func removeWorkbenchSettings(o WorkbenchInstallOptions) []error {
 			errs = append(errs, err)
 		}
 	}
-	if _, err := RemoveCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {
+	if _, err := RemoveCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) && !refusedFileReported(errs, err) {
 		errs = append(errs, err)
 	}
 	return errs
+}
+
+// refusedFileReported is true when err refuses a settings file outside the
+// folder (OutsideFolderError) that an error in reported already refuses: the
+// hooks step's hint tells the owner to clean that file by hand, so the
+// cleanup-rule step adds no second line for it.
+func refusedFileReported(reported []error, err error) bool {
+	var oe *OutsideFolderError
+	if !errors.As(err, &oe) {
+		return false
+	}
+	return slices.ContainsFunc(reported, func(prev error) bool {
+		var po *OutsideFolderError
+		return errors.As(prev, &po) && po.Outside == oe.Outside
+	})
 }
 
 // removeWorkbenchSkills removes our un-edited skills in both vocabularies,
