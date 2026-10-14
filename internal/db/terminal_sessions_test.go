@@ -1777,7 +1777,9 @@ var cwdRowSkip = []string{"id", "agent_cwd", "agent_cwd_at"}
 
 // richCwdRow is a claude row of workbench pid with every agent column set: a
 // Stop's counted `waiting` at t0 with a turn end, a chat question, an open
-// agent turn and a finish.
+// agent turn and a finish. created_at and last_active_at are pinned to t0 too:
+// their second-precision DB default would differ between twin rows inserted
+// across a second boundary.
 func richCwdRow(t *testing.T, d *DB, pid int64, t0 time.Time) int64 {
 	t.Helper()
 	w := writeResult(t)
@@ -1797,8 +1799,10 @@ func richCwdRow(t *testing.T, d *DB, pid int64, t0 time.Time) int64 {
 	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "a-1", true, t0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = ?, finish_summary = 'done' WHERE id = ?`,
-		AgentStateStamp(t0), id); err != nil {
+	created := t0.Format("2006-01-02T15:04:05Z")
+	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = ?, finish_summary = 'done',
+		created_at = ?, last_active_at = ? WHERE id = ?`,
+		AgentStateStamp(t0), created, created, id); err != nil {
 		t.Fatal(err)
 	}
 	return id
