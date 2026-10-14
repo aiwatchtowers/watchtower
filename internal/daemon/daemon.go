@@ -323,6 +323,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 		defer RemovePID(d.pidPath)
+		// The wake watcher is installed above: advertise it, so the CLI
+		// never sends SIGUSR2 to a daemon that would die of it.
+		defer d.advertiseCaps()()
 	}
 
 	pollInterval := d.config.Sync.PollInterval

@@ -33,6 +33,12 @@ type Backends struct {
 	Workbench WorkbenchResolver
 }
 
+// RunEnvMarker is the environment variable every child process an automation
+// run starts carries (P5 shell()/session(), P6 agent()), set to the run id.
+// It is one of AGENT-07's agent markers: a command an automation runs can no
+// more approve, confirm or dry-run an unconfirmed recipe than an AI agent can.
+const RunEnvMarker = "WATCHTOWER_AUTOMATION_RUN_ID"
+
 // ShellCommand is one shell() call (P5).
 type ShellCommand struct {
 	Cmd, Dir string

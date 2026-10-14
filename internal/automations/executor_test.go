@@ -887,3 +887,24 @@ func TestWaiter_SlotWaitStillExpires(t *testing.T) {
 	}
 	close(sf.gate)
 }
+
+// A caller that checked the recipe at one approval hash (the CLI's D16 gate)
+// never runs a recipe a rescan changed in between: the run is cancelled.
+func TestExecutor_ExecuteInlinePinnedRefusesChangedRecipe(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
+	f := newExFixture(t, exOpts{gen: gen})
+	a := f.seed(t, "digest", `return llm("x")`, false)
+	id := f.enqueue(t, a, db.TriggerDryRun)
+	f.write(t, "digest", exRecipeText(`llm("x"); return llm("y")`, ""))
+	if changed := f.rescan(t, "digest"); changed.ApprovalHash == a.ApprovalHash {
+		t.Fatal("the rescan did not change the approval hash")
+	}
+	r, err := f.e.ExecuteInlinePinned(context.Background(), id, a.ApprovalHash)
+	if !errors.Is(err, automations.ErrRecipeChanged) || r != nil {
+		t.Fatalf("ExecuteInlinePinned = %+v, %v; want ErrRecipeChanged", r, err)
+	}
+	f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled)
+	if n := gen.CallCount(); n != 0 {
+		t.Fatalf("generator calls = %d; want 0", n)
+	}
+}
