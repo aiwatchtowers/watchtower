@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -72,4 +73,25 @@ func RequireTLS(host, what string) error {
 	}
 	return fmt.Errorf("%w: %s would send the password to %s in cleartext; use TLS "+
 		"(no TLS is allowed only for a loopback host: %s)", ErrCleartext, what, host, LoopbackHosts)
+}
+
+// SecretRedirect is an http.Client CheckRedirect for a client that sends a
+// secret on every request (basic auth): a hop is refused when it would carry
+// the secret in cleartext (RequireSecureURL — a downgrade to plain http) or
+// to another host. Go's default 10-hop cap is kept (a CheckRedirect replaces
+// it).
+func SecretRedirect(what string) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after %d redirects", len(via))
+		}
+		if err := RequireSecureURL(req.URL.String(), what); err != nil {
+			return fmt.Errorf("redirect refused: %w", err)
+		}
+		if from := via[0].URL; !strings.EqualFold(req.URL.Hostname(), from.Hostname()) {
+			return fmt.Errorf("redirect refused: %s sends a secret, so it does not follow %s to another host (%s)",
+				what, from.Hostname(), req.URL.Hostname())
+		}
+		return nil
+	}
 }

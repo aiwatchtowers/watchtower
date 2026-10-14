@@ -31,12 +31,19 @@ func DialCalDAV(baseURL, username, password string) (*Client, error) {
 	if err := netsec.RequireSecureURL(baseURL, "CalDAV basic auth"); err != nil {
 		return nil, fmt.Errorf("caldav: %w", err)
 	}
-	httpClient := webdav.HTTPClientWithBasicAuth(&http.Client{Timeout: httpTimeout}, username, password)
+	httpClient := webdav.HTTPClientWithBasicAuth(newHTTPClient(), username, password)
 	c, err := webcaldav.NewClient(httpClient, baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("creating caldav client for %s: %w", baseURL, err)
 	}
 	return &Client{c: c}, nil
+}
+
+// newHTTPClient is the CalDAV transport: Go re-sends the Authorization
+// header on a same-host redirect, so a redirect downgrading to plain http
+// (or leaving the host) is refused before the password goes out.
+func newHTTPClient() *http.Client {
+	return &http.Client{Timeout: httpTimeout, CheckRedirect: netsec.SecretRedirect("CalDAV basic auth")}
 }
 
 // FetchEvents discovers the account's calendars (current-user-principal →
