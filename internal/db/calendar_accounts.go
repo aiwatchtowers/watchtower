@@ -9,11 +9,14 @@ import (
 // CalendarAccount is one row of calendar_accounts — a connected CalDAV server
 // or secret ICS feed. The exact calendar analog of EmailAccount.
 type CalendarAccount struct {
-	ID        int64
-	Provider  string // "caldav" | "ics"
-	Username  string
-	URL       string // CalDAV server base URL only; empty for provider="ics" (the feed URL is a credential)
-	Label     string
+	ID       int64
+	Provider string // "caldav" | "ics"
+	Username string
+	URL      string // CalDAV server base URL only; empty for provider="ics" (the feed URL is a credential)
+	Label    string
+	// LabelHint, not a column, seeds the automatic label of a new ICS feed —
+	// its ICSAccountLabel, which the stored row (no feed URL) cannot rebuild.
+	LabelHint string
 	Status    string // "ok" | "error" | "revoked"
 	Error     string
 	CreatedAt string
@@ -28,18 +31,30 @@ func CalendarAccountCalendarID(provider string, accountID int64) string {
 	return fmt.Sprintf("%s:%d", provider, accountID)
 }
 
-// CreateCalendarAccount inserts a new connected calendar source and returns its ID.
+// CreateCalendarAccount inserts a new connected calendar source and returns
+// its ID. An empty a.Label gets the automatic label: CalDAVAccountLabel for
+// CalDAV, a.LabelHint for an ICS feed.
 func (db *DB) CreateCalendarAccount(a CalendarAccount) (int64, error) {
-	res, err := db.Exec(`INSERT INTO calendar_accounts
+	base := a.LabelHint
+	if a.Provider == "caldav" {
+		base = CalDAVAccountLabel(a.URL, a.Username)
+	}
+	var id int64
+	err := db.inLabelTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`INSERT INTO calendar_accounts
         (provider, username, url, label)
         VALUES (?,?,?,?)`,
-		a.Provider, a.Username, a.URL, a.Label)
+			a.Provider, a.Username, a.URL, a.Label)
+		if err != nil {
+			return fmt.Errorf("creating calendar account: %w", err)
+		}
+		if id, err = res.LastInsertId(); err != nil {
+			return fmt.Errorf("reading new calendar account id: %w", err)
+		}
+		return fillAccountLabel(tx, "calendar_accounts", id, base)
+	})
 	if err != nil {
-		return 0, fmt.Errorf("creating calendar account: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("reading new calendar account id: %w", err)
+		return 0, err
 	}
 	return id, nil
 }

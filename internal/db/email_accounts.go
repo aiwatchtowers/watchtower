@@ -49,18 +49,25 @@ type ImapMessage struct {
 	UpdatedAt string
 }
 
-// CreateEmailAccount inserts a new connected mailbox and returns its ID.
+// CreateEmailAccount inserts a new connected mailbox and returns its ID. An
+// empty a.Label gets the automatic label (MailAccountLabel).
 func (db *DB) CreateEmailAccount(a EmailAccount) (int64, error) {
-	res, err := db.Exec(`INSERT INTO email_accounts
+	var id int64
+	err := db.inLabelTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`INSERT INTO email_accounts
         (provider, email_address, host, port, security, folder, label)
         VALUES (?,?,?,?,?,?,?)`,
-		a.Provider, a.EmailAddress, a.Host, a.Port, a.Security, a.Folder, a.Label)
+			a.Provider, a.EmailAddress, a.Host, a.Port, a.Security, a.Folder, a.Label)
+		if err != nil {
+			return fmt.Errorf("creating email account: %w", err)
+		}
+		if id, err = res.LastInsertId(); err != nil {
+			return fmt.Errorf("reading new email account id: %w", err)
+		}
+		return fillAccountLabel(tx, "email_accounts", id, MailAccountLabel(a.EmailAddress, a.Host))
+	})
 	if err != nil {
-		return 0, fmt.Errorf("creating email account: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("reading new email account id: %w", err)
+		return 0, err
 	}
 	return id, nil
 }

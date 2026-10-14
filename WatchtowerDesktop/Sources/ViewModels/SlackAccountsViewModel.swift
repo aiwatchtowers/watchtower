@@ -66,24 +66,17 @@ final class SlackAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `slack add` args — always `--app-return` (the OAuth success
-    /// page redirects to watchtower-auth:// so macOS brings the app back to the
-    /// foreground) and an optional `--label`. Pure and side-effect-free so the
-    /// flag assembly is directly testable without shelling out to a real
-    /// process.
-    static func addArgs(label: String) -> [String] {
-        var args = ["slack", "add", "--app-return"]
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
-        return args
-    }
+    /// The `slack add` args — always `--app-return` (the OAuth success page
+    /// redirects to watchtower-auth:// so macOS brings the app back to the
+    /// foreground). No `--label`: the CLI names the workspace after its team
+    /// (`db.SlackAccountLabel`); the owner renames it in Settings.
+    static let addArgs = ["slack", "add", "--app-return"]
 
     /// Connects a new Slack workspace via `watchtower slack add --app-return`.
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(label: String, daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs(label: label), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
+    func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async {
+        await runAuthFlow(args: Self.addArgs, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -126,6 +119,19 @@ final class SlackAccountsViewModel {
             failurePrefix: enabled ? "Enable failed" : "Disable failed",
             daemonPolicy: .restart
         )
+    }
+
+    // MARK: - Rename
+
+    /// Renames account `accountID` via `watchtower slack rename` (`AccountRename`). No
+    /// daemon restart: the daemon reads labels when it needs them.
+    func rename(accountID: Int, to name: String) async {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return
+        }
+        error = await AccountRename.run(source: "slack", id: accountID, name: name, cliPath: cliPath())
+        if error == nil { await refreshAsync() }
     }
 
     // MARK: - Remove

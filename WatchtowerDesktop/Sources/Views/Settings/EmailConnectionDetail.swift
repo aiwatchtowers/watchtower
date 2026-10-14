@@ -9,6 +9,7 @@ struct EmailConnectionDetail: View {
     @Environment(AppState.self) private var appState
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
+    @State private var accountBeingRenamed: AccountRenameTarget?
 
     var body: some View {
         Form {
@@ -41,6 +42,11 @@ struct EmailConnectionDetail: View {
                             Circle()
                                 .fill(emailAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
+                            Button("Rename…") {
+                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isRunning)
                             Button("Remove") {
                                 accountPendingRemoval = account
                             }
@@ -69,6 +75,9 @@ struct EmailConnectionDetail: View {
             AddEmailAccountView()
                 .environment(appState)
                 .marksAccountSheet(appState)
+        }
+        .accountRenameAlert($accountBeingRenamed) { target, name in
+            Task { await appState.emailAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
         .confirmationDialog(
             "Remove \(accountPendingRemoval?.displayName ?? "this account")?",

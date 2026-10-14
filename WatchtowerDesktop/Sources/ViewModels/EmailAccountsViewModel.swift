@@ -16,10 +16,13 @@ final class EmailAccountsViewModel {
     var error: String?
 
     private let dbPool: DatabasePool
+    /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
+    private let cliPath: () -> String?
     private var authProcess: Process?
 
-    init(dbPool: DatabasePool) {
+    init(dbPool: DatabasePool, cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -61,8 +64,7 @@ final class EmailAccountsViewModel {
         username: String,
         password: String,
         folder: String,
-        security: String,
-        label: String
+        security: String
     ) async -> Bool {
         guard !isRunning else {
             error = "Another connection is already in progress."
@@ -82,8 +84,7 @@ final class EmailAccountsViewModel {
             "--port", String(port),
             "--username", username,
             "--folder", folder,
-            "--security", security,
-            "--label", label
+            "--security", security
         ]
 
         let result = await Self.runCLI(path: cliPath, arguments: args, stdin: password + "\n")
@@ -107,7 +108,7 @@ final class EmailAccountsViewModel {
 
     /// Runs `watchtower outlook login --app-return`, same OAuth loopback-browser
     /// flow shape as `GoogleAuthService.connect()`.
-    func connectOutlook(label: String) {
+    func connectOutlook() {
         guard !isRunning else { return }
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
@@ -117,10 +118,7 @@ final class EmailAccountsViewModel {
         isRunning = true
         error = nil
 
-        var args = ["outlook", "login", "--app-return"]
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
+        let args = ["outlook", "login", "--app-return"]
 
         // --app-return: the success page redirects to watchtower-auth:// so
         // macOS brings the app back to the foreground after the browser step.
@@ -159,6 +157,19 @@ final class EmailAccountsViewModel {
         }
         authProcess = nil
         isRunning = false
+    }
+
+    // MARK: - Rename
+
+    /// Renames account `accountID` via `watchtower imap rename` — any mailbox, IMAP or
+    /// Outlook (`AccountRename`). No daemon restart: labels are read on use.
+    func rename(accountID: Int, to name: String) async {
+        guard !isRunning else {
+            error = "Another connection is already in progress."
+            return
+        }
+        error = await AccountRename.run(source: "imap", id: accountID, name: name, cliPath: cliPath())
+        if error == nil { await refreshAsync() }
     }
 
     // MARK: - Remove

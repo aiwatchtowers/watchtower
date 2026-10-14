@@ -104,7 +104,7 @@ final class CalendarAccountsViewModelTests: XCTestCase {
 
         let success = await vm.addCalDAV(
             url: "https://caldav.icloud.com", username: "me@icloud.com",
-            password: "secret", label: ""
+            password: "secret"
         )
 
         XCTAssertFalse(success)
@@ -120,7 +120,7 @@ final class CalendarAccountsViewModelTests: XCTestCase {
         let vm = CalendarAccountsViewModel(dbPool: pool)
         vm.isRunning = true
 
-        let success = await vm.addICS(feedURL: "https://calendar.google.com/calendar/ical/secret.ics", label: "")
+        let success = await vm.addICS(feedURL: "https://calendar.google.com/calendar/ical/secret.ics")
 
         XCTAssertFalse(success)
         XCTAssertEqual(vm.error, "Another connection is already in progress.")

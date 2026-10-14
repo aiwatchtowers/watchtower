@@ -24,7 +24,6 @@ struct AddEmailAccountView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var folder = "INBOX"
-    @State private var label = ""
     @State private var isConnectingIMAP = false
     @State private var imapError: String?
 
@@ -34,10 +33,6 @@ struct AddEmailAccountView: View {
     @State private var setupChatVM: EmailSetupChatViewModel?
     @State private var showAssistantFilledNote = false
     @State private var assistantFilledNoteToken = 0
-
-    // MARK: - Outlook form state
-
-    @State private var outlookLabel = ""
 
     enum IMAPSecurity: String, CaseIterable, Identifiable {
         case ssl, starttls, none
@@ -142,9 +137,6 @@ struct AddEmailAccountView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField("Label (optional)", text: $outlookLabel)
-                    .textFieldStyle(.roundedBorder)
-
                 if vm?.isRunning == true {
                     HStack {
                         ProgressView().controlSize(.small)
@@ -154,7 +146,7 @@ struct AddEmailAccountView: View {
                     }
                 } else {
                     Button("Connect Outlook") {
-                        vm?.connectOutlook(label: outlookLabel)
+                        vm?.connectOutlook()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -220,9 +212,6 @@ struct AddEmailAccountView: View {
                 TextField("Folder", text: $folder, prompt: Text("INBOX"))
                     .textFieldStyle(.roundedBorder)
 
-                TextField("Label (optional)", text: $label)
-                    .textFieldStyle(.roundedBorder)
-
                 HStack {
                     if isConnectingIMAP {
                         ProgressView().controlSize(.small)
@@ -278,7 +267,6 @@ struct AddEmailAccountView: View {
             security: security.rawValue,
             username: username,
             folder: folder,
-            label: label,
             hasPassword: !password.isEmpty,
             lastConnectionError: imapError
         )
@@ -312,7 +300,6 @@ struct AddEmailAccountView: View {
         if let value = patch.security, let parsed = IMAPSecurity(rawValue: value) { security = parsed }
         if let value = patch.username { username = value }
         if let value = patch.folder { folder = value }
-        if let value = patch.label { label = value }
 
         assistantFilledNoteToken += 1
         let token = assistantFilledNoteToken
@@ -337,7 +324,6 @@ struct AddEmailAccountView: View {
         let hostValue = host.trimmingCharacters(in: .whitespaces)
         let usernameValue = username.trimmingCharacters(in: .whitespaces)
         let folderValue = folder.trimmingCharacters(in: .whitespaces)
-        let labelValue = label.trimmingCharacters(in: .whitespaces)
         let passwordValue = password
         Task {
             let success = await vm.addImapAccount(
@@ -346,8 +332,7 @@ struct AddEmailAccountView: View {
                 username: usernameValue,
                 password: passwordValue,
                 folder: folderValue.isEmpty ? "INBOX" : folderValue,
-                security: security.rawValue,
-                label: labelValue
+                security: security.rawValue
             )
             isConnectingIMAP = false
             if success {

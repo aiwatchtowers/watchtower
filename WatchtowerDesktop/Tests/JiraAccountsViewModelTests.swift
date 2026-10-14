@@ -58,32 +58,17 @@ final class JiraAccountsViewModelTests: XCTestCase {
 
     // MARK: - addArgs (pure)
 
-    func testAddArgsWithLabel() {
-        let args = JiraAccountsViewModel.addArgs(label: "Client")
-        XCTAssertEqual(args, ["jira", "add", "--app-return", "--label", "Client"])
-    }
-
-    func testAddArgsWithoutLabelOmitsFlag() {
-        let args = JiraAccountsViewModel.addArgs(label: "")
+    // The connect never names the site: the CLI labels it after its host.
+    func testAddArgsCarryNoLabel() {
+        let args = JiraAccountsViewModel.addArgs()
         XCTAssertEqual(args, ["jira", "add", "--app-return"])
-        XCTAssertFalse(args.contains("--label"))
     }
 
     // A grant reaching several Atlassian sites can only be resolved by naming
     // one: the CLI's picker reads stdin, which the spawned Process never wires.
     func testAddArgsWithSite() {
-        let args = JiraAccountsViewModel.addArgs(label: "Client", site: "acme.atlassian.net")
-        XCTAssertEqual(args, ["jira", "add", "--app-return", "--label", "Client", "--site", "acme.atlassian.net"])
-    }
-
-    func testAddArgsWithSiteOnly() {
-        let args = JiraAccountsViewModel.addArgs(label: "", site: "acme.atlassian.net")
+        let args = JiraAccountsViewModel.addArgs(site: "acme.atlassian.net")
         XCTAssertEqual(args, ["jira", "add", "--app-return", "--site", "acme.atlassian.net"])
-    }
-
-    func testAddArgsWithoutSiteOmitsFlag() {
-        let args = JiraAccountsViewModel.addArgs(label: "Client")
-        XCTAssertFalse(args.contains("--site"))
     }
 
     // MARK: - removeArgs (pure)
@@ -159,7 +144,7 @@ extension JiraAccountsViewModelTests {
 
     func testAddRestartsTheDaemonByDefault() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        await vm.addAccount(label: "")
+        await vm.addAccount()
         await vm.daemonRestartTask?.value
         XCTAssertNil(vm.error)
         XCTAssertEqual(daemon.restartCount, 1)
@@ -167,7 +152,7 @@ extension JiraAccountsViewModelTests {
 
     func testDeferredAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        await vm.addAccount(label: "", daemonPolicy: .deferred)
+        await vm.addAccount(daemonPolicy: .deferred)
         XCTAssertNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)
@@ -192,7 +177,7 @@ extension JiraAccountsViewModelTests {
 
     func testFailedAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
-        await vm.addAccount(label: "")
+        await vm.addAccount()
         XCTAssertNotNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)

@@ -73,18 +73,17 @@ final class GoogleAccountsViewModel {
 
     /// Builds the `google add` args — always `--app-return` (the OAuth success
     /// page redirects to watchtower-auth:// so macOS brings the app back to
-    /// the foreground), the selected services, an optional `--label`, and
+    /// the foreground), the selected services, and
     /// `--client-id`/`--client-secret-stdin` when the account brings its own
     /// Google Cloud OAuth client instead of Watchtower's build-time default.
+    /// No `--label`: the CLI names the account after its mail domain
+    /// (`db.MailAccountLabel`); the owner renames it in Settings.
     /// Pure and side-effect-free so the flag assembly is directly testable
     /// without shelling out to a real process.
-    static func addArgs(label: String, calendar: Bool, gmail: Bool, hasCustomClient: Bool, clientID: String) -> [String] {
+    static func addArgs(calendar: Bool, gmail: Bool, hasCustomClient: Bool, clientID: String) -> [String] {
         var args = ["google", "add", "--app-return"]
         if calendar { args.append("--calendar") }
         if gmail { args.append("--gmail") }
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
         if hasCustomClient {
             args.append(contentsOf: ["--client-id", clientID, "--client-secret-stdin"])
         }
@@ -104,7 +103,6 @@ final class GoogleAccountsViewModel {
     /// arm itself when this returns `false`.
     @discardableResult
     func addAccount(
-        label: String,
         calendar: Bool,
         gmail: Bool,
         clientID: String,
@@ -124,7 +122,7 @@ final class GoogleAccountsViewModel {
         error = nil
 
         let hasCustomClient = !clientID.isEmpty
-        let args = Self.addArgs(label: label, calendar: calendar, gmail: gmail, hasCustomClient: hasCustomClient, clientID: clientID)
+        let args = Self.addArgs(calendar: calendar, gmail: gmail, hasCustomClient: hasCustomClient, clientID: clientID)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -225,6 +223,19 @@ final class GoogleAccountsViewModel {
         }
         authProcess = nil
         isConnecting = false
+    }
+
+    // MARK: - Rename
+
+    /// Renames account `accountID` via `watchtower google rename` (`AccountRename`). No
+    /// daemon restart: the daemon reads labels when it needs them.
+    func rename(accountID: Int, to name: String) async {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return
+        }
+        error = await AccountRename.run(source: "google", id: accountID, name: name, cliPath: cliPath())
+        if error == nil { await refreshAsync() }
     }
 
     // MARK: - Remove

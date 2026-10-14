@@ -29,7 +29,6 @@ struct AddGoogleAccountView: View {
     let presetCalendar: Bool
     let presetMail: Bool
 
-    @State private var label = ""
     @State private var wantCalendar = true
     @State private var wantGmail = true
     @State private var showAdvanced = false
@@ -66,9 +65,6 @@ struct AddGoogleAccountView: View {
                 Button("Close") { dismiss() }
                     .buttonStyle(.plain)
             }
-
-            TextField("Label (optional)", text: $label, prompt: Text("e.g. Work, Personal"))
-                .textFieldStyle(.roundedBorder)
 
             Toggle("Calendar", isOn: $wantCalendar)
             Toggle("Gmail", isOn: $wantGmail)
@@ -147,7 +143,6 @@ struct AddGoogleAccountView: View {
         // onChange below would otherwise wait for a true→false transition
         // that will never come from this attempt.
         connectAttempted = vm?.addAccount(
-            label: label.trimmingCharacters(in: .whitespaces),
             calendar: wantCalendar,
             gmail: wantGmail,
             clientID: clientID.trimmingCharacters(in: .whitespaces),

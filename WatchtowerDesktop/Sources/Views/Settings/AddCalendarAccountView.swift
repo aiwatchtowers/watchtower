@@ -23,14 +23,12 @@ struct AddCalendarAccountView: View {
     @State private var caldavURL = ""
     @State private var username = ""
     @State private var password = ""
-    @State private var caldavLabel = ""
     @State private var isConnectingCalDAV = false
     @State private var caldavError: String?
 
     // MARK: - ICS form state
 
     @State private var feedURL = ""
-    @State private var icsLabel = ""
     @State private var isConnectingICS = false
     @State private var icsError: String?
 
@@ -155,9 +153,6 @@ struct AddCalendarAccountView: View {
                 SecureField("App password", text: $password)
                     .textFieldStyle(.roundedBorder)
 
-                TextField("Label (optional)", text: $caldavLabel)
-                    .textFieldStyle(.roundedBorder)
-
                 HStack {
                     if isConnectingCalDAV {
                         ProgressView().controlSize(.small)
@@ -222,9 +217,6 @@ struct AddCalendarAccountView: View {
                 TextField("Secret feed URL", text: $feedURL, prompt: Text("https://calendar.google.com/calendar/ical/…"))
                     .textFieldStyle(.roundedBorder)
 
-                TextField("Label (optional)", text: $icsLabel)
-                    .textFieldStyle(.roundedBorder)
-
                 HStack {
                     if isConnectingICS {
                         ProgressView().controlSize(.small)
@@ -270,7 +262,6 @@ struct AddCalendarAccountView: View {
         CalendarFormSnapshot(
             caldavURL: caldavURL,
             username: username,
-            label: caldavLabel,
             hasPassword: !password.isEmpty,
             hasFeedURL: !feedURL.isEmpty,
             lastConnectionError: caldavError ?? icsError
@@ -326,14 +317,12 @@ struct AddCalendarAccountView: View {
         caldavError = nil
         let urlValue = caldavURL.trimmingCharacters(in: .whitespaces)
         let usernameValue = username.trimmingCharacters(in: .whitespaces)
-        let labelValue = caldavLabel.trimmingCharacters(in: .whitespaces)
         let passwordValue = password
         Task {
             let success = await vm.addCalDAV(
                 url: urlValue,
                 username: usernameValue,
-                password: passwordValue,
-                label: labelValue
+                password: passwordValue
             )
             isConnectingCalDAV = false
             if success {
@@ -355,9 +344,8 @@ struct AddCalendarAccountView: View {
         isConnectingICS = true
         icsError = nil
         let feedValue = feedURL.trimmingCharacters(in: .whitespaces)
-        let labelValue = icsLabel.trimmingCharacters(in: .whitespaces)
         Task {
-            let success = await vm.addICS(feedURL: feedValue, label: labelValue)
+            let success = await vm.addICS(feedURL: feedValue)
             isConnectingICS = false
             if success {
                 dismiss()

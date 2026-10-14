@@ -12,7 +12,7 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         lastConnectionError: String? = nil
     ) -> CalendarFormSnapshot {
         CalendarFormSnapshot(
-            caldavURL: caldavURL, username: "user@example.com", label: "",
+            caldavURL: caldavURL, username: "user@example.com",
             hasPassword: hasPassword, hasFeedURL: hasFeedURL,
             lastConnectionError: lastConnectionError
         )

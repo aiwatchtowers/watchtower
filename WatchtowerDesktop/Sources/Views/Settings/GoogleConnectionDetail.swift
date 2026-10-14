@@ -10,6 +10,7 @@ struct GoogleConnectionDetail: View {
     @State private var saveError: String?
     @State private var showAddGoogleAccountSheet = false
     @State private var googleAccountPendingRemoval: GoogleAccount?
+    @State private var accountBeingRenamed: AccountRenameTarget?
 
     var body: some View {
         Form {
@@ -60,6 +61,11 @@ struct GoogleConnectionDetail: View {
                                 }
                                 .disabled(vm.isConnecting)
                             }
+                            Button("Rename…") {
+                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isConnecting)
                             Button("Remove") {
                                 googleAccountPendingRemoval = account
                             }
@@ -92,6 +98,9 @@ struct GoogleConnectionDetail: View {
             AddGoogleAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
                 .marksAccountSheet(appState)
+        }
+        .accountRenameAlert($accountBeingRenamed) { target, name in
+            Task { await appState.googleAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
         .confirmationDialog(
             "Remove \(googleAccountPendingRemoval?.displayName ?? "this account")?",

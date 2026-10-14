@@ -24,7 +24,6 @@ struct AddSlackAccountView: View {
         self.daemonPolicy = daemonPolicy
     }
 
-    @State private var label = ""
     /// Set when Cancel is tapped so the awaited `addAccount` (which returns with
     /// a cleared error after the SIGTERM) does NOT auto-dismiss — Cancel means
     /// "let me adjust the form", matching AddGoogleAccountView's behavior.
@@ -41,10 +40,10 @@ struct AddSlackAccountView: View {
                     .buttonStyle(.plain)
             }
 
-            TextField("Label (optional)", text: $label, prompt: Text("e.g. Work, Community"))
-                .textFieldStyle(.roundedBorder)
-
-            Text("Opens Slack's authorization page in your browser. After you approve, the workspace is added and syncing starts.")
+            Text("""
+                Opens Slack's authorization page in your browser. After you approve, the workspace \
+                is added under its Slack name and syncing starts. Rename it in Settings any time.
+                """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -78,15 +77,14 @@ struct AddSlackAccountView: View {
             }
         }
         .padding(20)
-        .frame(width: 360, height: 200)
+        .frame(width: 360, height: 180)
     }
 
     private func connect() {
         guard let vm else { return }
         cancelled = false
-        let trimmed = label.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(label: trimmed, daemonPolicy: daemonPolicy)
+            await vm.addAccount(daemonPolicy: daemonPolicy)
             // addAccount is awaited: on success `error` is nil. A user Cancel
             // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss on
             // `cancelled` to keep the sheet open when the flow was cancelled.

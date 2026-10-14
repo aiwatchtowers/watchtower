@@ -119,17 +119,20 @@ func (db *DB) GetJiraAccount(id int64) (JiraAccount, error) {
 }
 
 // UpdateJiraAccountConnection updates the resolved site identity for
-// accountID — called once the OAuth flow resolves accessible resources.
+// accountID — called once the OAuth flow resolves accessible resources — and
+// gives a still-unlabeled account its automatic label (JiraAccountLabel).
 func (db *DB) UpdateJiraAccountConnection(id int64, cloudID, siteURL, siteName string) error {
-	res, err := db.Exec(`UPDATE jira_accounts SET cloud_id = ?, site_url = ?, site_name = ? WHERE id = ?`,
-		cloudID, siteURL, siteName, id)
-	if err != nil {
-		return fmt.Errorf("updating jira account %d connection: %w", id, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("updating jira account connection: no jira_accounts row %d", id)
-	}
-	return nil
+	return db.inLabelTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE jira_accounts SET cloud_id = ?, site_url = ?, site_name = ? WHERE id = ?`,
+			cloudID, siteURL, siteName, id)
+		if err != nil {
+			return fmt.Errorf("updating jira account %d connection: %w", id, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("updating jira account connection: no jira_accounts row %d", id)
+		}
+		return fillAccountLabel(tx, "jira_accounts", id, JiraAccountLabel(siteURL, siteName))
+	})
 }
 
 // SetJiraAccountEnabled toggles whether accountID is synced.

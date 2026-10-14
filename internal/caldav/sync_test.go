@@ -366,3 +366,28 @@ END:VCALENDAR
 		t.Fatalf("want only the 10-day-old event with history_days=14, got %v", ids)
 	}
 }
+
+// A rename after the syncer was wired reaches the calendar's name on the next
+// sync, without a daemon restart.
+func TestICSSyncPicksUpARename(t *testing.T) {
+	feed := &testFeed{}
+	feed.set(feedICS(time.Now().UTC(), true), http.StatusOK)
+	srv := httptest.NewServer(feed)
+	defer srv.Close()
+	database := db.OpenTestDB(t)
+
+	syncer, acct := newICSSyncer(t, database, srv.URL, "Personal")
+	if err := database.RenameAccount("calendar_accounts", acct.ID, "Team"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	var name string
+	if err := database.QueryRow(`SELECT name FROM calendar_calendars WHERE id = ?`, syncer.CalendarID()).Scan(&name); err != nil {
+		t.Fatalf("read calendar name: %v", err)
+	}
+	if name != "Team" {
+		t.Fatalf("calendar name = %q, want the renamed %q", name, "Team")
+	}
+}
