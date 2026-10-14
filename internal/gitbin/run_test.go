@@ -66,6 +66,44 @@ func plantFilter(t *testing.T, bin, dir string) string {
 	return marker
 }
 
+// plantedFilterRepo is a repository whose own config names a filter driver
+// (and an lfs extension) for a file edited to the same size since its
+// commit — only hashing the content, the clean filter's moment, tells — and
+// whose owner's global config names the lfs driver. marker appears when the
+// planted driver runs.
+func plantedFilterRepo(t *testing.T, bin string) (dir, marker string) {
+	t.Helper()
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	mustNoErr(t, os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n"), 0o644))
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	dir = t.TempDir()
+	mustGit(t, bin, dir, "init", "-q")
+	mustNoErr(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644))
+	mustGit(t, bin, dir, "add", "a.txt")
+	mustGit(t, bin, dir, "-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i")
+	marker = plantFilter(t, bin, dir)
+	mustGit(t, bin, dir, "config", "lfs.extension.planted.clean", "planted %f")
+	mustNoErr(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b\n"), 0o644))
+	return dir, marker
+}
+
+// mustNoErr fails the test on err.
+func mustNoErr(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustGit runs git in dir and fails the test on an error.
+func mustGit(t *testing.T, bin, dir string, args ...string) {
+	t.Helper()
+	if _, stderr, err := Exec(context.Background(), dir, nil, bin, args...); err != nil {
+		t.Fatalf("git %v: %v %s", args, err, stderr)
+	}
+}
+
 // A read through ReadArgsIn runs no filter driver the folder's config names
 // (clean, process; `required` lifted so the read still answers), while a
 // driver from the owner's global config is left alone.
@@ -74,33 +112,7 @@ func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
 	if !ok {
 		t.Skip("no git")
 	}
-	global := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GIT_CONFIG_GLOBAL", global)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
-	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "init", "-q"); err != nil {
-		t.Fatalf("git init: %v %s", err, stderr)
-	}
-	// Committed before the filter is planted; then edited to the same size,
-	// so only hashing the content (the clean filter's moment) tells.
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "a.txt"}, {"-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i"}} {
-		if _, stderr, err := Exec(context.Background(), dir, nil, bin, args...); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, stderr)
-		}
-	}
-	marker := plantFilter(t, bin, dir)
-	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "config", "lfs.extension.planted.clean", "planted %f"); err != nil {
-		t.Fatalf("git config: %v %s", err, stderr)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir, marker := plantedFilterRepo(t, bin)
 
 	argv, err := ReadArgsIn(context.Background(), bin, dir, "status", "--porcelain")
 	if err != nil {
@@ -126,9 +138,7 @@ func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, stderr, err := Exec(context.Background(), dir, nil, bin, read...); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, stderr)
-		}
+		mustGit(t, bin, dir, read...)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("a filter driver from the folder's config ran")
