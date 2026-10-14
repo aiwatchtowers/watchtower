@@ -166,7 +166,9 @@ final class RecorderTests: XCTestCase {
 
         rig.clock.advance(PhoneRecorderController.pauseLimit)
         sleeper.tick()
-        try await poll({ rig.controller.savedRecording != nil }, "the long pause did not finish the capture")
+        // `onAutoFinish` is the auto-finish's last step: the phase reads
+        // `.saved` before the seal and upload pass behind it have run.
+        try await poll({ notifications == 1 }, "the long pause did not finish the capture: \(rig.controller.phase)")
 
         let saved = try XCTUnwrap(rig.controller.savedRecording)
         XCTAssertEqual(saved.durationSec, 30, "the pause is not audio")
@@ -218,7 +220,9 @@ final class RecorderTests: XCTestCase {
 
         rig.clock.advance(PhoneRecorderController.pauseLimit)
         sleeper.tick()
-        try await poll({ !rig.controller.isCapturing && rig.controller.phase != .saving }, "the long pause did not finish the capture")
+        // The notification is raised once the save's work has ended, not
+        // when the phase turns `.saved` (the seal and upload come after).
+        try await poll({ notifications == 1 }, "the long pause did not finish the capture: \(rig.controller.phase)")
 
         let saved = try XCTUnwrap(rig.controller.savedRecording, "the save failed: \(rig.controller.phase)")
         XCTAssertEqual(notifications, 1)
@@ -263,6 +267,8 @@ final class RecorderTests: XCTestCase {
     func testAnInterruptionLongerThanTheLimitFinishesTheCapture() async throws {
         let sleeper = TickSleeper()
         let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        var finished = 0
+        rig.controller.onAutoFinish = { finished += 1 }
         await rig.controller.recordVoiceNote()
         rig.clock.advance(20)
         postInterruption(rig.notifications, began: true)
@@ -271,7 +277,7 @@ final class RecorderTests: XCTestCase {
 
         rig.clock.advance(PhoneRecorderController.pauseLimit + 1)
         sleeper.tick()
-        try await poll({ rig.controller.savedRecording != nil }, "the long interruption did not finish the capture")
+        try await poll({ finished == 1 }, "the long interruption did not finish the capture: \(rig.controller.phase)")
         let saved = try XCTUnwrap(rig.controller.savedRecording)
 
         postInterruption(rig.notifications, began: false, shouldResume: true)
@@ -308,6 +314,8 @@ final class RecorderTests: XCTestCase {
     func testAnInterruptionWithoutResumeBehavesLikeAPause() async throws {
         let sleeper = TickSleeper()
         let rig = try makeRecorderRig(tickInterval: .milliseconds(100)) { try await sleeper.sleep($0) }
+        var finished = 0
+        rig.controller.onAutoFinish = { finished += 1 }
         await rig.controller.recordVoiceNote()
         rig.clock.advance(40)
         postInterruption(rig.notifications, began: true)
@@ -320,7 +328,7 @@ final class RecorderTests: XCTestCase {
         try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
         rig.clock.advance(PhoneRecorderController.pauseLimit)
         sleeper.tick()
-        try await poll({ rig.controller.savedRecording != nil }, "the long pause did not finish the capture")
+        try await poll({ finished == 1 }, "the long pause did not finish the capture: \(rig.controller.phase)")
         let saved = try XCTUnwrap(rig.controller.savedRecording)
         XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
     }
@@ -329,6 +337,8 @@ final class RecorderTests: XCTestCase {
     /// meanwhile finishes on the return to the foreground.
     func testAPauseThatOutlivedTheLimitFinishesOnTheReturn() async throws {
         let rig = try makeRecorderRig()
+        var finished = 0
+        rig.controller.onAutoFinish = { finished += 1 }
         await rig.controller.recordVoiceNote()
         rig.clock.advance(15)
         rig.controller.pause()
@@ -340,7 +350,7 @@ final class RecorderTests: XCTestCase {
         rig.controller.setForeground(false)
         rig.clock.advance(1)
         rig.controller.setForeground(true)
-        try await poll({ rig.controller.savedRecording != nil }, "the return did not finish the capture")
+        try await poll({ finished == 1 }, "the return did not finish the capture: \(rig.controller.phase)")
         let saved = try XCTUnwrap(rig.controller.savedRecording)
         XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
         XCTAssertEqual(rig.engine.finishCount, 1)
