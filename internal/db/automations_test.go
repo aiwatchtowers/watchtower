@@ -69,7 +69,7 @@ func TestAutomationIndex_UpsertKeepsOwnerColumns(t *testing.T) {
 	d := openTestDB(t)
 	path := filepath.Join(t.TempDir(), "digest.md")
 	id := seedAutomationRow(t, d, "digest", path, "h1")
-	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+	if err := d.ConfirmAutomation(id, "h1", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC)
@@ -124,16 +124,16 @@ func TestAutomationIndex_InsertNeverSetsOwnerColumns(t *testing.T) {
 func TestAutomationIndex_ConfirmRefusesStaleHash(t *testing.T) {
 	d := openTestDB(t)
 	id := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h1")
-	if err := d.ConfirmAutomation(id, "other"); !errors.Is(err, ErrHashMismatch) {
+	if err := d.ConfirmAutomation(id, "other", time.Now()); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("ConfirmAutomation(other) = %v, want ErrHashMismatch", err)
 	}
-	if err := d.ConfirmAutomation(id, ""); !errors.Is(err, ErrHashMismatch) {
+	if err := d.ConfirmAutomation(id, "", time.Now()); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("ConfirmAutomation(\"\") = %v, want ErrHashMismatch", err)
 	}
 	if got := mustGetAutomation(t, d, id).ConfirmedHash; got != "" {
 		t.Errorf("confirmed_hash = %q after refused confirms, want ''", got)
 	}
-	if err := d.ConfirmAutomation(id+100, "h1"); !errors.Is(err, ErrAutomationNotFound) {
+	if err := d.ConfirmAutomation(id+100, "h1", time.Now()); !errors.Is(err, ErrAutomationNotFound) {
 		t.Errorf("ConfirmAutomation(missing) = %v, want ErrAutomationNotFound", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestAutomationIndex_RunnableTable(t *testing.T) {
 	disabled := seedAutomationRow(t, d, "disabled", filepath.Join(dir, "disabled.md"), "h")
 	seedAutomationRow(t, d, "unconfirmed", filepath.Join(dir, "unconfirmed.md"), "h")
 	for _, id := range []int64{good, changed, disabled} {
-		if err := d.ConfirmAutomation(id, "h"); err != nil {
+		if err := d.ConfirmAutomation(id, "h", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -439,7 +439,7 @@ func TestAutomationIndex_UpsertChangedApprovalHashNeedsConfirmation(t *testing.T
 	d := openTestDB(t)
 	path := filepath.Join(t.TempDir(), "digest.md")
 	id := seedAutomationRow(t, d, "digest", path, "h1")
-	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+	if err := d.ConfirmAutomation(id, "h1", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.SetAutomationEnabled(id, true, time.Now()); err != nil {
@@ -495,50 +495,43 @@ func TestAutomationIndex_ConfirmSetsLastScheduledForNow(t *testing.T) {
 	d := openTestDB(t)
 	path := filepath.Join(t.TempDir(), "digest.md")
 	id := seedAutomationRow(t, d, "digest", path, "h1")
-	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	base := time.Now().Truncate(time.Second)
+	old := base.Add(-48 * time.Hour)
 	if err := d.SetAutomationEnabled(id, true, old); err != nil {
 		t.Fatal(err)
 	}
-
-	inWindow := func(label string, before time.Time) {
+	lastIs := func(label string, want time.Time) {
 		t.Helper()
-		after := time.Now().Add(time.Second)
-		a := mustGetAutomation(t, d, id)
-		if a.LastScheduledFor == nil || a.LastScheduledFor.Before(before.Truncate(time.Second)) || a.LastScheduledFor.After(after) {
-			t.Errorf("%s: last_scheduled_for = %v, want within [%v, %v]", label, a.LastScheduledFor, before, after)
+		if a := mustGetAutomation(t, d, id); a.LastScheduledFor == nil || !a.LastScheduledFor.Equal(want) {
+			t.Errorf("%s: last_scheduled_for = %v, want %v", label, a.LastScheduledFor, want)
 		}
 	}
 
-	before := time.Now()
-	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+	if err := d.ConfirmAutomation(id, "h1", base); err != nil {
 		t.Fatal(err)
 	}
-	inWindow("first confirm", before)
+	lastIs("first confirm", base)
 
 	// Confirming the already confirmed hash keeps the schedule point.
 	if err := d.SetAutomationSchedule(id, &old, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+	if err := d.ConfirmAutomation(id, "h1", base.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if a := mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(old) {
-		t.Errorf("re-confirm moved last_scheduled_for to %v, want %v", a.LastScheduledFor, old)
-	}
+	lastIs("re-confirm", old)
 
 	// A refused confirm moves nothing.
-	if err := d.ConfirmAutomation(id, "h2"); !errors.Is(err, ErrHashMismatch) {
+	if err := d.ConfirmAutomation(id, "h2", base.Add(2*time.Hour)); !errors.Is(err, ErrHashMismatch) {
 		t.Fatalf("ConfirmAutomation(h2) before the edit = %v, want ErrHashMismatch", err)
 	}
-	if a := mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(old) {
-		t.Errorf("refused confirm moved last_scheduled_for to %v", a.LastScheduledFor)
-	}
+	lastIs("refused confirm", old)
 
 	// Confirming an edited recipe's new hash moves it to now.
 	seedAutomationRow(t, d, "digest", path, "h2")
-	before = time.Now()
-	if err := d.ConfirmAutomation(id, "h2"); err != nil {
+	later := base.Add(3 * time.Hour)
+	if err := d.ConfirmAutomation(id, "h2", later); err != nil {
 		t.Fatal(err)
 	}
-	inWindow("confirm after edit", before)
+	lastIs("confirm after edit", later)
 }
