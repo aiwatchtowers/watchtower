@@ -39,7 +39,7 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var log: [String] = []
     private var failing = false
     /// Call names (before the `:`) that throw, or hang for 5 s (a regression
-    /// fails on time, never hangs the suite), or throw once cancelled.
+    /// fails on time, never hangs the suite).
     private var failingCalls: Set<String> = []
     private var hangingCalls: Set<String> = []
     private var cancellationAware = false
@@ -47,6 +47,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var gates: [String: SaveGate] = [:]
     /// Call names that throw for their next N calls.
     private var failCounts: [String: Int] = [:]
+    private var linkCallsRunning = 0
+    private var mostLinkCallsRunning = 0
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -57,6 +59,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     var shares: [CloudZoneID: Share] { lock.withLock { shareByZone } }
     /// True only when both shares exist and their public link is open.
     var isLinkOpen: Bool { lock.withLock { shareByZone.count == 2 && shareByZone.values.allSatisfy(\.publicOpen) } }
+    /// The most `setPublicLink` calls ever running at once.
+    var maxConcurrentLinkCalls: Int { lock.withLock { mostLinkCallsRunning } }
 
     func setAccount(_ value: CloudAvailability) { lock.withLock { account = value } }
     /// Every share call throws (sharing impossible on this account).
@@ -66,8 +70,9 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     func setHanging(_ calls: Set<String>) { lock.withLock { hangingCalls = calls } }
     /// The next `call` parks on `gate` (once).
     func gate(_ call: String, on gate: SaveGate) { lock.withLock { gates[call] = gate } }
-    /// Every call throws `CancellationError` when its task is cancelled
-    /// (like a cancellation-aware CloudKit await).
+    /// A call whose task was cancelled still takes effect, then throws
+    /// `CancellationError` (like a cancelled CloudKit await: the server may
+    /// have applied the save, the caller reads a failure).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
     /// The next `times` calls named `call` throw.
     func failNext(_ call: String, times: Int) { lock.withLock { failCounts[call] = times } }
@@ -87,19 +92,22 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     private func record(_ call: String) async throws {
         let name = String(call.prefix { $0 != ":" })
-        let (fails, hangs, aware, gate) = lock.withLock {
+        let (fails, hangs, gate) = lock.withLock {
             log.append(call)
             let counted = (failCounts[name] ?? 0) > 0
             if counted { failCounts[name, default: 0] -= 1 }
             return (
-                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), cancellationAware,
-                gates.removeValue(forKey: name)
+                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), gates.removeValue(forKey: name)
             )
         }
         await gate?.park()
-        if aware { try Task.checkCancellation() }
         if fails { throw URLError(.cannotConnectToHost) }
         if hangs { try await Task.sleep(for: .seconds(5)) }
+    }
+
+    /// After a call took effect: a cancelled one throws in cancellation-aware mode.
+    private func settle() throws {
+        if lock.withLock({ cancellationAware }) { try Task.checkCancellation() }
     }
 
     func accountStatus() async -> CloudAvailability {
@@ -111,30 +119,41 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     func ensureShares() async throws -> ShareURLs {
         try await record("ensureShares")
-        return lock.withLock {
+        let urls = lock.withLock {
             for zone in [CloudZoneID.data, .relay] where shareByZone[zone] == nil {
                 createdCount += 1
                 shareByZone[zone] = Share(url: "https://www.icloud.com/share/\(zone.rawValue)-\(createdCount)")
             }
             return ShareURLs(data: shareByZone[.data]?.url ?? "", relay: shareByZone[.relay]?.url ?? "")
         }
+        try settle()
+        return urls
     }
 
     func setPublicLink(open: Bool) async throws {
+        lock.withLock {
+            linkCallsRunning += 1
+            mostLinkCallsRunning = max(mostLinkCallsRunning, linkCallsRunning)
+        }
+        defer { lock.withLock { linkCallsRunning -= 1 } }
         try await record("setPublicLink:\(open)")
         lock.withLock {
             for zone in shareByZone.keys { shareByZone[zone]?.publicOpen = open }
         }
+        try settle()
     }
 
     func participants(in zone: CloudZoneID) async throws -> [ShareParticipant] {
         try await record("participants:\(zone.rawValue)")
-        return lock.withLock { shareByZone[zone]?.participants ?? [] }
+        let found = lock.withLock { shareByZone[zone]?.participants ?? [] }
+        try settle()
+        return found
     }
 
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws {
         try await record("removeParticipants:\(zone.rawValue)")
         lock.withLock { shareByZone[zone]?.participants.removeAll(where: shouldRemove) }
+        try settle()
     }
 
     /// A test helper, not a protocol member: the zones and their shares are gone.
