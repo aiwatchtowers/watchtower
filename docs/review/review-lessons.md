@@ -1517,6 +1517,7 @@ Entry format:
 - miss: codex's single finding (unreadable rows appended after readable ones, drag maps display offsets to registry indexes) was also the prosecutor's F9; nothing codex-only. The F1-era `hub_id` NULL wipe was found only by the judge tracing `adoptScope` history.
 - weak-dimension: 7. The production resend path is untested (all tests stub `resend`), no test parks the resend and relinks/scans meanwhile, and the #221 fixture skips the binding the real start checks.
 - rule-gap (candidate, Swift dim 7): *a fix that keeps work for a later retry ships a test that changes the deciding state (relink, account, pending link) while the retry's await is parked, and the retry must observe the change.*
+- outcome: TBD
 
 ## 2026-10-14 — fix/mobile-held-recordings (board #171, owner ruling ask #132: Share + confirmed Delete for a recording held for a Mac the phone no longer links (`AppEnvironment.linkedHubIDs` = sessions ∪ unopened, `RecordingHold.discard`), and a Recordings row + sheet listing `.held/unreadable` with per-file Share/Delete and Delete All (`unreadableAudio`, `deleteUnreadable(named:)`); phone only, 9 files +424; panel: prosecutor + codex (no findings), 3 specialists DOWN (not installed); judge verified against 55063b9e by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
 
