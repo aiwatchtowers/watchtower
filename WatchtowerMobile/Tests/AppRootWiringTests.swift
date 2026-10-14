@@ -50,6 +50,9 @@ final class AppRootWiringTests: XCTestCase {
     /// The send step never returns (a network that hangs): only the cap
     /// ends the wait.
     private var farewellSendHangs = false
+    /// Every resend of a kept farewell (#143), and whether one goes out.
+    private var farewellResends: [PendingFarewell] = []
+    private var farewellResendSucceeds = false
     /// The hung sends, resumed at teardown so no task outlives the test.
     private var hungSends: [CheckedContinuation<Void, Never>] = []
     /// Hubs whose session the factory cannot build (a replica that will
@@ -81,11 +84,12 @@ final class AppRootWiringTests: XCTestCase {
     private func linkRecord(
         _ hubID: String = TestHub.acme,
         macName: String = "Acme Mac",
+        scope: DeviceScope = .private,
         deviceID: String? = TestPhone.deviceID(),
         linkedAt: Date? = Date(timeIntervalSince1970: 1_800_000_000)
     ) -> LinkRecord {
         LinkRecord(
-            hubID: hubID, macName: macName, scope: .private, ownerName: "_owner-acme",
+            hubID: hubID, macName: macName, scope: scope, ownerName: "_owner-acme",
             userRecordName: "_owner-acme", nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil,
             deviceID: deviceID, linkedAt: linkedAt
         )
@@ -141,9 +145,10 @@ final class AppRootWiringTests: XCTestCase {
             // Runs before the temp directory's removal (teardown blocks run
             // last-in first-out): the boot has ended and the replica's
             // handles are closed, so nothing writes a file already unlinked.
-            self?.addTeardownBlock { @MainActor in
-                await session.shutDown()
-                try? session.store.reader.close()
+            // Weak: a test may check that a session is freed.
+            self?.addTeardownBlock { @MainActor [weak session] in
+                await session?.shutDown()
+                try? session?.store.reader.close()
             }
             self?.built.append((session, scope, hubID, memory))
             return session
@@ -157,6 +162,7 @@ final class AppRootWiringTests: XCTestCase {
         links: [LinkRecord] = [],
         active: String? = nil,
         frozen: Set<String> = [],
+        unreadable: Set<String> = [],
         linkClock: any LinkClock = SystemLinkClock(),
         persistentTransport: Bool = false,
         keyStore given: InMemoryPhoneKeyStore? = nil,
@@ -172,6 +178,12 @@ final class AppRootWiringTests: XCTestCase {
             try registry.upsert(link, now: Date())
             if frozen.contains(link.hubID) {
                 try registry.setState(.unlinkedByMac, for: link.hubID)
+            }
+        }
+        for hubID in unreadable {
+            // A newer build's link, a damaged value: the row does not decode.
+            try DatabaseQueue(path: paths.registryPath).write { db in
+                try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = ?", arguments: [Data("{not json".utf8), hubID])
             }
         }
         if let active {
@@ -191,6 +203,10 @@ final class AppRootWiringTests: XCTestCase {
                 return
             }
             await withCheckedContinuation { self?.hungSends.append($0) }
+        }
+        let resend: @MainActor (PendingFarewell) async -> Bool = { [weak self] farewell in
+            self?.farewellResends.append(farewell)
+            return self?.farewellResendSucceeds ?? false
         }
         let starter: BackgroundWork.Starter = { [weak self] name in
             self?.workBegun.append(name)
@@ -214,7 +230,8 @@ final class AppRootWiringTests: XCTestCase {
                 },
                 cap: farewellCap,
                 pause: .milliseconds(20),
-                send: send
+                send: send,
+                resend: resend
             )
         )
     }
@@ -384,6 +401,7 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "its replica, transport and audio folders are gone")
         XCTAssertEqual(hubFilesExist(TestHub.home), [true, true, true], "the other hub's stay")
+        assertClosed(built.first { $0.hubID == TestHub.acme }?.session.store.reader)
         let held = try XCTUnwrap(try hold.load().first, "the hold manifest names the unsent recording")
         XCTAssertEqual(held.id, id)
         XCTAssertEqual(held.hubID, TestHub.acme)
@@ -400,9 +418,9 @@ final class AppRootWiringTests: XCTestCase {
         let check = try XCTUnwrap(farewellChecks.first, "the removal looked at the send queue", line: line)
         XCTAssertEqual(check.hubID, hubID, line: line)
         XCTAssertTrue(check.running, "sent before the session stops", line: line)
-        let sent = try await deviceWrites(in: try transport(hubID))
+        let sent = try await TestPhone.deviceWrites(in: try transport(hubID))
         XCTAssertEqual(sent.last?.unlinked, true, "the hub's own transport carried it", line: line)
-        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DevicePayload.self, from: check.record.payload).unlinked, true, line: line)
+        XCTAssertEqual(check.record.kind, WireKind.envelope, "the queue is looked at for the sealed record", line: line)
     }
 
     /// Fix round 1, I1: a farewell that never leaves the queue holds the
@@ -420,6 +438,59 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertTrue(root.showsOnboarding)
         XCTAssertEqual(root.linking.phase, .idle)
+    }
+
+    /// #143: an `unlinked` record still queued at the cap is kept, sealed,
+    /// in the registry while the hub's files go; a resend that fails keeps
+    /// it for the next try, one that goes out clears it.
+    func testAFarewellStillQueuedAtTheCapIsKeptAcrossTheWipeUntilAResendGoesOut() async throws {
+        farewellStuck = true
+        farewellCap = .milliseconds(200)
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "the replica is wiped all the same")
+        let kept = try XCTUnwrap(try registry.pendingFarewells().first, "the farewell outlives the replica")
+        let queued = try XCTUnwrap(farewellChecks.last?.record)
+        XCTAssertEqual(kept.hubID, TestHub.acme)
+        XCTAssertEqual(kept.scope, .private)
+        XCTAssertEqual(kept.userRecordName, "_owner-acme")
+        XCTAssertEqual(kept.record.recordName, queued.recordName, "the sealed record the queue held")
+        XCTAssertEqual(kept.record.payload, queued.payload)
+        XCTAssertEqual(kept.record.kind, WireKind.envelope)
+
+        await root.linking.retryFarewells()
+
+        XCTAssertEqual(farewellResends.map(\.hubID), [TestHub.acme])
+        XCTAssertEqual(try registry.pendingFarewells().map(\.hubID), [TestHub.acme], "a failed resend keeps it")
+
+        farewellResendSucceeds = true
+        await root.linking.retryFarewells()
+
+        XCTAssertEqual(farewellResends.count, 2)
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty, "sent: no longer kept")
+    }
+
+    /// #143: a farewell that went out is not kept; a new link to a hub
+    /// whose farewell was kept drops it unsent.
+    func testASentFarewellIsNotKeptAndARelinkDropsAKeptOne() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+        await root.linking.unlink(TestHub.acme)
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty, "it left the queue")
+
+        let sealed = CloudRecord(recordName: "wire", zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: Data([1]))
+        try registry.savePendingFarewell(PendingFarewell(
+            hubID: TestHub.acme, scope: .private, userRecordName: "_owner-acme", record: sealed, since: Date()
+        ))
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+        try await root.linked(linkRecord(), device: device)
+
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+        await root.linking.retryFarewells()
+        XCTAssertTrue(farewellResends.isEmpty, "never sent over the new link")
     }
 
     /// Fix round 2: the cap bounds the whole wait, a send that never
@@ -576,6 +647,30 @@ final class AppRootWiringTests: XCTestCase {
         root.env.activeSession.onLinkSignal?(.accountChanged)
         try await poll { root.env.sessions.isEmpty && self.workEnded.count == self.workBegun.count && self.workBegun.count > 2 }
         XCTAssertEqual(Set(workBegun), ["hub-remove"])
+    }
+
+    /// #220: the launch's orphan pass runs inside background work, and a
+    /// link's `prepare` for the same hub started while it runs (a cold
+    /// launch by a link URL) waits for it: the pass removes the orphan's
+    /// files first, never the new session's.
+    func testAPrepareStartedDuringTheOrphanPassWaitsForIt() async throws {
+        let root = try makeRoot()
+        try paths.prepare(TestHub.acme)
+        let leftover = paths.hubDirectory(TestHub.acme).appendingPathComponent("leftover")
+        try Data("old".utf8).write(to: leftover)
+
+        let launch = root.launch { nil }
+        XCTAssertNotNil(root.orphanPass, "kept before the launch's first await")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+
+        // The launch's account check (`resumeLink`) holds its own work.
+        XCTAssertEqual(workBegun.filter { $0 == "hub-orphans" }, ["hub-orphans"], "the pass held background work")
+        XCTAssertEqual(workEnded.filter { $0 == "hub-orphans" }, ["hub-orphans"], "and ended it before the prepare went on")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path), "the orphan's files went first")
+        XCTAssertNotNil(root.env.session(TestHub.acme))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.acme)), "the new session's replica stays")
+        await launch.value
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [true, true, true])
     }
 
     // MARK: - The grant check per hub (#64)
@@ -1294,17 +1389,96 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "then its files go")
     }
 
-    /// Every hub failing fails the boot (`BootFailureView`), never Welcome:
-    /// the links still exist.
-    func testEveryHubFailingFailsTheBoot() throws {
+    /// Every hub failing leaves no hub on screen and the unopened Macs
+    /// shown with Forget and Try Again, never Welcome and never a boot
+    /// failure with no way out (#222): the links still exist. Try Again
+    /// opens a hub once its data opens.
+    func testEveryHubFailingShowsTheUnopenedMacsAndTryAgainOpensThem() async throws {
         failingHubs = [TestHub.acme, TestHub.home]
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
+        try [TestHub.acme, TestHub.home].forEach { _ = try TestHub.keys($0, store: keyStore) }
 
-        XCTAssertThrowsError(try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])) { error in
-            guard case .noHubOpened = error as? AppEnvironmentError else {
-                return XCTFail("expected noHubOpened, got \(error)")
-            }
-        }
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsUnopenedMacs, "the Macs with Forget, not Welcome")
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme, TestHub.home])
         XCTAssertEqual(try registry.hubIDs(), [TestHub.acme, TestHub.home], "the links are kept")
+
+        await root.reopenHubs()
+        XCTAssertTrue(root.showsUnopenedMacs, "still failing: nothing changes")
+
+        failingHubs = [TestHub.home]
+        await root.reopenHubs()
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertFalse(root.showsOnboarding)
+        XCTAssertFalse(root.showsUnopenedMacs)
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.home])
+    }
+
+    /// The last Mac that opened going leaves the unopened one on screen
+    /// with Forget, not Welcome (#222); forgetting it then leaves Welcome.
+    /// A linked one in `shared` scope leaves its shares: no farewell can
+    /// reach its Mac (no session), and nothing else would remove this
+    /// phone's seat in its zones.
+    func testTheLastOpenedHubGoingLeavesTheUnopenedOnesWithForget() async throws {
+        failingHubs = [TestHub.home]
+        let root = try makeRoot(
+            links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac", scope: .shared)], active: TestHub.acme
+        )
+        _ = try TestHub.keys(TestHub.home, store: keyStore)
+        try await poll { root.env.activeSession.isBootstrapped }
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsUnopenedMacs)
+        let items = root.env.hubListItems(root.linking.links, unreadable: root.linking.unreadableHubIDs, now: Date())
+        XCTAssertEqual(items.map(\.id), [TestHub.home])
+        XCTAssertEqual(items.first.map(MacsModel.action(for:)), .forget)
+
+        await root.linking.forget(TestHub.home)
+
+        XCTAssertTrue(try registry.hubIDs().isEmpty)
+        XCTAssertNil(try keyStore.hubLink(TestHub.home), "its keys are gone")
+        XCTAssertEqual(container.leftHubIDs, [TestHub.home], "the shares are left (Acme's link is private)")
+        XCTAssertFalse(root.showsUnopenedMacs)
+        XCTAssertTrue(root.showsOnboarding, "Welcome")
+    }
+
+    /// A registry row that cannot be read is listed (an unknown Mac,
+    /// unopened, Forget only) and counts toward the limit; Forget removes it
+    /// and its keys, and its place is free again (#222).
+    func testAnUnreadableRowIsListedAndCanBeForgotten() async throws {
+        let root = try makeRoot(
+            links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme, unreadable: [TestHub.home]
+        )
+        _ = try TestHub.keys(TestHub.home, store: keyStore)
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertEqual(root.linking.unreadableHubIDs, [TestHub.home])
+        let items = root.env.hubListItems(root.linking.links, unreadable: root.linking.unreadableHubIDs, now: Date())
+        let unreadable = try XCTUnwrap(items.first { $0.id == TestHub.home }, "listed in Settings → Macs")
+        XCTAssertEqual(unreadable.name, HubListModel.unreadableName)
+        XCTAssertEqual(unreadable.problem, HubListModel.unreadableProblem)
+        XCTAssertTrue(unreadable.unopened)
+        XCTAssertEqual(MacsModel.action(for: unreadable), .forget)
+
+        await root.linking.forget(TestHub.home)
+
+        XCTAssertEqual(try registry.hubIDs(), [TestHub.acme])
+        XCTAssertTrue(root.linking.unreadableHubIDs.isEmpty)
+        XCTAssertNil(try keyStore.hubLink(TestHub.home), "its keys are gone")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertTrue(container.leftHubIDs.isEmpty, "its link is unknown: no share is touched")
+    }
+
+    /// Only unreadable rows: the unopened Macs, not Welcome (#222).
+    func testOnlyUnreadableRowsShowTheUnopenedMacs() throws {
+        let root = try makeRoot(links: [linkRecord()], unreadable: [TestHub.acme])
+
+        XCTAssertTrue(root.linking.links.isEmpty)
+        XCTAssertTrue(root.showsUnopenedMacs)
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme])
     }
 
     // MARK: - The last hub's removal (the forwarders)
@@ -1358,7 +1532,44 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(env.activeSession === env.session(TestHub.home), "a new hub on screen ends the retained one")
     }
 
+    /// Welcome on screen lets go of the session the last hub's removal
+    /// kept for the forwarders (#222): its replica closes then, not at the
+    /// next activation.
+    func testReleasingTheRetainedSessionLetsTheRemovedSessionGo() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+        try await poll { root.env.activeSession.isBootstrapped }
+        await root.linking.unlink(TestHub.acme)
+        weak var removed = root.env.activeSession
+        built.removeAll()
+        XCTAssertTrue(root.env.holdsRetainedSession)
+
+        root.env.releaseRetained()
+
+        XCTAssertFalse(root.env.holdsRetainedSession)
+        try await poll({ removed == nil }, "the removed session (and its replica) is freed")
+    }
+
     // MARK: - The stale notice on a switch
+
+    /// An unlink of the hub on screen that has nothing to report keeps the
+    /// stale notice the activation of the next hub set (#222).
+    func testAnUnlinkKeepsTheSuccessorsStaleNotice() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+        await root.env.waitForBoot()
+        try await TestHub.hub(over: transport(TestHub.home), TestHub.home).save([
+            try CloudRecordFactory.record(
+                for: heartbeat(updatedAt: Date().addingTimeInterval(-2 * 86_400), hubID: TestHub.home, macName: "Home Mac"),
+                modifiedAt: Date()
+            )
+        ])
+        try await fetch(root, TestHub.home)
+        XCTAssertNil(root.linking.notice, "Home Mac is not on screen")
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.linking.notice, .stale(macName: "Home Mac"), "the next hub's stale notice is not overwritten")
+    }
 
     /// A switch re-evaluates the stale notice for the new hub at once, with
     /// no fetch (`AppEnvironment.onActivate`).
@@ -1421,14 +1632,6 @@ final class AppRootWiringTests: XCTestCase {
     }
 
     // MARK: - Glue: the link URL and Unlink (board #71)
-
-    /// The `device` records the phone sealed into `transport`, as the test hub opens them.
-    private func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
-        let opened = try await TestPhone.hub(over: transport).changes(in: .relay, since: nil).changed
-        return try opened
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
-    }
 
     /// A `watchtower://link` URL on a live root runs the whole flow over the
     /// real host: the code's hub's session, the sealed hello, the Mac's
@@ -1833,34 +2036,6 @@ private actor GatedTransport: CloudSyncTransport {
             await withCheckedContinuation { waiters.append($0) }
         }
         return try await inner.changes(in: zone, since: token)
-    }
-}
-
-/// A link clock whose sleeps wait for `release()` and whose `now` stands
-/// still: the grant wait polls once, then the test answers for the Mac.
-private final class GateLinkClock: LinkClock, @unchecked Sendable {
-    let start = Date()
-    private let lock = NSLock()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    var waiting: Int { lock.withLock { waiters.count } }
-
-    func now() -> Date { start }
-
-    func sleep(for duration: Duration) async throws {
-        await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
-        }
-        try Task.checkCancellation()
-    }
-
-    func release() {
-        let all = lock.withLock {
-            let parked = waiters
-            waiters = []
-            return parked
-        }
-        all.forEach { $0.resume() }
     }
 }
 

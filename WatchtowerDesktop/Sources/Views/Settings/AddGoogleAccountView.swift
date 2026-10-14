@@ -15,22 +15,16 @@ struct AddGoogleAccountView: View {
     /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
     let daemonPolicy: DaemonRestartPolicy
 
-    /// `calendar`/`mail` preset the scope toggles: onboarding asks only for
-    /// what the goals need.
-    init(daemonPolicy: DaemonRestartPolicy = .restart, calendar: Bool = true, mail: Bool = true) {
+    init(daemonPolicy: DaemonRestartPolicy = .restart) {
         self.daemonPolicy = daemonPolicy
-        presetCalendar = calendar
-        presetMail = mail
-        _wantCalendar = State(initialValue: calendar)
-        _wantGmail = State(initialValue: mail)
     }
 
-    /// The scopes the sheet opens with.
-    let presetCalendar: Bool
-    let presetMail: Bool
+    /// The sheet opens with both services checked on every surface,
+    /// onboarding included; either can be unchecked (#740).
+    static let initialScopes = (calendar: true, gmail: true)
 
-    @State private var wantCalendar = true
-    @State private var wantGmail = true
+    @State private var wantCalendar = Self.initialScopes.calendar
+    @State private var wantGmail = Self.initialScopes.gmail
     @State private var showAdvanced = false
     @State private var clientID = ""
     @State private var clientSecret = ""

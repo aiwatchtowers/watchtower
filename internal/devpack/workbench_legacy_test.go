@@ -152,10 +152,16 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		t.Fatalf("the hooks must be reported replaced: %+v", rep)
 	}
 	after := decodeSettings(t, folder)
-	for _, k := range []string{"model", "permissions"} {
-		if !reflect.DeepEqual(after[k], before[k]) {
-			t.Fatalf("PROJ-04: the owner's %q changed: %#v → %#v", k, before[k], after[k])
-		}
+	if !reflect.DeepEqual(after["model"], before["model"]) {
+		t.Fatalf("PROJ-04: the owner's \"model\" changed: %#v → %#v", before["model"], after["model"])
+	}
+	// The owner's allow rules stay, in order; the install appends exactly
+	// its cleanup rule (PROJ-04, session cleanup §10).
+	beforePerms := before["permissions"].(map[string]any)
+	wantAllow := append(append([]any{}, beforePerms["allow"].([]any)...), cleanupAllowRule(legacyBin))
+	wantPerms := map[string]any{"allow": wantAllow}
+	if !reflect.DeepEqual(after["permissions"], wantPerms) {
+		t.Fatalf("PROJ-04: the owner's \"permissions\" changed: %#v → %#v", before["permissions"], after["permissions"])
 	}
 	afterHooks, beforeHooks := after["hooks"].(map[string]any), before["hooks"].(map[string]any)
 	// The owner's PreToolUse group stays first and as it was; ours (the ask

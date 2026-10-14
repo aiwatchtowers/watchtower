@@ -55,4 +55,13 @@ enum MacsModel {
         let target = destination > from ? destination - 1 : destination
         return target == from ? nil : target
     }
+
+    /// `List.onMove` over `items` (`HubListModel.items`, in the registry's
+    /// order, unreadable rows in their places) as the moved Mac and its new
+    /// registry index; nil when nothing moves.
+    static func registryMove(_ items: [HubListItem], from source: IndexSet, to destination: Int) -> (hubID: String, index: Int)? {
+        guard let from = source.first, items.indices.contains(from),
+              let to = targetIndex(from: from, destination: destination) else { return nil }
+        return (items[from].id, to)
+    }
 }

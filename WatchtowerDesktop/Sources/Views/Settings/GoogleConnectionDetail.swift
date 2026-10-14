@@ -22,6 +22,11 @@ struct GoogleConnectionDetail: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
+        // A connect or Re-login turns the granted services' sync on from the
+        // CLI (#740): show that instead of the switches this pane loaded.
+        .onChange(of: appState.googleAccountsViewModel?.isConnecting ?? false) { wasConnecting, isConnecting in
+            if wasConnecting && !isConnecting { config.adoptGoogleSyncSwitchesFromDisk() }
+        }
     }
 
     /// Google Accounts section — the multi-account Calendar/Gmail
@@ -138,7 +143,7 @@ struct GoogleConnectionDetail: View {
     private var calendarSettingsSection: some View {
         Section("Google Calendar") {
             Toggle("Enable calendar sync", isOn: $config.calendarEnabled)
-                .onChange(of: config.calendarEnabled) { _, _ in saveConfig() }
+                .onChange(of: config.calendarEnabled) { _, _ in saveSyncSwitchIfChanged() }
 
             Picker("Sync days ahead", selection: $config.calendarSyncDaysAhead) {
                 Text("2 days").tag(2)
@@ -156,7 +161,7 @@ struct GoogleConnectionDetail: View {
     private var gmailSettingsSection: some View {
         Section("Gmail") {
             Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
-                .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+                .onChange(of: config.gmailEnabled) { _, _ in saveSyncSwitchIfChanged() }
         }
     }
 
@@ -171,6 +176,12 @@ struct GoogleConnectionDetail: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    /// A switch adopted from disk after a connect needs no save; one the
+    /// owner flipped does.
+    private func saveSyncSwitchIfChanged() {
+        if config.googleSyncSwitchesChanged { saveConfig() }
     }
 
     private func saveConfig() {

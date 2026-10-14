@@ -8,30 +8,51 @@ extension WorkbenchesViewModel {
     /// session on screen — shown, never started (a stopped one offers
     /// Resume), so a click never launches an agent. An ask filed outside the
     /// app has no session: its drawer opens at the page's trailing edge.
+    /// So does one whose session was deleted since the asks were last read:
+    /// they are read again first when they changed (board #542), so a stale
+    /// session id never reveals another session or nothing at all.
     /// The drawer opens once the session is on screen (it closes whenever
     /// that session leaves it, `setLayout`). Returns false when the ask is
     /// gone or could not be read. `keepKeyboard` (a switch started from the
     /// keyboard, board #412): the terminal coming on screen does not take
-    /// the keyboard.
+    /// the keyboard. A switch like any other (board #187): its ticket is
+    /// taken before the first await, so of two quick clicks the later one
+    /// wins whichever read finishes first.
     @discardableResult
     func showAsk(_ askID: Int64, projectID: Int64, keepKeyboard: Bool = false) async -> Bool {
+        let ticket = beginSwitch(projectID: projectID)
         if selectedWorkbenchID != projectID { drill(into: projectID) }
+        await asks.refreshIfChanged(projectID: projectID)
         guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return false }
+        // A later click took over meanwhile: it opens its own ask.
+        guard isLatestSwitch(ticket, projectID: projectID) else { return true }
         if let sessionID = ask.sessionID {
             // A session waiting in the Undo batch is deleted as far as the
             // owner can tell (PROJ-17, spec §4.3): no other session on
             // screen, the deleted row's message.
             if pendingDeletes.ids.contains(sessionID) {
-                reportSwitchError("That session no longer exists.", projectID: projectID, ticket: beginSwitch(projectID: projectID))
+                reportSwitchError("That session no longer exists.", projectID: projectID, ticket: ticket)
                 return true
             }
             if keepKeyboard { terminalCenter?.keepKeyboardOnAttach(sessionID) }
-            await revealTerminal(projectID: projectID, sessionID: sessionID)
+            await revealTerminal(projectID: projectID, sessionID: sessionID, ticket: ticket)
             // A failed open already reports itself; no drawer beside nothing.
-            guard layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
+            guard isLatestSwitch(ticket, projectID: projectID),
+                  layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
         }
         asks.openDrawer(ask)
         return true
+    }
+
+    /// A stack row's session caption: the session's title; for a
+    /// session-less ask "Session deleted" when the app saw its session go
+    /// (board #542), else "Outside the app".
+    func askSessionTitle(_ ask: OwnerAsk) -> String {
+        guard let id = ask.sessionID else {
+            let deleted = asks.sessionDeletedAskIDs[ask.projectID]?.contains(ask.id) == true
+            return deleted ? OwnerAskStack.sessionDeletedTitle : OwnerAskStack.outsideTheAppTitle
+        }
+        return session(id, projectID: ask.projectID)?.title ?? "Session"
     }
 
     /// A Quick ask's option tapped or Reply sent, on its banner or stack

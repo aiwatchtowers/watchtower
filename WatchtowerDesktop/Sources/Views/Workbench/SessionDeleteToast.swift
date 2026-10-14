@@ -13,9 +13,18 @@ struct SessionDeleteToast: View {
     var body: some View {
         if let text = vm.pendingDeleteToast {
             HStack(spacing: 8) {
-                Text(text)
-                    .font(.callout)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text)
+                        .font(.callout)
+                        .lineLimit(1)
+                    // What a Delete and Clean Up kept (board #535).
+                    if let notice = vm.pendingCleanupNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Spacer(minLength: 4)
                 Button("Undo") {
                     vm.requestPanelKeyboard()
@@ -33,7 +42,13 @@ struct SessionDeleteToast: View {
             .accessibilityElement(children: .contain)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .onChange(of: text, initial: true) { _, text in
-                AccessibilityNotification.Announcement("\(text). Undo is available.").post()
+                let notice = vm.pendingCleanupNotice.map { " \($0)." } ?? ""
+                AccessibilityNotification.Announcement("\(text).\(notice) Undo is available.").post()
+            }
+            // Delete and Clean Up sets its kept-items notice after the row
+            // joined the bar (board #535): announce it when it arrives.
+            .onChange(of: vm.pendingCleanupNotice) { _, notice in
+                if let notice { AccessibilityNotification.Announcement("\(notice). Undo is available.").post() }
             }
         }
     }

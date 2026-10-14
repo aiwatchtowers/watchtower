@@ -342,6 +342,152 @@ struct ConfigServiceTests {
         }
     }
 
+    /// #740: `google add` turns `calendar.enabled`/`gmail.enabled` on while a
+    /// Settings window's ConfigService, loaded before the connect, still holds
+    /// `false`. Its next unrelated Save must not switch the sync back off.
+    @Test("Save keeps sync switches the CLI turned on after load")
+    func saveKeepsSyncSwitchesTurnedOnAfterLoad() throws {
+        let path = makeTempConfig("calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+        let stale = ConfigService(configPath: path)
+        #expect(stale.calendarEnabled == false)
+
+        // The CLI's connect writes the switches behind the loaded instance.
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+
+        stale.briefingHour = 10
+        try stale.save()
+
+        #expect(stale.calendarEnabled == true, "the saved instance adopts the switch on disk")
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.calendarEnabled == true)
+        #expect(reloaded.gmailEnabled == true)
+        #expect(reloaded.briefingHour == 10)
+    }
+
+    /// #740: a connect or Re-login from Settings turns the switches on from the
+    /// CLI; the pane adopts them without a save and without dropping an
+    /// unsaved edit elsewhere.
+    @Test("Adopting the sync switches from disk keeps other unsaved edits")
+    func adoptGoogleSyncSwitchesFromDisk() throws {
+        let path = makeTempConfig("calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+        let svc = ConfigService(configPath: path)
+        svc.briefingHour = 10
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.adoptGoogleSyncSwitchesFromDisk()
+
+        #expect(svc.calendarEnabled == true)
+        #expect(svc.gmailEnabled == true)
+        #expect(svc.googleSyncSwitchesChanged == false, "an adopted switch needs no save")
+        #expect(svc.briefingHour == 10, "an unsaved edit survives")
+        svc.calendarEnabled = false
+        #expect(svc.googleSyncSwitchesChanged == true, "an owner flip after adopting does")
+    }
+
+    @Test("Adopting from an unreadable config changes nothing")
+    func adoptGoogleSyncSwitchesFromUnreadableConfig() throws {
+        let path = makeTempConfig("calendar:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        try "calendar: [unclosed\n".write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.adoptGoogleSyncSwitchesFromDisk()
+
+        #expect(svc.calendarEnabled == true)
+        #expect(svc.googleSyncSwitchesChanged == false)
+    }
+
+    /// A fresh install's first Save (Goals' Continue writes the history depth)
+    /// must not materialize `calendar.enabled: false` / `gmail.enabled: false`.
+    @Test("Save of an untouched switch writes no enabled key")
+    func saveOfUntouchedSwitchWritesNoKey() throws {
+        let path = makeTempConfig("active_workspace: acme\n")
+        let svc = ConfigService(configPath: path)
+        svc.initialHistoryDays = 3
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect((saved?["calendar"] as? [String: Any])?["enabled"] == nil)
+        #expect((saved?["gmail"] as? [String: Any])?["enabled"] == nil)
+    }
+
+    /// The Settings toggle still turns a switch off: an edit made in this
+    /// instance is written, and a second Save after it stays consistent.
+    @Test("Save writes a switch the owner changed")
+    func saveWritesChangedSwitch() throws {
+        let path = makeTempConfig("calendar:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        svc.calendarEnabled = false
+        try svc.save()
+        #expect(ConfigService(configPath: path).calendarEnabled == false)
+
+        svc.calendarEnabled = true
+        try svc.save()
+        #expect(ConfigService(configPath: path).calendarEnabled == true)
+    }
+
+    /// Gmail has its own branch in `save()` (its section is written only on a
+    /// change): turning Gmail sync off in Settings must still reach the file.
+    @Test("Save writes a Gmail switch the owner changed")
+    func saveWritesChangedGmailSwitch() throws {
+        let path = makeTempConfig("gmail:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        svc.gmailEnabled = false
+        try svc.save()
+        #expect(ConfigService(configPath: path).gmailEnabled == false)
+    }
+
+    /// #740: the Calendar tab reads the switch through `calendarSyncReadsOff`.
+    /// A config.yaml that is present but not a YAML mapping is unknown, never
+    /// "off" — or the tab would offer to fix a switch it cannot read.
+    @Test("A present but undecodable config reads the switch as unknown")
+    func undecodableConfigSwitchIsUnknown() throws {
+        let notMapping = ConfigService(configPath: makeTempConfig("- just\n- a list\n"))
+        #expect(notMapping.parseError != nil)
+        #expect(notMapping.calendarSyncReadsOff == false)
+
+        let badSyntax = ConfigService(configPath: makeTempConfig("calendar: [unclosed\n"))
+        #expect(badSyntax.calendarSyncReadsOff == false)
+
+        let path = makeTempConfig("")
+        try Data([0xFF, 0xFE, 0x00]).write(to: URL(fileURLWithPath: path))
+        #expect(ConfigService(configPath: path).calendarSyncReadsOff == false)
+    }
+
+    /// Degenerate: an empty document — blank, comments only, `null` — is an
+    /// empty config (as the Go CLI reads it), not a broken one.
+    @Test("An empty config document reads the switch as off, without an error")
+    func emptyConfigSwitchIsOff() {
+        for yaml in ["", "  \n", "# just a comment\n", "---\n", "null\n"] {
+            let svc = ConfigService(configPath: makeTempConfig(yaml))
+            #expect(svc.parseError == nil, "\(yaml.debugDescription) is an empty config")
+            #expect(svc.calendarSyncReadsOff == true)
+        }
+    }
+
+    @Test("Turn on calendar sync writes the switch and keeps other keys")
+    func turnOnCalendarSyncWritesSwitch() throws {
+        let path = makeTempConfig("active_workspace: acme\ncalendar:\n  enabled: false\n")
+        try ConfigService(configPath: path).turnOnCalendarSync()
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.calendarSyncReadsOff == false)
+        #expect(reloaded.calendarEnabled == true)
+        #expect(reloaded.activeWorkspace == "acme")
+    }
+
+    /// Saving over an unreadable file would fall back to the last good
+    /// snapshot and drop every section the Desktop does not own.
+    @Test("Turn on calendar sync refuses an unreadable config and leaves it untouched")
+    func turnOnCalendarSyncRefusesUnreadableConfig() throws {
+        let body = "calendar: [unclosed\njira:\n  token: keep\n"
+        let path = makeTempConfig(body)
+        #expect(throws: ConfigUnreadableError.self) {
+            try ConfigService(configPath: path).turnOnCalendarSync()
+        }
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == body)
+    }
+
     @Test("Load parses jira features")
     func loadJiraFeatures() {
         let path = makeTempConfig("""

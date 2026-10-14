@@ -50,6 +50,7 @@ struct WorkbenchSessionReportView: View {
                     report: report,
                     state: vm.sessionState(session),
                     staleError: staleError,
+                    cleanupSection: SessionReportCleanupSection(vm: vm, sessionID: sessionID),
                     pullRequestURL: { vm.pullRequestURL($0, projectID: project.id) },
                     actions: .init(
                         openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
@@ -82,6 +83,8 @@ struct SessionReportContent: View {
     let state: SessionSwitcherPresentation.State
     /// The failed refresh's error line; the report is from an earlier run.
     let staleError: String?
+    /// The Cleanup line (board #535); nil = none.
+    var cleanupSection: SessionReportCleanupSection?
     let pullRequestURL: (SessionReport.PullRequest) -> URL?
     let actions: SessionReportActions
 
@@ -92,7 +95,11 @@ struct SessionReportContent: View {
             now
             pullRequests
             done
-            lastWord
+            // The Cleanup section brings its own gap: absent, it takes none.
+            VStack(alignment: .leading, spacing: 0) {
+                cleanupSection
+                lastWord
+            }
         }
         .textSelection(.enabled)
     }

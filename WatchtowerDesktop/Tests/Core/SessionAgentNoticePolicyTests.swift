@@ -75,9 +75,11 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
                                                     canPost: true)).map(\.title),
                        ["Release work stopped"], "ready → stopped (asks answered, turn over): one notice")
 
-        // A check filed, then `finish_session`: the stored row (finished_at
-        // set, the turn's Stop after it) resolves to ready to check, not
-        // finished — one notice per hand-off (the ask's), not two.
+        // A row shaped like a check filed, then `finish_session` (seeded:
+        // finished_at set, this run's Stop after it, one open check) resolves
+        // to ready to check, not finished, and the policy posts no finished
+        // notice for it — the ask's own notice (WorkbenchNotificationPolicy,
+        // not exercised here) is the only one.
         var finishing = SessionAgentNoticePolicy()
         let finished = finishedWithACheck(id: 6)
         XCTAssertEqual(finished.state.kind, .readyToCheck, "a finished row with only a check open reads ready to check")
@@ -87,9 +89,11 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
                        "a check filed then finish: no finished notice")
     }
 
-    /// The status of a live session whose agent filed one check, called
-    /// `finish_session` (finished_at) and ended its turn (a stored `waiting`
-    /// of this run), resolved from the stored row as the app resolves it.
+    /// The status of a live session seeded as if its agent filed one check,
+    /// called `finish_session` (finished_at) and ended its turn (a stored
+    /// `waiting` of this run): a hand-built `SessionAgentStateRow` resolved
+    /// through `SessionAgentStatus.resolve`, as the app resolves the rows it
+    /// reads (no database, no hook).
     private func finishedWithACheck(id: Int64) -> SessionAgentStatus {
         let started = Date().addingTimeInterval(-600)
         let formatter = ISO8601DateFormatter()

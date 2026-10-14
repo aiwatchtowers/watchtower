@@ -83,6 +83,78 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// Seeds every per-conversation column (and the ones a conversation
+    /// change keeps) with a non-empty value, as the previous conversation's
+    /// hooks left them.
+    private func seedConversation(_ db: Database, id: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE terminal_sessions SET agent_transcript_path = '/Users/example/old.jsonl',
+                    agent_turn_end = 3, agent_tool_run = 2,
+                    agent_background = 4, agent_background_at = '2026-10-14T10:00:00.000Z',
+                    chat_question = 'Which branch?', chat_question_at = '2026-10-14T10:00:01.000Z',
+                    agent_turns = '{"since":"2026-10-14T09:00:00.000Z","turns":{}}',
+                    agent_state = 'waiting', agent_state_at = '2026-10-14T10:00:02.000Z',
+                    agent_cwd = '/tmp/acme/wt', agent_cwd_at = '2026-10-14T10:00:03.000Z'
+                WHERE id = ?
+                """,
+            arguments: [id]
+        )
+    }
+
+    /// Board #552: "Start fresh" clears what Go's `SetTerminalClaudeSessionID`
+    /// (claude) and `SetTerminalAgentSessionID` (codex) clear on a
+    /// conversation change, and keeps what they keep.
+    private func assertConversationCleared(_ db: Database, id: Int64, _ label: String) throws {
+        let row = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?",
+                                             arguments: [id]))
+        for column in ["agent_transcript_path", "agent_turn_end", "agent_background", "agent_background_at",
+                       "chat_question", "chat_question_at", "agent_turns"] {
+            XCTAssertTrue((row[column] as DatabaseValue).isNull, "\(label): \(column) is cleared")
+        }
+        XCTAssertEqual(row["agent_tool_run"] as Int?, 0, "\(label): agent_tool_run is reset to 0")
+        XCTAssertEqual(row["agent_cwd"] as String?, "/tmp/acme/wt", "\(label): the working directory stays")
+        XCTAssertEqual(row["agent_cwd_at"] as String?, "2026-10-14T10:00:03.000Z", label)
+        XCTAssertEqual(row["agent_state"] as String?, "waiting", "\(label): the state is the next run mark's")
+        XCTAssertEqual(row["agent_state_at"] as String?, "2026-10-14T10:00:02.000Z", label)
+    }
+
+    func testStartFreshClearsThePreviousConversationsColumns() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let cl = try TerminalSessionQueries.create(db, claude(project))
+            let cx = try TerminalSessionQueries.create(db, codex(project))
+            try db.execute(sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+                           arguments: ["00000000-0000-7000-8000-000000000003", cx.id])
+            try seedConversation(db, id: cl.id)
+            try seedConversation(db, id: cx.id)
+
+            try TerminalSessionQueries.replaceClaudeSessionID(db, id: cl.id, uuid: "new-id")
+            XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: cl.id)?.claudeSessionID, "new-id")
+            try assertConversationCleared(db, id: cl.id, "claude")
+
+            try TerminalSessionQueries.resetAgentSession(db, id: cx.id)
+            XCTAssertNil(try TerminalSessionQueries.fetch(db, id: cx.id)?.claudeSessionID)
+            try assertConversationCleared(db, id: cx.id, "codex")
+        }
+    }
+
+    func testResetAgentSessionLeavesAClaudeRowsConversationUntouched() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let cl = try TerminalSessionQueries.create(db, claude(project))
+            try seedConversation(db, id: cl.id)
+            let before = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?",
+                                                    arguments: [cl.id]))
+            try TerminalSessionQueries.resetAgentSession(db, id: cl.id)
+            let after = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?",
+                                                   arguments: [cl.id]))
+            XCTAssertEqual(after, before, "the codex reset never touches a claude row")
+        }
+    }
+
     func testFetchAgentStatesIncludesCodexRows() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
@@ -476,6 +548,66 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertEqual(rows.map(\.id), [row.id])
             XCTAssertEqual(rows.first?.agentState, "waiting")
             XCTAssertNil(rows.first?.agentCwdAt)
+        }
+    }
+
+    // MARK: - Cleanup result (board #535)
+
+    func testFetchCleanupRecordReadsTheStoredResultAndStamp() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            let json = #"{"session_id":\#(row.id),"mode":"apply","items":[],"summary":"1 worktree removed (~2 GB)"}"#
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = '2026-10-12T10:00:00Z' WHERE id = ?",
+                arguments: [json, row.id]
+            )
+            let record = try XCTUnwrap(TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertEqual(record.at, "2026-10-12T10:00:00Z")
+            XCTAssertEqual(record.result?.summary, "1 worktree removed (~2 GB)")
+            XCTAssertEqual(record.result?.mode, "apply")
+        }
+    }
+
+    func testFetchCleanupRecordIsNilWithoutAResultOrARow() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id + 100))
+        }
+    }
+
+    /// Garbage in `cleanup_result` is a record without a result, not an error
+    /// that would fail the report.
+    func testFetchCleanupRecordKeepsAnUndecodableResultAsNil() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = 'not json' WHERE id = ?", arguments: [row.id]
+            )
+            let record = try XCTUnwrap(TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertNil(record.result)
+            XCTAssertEqual(record.at, "")
+        }
+    }
+
+    /// A database without migration 00111: no record, and every other
+    /// session read still works (the columns stay out of `TerminalSession`).
+    func testADatabaseWithoutTheCleanupColumnsStillLoadsSessions() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN cleanup_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN cleanup_result")
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: row.id)?.id, row.id)
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id), [row.id])
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
         }
     }
 }

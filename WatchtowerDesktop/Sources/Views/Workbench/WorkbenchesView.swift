@@ -31,6 +31,7 @@ struct WorkbenchesView: View {
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
     @State private var deletingSession: TerminalSession?
+    @State private var cleaningSession: TerminalSession?
     /// The ⌘K palette (board #252). View state: it closes with the tab.
     @State private var goToOpen = false
 
@@ -78,7 +79,7 @@ struct WorkbenchesView: View {
                 GoToPaletteOverlay(vm: vm) { goToOpen = false }
             }
         }
-        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
+        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession, cleaning: $cleaningSession)
         .onAppear {
             consumeRoute()
             Task { await vm.tabAppeared() }
@@ -132,7 +133,8 @@ struct WorkbenchesView: View {
                 }
             },
             rename: { renamingSession = $0 },
-            delete: { deletingSession = $0 }
+            delete: { deletingSession = $0 },
+            cleanUp: { cleaningSession = $0 }
         )
     }
 

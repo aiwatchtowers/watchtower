@@ -37,7 +37,7 @@ struct RecordingIndicatorView: View {
     @State private var provisionerHeight: CGFloat = 0
 
     private var reservedInset: CGFloat {
-        let provisionerShown = appState.transcriptionModelProvisioner.state != .idle
+        let provisionerShown = !appState.transcriptionModelProvisioner.downloads.isEmpty
         return RecordingIndicatorInset.reservedHeight(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
                                                       belowPanelHeight: provisionerShown ? provisionerHeight : 0)
     }
@@ -110,37 +110,21 @@ struct RecordingIndicatorView: View {
         }
     }
 
+    /// One pill per model download, running or failed (#744): the model,
+    /// its size, the percent and the time left, or the failure with Retry.
     @ViewBuilder
     private func provisionerContent(_ provisioner: TranscriptionModelProvisioner) -> some View {
-        switch provisioner.state {
-        case .idle:
-            EmptyView()
-        case let .downloading(progress):
-            indicatorCapsule {
-                ProgressView(value: progress).controlSize(.small).frame(width: 80)
-                Text("Downloading model… \(Int(progress * 100))%").font(.callout)
+        if !provisioner.downloads.isEmpty {
+            VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
+                ForEach(provisioner.downloads) { download in
+                    ModelDownloadPill(
+                        download: download,
+                        retry: { provisioner.retry(download.key) },
+                        dismiss: { provisioner.dismiss(download.key) })
+                }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
-        case let .failed(message):
-            modelFailedCapsule(provisioner, message: message)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         }
-    }
-
-    private func modelFailedCapsule(_ provisioner: TranscriptionModelProvisioner, message: String) -> some View {
-        indicatorCapsule {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Model download failed").font(.callout.weight(.medium))
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Button("Retry") { provisioner.retry() }
-                .controlSize(.small)
-            Button("Dismiss") { provisioner.dismiss() }
-                .controlSize(.small)
-        }
-        .frame(maxWidth: 380)
     }
 
     // MARK: - Phase content
@@ -249,7 +233,16 @@ struct RecordingIndicatorView: View {
     private func liveTranscriptBody(_ center: MeetingRecorderCenter) -> some View {
         switch center.liveEngineState {
         case .loading:
-            Text("Loading transcription model…").font(.callout).foregroundStyle(.secondary)
+            // A first recording waits for the model's download: say so, with
+            // its progress, rather than a bare "Loading…" (#744).
+            if let key = appState.meetingModelKey,
+               let download = appState.transcriptionModelProvisioner.download(for: key),
+               case .downloading = download.state {
+                Text(download.progressLine(now: Date()) + ". The transcript starts once it lands.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text("Loading transcription model…").font(.callout).foregroundStyle(.secondary)
+            }
         case .waiting:
             Text("Waiting for previous transcription… live transcript will catch up.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -450,5 +443,38 @@ struct RecordingJobPill: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .frame(maxWidth: 160, alignment: .leading)
+    }
+}
+
+/// One model download in the indicator stack (#744). Plain values + closures,
+/// like `RecordingJobPill`, so it renders without `AppState`.
+struct ModelDownloadPill: View {
+    let download: TranscriptionModelProvisioner.Download
+    let retry: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        indicatorCapsule {
+            switch download.state {
+            case let .downloading(progress):
+                ProgressView(value: progress).controlSize(.small).frame(width: 80)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(download.progressLine(now: Date())).font(.callout)
+                    Text(ModelDownloadText.oneTimeNote).font(.caption).foregroundStyle(.secondary)
+                }
+            case let .failed(message):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(download.label) download failed").font(.callout.weight(.medium))
+                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Button("Retry", action: retry)
+                    .controlSize(.small)
+                Button("Dismiss", action: dismiss)
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: 420)
     }
 }

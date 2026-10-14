@@ -22,7 +22,7 @@ struct SessionsPanelSessionRow: View {
             row: row,
             actions: actions,
             openAsks: openAsks,
-            reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: projectID) : nil,
+            reportLine: row.showsStateLabel ? reportLine : nil,
             reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
@@ -32,6 +32,9 @@ struct SessionsPanelSessionRow: View {
             showsDelete: hoveredRow == row.id || hasCursor,
             hasCursor: hasCursor
         )
+        // Its terminal closed by Delete and Clean Up (board #535): no
+        // resume, no menu. A Clean Up… apply leaves it clickable.
+        .disabled(vm.closedForCleanup.contains(row.id))
         .panelTab(isSelected: vm.panelSelection == .session(row.id))
         .onHover { inside in
             if inside {
@@ -41,6 +44,15 @@ struct SessionsPanelSessionRow: View {
             }
         }
     }
+
+    /// The report line, or "Cleaning up…" while Delete and Clean Up or a
+    /// Clean Up… apply runs on this row (board #535).
+    private var reportLine: String? {
+        if isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
+        return vm.reportLine(sessionID: row.id, projectID: projectID)
+    }
+
+    private var isCleaningUp: Bool { vm.cleaningUpSessions.contains(row.id) }
 
     private var hasCursor: Bool {
         panelHasKeyboard && vm.panelCursor == row.id
@@ -53,7 +65,7 @@ struct SessionsPanelSessionRow: View {
     /// panel (`deleteButtonTakesKeyboard`), so VoiceOver's action never
     /// pulls it out of the terminal or the editor.
     var quickDeleteAction: (() -> Void)? {
-        guard SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
+        guard !isCleaningUp, SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
         let (vm, actions, session) = (vm, actions, row.session)
         return {
             Task {

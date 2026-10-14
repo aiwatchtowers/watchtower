@@ -36,8 +36,9 @@ var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench fo
 
 // What an OutsideFolderError left in place outside the folder.
 const (
-	leftoverHooks = "hooks"
-	leftoverSkill = "skill"
+	leftoverHooks     = "hooks"
+	leftoverSkill     = "skill"
+	leftoverAllowRule = "cleanup allow rule"
 )
 
 // OutsideFolderError is an ErrSymlinkOutsideFolder refusal, naming the link
@@ -46,7 +47,7 @@ const (
 // the owner to remove by hand (Hint).
 type OutsideFolderError struct {
 	Link, Outside string
-	leftover      string // leftoverHooks or leftoverSkill
+	leftover      string // leftoverHooks, leftoverSkill or leftoverAllowRule
 	msg           string
 }
 
@@ -56,8 +57,11 @@ func (e *OutsideFolderError) Unwrap() error { return ErrSymlinkOutsideFolder }
 // Hint tells the owner what a refused removal left outside the folder and
 // what to remove by hand (ask #118).
 func (e *OutsideFolderError) Hint() string {
-	if e.leftover == leftoverSkill {
+	switch e.leftover {
+	case leftoverSkill:
 		return fmt.Sprintf("Watchtower's skill stays in %s — remove it by hand", e.Outside)
+	case leftoverAllowRule:
+		return fmt.Sprintf("Watchtower's cleanup allow rule stays in %s — remove the \"workbench cleanup\" entry from permissions.allow by hand", e.Outside)
 	}
 	return fmt.Sprintf("Watchtower's hooks stay in %s — remove the entries marked watchtower by hand", e.Outside)
 }
@@ -378,15 +382,22 @@ func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 		return false, nil
 	}
 	pruneEmpty(settings, hooks, spec.event, kept)
-	// A symlinked file (dotfiles-managed) is never removed: that would drop
-	// the link and leave our hook in its target. Its target gets {} instead.
+	return true, writeOrDropSettings(file, target, settings, mode)
+}
+
+// writeOrDropSettings writes settings back to target (file resolved past a
+// symlink, resolveSymlinkInside) after a removal of ours, or — when nothing
+// at all is left — removes the file. A symlinked file (dotfiles-managed) is
+// never removed: that would drop the link and leave our entry in its
+// target. Its target gets {} instead.
+func writeOrDropSettings(file, target string, settings map[string]any, mode os.FileMode) error {
 	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
-			return false, fmt.Errorf("removing %s: %w", file, err)
+			return fmt.Errorf("removing %s: %w", file, err)
 		}
-		return true, nil
+		return nil
 	}
-	return true, writeSettings(target, settings, mode)
+	return writeSettings(target, settings, mode)
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for
@@ -498,17 +509,27 @@ func readSettings(file string) (map[string]any, os.FileMode, bool, error) {
 }
 
 // eventGroupsOf returns the hooks object (a fresh one when absent, not yet
-// attached) and its groups for event, refusing a shape it does not know. The
-// whole file counts as malformed when any event we own an entry in has the
-// wrong shape, so a file one install step refuses is refused — and left
-// byte-identical — by every step (PROJ-04).
+// attached) and its groups for event, refusing a shape it does not know
+// (checkOwnedShapes).
 func eventGroupsOf(settings map[string]any, file, event string) (map[string]any, []any, error) {
-	for _, spec := range ownedHookSpecs {
-		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
-			return nil, nil, err
-		}
+	if err := checkOwnedShapes(settings, file); err != nil {
+		return nil, nil, err
 	}
 	return rawEventGroups(settings, file, event)
+}
+
+// checkOwnedShapes refuses the whole file when any part we own an entry in —
+// an event of ours under hooks, or permissions.allow (the cleanup rule) — has
+// the wrong shape, so a file one install step refuses is refused, and left
+// byte-identical, by every step (PROJ-04).
+func checkOwnedShapes(settings map[string]any, file string) error {
+	for _, spec := range ownedHookSpecs {
+		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
+			return err
+		}
+	}
+	_, _, err := allowRules(settings, file)
+	return err
 }
 
 func rawEventGroups(settings map[string]any, file, event string) (map[string]any, []any, error) {
@@ -936,7 +957,13 @@ func resolveSymlink(file string) (string, error) {
 // .codex) that is a symlink leaving root. A link that stays inside root is
 // followed as before.
 func resolveSymlinkInside(file, root string) (string, error) {
-	realRoot, err := dirInside(filepath.Dir(file), file, root, leftoverHooks)
+	return resolveSymlinkInsideFor(file, root, leftoverHooks)
+}
+
+// resolveSymlinkInsideFor is resolveSymlinkInside whose refusal names
+// leftover as what a refused removal left outside the folder (Hint).
+func resolveSymlinkInsideFor(file, root, leftover string) (string, error) {
+	realRoot, err := dirInside(filepath.Dir(file), file, root, leftover)
 	if err != nil {
 		return "", err
 	}
@@ -945,7 +972,7 @@ func resolveSymlinkInside(file, root string) (string, error) {
 		return target, err
 	}
 	if outsideRoot(realRoot, target) {
-		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftoverHooks,
+		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftover,
 			msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%v)",
 				file, target, ErrSymlinkOutsideFolder)}
 	}

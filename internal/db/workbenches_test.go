@@ -171,7 +171,8 @@ func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/workbench.md): deleting a project leaves no project, target,
-// source, comment, ask, session link or PR cache row of it, leaves the owner's
+// source, comment, ask, session link, session worktree ledger or PR cache
+// row of it (the ledger since board #535), leaves the owner's
 // presence on one of its sessions in no session, and touches no other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
@@ -206,6 +207,17 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	keepAsk := mustInsertAsk(t, d, questionAsk(keep, "Theirs"))
 	require.NoError(t, d.LinkSessionTarget(sid, parent))
 	setPresence(t, d, sid, "2026-10-10T12:00:00.000Z")
+	// The session cleanup ledger (board #535): this workbench's session's
+	// rows go with it, another workbench's session's row stays.
+	keepSession := newTestSession(t, d, keep)
+	for _, row := range []struct {
+		session int64
+		branch  string
+	}{{sid, "feat/x"}, {sid, ""}, {keepSession, "feat/theirs"}} {
+		_, err = d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+			VALUES (?, '/tmp/acme/.claude/worktrees/x', ?, '2026-10-12T12:00:00.000Z')`, row.session, row.branch)
+		require.NoError(t, err)
+	}
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: keep, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 	// The folder files' search index entries (PROJ-08), this project's and another's.
@@ -269,6 +281,11 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var links int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_session_targets`).Scan(&links))
 	assert.Zero(t, links, "the deleted project's session links are gone")
+	var ledger int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ?`, sid).Scan(&ledger))
+	assert.Zero(t, ledger, "the deleted project's session worktree ledger is gone")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_session_worktrees`).Scan(&ledger))
+	assert.Equal(t, 1, ledger, "another project's session worktree ledger is untouched")
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")
