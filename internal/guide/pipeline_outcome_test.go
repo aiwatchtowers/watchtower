@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestRunForWindow_NoActiveUsersReportsNoData(t *testing.T) {
 	database := db.OpenTestDB(t)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 
 	n, err := pipe.RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestRunForWindow_NoActiveUsersReportsNoData(t *testing.T) {
 
 func TestRunForWindow_NoSituationsReportsNoData(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 	seedOutcomeUser(t, database, from)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -61,7 +62,7 @@ func TestRunForWindow_NoSituationsReportsNoData(t *testing.T) {
 
 func TestRunForWindow_AllCoveredReportsCovered(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 	seedOutcomeUser(t, database, from)
 	seedOutcomeSituation(t, database, from, to)
 	gen := &mockGenerator{response: outcomeBatchReply}
@@ -80,7 +81,7 @@ func TestRunForWindow_AllCoveredReportsCovered(t *testing.T) {
 
 func TestRunForWindow_GeneratesReportsGenerated(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 	seedOutcomeUser(t, database, from)
 	seedOutcomeSituation(t, database, from, to)
 	gen := &mockGenerator{response: outcomeBatchReply}
@@ -94,7 +95,7 @@ func TestRunForWindow_GeneratesReportsGenerated(t *testing.T) {
 
 func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 	seedOutcomeUser(t, database, from)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -110,7 +111,7 @@ func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 func TestHasData_MatchesNoDataOutcome(t *testing.T) {
 	database := db.OpenTestDB(t)
 	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
-	from, to := currentWindow()
+	from, to := (&Pipeline{}).currentWindow()
 
 	has, err := pipe.HasData()
 	require.NoError(t, err)
@@ -131,4 +132,27 @@ func TestHasData_MatchesNoDataOutcome(t *testing.T) {
 	has, err = pipe.HasData()
 	require.NoError(t, err)
 	assert.True(t, has, "users and situations")
+}
+
+// A fresh install's first digest ends now: the regular window (ending at the
+// start of today) misses it, a FirstRun window counts it.
+func TestHasData_FirstRunCountsADigestEndingNow(t *testing.T) {
+	database := db.OpenTestDB(t)
+	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	from, dayStart := pipe.currentWindow()
+	now := float64(time.Now().Unix())
+	if now <= dayStart {
+		t.Skip("runs in the first second of the day: both windows end now")
+	}
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, now-60, now)
+
+	has, err := pipe.HasData()
+	require.NoError(t, err)
+	assert.False(t, has, "the regular window ends at the start of today")
+
+	pipe.FirstRun = true
+	has, err = pipe.HasData()
+	require.NoError(t, err)
+	assert.True(t, has, "a first run counts today's digests")
 }

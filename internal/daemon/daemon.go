@@ -1237,6 +1237,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if d.peopleAttemptsExhausted(date) {
 		return
 	}
+	// Until the first stamped run the window ends now, not at the start of
+	// today: a fresh install's first digests end now, and cards should not
+	// wait for midnight.
+	d.peoplePipe.FirstRun = d.lastPeople.IsZero()
 	// No data yet: skip before trackedPipelineRun so a workspace that stays
 	// without data writes no empty "people" row every cycle (the
 	// phaseCustomTrackScan precedent). A failed check falls through so Run

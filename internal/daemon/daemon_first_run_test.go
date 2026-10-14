@@ -65,15 +65,22 @@ func seedFirstRunMessages(t *testing.T, database *db.DB) {
 	}
 }
 
-// seedFirstRunSituation seeds a channel digest carrying a situation, what the
-// first digest run leaves for people cards to mine.
+// seedFirstRunSituation seeds a channel digest carrying a situation, inside
+// people Run's regular window.
 func seedFirstRunSituation(t *testing.T, database *db.DB) {
 	t.Helper()
 	dayStart := firstRunDayStart()
+	seedFirstRunSituationAt(t, database, dayStart.Add(-4*24*time.Hour), dayStart.Add(-2*24*time.Hour))
+}
+
+// seedFirstRunSituationAt seeds a channel digest carrying a situation over
+// [from, to], what a digest run leaves for people cards to mine.
+func seedFirstRunSituationAt(t *testing.T, database *db.DB, from, to time.Time) {
+	t.Helper()
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
-		PeriodFrom: float64(dayStart.Add(-4 * 24 * time.Hour).Unix()),
-		PeriodTo:   float64(dayStart.Add(-2 * 24 * time.Hour).Unix()),
+		PeriodFrom: float64(from.Unix()),
+		PeriodTo:   float64(to.Unix()),
 		Summary:    "d", Topics: "[]", Decisions: "[]", ActionItems: "[]", PeopleSignals: "[]",
 		Situations:   `[{"topic":"X","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`,
 		MessageCount: 8,
@@ -133,6 +140,25 @@ func TestDaemon_PeopleNoDataRetriesNextCycle(t *testing.T) {
 	d.phasePeopleCards(context.Background())
 
 	assert.Positive(t, gen.calls, "the next cycle with situations generates cards")
+	assert.False(t, d.lastPeople.IsZero(), "the generating run stamps the throttle")
+}
+
+// A fresh install's first digests end now, after the start of today where
+// the regular window ends: the first run still counts them, so cards come in
+// the first cycle with digests instead of after midnight.
+func TestDaemon_PeopleFirstDigestEndingNowGeneratesCards(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	seedFirstRunMessages(t, database)
+	now := time.Now()
+	if !now.After(firstRunDayStart()) {
+		t.Skip("runs in the first instant of the day: the regular window ends now too")
+	}
+	seedFirstRunSituationAt(t, database, now.Add(-time.Hour), now)
+	gen := attachPeoplePipeline(d, database)
+
+	d.phasePeopleCards(context.Background())
+
+	assert.Positive(t, gen.calls, "the first digests generate cards the same day")
 	assert.False(t, d.lastPeople.IsZero(), "the generating run stamps the throttle")
 }
 

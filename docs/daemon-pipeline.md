@@ -336,7 +336,7 @@ Synthesizes observations about people from all channels into personal cards. Thi
 - Cards for the given 7-day window already exist
 - No situations from digests (digests haven't run yet or didn't produce situations)
 
-**First cycle note:** on a fresh install the first cycles usually have no situations yet (digests have not run) or no users with enough messages, so the people pipeline skips. A no-data cycle does not start the 24h throttle, does not spend the daily attempt budget and writes no `pipeline_runs` row: the phase retries on the next cycle, and cards appear in the first cycle that has situations. Only a run that reached the AI stage, or found every active user already covered for the window, stamps `last_people.txt`.
+**First cycle note:** on a fresh install the first cycles usually have no situations yet (digests have not run) or no users with enough messages, so the people pipeline skips. A no-data cycle does not start the 24h throttle, does not spend the daily attempt budget and writes no `pipeline_runs` row: the phase retries on the next cycle, and cards appear in the first cycle that has situations. Until that first stamped run the window ends now rather than at the start of today, so the first digests (which end now) count the same day. Only a run that reached the AI stage, or found every active user already covered for the window, stamps `last_people.txt`.
 
 ### Data Collection (7-Day Window)
 

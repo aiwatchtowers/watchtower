@@ -101,6 +101,10 @@ type Pipeline struct {
 
 	OnProgress      ProgressFunc
 	ForceRegenerate bool
+	// FirstRun ends Run's window now instead of at the start of today, so a
+	// fresh install's first digests (period_to = now) count the same day. The
+	// daemon sets it until the first run that stamps last_people.txt.
+	FirstRun bool
 
 	// LastStep* fields are set before each OnProgress callback with the
 	// current step's message count and time window. Read them in OnProgress.
@@ -169,16 +173,20 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	p.totalOutputTokens.Store(0)
 	p.totalAPITokens.Store(0)
 
-	from, to := currentWindow()
+	from, to := p.currentWindow()
 	return p.RunForWindow(ctx, from, to)
 }
 
 // currentWindow is Run's window: the DefaultWindowDays days ending at the
-// start of today.
-func currentWindow() (from, to float64) {
+// start of today, or ending now on a FirstRun.
+func (p *Pipeline) currentWindow() (from, to float64) {
 	now := time.Now()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	return float64(endOfDay.AddDate(0, 0, -DefaultWindowDays).Unix()), float64(endOfDay.Unix())
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	from = float64(dayStart.AddDate(0, 0, -DefaultWindowDays).Unix())
+	if p.FirstRun {
+		return from, float64(now.Unix())
+	}
+	return from, float64(dayStart.Unix())
 }
 
 // HasData reports whether Run would find anything to work on: active users
@@ -187,7 +195,7 @@ func currentWindow() (from, to float64) {
 // opening a tracked run, so a workspace without data yet writes no empty
 // pipeline_runs row every cycle.
 func (p *Pipeline) HasData() (bool, error) {
-	from, to := currentWindow()
+	from, to := p.currentWindow()
 	if !p.ForceRegenerate {
 		sits, err := p.db.GetSituationsForWindow(from, to)
 		if err != nil {

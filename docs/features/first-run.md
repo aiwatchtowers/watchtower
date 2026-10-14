@@ -178,6 +178,14 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   is the backstop for a window that moved between the check and the run: no
   stamp. Either way a no-data cycle does not stamp `last_people.txt`, records no
   attempt and retries next cycle. Generated and covered runs stamp as before.
+- **The first run's window ends now.** Run's window is the 7 days ending at
+  the start of today, and a fresh install's first digests end now
+  (`period_to` = the digest run), so they would only count after midnight.
+  Until the first stamped run (`lastPeople` zero) the daemon sets
+  `Pipeline.FirstRun` and the window ends now instead. Limit: a first run that
+  fails part-way retries over a new window (it ends at the next cycle's now),
+  so the users it already carded are carded again — bounded by the attempt
+  budget, and only before the first stamp.
 - **Briefing and day plan** — the fresh-install bypass above. One briefing and
   possibly one day plan move earlier on day one; people cards run in the first
   cycle that has situations. Runs per day do not grow.
