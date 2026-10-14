@@ -454,7 +454,8 @@ final class MobileLinkCenter {
 
     /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
     /// revoke", §10): `unlinked: true` removes it as Remove does (in
-    /// `shared` scope it has left the shares already); otherwise its
+    /// `shared` scope it has left the shares already); otherwise its name
+    /// replaces the stored one (a rename on the phone), its
     /// start-sessions choice becomes the grant, and its typing request is
     /// stored: turned on while not allowed, the owner is asked
     /// (`onTypingRequested`); turned off while allowed, the grant goes (a
@@ -478,6 +479,10 @@ final class MobileLinkCenter {
                 logger.warning("unlinked phone's share participant not removed: \(error.localizedDescription, privacy: .public)")
             }
             return
+        }
+        if try sidecar.setDeviceName(Self.displayName(payload.name), deviceID: device.deviceID) {
+            reloadDevices()
+            nudgeKinds([.deviceGrant])
         }
         if payload.startSessions != device.startSessionsAllowed {
             try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
@@ -526,6 +531,17 @@ final class MobileLinkCenter {
         } catch {
             logger.error("share participants unreadable, phone not linked: \(error.localizedDescription, privacy: .public)")
             return false
+        }
+    }
+
+    /// Forgets the refusals and revoked phones whose keybox lifetime ended (`DeviceGrantSlice` no longer publishes
+    /// them; it only reads). Each relay cycle runs it; a failure is logged and the next cycle retries.
+    func pruneExpiredAnswers() {
+        do {
+            try sidecar.pruneLinkRefusals(olderThan: now().addingTimeInterval(-DeviceGrantSlice.refusalLifetime))
+            try sidecar.pruneRevokedDevices(olderThan: now().addingTimeInterval(-DeviceGrantSlice.revokedLifetime))
+        } catch {
+            logger.warning("expired link answers not pruned: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -579,12 +595,16 @@ final class MobileLinkCenter {
             hubID: try WireBytes.hubUUID(sidecar.ensureHubID()), linkNonce: opened.nonce,
             hubSigning: keyring.signingPublicKey, hubAgreement: keyring.agreementPublicKey,
             deviceSigning: opened.signingKey, deviceAgreement: opened.agreementKey, confirmNonce: nonce)
+        // `private`: the phone is the Mac's own user, so the creator check compares with the owner, never with the
+        // name the phone sent (cached since the QR was issued).
+        let user = payload.scope == .private ? await resolveOwnerUser() ?? "" : payload.userRecordName
         let saved = try sidecar.savePendingDevice(HubSyncState.PendingDevice(
             deviceID: deviceID, name: Self.displayName(payload.name), model: payload.model,
-            scope: payload.scope, userRecordName: payload.userRecordName,
+            scope: payload.scope, userRecordName: user,
             signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
             linkNonce: opened.code.nonce, sas: sas, confirmNonce: nonce, receivedAt: current,
-            typingRequested: payload.typingRequested), maxNoncesPerCode: Self.maxNoncesPerCode)
+            typingRequested: payload.typingRequested, startSessions: payload.startSessions),
+            maxNoncesPerCode: Self.maxNoncesPerCode)
         switch saved {
         case .unchanged:
             return
@@ -671,6 +691,8 @@ final class MobileLinkCenter {
     private func refuse(_ opened: OpenedHello, _ reason: LinkRefusal, at date: Date) throws {
         let deviceID = opened.deviceID.uuidString
         guard try sidecar.linkedDevice(deviceID) == nil else { return }
+        // An expired refusal never holds a place under `maxLinkRefusals`.
+        try sidecar.pruneLinkRefusals(olderThan: now().addingTimeInterval(-DeviceGrantSlice.refusalLifetime))
         let payload = opened.hello.device
         let saved = try sidecar.saveBoundedLinkRefusal(
             HubSyncState.LinkRefusalRecord(

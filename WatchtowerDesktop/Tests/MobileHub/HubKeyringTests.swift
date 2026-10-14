@@ -670,7 +670,7 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(columns["slice_state"]).contains("wire_name"))
         XCTAssertEqual(columns["pending_devices"], [
             "device_id", "name", "model", "scope", "user_record_name", "signing_key", "agreement_key", "link_nonce", "sas",
-            "received_at", "typing_requested", "confirm_nonce"
+            "received_at", "typing_requested", "confirm_nonce", "start_sessions"
         ])
         XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at", "name", "scope"])
         XCTAssertEqual(columns["relay_seen"], ["wire_name", "sender_id", "epoch", "seq", "at"])

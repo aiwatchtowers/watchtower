@@ -724,10 +724,11 @@ final class MobileHubService {
         }
     }
 
-    /// One relay cycle: pull, daily hygiene, then passes until the backlog
+    /// One relay cycle: the expired link answers pruned, pull, daily hygiene, then passes until the backlog
     /// is empty — a long Mac sleep drains in one cycle (Review focus 5).
     private func runRelayCycle() async {
         rotateEpochIfDue()
+        linkCenter?.pruneExpiredAnswers()
         do {
             try await transport.pull()
             try await processor.runHygieneIfDue()
