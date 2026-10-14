@@ -739,6 +739,7 @@ func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string)
 	if err := closeOpenStepsTx(tx, RunFailed, stamp, predicate, stamp); err != nil {
 		return 0, err
 	}
+	//nolint:gosec // G202: predicate is one of the package's constant run predicates; every value is a bound arg.
 	res, err := tx.Exec(`UPDATE automation_runs SET status = 'failed', error_kind = 'interrupted',
 		error = ?, waiting_reason = '', finished_at = ?
 		WHERE `+predicate, errText, stamp, stamp)

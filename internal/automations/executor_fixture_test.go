@@ -261,7 +261,7 @@ func (f *exFixture) dump(t *testing.T) string {
 	return out.String()
 }
 
-// commitPrior gives a a committed state {"k":1} and one inbox output through
+// commitPrior gives the automation a committed state {"k":1} and one inbox output through
 // a finished run, as an earlier successful run would.
 func (f *exFixture) commitPrior(t *testing.T, a db.Automation) {
 	t.Helper()
