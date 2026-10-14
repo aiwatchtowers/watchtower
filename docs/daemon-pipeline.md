@@ -446,7 +446,7 @@ With each cycle:
 | Daily Rollup | Every 15 min, but skipped without a newer channel digest; capped at 3 real attempts/UTC day | DB: `digests.created_at` (today's daily row) + File: `rollup_attempts.txt` | Regenerates only on new/changed channel digests for the day; date,attempt-count |
 | Tracks | Every 15 min | DB: `pipeline_runs.period_to` | End of last window |
 | People Cards | Once per 24h | File: `last_people.txt` | Unix timestamp |
-| Briefing | Once per day, capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
+| Briefing | Once per day after `briefing.hour` (the first briefing on a fresh install — no stamp and no `briefings` row at all — skips the hour gate, mirrored in the Desktop's `FeatureReadiness.swift`), capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
 | Day Plan | Once per day after `day_plan.hour` (default 8; the first plan on a fresh install — no `day_plans` row at all — skips the hour gate, mirrored in the Desktop's `FeatureReadiness.swift`), capped at 3 real attempts/day; runs right after Briefing in the same cycle | DB: `day_plans` UNIQUE(user, date) + File: `day_plan_attempts.txt` | date,attempt-count |
 
 Files `last_people.txt` and `last_briefing.txt` survive daemon restarts, as do `day_plan_attempts.txt`, `briefing_attempts.txt`, and `rollup_attempts.txt`.
