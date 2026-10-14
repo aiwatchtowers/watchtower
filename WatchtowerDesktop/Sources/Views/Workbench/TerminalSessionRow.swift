@@ -61,6 +61,9 @@ struct TerminalSessionRow: View {
         .listRowSeparator(.hidden)
         .contextMenu {
             Button("Rename…") { actions.rename(session) }
+            if session.projectID != nil, let cleanUp = actions.cleanUp {
+                Button("Clean Up…") { cleanUp(session) }
+            }
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }

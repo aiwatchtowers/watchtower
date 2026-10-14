@@ -156,10 +156,12 @@ struct WorkbenchSessionsPanel: View {
     }
 }
 
-/// What a session row's click, Rename… and Delete… do; the page owns the
-/// sheet and the confirmation (`sessionActionDialogs`).
+/// What a session row's click, Rename…, Delete… and Clean Up… do; the page
+/// owns the sheets and the confirmation (`sessionActionDialogs`).
 struct SessionRowActions {
     let open: (TerminalSession) -> Void
     let rename: (TerminalSession) -> Void
     let delete: (TerminalSession) -> Void
+    /// A workbench session's Clean Up… (board #535); nil = no menu item.
+    var cleanUp: ((TerminalSession) -> Void)?
 }

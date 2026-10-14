@@ -105,10 +105,18 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     }
 
     package func run(args: [String]) async throws -> Data {
+        try await run(args: args, environment: Constants.resolvedEnvironment())
+    }
+
+    /// `run(args:)` with the child's whole environment given: a caller that
+    /// must keep a variable of the app's own environment from the child
+    /// (session cleanup drops `WATCHTOWER_TERMINAL_SESSION_ID`) passes the
+    /// environment it built.
+    package func run(args: [String], environment: [String: String]) async throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = environment
         process.currentDirectoryURL = Constants.processWorkingDirectory()
 
         let stdoutPipe = Pipe()

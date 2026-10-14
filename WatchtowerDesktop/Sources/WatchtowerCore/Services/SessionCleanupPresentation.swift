@@ -115,13 +115,34 @@ package enum SessionCleanupPresentation {
     // MARK: Delete dialog
 
     /// The Delete dialog's line: "Also clean up: 2 worktrees, 3 branches
-    /// (~12 GB). Kept: 1 worktree — uncommitted changes." Nil when the plan
-    /// removes nothing (the dialog is then as before).
+    /// (~12 GB). After the terminal closes: 1 worktree, 1 branch, if
+    /// nothing else runs there. Kept: 1 worktree — uncommitted changes."
+    /// Nil when the dialog shows nothing to remove (it is then as before).
     package static func offerLine(_ plan: SessionCleanupPlan) -> String? {
-        guard let removal = totalText(plan.items.filter(\.isPendingRemoval)) else { return nil }
-        let line = "Also clean up: \(removal)."
-        guard let kept = keptText(plan.items) else { return line }
-        return line + " Kept: \(kept)."
+        offerLine(SessionDeleteCleanupChoice(plan: plan))
+    }
+
+    package static func offerLine(_ choice: SessionDeleteCleanupChoice) -> String? {
+        var parts: [String] = []
+        if let now = totalText(choice.removable) { parts.append("Also clean up: \(now).") }
+        if let later = countText(choice.afterClose) {
+            parts.append("After the terminal closes: \(later), if nothing else runs there.")
+        }
+        guard !parts.isEmpty else { return nil }
+        if let kept = keptText(choice.kept) { parts.append("Kept: \(kept).") }
+        return parts.joined(separator: " ")
+    }
+
+    /// The page's notice after Delete and Clean Up when Go kept shown items
+    /// at apply time: "“Fix the form” deleted; 1 item was kept: feat/x —
+    /// unpushed commits". Nil when nothing shown was kept.
+    package static func keptAfterDeleteNotice(title: String, kept: [Item]) -> String? {
+        guard !kept.isEmpty else { return nil }
+        let list = kept.map { item in
+            "\(item.name.isEmpty ? item.key : item.name) — \(reasonText(item.reason ?? .unknown("")))"
+        }
+        let count = kept.count == 1 ? "1 item was kept" : "\(kept.count) items were kept"
+        return "“\(title)” deleted; \(count): \(list.joined(separator: "; "))"
     }
 
     /// "1 worktree, 2 branches — uncommitted changes, checked out": the

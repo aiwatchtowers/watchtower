@@ -103,6 +103,33 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Session cleanup (board #535): the Delete dialog's plan and apply, the
+    /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
+    /// run survives navigating away. AppState wires its own; nil = Delete
+    /// Only.
+    @ObservationIgnored var sessionCleanup: SessionCleanupCenter?
+    /// The sessions' stored cleanup results (`cleanup_result`), for the
+    /// report's Cleanup line; a session without one has no entry.
+    var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
+    /// The sessions a cleanup runs on (board #535) — Delete and Clean Up,
+    /// or a Clean Up… apply: the row is busy, it does not delete (✕, ⌘⌫,
+    /// Delete, Delete and Clean Up) or start fresh, and shows "Cleaning
+    /// up…".
+    var cleaningUpSessions: Set<Int64> = []
+    /// The subset whose terminal Delete and Clean Up closed: the row does
+    /// not resume either, until it is deleted or kept. A Clean Up… apply
+    /// leaves a live session's terminal reachable.
+    var closedForCleanup: Set<Int64> = []
+    /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
+    /// Up… apply), per session: a view going away never cancels one.
+    @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The sessions whose Clean Up… sheet is on screen: an apply ending
+    /// while it is not shows its failure on the page instead.
+    @ObservationIgnored var openCleanupSheets: Set<Int64> = []
+    /// Per deleted session, what its Delete and Clean Up kept of the items
+    /// the dialog showed: told on the Undo bar while the row waits there,
+    /// dropped once it leaves the batch (Undo or the commit).
+    var cleanupKeptNotices: [Int64: String] = [:]
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter
@@ -223,7 +250,10 @@ final class WorkbenchesViewModel {
     /// `onPendingDeletesChanged` (the phone's session slice).
     var pendingDeletes = PendingSessionDeletes() {
         didSet {
-            if oldValue.ids != pendingDeletes.ids { onPendingDeletesChanged?(pendingDeletes.ids) }
+            if oldValue.ids != pendingDeletes.ids {
+                onPendingDeletesChanged?(pendingDeletes.ids)
+                cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
+            }
         }
     }
     /// The hidden ids changed (MobileHub: the `terminal_session` slice
