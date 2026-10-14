@@ -84,7 +84,7 @@ final class RecordingsWiringTests: XCTestCase {
     ) -> RecordingsListModel {
         RecordingsListModel(
             recordings: recordings, replica: CalendarReplicaSnapshot(transcripts: transcripts),
-            seen: seen, now: now, calendar: calendar
+            seen: seen, now: now, calendar: calendar, linkedHubIDs: []
         )
     }
 
