@@ -38,7 +38,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   off, Reset to goals included; on its own it does not make the re-run
   "Features customized". Settings → Features keeps them as normal toggles, and the
   related-features offer after a connect never proposes them. Left alone:
-  `knowledge-connectors` (Confluence in search) and the core entries.
+  `knowledge-connectors` (Confluence in search), `automations` (on by
+  default, runs nothing until the owner confirms a recipe) and the core
+  entries.
   `OnboardingFeaturePlanTests` parses `internal/features/registry.go` and
   fails on a toggleable feature that is in none of these sets.
 - Default goals: all but Meetings. Zero goals = Development only.

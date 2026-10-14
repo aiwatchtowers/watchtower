@@ -40,6 +40,9 @@ const (
 	InterruptBudget   InterruptReason = "budget"
 	InterruptDailyCap InterruptReason = "daily_cap"
 	InterruptCancel   InterruptReason = "cancel"
+	// InterruptExpired: a wait outlasted the recipe's pause_timeout_hours
+	// (the executor's Waiter returns it; the run ends expired).
+	InterruptExpired InterruptReason = "expired"
 )
 
 // RunInterrupted is what Sandbox.Run returns when an interrupt stopped the

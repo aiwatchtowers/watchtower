@@ -25,6 +25,9 @@ var legacyDigestOffFeatureKeys = []string{
 	"briefing.enabled",
 	"day_plan.enabled",
 	"targets.next_step.enabled",
+	// Automations postdate the legacy switch, but an owner whose install
+	// means "all AI off" must not get recipes running either.
+	"automations.enabled",
 }
 
 // MigrateFeatureGates performs the one-time back-compat migration for
@@ -116,6 +119,7 @@ func ApplyLegacyDigestOff(cfg *Config) {
 	cfg.Briefing.Enabled = false
 	cfg.DayPlan.Enabled = false
 	cfg.Targets.NextStep.Enabled = false
+	cfg.Automations.Enabled = false
 }
 
 // patchConfigYAML sets each dotted key in sets to its bool value by editing

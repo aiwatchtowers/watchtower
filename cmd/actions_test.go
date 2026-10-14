@@ -436,6 +436,9 @@ func TestActions_ApprovePatchSavesTheEditWithTheDecision(t *testing.T) {
 // the CLI never approves, applies or grants execute trust — an agent must not
 // approve its own proposal. Reject and the read verbs stay open.
 func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
+	// A child an automation run starts is an agent too (spec 2026-10-14
+	// §10, §14.3): the marker list carries its variable.
+	require.Contains(t, agentEnvMarkers, "WATCHTOWER_AUTOMATION_RUN_ID")
 	for _, marker := range agentEnvMarkers {
 		t.Run(marker, func(t *testing.T) {
 			database := writeActionsConfig(t)
