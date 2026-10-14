@@ -559,3 +559,64 @@ func TestBuildGrant_PositiveExpiresInStampsExpiresAt(t *testing.T) {
 		t.Errorf("ExpiresAt = %v, want %v", grant.ExpiresAt, want)
 	}
 }
+
+// TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut: the callback came
+// and the exchange was still running when the login's context ended. The
+// owner was just in the browser, so the error must not read as the
+// nobody-came timeout that keeps oauthpage.ReturnAfterLogin from bringing
+// the app back (#741).
+func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
+	as := newFakeAS(t)
+	inner := as.server.Config.Handler
+	inToken := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // before as.server.Close (LIFO)
+	var once sync.Once
+	// Set before Login starts, so every request below sees it.
+	as.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			once.Do(func() { close(inToken) })
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+
+	urlCh := captureAuthorizeURL(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, &syncBuffer{}, LoginOptions{})
+		errCh <- err
+	}()
+
+	u, err := url.Parse(<-urlCh)
+	if err != nil {
+		t.Fatalf("parsing authorize URL: %v", err)
+	}
+	q := u.Query()
+	go hitCallback(t, q.Get("redirect_uri"), map[string]string{"code": as.AuthCode, "state": q.Get("state")})
+
+	select {
+	case <-inToken:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the exchange never reached /token")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Login: want an error when the context ends mid-exchange, got nil")
+		}
+		if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+			t.Errorf("Login: err = %v, must not wrap ErrLoginTimedOut once the callback came", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Login did not return after the context ended")
+	}
+}

@@ -135,6 +135,12 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 	case res := <-resultCh:
 		return res.grant, res.err
 	case <-loginCtx.Done():
+		if delivered.Load() {
+			// The callback came and its exchange ran into the deadline: the
+			// owner was just in the browser, so this is not ErrLoginTimedOut
+			// (which would keep the app from coming back).
+			return nil, fmt.Errorf("mcpoauth: login timed out while finishing the sign-in: %w", loginCtx.Err())
+		}
 		return nil, fmt.Errorf("mcpoauth: %w or was cancelled: %w", oauthpage.ErrLoginTimedOut, loginCtx.Err())
 	}
 }
