@@ -39,6 +39,7 @@ func TestMigration00113_AutomationTables(t *testing.T) {
 		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs",
 		"idx_automations_scope_slug", "idx_automation_runs_automation_status", "idx_automation_runs_status_queued",
 		"idx_automation_runs_event_cycle", "idx_automation_runs_queued_trigger", "idx_automation_runs_rerun_of",
+		"idx_automation_runs_started_at",
 		"idx_automation_outputs_kind", "idx_automation_outputs_automation", "idx_automation_outputs_run",
 	} {
 		var got string

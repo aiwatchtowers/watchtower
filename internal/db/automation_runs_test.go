@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,97 @@ func countAutomationTableRows(t *testing.T, d *DB, table string) int {
 	return n
 }
 
+// wantAutomationRun checks a run's status and error kind.
+func wantAutomationRun(t *testing.T, d *DB, id int64, status, errorKind string) *AutomationRun {
+	t.Helper()
+	r := mustGetAutomationRun(t, d, id)
+	if r.Status != status || r.ErrorKind != errorKind {
+		t.Errorf("run %d = %s/%q; want %s/%q", id, r.Status, r.ErrorKind, status, errorKind)
+	}
+	return r
+}
+
+// wantCoalesced checks an enqueue result.
+func wantCoalesced(t *testing.T, what string, gotID int64, gotCoalesced bool, wantID int64) {
+	t.Helper()
+	if gotID != wantID || !gotCoalesced {
+		t.Errorf("%s = (%d, %v); want (%d, true)", what, gotID, gotCoalesced, wantID)
+	}
+}
+
+func wantRowCount(t *testing.T, d *DB, table string, want int) {
+	t.Helper()
+	if n := countAutomationTableRows(t, d, table); n != want {
+		t.Errorf("%s rows = %d; want %d", table, n, want)
+	}
+}
+
+func wantErrIs(t *testing.T, what string, err, target error) {
+	t.Helper()
+	if !errors.Is(err, target) {
+		t.Errorf("%s: %v; want %v", what, err, target)
+	}
+}
+
+// automationData is the committed state bytes and every output of an automation.
+type automationData struct {
+	state   string
+	outputs []AutomationOutput
+}
+
+func readAutomationData(t *testing.T, d *DB, automationID int64) automationData {
+	t.Helper()
+	s, err := d.GetAutomationState(automationID)
+	if err != nil {
+		t.Fatalf("GetAutomationState: %v", err)
+	}
+	outs, err := d.ListAutomationOutputs("", 0)
+	if err != nil {
+		t.Fatalf("ListAutomationOutputs: %v", err)
+	}
+	return automationData{state: string(s), outputs: outs}
+}
+
+func wantAutomationDataUnchanged(t *testing.T, d *DB, automationID int64, before automationData) {
+	t.Helper()
+	if after := readAutomationData(t, d, automationID); !reflect.DeepEqual(after, before) {
+		t.Errorf("state/outputs changed:\n before %+v\n after  %+v", before, after)
+	}
+}
+
+func seedRunningAutomationRun(t *testing.T, d *DB) (automationID, runID int64) {
+	t.Helper()
+	a := seedRunAutomation(t, d, "digest", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	if !mustClaimAutomationRun(t, d, run) {
+		t.Fatal("claim lost")
+	}
+	return a, run
+}
+
+func mustFinishAutomationRun(t *testing.T, d *DB, runID int64, f RunFinish, c *RunCommit) {
+	t.Helper()
+	if f.Now.IsZero() {
+		f.Now = runTestNow
+	}
+	if err := d.FinishAutomationRun(runID, f, c); err != nil {
+		t.Fatalf("FinishAutomationRun(%d): %v", runID, err)
+	}
+}
+
+func mustAppendAutomationRunStep(t *testing.T, d *DB, runID int64, kind, status string) int64 {
+	t.Helper()
+	id, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: runID, Kind: kind, Status: status, StartedAt: runTestNow})
+	if err != nil {
+		t.Fatalf("AppendAutomationRunStep: %v", err)
+	}
+	return id
+}
+
+func sameAutomationTime(got *time.Time, want time.Time) bool {
+	return got != nil && got.Equal(want)
+}
+
 func TestEnqueue_InsertsQueued(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunAutomation(t, d, "digest", 1)
@@ -67,12 +159,9 @@ func TestEnqueue_InsertsQueued(t *testing.T) {
 	if coalesced {
 		t.Error("first enqueue coalesced")
 	}
-	r := mustGetAutomationRun(t, d, id)
-	if r.Status != RunQueued || !r.QueuedAt.Equal(runTestNow) || r.Trigger != TriggerManual || r.StartedAt != nil {
+	r := wantAutomationRun(t, d, id, RunQueued, "")
+	if !r.QueuedAt.Equal(runTestNow) || r.Trigger != TriggerManual || r.StartedAt != nil {
 		t.Errorf("run = %+v; want queued at %v", r, runTestNow)
-	}
-	if _, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: a, Trigger: TriggerButton}); err == nil {
-		t.Error("enqueue with zero Now accepted")
 	}
 }
 
@@ -81,16 +170,12 @@ func TestRun_CoalescesSecondTrigger(t *testing.T) {
 	a := seedRunAutomation(t, d, "digest", 1)
 	first, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
 	second, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
-	if second != first || !coalesced {
-		t.Errorf("second manual = (%d, %v); want (%d, true)", second, coalesced, first)
-	}
+	wantCoalesced(t, "second manual", second, coalesced, first)
 	button, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerButton})
 	if button == first || coalesced {
 		t.Errorf("button = (%d, %v); want a new row", button, coalesced)
 	}
-	if n := countAutomationTableRows(t, d, "automation_runs"); n != 2 {
-		t.Errorf("rows = %d; want 2", n)
-	}
+	wantRowCount(t, d, "automation_runs", 2)
 }
 
 func TestEnqueue_EventCycleOncePerAutomation(t *testing.T) {
@@ -101,16 +186,10 @@ func TestEnqueue_EventCycleOncePerAutomation(t *testing.T) {
 	if !mustClaimAutomationRun(t, d, first) {
 		t.Fatal("claim failed")
 	}
-	if err := d.FinishAutomationRun(first, RunFinish{Status: RunSucceeded, Now: runTestNow}, nil); err != nil {
-		t.Fatal(err)
-	}
+	mustFinishAutomationRun(t, d, first, RunFinish{Status: RunSucceeded}, nil)
 	again, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "c1"})
-	if again != first || !coalesced {
-		t.Errorf("same cycle after finish = (%d, %v); want (%d, true)", again, coalesced, first)
-	}
-	if n := countAutomationTableRows(t, d, "automation_runs"); n != 1 {
-		t.Errorf("rows = %d; want 1", n)
-	}
+	wantCoalesced(t, "same cycle after finish", again, coalesced, first)
+	wantRowCount(t, d, "automation_runs", 1)
 }
 
 func TestEnqueue_EventCycleMergedIntoEarlierRunIsCoalesced(t *testing.T) {
@@ -124,15 +203,12 @@ func TestEnqueue_EventCycleMergedIntoEarlierRunIsCoalesced(t *testing.T) {
 	}
 	seeded, _ := res.LastInsertId()
 	id, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "B"})
-	if id != seeded || !coalesced {
-		t.Errorf("cycle B = (%d, %v); want (%d, true)", id, coalesced, seeded)
-	}
-	if n := countAutomationTableRows(t, d, "automation_runs"); n != 1 {
-		t.Errorf("rows = %d; want 1", n)
-	}
-	// A malformed event_json of another run never breaks the lookup.
+	wantCoalesced(t, "cycle B", id, coalesced, seeded)
+	wantRowCount(t, d, "automation_runs", 1)
+	// A malformed event_json of another event run never breaks the lookup, and
+	// a non-event run's event_json is not consulted.
 	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, event_json, status)
-		VALUES (?, 'event', '{', 'failed')`, a); err != nil {
+		VALUES (?, 'event', '{', 'failed'), (?, 'manual', '{"cycles":["C"]}', 'failed')`, a, a); err != nil {
 		t.Fatal(err)
 	}
 	if _, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "C"}); coalesced {
@@ -146,16 +222,12 @@ func TestEnqueue_EventCycleCheckedBeforeQueuedCoalescing(t *testing.T) {
 	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "A"})
 	for _, cycle := range []string{"A", "B"} {
 		id, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: cycle})
-		if id != queued || !coalesced {
-			t.Errorf("cycle %s = (%d, %v); want (%d, true)", cycle, id, coalesced, queued)
-		}
+		wantCoalesced(t, "cycle "+cycle, id, coalesced, queued)
 	}
 	if r := mustGetAutomationRun(t, d, queued); r.EventCycle != "A" {
 		t.Errorf("event_cycle = %q; want A untouched", r.EventCycle)
 	}
-	if n := countAutomationTableRows(t, d, "automation_runs"); n != 1 {
-		t.Errorf("rows = %d; want 1", n)
-	}
+	wantRowCount(t, d, "automation_runs", 1)
 }
 
 func TestEnqueue_AdvancesScheduleAtomically(t *testing.T) {
@@ -171,11 +243,12 @@ func TestEnqueue_AdvancesScheduleAtomically(t *testing.T) {
 		t.Fatal("second schedule enqueue not coalesced")
 	}
 	got := mustGetAutomation(t, d, a)
-	if got.LastScheduledFor == nil || !got.LastScheduledFor.Equal(due2) || got.NextRunAt == nil || !got.NextRunAt.Equal(next) {
+	if !sameAutomationTime(got.LastScheduledFor, due2) || !sameAutomationTime(got.NextRunAt, next) {
 		t.Errorf("schedule = (%v, %v); want (%v, %v)", got.LastScheduledFor, got.NextRunAt, due2, next)
 	}
-	if _, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: 999, Trigger: TriggerSchedule,
-		AdvanceScheduleTo: &due2, Now: runTestNow}); err == nil {
+	_, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: 999, Trigger: TriggerSchedule,
+		AdvanceScheduleTo: &due2, Now: runTestNow})
+	if err == nil {
 		t.Error("enqueue for a missing automation succeeded")
 	}
 }
@@ -197,38 +270,47 @@ func TestAuto05_OneActiveRunPerAutomation(t *testing.T) {
 	if mustClaimAutomationRun(t, d, r2) {
 		t.Fatal("second claim won while the first waits")
 	}
-	if err := d.FinishAutomationRun(r1, RunFinish{Status: RunSucceeded, Now: runTestNow}, nil); err != nil {
-		t.Fatal(err)
-	}
+	mustFinishAutomationRun(t, d, r1, RunFinish{Status: RunSucceeded}, nil)
 	if !mustClaimAutomationRun(t, d, r2) {
 		t.Fatal("second claim lost after the first finished")
 	}
-	r := mustGetAutomationRun(t, d, r2)
-	if r.Status != RunRunning || r.RecipeHash != "hash" || r.RecipeSnapshot != "snapshot" ||
-		r.BudgetTokens != 50000 || r.BudgetMinutes != 5 || r.StartedAt == nil {
-		t.Errorf("claimed run = %+v", r)
+	r := wantAutomationRun(t, d, r2, RunRunning, "")
+	got := []any{r.RecipeHash, r.RecipeSnapshot, r.BudgetTokens, r.BudgetMinutes, r.StartedAt != nil}
+	if want := []any{"hash", "snapshot", 50000, 5, true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("claim snapshot = %v; want %v", got, want)
 	}
 	if mustClaimAutomationRun(t, d, r2) {
 		t.Error("a running run was claimed again")
 	}
-	if _, err := d.ClaimAutomationRun(999, "", "", 1, 1, runTestNow); !errors.Is(err, ErrAutomationRunNotFound) {
-		t.Errorf("claim of a missing run: %v; want ErrAutomationRunNotFound", err)
-	}
+	_, err := d.ClaimAutomationRun(999, "", "", 1, 1, runTestNow)
+	wantErrIs(t, "claim of a missing run", err, ErrAutomationRunNotFound)
 }
 
 func TestAuto05_ConcurrencyN(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunAutomation(t, d, "fan", 3)
-	var runs []int64
-	for _, tr := range []string{TriggerManual, TriggerButton, TriggerSchedule, TriggerCatchUp} {
+	for i, tr := range []string{TriggerManual, TriggerButton, TriggerSchedule, TriggerCatchUp} {
 		id, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: tr})
-		runs = append(runs, id)
-	}
-	for i, id := range runs {
 		if got, want := mustClaimAutomationRun(t, d, id), i < 3; got != want {
 			t.Errorf("claim %d = %v; want %v", i, got, want)
 		}
 	}
+}
+
+// openClaimRacers opens n extra connections to the file DB at path, one per
+// racer, so the claims race across connections as two processes would.
+func openClaimRacers(t *testing.T, path string, n int) []*DB {
+	t.Helper()
+	handles := make([]*DB, n)
+	for i := range handles {
+		h, err := OpenExistingRW(path, 10*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = h.Close() })
+		handles[i] = h
+	}
+	return handles
 }
 
 func TestAuto05_ConcurrentClaimsOneWinner(t *testing.T) {
@@ -241,21 +323,12 @@ func TestAuto05_ConcurrentClaimsOneWinner(t *testing.T) {
 	a := seedRunAutomation(t, d, "race", 4)
 	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
 
-	const racers = 8
-	handles := make([]*DB, racers)
-	for i := range handles {
-		h, err := OpenExistingRW(path, 10*time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = h.Close() })
-		handles[i] = h
-	}
+	handles := openClaimRacers(t, path, 8)
 	var (
 		wg    sync.WaitGroup
 		start = make(chan struct{})
-		wins  = make([]bool, racers)
-		errs  = make([]error, racers)
+		wins  = make([]bool, len(handles))
+		errs  = make([]error, len(handles))
 	)
 	for i := range handles {
 		wg.Add(1)
@@ -279,93 +352,108 @@ func TestAuto05_ConcurrentClaimsOneWinner(t *testing.T) {
 	if winners != 1 {
 		t.Errorf("winners = %d; want exactly 1", winners)
 	}
-	if r := mustGetAutomationRun(t, d, run); r.Status != RunRunning {
-		t.Errorf("status = %s; want running", r.Status)
-	}
+	wantAutomationRun(t, d, run, RunRunning, "")
 }
 
 func TestAuto04_FinishCommitOnlyOnSuccess(t *testing.T) {
 	d := openTestDB(t)
-	a := seedRunAutomation(t, d, "digest", 1)
+	a, prior := seedRunningAutomationRun(t, d)
 	// A prior succeeded run left state and one output.
-	prior, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
-	mustClaimAutomationRun(t, d, prior)
-	if err := d.FinishAutomationRun(prior, RunFinish{Status: RunSucceeded, Now: runTestNow},
-		&RunCommit{StateJSON: json.RawMessage(`{"seen":1}`), Outputs: []AutomationOutput{{Kind: "inbox", Title: "old", Body: "b"}}}); err != nil {
-		t.Fatal(err)
-	}
-	stateBefore, _ := d.GetAutomationState(a)
-	outputsBefore, _ := d.ListAutomationOutputs("", 0)
+	mustFinishAutomationRun(t, d, prior, RunFinish{Status: RunSucceeded},
+		&RunCommit{StateJSON: json.RawMessage(`{"seen":1}`), Outputs: []AutomationOutput{{Kind: "inbox", Title: "old", Body: "b"}}})
+	before := readAutomationData(t, d, a)
 
 	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
 	mustClaimAutomationRun(t, d, run)
 	commit := &RunCommit{StateJSON: json.RawMessage(`{"seen":2}`),
 		Outputs: []AutomationOutput{{Kind: "inbox", Title: "new", Body: "b", Priority: "high"}, {Kind: "report", Title: "r", Body: "x"}}}
-	err := d.FinishAutomationRun(run, RunFinish{Status: RunFailed, ErrorKind: ErrKindScript, Now: runTestNow}, commit)
-	if !errors.Is(err, ErrCommitOnFailure) {
-		t.Fatalf("failed+commit: %v; want ErrCommitOnFailure", err)
-	}
-	stateAfter, _ := d.GetAutomationState(a)
-	outputsAfter, _ := d.ListAutomationOutputs("", 0)
-	if string(stateAfter) != string(stateBefore) || len(outputsAfter) != len(outputsBefore) {
-		t.Errorf("failed commit changed state %s→%s or outputs %d→%d", stateBefore, stateAfter, len(outputsBefore), len(outputsAfter))
-	}
-	if r := mustGetAutomationRun(t, d, run); r.Status != RunRunning {
-		t.Errorf("status = %s; want still running", r.Status)
-	}
 
-	if err := d.FinishAutomationRun(run, RunFinish{Status: RunSucceeded, Summary: "done", Now: runTestNow}, commit); err != nil {
-		t.Fatal(err)
+	err := d.FinishAutomationRun(run, RunFinish{Status: RunFailed, ErrorKind: ErrKindScript, Now: runTestNow}, commit)
+	wantErrIs(t, "failed+commit", err, ErrCommitOnFailure)
+	wantAutomationDataUnchanged(t, d, a, before)
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	// One transaction: an output write that fails after the state write rolls
+	// the state, the earlier output and the run's own status back.
+	broken := &RunCommit{StateJSON: json.RawMessage(`{"seen":99}`),
+		Outputs: []AutomationOutput{{Kind: "inbox", Title: "first", Body: "b"}, {Kind: "bogus", Title: "t", Body: "b"}}}
+	if err := d.FinishAutomationRun(run, RunFinish{Status: RunSucceeded, Now: runTestNow}, broken); err == nil {
+		t.Fatal("finish with a CHECK-violating output kind succeeded")
 	}
-	if s, _ := d.GetAutomationState(a); string(s) != `{"seen":2}` {
-		t.Errorf("state = %s; want replaced", s)
+	wantAutomationDataUnchanged(t, d, a, before)
+	wantAutomationRun(t, d, run, RunRunning, "")
+
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunSucceeded, Summary: "done"}, commit)
+	wantCommittedRun(t, d, a, run)
+}
+
+// wantCommittedRun checks what TestAuto04_FinishCommitOnlyOnSuccess's
+// succeeded finish committed.
+func wantCommittedRun(t *testing.T, d *DB, a, run int64) {
+	t.Helper()
+	data := readAutomationData(t, d, a)
+	if data.state != `{"seen":2}` || len(data.outputs) != 3 {
+		t.Fatalf("after success: state %s, %d outputs; want {\"seen\":2} and 3", data.state, len(data.outputs))
 	}
-	outs, _ := d.ListAutomationOutputs("", 0)
-	if len(outs) != 3 {
-		t.Fatalf("outputs = %d; want 3", len(outs))
+	inbox, err := d.ListAutomationOutputs("inbox", 1)
+	if err != nil || len(inbox) != 1 {
+		t.Fatalf("inbox outputs = %d, %v; want 1", len(inbox), err)
 	}
-	inbox, _ := d.ListAutomationOutputs("inbox", 1)
-	if len(inbox) != 1 || inbox[0].Title != "new" || inbox[0].Priority != "high" || inbox[0].RunID != run || inbox[0].AutomationID != a {
-		t.Errorf("newest inbox = %+v", inbox)
+	got := []any{inbox[0].Title, inbox[0].Priority, inbox[0].RunID, inbox[0].AutomationID}
+	if want := []any{"new", "high", run, a}; !reflect.DeepEqual(got, want) {
+		t.Errorf("newest inbox = %v; want %v", got, want)
 	}
-	if reports, _ := d.ListAutomationOutputs("report", 0); len(reports) != 1 || reports[0].Priority != "medium" {
-		t.Errorf("reports = %+v; want one with priority medium", reports)
+	reports, err := d.ListAutomationOutputs("report", 0)
+	if err != nil || len(reports) != 1 || reports[0].Priority != "medium" {
+		t.Errorf("reports = %+v, %v; want one with priority medium", reports, err)
 	}
-	r := mustGetAutomationRun(t, d, run)
-	if r.Status != RunSucceeded || r.Summary != "done" || r.FinishedAt == nil {
+	r := wantAutomationRun(t, d, run, RunSucceeded, "")
+	if r.Summary != "done" || r.FinishedAt == nil {
 		t.Errorf("finished run = %+v", r)
 	}
 }
 
+func TestFinish_RefusesForeignOutput(t *testing.T) {
+	d := openTestDB(t)
+	a, run := seedRunningAutomationRun(t, d)
+	other := seedRunAutomation(t, d, "other", 1)
+	before := readAutomationData(t, d, a)
+	for name, o := range map[string]AutomationOutput{
+		"foreign automation": {AutomationID: other, Kind: "inbox", Title: "t", Body: "b"},
+		"foreign run":        {RunID: run + 100, Kind: "inbox", Title: "t", Body: "b"},
+	} {
+		c := &RunCommit{StateJSON: json.RawMessage(`{"x":1}`), Outputs: []AutomationOutput{{Kind: "report", Title: "ok", Body: "b"}, o}}
+		if err := d.FinishAutomationRun(run, RunFinish{Status: RunSucceeded, Now: runTestNow}, c); err == nil {
+			t.Errorf("%s: finish succeeded; want refused", name)
+		}
+		wantAutomationDataUnchanged(t, d, a, before)
+		wantAutomationRun(t, d, run, RunRunning, "")
+	}
+	ok := &RunCommit{Outputs: []AutomationOutput{{AutomationID: a, RunID: run, Kind: "inbox", Title: "own", Body: "b"}}}
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunSucceeded}, ok)
+	wantRowCount(t, d, "automation_outputs", 1)
+}
+
 func TestFinish_RefusesTerminalRun(t *testing.T) {
 	d := openTestDB(t)
-	a := seedRunAutomation(t, d, "digest", 1)
-	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
-	mustClaimAutomationRun(t, d, run)
+	a, run := seedRunningAutomationRun(t, d)
 	if ok, err := d.CancelAutomationRun(run, runTestNow); err != nil || !ok {
 		t.Fatalf("CancelAutomationRun = (%v, %v)", ok, err)
 	}
 	if ok, err := d.CancelAutomationRun(run, runTestNow); err != nil || ok {
 		t.Errorf("second cancel = (%v, %v); want (false, nil)", ok, err)
 	}
+	before := readAutomationData(t, d, a)
 	err := d.FinishAutomationRun(run, RunFinish{Status: RunSucceeded, Now: runTestNow},
 		&RunCommit{StateJSON: json.RawMessage(`{"x":1}`), Outputs: []AutomationOutput{{Kind: "inbox", Title: "t", Body: "b"}}})
-	if !errors.Is(err, ErrRunNotActive) {
-		t.Fatalf("finish after cancel: %v; want ErrRunNotActive", err)
+	wantErrIs(t, "finish after cancel", err, ErrRunNotActive)
+	wantAutomationDataUnchanged(t, d, a, before)
+	if before.state != `{}` {
+		t.Errorf("state = %s; want {}", before.state)
 	}
-	if s, _ := d.GetAutomationState(a); string(s) != `{}` {
-		t.Errorf("state = %s; want {}", s)
-	}
-	if n := countAutomationTableRows(t, d, "automation_outputs"); n != 0 {
-		t.Errorf("outputs = %d; want 0", n)
-	}
-	r := mustGetAutomationRun(t, d, run)
-	if r.Status != RunCancelled || r.ErrorKind != ErrKindCancelled {
-		t.Errorf("run = %s/%s; want cancelled/cancelled", r.Status, r.ErrorKind)
-	}
-	if err := d.FinishAutomationRun(999, RunFinish{Status: RunFailed, Now: runTestNow}, nil); !errors.Is(err, ErrAutomationRunNotFound) {
-		t.Errorf("finish of a missing run: %v; want ErrAutomationRunNotFound", err)
-	}
+	wantAutomationRun(t, d, run, RunCancelled, ErrKindCancelled)
+	err = d.FinishAutomationRun(999, RunFinish{Status: RunFailed, Now: runTestNow}, nil)
+	wantErrIs(t, "finish of a missing run", err, ErrAutomationRunNotFound)
 	if err := d.FinishAutomationRun(run, RunFinish{Status: RunRunning, Now: runTestNow}, nil); err == nil {
 		t.Error("finish with a non-terminal status accepted")
 	}
@@ -378,12 +466,8 @@ func TestCancelQueuedNotRunnable(t *testing.T) {
 	if err := d.CancelQueuedNotRunnable(run, runTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if r := mustGetAutomationRun(t, d, run); r.Status != RunCancelled || r.ErrorKind != ErrKindNotRunnable {
-		t.Errorf("run = %s/%s; want cancelled/not_runnable", r.Status, r.ErrorKind)
-	}
-	if err := d.CancelQueuedNotRunnable(run, runTestNow); !errors.Is(err, ErrRunNotQueued) {
-		t.Errorf("second cancel: %v; want ErrRunNotQueued", err)
-	}
+	wantAutomationRun(t, d, run, RunCancelled, ErrKindNotRunnable)
+	wantErrIs(t, "second cancel", d.CancelQueuedNotRunnable(run, runTestNow), ErrRunNotQueued)
 }
 
 func TestAuto08_RestartMarksInterrupted(t *testing.T) {
@@ -397,45 +481,169 @@ func TestAuto08_RestartMarksInterrupted(t *testing.T) {
 	if err := d.SetAutomationRunWaiting(waiting, WaitAsk); err != nil {
 		t.Fatal(err)
 	}
-	active, err := d.ListActiveAutomationRuns()
-	if err != nil || len(active) != 2 {
+	if active, err := d.ListActiveAutomationRuns(); err != nil || len(active) != 2 {
 		t.Fatalf("active = %d, %v; want 2", len(active), err)
 	}
-	n, err := d.MarkInterruptedAutomationRuns(runTestNow)
-	if err != nil || n != 2 {
+	if n, err := d.MarkInterruptedAutomationRuns(runTestNow); err != nil || n != 2 {
 		t.Fatalf("MarkInterruptedAutomationRuns = (%d, %v); want 2", n, err)
 	}
 	for _, id := range []int64{running, waiting} {
-		r := mustGetAutomationRun(t, d, id)
-		if r.Status != RunFailed || r.ErrorKind != ErrKindInterrupted || r.WaitingReason != "" || r.FinishedAt == nil {
-			t.Errorf("run %d = %s/%s/%q", id, r.Status, r.ErrorKind, r.WaitingReason)
+		r := wantAutomationRun(t, d, id, RunFailed, ErrKindInterrupted)
+		if r.WaitingReason != "" || r.FinishedAt == nil {
+			t.Errorf("run %d reason %q finished_at %v", id, r.WaitingReason, r.FinishedAt)
 		}
 	}
-	if r := mustGetAutomationRun(t, d, queued); r.Status != RunQueued {
-		t.Errorf("queued run = %s; want queued", r.Status)
+	wantAutomationRun(t, d, queued, RunQueued, "")
+	if next, err := d.NextQueuedAutomationRuns(10); err != nil || len(next) != 1 || next[0].ID != queued {
+		t.Errorf("next queued = %+v, %v", next, err)
 	}
-	if next, _ := d.NextQueuedAutomationRuns(10); len(next) != 1 || next[0].ID != queued {
-		t.Errorf("next queued = %+v", next)
+}
+
+// claimDryRunAt queues and claims a dry run of automation a started at started
+// with a budget of budgetMinutes snapshotted on the run.
+func claimDryRunAt(t *testing.T, d *DB, a int64, started time.Time, budgetMinutes int) int64 {
+	t.Helper()
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerDryRun})
+	if ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, budgetMinutes, started); err != nil || !ok {
+		t.Fatalf("claim dry run = (%v, %v)", ok, err)
+	}
+	return run
+}
+
+func TestAuto08_RestartSparesLiveDryRun(t *testing.T) {
+	d := openTestDB(t)
+	// budget 5 minutes + 1 minute grace = a 6-minute deadline.
+	live := claimDryRunAt(t, d, seedRunAutomation(t, d, "live", 1), runTestNow.Add(-2*time.Minute), 5)
+	stale := claimDryRunAt(t, d, seedRunAutomation(t, d, "stale", 1), runTestNow.Add(-7*time.Minute), 5)
+	// budget_minutes 0 on the run falls back to the automation's 5.
+	fallback := claimDryRunAt(t, d, seedRunAutomation(t, d, "fallback", 1), runTestNow.Add(-7*time.Minute), 0)
+	if n, err := d.MarkInterruptedAutomationRuns(runTestNow); err != nil || n != 2 {
+		t.Fatalf("MarkInterruptedAutomationRuns = (%d, %v); want 2", n, err)
+	}
+	wantAutomationRun(t, d, live, RunRunning, "")
+	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, fallback, RunFailed, ErrKindInterrupted)
+}
+
+func TestNextQueued_SkipsDryRun(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 1)
+	dry, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerDryRun})
+	manual, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	next, err := d.NextQueuedAutomationRuns(0)
+	if err != nil || len(next) != 1 || next[0].ID != manual {
+		t.Errorf("next queued = %+v, %v; want only the manual run %d", next, err, manual)
+	}
+	if !mustClaimAutomationRun(t, d, dry) {
+		t.Error("the CLI could not claim its dry run by id")
+	}
+}
+
+// TestRunEnd_ClosesOpenSteps: every way a run ends closes its open steps in
+// the same transaction.
+func TestRunEnd_ClosesOpenSteps(t *testing.T) {
+	for name, end := range map[string]func(d *DB, run int64) error{
+		"cancel": func(d *DB, run int64) error { _, err := d.CancelAutomationRun(run, runTestNow); return err },
+		"expire": func(d *DB, run int64) error {
+			return d.FinishAutomationRun(run, RunFinish{Status: RunExpired, ErrorKind: ErrKindExpired, Now: runTestNow}, nil)
+		},
+		"interrupt": func(d *DB, _ int64) error { _, err := d.MarkInterruptedAutomationRuns(runTestNow); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := openTestDB(t)
+			_, run := seedRunningAutomationRun(t, d)
+			done := mustAppendAutomationRunStep(t, d, run, "llm", "ok")
+			if err := d.FinishAutomationRunStep(done, StepFinish{Status: "ok", Now: runTestNow}); err != nil {
+				t.Fatal(err)
+			}
+			mustAppendAutomationRunStep(t, d, run, "tool", "proposed")
+			if err := end(d, run); err != nil {
+				t.Fatal(err)
+			}
+			wantStepsClosed(t, d, run, []string{"ok", "error"})
+		})
+	}
+}
+
+func wantStepsClosed(t *testing.T, d *DB, run int64, statuses []string) {
+	t.Helper()
+	steps, err := d.ListAutomationRunSteps(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range steps {
+		got = append(got, s.Status)
+		if s.FinishedAt == nil {
+			t.Errorf("step %d still open", s.Seq)
+		}
+	}
+	if !reflect.DeepEqual(got, statuses) {
+		t.Errorf("step statuses = %v; want %v", got, statuses)
+	}
+}
+
+// TestRunWriters_RefuseZeroTime: every writer that stamps a time refuses a
+// zero one before writing.
+func TestRunWriters_RefuseZeroTime(t *testing.T) {
+	d := openTestDB(t)
+	a, run := seedRunningAutomationRun(t, d)
+	step := mustAppendAutomationRunStep(t, d, run, "llm", "ok")
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerButton})
+	var zero time.Time
+	for name, write := range map[string]func() error{
+		"enqueue": func() error {
+			_, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule})
+			return err
+		},
+		"claim":         func() error { _, err := d.ClaimAutomationRun(queued, "h", "s", 1, 1, zero); return err },
+		"cancel queued": func() error { return d.CancelQueuedNotRunnable(queued, zero) },
+		"cancel":        func() error { _, err := d.CancelAutomationRun(run, zero); return err },
+		"finish":        func() error { return d.FinishAutomationRun(run, RunFinish{Status: RunFailed}, nil) },
+		"interrupt":     func() error { _, err := d.MarkInterruptedAutomationRuns(zero); return err },
+		"append step": func() error {
+			_, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: "llm", Status: "ok"})
+			return err
+		},
+		"finish step": func() error { return d.FinishAutomationRunStep(step, StepFinish{Status: "ok"}) },
+	} {
+		if err := write(); err == nil {
+			t.Errorf("%s with a zero time accepted", name)
+		}
+	}
+	wantAutomationRun(t, d, run, RunRunning, "")
+	wantAutomationRun(t, d, queued, RunQueued, "")
+	wantRowCount(t, d, "automation_run_steps", 1)
+	wantStepsOpen(t, d, run)
+}
+
+func wantStepsOpen(t *testing.T, d *DB, run int64) {
+	t.Helper()
+	steps, err := d.ListAutomationRunSteps(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range steps {
+		if s.FinishedAt != nil {
+			t.Errorf("step %d finished; want open", s.Seq)
+		}
 	}
 }
 
 func TestRunWaiting_ReasonChangeWhileWaiting(t *testing.T) {
 	d := openTestDB(t)
-	a := seedRunAutomation(t, d, "digest", 1)
-	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
-	mustClaimAutomationRun(t, d, run)
+	_, run := seedRunningAutomationRun(t, d)
 	if err := d.AddAutomationRunUsage(run, RunUsage{ActiveMS: 1500}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetAutomationRunWaiting(run, WaitApp); err != nil {
-		t.Fatal(err)
+	for _, reason := range []string{WaitApp, WaitSession} {
+		if err := d.SetAutomationRunWaiting(run, reason); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := d.SetAutomationRunWaiting(run, WaitSession); err != nil {
-		t.Fatal(err)
-	}
-	r := mustGetAutomationRun(t, d, run)
-	if r.Status != RunWaiting || r.WaitingReason != WaitSession || r.ActiveMS != 1500 {
-		t.Errorf("run = %s/%q/%d; want waiting/session/1500", r.Status, r.WaitingReason, r.ActiveMS)
+	r := wantAutomationRun(t, d, run, RunWaiting, "")
+	if r.WaitingReason != WaitSession || r.ActiveMS != 1500 {
+		t.Errorf("run reason %q active %d; want session/1500", r.WaitingReason, r.ActiveMS)
 	}
 	if err := d.SetAutomationRunWaiting(run, WaitNone); err == nil {
 		t.Error("empty waiting reason accepted")
@@ -443,74 +651,51 @@ func TestRunWaiting_ReasonChangeWhileWaiting(t *testing.T) {
 	if err := d.ResumeAutomationRun(run); err != nil {
 		t.Fatal(err)
 	}
-	if r := mustGetAutomationRun(t, d, run); r.Status != RunRunning || r.WaitingReason != "" {
-		t.Errorf("resumed = %s/%q", r.Status, r.WaitingReason)
+	if r := wantAutomationRun(t, d, run, RunRunning, ""); r.WaitingReason != "" {
+		t.Errorf("resumed reason = %q", r.WaitingReason)
 	}
-	if err := d.ResumeAutomationRun(run); !errors.Is(err, ErrRunNotActive) {
-		t.Errorf("resume of a running run: %v; want ErrRunNotActive", err)
-	}
-	if err := d.FinishAutomationRun(run, RunFinish{Status: RunSucceeded, Now: runTestNow}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.SetAutomationRunWaiting(run, WaitSession); !errors.Is(err, ErrRunNotActive) {
-		t.Errorf("waiting on a succeeded run: %v; want ErrRunNotActive", err)
-	}
-	if err := d.SetAutomationRunWaiting(999, WaitAsk); !errors.Is(err, ErrAutomationRunNotFound) {
-		t.Errorf("waiting on a missing run: %v; want ErrAutomationRunNotFound", err)
-	}
-}
-
-func seedRunningAutomationRun(t *testing.T, d *DB) int64 {
-	t.Helper()
-	a := seedRunAutomation(t, d, "digest", 1)
-	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
-	mustClaimAutomationRun(t, d, run)
-	return run
+	wantErrIs(t, "resume of a running run", d.ResumeAutomationRun(run), ErrRunNotActive)
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunSucceeded}, nil)
+	wantErrIs(t, "waiting on a succeeded run", d.SetAutomationRunWaiting(run, WaitSession), ErrRunNotActive)
+	wantErrIs(t, "waiting on a missing run", d.SetAutomationRunWaiting(999, WaitAsk), ErrAutomationRunNotFound)
 }
 
 func TestSteps_MarkIsNonFinal(t *testing.T) {
 	d := openTestDB(t)
-	run := seedRunningAutomationRun(t, d)
-	id, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: "tool", Name: "create_jira_issue",
-		Status: "proposed", StartedAt: runTestNow})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, run := seedRunningAutomationRun(t, d)
+	id := mustAppendAutomationRunStep(t, d, run, "tool", "proposed")
 	if err := d.MarkAutomationRunStep(id, "waiting", StepFinish{ActionID: 7}); err != nil {
 		t.Fatal(err)
 	}
-	steps, _ := d.ListAutomationRunSteps(run)
-	if s := steps[0]; s.Status != "waiting" || s.ActionID != 7 || s.FinishedAt != nil || s.AskID != 0 {
-		t.Errorf("marked step = %+v", s)
-	}
+	wantStep(t, d, run, []any{"waiting", int64(7), int64(0), false, ""})
 	if err := d.FinishAutomationRunStep(id, StepFinish{Status: "applied", ResultSummary: "ok", Now: runTestNow}); err != nil {
 		t.Fatal(err)
 	}
-	steps, _ = d.ListAutomationRunSteps(run)
-	if s := steps[0]; s.Status != "applied" || s.ActionID != 7 || s.FinishedAt == nil || s.ResultSummary != "ok" {
-		t.Errorf("finished step = %+v; action_id kept, finished_at set", s)
+	wantStep(t, d, run, []any{"applied", int64(7), int64(0), true, "ok"})
+	wantErrIs(t, "mark after finish", d.MarkAutomationRunStep(id, "waiting", StepFinish{}), ErrStepFinished)
+	wantErrIs(t, "second finish", d.FinishAutomationRunStep(id, StepFinish{Status: "ok", Now: runTestNow}), ErrStepFinished)
+	wantErrIs(t, "mark of a missing step", d.MarkAutomationRunStep(999, "waiting", StepFinish{}), ErrAutomationRunStepNotFound)
+}
+
+// wantStep checks the run's only step as [status, action_id, ask_id, finished, result_summary].
+func wantStep(t *testing.T, d *DB, run int64, want []any) {
+	t.Helper()
+	steps, err := d.ListAutomationRunSteps(run)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %d, %v; want 1", len(steps), err)
 	}
-	if err := d.MarkAutomationRunStep(id, "waiting", StepFinish{}); !errors.Is(err, ErrStepFinished) {
-		t.Errorf("mark after finish: %v; want ErrStepFinished", err)
-	}
-	if err := d.FinishAutomationRunStep(id, StepFinish{Status: "ok", Now: runTestNow}); !errors.Is(err, ErrStepFinished) {
-		t.Errorf("second finish: %v; want ErrStepFinished", err)
-	}
-	if err := d.MarkAutomationRunStep(999, "waiting", StepFinish{}); !errors.Is(err, ErrAutomationRunStepNotFound) {
-		t.Errorf("mark of a missing step: %v; want ErrAutomationRunStepNotFound", err)
+	s := steps[0]
+	if got := []any{s.Status, s.ActionID, s.AskID, s.FinishedAt != nil, s.ResultSummary}; !reflect.DeepEqual(got, want) {
+		t.Errorf("step = %v; want %v", got, want)
 	}
 }
 
 func TestSteps_SeqIsDenseAndOrdered(t *testing.T) {
 	d := openTestDB(t)
-	run := seedRunningAutomationRun(t, d)
+	_, run := seedRunningAutomationRun(t, d)
 	var ids []int64
 	for _, kind := range []string{"llm", "tool", "log"} {
-		id, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: kind, Status: "ok", StartedAt: runTestNow})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, id)
+		ids = append(ids, mustAppendAutomationRunStep(t, d, run, kind, "ok"))
 	}
 	cost := 0.02
 	if err := d.FinishAutomationRunStep(ids[0], StepFinish{Status: "ok", InputTokens: 120, OutputTokens: 30,
@@ -521,20 +706,21 @@ func TestSteps_SeqIsDenseAndOrdered(t *testing.T) {
 	if err != nil || len(steps) != 3 {
 		t.Fatalf("steps = %d, %v", len(steps), err)
 	}
-	for i, s := range steps {
-		if s.Seq != i+1 || s.ID != ids[i] {
-			t.Errorf("step %d seq = %d id = %d; want %d/%d", i, s.Seq, s.ID, i+1, ids[i])
-		}
+	var gotSeq []int
+	var gotIDs []int64
+	for _, s := range steps {
+		gotSeq, gotIDs = append(gotSeq, s.Seq), append(gotIDs, s.ID)
 	}
-	if s := steps[0]; s.InputTokens != 120 || s.OutputTokens != 30 || !s.TokensEstimated || s.DurationMS != 900 ||
-		s.ReportedCostUSD == nil || *s.ReportedCostUSD != cost {
-		t.Errorf("finished llm step = %+v", s)
+	if !reflect.DeepEqual(gotSeq, []int{1, 2, 3}) || !reflect.DeepEqual(gotIDs, ids) {
+		t.Errorf("seq = %v ids = %v; want [1 2 3] %v", gotSeq, gotIDs, ids)
+	}
+	s := steps[0]
+	got := []any{s.InputTokens, s.OutputTokens, s.TokensEstimated, s.DurationMS, s.ReportedCostUSD != nil && *s.ReportedCostUSD == cost}
+	if want := []any{int64(120), int64(30), true, int64(900), true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("finished llm step = %v; want %v", got, want)
 	}
 	if empty, err := d.ListAutomationRunSteps(999); err != nil || empty == nil || len(empty) != 0 {
 		t.Errorf("steps of a missing run = %v, %v; want empty non-nil", empty, err)
-	}
-	if _, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: "llm", Status: "ok"}); err == nil {
-		t.Error("step with zero StartedAt accepted")
 	}
 }
 
@@ -547,10 +733,13 @@ func TestEventPayload_MarshalsEmptyArrays(t *testing.T) {
 		t.Errorf("payload = %s; want %s", got, want)
 	}
 	full := AutomationEventPayload{Cycles: []string{"c1"}, Events: []json.RawMessage{json.RawMessage(`{"channel":"releases"}`)}, Count: 3, Truncated: true}
-	b, _ = json.Marshal(full)
+	b, err = json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var back AutomationEventPayload
-	if err := json.Unmarshal(b, &back); err != nil || back.Count != 3 || !back.Truncated || len(back.Events) != 1 || back.Cycles[0] != "c1" {
-		t.Errorf("round trip = %+v, %v", back, err)
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, full) {
+		t.Errorf("round trip = %+v, %v; want %+v", back, err, full)
 	}
 }
 
@@ -570,20 +759,24 @@ func TestAutomationTokensBetween_LocalDayWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n, err := d.AutomationTokensBetween(day1, day2); err != nil || n != 110 {
-		t.Errorf("day 1 = %d, %v; want 110 (the 23:59 run)", n, err)
-	}
-	if n, err := d.AutomationTokensBetween(day2, day3); err != nil || n != 210 {
-		t.Errorf("day 2 = %d, %v; want 210 (the 00:01 run)", n, err)
-	}
-	if n, err := d.AutomationTokensBetween(day3, day3.AddDate(0, 0, 1)); err != nil || n != 0 {
-		t.Errorf("empty day = %d, %v; want 0", n, err)
+	for _, c := range []struct {
+		name     string
+		from, to time.Time
+		want     int64
+	}{
+		{"day 1 (the 23:59 run)", day1, day2, 110},
+		{"day 2 (the 00:01 run)", day2, day3, 210},
+		{"empty day", day3, day3.AddDate(0, 0, 1), 0},
+	} {
+		if n, err := d.AutomationTokensBetween(c.from, c.to); err != nil || n != c.want {
+			t.Errorf("%s = %d, %v; want %d", c.name, n, err, c.want)
+		}
 	}
 }
 
 func TestAddAutomationRunUsage_Accumulates(t *testing.T) {
 	d := openTestDB(t)
-	run := seedRunningAutomationRun(t, d)
+	_, run := seedRunningAutomationRun(t, d)
 	cost := 0.5
 	for _, u := range []RunUsage{
 		{InputTokens: 10, OutputTokens: 5},
@@ -595,20 +788,24 @@ func TestAddAutomationRunUsage_Accumulates(t *testing.T) {
 		}
 	}
 	r := mustGetAutomationRun(t, d, run)
-	if r.InputTokens != 12 || r.OutputTokens != 6 || !r.TokensEstimated || r.ActiveMS != 40 ||
-		r.ReportedCostUSD == nil || *r.ReportedCostUSD != 1.0 {
-		t.Errorf("usage = %+v", r)
+	got := []any{r.InputTokens, r.OutputTokens, r.TokensEstimated, r.ActiveMS, r.ReportedCostUSD != nil && *r.ReportedCostUSD == 1.0}
+	if want := []any{int64(12), int64(6), true, int64(40), true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("usage = %v; want %v", got, want)
 	}
-	if err := d.AddAutomationRunUsage(999, RunUsage{}); !errors.Is(err, ErrAutomationRunNotFound) {
-		t.Errorf("usage on a missing run: %v; want ErrAutomationRunNotFound", err)
+	wantErrIs(t, "usage on a missing run", d.AddAutomationRunUsage(999, RunUsage{}), ErrAutomationRunNotFound)
+}
+
+func TestListAutomationRuns_NewestFirstNeverNil(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 1)
+	first, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	second, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerButton})
+	runs, err := d.ListAutomationRuns(a, 0)
+	if err != nil || len(runs) != 2 || runs[0].ID != second || runs[1].ID != first {
+		t.Errorf("ListAutomationRuns = %+v, %v; want [%d %d]", runs, err, second, first)
 	}
-	other := seedRunAutomation(t, d, "other", 1)
-	fresh, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: other, Trigger: TriggerManual})
-	if r := mustGetAutomationRun(t, d, fresh); r.ReportedCostUSD != nil {
-		t.Errorf("unreported cost = %v; want nil", *r.ReportedCostUSD)
-	}
-	if runs, err := d.ListAutomationRuns(other, 0); err != nil || len(runs) != 1 {
-		t.Errorf("ListAutomationRuns = %d, %v", len(runs), err)
+	if runs[0].ReportedCostUSD != nil {
+		t.Errorf("unreported cost = %v; want nil", *runs[0].ReportedCostUSD)
 	}
 	if runs, err := d.ListAutomationRuns(12345, 5); err != nil || runs == nil || len(runs) != 0 {
 		t.Errorf("runs of a missing automation = %v, %v; want empty non-nil", runs, err)

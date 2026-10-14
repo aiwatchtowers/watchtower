@@ -28,6 +28,9 @@ WHERE status = 'queued'
 index	idx_automation_runs_rerun_of
 CREATE INDEX idx_automation_runs_rerun_of ON automation_runs(rerun_of)
 
+index	idx_automation_runs_started_at
+CREATE INDEX idx_automation_runs_started_at ON automation_runs(started_at)
+
 index	idx_automation_runs_status_queued
 CREATE INDEX idx_automation_runs_status_queued ON automation_runs(status, queued_at)
 

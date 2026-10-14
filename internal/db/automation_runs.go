@@ -167,6 +167,29 @@ func scanAutomationRun(row interface{ Scan(...any) error }) (*AutomationRun, err
 	return &r, nil
 }
 
+// requireRunTime refuses a zero timestamp before a writer stamps it.
+func requireRunTime(t time.Time, what string) error {
+	if t.IsZero() {
+		return fmt.Errorf("%s: time is zero", what)
+	}
+	return nil
+}
+
+// closeOpenStepsSQL ends every still-open step of the runs a run-ending
+// update is about to end, in the same transaction: status 'error' (the step
+// never completed) and an error naming why. The placeholder ?-list is: error
+// text, finished_at, then the run predicate's own arguments.
+const closeOpenStepsSQL = `UPDATE automation_run_steps SET status = 'error', error = ?, finished_at = ?
+	WHERE finished_at IS NULL AND run_id IN (SELECT id FROM automation_runs WHERE `
+
+func closeOpenStepsTx(tx *sql.Tx, runStatus, stamp, runPredicate string, args ...any) error {
+	all := append([]any{"the run ended " + runStatus + " before the step finished", stamp}, args...)
+	if _, err := tx.Exec(closeOpenStepsSQL+runPredicate+`)`, all...); err != nil {
+		return fmt.Errorf("closing open steps of ended automation runs: %w", err)
+	}
+	return nil
+}
+
 func nullRunText(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
 
 func nullRunInt(n int64) sql.NullInt64 { return sql.NullInt64{Int64: n, Valid: n != 0} }
@@ -200,8 +223,8 @@ type EnqueueRequest struct {
 // last_scheduled_for/next_run_at advance in the same tx whether or not a row
 // was inserted.
 func (db *DB) EnqueueAutomationRun(r EnqueueRequest) (runID int64, coalesced bool, err error) {
-	if r.Now.IsZero() {
-		return 0, false, fmt.Errorf("enqueueing a run of automation %d: Now is zero", r.AutomationID)
+	if err := requireRunTime(r.Now, fmt.Sprintf("enqueueing a run of automation %d", r.AutomationID)); err != nil {
+		return 0, false, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -230,18 +253,13 @@ func (db *DB) EnqueueAutomationRun(r EnqueueRequest) (runID int64, coalesced boo
 }
 
 func enqueueRunTx(tx *sql.Tx, r EnqueueRequest) (int64, bool, error) {
-	var id int64
 	if r.EventCycle != "" {
-		err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND (event_cycle = ? OR EXISTS (
-			SELECT 1 FROM json_each(CASE WHEN json_valid(event_json) THEN event_json ELSE '{}' END, '$.cycles')
-			WHERE value = ?)) ORDER BY id LIMIT 1`, r.AutomationID, r.EventCycle, r.EventCycle).Scan(&id)
-		if err == nil {
-			return id, true, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return 0, false, fmt.Errorf("looking up event cycle %q of automation %d: %w", r.EventCycle, r.AutomationID, err)
+		id, found, err := runOfEventCycleTx(tx, r.AutomationID, r.EventCycle)
+		if err != nil || found {
+			return id, found, err
 		}
 	}
+	var id int64
 	err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = ? AND status = 'queued'`,
 		r.AutomationID, r.Trigger).Scan(&id)
 	if err == nil {
@@ -261,10 +279,37 @@ func enqueueRunTx(tx *sql.Tx, r EnqueueRequest) (int64, bool, error) {
 	return id, false, nil
 }
 
+// runOfEventCycleTx finds the run of an automation that already carries cycle:
+// first by the indexed event_cycle column, then inside the cycles array of an
+// event run's event_json (a cycle P4 merged into an earlier queued run). A
+// malformed event_json never fails the lookup.
+func runOfEventCycleTx(tx *sql.Tx, automationID int64, cycle string) (int64, bool, error) {
+	queries := []string{
+		`SELECT id FROM automation_runs WHERE automation_id = ? AND event_cycle = ?`,
+		`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = 'event' AND event_json != ''
+		   AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(event_json) THEN event_json ELSE '{}' END,
+		       '$.cycles') WHERE value = ?)
+		 ORDER BY id LIMIT 1`,
+	}
+	for _, q := range queries {
+		var id int64
+		err := tx.QueryRow(q, automationID, cycle).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, fmt.Errorf("looking up event cycle %q of automation %d: %w", cycle, automationID, err)
+		}
+	}
+	return 0, false, nil
+}
+
 // NextQueuedAutomationRuns returns up to limit queued runs, oldest queued_at
-// first; limit ≤ 0 returns all of them.
+// first; limit ≤ 0 returns all of them. Dry-run rows are left out: the CLI
+// claims and executes its own dry_run row by id (ExecuteInline), so the
+// daemon's executor never picks one up.
 func (db *DB) NextQueuedAutomationRuns(limit int) ([]AutomationRun, error) {
-	return db.listAutomationRuns(`WHERE status = 'queued' ORDER BY queued_at, id`, limit)
+	return db.listAutomationRuns(`WHERE status = 'queued' AND trigger != 'dry_run' ORDER BY queued_at, id`, limit)
 }
 
 // ListAutomationRuns returns up to limit runs of an automation, newest first;
@@ -338,7 +383,15 @@ func runExistsTx(q interface {
 // It returns false (no error) when the condition did not hold — another
 // executor won, or the automation is at its concurrency — and
 // ErrAutomationRunNotFound when the run does not exist.
+//
+// The claim deliberately does not check that the automation is runnable: the
+// executor (Task 10) cancels a queued row of a non-runnable automation with
+// CancelQueuedNotRunnable before claiming, and a dry run of an unconfirmed but
+// parsable recipe must still be claimable (AUTO-06's dry-run exemption).
 func (db *DB) ClaimAutomationRun(runID int64, recipeHash, recipeSnapshot string, budgetTokens, budgetMinutes int, now time.Time) (bool, error) {
+	if err := requireRunTime(now, fmt.Sprintf("claiming automation run %d", runID)); err != nil {
+		return false, err
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("claiming automation run %d: %w", runID, err)
@@ -369,12 +422,14 @@ func (db *DB) ClaimAutomationRun(runID int64, recipeHash, recipeSnapshot string,
 
 // CancelQueuedNotRunnable ends a queued run of a non-runnable automation:
 // cancelled with error_kind='not_runnable'. ErrRunNotQueued when the run was
-// claimed or ended meanwhile.
+// claimed or ended meanwhile. A queued run has no steps to close.
 func (db *DB) CancelQueuedNotRunnable(runID int64, now time.Time) error {
-	stamp := formatAutomationTime(now)
+	if err := requireRunTime(now, fmt.Sprintf("cancelling not-runnable automation run %d", runID)); err != nil {
+		return err
+	}
 	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'not_runnable',
 		error = 'the automation is not runnable', finished_at = ?
-		WHERE id = ? AND status = 'queued'`, stamp, runID)
+		WHERE id = ? AND status = 'queued'`, formatAutomationTime(now), runID)
 	if err != nil {
 		return fmt.Errorf("cancelling not-runnable automation run %d: %w", runID, err)
 	}
@@ -400,20 +455,37 @@ func requireRunTransition(q interface {
 }
 
 // CancelAutomationRun ends a queued, running or waiting run as cancelled with
-// error_kind='cancelled'. It returns false when the run is already terminal.
+// error_kind='cancelled' and closes its open steps in the same transaction.
+// It returns false when the run is already terminal.
 func (db *DB) CancelAutomationRun(runID int64, now time.Time) (bool, error) {
-	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled',
-		waiting_reason = '', finished_at = ?
-		WHERE id = ? AND status IN ('queued','running','waiting')`, formatAutomationTime(now), runID)
-	if err != nil {
-		return false, fmt.Errorf("cancelling automation run %d: %w", runID, err)
+	what := fmt.Sprintf("cancelling automation run %d", runID)
+	if err := requireRunTime(now, what); err != nil {
+		return false, err
 	}
-	err = requireRunTransition(db, res, runID, ErrRunNotActive)
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stamp := formatAutomationTime(now)
+	const active = `id = ? AND status IN ('queued','running','waiting')`
+	if err := closeOpenStepsTx(tx, RunCancelled, stamp, active, runID); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled',
+		waiting_reason = '', finished_at = ? WHERE `+active, stamp, runID)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	err = requireRunTransition(tx, res, runID, ErrRunNotActive)
 	if errors.Is(err, ErrRunNotActive) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
 	}
 	return true, nil
 }
@@ -492,19 +564,14 @@ type RunCommit struct {
 }
 
 // FinishAutomationRun ends a running or waiting run with f (else
-// ErrRunNotActive) and, in the same transaction, commits c. A non-nil c is
-// accepted only with Status == RunSucceeded (else ErrCommitOnFailure, nothing
-// written). Outputs take the run's automation and run ids; a non-zero id that
-// differs is refused.
+// ErrRunNotActive) and, in the same transaction, closes its open steps and
+// commits c. A non-nil c is accepted only with Status == RunSucceeded (else
+// ErrCommitOnFailure, nothing written). Outputs take the run's automation and
+// run ids; a non-zero id that differs is refused, and any failed write rolls
+// the whole finish back (the run stays active, state and outputs unchanged).
 func (db *DB) FinishAutomationRun(runID int64, f RunFinish, c *RunCommit) error {
-	if !terminalRunStatuses[f.Status] {
-		return fmt.Errorf("finishing automation run %d: %q is not a terminal status", runID, f.Status)
-	}
-	if c != nil && f.Status != RunSucceeded {
-		return fmt.Errorf("finishing automation run %d as %s: %w", runID, f.Status, ErrCommitOnFailure)
-	}
-	if c != nil && c.StateJSON != nil && !json.Valid(c.StateJSON) {
-		return fmt.Errorf("finishing automation run %d: state is not valid JSON", runID)
+	if err := validateRunFinish(runID, f, c); err != nil {
+		return err
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -512,10 +579,13 @@ func (db *DB) FinishAutomationRun(runID int64, f RunFinish, c *RunCommit) error 
 	}
 	defer func() { _ = tx.Rollback() }()
 	stamp := formatAutomationTime(f.Now)
+	const active = `id = ? AND status IN ('running','waiting')`
+	if err := closeOpenStepsTx(tx, f.Status, stamp, active, runID); err != nil {
+		return err
+	}
 	var automationID int64
 	err = tx.QueryRow(`UPDATE automation_runs SET status = ?, error_kind = ?, error = ?, summary = ?,
-		waiting_reason = '', finished_at = ?
-		WHERE id = ? AND status IN ('running','waiting') RETURNING automation_id`,
+		waiting_reason = '', finished_at = ? WHERE `+active+` RETURNING automation_id`,
 		f.Status, f.ErrorKind, f.Error, f.Summary, stamp, runID).Scan(&automationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := runExistsTx(tx, runID); err != nil {
@@ -533,6 +603,26 @@ func (db *DB) FinishAutomationRun(runID int64, f RunFinish, c *RunCommit) error 
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("finishing automation run %d: %w", runID, err)
+	}
+	return nil
+}
+
+// validateRunFinish refuses a finish before anything is written.
+func validateRunFinish(runID int64, f RunFinish, c *RunCommit) error {
+	if err := requireRunTime(f.Now, fmt.Sprintf("finishing automation run %d", runID)); err != nil {
+		return err
+	}
+	if !terminalRunStatuses[f.Status] {
+		return fmt.Errorf("finishing automation run %d: %q is not a terminal status", runID, f.Status)
+	}
+	if c == nil {
+		return nil
+	}
+	if f.Status != RunSucceeded {
+		return fmt.Errorf("finishing automation run %d as %s: %w", runID, f.Status, ErrCommitOnFailure)
+	}
+	if c.StateJSON != nil && !json.Valid(c.StateJSON) {
+		return fmt.Errorf("finishing automation run %d: state is not valid JSON", runID)
 	}
 	return nil
 }
@@ -563,18 +653,46 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 	return nil
 }
 
+// interruptedRunSQL selects the runs a daemon start ends as interrupted:
+// every running/waiting run except a dry run still inside its deadline —
+// started_at + budget minutes (the run's snapshot, else the automation's) +
+// a 1-minute grace. That dry run belongs to a live CLI process
+// (ExecuteInline), not to the previous daemon. The one argument is now.
+const interruptedRunSQL = `status IN ('running','waiting') AND NOT (trigger = 'dry_run'
+	AND started_at IS NOT NULL
+	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
+		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
+	    > julianday(?))`
+
 // MarkInterruptedAutomationRuns ends every running/waiting run as failed with
-// error_kind='interrupted' (a daemon restart; goja state is not resumable)
-// and returns how many it ended. Queued runs are untouched.
+// error_kind='interrupted' (a daemon restart; goja state is not resumable),
+// closes their open steps in the same transaction, and returns how many runs
+// it ended. Queued runs are untouched, and so is a dry run still within its
+// deadline (see interruptedRunSQL).
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	res, err := db.Exec(`UPDATE automation_runs SET status = 'failed', error_kind = 'interrupted',
+	if err := requireRunTime(now, "marking interrupted automation runs"); err != nil {
+		return 0, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stamp := formatAutomationTime(now)
+	if err := closeOpenStepsTx(tx, RunFailed, stamp, interruptedRunSQL, stamp); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`UPDATE automation_runs SET status = 'failed', error_kind = 'interrupted',
 		error = 'interrupted by a daemon restart', waiting_reason = '', finished_at = ?
-		WHERE status IN ('running','waiting')`, formatAutomationTime(now))
+		WHERE `+interruptedRunSQL, stamp, stamp)
 	if err != nil {
 		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
+		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
 	}
 	return int(n), nil
@@ -628,8 +746,8 @@ type StepFinish struct {
 // transaction) and returns its id. StartedAt must be set; clipping args and
 // summaries is the journal's job.
 func (db *DB) AppendAutomationRunStep(s AutomationRunStep) (int64, error) {
-	if s.StartedAt.IsZero() {
-		return 0, fmt.Errorf("appending a step to automation run %d: StartedAt is zero", s.RunID)
+	if err := requireRunTime(s.StartedAt, fmt.Sprintf("appending a step to automation run %d", s.RunID)); err != nil {
+		return 0, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -676,6 +794,9 @@ func (db *DB) MarkAutomationRunStep(id int64, status string, link StepFinish) er
 // FinishAutomationRunStep closes step id with f (finished_at = f.Now); links
 // are written only when non-zero. A finished step → ErrStepFinished.
 func (db *DB) FinishAutomationRunStep(id int64, f StepFinish) error {
+	if err := requireRunTime(f.Now, fmt.Sprintf("finishing automation run step %d", id)); err != nil {
+		return err
+	}
 	res, err := db.Exec(`UPDATE automation_run_steps SET status = ?, result_summary = ?, error = ?, auto = ?,
 		`+stepLinkSQL+`, input_tokens = ?, output_tokens = ?, tokens_estimated = ?, reported_cost_usd = ?,
 		duration_ms = ?, finished_at = ?

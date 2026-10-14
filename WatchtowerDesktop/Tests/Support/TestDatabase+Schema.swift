@@ -1882,6 +1882,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
     WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);

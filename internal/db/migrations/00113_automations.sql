@@ -80,6 +80,8 @@ CREATE UNIQUE INDEX idx_automation_runs_event_cycle ON automation_runs(automatio
 CREATE UNIQUE INDEX idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
     WHERE status = 'queued';
 CREATE INDEX idx_automation_runs_rerun_of ON automation_runs(rerun_of);
+-- The daily token cap sums runs by started_at over one local day (AutomationTokensBetween).
+CREATE INDEX idx_automation_runs_started_at ON automation_runs(started_at);
 
 -- One row per SDK call of a run (the journal).
 CREATE TABLE automation_run_steps (
