@@ -59,10 +59,10 @@ struct SessionSwitcherPopover: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        let rows = SessionSwitcherPresentation.matching(
-            vm.sessionRows(vm.orderedSessions(projectID: project.id)), query: query
-        )
-        if rows.isEmpty {
+        // The panel's order (#480): its main list, then a "Finished"
+        // divider and every finished session, folded in the panel or not.
+        let (rows, finished) = vm.panelSections(projectID: project.id).switcherRows(matching: query)
+        if rows.isEmpty, finished.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("No session matches.").font(.caption).foregroundStyle(.secondary)
             } else if vm.terminalSessions[project.id] != nil, vm.sessionLoadErrors[project.id] == nil {
@@ -74,6 +74,12 @@ struct SessionSwitcherPopover: View {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(rows) { row in
                         SessionSwitcherRow(row: row, isCurrent: row.id == currentID) { onSelect(row.id) }
+                    }
+                    if !finished.isEmpty {
+                        SessionSwitcherFinishedDivider()
+                        ForEach(finished) { row in
+                            SessionSwitcherRow(row: row, isCurrent: row.id == currentID) { onSelect(row.id) }
+                        }
                     }
                 }
             }
@@ -89,6 +95,23 @@ struct SessionSwitcherPopover: View {
             Text(keys).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
+    }
+}
+
+/// The "Finished" divider above the finished sessions (#480).
+struct SessionSwitcherFinishedDivider: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Finished")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            VStack { Divider() }
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 

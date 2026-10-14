@@ -43,8 +43,9 @@ struct AssetSliceRecord {
 /// expensive part stays out of the publisher's read transaction:
 /// `assetRecords` runs inside the read and returns the build, which the
 /// publisher runs after the read ended. `stagedDigest(recordName, fileName)`
-/// is the SHA-256 of the record's staged file (nil: none); a record whose
-/// staged file already holds its asset may come back without `data`.
+/// is the SHA-256 of the PLAINTEXT the record's staged file seals (nil:
+/// none); a record whose staged file already holds its asset may come back
+/// without `data`.
 protocol AssetSliceSource: SliceSource {
     func assetRecords(
         _ db: Database,
@@ -60,16 +61,29 @@ extension AssetSliceSource {
 }
 
 /// The hub's staged asset files, `<directory>/<recordName>/<fileName>`: one
-/// per record, replaced atomically when the record changes, removed when the
-/// record leaves the zone, on an account reset and when the hub is turned
-/// off. The transport's pending save points at the staged file until it is
-/// sent, so the file stays while its record is published.
+/// per record, replaced when the record changes, removed when the record
+/// leaves the zone, on an account reset and when the hub is turned off. The
+/// transport's pending save points at the staged file until it is sent, so
+/// the file stays while its record is published.
+///
+/// Mobile E2E spec §2.5: the staged file is the asset sealed with
+/// `ChunkedAssetCipher` under a fresh `K_asset` (header-less chunks), never
+/// the plaintext; `<fileName>.desc` beside it holds its `AssetDescriptor`
+/// (key, header, SHA-256 of the plaintext), which the record's envelope
+/// carries. The Mac keeps `K_asset` next to the file: it holds the plaintext
+/// anyway, and FileVault is the at-rest story (spec §2.6). The digest index
+/// is the descriptor's plaintext digest, so an unchanged record is neither
+/// rebuilt nor re-sealed (a re-seal under a fresh key changes every byte).
+///
+/// A restage removes the old descriptor first, then writes the sealed file,
+/// then the new descriptor (each atomically): a crash in between leaves a
+/// file without a descriptor, which reads as not staged and is staged again,
+/// so a descriptor never describes another file. A descriptor whose sealed
+/// length is not its file's reads as not staged too.
 ///
 /// `close()` removes every file and refuses new ones until `open()`: a
 /// publish cycle still running after the hub was turned off cannot leave a
-/// file behind. The staged files' digests are remembered (a file found on
-/// disk at launch is hashed once), so an unchanged record is neither
-/// rebuilt nor rewritten.
+/// file behind.
 ///
 /// `@unchecked Sendable`: every mutable field is guarded by `lock`, an
 /// `NSLock` because the critical sections span disk I/O (a 20 MB write).
@@ -83,8 +97,8 @@ final class SliceAssetStore: @unchecked Sendable {
     let directory: URL
     private let lock = NSLock()
     private var isOpen = true
-    /// Staged file path → SHA-256 of its content.
-    private var digests: [String: Data] = [:]
+    /// Staged file path → its descriptor (a `.desc` found at launch is read once).
+    private var descriptors: [String: AssetDescriptor] = [:]
     private let logger = Logger(subsystem: Constants.bundleID, category: "SliceAssetStore")
 
     init(directory: URL) {
@@ -95,40 +109,87 @@ final class SliceAssetStore: @unchecked Sendable {
         recordDirectory(recordName).appendingPathComponent(fileName)
     }
 
-    /// Writes `data` for `recordName` (atomically replacing an earlier
-    /// version) and returns the staged file.
-    func stage(_ data: Data, fileName: String, recordName: String) throws -> URL {
+    /// `<fileName>.desc` beside the staged file.
+    func descriptorURL(recordName: String, fileName: String) -> URL {
+        fileURL(recordName: recordName, fileName: fileName).appendingPathExtension("desc")
+    }
+
+    /// Seals `data` under a fresh `K_asset` (in memory: the 20 MB clip bounds
+    /// it), stages the sealed file for `recordName` in place of an earlier
+    /// version, writes its descriptor, and returns both.
+    func stage(_ data: Data, fileName: String, recordName: String) throws -> (url: URL, descriptor: AssetDescriptor) {
         try lock.withLock {
             guard isOpen else { throw StoreError.closed }
             let url = fileURL(recordName: recordName, fileName: fileName)
+            let descriptorURL = descriptorURL(recordName: recordName, fileName: fileName)
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try data.write(to: url, options: .atomic)
-            digests[url.path] = SliceAsset.digest(of: data)
-            return url
+            let sealed = try ChunkedAssetCipher.encrypt(data)
+            descriptors.removeValue(forKey: url.path)
+            do {
+                try FileManager.default.removeItem(at: descriptorURL)
+            } catch CocoaError.fileNoSuchFile {
+                // Nothing was staged before.
+            }
+            try sealed.sealed.write(to: url, options: .atomic)
+            try sealed.descriptor.encoded().write(to: descriptorURL, options: .atomic)
+            descriptors[url.path] = sealed.descriptor
+            return (url, sealed.descriptor)
         }
     }
 
-    /// The SHA-256 of the staged file; nil when there is none.
-    func stagedDigest(recordName: String, fileName: String) -> Data? {
+    /// The descriptor of the staged file (from `<fileName>.desc`); nil when
+    /// the file or its descriptor is missing, the descriptor does not parse,
+    /// or its sealed length is not the file's.
+    func stagedDescriptor(recordName: String, fileName: String) -> AssetDescriptor? {
         lock.withLock {
             let url = fileURL(recordName: recordName, fileName: fileName)
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                digests.removeValue(forKey: url.path)
+            let descriptorURL = descriptorURL(recordName: recordName, fileName: fileName)
+            let manager = FileManager.default
+            guard manager.fileExists(atPath: url.path), manager.fileExists(atPath: descriptorURL.path) else {
+                descriptors.removeValue(forKey: url.path)
                 return nil
             }
-            if let known = digests[url.path] { return known }
-            // A file staged by an earlier run: hashed once.
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            let digest = SliceAsset.digest(of: data)
-            digests[url.path] = digest
-            return digest
+            if let known = descriptors[url.path] { return known }
+            // Staged by an earlier run: read once.
+            guard let descriptor = readDescriptor(descriptorURL, sealedFile: url) else { return nil }
+            descriptors[url.path] = descriptor
+            return descriptor
         }
+    }
+
+    /// The SHA-256 of the plaintext the staged file seals; nil when nothing
+    /// usable is staged.
+    func stagedDigest(recordName: String, fileName: String) -> Data? {
+        stagedDescriptor(recordName: recordName, fileName: fileName)?.plaintextDigest
     }
 
     func isStaged(recordName: String, fileName: String) -> Bool {
-        FileManager.default.fileExists(atPath: fileURL(recordName: recordName, fileName: fileName).path)
+        stagedDescriptor(recordName: recordName, fileName: fileName) != nil
+    }
+
+    /// Under `lock`. nil (logged) for an unreadable or malformed descriptor
+    /// and for one whose sealed length is not the file's.
+    private func readDescriptor(_ descriptorURL: URL, sealedFile url: URL) -> AssetDescriptor? {
+        do {
+            let descriptor = try AssetDescriptor.parse(try Data(contentsOf: descriptorURL))
+            let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber
+            let expected = ChunkedAssetCipher.sealedLength(
+                forPlaintext: Int64(clamping: descriptor.header.totalLength), chunkSize: descriptor.header.chunkSize
+            )
+            guard size?.int64Value == expected else {
+                logger.warning("staged asset \(url.lastPathComponent, privacy: .public) does not match its descriptor; restaged")
+                return nil
+            }
+            return descriptor
+        } catch {
+            logger.warning("""
+                staged asset descriptor \(descriptorURL.lastPathComponent, privacy: .public) unreadable, restaged: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return nil
+        }
     }
 
     /// Removes the files of `kind`'s records not in `keeping` (records that
@@ -175,11 +236,11 @@ final class SliceAssetStore: @unchecked Sendable {
         directory.appendingPathComponent(recordName.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
     }
 
-    /// Under `lock`; forgets the digests below `url`. A missing file is
+    /// Under `lock`; forgets the descriptors below `url`. A missing file is
     /// fine; any other failure is logged (the next sweep retries).
     private func remove(_ url: URL) {
         let prefix = url.path + "/"
-        digests = digests.filter { !$0.key.hasPrefix(prefix) }
+        descriptors = descriptors.filter { !$0.key.hasPrefix(prefix) }
         do {
             try FileManager.default.removeItem(at: url)
         } catch CocoaError.fileNoSuchFile {

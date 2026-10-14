@@ -23,26 +23,26 @@ const (
 
 // briefSessionFixture: a project with one embedded claude row launched with
 // briefLaunchID.
-func briefSessionFixture(t *testing.T) (database *db.DB, projectID, rowID int64) {
+func briefSessionFixture(t *testing.T) (database *db.DB, workbenchID, rowID int64) {
 	t.Helper()
 	database = writeActionsConfig(t)
-	projectID, err := database.CreateWorkbench("acme", t.TempDir())
+	workbenchID, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, 'claude', 's', '/tmp/acme', ?)`, projectID, briefLaunchID)
+		VALUES (?, 'claude', 's', '/tmp/acme', ?)`, workbenchID, briefLaunchID)
 	require.NoError(t, err)
 	rowID, err = res.LastInsertId()
 	require.NoError(t, err)
-	return database, projectID, rowID
+	return database, workbenchID, rowID
 }
 
 // runBriefHook runs `project brief --project N` the way the SessionStart hook
 // does: the payload on stdin.
-func runBriefHook(t *testing.T, projectID int64, stdin string) (stdout, stderr string) {
+func runBriefHook(t *testing.T, workbenchID int64, stdin string) (stdout, stderr string) {
 	t.Helper()
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(projectID, 10))
+	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(workbenchID, 10))
 	require.NoError(t, err, "the hook always exits 0")
 	return out, errOut
 }
@@ -78,18 +78,18 @@ func TestProjectBrief_HookRecordsTheSessionIDAfterClear(t *testing.T) {
 
 // installBriefStateHooks gives the fixture workbench's folder the session
 // state hooks.
-func installBriefStateHooks(t *testing.T, database *db.DB, projectID int64) {
+func installBriefStateHooks(t *testing.T, database *db.DB, workbenchID int64) {
 	t.Helper()
-	wb, err := database.GetWorkbench(projectID)
+	wb, err := database.GetWorkbench(workbenchID)
 	require.NoError(t, err)
-	_, err = devpack.InstallStateHooks(wb.FolderPath, "watchtower", projectID)
+	_, err = devpack.InstallStateHooks(wb.FolderPath, "watchtower", workbenchID)
 	require.NoError(t, err)
 }
 
 // storeAgentState gives the fixture row a state from a previous run.
-func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sessionID string) {
+func storeAgentState(t *testing.T, database *db.DB, workbenchID, rowID int64, sessionID string) {
 	t.Helper()
-	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false, db.AgentOrder{})
+	ok, err := database.SetTerminalAgentState(rowID, workbenchID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false, db.AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 }

@@ -200,12 +200,12 @@ struct ActionStripActionsView: View {
         AgentActionCardView(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
-            onApprove: { Task { await vm.approve(action.id) } },
+            onApprove: { Task { await vm.approve(action.id, shownArgs: action.argsJSON) } },
             onReject: { Task { await vm.reject(action.id) } },
             onRetry: { Task { await vm.retry(action.id) } },
             gestureError: vm.actionFeed.rowErrors[action.id],
             onOpen: onOpen,
-            onApproveEdited: { patch in Task { await vm.approve(action.id, patch: patch) } },
+            onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: onReconnectSlack
         )
     }

@@ -58,7 +58,14 @@ struct WorkbenchesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+            // With the panel hidden, the delete's Undo shows over the page.
+            .overlay(alignment: .bottomLeading) {
+                if !vm.panelVisible {
+                    SessionDeleteToast(vm: vm).frame(maxWidth: 320)
+                }
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: vm.pendingDeleteToast)
         // ⌥⌘S, the title row's toggle, "All Workbenches" and the switchers' "Show
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
@@ -146,6 +153,9 @@ struct WorkbenchesView: View {
                 TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
             .clearPlainList()
+            // The Undo of a session delete (board #480) in its own bar, as
+            // under the sessions list at level 2.
+            SessionDeleteToast(vm: vm)
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }

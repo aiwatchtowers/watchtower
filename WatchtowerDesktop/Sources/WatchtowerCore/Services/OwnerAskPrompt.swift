@@ -12,6 +12,7 @@ package enum OwnerAskPrompt {
     }
 
     private static func short(_ kind: OwnerAskKind, _ answer: OwnerAskAnswer) -> String {
+        if answer.dismissed { return "dismissed" }
         switch (kind, answer.verdict) {
         case (.review, .approved): return "approved"
         case (.review, .changes): return "changes requested"

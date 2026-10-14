@@ -22,25 +22,25 @@ type Summary struct {
 }
 
 // Summaries is the row line of every agent session (Claude Code or Codex;
-// never a shell) of workbench projectID, in session id order, from the DB and
+// never a shell) of workbench workbenchID, in session id order, from the DB and
 // the PR cache only.
-func Summaries(ctx context.Context, d *db.DB, projectID int64) ([]Summary, error) {
-	b, err := loadBoard(d, projectID)
+func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, error) {
+	b, err := loadBoard(d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	states, err := d.PRStates(projectID)
+	states, err := d.PRStates(workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	links, err := workbenchLinks(ctx, d, projectID)
+	links, err := workbenchLinks(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := d.QueryContext(ctx, `SELECT id, target_id, finished_at FROM terminal_sessions
-		WHERE project_id = ? AND kind IN `+agentkind.SQLKinds()+` ORDER BY id`, projectID)
+		WHERE project_id = ? AND kind IN `+agentkind.SQLKinds()+` ORDER BY id`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("listing workbench %d sessions: %w", projectID, err)
+		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 	}
 	defer rows.Close()
 	out := []Summary{}
@@ -49,7 +49,7 @@ func Summaries(ctx context.Context, d *db.DB, projectID int64) ([]Summary, error
 		var target sql.NullInt64
 		var finishedAt sql.NullString
 		if err := rows.Scan(&s.SessionID, &target, &finishedAt); err != nil {
-			return nil, fmt.Errorf("listing workbench %d sessions: %w", projectID, err)
+			return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 		}
 		sc := newScope(b, target, links[s.SessionID])
 		p := sc.progress()
@@ -58,7 +58,7 @@ func Summaries(ctx context.Context, d *db.DB, projectID int64) ([]Summary, error
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing workbench %d sessions: %w", projectID, err)
+		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 	}
 	return out, nil
 }

@@ -1,5 +1,6 @@
 import GRDB
 import os
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -14,29 +15,42 @@ final class RelayFeedTests: XCTestCase {
 
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
 
+    /// The paired test phone and the test hub over one in-memory zone. The phone's outbox, feed and replica share
+    /// one key store (`keys`), so a test can lock it; the hub seals its echoes to the phone.
     private struct Fixtures {
-        let transport: InMemoryCloudTransport
+        let inner: any CloudSyncTransport & Sendable
+        let keys: InMemoryPhoneKeyStore
+        let transport: SecureTransport
+        let hub: SecureTransport
         let store: ReplicaStore
         let outbox: ActionOutbox
         let feed: RelayFeed
     }
 
+    private static let deviceID = TestE2E.deviceID.uuidString
+
     private func makeFixtures(
+        inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport(),
+        pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil
     ) throws -> Fixtures {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
+        let keys = try TestE2E.phoneStore()
+        let transport = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: inner)
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: Self.deviceID)
         let feed = RelayFeed(
             transport: transport,
             store: store,
             outbox: outbox,
+            pull: pull,
             onActionApplied: onActionApplied
         )
-        return Fixtures(transport: transport, store: store, outbox: outbox, feed: feed)
+        return Fixtures(
+            inner: inner, keys: keys, transport: transport, hub: TestE2E.hubTransport(inner: inner), store: store,
+            outbox: outbox, feed: feed)
     }
 
-    /// The desktop's rewrite of an action record carrying its verdict.
+    /// The desktop's rewrite of an action record carrying its verdict (the hub seals it on save).
     private func echoRecord(
         _ action: ActionRequestPayload,
         status: ActionStatus,
@@ -56,10 +70,16 @@ final class RelayFeedTests: XCTestCase {
         return try echoRecord(action, status: .applied)
     }
 
-    /// Lands a DataZone heartbeat in the replica the way hydration does.
+    private func deviceRecord() -> CloudRecord {
+        CloudRecord(recordName: "device-\(Self.deviceID)", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                    modifiedAt: base, payload: Data("{}".utf8))
+    }
+
+    /// Lands a DataZone heartbeat in the replica the way hydration does: sealed by the test hub.
     private func hydrateHeartbeat(_ store: ReplicaStore, updatedAt: Date, token: Int = 1) throws {
         let record = try CloudRecordFactory.record(for: HeartbeatFixtures.minimal(updatedAt: updatedAt), modifiedAt: updatedAt)
-        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: token)))
+        let sealed = try TestE2E.sealedDataRecord(record, wireName: HeartbeatPayload.recordName, seq: UInt64(token))
+        try store.apply(CloudChangeBatch(changed: [sealed], deletedRecordNames: [], newToken: CloudChangeToken(value: token)))
     }
 
     // MARK: - Action echo routing
@@ -68,7 +88,7 @@ final class RelayFeedTests: XCTestCase {
         let f = try makeFixtures()
         _ = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
         let action = try XCTUnwrap(f.store.pendingActions().first).action
-        try await f.transport.save([try echoRecord(action, status: .applied)])
+        try await f.hub.save([try echoRecord(action, status: .applied)])
 
         let result = try await f.feed.pollOnce()
 
@@ -80,7 +100,7 @@ final class RelayFeedTests: XCTestCase {
         let f = try makeFixtures()
         _ = try await f.outbox.enqueue(kind: .inboxResolve, entityRecordName: "inbox_item-2")
         let action = try XCTUnwrap(f.store.pendingActions().first).action
-        try await f.transport.save([try echoRecord(action, status: .failed, errorMessage: "inbox row 2 not found")])
+        try await f.hub.save([try echoRecord(action, status: .failed, errorMessage: "inbox row 2 not found")])
 
         let result = try await f.feed.pollOnce()
 
@@ -104,14 +124,63 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 1))
     }
 
+    // MARK: - E2E: locked keychain and rollback (mobile E2E Review Focus 1)
+
+    /// CloudKit delivers a hub echo while the phone is locked: the echo cannot be opened, so the poll throws
+    /// `keysUnavailable`, nothing is applied and the token stays; after unlock the same batch applies.
+    func testEchoesThatCannotBeOpenedWhileLockedAreReplayedAfterUnlock() async throws {
+        let f = try makeFixtures()
+        let id = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
+        let action = try XCTUnwrap(f.store.pendingActions().first).action
+        try await f.hub.save([try echoRecord(action, status: .applied)])
+
+        f.keys.isLocked = true
+        do {
+            _ = try await f.feed.pollOnce()
+            XCTFail("a locked keychain must fail the cycle, never drop the echo")
+        } catch SecureTransportError.keysUnavailable {
+            // expected
+        }
+        XCTAssertNil(try f.store.relayToken(), "the token stays, so the batch replays")
+
+        f.keys.isLocked = false
+        XCTAssertEqual(try f.store.pendingActions().map(\.id), [id], "nothing was applied while locked")
+        let routed = try await f.feed.pollOnce()
+
+        XCTAssertEqual(routed, 1)
+        XCTAssertTrue(try f.store.pendingActions().isEmpty)
+        XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 2))
+    }
+
+    /// The server re-presents an older version of an echo (`received`, hub seq 3) after the newer `applied`
+    /// (hub seq 10): the rollback guard drops it before routing.
+    func testARolledBackEchoIsIgnored() async throws {
+        let f = try makeFixtures()
+        _ = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
+        let action = try XCTUnwrap(f.store.pendingActions().first).action
+        let newer = TestE2E.hubTransport(TestE2E.hub(firstSeq: 10), inner: f.inner)
+        let older = TestE2E.hubTransport(TestE2E.hub(firstSeq: 3), inner: f.inner)
+        try await newer.save([try echoRecord(action, status: .applied)])
+        let applied = try await f.feed.pollOnce()
+        XCTAssertEqual(applied, 1)
+
+        try await older.save([try echoRecord(action, status: .received)])
+        let rolledBack = try await f.feed.pollOnce()
+
+        XCTAssertEqual(rolledBack, 0, "an older version of a seen echo is never routed")
+        XCTAssertTrue(try f.store.pendingActions().isEmpty)
+        XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 3), "the token moves past it")
+    }
+
     // MARK: - Heartbeat: DataZone only
 
     func testRelayZoneHeartbeatIsIgnored() async throws {
         // RelayZone is writable by a share participant, so a heartbeat there
-        // must never prove liveness. Known kind: no unknown-kind warning.
+        // must never prove liveness. A plaintext one never opens: SecureTransport
+        // drops it before the feed, and the token still advances.
         let f = try makeFixtures()
         let legacy = try CloudRecordFactory.record(for: HeartbeatFixtures.minimal(updatedAt: base), modifiedAt: base)
-        try await f.transport.save([
+        try await f.inner.save([
             CloudRecord(recordName: legacy.recordName, zone: .relay, kind: RelayRecordKind.heartbeat.rawValue,
                         modifiedAt: base, payload: legacy.payload)
         ])
@@ -128,10 +197,7 @@ final class RelayFeedTests: XCTestCase {
     func testDeviceRecordIsIgnoredSilently() async throws {
         // The phone's own link record reflects back; the Mac consumes it.
         let f = try makeFixtures()
-        try await f.transport.save([
-            CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
-                        modifiedAt: base, payload: Data("{}".utf8))
-        ])
+        try await f.transport.save([deviceRecord()])
 
         let result = try await f.feed.pollOnce()
 
@@ -142,7 +208,7 @@ final class RelayFeedTests: XCTestCase {
     }
 
     func testDataZoneHeartbeatSetsAge() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         try hydrateHeartbeat(store, updatedAt: base)
 
         XCTAssertEqual(try store.heartbeatAge(now: base.addingTimeInterval(300)), .seconds(300))
@@ -152,28 +218,51 @@ final class RelayFeedTests: XCTestCase {
         let f = try makeFixtures()
 
         XCTAssertNil(try f.store.heartbeatAge(now: base))
-        XCTAssertFalse(f.feed.isDesktopReachable(now: base))
+        XCTAssertEqual(f.feed.desktopReachability(now: base), .unreachable)
     }
 
-    func testDesktopReachableWhileHeartbeatIsUnder720Seconds() async throws {
+    /// Board #724, owner decision Q2: the Mac writes its heartbeat every
+    /// 15 min, so one missed write (30 min) still reads online.
+    func testDesktopReachableWhileHeartbeatIsUnder35Minutes() async throws {
         let f = try makeFixtures()
         try hydrateHeartbeat(f.store, updatedAt: base)
 
-        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(5 * 60)))
-        // Boundary: online while UNDER 720 s old (spec §3).
-        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(719)))
-        XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(720)))
+        XCTAssertEqual(RelayFeed.heartbeatStaleAfter, .seconds(2100))
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(5 * 60)), .reachable)
+        XCTAssertEqual(
+            f.feed.desktopReachability(now: base.addingTimeInterval(30 * 60)), .reachable, "one missed 15 min write")
+        // Boundary: online while UNDER 2100 s old (spec §3).
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(2099)), .reachable)
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(2100)), .unreachable)
+        XCTAssertTrue(f.feed.isDesktopReachable(now: base.addingTimeInterval(2099)))
+        XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(2100)))
+    }
+
+    /// The heartbeat is sealed: while the keychain is locked it cannot be read, and that is its own state,
+    /// never "the Mac is offline" (mobile E2E Task 8 note on `heartbeatAge`).
+    func testALockedKeychainIsNotAnUnreachableDesktop() async throws {
+        let f = try makeFixtures()
+        try hydrateHeartbeat(f.store, updatedAt: base)
+
+        f.keys.isLocked = true
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(60)), .keysUnavailable)
+        XCTAssertFalse(RelayFeed.isDesktopReachable(store: f.store, now: base.addingTimeInterval(60)))
+
+        f.keys.isLocked = false
+        XCTAssertEqual(f.feed.desktopReachability(now: base.addingTimeInterval(60)), .reachable)
+        XCTAssertTrue(RelayFeed.isDesktopReachable(store: f.store, now: base.addingTimeInterval(60)))
     }
 
     func testHeartbeatWithFutureValuesStillYieldsAnAge() throws {
         // A newer Mac's heartbeat (new flavor, sharing state, account kind)
         // must keep an older phone's liveness working.
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         // swiftlint:disable:next line_length
         let json = #"{"accounts":[{"kind":"confluence","label":"acme","status":"connected"}],"app_version":"9.0.0","enabled_at":1700000000,"flavor":"partner","hub_id":"hub-1","mac_name":"Acme Mac","owner_user":"_owner","relay_backlog":0,"sharing":"paused","updated_at":1700000000}"#
         let record = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
                                  modifiedAt: base, payload: Data(json.utf8))
-        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        let sealed = try TestE2E.sealedDataRecord(record, wireName: HeartbeatPayload.recordName, seq: 1)
+        try store.apply(CloudChangeBatch(changed: [sealed], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
 
         XCTAssertEqual(try store.heartbeatAge(now: base.addingTimeInterval(60)), .seconds(60))
     }
@@ -181,19 +270,21 @@ final class RelayFeedTests: XCTestCase {
     func testLivenessNeedsOnlyUpdatedAt() throws {
         // Liveness reads `updated_at` alone, so a field a future Mac drops or
         // reshapes can never turn the Mac offline.
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let record = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
                                  modifiedAt: base, payload: Data(#"{"updated_at":1700000000}"#.utf8))
-        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        let sealed = try TestE2E.sealedDataRecord(record, wireName: HeartbeatPayload.recordName, seq: 1)
+        try store.apply(CloudChangeBatch(changed: [sealed], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
 
         XCTAssertEqual(try store.heartbeatAge(now: base), .seconds(0))
     }
 
     func testUndecodableHeartbeatIsLoggedOnceNotPerRead() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let garbage = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
                                   modifiedAt: base, payload: Data("not json".utf8))
-        try store.apply(CloudChangeBatch(changed: [garbage], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        let sealed = try TestE2E.sealedDataRecord(garbage, wireName: HeartbeatPayload.recordName, seq: 1)
+        try store.apply(CloudChangeBatch(changed: [sealed], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
 
         for _ in 0..<3 {
             XCTAssertNil(try store.heartbeatAge(now: base))
@@ -202,43 +293,45 @@ final class RelayFeedTests: XCTestCase {
     }
 
     func testUndecodableHeartbeatReadsAsNeverSeen() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let garbage = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
                                   modifiedAt: base, payload: Data("not json".utf8))
-        try store.apply(CloudChangeBatch(changed: [garbage], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        let sealed = try TestE2E.sealedDataRecord(garbage, wireName: HeartbeatPayload.recordName, seq: 1)
+        try store.apply(CloudChangeBatch(changed: [sealed], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
 
         XCTAssertNil(try store.heartbeatAge(now: base))
     }
 
     // MARK: - Unknown kinds / undecodable payloads
 
-    func testUnknownKindIgnoredAndLoggedOncePerKind() async throws {
+    /// Rewritten for E2E: a record nobody sealed for this phone (plaintext, an unknown kind) is dropped by
+    /// SecureTransport and never reaches the feed's routing; the token still advances past it.
+    func testUnopenableRecordsNeverReachTheFeedAndTheTokenAdvances() async throws {
         let f = try makeFixtures()
         func mystery(_ name: String) -> CloudRecord {
             CloudRecord(recordName: name, zone: .relay, kind: "mystery", modifiedAt: base, payload: Data("?".utf8))
         }
-        try await f.transport.save([mystery("mystery-1")])
+        try await f.inner.save([mystery("mystery-1")])
 
         let first = try await f.feed.pollOnce()
         XCTAssertEqual(first, 0)
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 1))
 
-        // A second record of the same unknown kind must not log again —
-        // the once-per-kind set already contains it.
-        try await f.transport.save([mystery("mystery-2")])
+        try await f.inner.save([mystery("mystery-2")])
         _ = try await f.feed.pollOnce()
         let logged = await f.feed.loggedUnknownKinds
-        XCTAssertEqual(logged, ["mystery"])
+        XCTAssertTrue(logged.isEmpty, "dropped before routing")
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 2))
     }
 
     func testUndecodableKnownKindPayloadSkippedAndTokenStillAdvances() async throws {
         // Garbage payloads of KNOWN kinds must never wedge the feed: log,
         // skip, keep routing the rest of the batch, advance the token.
+        // Sealed by the hub (so they open), but not a payload of their kind.
         let f = try makeFixtures()
-        let garbage = Data("not json".utf8)
+        let garbage = Data(#"{"device_id":"\#(Self.deviceID)"}"#.utf8)
         let echo = try await appliedEcho(f)
-        try await f.transport.save([
+        try await f.hub.save([
             CloudRecord(recordName: "action-X", zone: .relay, kind: RelayRecordKind.action.rawValue,
                         modifiedAt: base, payload: garbage),
             CloudRecord(recordName: "recupload-X", zone: .relay, kind: RelayRecordKind.recordingUpload.rawValue,
@@ -262,7 +355,7 @@ final class RelayFeedTests: XCTestCase {
 
     func testTokenPersistsAndBatchIsNotRedelivered() async throws {
         let f = try makeFixtures()
-        try await f.transport.save([try await appliedEcho(f)])
+        try await f.hub.save([try await appliedEcho(f)])
 
         let first = try await f.feed.pollOnce()
         let second = try await f.feed.pollOnce()
@@ -278,7 +371,7 @@ final class RelayFeedTests: XCTestCase {
         // records would re-fire echo side effects.
         let f = try makeFixtures()
         XCTAssertTrue(try f.store.setRelayToken(CloudChangeToken(value: 100)))
-        try await f.transport.save([try await appliedEcho(f)])
+        try await f.hub.save([try await appliedEcho(f)])
 
         let result = try await f.feed.pollOnce()
 
@@ -293,19 +386,16 @@ final class RelayFeedTests: XCTestCase {
     /// phone is its only relay consumer, so events at or below the token it
     /// just persisted are dead weight in cloudkit-transport.sqlite.
     func testPollCompactsConsumedRelayEventsOfATransportStore() async throws {
+        // F1: the feed reaches the buffer through SecureTransport's CompactingTransport conformance.
         let transportStore = try TransportStore.inMemory()
-        let transport = CloudKitTransport(store: transportStore, scope: .private, hubID: HubZones.testHubID, role: .phone)
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
-        let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
-        let device = CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
-                                 modifiedAt: base, payload: Data("{}".utf8))
-        try transportStore.bufferChanged([device])
+        let cloud = CloudKitTransport(store: transportStore, scope: .private, hubID: HubZones.testHubID, role: .phone)
+        let f = try makeFixtures(inner: cloud)
+        try transportStore.bufferChanged([try await f.transport.seal(deviceRecord())])
         try transportStore.bufferDeleted(recordNames: ["action-gone"], zone: .relay)
 
-        _ = try await feed.pollOnce()
+        _ = try await f.feed.pollOnce()
 
-        let token = try XCTUnwrap(store.relayToken())
+        let token = try XCTUnwrap(f.store.relayToken())
         XCTAssertEqual(token, CloudChangeToken(value: 2))
         let left = try transportStore.changes(in: .relay, since: nil)
         XCTAssertTrue(left.changed.isEmpty, "consumed relay events are compacted")
@@ -316,17 +406,12 @@ final class RelayFeedTests: XCTestCase {
     /// whose token is already persisted.
     func testRelayCompactionFailureDoesNotFailThePoll() async throws {
         let transport = ThrowingRelayCompactTransport()
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
-        let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
-        try await transport.save([
-            CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
-                        modifiedAt: base, payload: Data("{}".utf8))
-        ])
+        let f = try makeFixtures(inner: transport)
+        try await f.transport.save([deviceRecord()])
 
-        _ = try await feed.pollOnce()
+        _ = try await f.feed.pollOnce()
 
-        XCTAssertEqual(try store.relayToken(), CloudChangeToken(value: 1))
+        XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 1))
         let calls = await transport.compactCalls
         XCTAssertEqual(calls.map(\.zone), [.relay])
         XCTAssertEqual(calls.map(\.keepSince), [1])
@@ -351,7 +436,7 @@ final class RelayFeedTests: XCTestCase {
     }
 
     func testSetRelayTokenIsMonotonic() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
 
         XCTAssertTrue(try store.setRelayToken(CloudChangeToken(value: 5)))
         XCTAssertFalse(try store.setRelayToken(CloudChangeToken(value: 3)))
@@ -364,7 +449,7 @@ final class RelayFeedTests: XCTestCase {
     func testRelayTokenIsIndependentOfDataToken() throws {
         // Decision 3: RelayFeed's cursor lives beside (not on top of) the
         // replica's data-zone cursor in replica_meta.
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         try store.setRelayToken(CloudChangeToken(value: 7))
 
         XCTAssertNil(try store.storedToken())
@@ -374,22 +459,24 @@ final class RelayFeedTests: XCTestCase {
     // MARK: - Pull hook
 
     func testPullHookRunsBeforeChangesAreRead() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
-        _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
-        let action = try XCTUnwrap(store.pendingActions().first).action
-        let record = try echoRecord(action, status: .applied)
+        let inner = InMemoryCloudTransport()
+        let hub = TestE2E.hubTransport(inner: inner)
+        let landed = OSAllocatedUnfairLock<CloudRecord?>(initialState: nil)
         // The pull hook lands the echo; pollOnce routes it in the same cycle
         // only if pull ran before changes().
-        let feed = RelayFeed(transport: transport, store: store, outbox: outbox) {
-            try await transport.save([record])
+        let pull: @Sendable () async throws -> Void = {
+            if let record = landed.withLock({ $0 }) { try await hub.save([record]) }
         }
+        let f = try makeFixtures(inner: inner, pull: pull)
+        _ = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
+        let action = try XCTUnwrap(f.store.pendingActions().first).action
+        let record = try echoRecord(action, status: .applied)
+        landed.withLock { $0 = record }
 
-        let routed = try await feed.pollOnce()
+        let routed = try await f.feed.pollOnce()
 
         XCTAssertEqual(routed, 1)
-        XCTAssertTrue(try store.pendingActions().isEmpty)
+        XCTAssertTrue(try f.store.pendingActions().isEmpty)
     }
 
     // MARK: - Reentrancy coalescing
@@ -426,9 +513,7 @@ final class RelayFeedTests: XCTestCase {
             CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
                         modifiedAt: base, payload: Data("{}".utf8))
         ])
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
-        let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
+        let feed = try makeFixtures(inner: transport).feed
 
         async let first = feed.pollOnce()
         async let second = feed.pollOnce()
@@ -446,9 +531,9 @@ final class RelayFeedTests: XCTestCase {
     // MARK: - onActionApplied hook
 
     func testOnActionAppliedFiresAfterTokenIsPersisted() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
+        let inner = InMemoryCloudTransport()
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
         let fired = expectation(description: "hook fired")
         let tokenAtFire = OSAllocatedUnfairLock<Int?>(initialState: nil)
         let hook: @Sendable () async -> Void = {
@@ -458,10 +543,13 @@ final class RelayFeedTests: XCTestCase {
             }
             fired.fulfill()
         }
+        let transport = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: inner)
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: Self.deviceID)
         let feed = RelayFeed(transport: transport, store: store, outbox: outbox, onActionApplied: hook)
         _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
         let action = try XCTUnwrap(store.pendingActions().first).action
-        try await transport.save([try echoRecord(action, status: .applied)])
+        let hub = TestE2E.hubTransport(inner: inner)
+        try await hub.save([try echoRecord(action, status: .applied)])
 
         _ = try await feed.pollOnce()
 
@@ -485,10 +573,10 @@ final class RelayFeedTests: XCTestCase {
         _ = try await f.feed.pollOnce()
         // Failed echo: no fire.
         let action = try XCTUnwrap(f.store.pendingActions().first).action
-        try await f.transport.save([try echoRecord(action, status: .failed, errorMessage: "no")])
+        try await f.hub.save([try echoRecord(action, status: .failed, errorMessage: "no")])
         _ = try await f.feed.pollOnce()
         // Applied echo: exactly this one fires.
-        try await f.transport.save([try echoRecord(action, status: .applied)])
+        try await f.hub.save([try echoRecord(action, status: .applied)])
         _ = try await f.feed.pollOnce()
 
         await fulfillment(of: [fired], timeout: 5)
@@ -510,7 +598,7 @@ final class RelayFeedTests: XCTestCase {
         _ = try await f.outbox.enqueue(kind: .inboxResolve, entityRecordName: "inbox_item-2")
         _ = try await f.feed.pollOnce() // consume the two own-pending reflections
         for pending in try f.store.pendingActions() {
-            try await f.transport.save([try echoRecord(pending.action, status: .applied)])
+            try await f.hub.save([try echoRecord(pending.action, status: .applied)])
         }
 
         let result = try await f.feed.pollOnce()
@@ -548,7 +636,7 @@ final class RelayFeedTests: XCTestCase {
         let f = try makeFixtures(onActionApplied: hook)
         _ = try await f.outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
         let action = try XCTUnwrap(f.store.pendingActions().first).action
-        try await f.transport.save([try echoRecord(action, status: .applied)])
+        try await f.hub.save([try echoRecord(action, status: .applied)])
 
         // pollOnce returns while the hook is still hung on the gate
         // (fire-and-forget), and the NEXT poll runs to completion too.

@@ -1,3 +1,4 @@
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -35,6 +36,14 @@ final class ActionStatusTests: XCTestCase {
 
     // MARK: - Overlay resolution per status
 
+    /// The outbox seals through the paired test phone; the replica opens the overlay with the same keys.
+    private func makeOutbox() throws -> (ReplicaStore, ActionOutbox) {
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let transport = TestE2E.phoneTransport(try TestE2E.phone(store: keys))
+        return (store, ActionOutbox(transport: transport, store: store, deviceID: "D1") { self.stamp })
+    }
+
     private func echo(_ status: ActionStatus, outbox: ActionOutbox, store: ReplicaStore) async throws {
         var action = try XCTUnwrap(store.pendingActions().first).action
         action.status = status
@@ -43,8 +52,7 @@ final class ActionStatusTests: XCTestCase {
 
     func testReceivedAndHeldKeepTheOverlayPending() async throws {
         for status in [ActionStatus.received, .held] {
-            let store = try ReplicaStore.inMemory()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
+            let (store, outbox) = try makeOutbox()
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 
             try await echo(status, outbox: outbox, store: store)
@@ -55,8 +63,7 @@ final class ActionStatusTests: XCTestCase {
 
     func testExpiredAndCancelledFailTheOverlay() async throws {
         for status in [ActionStatus.expired, .cancelled] {
-            let store = try ReplicaStore.inMemory()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
+            let (store, outbox) = try makeOutbox()
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 
             try await echo(status, outbox: outbox, store: store)

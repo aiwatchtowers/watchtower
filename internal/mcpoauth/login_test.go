@@ -194,7 +194,11 @@ func assertFields(t *testing.T, checks []fieldCheck) {
 	}
 }
 
-func TestLogin_StateMismatchRejected(t *testing.T) {
+// A callback with the wrong (or no) state — a stray or hostile local request,
+// even one carrying an `error` — is refused with 400 and ignored: it does not
+// end the login or use up the single delivery, so the real redirect that
+// follows still signs in.
+func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 	as := newFakeAS(t)
 
 	urlCh := captureAuthorizeURL(t)
@@ -205,25 +209,38 @@ func TestLogin_StateMismatchRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing authorize URL: %v", err)
 	}
-	redirectURI := u.Query().Get("redirect_uri")
+	q := u.Query()
+	as.SetCodeChallenge(q.Get("code_challenge"))
+	redirectURI := q.Get("redirect_uri")
 
-	status, body := hitCallback(t, redirectURI, map[string]string{"code": as.AuthCode, "state": "wrong-state"})
-	if status != http.StatusOK {
-		t.Errorf("callback status = %d, want 200 (the error page still renders normally)", status)
+	for _, params := range []map[string]string{
+		{"error": "access_denied"},
+		{"error": "access_denied", "state": "wrong-state"},
+		{"code": as.AuthCode, "state": "wrong-state"},
+	} {
+		status, body := hitCallback(t, redirectURI, params)
+		if status != http.StatusBadRequest {
+			t.Errorf("params %v: status = %d, want 400", params, status)
+		}
+		if strings.Contains(body, "Authorization Failed") || strings.Contains(body, "Connected") {
+			t.Errorf("params %v: body = %q, want neither the error nor the success page", params, body)
+		}
+		if !strings.Contains(body, "This sign-in page is out of date") {
+			t.Errorf("params %v: body = %q, want the out-of-date page", params, body)
+		}
 	}
-	if !strings.Contains(body, "Authorization Failed") {
-		t.Errorf("callback body = %q, want the error page for a state mismatch", body)
-	}
-	if strings.Contains(body, "This connection has been signed in") {
-		t.Errorf("callback body = %q, want NOT the success page on a state mismatch", body)
+	select {
+	case res := <-resultCh:
+		t.Fatalf("Login ended on a wrong-state callback: %v", res.err)
+	case <-time.After(200 * time.Millisecond):
 	}
 
-	res := <-resultCh
-	if res.err == nil {
-		t.Fatal("Login: want error for a state mismatch, got nil")
+	status, body := hitCallback(t, redirectURI, map[string]string{"code": as.AuthCode, "state": q.Get("state")})
+	if status != http.StatusOK || !strings.Contains(body, "Connected") {
+		t.Fatalf("matching callback = %d %q, want 200 with the success page", status, body)
 	}
-	if !strings.Contains(res.err.Error(), "state mismatch") {
-		t.Errorf("Login: err = %v, want it to mention state mismatch", res.err)
+	if res := <-resultCh; res.err != nil {
+		t.Fatalf("Login: %v", res.err)
 	}
 }
 
@@ -240,7 +257,7 @@ func TestLogin_ErrorQueryParamServesErrorPage(t *testing.T) {
 	}
 	redirectURI := u.Query().Get("redirect_uri")
 
-	status, body := hitCallback(t, redirectURI, map[string]string{"error": "access_denied"})
+	status, body := hitCallback(t, redirectURI, map[string]string{"error": "access_denied", "state": u.Query().Get("state")})
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}

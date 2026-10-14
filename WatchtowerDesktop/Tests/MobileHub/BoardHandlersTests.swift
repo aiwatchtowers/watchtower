@@ -499,14 +499,14 @@ final class BoardHandlersTests: XCTestCase {
         handlers.register(on: dispatcher)
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         let record = try pendingActionRecord(
             kind: .boardCommentAdd, entityID: String(t), params: ["workbench_id": .integer(p), "body": .string("Ship it")]
         )
         try await transport.save([record])
-        try sidecar.markRelayBegun(record.recordName, at: Date())
+        try sidecar.markRelayBegun(record.plainName, at: Date())
 
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
+        let processor = RelayProcessor(transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
         _ = try await processor.processOnce()
         try await transport.save([record])
         _ = try await processor.processOnce()
@@ -544,8 +544,8 @@ final class BoardHandlersTests: XCTestCase {
         }
         let transport = StubHubTransport()
         let linked = try HubSyncState.inMemory()
-        try linked.linkTestDevice("device-a")
-        let processor = RelayProcessor(transport: transport, sidecar: linked, dispatcher: dispatcher, hubID: "hub-acme")
+        try linked.linkTestDevice()
+        let processor = RelayProcessor(transport: transport.sealing(), sidecar: linked, dispatcher: dispatcher, hubID: "hub-acme")
         let record = try pendingActionRecord(
             kind: .boardCommentAdd, entityID: String(t), params: ["workbench_id": .integer(p), "body": .string("Ship it")]
         )

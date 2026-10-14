@@ -1,13 +1,15 @@
 import GRDB
+import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
 /// Smoke tests for the app's WIRING, not the replica logic (the Kit's own
-/// suites cover that): `AppEnvironment` picks the transport, boots, and
-/// hydrates exactly the demo seed.
+/// suites cover that): `AppEnvironment` picks the transport, its session
+/// boots and hydrates exactly the demo seed.
 ///
-/// Coupling note (spec §10): `AppEnvironment()` here opens the app's own
+/// Coupling note (spec §10): `AppEnvironment.demoSingle()` here opens the app's own
 /// on-disk replica. The TEST_HOST app boots nothing while it hosts the tests
 /// (`WatchtowerMobileApp.Boot.hostingTests`), but a replica a previous
 /// `make mobile-run` left behind would skew the exact counts: uninstall the
@@ -47,33 +49,43 @@ final class ReplicaWiringTests: XCTestCase {
 
     /// Stops the environment's loop on teardown, so no test leaves a fetch
     /// loop running into the next one.
+    private func managed(_ session: HubSession) -> HubSession {
+        addTeardownBlock { @MainActor in session.stop() }
+        return session
+    }
+
+    /// The app's environment over `session`, stopped on teardown.
     private func managed(_ env: AppEnvironment) -> AppEnvironment {
-        addTeardownBlock { @MainActor in env.stop() }
+        for session in env.sessions.values {
+            _ = managed(session)
+        }
         return env
     }
 
-    /// An isolated demo environment on `path`; `sleeper` steps its fetch
+    /// An isolated demo session on `path`; `sleeper` steps its fetch
     /// loop by hand (nil: real sleeps).
-    private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> AppEnvironment {
-        managed(try AppEnvironment(
-            transport: InMemoryCloudTransport(),
-            replicaPath: path,
-            transportKind: .inMemoryDemo,
-            defaults: try makeDefaults(),
-            recordingsDirectory: try makeRecordingsDirectory()
-        ) { interval in
+    private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> HubSession {
+        let sleep: @Sendable (Duration) async throws -> Void = { interval in
             if let sleeper {
                 try await sleeper.sleep(interval)
             } else {
                 try await Task.sleep(for: interval)
             }
-        })
+        }
+        return managed(try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: path,
+            transportKind: .inMemoryDemo,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            sleep: sleep
+        ))
     }
 
     // MARK: - Boot and demo seed
 
     func testAppEnvironmentBootsAndHydratesExactlyTheDemoSeed() async throws {
-        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
+        let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         try await poll { env.lastSyncAt != nil }
 
         for (kind, expected) in bootCounts {
@@ -88,9 +100,10 @@ final class ReplicaWiringTests: XCTestCase {
 
     /// The seed in isolation, on a fresh store: same tally, no shared path.
     func testDemoSeedHydratesTheTallyOnAFreshStore() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: Date())
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: Date())
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         for (kind, expected) in seededCounts {
@@ -99,13 +112,74 @@ final class ReplicaWiringTests: XCTestCase {
         }
     }
 
+    /// The second Mac's records, counted apart: its own small tally, none of
+    /// the primary's calendar or session details, under its own heartbeat.
+    func testSecondaryDemoSeedHydratesItsOwnTally() async throws {
+        let store = try makePoolStore(.demo)
+        let transport = InMemoryCloudTransport()
+        let now = Date()
+        try await DemoSeed.load(into: TestPhone.hub(over: transport, .demo), hub: DemoSeed.secondary, now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        let expected: [SliceKind: Int] = [
+            .heartbeat: 1, .deviceGrant: 1, .workbench: 1, .terminalSession: 1, .ownerAsk: 1, .workbenchTarget: 3
+        ]
+        let total = try await store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
+        }
+        XCTAssertEqual(total, expected.values.reduce(0, +), "nothing but the secondary's own records")
+        for (kind, count) in expected {
+            let rows = try await self.count(kind, in: store)
+            XCTAssertEqual(rows, count, "unexpected \(kind.rawValue) count")
+        }
+        let snapshot = try await store.reader.read { db in
+            try SettingsSnapshot.read(from: db, store: store, deviceID: DemoSeed.device.deviceID)
+        }
+        XCTAssertEqual(MacStatus(heartbeat: snapshot.heartbeat, now: now), .online(macName: "Home Mac"))
+        XCTAssertEqual(snapshot.heartbeat?.hubID, DemoSeed.secondary.hubID)
+        XCTAssertEqual(snapshot.grant?.hubID, DemoSeed.secondary.hubID)
+    }
+
+    /// The demo as the app builds it: two Macs, the primary on screen, a
+    /// registry row each, distinct content per Mac, and a badge that is
+    /// the sum of both Macs' open asks.
+    func testTheDemoRootHasTwoMacsWithDistinctContent() async throws {
+        let env = try managed(AppEnvironment.demo(recordingsDirectory: try makeRecordingsDirectory()))
+        let root = try AppRoot.demo(env, defaults: try makeDefaults())
+        XCTAssertEqual(root.linking.links.map(\.hubID), [DemoSeed.primary.hubID, DemoSeed.secondary.hubID])
+        XCTAssertEqual(root.linking.links.map(\.link.macName), ["Acme Mac", "Home Mac"])
+        XCTAssertEqual(env.activeHubID, DemoSeed.primary.hubID)
+        XCTAssertFalse(root.showsOnboarding)
+        XCTAssertEqual(env.session(DemoSeed.secondary.hubID)?.hubName, "Home Mac")
+
+        try await poll(timeout: 20, {
+            env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
+        }, "both Macs hydrated")
+        XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
+        let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
+        XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
+        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+
+        env.activate(DemoSeed.secondary.hubID)
+        XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")
+    }
+
+    /// The demo has no link to end: Settings → Macs offers no Unlink or
+    /// Forget there, and does in a live build.
+    func testTheDemoOffersNoMacRemoval() {
+        XCTAssertFalse(MacsView.offersRemoval(transportKind: .inMemoryDemo))
+        XCTAssertTrue(MacsView.offersRemoval(transportKind: .cloudKit))
+    }
+
     /// The demo heartbeat is fresh and the demo grant belongs to the demo
     /// device, so Settings demos an online Mac and a linked phone.
     func testDemoSeedIsOnlineAndGrantsTheDemoDevice() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport, .demo)
         let now = Date()
-        try await DemoSeed.load(into: transport, now: now)
+        try await DemoSeed.load(into: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let snapshot = try await store.reader.read { db in
@@ -125,8 +199,9 @@ final class ReplicaWiringTests: XCTestCase {
         let path = try makeReplicaPath()
         do {
             let stale = InMemoryCloudTransport()
-            try await DemoSeed.load(into: stale, now: Date().addingTimeInterval(-7_200))
-            _ = try await ReplicaHydrator(transport: stale, store: try ReplicaStore(path: path)).hydrateOnce()
+            let staleHub = TestPhone.hub(over: stale, .demo)
+            try await DemoSeed.load(into: staleHub, now: Date().addingTimeInterval(-7_200))
+            _ = try await ReplicaHydrator(transport: stale, store: try TestPhone.replica(path: path, .demo)).hydrateOnce()
         }
 
         for launch in 1...2 {
@@ -152,47 +227,16 @@ final class ReplicaWiringTests: XCTestCase {
 
     // MARK: - Fetch loop
 
-    /// "Last sync" follows every successful loop fetch, not only the first.
+    /// "Last sync" follows every successful safety-poll fetch, not only the
+    /// first. The sleeper is stepped by hand.
     func testALoopTickAdvancesLastSync() async throws {
-        let env = try demoEnvironment(at: try makeReplicaPath())
-        try await poll { env.isLooping }
-        let first = try XCTUnwrap(env.lastSyncAt)
-
-        env.setFetchInterval(.milliseconds(50))
-        try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
-    }
-
-    /// The tab sets the cadence the loop sleeps, and the loop pauses in the
-    /// background and resumes in the foreground. The sleeper is stepped by
-    /// hand: no wall-clock wait decides anything.
-    func testTheLoopFollowsTheTabCadenceAndPausesInTheBackground() async throws {
         let sleeper = TickSleeper()
         let env = try demoEnvironment(at: try makeReplicaPath(), sleeper: sleeper)
         try await poll { env.isLooping && sleeper.waitingCount == 1 }
-        XCTAssertEqual(sleeper.requested.last, .seconds(30))
+        let first = try XCTUnwrap(env.lastSyncAt)
 
-        env.setFetchInterval(RootTabView.Tab.now.fetchInterval)
-        XCTAssertEqual(env.fetchInterval, .seconds(5))
-        try await poll({ sleeper.requested.last == .seconds(5) && sleeper.waitingCount == 1 }, "the loop sleeps 5 s on Now")
-        env.setFetchInterval(RootTabView.Tab.calendar.fetchInterval)
-        XCTAssertEqual(env.fetchInterval, .seconds(30))
-        try await poll({ sleeper.requested.last == .seconds(30) && sleeper.waitingCount == 1 }, "the loop sleeps 30 s on Calendar")
-
-        let running = env.fetchCycles
         sleeper.tick()
-        try await poll({ env.fetchCycles == running + 1 && sleeper.waitingCount == 1 }, "a tick runs one more cycle")
-
-        env.setActive(false)
-        XCTAssertFalse(env.isLooping)
-        try await poll({ sleeper.waitingCount == 0 }, "the paused loop's sleep is cancelled")
-        let paused = env.fetchCycles
-        sleeper.tick()
-        await Task.yield()
-        XCTAssertEqual(env.fetchCycles, paused, "no cycle may begin while the app is in the background")
-
-        env.setActive(true)
-        XCTAssertTrue(env.isLooping)
-        try await poll({ env.fetchCycles == paused + 1 }, "the loop did not resume in the foreground")
+        try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
     }
 
     /// A-T11 N5: the scene phase is read at launch too (`initial: true`),
@@ -200,9 +244,9 @@ final class ReplicaWiringTests: XCTestCase {
     /// environment before its boot ends: the boot never starts the loop,
     /// and the first activation does.
     func testABackgroundLaunchStartsNoLoopUntilTheAppIsActive() async throws {
-        XCTAssertEqual(RootTabView.isActive(in: .background), false)
-        XCTAssertEqual(RootTabView.isActive(in: .active), true)
-        XCTAssertNil(RootTabView.isActive(in: .inactive), "inactive (a sheet, the app switcher) changes nothing")
+        XCTAssertFalse(RootTabView.isActive(in: .background))
+        XCTAssertTrue(RootTabView.isActive(in: .active))
+        XCTAssertFalse(RootTabView.isActive(in: .inactive), "inactive (Control Center, the app switcher) pauses too")
 
         let env = try demoEnvironment(at: try makeReplicaPath())
         env.setActive(false)
@@ -215,14 +259,14 @@ final class ReplicaWiringTests: XCTestCase {
     // MARK: - Transport choice
 
     /// The unsigned test host (CODE_SIGNING_ALLOWED=NO) has no iCloud
-    /// entitlement, so `AppEnvironment()` runs the demo transport and is
+    /// entitlement, so `AppEnvironment.demoSingle()` runs the demo transport and is
     /// linked to the demo device.
     func testUnsignedHostProbesFalseAndBootsDemo() async throws {
         XCTAssertFalse(
             CloudKitTransport.entitlementPresent(),
             "an unsigned simulator host must probe false, or the demo path is dead"
         )
-        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
+        let env = try managed(AppEnvironment.demoSingle(recordingsDirectory: try makeRecordingsDirectory()))
         XCTAssertEqual(env.transportKind, .inMemoryDemo)
         XCTAssertEqual(env.linkedDevice, DemoSeed.device)
     }
@@ -231,7 +275,7 @@ final class ReplicaWiringTests: XCTestCase {
     /// runs on the `.cloudKit` kind. Forced through the designated init with
     /// an in-memory stand-in on an isolated path.
     func testCloudKitKindSeedsNothingAndStartsUnlinked() async throws {
-        let env = try managed(AppEnvironment(
+        let env = try managed(HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .cloudKit,
@@ -245,6 +289,187 @@ final class ReplicaWiringTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
         XCTAssertEqual(rows, 0, "the cloudKit kind must start empty")
+    }
+
+    // MARK: - E2E (mobile E2E Task 17)
+
+    /// A live-kind environment with the test pairing's keys over `transport`: its fetch loop parked on `sleeper`,
+    /// its unlock signal posted on `notifications`.
+    private func liveEnvironment(
+        transport: InMemoryCloudTransport,
+        keys: PhoneKeys,
+        notifications: NotificationCenter,
+        sleeper: TickSleeper
+    ) throws -> HubSession {
+        managed(try HubSession(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString,
+            keys: keys,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            notifications: notifications,
+            // Labelled: a trailing closure would bind to `makeRecorder`.
+            sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+        ))
+    }
+
+    private func slice(_ kind: SliceKind, id: String, at date: Date) -> CloudRecord {
+        CloudRecordFactory.record(for: SliceRecord(kind: kind, id: id, modifiedAt: date, payload: Data("{}".utf8)))
+    }
+
+    /// Rows whose kind the replica knows: indexed (opened), or a fixed-name row.
+    private func indexedCount(_ kind: SliceKind, in store: ReplicaStore) throws -> Int {
+        try store.reader.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records WHERE kind = ?", arguments: [kind.rawValue]) ?? 0
+        }
+    }
+
+    private func rowCount(in store: ReplicaStore) throws -> Int {
+        try store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0 }
+    }
+
+    /// Every read goes through the envelope opener: a plaintext record put straight into the transport (a pre-E2E
+    /// Mac, a forger with zone access) is refused at apply and never shows; the hub's sealed record does.
+    func testTheLiveEnvironmentReadsOnlyThroughTheEnvelopeOpener() async throws {
+        let transport = InMemoryCloudTransport()
+        let env = try liveEnvironment(
+            transport: transport, keys: try TestPhone.keys(), notifications: NotificationCenter(), sleeper: TickSleeper()
+        )
+        try await poll { env.isBootstrapped }
+        let now = Date()
+        try await transport.save([slice(.workbench, id: "1", at: now)])
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "2", at: now)])
+
+        let fetched = await env.refresh(.pull)
+
+        XCTAssertTrue(fetched)
+        XCTAssertEqual(try rowCount(in: env.store), 1, "only the sealed record is stored")
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 1)
+        XCTAssertGreaterThanOrEqual(env.store.rejectedCount(), 1, "the plaintext record is refused and counted")
+        let names = try await env.store.reader.read { db in try String.fetchAll(db, sql: "SELECT plain_name FROM slice_records") }
+        XCTAssertEqual(names, [SliceKind.workbench.recordName(id: "2")])
+    }
+
+    /// Review Focus 1: a push hydrates while the keychain is locked. The batch is stored (ciphertext, signature
+    /// checked with the public key) but cannot be opened; the unlock signal indexes it at once, without waiting
+    /// for the next fetch.
+    func testUnlockIndexesRowsHydratedWhileLocked() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let notifications = NotificationCenter()
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: notifications, sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+
+        keychain.isLocked = true
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
+        let fetched = await env.refresh(.pull)
+        XCTAssertTrue(fetched, "a locked keychain still stores the batch")
+        XCTAssertEqual(try rowCount(in: env.store), 1, "the ciphertext is stored")
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0, "and cannot be opened while locked")
+
+        keychain.isLocked = false
+        notifications.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+
+        try await poll({ (try? self.indexedCount(.workbench, in: env.store)) == 1 }, "the unlock did not index the row")
+        XCTAssertEqual(sleeper.waitingCount, 1, "no fetch cycle ran: the unlock alone indexed it")
+    }
+
+    /// Review Focus 1, the foreground half: the app coming back to the foreground indexes what a locked
+    /// background hydrate stored (the unlock signal may have passed while the app was suspended).
+    func testForegroundIndexesRowsHydratedWhileLocked() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: NotificationCenter(), sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+        env.setActive(false)
+
+        keychain.isLocked = true
+        try await TestPhone.hub(over: transport).save([slice(.workbench, id: "1", at: Date())])
+        _ = await env.refresh(.pull)
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 0)
+
+        keychain.isLocked = false
+        env.setActive(true)
+        XCTAssertEqual(try indexedCount(.workbench, in: env.store), 1, "the foreground indexes before the first fetch")
+    }
+
+    /// A keybox (a rotation's new epoch, a removal) indexed at unlock reaches the link flow like one indexed by
+    /// a fetch.
+    func testAKeyboxIndexedAtUnlockFiresTheKeyboxSignal() async throws {
+        let transport = InMemoryCloudTransport()
+        let keys = try TestPhone.keys()
+        let keychain = try XCTUnwrap(keys.store as? InMemoryPhoneKeyStore)
+        let notifications = NotificationCenter()
+        let sleeper = TickSleeper()
+        let env = try liveEnvironment(transport: transport, keys: keys, notifications: notifications, sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+        var signals = 0
+        env.onKeyboxChanged = { signals += 1 }
+
+        keychain.isLocked = true
+        let grant = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: TestE2E.hubID.uuidString, name: "Colleague A's iPhone",
+            scope: .private, linked: true, typingAllowed: false, startSessionsAllowed: true
+        )
+        try await TestPhone.hub(over: transport).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
+        _ = await env.refresh(.pull)
+        XCTAssertEqual(signals, 0, "a keybox that cannot be read while locked signals nothing yet")
+
+        keychain.isLocked = false
+        notifications.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ signals == 1 }, "the keybox indexed at unlock did not signal")
+    }
+
+    /// The hub restaged an asset under a new key while the record was on its way: the record that arrives
+    /// carries the old key, so the file does not open. That is a wait for the next version, not poison: nothing
+    /// is counted corrupt, and the hub's next version (key and file together) reads.
+    func testAnAssetRestagedUnderANewKeyMidSendReadsWithTheNextVersion() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
+        let dir = try makeRecordingsDirectory()
+        let body = Data("segments".utf8)
+        let first = try TestPhone.sealAsset(body, to: dir.appendingPathComponent("first.bin"))
+        let restaged = dir.appendingPathComponent("restaged.bin")
+        let second = try TestPhone.sealAsset(body, to: restaged)
+        let name = SliceKind.meetingTranscript.recordName(id: "9")
+        func record(_ descriptor: AssetDescriptor) -> CloudRecord {
+            CloudRecord(
+                recordName: name, zone: .data, kind: SliceKind.meetingTranscript.rawValue, modifiedAt: Date(),
+                payload: Data("{}".utf8), assetFileURL: restaged, asset: descriptor)
+        }
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        func asset() async throws -> SliceAsset? {
+            try await store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) }
+        }
+
+        try await hub.save([record(first)])
+        _ = try await hydrator.hydrateOnce()
+        guard case .unreadable = try await asset() else { return XCTFail("a file sealed under another key must not open") }
+        XCTAssertEqual(store.corruptCount(), 0, "not poison")
+
+        try await hub.save([record(second)])
+        _ = try await hydrator.hydrateOnce()
+        let readable = try await asset()
+        XCTAssertEqual(readable, .data(body), "the next version reads")
+    }
+
+    // MARK: - Demo pairing
+
+    /// The demo hub's seqs come from a ceiling persisted in the defaults, never from the clock: a clock that
+    /// went backwards between two launches still seals above the last launch, so the replica takes the seed.
+    func testTheDemoHubSeqCeilingPersistsAcrossLaunches() throws {
+        let defaults = try makeDefaults()
+        let first = DemoSeed.hubSeq(defaults: defaults, now: Date())
+        let firstValues = try (0..<3).map { _ in try first.next() }
+        let relaunch = DemoSeed.hubSeq(defaults: defaults, now: Date().addingTimeInterval(-86_400))
+        XCTAssertGreaterThan(try relaunch.next(), try XCTUnwrap(firstValues.last))
     }
 
     // MARK: - Test host
@@ -264,7 +489,9 @@ final class ReplicaWiringTests: XCTestCase {
             processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"],
             makeRoot: {
                 built += 1
-                return AppRoot.demo(try self.demoEnvironment(at: try self.makeReplicaPath()), defaults: try self.makeDefaults())
+                let defaults = try self.makeDefaults()
+                let session = try self.demoEnvironment(at: try self.makeReplicaPath())
+                return try AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
             }
         ) else {
             return XCTFail("a test host must not build an environment")
@@ -275,7 +502,10 @@ final class ReplicaWiringTests: XCTestCase {
         let path = try makeReplicaPath()
         guard case let .ready(root) = WatchtowerMobileApp.Boot.make(
             processEnvironment: [:],
-            makeRoot: { AppRoot.demo(try self.demoEnvironment(at: path), defaults: try self.makeDefaults()) }
+            makeRoot: {
+                let defaults = try self.makeDefaults()
+                return try AppRoot.demo(AppEnvironment.single(try self.demoEnvironment(at: path), defaults: defaults), defaults: defaults)
+            }
         ) else {
             return XCTFail("a normal launch must boot")
         }
@@ -288,7 +518,7 @@ final class ReplicaWiringTests: XCTestCase {
     /// never a crash. `/dev/null/sub/…` is unopenable: its parent is a device.
     func testInitThrowsWhenReplicaPathIsUnopenable() throws {
         XCTAssertThrowsError(
-            try AppEnvironment(
+            try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: "/dev/null/sub/replica.sqlite",
                 defaults: try makeDefaults(),

@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       # -tags codegrammars: the release CLI carries the code index's full
       # grammar set (scripts/build-app.sh builds it the same way).
@@ -75,11 +75,11 @@ jobs:
           xcode-version: "26.4.1"
 
       # CodeNavRealCLITests builds the CLI from this checkout (go build .):
-      # the Go the other jobs use (go.mod needs 1.25), so the suite runs here
+      # the Go the other jobs use (go.mod needs 1.26), so the suite runs here
       # instead of skipping or failing.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26.9"
 
       - name: Cache SPM build
         uses: actions/cache@v4

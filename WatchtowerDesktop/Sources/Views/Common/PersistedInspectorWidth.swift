@@ -25,7 +25,6 @@ struct PersistedInspectorWidth: ViewModifier {
     func body(content: Content) -> some View {
         content
             .frame(maxWidth: .infinity)
-            .inspectorColumnWidth(min: range.lowerBound, ideal: openingWidth, max: range.upperBound)
             .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { liveWidth = $0 }
             .task(id: liveWidth) {
                 guard let liveWidth else { return }
@@ -33,6 +32,10 @@ struct PersistedInspectorWidth: ViewModifier {
                 guard !Task.isCancelled else { return }
                 Self.store(liveWidth, key: key, range: range, defaults: defaults)
             }
+            // Outermost (#735): wrapped in the width probe, the column width
+            // never reaches the inspector — SwiftUI pins the column at its
+            // default width and the divider drags nothing.
+            .inspectorColumnWidth(min: range.lowerBound, ideal: openingWidth, max: range.upperBound)
     }
 
     /// The width the column opens at: the stored one, clamped into `range`.

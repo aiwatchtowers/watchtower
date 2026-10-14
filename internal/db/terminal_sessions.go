@@ -171,7 +171,7 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 	return n > 0, nil
 }
 
-// SetTerminalClaudeSessionID points project projectID's agent row id at the
+// SetTerminalClaudeSessionID points workbench workbenchID's agent row id at the
 // conversation (Claude Code or Codex) it now runs — the SessionStart hook
 // after /clear or a resume that switched conversations, so the Desktop's next relaunch
 // resumes it. The same column write as the Desktop's
@@ -184,13 +184,13 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 // path (agent_transcript_path; the switch's SessionStart stores the new one).
 // The working directory (agent_cwd, agent_cwd_at) stays: the same process
 // switched conversations, it did not move.
-func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
+func (db *DB) SetTerminalClaudeSessionID(id, workbenchID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
 		agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
 		agent_turns = NULL
 		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id IS NOT ?`,
-		sessionID, id, projectID, sessionID)
+		sessionID, id, workbenchID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
 	}

@@ -17,6 +17,14 @@
 			</array>
 		</dict>
 	</array>
+	<!-- The Keychain group the E2E keys are written to (F20), the entitlements' first
+	     keychain-access-groups entry; read at runtime by PhoneKeychain. Expanded at build time. -->
+	<key>WTKeychainPrivateGroup</key>
+	<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile</string>
+	<!-- The shared Keychain group of the alert material (K_alert, the hub's public signing key), the
+	     entitlements' second keychain-access-groups entry; the NotifyService extension reads it too. -->
+	<key>WTKeychainAlertGroup</key>
+	<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
 	<!-- The link flow scans the QR code shown on the Mac. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Watchtower uses the camera to scan the code shown on your Mac.</string>

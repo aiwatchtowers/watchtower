@@ -2,9 +2,14 @@ import XCTest
 @testable import WatchtowerSync
 
 final class LinkPayloadTests: XCTestCase {
-    // A frozen v2 code (spec §2.3, multi-hub §3.4): sorted keys, unescaped slashes, base64url
+    // A frozen v3 code (mobile E2E spec §2.3): sorted keys, unescaped slashes, base64url
     // without padding. Changing the encoder's output breaks this fixture.
-    private static let fixtureURL = "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3d3dy5pY2xvdWQuY29tL3NoYXJlLzBhQmNEZUZnSGlKa0xtTm9QcVJzVHVWd1giLCJleHAiOjE3MDAwMDA2MDAsImh1Yl9pZCI6IjhGMEMyQTUxLTNCN0UtNEMxRC05QTZGLTJFNUI3RDlDMUEzNCIsImlhdCI6MTcwMDAwMDAwMCwibWFjX25hbWUiOiJBY21lIE1hY0Jvb2sgUHJvIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4Iiwib3duZXJfdXNlciI6Il8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8well4V3ZVdFNyUXBPbk1sS2pJaEdmRWRDIiwidiI6Mn0"
+    // swiftlint:disable:next line_length
+    private static let fixtureURL = "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3d3dy5pY2xvdWQuY29tL3NoYXJlLzBhQmNEZUZnSGlKa0xtTm9QcVJzVHVWd1giLCJleHAiOjE3MDAwMDA2MDAsImh1Yl9pZCI6IjhGMEMyQTUxLTNCN0UtNEMxRC05QTZGLTJFNUI3RDlDMUEzNCIsImh1Yl9reCI6IkFRSURCQVVHQndnSkNnc01EUTRQRUJFU0V4UVZGaGNZR1JvYkhCMGVIeUEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTcwMDAwMDAwMCwibWFjX25hbWUiOiJBY21lIE1hY0Jvb2sgUHJvIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4Iiwib3duZXJfdXNlciI6Il8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8well4V3ZVdFNyUXBPbk1sS2pJaEdmRWRDIiwidiI6M30"
+
+    // The frozen v2 code (multi-hub §3.4), rewritten on purpose from a "parses" fixture to an
+    // "older version" one: the v3 cut makes every v2 code read "Update Watchtower on this Mac".
+    private static let v2FixtureURL = "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3d3dy5pY2xvdWQuY29tL3NoYXJlLzBhQmNEZUZnSGlKa0xtTm9QcVJzVHVWd1giLCJleHAiOjE3MDAwMDA2MDAsImh1Yl9pZCI6IjhGMEMyQTUxLTNCN0UtNEMxRC05QTZGLTJFNUI3RDlDMUEzNCIsImlhdCI6MTcwMDAwMDAwMCwibWFjX25hbWUiOiJBY21lIE1hY0Jvb2sgUHJvIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4Iiwib3duZXJfdXNlciI6Il8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8well4V3ZVdFNyUXBPbk1sS2pJaEdmRWRDIiwidiI6Mn0"
 
     private static let fixturePayload = LinkPayload(
         hubID: "8F0C2A51-3B7E-4C1D-9A6F-2E5B7D9C1A34",
@@ -14,8 +19,14 @@ final class LinkPayloadTests: XCTestCase {
         iat: 1_700_000_000,
         exp: 1_700_000_600,
         dataShare: "https://www.icloud.com/share/0aBcDeFgHiJkLmNoPqRsTuVwX",
-        relayShare: "https://www.icloud.com/share/0zYxWvUtSrQpOnMlKjIhGfEdC"
+        relayShare: "https://www.icloud.com/share/0zYxWvUtSrQpOnMlKjIhGfEdC",
+        hubSigningKey: hubSigning,
+        hubAgreementKey: hubAgreement
     )
+
+    // 32-byte sequences (not real keys): the code carries the public keys as base64url.
+    private static let hubSigning = LinkPayload.encodeBase64URL(E2EFixtureKeys.sequence(0x41, 0x60))
+    private static let hubAgreement = LinkPayload.encodeBase64URL(E2EFixtureKeys.sequence(0x01, 0x20))
 
     /// The fixture's JSON object, for building variant codes.
     private static func fixtureObject() throws -> [String: Any] {
@@ -42,7 +53,9 @@ final class LinkPayloadTests: XCTestCase {
     func testFrozenFixtureRoundTripsByteForByte() throws {
         let parsed = try Self.parse(Self.fixtureURL).get()
         XCTAssertEqual(parsed, Self.fixturePayload)
-        XCTAssertEqual(parsed.v, 2)
+        XCTAssertEqual(parsed.v, 3)
+        XCTAssertEqual(parsed.hubSigningKey, Self.hubSigning)
+        XCTAssertEqual(parsed.hubAgreementKey, Self.hubAgreement)
         XCTAssertEqual(parsed.container, "iCloud.com.aiwatchtowers.watchtower")
         XCTAssertEqual(parsed.url().absoluteString, Self.fixtureURL)
         XCTAssertEqual(Self.fixturePayload.url().absoluteString, Self.fixtureURL)
@@ -56,9 +69,12 @@ final class LinkPayloadTests: XCTestCase {
             ownerUser: "_owner",
             dataShare: nil,
             relayShare: nil,
+            hubSigningKey: Self.hubSigning,
+            hubAgreementKey: Self.hubAgreement,
             now: now
         )
         XCTAssertEqual(payload.v, LinkPayload.currentVersion)
+        XCTAssertEqual(LinkPayload.currentVersion, 3)
         XCTAssertEqual(payload.container, WatchtowerCloud.containerID)
         XCTAssertEqual(payload.iat, Int64(now.timeIntervalSince1970))
         XCTAssertEqual(payload.exp, payload.iat + 600)
@@ -68,15 +84,60 @@ final class LinkPayloadTests: XCTestCase {
 
     // MARK: - Rejections
 
-    func testNewerVersionIsRejected() throws {
+    func testV3RoundTripsAndCarriesTheHubKeys() throws {
+        let object = try Self.fixtureObject()
+        XCTAssertEqual(object["hub_sig"] as? String, Self.hubSigning)
+        XCTAssertEqual(object["hub_kx"] as? String, Self.hubAgreement)
+        XCTAssertEqual(object["v"] as? Int, 3)
+    }
+
+    func testAV2CodeReadsUpdateTheMac() throws {
+        XCTAssertEqual(try Self.parse(Self.v2FixtureURL), .failure(.olderVersion))
+    }
+
+    func testAV4CodeReadsUpdateThePhone() throws {
         var object = try Self.fixtureObject()
-        object["v"] = 3
+        object["v"] = 4
         XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.newerVersion))
     }
 
     func testNewerVersionWinsOverUnknownShape() throws {
-        // A v3 code may drop v2 keys; the phone must still say "update".
-        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 3])), .failure(.newerVersion))
+        // A v4 code may drop v3 keys; the phone must still say "update".
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 4])), .failure(.newerVersion))
+    }
+
+    func testAMissingHubKeyIsMissingField() throws {
+        for name in ["hub_kx", "hub_sig"] {
+            var object = try Self.fixtureObject()
+            object.removeValue(forKey: name)
+            XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.missingField(name)))
+        }
+    }
+
+    func testAHubKeyThatIsNot32BytesIsBadEncoding() throws {
+        for name in ["hub_kx", "hub_sig"] {
+            var object = try Self.fixtureObject()
+            object[name] = LinkPayload.encodeBase64URL(Data(count: 31))
+            XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.badEncoding))
+        }
+    }
+
+    func testAnAllZeroHubKeyIsBadEncoding() throws {
+        for name in ["hub_kx", "hub_sig"] {
+            var object = try Self.fixtureObject()
+            object[name] = LinkPayload.encodeBase64URL(Data(count: 32))
+            XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.badEncoding))
+        }
+    }
+
+    func testAQRWithHubKeysStaysUnderTheEncoderLimit() throws {
+        let share = "https://www.icloud.com/share/" + String(repeating: "x", count: 120 - 29)
+        let payload = LinkPayload.issue(
+            hubID: UUID().uuidString, macName: String(repeating: "m", count: 60),
+            ownerUser: "_" + String(repeating: "0", count: 32), dataShare: share, relayShare: share,
+            hubSigningKey: Self.hubSigning, hubAgreementKey: Self.hubAgreement, now: Date())
+        let qr = payload.url().absoluteString.utf8.count
+        XCTAssertLessThanOrEqual(qr, 1_200, "QR string is \(qr) bytes")
     }
 
     /// Multi-hub spec §6.7: a v1 code is from a single-hub Mac, whose shares
@@ -84,6 +145,8 @@ final class LinkPayloadTests: XCTestCase {
     func testOlderVersionIsRejectedWhateverItsShape() throws {
         var object = try Self.fixtureObject()
         object["v"] = 1
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.olderVersion))
+        object["v"] = 2
         XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.olderVersion))
         XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 1])), .failure(.olderVersion))
     }
@@ -145,7 +208,7 @@ final class LinkPayloadTests: XCTestCase {
 
     // MARK: - Size and optional keys
 
-    func testEncodedSizeWithBothSharesIsUnder700Bytes() throws {
+    func testEncodedSizeWithBothSharesAndKeysIsUnder850Bytes() throws {
         let share = "https://www.icloud.com/share/" + String(repeating: "x", count: 120 - 29)
         XCTAssertEqual(share.count, 120)
         let payload = LinkPayload.issue(
@@ -154,10 +217,12 @@ final class LinkPayloadTests: XCTestCase {
             ownerUser: "_" + String(repeating: "0", count: 32),
             dataShare: share,
             relayShare: share,
+            hubSigningKey: Self.hubSigning,
+            hubAgreementKey: Self.hubAgreement,
             now: Date()
         )
         let json = try LinkPayload.makeEncoder().encode(payload)
-        XCTAssertLessThan(json.count, 700, "payload JSON is \(json.count) bytes")
+        XCTAssertLessThan(json.count, 850, "payload JSON is \(json.count) bytes")
         // The QR string itself (base64url adds a third) is reported for the record.
         let qr = payload.url().absoluteString.utf8.count
         XCTAssertLessThan(qr, 1_000, "QR string is \(qr) bytes")
@@ -170,6 +235,8 @@ final class LinkPayloadTests: XCTestCase {
             ownerUser: "_owner",
             dataShare: nil,
             relayShare: "https://www.icloud.com/share/0zYx",
+            hubSigningKey: Self.hubSigning,
+            hubAgreementKey: Self.hubAgreement,
             now: Date()
         )
         let json = try XCTUnwrap(String(data: try LinkPayload.makeEncoder().encode(payload), encoding: .utf8))
@@ -235,7 +302,9 @@ final class LinkPayloadTests: XCTestCase {
             ownerUser: "_owner",
             nonce: LinkPayload.makeNonce(),
             iat: 1,
-            exp: 601
+            exp: 601,
+            hubSigningKey: hubSigning,
+            hubAgreementKey: hubAgreement
         )
     }
 }

@@ -97,10 +97,11 @@ final class WorkbenchWiringTests: XCTestCase {
     /// The snapshot reads what the hydrator stored; an undecodable record is
     /// skipped, never a failed screen.
     func testTheSnapshotReadsTheHydratedDemoAndSkipsABadRecord() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
-        try await transport.save([
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: now)
+        try await hub.save([
             CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "99", modifiedAt: now, payload: Data("{}".utf8)))
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
@@ -122,8 +123,9 @@ final class WorkbenchWiringTests: XCTestCase {
     func testTheModelPublishesOnlyRealChangesAndTheBadgeOnlyItsOwn() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let hydrator = ReplicaHydrator(transport: transport, store: store)
-        try await transport.save(try DemoSeed.workbenchRecords(now: now))
+        try await hub.save(try DemoSeed.workbenchRecords(now: now))
         _ = try await hydrator.hydrateOnce()
         let model = WorkbenchReplicaModel()
         model.start(store: store)
@@ -138,18 +140,18 @@ final class WorkbenchWiringTests: XCTestCase {
         let sentinel = CalendarReplicaModel()
         sentinel.start(store: store)
 
-        try await transport.save(try DemoSeed.calendarRecords(now: now))
+        try await hub.save(try DemoSeed.calendarRecords(now: now))
         _ = try await hydrator.hydrateOnce()
         try await poll { !sentinel.snapshot.events.isEmpty }
 
-        try await transport.save([try DemoSeed.record(kind: .workbench, id: 98, json: DemoSeed.JSON.workbench(98), modifiedAt: now)])
+        try await hub.save([try DemoSeed.record(kind: .workbench, id: 98, json: DemoSeed.JSON.workbench(98), modifiedAt: now)])
         _ = try await hydrator.hydrateOnce()
         try await poll({ published.values.count >= 2 }, "the new workbench was not published")
         XCTAssertEqual(published.values.dropFirst().first?.workbenches.count, 4, "a calendar write must not republish the Workbench snapshot")
         try await poll { model.snapshot.workbenches.count == 4 }
         XCTAssertEqual(badgeSets.count, 0, "a new workbench leaves the open-ask count alone")
 
-        try await transport.save([try DemoSeed.record(
+        try await hub.save([try DemoSeed.record(
             kind: .ownerAsk, id: 199, json: DemoSeed.JSON.ask(199, workbench: 98), modifiedAt: now
         )])
         _ = try await hydrator.hydrateOnce()

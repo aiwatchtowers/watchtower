@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"watchtower/internal/config"
 )
 
 // containsPair reports whether args contains flag immediately followed by value.
@@ -363,5 +365,77 @@ fi
 	}
 	if _, statErr := os.Stat(got); !os.IsNotExist(statErr) {
 		t.Errorf("system prompt file %q must be removed after Generate, stat err = %v", got, statErr)
+	}
+}
+
+// A message beginning with '-' never follows -p on argv, where claude would
+// parse it as a flag (-c is --continue): it travels on stdin.
+func TestGenerateArgs_DashLeadingMessageViaStdin(t *testing.T) {
+	msg := "-c resume the last session"
+	args, stdin := generateArgs("m", "sys", "", msg, false)
+	if stdin != msg {
+		t.Errorf("stdin = %q, want the message", stdin)
+	}
+	for _, a := range args {
+		if a == msg {
+			t.Fatalf("args = %v carry the dash-leading message", args)
+		}
+	}
+}
+
+// Generate's working directory, ~/.config/watchtower, holds the config and
+// tokens: created private. So is the workspace a digest lock creates.
+func TestGenerateAndDigestLock_CreatePrivateDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '{\"type\":\"result\",\"result\":\"ok\",\"is_error\":false}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := NewClaudeGenerator("light", "strong", script).Generate(context.Background(), "sys", "hi", ""); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	_, unlock, err := (&Pipeline{cfg: cfg}).acquireDigestLock()
+	if err != nil {
+		t.Fatalf("acquireDigestLock: %v", err)
+	}
+	defer unlock()
+	for _, dir := range []string{filepath.Join(home, ".config", "watchtower"), cfg.WorkspaceDir()} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Errorf("%s: mode %o, want 700", dir, perm)
+		}
+	}
+}
+
+// An existing ~/.config/watchtower an older install left 0755 is narrowed
+// to 0700 when Generate runs from it.
+func TestGenerate_NarrowsAnExistingConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "watchtower")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '{\"type\":\"result\",\"result\":\"ok\",\"is_error\":false}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := NewClaudeGenerator("light", "strong", script).Generate(context.Background(), "sys", "hi", ""); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	info, err := os.Stat(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("%s: mode %o, want 700", configDir, perm)
 	}
 }

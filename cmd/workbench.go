@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/kb"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchfiles"
@@ -483,9 +484,16 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	rerr := workbenchRemoveInstall(cmd.Context(), cfg, p)
+	// A file or directory linked outside the folder is never written through
+	// (PROJ-04), so what Watchtower put there stays: name it and what to
+	// remove by hand (PROJ-02's exception, ask #118).
+	hints := devpack.OutsideFolderHints(rerr)
 	if rerr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the workbench is deleted anyway)\n",
 			p.FolderPath, rerr)
+	}
+	for _, h := range hints {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", h)
 	}
 	if err := database.DeleteWorkbench(id); err != nil {
 		return err
@@ -498,9 +506,11 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the workbench's stored images failed: %v (the workbench is deleted anyway)\n", ferr)
 	}
 	if workbenchFlagJSON {
-		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, FilesOK: ferr == nil}
-		if rerr != nil {
-			out.RemovalError = rerr.Error()
+		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, RemovalHints: hints, FilesOK: ferr == nil}
+		// The hints already say what the link refusals left; the error
+		// carries every other failure, so none is hidden behind them.
+		if rest := devpack.WithoutHinted(rerr); rest != nil {
+			out.RemovalError = rest.Error()
 		}
 		if ferr != nil {
 			out.FilesError = ferr.Error()
@@ -512,12 +522,12 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 }
 
 // discardTargetImages removes the stored copies of images (rows of a target
-// already deleted) that no remaining row of project projectID names.
-func discardTargetImages(cfg *config.Config, database *db.DB, projectID int64, images []db.WorkbenchTargetImage) error {
+// already deleted) that no remaining row of workbench workbenchID names.
+func discardTargetImages(cfg *config.Config, database *db.DB, workbenchID int64, images []db.WorkbenchTargetImage) error {
 	if len(images) == 0 {
 		return nil
 	}
-	keep, err := database.WorkbenchImagePaths(projectID)
+	keep, err := database.WorkbenchImagePaths(workbenchID)
 	if err != nil {
 		return err
 	}
@@ -535,6 +545,9 @@ type workbenchDeleteJSON struct {
 	Deleted      bool   `json:"deleted"`
 	RemovalOK    bool   `json:"removal_ok"`
 	RemovalError string `json:"removal_error"`
-	FilesOK      bool   `json:"files_ok"` // the target images' stored copies were removed
-	FilesError   string `json:"files_error"`
+	// RemovalHints names what a removal refused through a link leaving the
+	// folder left there, and what to remove by hand (devpack.OutsideFolderHints).
+	RemovalHints []string `json:"removal_hints,omitempty"`
+	FilesOK      bool     `json:"files_ok"` // the target images' stored copies were removed
+	FilesError   string   `json:"files_error"`
 }

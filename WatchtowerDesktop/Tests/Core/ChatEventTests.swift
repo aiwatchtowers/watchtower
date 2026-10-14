@@ -40,7 +40,7 @@ final class ChatEventTests: XCTestCase {
 
     func testEveryWireErrorCodeRoundTrips() {
         let codes = ["auth", "rate_limit", "provider_unavailable", "session_lost",
-                     "attachment_unsupported", "interrupted", "internal"]
+                     "attachment_unsupported", "interrupted", "internal", "workdir_unsafe"]
         for code in codes {
             XCTAssertEqual(ChatErrorCode(rawValue: code)?.rawValue, code, code)
         }

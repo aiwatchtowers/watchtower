@@ -70,16 +70,18 @@ func TestToolTrust_DefaultAskAndUpsert(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
-	trust, err := database.GetToolTrust("create_target")
+	trust, err := database.GetToolTrust("create_target", "main")
 	require.NoError(t, err)
 	assert.Equal(t, "ask", trust)
 
-	require.NoError(t, database.SetToolTrust("create_target", "execute"))
-	trust, _ = database.GetToolTrust("create_target")
+	require.NoError(t, database.SetToolTrust("create_target", "main", "execute"))
+	trust, _ = database.GetToolTrust("create_target", "main")
 	assert.Equal(t, "execute", trust)
+	trust, _ = database.GetToolTrust("create_target", "reaction")
+	assert.Equal(t, "ask", trust, "a row covers its own surface only")
 
-	require.NoError(t, database.SetToolTrust("create_target", "ask"))
-	trust, _ = database.GetToolTrust("create_target")
+	require.NoError(t, database.SetToolTrust("create_target", "main", "ask"))
+	trust, _ = database.GetToolTrust("create_target", "main")
 	assert.Equal(t, "ask", trust)
 }
 

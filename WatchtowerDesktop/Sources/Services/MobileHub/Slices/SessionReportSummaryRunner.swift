@@ -49,8 +49,9 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     private let workbenches: @Sendable () async throws -> Workbenches
     private let timing: Timing
     private let clock: @Sendable () -> ContinuousClock.Instant
+    /// Whether a pass runs at all (the hub's linked-phone gate).
+    private let isActive: @Sendable () -> Bool
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
-    private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
@@ -61,7 +62,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     struct Workbenches: Sendable {
         /// With a live agent session: the 60 s cadence.
         let live: [Int64]
-        /// Published (`WorkbenchSlice.publishedWorkbenches`): a requested
+        /// Published (`WorkbenchSlice.publishedWorkbenchRefs`): a requested
         /// workbench runs while listed here; one that leaves it is forgotten
         /// with its summaries.
         let published: Set<Int64>
@@ -71,26 +72,34 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         fetch: @escaping Fetch,
         workbenches: @escaping @Sendable () async throws -> Workbenches,
         timing: Timing = .standard,
-        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        isActive: @escaping @Sendable () -> Bool = { true }
     ) {
         self.fetch = fetch
         self.workbenches = workbenches
         self.timing = timing
         self.clock = clock
+        self.isActive = isActive
     }
 
     /// The hub's runner: the CLI through `runner`, over the published
-    /// workbenches and those with a live session per `liveness`.
-    static func live(_ runner: any CLIRunnerProtocol, dbPool: DatabasePool, liveness: SessionLivenessBox) -> SessionReportSummaryRunner {
-        SessionReportSummaryRunner(fetch: cliFetch(runner)) { [liveness] in
+    /// workbenches and those with a live session per `liveness`; no pass
+    /// runs while `isActive` is false.
+    static func live(
+        _ runner: any CLIRunnerProtocol,
+        dbPool: DatabasePool,
+        liveness: SessionLivenessBox,
+        isActive: @escaping @Sendable () -> Bool = { true }
+    ) -> SessionReportSummaryRunner {
+        SessionReportSummaryRunner(fetch: cliFetch(runner), workbenches: { [liveness] in
             let live = liveness.current.liveIDs
             return try await dbPool.read { db in
                 Workbenches(
                     live: try TerminalSessionSlice.liveWorkbenchIDs(db, liveIDs: live),
-                    published: Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+                    published: Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
                 )
             }
-        }
+        }, isActive: isActive)
     }
 
     /// The CLI run and its decode, as `SessionReportCenter.runSummary`.
@@ -106,12 +115,6 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     /// good run, or when the summary does not name it.
     func summary(workbenchID: Int64, sessionID: Int64) -> SessionReportSummary? {
         entries.withLock { $0[workbenchID]?.summaries?[sessionID] }
-    }
-
-    /// Runs after a workbench's summaries changed (the hub nudges the
-    /// `terminal_session` kind).
-    func setOnChange(_ handler: (@Sendable () -> Void)?) {
-        onChange.withLock { $0 = handler }
     }
 
     /// A session of `workbenchID` changed state: run it at the next wake,
@@ -218,13 +221,11 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     }
 
     private func store(_ summaries: [Int64: SessionReportSummary], for id: Int64) {
-        let changed = entries.withLock { entries -> Bool in
+        entries.withLock { entries in
             // The workbench may have been forgotten while the run was out.
-            guard entries[id] != nil, entries[id]?.summaries != summaries else { return false }
+            guard entries[id] != nil else { return }
             entries[id]?.summaries = summaries
-            return true
         }
-        if changed { onChange.withLock { $0 }?() }
     }
 
     // MARK: - HubCompanion
@@ -234,7 +235,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.runDue()
+                if self.isActive() { await self.runDue() }
                 try? await Task.sleep(for: self.timing.wake)
             }
         }

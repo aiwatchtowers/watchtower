@@ -12,12 +12,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // writeActionsConfig points flagConfig at a temp workspace whose DB path
 // lives under a temp HOME (the writeFeaturesConfig precedent).
 func writeActionsConfig(t *testing.T) *db.DB {
 	t.Helper()
+	// The suite may itself run under an agent; approve/apply refuse there
+	// (AGENT-07). Unset, not empty: an empty WATCHTOWER_TERMINAL_SESSION_ID
+	// reads as a malformed caller to `workbench cleanup` (PROJ-18).
+	// t.Setenv registers the restore of the original value.
+	for _, name := range agentEnvMarkers {
+		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
+	}
 	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -45,6 +54,7 @@ func runActions(t *testing.T, args ...string) (string, error) {
 	actionsFlagSurface = ""
 	actionsFlagForce = false
 	actionsFlagPatch = ""
+	actionsFlagArgsSHA256 = ""
 	return out.String(), err
 }
 
@@ -215,11 +225,90 @@ func TestActions_TrustAndTools(t *testing.T) {
 	assert.Equal(t, "execute", listed[byName["create_target"]].Trust)
 	assert.True(t, listed[byName["create_jira_issue"]].External)
 	assert.Equal(t, "ask", listed[byName["create_jira_issue"]].Trust)
-	assert.ElementsMatch(t, []string{"main", "target"}, listed[byName["create_jira_issue"]].Surfaces)
+	assert.ElementsMatch(t, []string{"main", "target", "reaction"}, listed[byName["create_jira_issue"]].Surfaces)
 
 	out, err = runActions(t, "tools", "--surface", "target", "--json")
 	require.NoError(t, err)
 	assert.NotContains(t, out, `"create_target"`)
+}
+
+// Trust is per (tool, surface) (target 167): without --surface the CLI sets
+// every surface the tool is on; --surface sets one; the listing shows each.
+func TestActions_TrustPerSurface(t *testing.T) {
+	database := writeActionsConfig(t)
+	type row struct {
+		Name           string            `json:"name"`
+		Trust          string            `json:"trust"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	listCreateTarget := func(args ...string) row {
+		out, err := runActions(t, append([]string{"tools", "--json"}, args...)...)
+		require.NoError(t, err)
+		var listed []row
+		require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+		for _, l := range listed {
+			if l.Name == "create_target" {
+				return l
+			}
+		}
+		t.Fatalf("create_target not listed: %s", out)
+		return row{}
+	}
+
+	_, err := runActions(t, "trust", "create_target", "execute")
+	require.NoError(t, err)
+	got := listCreateTarget()
+	assert.Equal(t, "execute", got.Trust)
+	assert.Equal(t, map[string]string{"main": "execute", "reaction": "execute"}, got.TrustBySurface)
+
+	_, err = runActions(t, "trust", "create_target", "ask", "--surface", "main")
+	require.NoError(t, err)
+	got = listCreateTarget()
+	assert.Equal(t, "mixed", got.Trust)
+	assert.Equal(t, map[string]string{"main": "ask", "reaction": "execute"}, got.TrustBySurface)
+	assert.Equal(t, "execute", listCreateTarget("--surface", "reaction").Trust)
+	trust, err := database.GetToolTrust("create_target", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "ask", trust)
+
+	_, err = runActions(t, "trust", "create_target", "execute", "--surface", "target")
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered, "create_target is not on the target surface")
+}
+
+// The workbench surface is no trust place (target 167, DEV-06): the listing
+// leaves it out of trust_by_surface, and the CLI refuses to set it.
+func TestActions_WorkbenchSurfaceIsNoTrustPlace(t *testing.T) {
+	writeActionsConfig(t)
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name           string            `json:"name"`
+		Surfaces       []string          `json:"surfaces"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	var onWorkbench, onlyWorkbench string
+	for _, l := range listed {
+		for _, s := range l.Surfaces {
+			if s != tools.WorkbenchSurface {
+				continue
+			}
+			onWorkbench = l.Name
+			if len(l.Surfaces) == 1 {
+				onlyWorkbench = l.Name
+			}
+			assert.NotContains(t, l.TrustBySurface, tools.WorkbenchSurface, l.Name)
+		}
+	}
+	require.NotEmpty(t, onWorkbench, "some listed tool is on the workbench surface: %s", out)
+
+	_, err = runActions(t, "trust", onWorkbench, "ask", "--surface", tools.WorkbenchSurface)
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
+	if onlyWorkbench != "" {
+		_, err = runActions(t, "trust", onlyWorkbench, "ask")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "always apply in their own workbench")
+	}
 }
 
 // The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
@@ -298,4 +387,67 @@ func TestActions_ApprovePatchSavesTheEditWithTheDecision(t *testing.T) {
 	assert.Contains(t, out, "already reached Slack")
 	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"text":"late"}`, "--json")
 	require.Error(t, err, "a decided row takes no edits")
+}
+
+// AGENT-07 (owner decision 2026-10-14, ask #106): under an AI agent's shell
+// the CLI never approves, applies or grants execute trust — an agent must not
+// approve its own proposal. Reject and the read verbs stay open.
+func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database := writeActionsConfig(t)
+			pending, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+				ArgsJSON: `{"text":"x","reason":"r"}`, Reason: "r", Surface: "main"})
+			require.NoError(t, err)
+			approved, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+				ArgsJSON: `{"text":"y","reason":"r"}`, Reason: "r", Surface: "main", Status: "approved"})
+			require.NoError(t, err)
+			t.Setenv(marker, "1")
+
+			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), marker)
+			assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)",
+				"the refusal says where the decision can be made")
+			_, err = runActions(t, "apply", strconv.FormatInt(approved, 10), "--json")
+			require.Error(t, err)
+			_, err = runActions(t, "trust", "create_target", "execute")
+			require.Error(t, err)
+
+			for id, want := range map[int64]string{pending: "pending", approved: "approved"} {
+				row, err := database.GetAgentAction(id)
+				require.NoError(t, err)
+				assert.Equal(t, want, row.Status)
+			}
+			targets, err := database.GetTargets(db.TargetFilter{})
+			require.NoError(t, err)
+			assert.Empty(t, targets, "nothing executed")
+			trust, err := database.GetToolTrust("create_target", "main")
+			require.NoError(t, err)
+			assert.Equal(t, "ask", trust)
+
+			_, err = runActions(t, "trust", "create_target", "ask")
+			require.NoError(t, err, "lowering trust stays open")
+			_, err = runActions(t, "reject", strconv.FormatInt(pending, 10), "--json")
+			require.NoError(t, err, "a reject is harmless and stays open")
+		})
+	}
+}
+
+// --args-sha256 binds the approve to the args the card showed.
+func TestActions_ApproveArgsSHA256MustMatchTheStoredArgs(t *testing.T) {
+	database := writeActionsConfig(t)
+	args := `{"text":"Call Vasya","reason":"r"}`
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: args, Reason: "r", Surface: "main"})
+	require.NoError(t, err)
+
+	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--args-sha256", tools.ArgsSHA256(`{"text":"other","reason":"r"}`), "--json")
+	require.Error(t, err)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", row.Status)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--args-sha256", tools.ArgsSHA256(args), "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"status": "applied"`)
 }

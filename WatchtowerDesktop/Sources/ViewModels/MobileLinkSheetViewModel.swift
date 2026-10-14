@@ -6,7 +6,10 @@ import WatchtowerSync
 /// on the link center, counts its 10 minutes down, offers New code, and
 /// closes the public link at 0 (`.expired`) and when the sheet closes
 /// (`.sheetClosed`). The open code itself lives on `MobileLinkCenter`; this
-/// model only shows it.
+/// model only shows it. While phones wait for the owner's confirmation
+/// (`MobileLinkCenter.pendingLinks`, mobile E2E spec §2.3), the sheet shows
+/// them with their four-digit codes instead of the QR; Link and Refuse go to
+/// the center.
 @MainActor
 @Observable
 final class MobileLinkSheetViewModel: Identifiable {
@@ -26,6 +29,11 @@ final class MobileLinkSheetViewModel: Identifiable {
     private(set) var remainingSeconds = 0
     /// The QR of the code on screen, rendered once per code.
     private(set) var qrImage: CGImage?
+    /// Why the last Link or Refuse failed; nil once one succeeds.
+    private(set) var decisionError: String?
+
+    /// The link requests waiting for the owner. They live on the center, so they survive the sheet.
+    var pendingLinks: [MobileLinkCenter.PendingLink] { center.pendingLinks }
 
     @ObservationIgnored private let center: MobileLinkCenter
     @ObservationIgnored private let now: () -> Date
@@ -34,9 +42,13 @@ final class MobileLinkSheetViewModel: Identifiable {
     /// The close at 0, outside the countdown task: a New code waits for it,
     /// so the old close never lands on the new code's link.
     @ObservationIgnored private var expiryClose: Task<Void, Never>?
-    /// The phones linked before the code was shown: a new one used it.
-    @ObservationIgnored private var knownDevices: Set<String> = []
+    /// The phones linked before the code was shown, with their link time:
+    /// a new one used the code, and so did a linked one whose link time
+    /// moved (a phone that scans again re-links, keeping its grants).
+    @ObservationIgnored private var knownDevices: [String: Date] = [:]
     @ObservationIgnored private var started = false
+    /// A code is being issued: a second New code click is dropped.
+    @ObservationIgnored private var issuing = false
     @ObservationIgnored private var closed = false
 
     init(
@@ -47,6 +59,26 @@ final class MobileLinkSheetViewModel: Identifiable {
         self.center = center
         self.now = now
         self.sleep = sleep
+    }
+
+    /// Pairing code v2: why this waiting row needs a second look, nil when it does not. Two rows with one code
+    /// cannot be told apart by comparing (refuse both); two rows with one name (a photographed QR answered under the
+    /// owner's phone name) are told apart only by the code.
+    func duplicateWarning(for link: MobileLinkCenter.PendingLink) -> String? {
+        Self.duplicateWarning(for: link, among: pendingLinks)
+    }
+
+    nonisolated static func duplicateWarning(
+        for link: MobileLinkCenter.PendingLink, among links: [MobileLinkCenter.PendingLink]
+    ) -> String? {
+        let others = links.filter { $0.id != link.id }
+        if others.contains(where: { $0.sas == link.sas }) {
+            return "Two iPhones show code \(link.sas) — refuse both and show a new code."
+        }
+        if others.contains(where: { $0.name.localizedCaseInsensitiveCompare(link.name) == .orderedSame }) {
+            return "Two iPhones named \"\(link.name)\" are waiting — link only the one whose screen shows this code."
+        }
+        return nil
     }
 
     /// "9:59".
@@ -66,6 +98,25 @@ final class MobileLinkSheetViewModel: Identifiable {
         await issue()
     }
 
+    /// Link: the phone is linked and gets its keys; the code is used. Bound to the code the row showed.
+    func confirm(_ link: MobileLinkCenter.PendingLink) async {
+        await decide { try await $0.confirmLink(deviceID: link.id, sas: link.sas) }
+    }
+
+    /// Refuse: the phone reads `not_confirmed`.
+    func refuse(_ link: MobileLinkCenter.PendingLink) async {
+        await decide { try await $0.refuseLink(deviceID: link.id) }
+    }
+
+    private func decide(_ decision: (MobileLinkCenter) async throws -> Void) async {
+        do {
+            try await decision(center)
+            decisionError = nil
+        } catch {
+            decisionError = error.localizedDescription
+        }
+    }
+
     /// The sheet closed: no more countdown, and the public link closes.
     func close() async {
         closed = true
@@ -75,12 +126,15 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func issue() async {
+        guard !issuing else { return }
+        issuing = true
+        defer { issuing = false }
         countdownTask?.cancel()
         countdownTask = nil
         await expiryClose?.value
         guard !closed else { return }
         phase = .issuing
-        knownDevices = Set(center.devices.map(\.deviceID))
+        knownDevices = Dictionary(center.devices.map { ($0.deviceID, $0.linkedAt) }) { first, _ in first }
         do {
             let code = try await center.issueCode()
             // Closed while the code was being made: it must not stay open.
@@ -99,6 +153,7 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func startCountdown() {
+        countdownTask?.cancel()
         countdownTask = Task { [weak self, sleep] in
             while !Task.isCancelled {
                 guard let self, await self.tick() else { return }
@@ -113,13 +168,17 @@ final class MobileLinkSheetViewModel: Identifiable {
     func tick() async -> Bool {
         guard case .showing(let code) = phase else { return false }
         if center.openCode?.nonce != code.nonce {
-            if let linked = center.devices.first(where: { !knownDevices.contains($0.deviceID) }) {
+            if let linked = center.devices.first(where: { knownDevices[$0.deviceID] != $0.linkedAt }) {
                 phase = .linked(linked.name)
                 return false
             }
         }
         updateRemaining(code)
         guard remainingSeconds <= 0 || center.openCode?.nonce != code.nonce else { return true }
+        if center.openCode == nil, center.lastCloseReason == .accountChanged {
+            phase = .failed(MobileLinkError.accountChanged.localizedDescription)
+            return false
+        }
         phase = .expired
         let close = Task { [center] in await center.closeLink(reason: .expired) }
         expiryClose = close

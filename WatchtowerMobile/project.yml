@@ -93,8 +93,9 @@ targets:
         Debug:
           ENABLE_TESTABILITY: YES
 
-  # Notification Service Extension (spec §2.1). Task 13 gives it its job;
-  # until then it delivers the notification unchanged.
+  # Notification Service Extension (spec §2.1). Fills an ask alert from its
+  # sealed record (mobile E2E Task 18, `AlertOpener`); the rest of A13 is
+  # not built. Links WatchtowerSync only, never UIKit-dependent app code.
   NotifyService:
     type: app-extension
     platform: iOS
@@ -104,6 +105,9 @@ targets:
     configFiles:
       Debug: Base.xcconfig
       Release: Base.xcconfig
+    dependencies:
+      - package: WatchtowerKit
+        product: WatchtowerSync
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile.notify-service
@@ -159,6 +163,10 @@ targets:
         product: WatchtowerKit
       - package: WatchtowerKit
         product: WatchtowerSync
+      # The Kit's test hub and test phone (F25): tests seal the records they
+      # put into the transport. Test target only; the app never links it.
+      - package: WatchtowerKit
+        product: WatchtowerE2ETesting
       - package: GRDB
         product: GRDB
     settings:

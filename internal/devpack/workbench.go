@@ -270,11 +270,15 @@ func keptLegacySkill(legacySkillDir string) SkillStatus {
 func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallReport, hadLegacyHooks bool) []error {
 	var errs []error
 	var err error
-	if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
+	if err = skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
 		errs = append(errs, err)
-	}
-	if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
-		errs = append(errs, err)
+	} else {
+		if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
+			errs = append(errs, err)
+		}
+		if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, []string{legacySkillExcludeLine})); err != nil {
 		errs = append(errs, err)
@@ -317,16 +321,17 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 		return folderGone(o)
 	}
 	errs := removeWorkbenchSettings(o)
-	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
-		if _, err := removeSkill(o.skillsDir(), s); err != nil {
-			errs = append(errs, err)
-		}
+	skillsErr := removeWorkbenchSkills(o)
+	if skillsErr != nil {
+		errs = append(errs, skillsErr)
 	}
 	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
 		errs = append(errs, err)
 	}
-	removeIfEmpty(o.skillsDir())
-	removeIfEmpty(filepath.Join(o.Folder, ".claude"))
+	if !errors.Is(skillsErr, ErrSymlinkOutsideFolder) {
+		removeIfEmpty(o.skillsDir())
+		removeIfEmpty(filepath.Join(o.Folder, ".claude"))
+	}
 	lines := append(append([]string{}, workbenchExcludeLines...), legacySkillExcludeLine)
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, lines)); err != nil {
 		errs = append(errs, err)
@@ -334,29 +339,41 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	return errors.Join(errs...)
 }
 
-// removeWorkbenchSettings removes our hooks and the cleanup allow rule from
-// the folder's settings file. A malformed file is reported once, by the
+// removeWorkbenchSettings takes out every hook of the workbench (the
+// recognizer matches the pre-rename commands too) and the cleanup allow
+// rule. A settings file that is malformed is reported once, by the
 // SessionStart step, not again by every later step reading the same file.
 func removeWorkbenchSettings(o WorkbenchInstallOptions) []error {
 	var errs []error
-	// The hook recognizer matches the pre-rename commands too.
 	_, startErr := RemoveSessionStartHook(o.Folder, o.WorkbenchID)
 	if startErr != nil {
 		errs = append(errs, startErr)
 	}
-	if _, err := RemoveStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	if _, err := RemoveStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	if _, err := RemoveAskGuardHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
+	for _, remove := range []func(string, int64) (bool, error){RemoveStopHook, RemoveStateHooks, RemoveAskGuardHooks} {
+		if _, err := remove(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+			errs = append(errs, err)
+		}
 	}
 	if _, err := RemoveCleanupPermission(o.Folder); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	return errs
+}
+
+// removeWorkbenchSkills removes our un-edited skills in both vocabularies,
+// unless the skills directory leads outside the folder: then nothing is
+// removed and that refusal is returned (PROJ-04).
+func removeWorkbenchSkills(o WorkbenchInstallOptions) error {
+	if err := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
+		return err
+	}
+	var errs []error
+	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
+		if _, err := removeSkill(o.skillsDir(), s); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // StatusWorkbench reports skill, hook and MCP state, writing nothing. A
@@ -592,6 +609,19 @@ func isDir(p string) bool {
 }
 
 // removeIfEmpty drops a directory only when nothing is left in it.
+// skillDirsInside refuses the skills directory of the folder when a
+// .claude/.agents, skills or skill directory link leads outside it
+// (ErrSymlinkOutsideFolder, PROJ-04): nothing is written or removed there.
+func skillDirsInside(folder, skillsDir string, skills ...Skill) error {
+	for _, s := range skills {
+		dir := filepath.Join(skillsDir, s.Name)
+		if _, err := dirInside(dir, dir, folder, leftoverSkill); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func removeIfEmpty(dir string) {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
 		_ = os.Remove(dir)

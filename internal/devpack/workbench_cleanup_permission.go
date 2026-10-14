@@ -90,9 +90,15 @@ var beforeCleanupRuleWrite = func() {}
 // whether anything is to change, then the file is read again and the edit
 // applied to that fresh copy right before the atomic write. An entry we did
 // not add is never dropped; only a write landing within that last instant
-// can still be lost.
-func editCleanupRules(dir string, edit func([]any) ([]any, bool), write func(string, map[string]any, os.FileMode) error) (bool, error) {
+// can still be lost. write gets the file and its symlink-resolved target
+// (resolveSymlinkInside: a link leaving the folder is refused before any
+// read or write).
+func editCleanupRules(dir string, edit func([]any) ([]any, bool), write func(file, target string, settings map[string]any, mode os.FileMode) error) (bool, error) {
 	file := settingsLocalPath(dir)
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	if _, _, changed, err := editedAllow(file, edit); err != nil || !changed {
 		return false, err
 	}
@@ -101,7 +107,7 @@ func editCleanupRules(dir string, edit func([]any) ([]any, bool), write func(str
 	if err != nil || !changed {
 		return false, err
 	}
-	return true, write(file, settings, mode)
+	return true, write(file, target, settings, mode)
 }
 
 // editedAllow reads file and returns its settings with edit applied to
@@ -145,7 +151,9 @@ func InstallCleanupPermission(dir, bin string) (bool, error) {
 	want := cleanupAllowRule(bin)
 	return editCleanupRules(dir, func(allow []any) ([]any, bool) {
 		return upsertCleanupRule(allow, want)
-	}, writeSettings)
+	}, func(_, target string, settings map[string]any, mode os.FileMode) error {
+		return writeSettings(target, settings, mode)
+	})
 }
 
 // upsertCleanupRule sets the first rule of ours to want and drops any

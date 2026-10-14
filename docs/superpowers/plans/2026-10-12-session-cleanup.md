@@ -4,7 +4,7 @@
 
 **Goal:** A workbench session removes, before it finishes, the worktrees and local branches it created once they are merged or pushed, its orphan processes and the LaunchServices entries of builds inside those worktrees — never uncommitted, unpushed, in-use or someone else's work — and reports what it removed, the space freed and what it kept and why. The Desktop offers the same on Delete Session, per session, and as a one-time sweep.
 
-**Architecture:** The session-state hook records, per session, each new (worktree root, branch) any of its agents worked in (`terminal_session_worktrees`, reusing #565's `cwd` parse and resolver). `watchtower workbench cleanup` (`internal/sessioncleanup`) plans from that ledger plus linked targets' branches, applies ownership (observed + born after the session) and the PROJ-16 catches, and on `--apply` re-checks and removes with `git worktree remove` (no force) and compare-and-delete `git update-ref -d`. The result is saved in `terminal_sessions.cleanup_result`. Go is the only writer; the Desktop drives the CLI through `SessionCleanupCenter`.
+**Architecture:** The session-state hook records, per session, each new (worktree root, branch) any of its agents worked in (`terminal_session_worktrees`, reusing #565's `cwd` parse and resolver). `watchtower workbench cleanup` (`internal/sessioncleanup`) plans from that ledger plus linked targets' branches, applies ownership (observed + born after the session) and the PROJ-18 catches, and on `--apply` re-checks and removes with `git worktree remove` (no force) and compare-and-delete `git update-ref -d`. The result is saved in `terminal_sessions.cleanup_result`. Go is the only writer; the Desktop drives the CLI through `SessionCleanupCenter`.
 
 **Tech Stack:** Go 1.25 (`cmd/`, `internal/db`, `internal/sessioncleanup`, `internal/devpack`), SQLite + goose, SwiftUI / GRDB (WatchtowerCore + app target).
 
@@ -20,17 +20,17 @@
 - Signals: SIGTERM only, only to orphans as defined in spec §7; the process key carries the start time.
 - No TCC prompt (memory rule): Task 0 decides whether `lsof` is used.
 - Tests that create repos use `t.TempDir()` with `git init` through `gitbin`; tests that start processes (orphan stubs) kill their process group and wait in `t.Cleanup`, the timeout path included.
-- Guard tests named `TestProj16_*` / `testProj16_*` (`TestProj11_*`, `TestProj04_*`, `TestProj02_*` where those are amended); existing guards are never weakened, renamed or split.
+- Guard tests named `TestProj18_*` / `testProj18_*` (`TestProj11_*`, `TestProj04_*`, `TestProj02_*` where those are amended); existing guards are never weakened, renamed or split.
 - Public repo: no real paths, ids or names in fixtures and docs (`/tmp/...` under `t.TempDir()`, `example`).
 - Inner loop only (`go test ./internal/<pkg>`, `go test ./cmd -run '<regex>'`, `make test-swift FILTER=…`, `make lint-diff`); no `-count=1`; logs to a file with `echo "exit=$?"`. Swift tasks (10, 11, 12) one at a time.
 - Commits in English, ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Review Focus
 
-1. **Every catch re-checked right before its removal**, not only at plan time (spec §7) — `TestProj16_ApplyRechecksAndActsOnlyOnNamedItems`, `TestProj16_BranchThatMovedAfterThePlanIsKept`.
-2. **Ownership needs both "observed" and "born after the session"** — `TestProj16_WorktreeOlderThanTheSessionIsKept`, `TestProj16_BranchOlderThanTheSessionIsKept`.
+1. **Every catch re-checked right before its removal**, not only at plan time (spec §7) — `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems`, `TestProj18_BranchThatMovedAfterThePlanIsKept`.
+2. **Ownership needs both "observed" and "born after the session"** — `TestProj18_WorktreeOlderThanTheSessionIsKept`, `TestProj18_BranchOlderThanTheSessionIsKept`.
 3. **Ledger failure never costs the state write** — `TestProj11_LedgerFailureNeverCostsTheStateWrite`.
-4. **The Desktop never deletes the row after a failed cleanup** and applies only the planned keys — `testProj16_FailedCleanupKeepsTheSessionRow`, `testProj16_DeleteAppliesOnlyThePlannedItems`.
+4. **The Desktop never deletes the row after a failed cleanup** and applies only the planned keys — `testProj18_FailedCleanupKeepsTheSessionRow`, `testProj18_DeleteAppliesOnlyThePlannedItems`.
 5. **Empty-state wire shape** (`items: []`, never `null`) — `TestCleanupJSON_EmptyPlanHasEmptyItems` + the Swift decode test.
 
 ## Task list
@@ -140,15 +140,15 @@ func Build(ctx context.Context, d Deps, r Request) (Plan, error)
 `inventory.go`: `git worktree list --porcelain`, default branch (`origin/HEAD` → `main` → `master`), `for-each-ref refs/heads`, `--contains`/`merge-base --is-ancestor` checks, worktree admin-dir birth time, branch reflog first entry. `ownership.go`: spec §2. `catches.go`: W1–W8, B1–B4 in order (spec §5), reason codes as constants.
 
 **Tests (real temp repos, a bare "remote" repo for pushed refs):**
-- `TestProj16_UncommittedWorktreeIsKept`, `TestProj16_UntrackedFileKeepsTheWorktree` (an ignored `.build/` file alone does **not** keep it — `TestPlan_IgnoredFilesDoNotKeepTheWorktree`).
-- `TestProj16_UnpushedCommitKeepsWorktreeAndBranch`, `TestProj16_LockedWorktreeIsKept`, `TestPlan_OperationInProgressKeepsTheWorktree`.
-- `TestProj16_WorktreeOlderThanTheSessionIsKept`, `TestProj16_BranchOlderThanTheSessionIsKept`, `TestPlan_BranchWithoutReflogIsKept`.
-- `TestProj16_BranchCheckedOutElsewhereIsKept`, `TestProj16_DefaultBranchIsNeverDeleted`.
-- `TestProj16_MainFolderAndWorkbenchFoldersAreNeverCandidates` (a second workbench bound to a linked worktree).
-- `TestProj16_SessionInTheWorktreeKeepsIt` (another session's `agent_cwd` inside + live; reported 25 h ago and not live → not kept; caller's own `agent_cwd` → `you_are_in_it`).
+- `TestProj18_UncommittedWorktreeIsKept`, `TestProj18_UntrackedFileKeepsTheWorktree` (an ignored `.build/` file alone does **not** keep it — `TestPlan_IgnoredFilesDoNotKeepTheWorktree`).
+- `TestProj18_UnpushedCommitKeepsWorktreeAndBranch`, `TestProj18_LockedWorktreeIsKept`, `TestPlan_OperationInProgressKeepsTheWorktree`.
+- `TestProj18_WorktreeOlderThanTheSessionIsKept`, `TestProj18_BranchOlderThanTheSessionIsKept`, `TestPlan_BranchWithoutReflogIsKept`.
+- `TestProj18_BranchCheckedOutElsewhereIsKept`, `TestProj18_DefaultBranchIsNeverDeleted`.
+- `TestProj18_MainFolderAndWorkbenchFoldersAreNeverCandidates` (a second workbench bound to a linked worktree).
+- `TestProj18_SessionInTheWorktreeKeepsIt` (another session's `agent_cwd` inside + live; reported 25 h ago and not live → not kept; caller's own `agent_cwd` → `you_are_in_it`).
 - `TestPlan_TargetBranchOfALinkedTargetIsACandidate`, `TestPlan_DeclaredPathThatIsNotAWorktreeIsKept`, `TestPlan_PrunableWorktreeIsListed`.
 - `TestPlan_SweepIgnoresOwnershipAndMarksRecentSessions` (7-day rule, `owner` hint, `unknown` for no ledger).
-- `TestProj16_PlanWritesNothing` (refs, worktrees, DB and process signals unchanged; a fake scanner records no signal).
+- `TestProj18_PlanWritesNothing` (refs, worktrees, DB and process signals unchanged; a fake scanner records no signal).
 - `TestPlan_NoGitIsAnError` (no process spawned).
 
 **Verify:** `go test ./internal/sessioncleanup`.
@@ -167,7 +167,7 @@ func OrphansIn(procs []Proc, roots []string, self int) (orphans, blockers []Proc
 ```
 `ps -axo pid=,ppid=,uid=,lstart=,comm=` parse; `lsof` per Task 0's decision (or the fallback: cwd unknown → blocker `process_unknown`). `lsregister` at its fixed system path, never PATH.
 
-**Tests:** `TestPsParse_FixtureLines`, `TestLsofParse_FixtureLines`, `TestProj16_OnlyOrphansAreSignalled` (ppid ≠ 1, another uid, a Watchtower or `claude` executable, outside the roots → never orphans; a stub process started by the test in a temp worktree and reparented → orphan; reaped in `t.Cleanup`), `TestTerminate_ReusedPidIsNotSignalled` (start time mismatch), `TestSize_CountsAllocatedBlocksAndStopsAtBudget`, `TestSize_DoesNotFollowSymlinks`, `TestBundles_SkipsNodeModulesAndGitAndDepth`, `TestLsregDumpParse_Fixture`.
+**Tests:** `TestPsParse_FixtureLines`, `TestLsofParse_FixtureLines`, `TestProj18_OnlyOrphansAreSignalled` (ppid ≠ 1, another uid, a Watchtower or `claude` executable, outside the roots → never orphans; a stub process started by the test in a temp worktree and reparented → orphan; reaped in `t.Cleanup`), `TestTerminate_ReusedPidIsNotSignalled` (start time mismatch), `TestSize_CountsAllocatedBlocksAndStopsAtBudget`, `TestSize_DoesNotFollowSymlinks`, `TestBundles_SkipsNodeModulesAndGitAndDepth`, `TestLsregDumpParse_Fixture`.
 
 **Verify:** `go test ./internal/sessioncleanup -run 'Ps|Lsof|Orphan|Terminate|Size|Bundles|Lsreg'`.
 
@@ -183,7 +183,7 @@ func Summarize(items []Item) string // "2 worktrees, 4 branches removed (~14 GB)
 ```
 Order per spec §7: re-plan → per worktree re-check, orphans (session mode only), `lsregister -u`, `git worktree remove` (no force) → prune gone dirs → branches re-check and `update-ref -d <ref> <sha>` + `config --remove-section`. Sweep requires non-empty `only`.
 
-**Tests:** `TestProj16_ApplyRechecksAndActsOnlyOnNamedItems` (a file written into the worktree between plan and apply → kept), `TestProj16_BranchThatMovedAfterThePlanIsKept`, `TestProj16_MergedAndPushedWorkIsRemoved` (done-criterion 1: two worktrees with a merged PR branch and a pushed branch → both worktrees and branches gone, `~/.claude`-like dir and the main folder's `WatchtowerDesktop/.build` fixture untouched — `TestProj16_ClaudeHistoryAndMainBuildUntouched`), `TestApply_GitRefusalIsKeptWithDetail`, `TestApply_LsregisterFailureDoesNotBlockRemoval`, `TestApply_SweepWithoutItemsIsRefused`, `TestApply_OrphanSurvivingSIGTERMKeepsTheWorktree`, `TestSummarize_Wording` (table: nothing, removed only, kept only, mixed, unknown size).
+**Tests:** `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems` (a file written into the worktree between plan and apply → kept), `TestProj18_BranchThatMovedAfterThePlanIsKept`, `TestProj18_MergedAndPushedWorkIsRemoved` (done-criterion 1: two worktrees with a merged PR branch and a pushed branch → both worktrees and branches gone, `~/.claude`-like dir and the main folder's `WatchtowerDesktop/.build` fixture untouched — `TestProj18_ClaudeHistoryAndMainBuildUntouched`), `TestApply_GitRefusalIsKeptWithDetail`, `TestApply_LsregisterFailureDoesNotBlockRemoval`, `TestApply_SweepWithoutItemsIsRefused`, `TestApply_OrphanSurvivingSIGTERMKeepsTheWorktree`, `TestSummarize_Wording` (table: nothing, removed only, kept only, mixed, unknown size).
 
 **Verify:** `go test ./internal/sessioncleanup`.
 
@@ -244,9 +244,9 @@ func cleanupAllowRule(bin string) string // Bash('<bin>' workbench cleanup:*)
     func phase(for key: CleanupScope) -> Phase
 }
 ```
-Delete flow per spec §12: close terminal → apply planned `remove` keys → delete row only on success; a failure shows the message and leaves the row. Live session ids passed from `TerminalCenter.liveIDs`.
+The center's cleanup calls run without `WATCHTOWER_TERMINAL_SESSION_ID` in the child environment (spec §4: inside a terminal session the CLI refuses sweeps and other sessions; an app launched from a workbench terminal would inherit the variable). Delete flow per spec §12: close terminal → apply planned `remove` keys → delete row only on success; a failure shows the message and leaves the row. Live session ids passed from `TerminalCenter.liveIDs`.
 
-**Tests:** `testProj16_DeleteAppliesOnlyThePlannedItems` (fake runner records argv: `--apply` + exactly the planned keys), `testProj16_FailedCleanupKeepsTheSessionRow`, `testDeleteOnlySkipsTheCleanup`, `testCleanupSurvivesNavigation` (start → leave the page → return → phase kept), `testPlanPassesLiveSessions`, `testReportShowsTheCleanupLine`.
+**Tests:** `testProj18_DeleteAppliesOnlyThePlannedItems` (fake runner records argv: `--apply` + exactly the planned keys), `testProj18_FailedCleanupKeepsTheSessionRow`, `testDeleteOnlySkipsTheCleanup`, `testCleanupSurvivesNavigation` (start → leave the page → return → phase kept), `testPlanPassesLiveSessions`, `testCleanupCallsDropTheTerminalSessionVariable`, `testReportShowsTheCleanupLine`.
 
 **Verify:** `make test-swift FILTER='SessionCleanupCenterTests|WorkbenchSessionDeleteTests'`.
 
@@ -260,9 +260,9 @@ Delete flow per spec §12: close terminal → apply planned `remove` keys → de
 
 ### Task 13: Inventory, feature notes, app guide
 
-**Files:** `docs/inventory/workbench.md` (new PROJ-16 with the approved wording and guard list; PROJ-11/04/02 amendments; v1 limits: the deferred list of spec §1; changelog), `docs/inventory/dev-surface.md` (DEV-04 changelog: pack v7, v6 fixture), `docs/features/workbench.md` (a "Session cleanup" bullet), `CLAUDE.md` feature index line for workbench (mention cleanup), `docs/app-guide.md` (Delete and Clean Up, Clean Up…, Clean Up Old Worktrees…, Re-run Setup once).
+**Files:** `docs/inventory/workbench.md` (new PROJ-18 with the approved wording and guard list; PROJ-11/04/02 amendments; v1 limits: the deferred list of spec §1; changelog), `docs/inventory/dev-surface.md` (DEV-04 changelog: pack v7, v6 fixture), `docs/features/workbench.md` (a "Session cleanup" bullet), `CLAUDE.md` feature index line for workbench (mention cleanup), `docs/app-guide.md` (Delete and Clean Up, Clean Up…, Clean Up Old Worktrees…, Re-run Setup once).
 
-**Verify:** `grep -n 'PROJ-16' docs/inventory/workbench.md` lists every guard name that exists in the code (`grep -rn 'TestProj16_\|testProj16_' cmd internal WatchtowerDesktop/Tests`).
+**Verify:** `grep -n 'PROJ-18' docs/inventory/workbench.md` lists every guard name that exists in the code (`grep -rn 'TestProj18_\|testProj18_' cmd internal WatchtowerDesktop/Tests`).
 
 ### Task 14: Final gate
 

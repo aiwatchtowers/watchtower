@@ -187,27 +187,31 @@ func (db *DB) ApproveAgentActionWithArgs(id int64, oldArgs, newArgs string) (boo
 	return n > 0, nil
 }
 
-// GetToolTrust returns "ask" when no row exists.
-func (db *DB) GetToolTrust(tool string) (string, error) {
+// GetToolTrust returns the trust for tool on one chat surface; "ask" when
+// no row exists. Trust is per (tool, surface) since migration 00112: an
+// `execute` granted for the reaction path never covers the main chat.
+func (db *DB) GetToolTrust(tool, surface string) (string, error) {
 	var trust string
-	err := db.QueryRow(`SELECT trust FROM tool_trust WHERE tool = ?`, tool).Scan(&trust)
+	err := db.QueryRow(`SELECT trust FROM tool_trust WHERE tool = ? AND surface = ?`, tool, surface).Scan(&trust)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "ask", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("getting trust for %s: %w", tool, err)
+		return "", fmt.Errorf("getting trust for %s on %s: %w", tool, surface, err)
 	}
 	return trust, nil
 }
 
-// SetToolTrust upserts the trust level. The registry, not this function,
-// enforces the external-never-execute rule (AGENT-03).
-func (db *DB) SetToolTrust(tool, trust string) error {
-	_, err := db.Exec(`INSERT INTO tool_trust (tool, trust, updated_at)
-		VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-		ON CONFLICT(tool) DO UPDATE SET trust = excluded.trust, updated_at = excluded.updated_at`, tool, trust)
+// SetToolTrust upserts the trust level for tool on one surface. The
+// registry, not this function, enforces the external-never-execute rule
+// (AGENT-03) and that the surface is one the tool names.
+func (db *DB) SetToolTrust(tool, surface, trust string) error {
+	_, err := db.Exec(`INSERT INTO tool_trust (tool, surface, trust, updated_at)
+		VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		ON CONFLICT(tool, surface) DO UPDATE SET trust = excluded.trust, updated_at = excluded.updated_at`,
+		tool, surface, trust)
 	if err != nil {
-		return fmt.Errorf("setting trust for %s: %w", tool, err)
+		return fmt.Errorf("setting trust for %s on %s: %w", tool, surface, err)
 	}
 	return nil
 }

@@ -35,7 +35,7 @@ final class KitFixtureTests: XCTestCase {
     func testRelayRecordKindsAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device"]
+            ["action", "heartbeat", "recording_upload", "device", "hello"]
         )
     }
 
@@ -327,7 +327,10 @@ final class KitFixtureTests: XCTestCase {
     }
 
     func testLinkRefusalAndScopeAreFrozen() {
-        XCTAssertEqual(LinkRefusal.knownValues.map(\.rawValue), ["used_code", "expired_code", "unknown_code"])
+        // too_many_requests: the pairing code v2 attempt cap (owner-approved wire change, ask #97).
+        XCTAssertEqual(
+            LinkRefusal.knownValues.map(\.rawValue),
+            ["used_code", "expired_code", "unknown_code", "not_confirmed", "too_many_requests"])
         XCTAssertEqual(DeviceScope.knownValues.map(\.rawValue), ["private", "shared"])
     }
 }

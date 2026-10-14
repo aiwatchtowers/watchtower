@@ -7,7 +7,7 @@ import WatchtowerSync
 /// The `recording_job` slice (mobile POC spec §4.12), record name
 /// `recording_job-<upload id>`: the Mac-side progress of one phone upload,
 /// from the sidecar's `phone_recordings` that `PhoneRecordingJobs` keeps. A
-/// fast-lane kind: the tracker nudges it on every change.
+/// normal kind (board #724): it publishes on the 30 s full tick.
 ///
 /// A job is published until 7 days after it ended (`done` or `failed`); an
 /// unfinished one stays. At most 100, the latest updated first. The sidecar

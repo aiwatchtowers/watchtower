@@ -46,6 +46,7 @@ final class WorkbenchesViewModel {
             } else {
                 drilledWorkbenchID = nil
             }
+            refreshStickySection()
         }
     }
     private(set) var isCreating = false
@@ -169,6 +170,21 @@ final class WorkbenchesViewModel {
     /// The panel's dragged session orders touched this run (key nil = the
     /// standalone terminals); the rest are read from `defaults`.
     var sessionOrders: [Int64?: [Int64]] = [:]
+    /// The sessions panel's "▸ N finished" folds touched this run (board
+    /// #480); the rest are read from `defaults`.
+    var finishedGroupFolds: [Int64: Bool] = [:]
+    /// The on-screen session's kept panel section (spec
+    /// 2026-10-12-sessions-panel-design §3.3): a session finishing in front
+    /// of the owner keeps its main-list slot until another one comes on
+    /// screen (`refreshStickySection`).
+    var stickySection: SessionPanelSections.Sticky?
+    /// The sessions panel's keyboard highlight (spec
+    /// 2026-10-12-sessions-panel-design §4.4): the row ↑ ↓ move over and ⌘⌫
+    /// deletes, apart from the session on screen; moving it opens nothing.
+    var panelCursor: Int64?
+    /// Bumped to hand the keyboard to the sessions panel
+    /// (`requestPanelKeyboard`): its key view takes first responder.
+    var panelKeyboardSerial = 0
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
     /// Consecutive "no owner message yet" title answers per session; at
@@ -393,26 +409,26 @@ final class WorkbenchesViewModel {
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
         // A line (an answer's) is held while its session waits on a permission
-        // prompt and goes once the states show it answered (PROJ-12).
-        lineDelivery.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
-        // Its Return only into a session whose hooks reported this run (a
+        // prompt and goes once the states show it answered (PROJ-12); its
+        // Return only into a session whose hooks reported this run (a
         // state, or the mark of a run not yet turned to — board #396).
-        lineDelivery.hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.hooksReported == true }
+        lineDelivery.follow(agentStates)
         // Keys typed into a permission dialog leave no draft in the prompt.
         terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
             agentStates?.statuses[id]?.state.kind == .needsApproval
         }
-        // A failed read (or no states at all) vouches for nothing: no Return.
-        lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
-        agentStates?.onChange = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
-            Task { await lineDelivery?.deliverHeld() }
+        // The states' hooks are single slots: `follow` set them for the held
+        // lines; these keep that call and add the panel's and the places'.
+        agentStates?.onChange = { [weak self, weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
+            lineDelivery?.statesRead()
+            // The session on screen keeps its panel section (#480).
+            self?.refreshStickySection()
             // A session started, stopped or began a run: whether its stored
             // cwd is trusted may have moved (board #565).
             sessionPlaces?.cwdsMayHaveChanged()
         }
-        // Also on an unchanged read: a line held because a read failed.
         agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
-            Task { await lineDelivery?.deliverHeld() }
+            lineDelivery?.statesRead()
             // A hook may have stored a new cwd: re-read only on a new stamp.
             sessionPlaces?.stateRowsRead(agentStates?.rows ?? [])
         }
@@ -608,6 +624,19 @@ final class WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// The create flow's note for a failed folder install. A symlink the CLI
+    /// refuses to write through fails Repair the same way, so that note is the
+    /// CLI's own message, which says how to fix the link. The two texts are
+    /// Go's `devpack.ErrSymlinkOutsideFolder` and `devpack.ErrSymlinkInPlace`,
+    /// pinned by `TestInstallErrorTextsTheDesktopMatches`.
+    nonisolated static func createInstallNote(_ detail: String) -> String {
+        let linkRefusals = ["outside the workbench folder", "is a symlink; not writing through it"]
+        if linkRefusals.contains(where: detail.contains) {
+            return "The workbench was created, but installing into the folder failed: " + detail
+        }
+        return "The workbench was created, but installing into the folder failed — use Repair. " + detail
+    }
+
     /// New Workbench… → `workbench create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
     /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
@@ -633,8 +662,7 @@ final class WorkbenchesViewModel {
             try await cli.install(projectID: created.id)
         } catch {
             installed = false
-            installNotes[created.id] = "The workbench was created, but installing into the folder failed — use Repair. "
-                + error.localizedDescription
+            installNotes[created.id] = Self.createInstallNote(error.localizedDescription)
         }
         await reload()
         selectedWorkbenchID = created.id

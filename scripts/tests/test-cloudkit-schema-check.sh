@@ -14,6 +14,8 @@
 #   - no management token                       → exit 1, save-token hint
 #   - team id read from Signing.xcconfig        → passed to cktool
 #   - no team id anywhere                       → exit 1
+#   - an E2E record type missing from both      → exit 1, the type named
+#   - a leftover pre-E2E type only in Production → exit 0
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,10 +55,17 @@ DEV='DEFINE SCHEMA
         GRANT READ TO "_world"
     );
 
-    RECORD TYPE WatchtowerRecord (
+    RECORD TYPE WatchtowerEnvelope (
         "___createTime" TIMESTAMP,
         kind            STRING QUERYABLE SEARCHABLE SORTABLE,
         payload         ENCRYPTED BYTES,
+        GRANT WRITE TO "_creator",
+        GRANT READ TO "_world"
+    );
+
+    RECORD TYPE WatchtowerSignal (
+        "___createTime" TIMESTAMP,
+        hub             STRING QUERYABLE,
         GRANT WRITE TO "_creator",
         GRANT READ TO "_world"
     );'
@@ -87,23 +96,43 @@ run 'DEFINE SCHEMA
         GRANT READ TO "_world"
     );'
 [ "$RC" = 1 ] || note_fail "missing type: exit $RC"
-check "missing type" "$OUT" "WatchtowerRecord kind STRING QUERYABLE SEARCHABLE SORTABLE"
-check "missing type" "$OUT" "WatchtowerRecord payload ENCRYPTED BYTES"
+check "missing type" "$OUT" "WatchtowerEnvelope kind STRING QUERYABLE SEARCHABLE SORTABLE"
+check "missing type" "$OUT" "WatchtowerEnvelope payload ENCRYPTED BYTES"
 check "missing type" "$OUT" "Deploy Schema Changes"
 check_not "missing type" "$OUT" "Users roles"
 
 run "${DEV/        payload         ENCRYPTED BYTES,
 /}"
 [ "$RC" = 1 ] || note_fail "missing field: exit $RC"
-check "missing field" "$OUT" "WatchtowerRecord payload ENCRYPTED BYTES"
-check_not "missing field" "$OUT" "WatchtowerRecord kind"
+check "missing field" "$OUT" "WatchtowerEnvelope payload ENCRYPTED BYTES"
+check_not "missing field" "$OUT" "WatchtowerEnvelope kind"
 
 run "${DEV/QUERYABLE SEARCHABLE SORTABLE/QUERYABLE}"
 [ "$RC" = 1 ] || note_fail "index flags: exit $RC"
-check "index flags" "$OUT" "WatchtowerRecord kind STRING QUERYABLE SEARCHABLE SORTABLE"
+check "index flags" "$OUT" "WatchtowerEnvelope kind STRING QUERYABLE SEARCHABLE SORTABLE"
 
 run "$(printf '%s\n' "$DEV" | grep -v 'GRANT READ' | sed 's/  */ /g')"
 [ "$RC" = 0 ] || note_fail "grants/whitespace: exit $RC: $OUT"
+
+# Neither environment has the signal type yet (no E2E build ran in Development): the diff alone would pass.
+NO_SIGNAL="$(printf '%s\n' "$DEV" | awk '/RECORD TYPE WatchtowerSignal/ { skip = 1 } !skip { print } /\);/ { skip = 0 }')"
+rm -f "$TMP/calls"
+printf '%s\n' "$NO_SIGNAL" >"$TMP/development.ckdb"
+printf '%s\n' "$NO_SIGNAL" >"$TMP/production.ckdb"
+set +e
+OUT="$(env PATH="$TMP/bin:$PATH" STUB_DIR="$TMP" CLOUDKIT_TEAM_ID=TEAM123 bash "$SCRIPT" 2>&1)"
+RC=$?
+set -e
+[ "$RC" = 1 ] || note_fail "required type: exit $RC: $OUT"
+check "required type" "$OUT" "WatchtowerSignal"
+check_not "required type" "$OUT" "Production holds everything"
+
+# Production keeps the pre-E2E type the hard cut left behind: harmless.
+run "$DEV
+    RECORD TYPE WatchtowerRecord (
+        payload         ENCRYPTED BYTES
+    );"
+[ "$RC" = 0 ] || note_fail "leftover type: exit $RC: $OUT"
 
 run "$DEV" STUB_NO_TOKEN=1
 [ "$RC" = 1 ] || note_fail "no token: exit $RC"

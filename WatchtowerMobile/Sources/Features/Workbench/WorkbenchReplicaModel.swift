@@ -26,41 +26,63 @@ struct WorkbenchReplicaSnapshot: Equatable {
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]
 
+    /// The slice kinds this snapshot decodes.
+    static let kinds: [SliceKind] = [
+        Workbench.sliceKind, WorkbenchTarget.sliceKind, TerminalSessionState.sliceKind,
+        OwnerAsk.sliceKind, WorkbenchComment.sliceKind, .heartbeat, .deviceGrant
+    ]
+
     /// Reads from an ALREADY-OPEN database, so it runs inside a
-    /// ValueObservation tracking closure.
-    static func read(from db: Database, store: ReplicaStore) throws -> Self {
+    /// ValueObservation fetch. A kind whose change stamp is unchanged comes
+    /// from `cache` undecoded; the default fresh cache decodes everything.
+    static func read(from db: Database, store: ReplicaStore, cache: ReplicaDecodeCache = ReplicaDecodeCache()) throws -> Self {
+        let versions = try store.kindVersions(kinds, from: db)
         var snapshot = Self()
-        snapshot.workbenches = try snapshot.decodeAll(Workbench.self, store: store, from: db)
-        snapshot.targets = try snapshot.decodeAll(WorkbenchTarget.self, store: store, from: db)
-        snapshot.sessions = try snapshot.decodeAll(TerminalSessionState.self, store: store, from: db)
-        snapshot.asks = try snapshot.decodeAll(OwnerAsk.self, store: store, from: db)
-        snapshot.comments = try snapshot.decodeAll(WorkbenchComment.self, store: store, from: db)
-        snapshot.heartbeat = try SettingsSnapshot.decode(
-            HeartbeatPayload.self,
-            recordName: HeartbeatPayload.recordName,
-            store: store,
-            from: db
-        )
-        let decoder = RelayCoder.makeDecoder()
-        snapshot.grants = try store.payloads(of: .deviceGrant, from: db).compactMap { try? decoder.decode(DeviceGrant.self, from: $0) }
+        snapshot.workbenches = try snapshot.decodeAll(Workbench.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.targets = try snapshot.decodeAll(WorkbenchTarget.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.sessions = try snapshot.decodeAll(TerminalSessionState.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.asks = try snapshot.decodeAll(OwnerAsk.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.comments = try snapshot.decodeAll(WorkbenchComment.self, store: store, from: db, cache: cache, versions: versions)
+        snapshot.heartbeat = try cache.value(HeartbeatPayload.recordName, version: versions[.heartbeat] ?? 0) {
+            try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+        }
+        snapshot.grants = try cache.value(SliceKind.deviceGrant.rawValue, version: versions[.deviceGrant] ?? 0) {
+            let decoder = RelayCoder.makeDecoder()
+            return try store.payloads(of: .deviceGrant, from: db).compactMap { try? decoder.decode(DeviceGrant.self, from: $0) }
+        }
         snapshot.pending = try store.pendingActions(from: db)
         return snapshot
     }
 
-    private mutating func decodeAll<T: SliceMirror>(_ type: T.Type, store: ReplicaStore, from db: Database) throws -> [T] {
-        var skipped = 0
-        let decoded = try store.payloads(of: T.sliceKind, from: db).compactMap { payload -> T? in
-            do {
-                return try T.decode(payload: payload)
-            } catch {
-                skipped += 1
-                return nil
+    /// One kind's decoded records and how many did not decode.
+    private struct Decoded<T> {
+        let records: [T]
+        let skipped: Int
+    }
+
+    private mutating func decodeAll<T: SliceMirror>(
+        _ type: T.Type,
+        store: ReplicaStore,
+        from db: Database,
+        cache: ReplicaDecodeCache,
+        versions: [SliceKind: Int64]
+    ) throws -> [T] {
+        let decoded = try cache.value(T.sliceKind.rawValue, version: versions[T.sliceKind] ?? 0) {
+            var skipped = 0
+            let records = try store.payloads(of: T.sliceKind, from: db).compactMap { payload -> T? in
+                do {
+                    return try T.decode(payload: payload)
+                } catch {
+                    skipped += 1
+                    return nil
+                }
             }
+            return Decoded(records: records, skipped: skipped)
         }
-        if skipped > 0 {
-            skippedRecords[T.sliceKind] = skipped
+        if decoded.skipped > 0 {
+            skippedRecords[T.sliceKind] = decoded.skipped
         }
-        return decoded
+        return decoded.records
     }
 
     /// The Workbench list's order: latest session activity first (none
@@ -101,8 +123,8 @@ struct WorkbenchReplicaSnapshot: Equatable {
     }
 }
 
-/// Live replica state for one tab root: one observation over the slice
-/// records, re-read on every replica write.
+/// Live replica state for one tab root: one observation over the change
+/// stamps of its kinds and the outbox overlay.
 @MainActor
 @Observable
 final class WorkbenchReplicaModel {
@@ -110,26 +132,32 @@ final class WorkbenchReplicaModel {
     /// The open asks across all workbenches: the Workbench tab's badge.
     /// Its own property, so the tab bar re-renders only when it changes.
     private(set) var openAskCount = 0
+    /// The decoded kinds between reads (and the tests' decode counter).
+    @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "WorkbenchReplicaModel")
 
-    /// The slices re-read on every replica write; a write that leaves them
-    /// equal (another kind's record, a sync token) publishes nothing.
+    /// Re-read when a stamp changes (any kind's write) or the overlay does;
+    /// only this snapshot's changed kinds decode again, and a read that
+    /// leaves it equal publishes nothing.
     nonisolated static func observation(
-        store: ReplicaStore
+        store: ReplicaStore,
+        cache: ReplicaDecodeCache = ReplicaDecodeCache()
     ) -> ValueObservation<ValueReducers.RemoveDuplicates<ValueReducers.Fetch<WorkbenchReplicaSnapshot>>> {
-        ValueObservation.tracking { db in
-            try WorkbenchReplicaSnapshot.read(from: db, store: store)
+        ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion, ReplicaStore.pendingActionsRegion]) { db in
+            try WorkbenchReplicaSnapshot.read(from: db, store: store, cache: cache)
         }
         .removeDuplicates()
     }
 
-    func start(store: ReplicaStore) {
+    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
         guard cancellable == nil else { return }
+        let cache = decodeCache
         cancellable = ResilientObservation(
             name: "workbench",
             reader: store.reader,
-            observation: { Self.observation(store: store) },
+            gate: gate,
+            observation: { Self.observation(store: store, cache: cache) },
             onChange: { [weak self] value in self?.receive(value) }
         )
     }

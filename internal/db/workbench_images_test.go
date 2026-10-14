@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func attachImage(d *DB, projectID, targetID int64, sha string) (int64, error) {
+func attachImage(d *DB, workbenchID, targetID int64, sha string) (int64, error) {
 	var id int64
 	err := d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		id, err = AddWorkbenchTargetImageTx(tx, WorkbenchTargetImage{WorkbenchID: projectID, TargetID: targetID,
+		id, err = AddWorkbenchTargetImageTx(tx, WorkbenchTargetImage{WorkbenchID: workbenchID, TargetID: targetID,
 			FileName: "shot.png", MIME: "image/png", Size: 3, SHA256: sha, Path: "/store/" + sha + ".png"})
 		return err
 	})

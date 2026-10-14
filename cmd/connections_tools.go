@@ -133,6 +133,9 @@ func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnectio
 // policy: no allowed tool records the tools error; a usable policy clears a
 // tools error this code wrote earlier (never a credential one).
 func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
+	if strings.HasPrefix(conn.Error, transportReasonPrefix) {
+		return // the URL, not the tool policy, keeps it unmounted
+	}
 	allowed, _ := externalmcp.ResolveTools(conn)
 	switch {
 	case len(allowed) == 0:
@@ -146,9 +149,12 @@ func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
 // listConnectionTools refreshes conn's cached tools/list from its server,
 // with the same credentials a chat launch would use.
 func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalConnection) error {
-	server, ok := connectionServer(cfg, database, *conn)
-	if !ok {
+	server, err := connectionServer(cfg, database, *conn)
+	switch {
+	case errors.Is(err, errNoCredentials):
 		return fmt.Errorf("%w (see the log; `connections oauth %d` to sign in again)", errNoCredentials, conn.ID)
+	case err != nil:
+		return err
 	}
 	return refreshConnectionTools(database, conn, server, toolsListTimeout)
 }
@@ -168,7 +174,7 @@ func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *d
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
-	if errors.Is(err, errNoCredentials) {
+	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}

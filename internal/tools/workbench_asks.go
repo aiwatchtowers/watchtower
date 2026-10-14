@@ -40,12 +40,12 @@ const (
 // getter WorkbenchTools gives the ask tools; tests inject their own.
 func processTerminalSession() string { return os.Getenv(TerminalSessionEnv) }
 
-// terminalSessionOf is the session an ask of workbench projectID belongs to:
+// terminalSessionOf is the session an ask of workbench workbenchID belongs to:
 // getenv's id when it parses and names a terminal_sessions row of that
 // workbench; otherwise none (an external terminal, a garbage value or a gone
 // row), never an error — only a failed lookup is one.
-func terminalSessionOf(d *db.DB, projectID int64, getenv func() string) (sql.NullInt64, error) {
-	s, err := terminalSessionRow(d, projectID, getenv)
+func terminalSessionOf(d *db.DB, workbenchID int64, getenv func() string) (sql.NullInt64, error) {
+	s, err := terminalSessionRow(d, workbenchID, getenv)
 	if err != nil || s == nil {
 		return sql.NullInt64{}, err
 	}
@@ -53,8 +53,8 @@ func terminalSessionOf(d *db.DB, projectID int64, getenv func() string) (sql.Nul
 }
 
 // terminalSessionRow is terminalSessionOf's row: nil for no session of
-// workbench projectID, an error only for a failed lookup.
-func terminalSessionRow(d *db.DB, projectID int64, getenv func() string) (*db.TerminalSession, error) {
+// workbench workbenchID, an error only for a failed lookup.
+func terminalSessionRow(d *db.DB, workbenchID int64, getenv func() string) (*db.TerminalSession, error) {
 	id, ok := parseSessionID(getenv())
 	if !ok {
 		return nil, nil
@@ -66,7 +66,7 @@ func terminalSessionRow(d *db.DB, projectID int64, getenv func() string) (*db.Te
 	if err != nil {
 		return nil, fmt.Errorf("loading terminal session %d: %w", id, err)
 	}
-	if s.WorkbenchID.Int64 != projectID {
+	if s.WorkbenchID.Int64 != workbenchID {
 		return nil, nil
 	}
 	return s, nil
@@ -93,10 +93,10 @@ func noAsk(id int64) error {
 	return &ValidationError{Msg: fmt.Sprintf("no ask with id %d", id), Err: db.ErrAskNotFound}
 }
 
-// askInWorkbench loads ask id of projectID; another workbench's or a missing
+// askInWorkbench loads ask id of workbenchID; another workbench's or a missing
 // one reads as noAsk.
-func askInWorkbench(d *db.DB, projectID, id int64) (*db.OwnerAsk, error) {
-	a, err := d.GetOwnerAsk(projectID, id)
+func askInWorkbench(d *db.DB, workbenchID, id int64) (*db.OwnerAsk, error) {
+	a, err := d.GetOwnerAsk(workbenchID, id)
 	if errors.Is(err, db.ErrAskNotFound) {
 		return nil, noAsk(id)
 	}
@@ -441,8 +441,8 @@ func NewGetAsk() *Tool {
 // checked against the ask before anything is returned — an invalid stored
 // answer is an error, never a partial one — and an answered ask then moves
 // to delivered.
-func readAsk(d *db.DB, projectID, id int64) (*askView, error) {
-	a, err := askInWorkbench(d, projectID, id)
+func readAsk(d *db.DB, workbenchID, id int64) (*askView, error) {
+	a, err := askInWorkbench(d, workbenchID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +468,7 @@ func readAsk(d *db.DB, projectID, id int64) (*askView, error) {
 	}
 	view.Answer, view.AnswerText = &answer, asks.Render(a.Kind, payload, answer)
 	if a.Status == "answered" {
-		if _, err := d.MarkOwnerAskDelivered(projectID, id); err != nil {
+		if _, err := d.MarkOwnerAskDelivered(workbenchID, id); err != nil {
 			return nil, err
 		}
 		// Not marked means another session's get_ask delivered it first:

@@ -15,21 +15,21 @@ import (
 )
 
 // newWorkbenchSession mirrors cmd/mcp.go's --workbench wiring: a writable
-// connection, the workbench tools plus every read tool, bound to projectID
+// connection, the workbench tools plus every read tool, bound to workbenchID
 // with DirectApply.
-func newWorkbenchSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
+func newWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
 	t.Helper()
-	return newBoundWorkbenchSession(t, database, projectID, false)
+	return newBoundWorkbenchSession(t, database, workbenchID, false)
 }
 
 // newLegacyWorkbenchSession is the pre-rename `mcp --project N` wiring: the
 // same session, listing the renamed tools under their old names.
-func newLegacyWorkbenchSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
+func newLegacyWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
 	t.Helper()
-	return newBoundWorkbenchSession(t, database, projectID, true)
+	return newBoundWorkbenchSession(t, database, workbenchID, true)
 }
 
-func newBoundWorkbenchSession(t *testing.T, database *db.DB, projectID int64, legacy bool) *mcpsdk.ClientSession {
+func newBoundWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64, legacy bool) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
 	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir())), tools.ReadTools()...) {
@@ -37,7 +37,7 @@ func newBoundWorkbenchSession(t *testing.T, database *db.DB, projectID int64, le
 			t.Fatal(err)
 		}
 	}
-	return newChatSession(t, database, reg, tools.Binding{Surface: "project", WorkbenchID: projectID, DirectApply: true, LegacyNames: legacy})
+	return newChatSession(t, database, reg, tools.Binding{Surface: "project", WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy})
 }
 
 func seedMCPWorkbench(t *testing.T, database *db.DB) int64 {
@@ -108,7 +108,7 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherProjectRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_targets", ArgsJSON: `{}`, Reason: "r",
+	otherWorkbenchRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_targets", ArgsJSON: `{}`, Reason: "r",
 		Surface: "project", ContextType: tools.WorkbenchContextType, ContextID: strconv.FormatInt(otherPID, 10),
 		Status: "pending", TrustAtCreate: "execute"})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 		t.Fatalf("want applied, got %+v", rc)
 	}
 
-	for id, visible := range map[int64]bool{rc.ActionID: true, mainRow: false, otherProjectRow: false} {
+	for id, visible := range map[int64]bool{rc.ActionID: true, mainRow: false, otherWorkbenchRow: false} {
 		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 		if err != nil {
 			t.Fatal(err)

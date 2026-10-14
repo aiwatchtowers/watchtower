@@ -240,7 +240,7 @@ func TestChatMode_ValidationErrorIsToolErrorWithoutRow(t *testing.T) {
 
 func TestGetAction_ReturnsRowAndNotFound(t *testing.T) {
 	database := seedDB(t)
-	id, _ := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r"})
+	id, _ := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", Surface: "main"})
 	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
 	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 	if res.IsError || !strings.Contains(textContent(t, res), `"status": "pending"`) {
@@ -256,10 +256,9 @@ func TestGetAction_ReturnsRowAndNotFound(t *testing.T) {
 // leaking existence across conversations: a session bound to conversation 3
 // must get the same not-found error for a row belonging to conversation 2 as
 // it would for an id that never existed, so a model that invents an id learns
-// nothing about another conversation's proposal. conversation_id 0 (a
-// CLI-only install, spec §12) stays unscoped — nothing in this app is
-// multi-tenant below the single owner, and TestChatMode_ValidationErrorIsToolErrorWithoutRow
-// already binds with no conversation.
+// nothing about another conversation's proposal. A binding with no
+// conversation (a CLI-only install, spec §12) is not a wildcard: it sees only
+// conversation-less rows of its own surface (target 167).
 func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 	database := seedDB(t)
 	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", ConversationID: 2})
@@ -275,8 +274,32 @@ func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 
 	unbound := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
 	res, _ = unbound.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	if !res.IsError {
+		t.Fatalf("a binding with no conversation must not see a conversation's row, got %s", textContent(t, res))
+	}
+	// Conversation-less rows of another surface (a reaction's, a workbench's)
+	// stay hidden too; the session's own conversation-less row is visible.
+	hidden := []db.AgentAction{
+		{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", Surface: "reaction", ContextType: "reaction", ContextID: "C1@1.1"},
+		{Tool: "update_target", ArgsJSON: `{}`, Reason: "r", Surface: tools.WorkbenchSurface, ContextType: tools.WorkbenchContextType, ContextID: "1"},
+	}
+	for _, a := range hidden {
+		hid, err := database.InsertAgentAction(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, _ = unbound.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": hid}})
+		if !res.IsError {
+			t.Fatalf("a binding with no conversation must not see a %s row, got %s", a.Surface, textContent(t, res))
+		}
+	}
+	own, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", Surface: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ = unbound.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": own}})
 	if res.IsError {
-		t.Fatalf("a binding with no conversation must still see every row: %s", textContent(t, res))
+		t.Fatalf("a binding with no conversation sees its own surface's conversation-less row: %s", textContent(t, res))
 	}
 
 	same := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 2})
@@ -317,7 +340,7 @@ func TestGetAction_ElidesLargeArgStrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := database.InsertAgentAction(db.AgentAction{Tool: "edit_confluence_page", ArgsJSON: string(args), Reason: "r"})
+	id, _ := database.InsertAgentAction(db.AgentAction{Tool: "edit_confluence_page", ArgsJSON: string(args), Reason: "r", Surface: "main"})
 	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
 	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 	text := textContent(t, res)

@@ -30,6 +30,7 @@ struct NowView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            .hubSwitcher()
             .navigationDestination(for: NowRoute.self) { _ in SettingsView() }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             // An event detail pushed here opens its recap here (Open recap).
@@ -43,7 +44,7 @@ struct NowView: View {
             .navigationDestination(for: AskRoute.self) { route in
                 AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
             }
-            .refreshable { await env.refresh() }
+            .refreshable { await env.refresh(.pull) }
         }
     }
 
@@ -141,6 +142,7 @@ private struct NextMeetingCardView: View {
             RecordButton {
                 Task { await env.recorder.recordMeeting(card.meetingEvent) }
             }
+            .disabled(!env.canStartCapture)
         }
         .card(.plain)
     }

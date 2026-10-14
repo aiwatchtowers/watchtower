@@ -11,8 +11,8 @@ import (
 	"watchtower/internal/asks"
 )
 
-func questionAsk(projectID int64, title string) OwnerAsk {
-	return OwnerAsk{WorkbenchID: projectID, Kind: "question", Title: title}
+func questionAsk(workbenchID int64, title string) OwnerAsk {
+	return OwnerAsk{WorkbenchID: workbenchID, Kind: "question", Title: title}
 }
 
 func insertTestAsk(t *testing.T, d *DB, a OwnerAsk) (id, superseded int64, err error) {
@@ -46,10 +46,10 @@ func askStatus(t *testing.T, d *DB, id int64) (status, reason string) {
 	return status, reason
 }
 
-func newTestSession(t *testing.T, d *DB, projectID int64) int64 {
+func newTestSession(t *testing.T, d *DB, workbenchID int64) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid')`, projectID)
+		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid')`, workbenchID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)

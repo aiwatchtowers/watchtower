@@ -3,7 +3,7 @@
 // branches it created once their work is merged or pushed, its orphan
 // processes and the LaunchServices entries of builds inside those worktrees.
 // It never removes uncommitted, unpushed, in-use or someone else's work
-// (PROJ-16, docs/inventory/workbench.md). git runs only through
+// (PROJ-18, docs/inventory/workbench.md). git runs only through
 // internal/gitbin's binary, never in a folder outside a repository, never
 // with --force and never to fetch.
 package sessioncleanup
@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,6 +46,10 @@ func (e *GitError) Error() string {
 
 // SystemGit is the real GitRunner: gitbin.Locate and gitbin.Exec
 // (non-interactive, no optional locks, no inherited repository variables).
+// The folder's .git/config is the agent's to write (security review #155):
+// a read runs none of the commands it names (gitbin.ReadArgsIn — no
+// fsmonitor, hook or signature program, and no filter driver on a status),
+// and the owner-confirmed writes run no fsmonitor (gitbin.OwnerArgs).
 type SystemGit struct{}
 
 // GitBinary is gitbin.Locate.
@@ -52,7 +57,15 @@ func (SystemGit) GitBinary() (string, bool) { return gitbin.Locate() }
 
 // RunGit runs bin with args in dir.
 func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
-	stdout, stderr, err := gitbin.Exec(ctx, dir, nil, bin, args...)
+	argv := gitbin.OwnerArgs(args...)
+	if !ownerWrite(args) {
+		read, err := gitbin.ReadArgsIn(ctx, bin, dir, args...)
+		if err != nil {
+			return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		argv = read
+	}
+	stdout, stderr, err := gitbin.Exec(ctx, dir, nil, bin, argv...)
 	if err == nil {
 		return stdout, 0, nil
 	}
@@ -61,6 +74,23 @@ func (SystemGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([
 		return stdout, exitErr.ExitCode(), &GitError{Args: args, Code: exitErr.ExitCode(), Stderr: string(stderr)}
 	}
 	return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+}
+
+// ownerWrite: args are one of the writes an apply runs on the owner's
+// confirmation (worktree remove, update-ref -d, config --remove-section);
+// everything else is a read.
+func ownerWrite(args []string) bool {
+	switch {
+	case len(args) == 0:
+		return false
+	case args[0] == "update-ref":
+		return true
+	case args[0] == "worktree":
+		return len(args) > 1 && args[1] == "remove"
+	case args[0] == "config":
+		return slices.Contains(args[1:], "--remove-section")
+	}
+	return false
 }
 
 // SessionInfo is the slice of a terminal_sessions row a session-mode plan
@@ -84,7 +114,7 @@ type SessionActivity struct {
 }
 
 // Store is what a plan reads from the database. It has no write method: a
-// plan writes nothing (PROJ-16).
+// plan writes nothing (PROJ-18).
 type Store interface {
 	CleanupSession(ctx context.Context, sessionID int64) (SessionInfo, error)
 	SessionWorktrees(ctx context.Context, sessionID int64) ([]db.SessionWorktree, error)

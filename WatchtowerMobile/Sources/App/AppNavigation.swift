@@ -22,4 +22,11 @@ final class AppNavigation {
         tab = .calendar
         calendarPath = [.recordings]
     }
+
+    /// Every stack this object owns back at its root, the tab kept: a hub
+    /// switch (multi-hub spec §5.6). The Now and Workbench stacks are the
+    /// tabs' own and start over with the tab tree the switch rebuilds.
+    func resetStacks() {
+        calendarPath = []
+    }
 }

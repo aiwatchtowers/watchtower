@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 
@@ -129,10 +130,20 @@ package final class AgentActionFeed {
         rows.filter { !messageTurnIDs.contains($0.turnID) && !$0.isTerminal }
     }
 
-    /// `patch` carries the owner's card edits (`actions approve --patch`,
-    /// e.g. a Slack message's text); Go merges and approves them in one write.
-    package func approve(_ id: Int64, patch: String? = nil) async {
-        await run("approve", id: id, extra: patch.map { ["--patch", $0] } ?? [])
+    /// `shownArgs` is the row's `args_json` exactly as the card rendered it:
+    /// its digest rides `--args-sha256`, and Go refuses the approve when the
+    /// stored args are no longer what the owner saw. `patch` carries the
+    /// owner's card edits (`actions approve --patch`, e.g. a Slack message's
+    /// text); Go merges and approves them in one write.
+    package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {
+        let pin = ["--args-sha256", Self.argsSHA256(shownArgs)]
+        await run("approve", id: id, extra: pin + (patch.map { ["--patch", $0] } ?? []))
+    }
+
+    /// Hex sha256 of the args text's UTF-8 bytes — Go `tools.ArgsSHA256` over
+    /// the stored `args_json`.
+    package static func argsSHA256(_ argsJSON: String) -> String {
+        SHA256.hash(data: Data(argsJSON.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     package func reject(_ id: Int64) async {
@@ -148,7 +159,7 @@ package final class AgentActionFeed {
     /// failure on row 1 still shows on its card after row 2 succeeds.
     package func approveAllPending(forTurn turnID: String) async {
         for row in cards(forTurn: turnID) where row.isPending {
-            await run("approve", id: row.id)
+            await approve(row.id, shownArgs: row.argsJSON)
         }
     }
 

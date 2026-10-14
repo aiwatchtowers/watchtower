@@ -247,7 +247,7 @@ func TestScan_UnknownRecheckDoubtKeepsTheProcess(t *testing.T) {
 	}
 }
 
-func TestProj16_OnlyOrphansAreSignalled(t *testing.T) {
+func TestProj18_OnlyOrphansAreSignalled(t *testing.T) {
 	root := "/private/tmp/acme/wt"
 	uid := os.Getuid()
 	start := "Mon Oct 12 10:00:00 2026"

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,7 +23,7 @@ var workbenchCleanupCmd = &cobra.Command{
 		"and writes nothing. --session S (default $" + terminalSessionEnv + ") plans that session's\n" +
 		"cleanup: the linked worktrees and local branches it created whose work is merged or\n" +
 		"pushed, their orphan processes and LaunchServices entries; never uncommitted, unpushed,\n" +
-		"in-use or someone else's work (PROJ-16). --apply evaluates afresh and removes what is\n" +
+		"in-use or someone else's work (PROJ-18). --apply evaluates afresh and removes what is\n" +
 		"eligible now — only the --item keys named, when any — and saves the result on the\n" +
 		"session (result_saved / result_error). --workbench N --sweep lists every worktree and\n" +
 		"branch of the workbench repository with an owner hint; a sweep applies only named\n" +
@@ -77,11 +78,11 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 		return usageError("%v", err)
 	}
 	f := workbenchCleanupFlags
-	req, err := cleanupRequest(f, cmd.Flags().Changed("session"), os.Getenv)
+	req, err := cleanupRequest(f, cmd.Flags().Changed("session"), os.LookupEnv)
 	if err != nil {
 		return err
 	}
-	_, database, err := openJiraCmdDB()
+	database, err := openCleanupDB(f.apply)
 	if err != nil {
 		return err
 	}
@@ -90,11 +91,7 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	deps := cleanupDeps(database)
-	if err := resolveCleanupScope(ctx, deps.DB, &req); err != nil {
-		return err
-	}
-	res, err := runCleanup(ctx, deps, req, f)
+	res, err := runCleanup(ctx, cleanupDeps(database), req, f)
 	if err != nil {
 		return err
 	}
@@ -105,15 +102,55 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// cleanupBusyTimeout is how long a statement waits out another process's
+// write lock.
+const cleanupBusyTimeout = 5 * time.Second
+
+// openCleanupDB opens the active workspace's database without creating the
+// file or migrating it: read-only for a plan (db.OpenExisting), read-write
+// only for --apply, which saves the result (db.OpenExistingRW). A schema
+// without the 00111 cleanup columns is refused, so an older database fails
+// clearly instead of on the first query.
+func openCleanupDB(apply bool) (*db.DB, error) {
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	open := db.OpenExisting
+	if apply {
+		open = db.OpenExistingRW
+	}
+	database, err := open(cfg.DBPath(), cleanupBusyTimeout)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := database.HasColumns("terminal_sessions", "cleanup_result", "cleanup_at")
+	if err == nil && ok {
+		ok, err = database.HasColumns("terminal_session_worktrees", "session_id", "root", "branch", "first_at")
+	}
+	if err == nil && !ok {
+		err = errors.New("the database predates session cleanup (migration 00111): open the Watchtower app to upgrade it")
+	}
+	if err != nil {
+		database.Close()
+		return nil, err
+	}
+	return database, nil
+}
+
 // cleanupRequest checks the flags and builds the request. The calling
 // agent's session comes from the environment; a value there that is not a
-// session id is a usage error, never read as "no caller".
-func cleanupRequest(f cleanupFlags, sessionGiven bool, getenv func(string) string) (sessioncleanup.Request, error) {
-	caller, err := envTerminalSession(getenv)
+// session id (empty and whitespace included) is a usage error, never read as
+// "no caller".
+func cleanupRequest(f cleanupFlags, sessionGiven bool, lookupEnv func(string) (string, bool)) (sessioncleanup.Request, error) {
+	caller, err := envTerminalSession(lookupEnv)
 	if err != nil {
 		return sessioncleanup.Request{}, err
 	}
 	if err := checkCleanupFlags(f, sessionGiven); err != nil {
+		return sessioncleanup.Request{}, err
+	}
+	if err := checkCallerScope(f, sessionGiven, caller); err != nil {
 		return sessioncleanup.Request{}, err
 	}
 	req := sessioncleanup.Request{
@@ -133,17 +170,38 @@ func cleanupRequest(f cleanupFlags, sessionGiven bool, getenv func(string) strin
 	return req, nil
 }
 
-// envTerminalSession is $WATCHTOWER_TERMINAL_SESSION_ID; 0 when unset.
-func envTerminalSession(getenv func(string) string) (int64, error) {
-	raw := strings.TrimSpace(getenv(terminalSessionEnv))
-	if raw == "" {
+// envTerminalSession is $WATCHTOWER_TERMINAL_SESSION_ID; 0 only when the
+// variable is absent. Present but empty, whitespace or not a positive id, it
+// fails closed (a usage error): a caller session is set but unreadable, and
+// reading it as "no caller" would lift the caller-scope guard (PROJ-18).
+func envTerminalSession(lookupEnv func(string) (string, bool)) (int64, error) {
+	raw, present := lookupEnv(terminalSessionEnv)
+	if !present {
 		return 0, nil
 	}
-	id, err := strconv.ParseInt(raw, 10, 64)
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || id <= 0 {
-		return 0, usageError("%s=%q is not a terminal session id", terminalSessionEnv, raw)
+		return 0, usageError("%s=%q is set but is not a terminal session id", terminalSessionEnv, raw)
 	}
 	return id, nil
+}
+
+// checkCallerScope confines a caller inside an agent's terminal session
+// ($WATCHTOWER_TERMINAL_SESSION_ID set — where the auto-approved allow rule
+// applies, spec §4) to that same session: another --session and a sweep are
+// refused; a --workbench other than the session's is refused by the plan
+// (sessioncleanup.ErrWrongWorkbench). Sweeps and other sessions are the
+// Desktop's, which runs the command without that variable.
+func checkCallerScope(f cleanupFlags, sessionGiven bool, caller int64) error {
+	switch {
+	case caller == 0:
+		return nil
+	case f.sweep:
+		return usageError("inside terminal session %d a sweep is refused: sweeps run from the Watchtower app", caller)
+	case sessionGiven && f.session != caller:
+		return usageError("inside terminal session %d only that session can be cleaned up, not session %d", caller, f.session)
+	}
+	return nil
 }
 
 // checkCleanupFlags refuses the flag combinations spec §4 does not have.
@@ -175,31 +233,6 @@ func checkSweepFlags(f cleanupFlags, sessionGiven bool) error {
 	return nil
 }
 
-// resolveCleanupScope checks the session (or the swept workbench) exists
-// and, when both are given, that the session belongs to the workbench; it
-// fills in the session's workbench. A wrong id is a usage error.
-func resolveCleanupScope(ctx context.Context, store sessioncleanup.Store, req *sessioncleanup.Request) error {
-	if req.Sweep {
-		_, err := store.WorkbenchFolder(ctx, req.WorkbenchID)
-		if errors.Is(err, db.ErrWorkbenchNotFound) {
-			return usageError("%v", err)
-		}
-		return err
-	}
-	s, err := store.CleanupSession(ctx, req.SessionID)
-	if errors.Is(err, db.ErrTerminalSessionNotFound) || errors.Is(err, sessioncleanup.ErrStandaloneSession) {
-		return usageError("session %d: %v", req.SessionID, err)
-	}
-	if err != nil {
-		return err
-	}
-	if req.WorkbenchID != 0 && s.WorkbenchID != req.WorkbenchID {
-		return usageError("session %d belongs to workbench %d, not %d", req.SessionID, s.WorkbenchID, req.WorkbenchID)
-	}
-	req.WorkbenchID = s.WorkbenchID
-	return nil
-}
-
 // runCleanup plans, or applies with --apply; Apply saves a session's
 // result itself (Deps.Results).
 func runCleanup(ctx context.Context, deps sessioncleanup.Deps, req sessioncleanup.Request, f cleanupFlags) (sessioncleanup.Result, error) {
@@ -207,26 +240,21 @@ func runCleanup(ctx context.Context, deps sessioncleanup.Deps, req sessioncleanu
 		res, err := sessioncleanup.Apply(ctx, deps, req, f.items)
 		return res, cleanupFailure(err)
 	}
-	p, err := sessioncleanup.Build(ctx, deps, req)
-	if err != nil {
-		return sessioncleanup.Result{}, cleanupFailure(err)
-	}
-	if p.Items == nil {
-		p.Items = []sessioncleanup.Item{}
-	}
-	return sessioncleanup.Result{
-		SessionID: req.SessionID, WorkbenchID: req.WorkbenchID, Mode: sessioncleanup.ModePlan, Sweep: req.Sweep,
-		Plan: p, RemovedBytesKnown: true, Summary: sessioncleanup.Summarize(p.Items),
-	}, nil
+	res, err := sessioncleanup.PlanResult(ctx, deps, req)
+	return res, cleanupFailure(err)
 }
 
-// cleanupFailure is exit 1 (could not plan), or 2 for a sweep without
-// items.
+// cleanupFailure is exit 1 (could not plan), or 2 for a wrong id — an
+// unknown or standalone session, an unknown workbench, a session of another
+// workbench — or a sweep without items. The plan checks the ids itself
+// before anything is done.
 func cleanupFailure(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, sessioncleanup.ErrSweepNeedsItems):
+	case errors.Is(err, sessioncleanup.ErrSweepNeedsItems), errors.Is(err, sessioncleanup.ErrWrongWorkbench),
+		errors.Is(err, sessioncleanup.ErrStandaloneSession), errors.Is(err, db.ErrTerminalSessionNotFound),
+		errors.Is(err, db.ErrWorkbenchNotFound):
 		return usageError("%v", err)
 	case errors.Is(err, sessioncleanup.ErrNoGit):
 		return fmt.Errorf("cleanup: no git found, nothing was planned: %w", err)

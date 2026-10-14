@@ -14,11 +14,11 @@ var ErrParentOtherBoard = errors.New("a parent and its child must be on the same
 // its descendants (board #186).
 var ErrParentCycle = errors.New("a target cannot be nested under itself or its own sub-target")
 
-func boardName(projectID sql.NullInt64) string {
-	if !projectID.Valid {
+func boardName(workbenchID sql.NullInt64) string {
+	if !workbenchID.Valid {
 		return "the personal board"
 	}
-	return fmt.Sprintf("workbench %d's board", projectID.Int64)
+	return fmt.Sprintf("workbench %d's board", workbenchID.Int64)
 }
 
 func sameBoard(a, b sql.NullInt64) bool {
@@ -26,32 +26,32 @@ func sameBoard(a, b sql.NullInt64) bool {
 }
 
 // checkParentBoard refuses parentID when it is on a different board than a
-// child on projectID. A missing parent is left to the foreign key.
-func checkParentBoard(q targetsQuerier, parentID, projectID sql.NullInt64) error {
+// child on workbenchID. A missing parent is left to the foreign key.
+func checkParentBoard(q targetsQuerier, parentID, workbenchID sql.NullInt64) error {
 	if !parentID.Valid {
 		return nil
 	}
-	var parentProject sql.NullInt64
-	err := q.QueryRow(`SELECT project_id FROM targets WHERE id = ?`, parentID.Int64).Scan(&parentProject)
+	var parentWorkbench sql.NullInt64
+	err := q.QueryRow(`SELECT project_id FROM targets WHERE id = ?`, parentID.Int64).Scan(&parentWorkbench)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("checking parent target #%d: %w", parentID.Int64, err)
 	}
-	if !sameBoard(parentProject, projectID) {
+	if !sameBoard(parentWorkbench, workbenchID) {
 		return fmt.Errorf("parent target #%d is on %s, the child on %s: %w",
-			parentID.Int64, boardName(parentProject), boardName(projectID), ErrParentOtherBoard)
+			parentID.Int64, boardName(parentWorkbench), boardName(workbenchID), ErrParentOtherBoard)
 	}
 	return nil
 }
 
-// checkChildrenBoard refuses moving target id to projectID while any of its
+// checkChildrenBoard refuses moving target id to workbenchID while any of its
 // children stays on another board.
-func checkChildrenBoard(q targetsQuerier, id int64, projectID sql.NullInt64) error {
+func checkChildrenBoard(q targetsQuerier, id int64, workbenchID sql.NullInt64) error {
 	var child int64
 	err := q.QueryRow(`SELECT id FROM targets WHERE parent_id = ? AND project_id IS NOT ? LIMIT 1`,
-		id, projectID).Scan(&child)
+		id, workbenchID).Scan(&child)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -59,7 +59,7 @@ func checkChildrenBoard(q targetsQuerier, id int64, projectID sql.NullInt64) err
 		return fmt.Errorf("checking children of target #%d: %w", id, err)
 	}
 	return fmt.Errorf("target #%d would move to %s but its child #%d stays behind: %w",
-		id, boardName(projectID), child, ErrParentOtherBoard)
+		id, boardName(workbenchID), child, ErrParentOtherBoard)
 }
 
 // CheckParentCycle is checkParentCycle on the pool, for a caller that

@@ -1,5 +1,6 @@
 import GRDB
 import os
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -11,24 +12,134 @@ final class ActionOutboxTests: XCTestCase {
 
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
 
-    private func makeFixtures(
-        clock: OSAllocatedUnfairLock<Date>? = nil
-    ) throws -> (transport: InMemoryCloudTransport, store: ReplicaStore, outbox: ActionOutbox) {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
-        let frozen = base
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1") {
-            clock?.withLock { $0 } ?? frozen
-        }
-        return (transport, store, outbox)
+    /// The paired test phone over one in-memory zone: the outbox seals through `secure`, the replica opens the
+    /// overlay with the same key store.
+    private struct Phone {
+        let inner: any CloudSyncTransport & Sendable
+        let keys: InMemoryPhoneKeyStore
+        let secure: SecureTransport
+        let store: ReplicaStore
     }
 
-    private func relayRecords(_ transport: InMemoryCloudTransport) async throws -> [CloudRecord] {
+    private func makePhone(inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()) throws -> Phone {
+        let keys = try TestE2E.phoneStore()
+        return Phone(
+            inner: inner,
+            keys: keys,
+            secure: TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: inner),
+            store: try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys)))
+    }
+
+    private func makeFixtures(
+        clock: OSAllocatedUnfairLock<Date>? = nil
+    ) throws -> (transport: SecureTransport, store: ReplicaStore, outbox: ActionOutbox) {
+        let phone = try makePhone()
+        let frozen = base
+        let outbox = ActionOutbox(transport: phone.secure, store: phone.store, deviceID: "D1") {
+            clock?.withLock { $0 } ?? frozen
+        }
+        return (phone.secure, phone.store, outbox)
+    }
+
+    /// The relay zone as the phone reads it: its own p2h envelopes opened.
+    private func relayRecords(_ transport: SecureTransport) async throws -> [CloudRecord] {
         try await transport.changes(in: .relay, since: nil).changed
     }
 
     private func decodeAction(_ record: CloudRecord) throws -> ActionRequestPayload {
         try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
+    }
+
+    // MARK: - Sealing (mobile E2E: the outbox is encrypted at enqueue)
+
+    func testEnqueueSealsOnceAndTheOverlayReadsTheSealedRow() async throws {
+        let phone = try makePhone()
+        let outbox = ActionOutbox(transport: phone.secure, store: phone.store, deviceID: "D1") { self.base }
+
+        let id = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+
+        let wire = try await phone.inner.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(wire.count, 1, "one save")
+        let sent = try XCTUnwrap(wire.first)
+        XCTAssertEqual(sent.kind, WireKind.envelope)
+        XCTAssertEqual(sent.recordName, try phone.secure.wireName(plain: "action-\(id)", zone: .relay))
+        XCTAssertEqual(try Envelope.parse(sent.payload).header.envelopeClass, .relayToHub)
+        let row = try await phone.store.writer.read { db in
+            try Row.fetchOne(db, sql: "SELECT wire_name, payload FROM pending_actions WHERE action_id = ?", arguments: [id])
+        }
+        let stored = try XCTUnwrap(row)
+        XCTAssertEqual(stored["wire_name"] as String?, sent.recordName)
+        XCTAssertEqual(stored["payload"] as Data, sent.payload, "the overlay keeps the envelope it sent: sealed once")
+        XCTAssertNil((stored["payload"] as Data).range(of: Data(id.utf8)), "no plaintext action at rest")
+
+        let pending = try XCTUnwrap(phone.store.pendingActions().first)
+        XCTAssertEqual(pending.id, id)
+        XCTAssertEqual(pending.action.kind, .targetDone)
+        XCTAssertEqual(pending.action.entityID, "42")
+        XCTAssertEqual(pending.action.createdAt, base)
+    }
+
+    /// Locked is its own state: the overlay read throws instead of reading as "no pending actions".
+    func testTheOverlayReadThrowsLockedWhileTheKeychainIsLocked() async throws {
+        let phone = try makePhone()
+        let outbox = ActionOutbox(transport: phone.secure, store: phone.store, deviceID: "D1")
+        _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+
+        phone.keys.isLocked = true
+        XCTAssertThrowsError(try phone.store.pendingActions()) { XCTAssertEqual($0 as? KeyStoreError, .locked) }
+
+        phone.keys.isLocked = false
+        XCTAssertEqual(try phone.store.pendingActions().count, 1)
+    }
+
+    /// A locked keychain cannot seal: enqueue throws and leaves no overlay row and no record.
+    func testEnqueueWhileLockedSendsNothing() async throws {
+        let phone = try makePhone()
+        let outbox = ActionOutbox(transport: phone.secure, store: phone.store, deviceID: "D1")
+        phone.keys.isLocked = true
+
+        do {
+            _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+            XCTFail("sealing needs the unlocked keychain")
+        } catch KeyStoreError.locked {
+            // expected
+        }
+
+        let wire = try await phone.inner.changes(in: .relay, since: nil).changed
+        XCTAssertTrue(wire.isEmpty)
+        phone.keys.isLocked = false
+        XCTAssertTrue(try phone.store.pendingActions().isEmpty)
+    }
+
+    /// A row written before E2E holds a plaintext payload for a hub the hard cut removed: it is dropped when the
+    /// overlay gains `wire_name`, so no plaintext action stays at rest.
+    func testAPlaintextOverlayRowFromBeforeE2EIsDroppedOnOpen() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("outbox-legacy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("replica.sqlite").path
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE pending_actions (
+                    action_id TEXT PRIMARY KEY, kind TEXT NOT NULL, entity_record_name TEXT, payload BLOB NOT NULL,
+                    created_at REAL NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','failed')),
+                    error_message TEXT, reason TEXT, result BLOB, echo_status TEXT);
+                INSERT INTO pending_actions (action_id, kind, payload, created_at, state)
+                    VALUES ('A1', 'probe', '{"id":"A1","text":"plaintext-marker-7f3a"}', 1700000000, 'pending');
+                """)
+        }
+
+        let store = try ReplicaStore(path: path, opener: TestE2E.opener())
+
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+        let count = try store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM pending_actions") }
+        XCTAssertEqual(count, 0)
+        // Review fix 5: secure_delete + a TRUNCATE checkpoint leave no plaintext copy on disk.
+        let marker = Data("plaintext-marker-7f3a".utf8)
+        for suffix in ["", "-wal"] {
+            let bytes = (try? Data(contentsOf: URL(fileURLWithPath: path + suffix))) ?? Data()
+            XCTAssertNil(bytes.range(of: marker), "plaintext left in replica.sqlite\(suffix)")
+        }
     }
 
     // MARK: - Enqueue
@@ -115,8 +226,8 @@ final class ActionOutboxTests: XCTestCase {
     }
 
     func testUnlinkedOutboxRefusesToEnqueue() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let phone = try makePhone()
+        let (transport, store) = (phone.secure, phone.store)
         let outbox = ActionOutbox(transport: transport, store: store)
 
         do {
@@ -134,8 +245,8 @@ final class ActionOutboxTests: XCTestCase {
     /// An empty device id is no link: the hub's device gate would reject
     /// every action stamped "" (final-review A-T3).
     func testEmptyDeviceIDCountsAsUnlinked() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let phone = try makePhone()
+        let (transport, store) = (phone.secure, phone.store)
         let viaInit = ActionOutbox(transport: transport, store: store, deviceID: "")
         let viaSetter = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         await viaSetter.setDeviceID("  ")
@@ -154,8 +265,8 @@ final class ActionOutboxTests: XCTestCase {
     }
 
     func testSetDeviceIDLinksAndUnlinksTheOutbox() async throws {
-        let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let phone = try makePhone()
+        let (transport, store) = (phone.secure, phone.store)
         let outbox = ActionOutbox(transport: transport, store: store)
 
         await outbox.setDeviceID("D2")
@@ -174,8 +285,9 @@ final class ActionOutboxTests: XCTestCase {
     }
 
     func testEnqueueTransportThrowLeavesNoPendingRow() async throws {
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: ThrowingSaveTransport(), store: store, deviceID: "D1")
+        let phone = try makePhone(inner: ThrowingSaveTransport())
+        let store = phone.store
+        let outbox = ActionOutbox(transport: phone.secure, store: store, deviceID: "D1")
 
         do {
             _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
@@ -245,11 +357,20 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertEqual(row.state, .pending)
         XCTAssertEqual(row.echoStatus, .received)
 
+        XCTAssertNil(row.reason)
+
         echo.status = .held
+        echo.reason = .agentBusy
         try await outbox.applyEcho(echo)
         row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.state, .pending)
         XCTAssertEqual(row.echoStatus, .held, "the last non-terminal echo wins")
+        XCTAssertEqual(row.reason, .agentBusy, "a held echo keeps why it is held")
+
+        echo.reason = .needsApproval
+        try await outbox.applyEcho(echo)
+        XCTAssertEqual(try XCTUnwrap(store.pendingActions().first).reason, .needsApproval, "a new reason replaces the old")
+        echo.reason = nil
 
         echo.status = .applied
         echo.result = ["session_id": .integer(42), "stage": .string("starting")]

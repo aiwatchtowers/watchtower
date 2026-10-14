@@ -154,6 +154,9 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     }
 
     /// The real macOS 26 `SpeechAnalyzer` pass over one buffer (see the type comment).
+    /// `@Sendable` so it is the `Decode` default as is: a static function
+    /// captures nothing.
+    @Sendable
     static func analyze(samples: [Float], locale: Locale) async throws -> String {
         guard #available(macOS 26, *) else {
             throw NSError(domain: "AppleProvider", code: 2,

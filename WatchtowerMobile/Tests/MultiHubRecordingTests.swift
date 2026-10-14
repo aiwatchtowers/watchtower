@@ -1,0 +1,365 @@
+import Foundation
+import WatchtowerKit
+import WatchtowerSync
+import XCTest
+@testable import WatchtowerMobile
+
+/// Recording across hubs (multi-hub spec §5.4): a recording goes to the
+/// Mac that was active when it started, and that session's uploader
+/// finishes it even after a switch; one microphone, so one capture at a
+/// time across hubs; the Recordings list shows the active hub's
+/// recordings; sessions adopting their held recordings at one boot never
+/// clobber the shared hold manifest.
+@MainActor
+final class MultiHubRecordingTests: XCTestCase {
+    private let device = LinkedDevice(
+        deviceID: TestPhone.deviceID(),
+        name: "Acme iPhone",
+        model: "iPhone",
+        appVersion: "1.0",
+        scope: .private,
+        userRecordName: "_owner-acme"
+    )
+
+    private struct Hub {
+        let session: HubSession
+        let transport: InMemoryCloudTransport
+        let engine: FakeAudioEngine
+        let clock: FakeClock
+    }
+
+    private func makeBase() throws -> URL {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("multi-hub-rec-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        return base
+    }
+
+    private func paths(_ base: URL) -> HubPaths {
+        HubPaths(
+            groupDirectory: base.appendingPathComponent("g"),
+            localDirectory: base.appendingPathComponent("l"),
+            recordingsBase: base.appendingPathComponent("r")
+        )
+    }
+
+    /// A cloudKit-kind session on `hubID`'s files over its own in-memory
+    /// transport and a fake audio engine; its safety poll waits for good.
+    /// `replicaPath` overrides the hub's replica (the hold's seed sessions).
+    private func makeHub(
+        _ hubID: String,
+        base: URL,
+        linked: Bool = true,
+        replicaPath: String? = nil
+    ) throws -> Hub {
+        let paths = paths(base)
+        try paths.prepare(hubID)
+        let transport = InMemoryCloudTransport()
+        let engine = FakeAudioEngine()
+        let clock = FakeClock()
+        let session = try HubSession(
+            transport: transport,
+            replicaPath: replicaPath ?? paths.replicaPath(hubID),
+            transportKind: .cloudKit,
+            hubID: hubID,
+            linkedDevice: linked ? device : nil,
+            // The test hub's keys whatever the hub id: tests seal through the test hub.
+            keys: try TestHub.keys(hubID),
+            defaults: try makeDefaults(),
+            recordingsDirectory: paths.recordingsDirectory(hubID),
+            hold: RecordingHold(directory: paths.holdDirectory),
+            uploadRetriesAllowed: true,
+            makeRecorder: { uploader in
+                PhoneRecorderController(
+                    uploader: uploader, engine: engine, notificationCenter: NotificationCenter(),
+                    now: { clock.now }, tickInterval: nil
+                )
+            },
+            sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        return Hub(session: session, transport: transport, engine: engine, clock: clock)
+    }
+
+    private func makeEnvironment(_ hubs: [Hub]) throws -> AppEnvironment {
+        let env = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults()) { _ in }
+        for hub in hubs {
+            env.add(hub.session)
+        }
+        if let first = hubs.first {
+            env.activate(first.session.hubID)
+        }
+        return env
+    }
+
+    /// Records a 30 s voice note through the environment's recorder and
+    /// returns the saved id.
+    private func recordThroughEnvironment(_ env: AppEnvironment, clock: FakeClock) async throws -> String {
+        await env.recorder.recordVoiceNote()
+        clock.advance(30)
+        let recorder = env.recorder
+        await recorder.stop()
+        let id = try XCTUnwrap(recorder.savedRecording?.id, "expected a saved recording")
+        recorder.close()
+        return id
+    }
+
+    /// A recording held for `hubID` (as a removal holds it): recorded by a
+    /// throwaway session of that hub, on a replica of its own, then moved
+    /// into the shared hold.
+    private func holdRecording(for hubID: String, base: URL) async throws -> HeldRecording {
+        let seed = try makeHub(hubID, base: base, linked: false, replicaPath: try makeReplicaPath())
+        await seed.session.waitForBoot()
+        await seed.session.recorder.recordVoiceNote()
+        seed.clock.advance(30)
+        await seed.session.recorder.stop()
+        let id = try XCTUnwrap(seed.session.recorder.savedRecording?.id)
+        let row = try XCTUnwrap(try seed.session.store.phoneRecording(id: id))
+        let held = HeldRecording(row, marks: [], hubID: hubID, macName: nil)
+        try RecordingHold(directory: paths(base).holdDirectory).hold([held], from: paths(base).recordingsDirectory(hubID))
+        seed.session.stop()
+        return held
+    }
+
+    // MARK: - Review Focus 5
+
+    /// A capture started on hub A goes on under hub B, is stopped there,
+    /// and is sent by A's uploader through A's transport only. A's recorder
+    /// stays on screen through the save and its result until it is closed.
+    func testARecordingStartedOnOneHubFinishesThereAfterASwitch() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+
+        await env.recorder.recordVoiceNote()
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        env.activate(TestHub.hubB)
+
+        XCTAssertTrue(env.recorder === hubA.session.recorder, "the running capture stays on screen")
+        XCTAssertTrue(env.capturingSession === hubA.session)
+        hubA.clock.advance(30)
+        await env.recorder.stop()
+
+        XCTAssertTrue(env.recorder === hubA.session.recorder, "A's result stays on screen")
+        XCTAssertFalse(env.canStartCapture)
+        let id = try XCTUnwrap(hubA.session.recorder.savedRecording?.id)
+        env.recorder.close()
+        XCTAssertTrue(env.recorder === hubB.session.recorder, "closed: the active hub's recorder")
+        XCTAssertTrue(env.canStartCapture)
+        XCTAssertNotNil(try hubA.session.store.phoneRecording(id: id))
+        XCTAssertNil(try hubB.session.store.phoneRecording(id: id))
+        let uploadsA = try await relayUploads(in: hubA.transport, hub: TestHub.hubA)
+        XCTAssertEqual(uploadsA.map(\.id), [id], "sent to the Mac it started on")
+        let uploadsB = try await relayUploads(in: hubB.transport, hub: TestHub.hubB)
+        XCTAssertTrue(uploadsB.isEmpty, "never sent to the hub on screen")
+    }
+
+    /// "See recordings" after a capture for another Mac opens that Mac's
+    /// Recordings list, the one that holds the new recording: its hub goes
+    /// on screen first.
+    func testSeeRecordingsAfterAnotherHubsCaptureOpensThatHubsList() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate(TestHub.hubB)
+        hubA.clock.advance(30)
+        await env.recorder.stop()
+        let id = try XCTUnwrap(hubA.session.recorder.savedRecording?.id)
+
+        env.showRecordings()
+
+        XCTAssertEqual(env.activeHubID, TestHub.hubA, "the Mac the recording is for")
+        XCTAssertEqual(env.navigation.tab, .calendar)
+        XCTAssertEqual(env.navigation.calendarPath, [.recordings])
+        XCTAssertFalse(hubA.session.recorder.holdsMicrophoneOrScreen, "the recorder is closed")
+        XCTAssertNotNil(try env.store.phoneRecording(id: id), "the list on screen holds it")
+
+        // The active hub's own capture opens its own list, no switch.
+        await env.recorder.recordVoiceNote()
+        hubA.clock.advance(10)
+        await env.recorder.stop()
+        env.showRecordings()
+        XCTAssertEqual(env.activeHubID, TestHub.hubA)
+    }
+
+    func testOneCaptureAtATimeAcrossHubs() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        XCTAssertTrue(env.canStartCapture)
+        XCTAssertNil(env.captureHubName)
+
+        await env.recorder.recordVoiceNote()
+        XCTAssertFalse(env.canStartCapture)
+        XCTAssertNil(env.captureHubName, "a capture on the hub on screen names no Mac")
+        hubA.session.hubName = "Acme Studio"
+        env.activate(TestHub.hubB)
+
+        XCTAssertFalse(env.canStartCapture, "hub B's Record buttons are off while hub A captures")
+        XCTAssertEqual(env.captureHubName, "Acme Studio")
+        // A Record tap on hub B reaches the running capture, never a second one.
+        await env.recorder.recordVoiceNote()
+        XCTAssertFalse(hubB.session.recorder.isCapturing)
+        XCTAssertTrue(hubA.session.recorder.isCapturing)
+
+        hubA.clock.advance(30)
+        env.recorder.pause()
+        XCTAssertFalse(env.canStartCapture, "a paused capture still holds the microphone")
+        await hubA.session.recorder.stop()
+        XCTAssertFalse(env.canStartCapture, "A's result is on screen until closed")
+        hubA.session.recorder.close()
+        XCTAssertTrue(env.canStartCapture)
+        XCTAssertNil(env.captureHubName)
+    }
+
+    /// The microphone is A's until its save ends: the engine's finish turns
+    /// the shared audio session off, so nothing may start on B meanwhile.
+    func testNoCaptureStartsWhileAnotherHubSaves() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate(TestHub.hubB)
+        hubA.clock.advance(30)
+        hubA.engine.holdFinish = true
+
+        let stopping = Task { await env.recorder.stop() }
+        try await poll({ hubA.session.recorder.phase == .saving }, "the stop never began saving")
+        XCTAssertFalse(env.canStartCapture, "A is saving")
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        hubA.engine.releaseFinish()
+        await stopping.value
+        XCTAssertNotNil(hubA.session.recorder.savedRecording)
+        XCTAssertFalse(env.canStartCapture, "A's result is on screen")
+        env.recorder.close()
+        XCTAssertTrue(env.canStartCapture)
+    }
+
+    /// A start waiting on the microphone permission already owns the
+    /// recorder: a switch keeps it on screen and B's Record buttons off.
+    func testNoCaptureStartsWhileAnotherHubsStartWaits() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        hubA.engine.holdPermission = true
+        addTeardownBlock { @MainActor in hubA.engine.releasePermission() }
+
+        let starting = Task { await env.recorder.recordVoiceNote() }
+        try await poll({ hubA.session.recorder.isPresented }, "the start never opened the recorder")
+        env.activate(TestHub.hubB)
+        XCTAssertFalse(hubA.session.recorder.isCapturing, "still waiting on the permission")
+        XCTAssertFalse(env.canStartCapture)
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+
+        hubA.engine.releasePermission()
+        await starting.value
+        XCTAssertTrue(hubA.session.recorder.isCapturing)
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        XCTAssertFalse(hubB.session.recorder.isPresented)
+    }
+
+    /// A save that fails on hub A shows its error through the environment's
+    /// recorder while hub B is on screen.
+    func testAFailedSaveOnAnotherHubStaysOnScreen() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        hubA.session.hubName = "Acme Studio"
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+        await env.recorder.recordVoiceNote()
+        env.activate(TestHub.hubB)
+        hubA.clock.advance(30)
+        hubA.engine.fileDuration = nil
+
+        await env.recorder.stop()
+
+        XCTAssertTrue(env.recorder === hubA.session.recorder)
+        XCTAssertEqual(env.recorder.phase, .failed(RecordingUploader.unrecoverableMessage))
+        XCTAssertTrue(env.recorder.isPresented)
+        XCTAssertEqual(env.captureHubName, "Acme Studio")
+        XCTAssertFalse(env.canStartCapture)
+    }
+
+    func testTheRecordingsListShowsTheActiveHubsRecordings() async throws {
+        let base = try makeBase()
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        let env = try makeEnvironment([hubA, hubB])
+        await env.waitForBoot()
+
+        let onA = try await recordThroughEnvironment(env, clock: hubA.clock)
+        env.activate(TestHub.hubB)
+        let onB = try await recordThroughEnvironment(env, clock: hubB.clock)
+
+        try await poll({ env.phoneRecordings.snapshot.recording(onB) != nil }, "hub B's recording not listed")
+        XCTAssertNil(env.phoneRecordings.snapshot.recording(onA))
+        env.activate(TestHub.hubA)
+        try await poll({ env.phoneRecordings.snapshot.recording(onA) != nil }, "hub A's recording not listed")
+        XCTAssertNil(env.phoneRecordings.snapshot.recording(onB))
+    }
+
+    /// The held list on a hub's Recordings shows the recordings waiting
+    /// for a Mac the phone no longer has, and its own not yet adopted;
+    /// never another linked hub's (that hub adopts them).
+    func testTheHeldListNeverShowsAnotherLinkedHubsRecordings() async throws {
+        let base = try makeBase()
+        let forB = try await holdRecording(for: TestHub.hubB, base: base)
+        let forGone = try await holdRecording(for: TestHub.gone, base: base)
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let env = try makeEnvironment([hubA])
+        await env.waitForBoot()
+        XCTAssertEqual(Set(env.heldRecordings.map(\.id)), [forB.id, forGone.id], "one hub: every other hub's waits here")
+
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        env.add(hubB.session)
+        _ = await hubB.session.adoption?.value
+
+        XCTAssertEqual(env.heldRecordings.map(\.id), [forGone.id], "hub B's recording is hub B's, not on hub A's list")
+        env.activate(TestHub.hubB)
+        XCTAssertEqual(env.heldRecordings.map(\.id), [forGone.id])
+    }
+
+    // MARK: - Review Focus 3
+
+    /// Both sessions adopt their own held recording from one manifest at
+    /// one boot: each lands in its own replica and folder, none is lost,
+    /// and the manifest ends empty.
+    func testTwoSessionsAdoptTheirOwnHeldRecordingsAtOneBoot() async throws {
+        let base = try makeBase()
+        let forA = try await holdRecording(for: TestHub.hubA, base: base)
+        let forB = try await holdRecording(for: TestHub.hubB, base: base)
+        let hold = RecordingHold(directory: paths(base).holdDirectory)
+        XCTAssertEqual(Set(try hold.load().map(\.id)), [forA.id, forB.id])
+
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let hubB = try makeHub(TestHub.hubB, base: base)
+        async let adoptedA = hubA.session.adoption?.value
+        async let adoptedB = hubB.session.adoption?.value
+        let reports = await [adoptedA, adoptedB]
+
+        XCTAssertEqual(reports, [HeldAdoption(), HeldAdoption()])
+        XCTAssertEqual(try hubA.session.store.phoneRecordings().map(\.id), [forA.id])
+        XCTAssertEqual(try hubB.session.store.phoneRecordings().map(\.id), [forB.id])
+        let folderA = paths(base).recordingsDirectory(TestHub.hubA)
+        let folderB = paths(base).recordingsDirectory(TestHub.hubB)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folderA.appendingPathComponent(forA.fileName).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folderB.appendingPathComponent(forB.fileName).path))
+        XCTAssertTrue(try hold.load().isEmpty, "both adoptions left the manifest")
+        let env = try makeEnvironment([hubA, hubB])
+        XCTAssertTrue(env.heldRecordings.isEmpty)
+        env.activate(TestHub.hubB)
+        XCTAssertTrue(env.heldRecordings.isEmpty)
+    }
+}

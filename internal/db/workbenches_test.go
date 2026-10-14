@@ -24,10 +24,10 @@ func nullID(id int64) sql.NullInt64 { return sql.NullInt64{Int64: id, Valid: tru
 
 // insertWorkbenchTargetRow plants a project target with raw SQL, independent of
 // CreateProjectTarget (Task 3).
-func insertWorkbenchTargetRow(t *testing.T, d *DB, projectID int64, text string) int64 {
+func insertWorkbenchTargetRow(t *testing.T, d *DB, workbenchID int64, text string) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO targets (text, level, custom_label, period_start, period_end, source_type, project_id)
-		VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', 'chat', ?)`, text, projectID)
+		VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', 'chat', ?)`, text, workbenchID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)
