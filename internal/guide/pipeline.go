@@ -78,6 +78,16 @@ type batchUserEntry struct {
 	sitCount   int
 }
 
+// RunOutcome says how the most recent RunForWindow ended, so the daemon can
+// tell a run that had nothing to work on from one that covered the window.
+type RunOutcome int
+
+const (
+	OutcomeGenerated RunOutcome = iota // reached the AI stage (cards written or attempted)
+	OutcomeCovered                     // every active user already has a card for the window
+	OutcomeNoData                      // no active users with enough messages, or no situations yet
+)
+
 // ProgressFunc is called during generation to report progress.
 type ProgressFunc func(completed, totalUsers int, status string)
 
@@ -107,6 +117,8 @@ type Pipeline struct {
 	channelNames map[string]string
 	userNames    map[string]string
 	profile      *db.UserProfile
+
+	lastOutcome RunOutcome
 }
 
 // New creates a new people card pipeline.
@@ -124,6 +136,12 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 func (p *Pipeline) lightModel() string {
 	light, _ := providers.ResolveModelsFor(p.cfg, p.cfg.AI.Provider)
 	return light
+}
+
+// LastOutcome returns the outcome of the most recent Run/RunForWindow;
+// OutcomeGenerated before any run.
+func (p *Pipeline) LastOutcome() RunOutcome {
+	return p.lastOutcome
 }
 
 // SetPromptStore sets an optional prompt store for loading customized prompts.
@@ -161,6 +179,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 
 // RunForWindow executes the people card pipeline for a specific time window.
 func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, error) {
+	p.lastOutcome = OutcomeGenerated
 	t0 := time.Now()
 	p.loadCaches()
 	p.logger.Printf("people: loadCaches took %s", time.Since(t0).Round(time.Millisecond))
@@ -187,6 +206,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	if len(allStats) == 0 {
 		p.progress(0, 0, "No active users with enough messages")
 		p.logger.Println("people: no active users with enough messages")
+		p.lastOutcome = OutcomeNoData
 		return 0, nil
 	}
 	// todo is who still needs a card; team norms stay computed over the whole
@@ -197,6 +217,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		todo = withoutCovered(allStats, covered)
 		if len(todo) == 0 {
 			p.logger.Printf("people: window already has AI cards for all %d users, skipping", len(covered))
+			p.lastOutcome = OutcomeCovered
 			return 0, nil
 		}
 		p.logger.Printf("people: %d user(s) still need a card for this window", len(todo))
@@ -217,6 +238,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	if !p.ForceRegenerate && len(allSituations) == 0 {
 		p.progress(0, 0, "No situations from digests yet, skipping people cards")
 		p.logger.Println("people: no situations available, skipping (run digests first)")
+		p.lastOutcome = OutcomeNoData
 		return 0, nil
 	}
 

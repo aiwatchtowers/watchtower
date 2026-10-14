@@ -1202,7 +1202,10 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 }
 
 // phasePeopleCards (group B) generates per-user people cards from people_signals
-// produced by phaseChannelDigests. Throttled to once per 24h. Compound-gated
+// produced by phaseChannelDigests. Throttled to once per 24h; a run with no
+// data yet (no active users or no situations, the fresh-install first cycle)
+// neither stamps the throttle nor spends the budget, so cards appear in the
+// first cycle that has situations. Compound-gated
 // on Digest.Enabled too: people cards mine people_signals that only
 // phaseChannelDigests produces — starved without them, and gating on
 // People.Enabled alone would still create an empty pipeline_runs row every
@@ -1235,7 +1238,7 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) {
 				d.recordPeopleAttempt(date)
 			}
-		} else {
+		} else if d.peoplePipe.LastOutcome() != guide.OutcomeNoData {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
 			}
