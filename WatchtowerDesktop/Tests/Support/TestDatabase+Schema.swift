@@ -1794,7 +1794,6 @@ CREATE INDEX IF NOT EXISTS idx_feedback_entity ON feedback(entity_type, entity_i
 CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(entity_type, rating);
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sender_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surface, ts);
-CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee ON jira_issues(assignee_account_id);
@@ -1888,6 +1887,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outpu
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
 CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id, account_id, internal_date);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

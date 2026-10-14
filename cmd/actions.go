@@ -57,7 +57,8 @@ var actionsTrustCmd = &cobra.Command{
 	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
 covers another. Without --surface the level is set on every surface the tool
 is offered on; with --surface it is set on that surface only (what
-Settings → Assistant tools passes, one switch per surface).`,
+Settings → Assistant tools passes, one switch per surface). Only write tools
+take a trust level; the workbench and automation surfaces take none.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runActionsTrust,
 }
@@ -411,6 +412,9 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return tools.ErrUnknownTool
 	}
+	if err := tools.CheckTrustable(t); err != nil {
+		return err
+	}
 	surfaces := tools.TrustSurfaces(t)
 	if actionsFlagSurface != "" {
 		surfaces = []string{actionsFlagSurface}
@@ -459,10 +463,12 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	}
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
-		surfaces := t.Surfaces
-		if surfaces == nil {
-			surfaces = []string{}
+		// Settings → Assistant tools draws a trust switch per surface, so
+		// only what trust can act on is listed (CheckTrustable).
+		if tools.CheckTrustable(t) != nil {
+			continue
 		}
+		surfaces := listedToolSurfaces(t)
 		trustSurfaces := tools.TrustSurfaces(t)
 		bySurface := make(map[string]string, len(trustSurfaces))
 		for _, s := range trustSurfaces {
@@ -492,6 +498,19 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))
 	}
 	return nil
+}
+
+// listedToolSurfaces is toolJSON.Surfaces: t's surfaces without the
+// automation surface, which takes no trust in P1 (tools.TrustSurfaces) and
+// would otherwise show as a switch; never nil, so JSON carries [].
+func listedToolSurfaces(t *tools.Tool) []string {
+	out := make([]string, 0, len(t.Surfaces))
+	for _, s := range t.Surfaces {
+		if s != tools.AutomationSurface {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // summarizeTrust is toolJSON.Trust: the level on the filtered surface, else

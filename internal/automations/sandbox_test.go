@@ -18,8 +18,9 @@ import (
 	"watchtower/internal/tools"
 )
 
-// sbClock is a minimal fake Clock (automationstest.FakeClock arrives with
-// the SDK modules).
+// sbClock is a minimal fake Clock for these in-package tests: they cannot use
+// automationstest.FakeClock, which imports this package (an import cycle).
+// Unlike FakeClock, After waits on the real clock.
 type sbClock struct {
 	mu  sync.Mutex
 	now time.Time

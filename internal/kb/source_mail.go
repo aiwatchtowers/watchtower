@@ -113,7 +113,8 @@ func loadGmailRows(ctx context.Context, q Queryer, query string, args ...any) ([
 }
 
 // gmailThreadQuery and gmailMessageQuery are split so each hits its own
-// index: thread_id = ? uses idx_gmail_messages_thread, id = ? uses the
+// index: thread_id = ? uses idx_gmail_messages_thread (thread_id, account_id,
+// internal_date — migration 00113), id = ? uses the
 // (account_id, id) primary-key autoindex. A single combined WHERE with an
 // expression on the bind param ('m:' || id = ?) defeated both and forced a
 // full per-account table scan (SEARCH ... USING INDEX

@@ -139,8 +139,16 @@ CREATE INDEX idx_automation_outputs_run ON automation_outputs(run_id);
 -- first, optionally from a `since` instant.
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
 CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
+-- Without it the planner would answer the KB thread lookup (account_id = ?
+-- AND thread_id = ? ORDER BY internal_date, id) from the new account/date
+-- index, walking the whole mailbox: the thread index widens to carry both
+-- equalities and the order, so it wins again (kb TestGmail_QueryPlan).
+DROP INDEX IF EXISTS idx_gmail_messages_thread;
+CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id, account_id, internal_date);
 
 -- +goose Down
+DROP INDEX IF EXISTS idx_gmail_messages_thread;
+CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id);
 DROP INDEX IF EXISTS idx_imap_messages_account_date;
 DROP INDEX IF EXISTS idx_gmail_messages_account_date;
 DROP TABLE IF EXISTS automation_outputs;

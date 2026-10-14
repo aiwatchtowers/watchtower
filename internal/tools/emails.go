@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
 )
 
-// maxEmailBodyBytes caps get_email's body (spec 2026-10-14-automations-design
-// Global Constraints: email body clipped 32 KiB).
-const maxEmailBodyBytes = 32 * 1024
+// MaxEmailBodyBytes caps get_email's body (spec 2026-10-14-automations-design
+// Global Constraints: email body clipped 32 KiB). The one copy of the value.
+const MaxEmailBodyBytes = 32 * 1024
 
 type listEmailsArgs struct {
 	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
@@ -70,13 +69,9 @@ func NewListEmails() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			since := ""
-			if strings.TrimSpace(a.Since) != "" {
-				ts, perr := time.Parse(time.RFC3339, strings.TrimSpace(a.Since))
-				if perr != nil {
-					return nil, &ValidationError{Msg: "since must be an RFC 3339 time, e.g. 2026-10-14T09:00:00Z", Err: perr}
-				}
-				since = ts.UTC().Format(time.RFC3339)
+			since, err := utcArg("since", a.Since)
+			if err != nil {
+				return nil, err
 			}
 			msgs, err := d.ListLocalEmails(ctx, db.LocalEmailQuery{
 				Store: acct.store, AccountID: acct.id, Since: since, Limit: listLimit(a.Limit), UnreadOnly: a.UnreadOnly,
@@ -128,7 +123,7 @@ func NewGetEmail() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("reading the Cc list of email %s: %w", m.ID, err)
 			}
-			body, truncated := clipUTF8Bytes(m.BodyText, maxEmailBodyBytes)
+			body, truncated := ClipUTF8Bytes(m.BodyText, MaxEmailBodyBytes)
 			return emailDetail{
 				Account: acct.name, emailSummary: summarizeEmail(m),
 				To: to, Cc: cc, Body: body, Truncated: truncated,
@@ -285,9 +280,9 @@ func emailRecipients(raw string) ([]string, error) {
 	return out, nil
 }
 
-// clipUTF8Bytes cuts s to at most maxBytes bytes on a rune boundary and
+// ClipUTF8Bytes cuts s to at most maxBytes bytes on a rune boundary and
 // reports whether it cut anything.
-func clipUTF8Bytes(s string, maxBytes int) (string, bool) {
+func ClipUTF8Bytes(s string, maxBytes int) (string, bool) {
 	if len(s) <= maxBytes {
 		return s, false
 	}

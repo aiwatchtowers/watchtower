@@ -311,6 +311,49 @@ func TestActions_WorkbenchSurfaceIsNoTrustPlace(t *testing.T) {
 	}
 }
 
+// Settings → Assistant tools draws a switch per listed surface, and trust is a
+// write-tool setting: the listing carries write tools only — none of the
+// automation-only reads — and no "automation" surface anywhere (P1 automations
+// get no grants). `actions trust` refuses a read tool, with or without
+// --surface, and the automation surface on a write tool; nothing is written.
+func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
+	database := writeActionsConfig(t)
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name           string            `json:"name"`
+		Access         string            `json:"access"`
+		Surfaces       []string          `json:"surfaces"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	require.NotEmpty(t, listed)
+	for _, l := range listed {
+		assert.Equal(t, string(tools.AccessWrite), l.Access, "%s: only write tools take trust", l.Name)
+		assert.NotContains(t, l.Surfaces, tools.AutomationSurface, l.Name)
+		assert.NotContains(t, l.TrustBySurface, tools.AutomationSurface, l.Name)
+	}
+	assert.NotContains(t, out, `"`+tools.AutomationSurface+`"`)
+	for _, name := range []string{"list_emails", "get_email", "list_inbox", "get_writing_style", "list_messages"} {
+		assert.NotContains(t, out, `"`+name+`"`, "%s is a read tool", name)
+	}
+
+	for _, args := range [][]string{
+		{"trust", "get_writing_style", "execute"},
+		{"trust", "get_writing_style", "ask", "--surface", "main"},
+		{"trust", "list_emails", "execute", "--surface", tools.AutomationSurface},
+	} {
+		_, err = runActions(t, args...)
+		require.ErrorIs(t, err, tools.ErrNotWritable, args)
+	}
+	_, err = runActions(t, "trust", "create_target", "execute", "--surface", tools.AutomationSurface)
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
+	var rows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
+		WHERE surface = ? OR tool IN ('get_writing_style', 'list_emails')`, tools.AutomationSurface).Scan(&rows))
+	assert.Zero(t, rows, "no refused trust call writes a row")
+}
+
 // The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
 func TestActions_ToolsJSONMarksAlwaysAsk(t *testing.T) {
 	writeActionsConfig(t)
