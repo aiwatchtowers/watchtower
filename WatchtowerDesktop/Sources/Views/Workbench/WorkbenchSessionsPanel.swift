@@ -13,11 +13,17 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
+    /// View-local: it is only this list's scroll. The view keeps its identity
+    /// when another workbench is opened, so `project.id` resets it.
+    @State private var scroll = PanelSelectionScrollPolicy<Int64>()
+    /// The panel holds the keyboard (`SessionsPanelKeyView`, board #480).
+    @State private var hasKeyboard = false
+    /// The row under the mouse: its ✕ shows.
+    @State private var hoveredRow: Int64?
 
     var body: some View {
-        let sessions = vm.drilledSessions
-        let stack = vm.asks.stack(projectID: project.id)
-        let closed = vm.asks.closedCounts[project.id] ?? [:]
+        let sections = vm.panelSections(projectID: project.id)
+        let scrollIDs = sections.panelScrollIDs
         VStack(alignment: .leading, spacing: 0) {
             header
             OwnerAskStackSection(vm: vm, project: project)
@@ -27,31 +33,100 @@ struct WorkbenchSessionsPanel: View {
                 .padding(.top, 4)
                 .padding(.bottom, 2)
                 .accessibilityAddTraits(.isHeader)
+                .contentShape(Rectangle())
+                .onTapGesture { vm.requestPanelKeyboard() }
             // No List selection: its highlight would draw over the tab. The
             // tab follows `vm.panelSelection` (the session on screen) and a
             // row opens on its own click (`SessionRowActions.open`), which
             // also reaches the row already highlighted but not running
             // (VoiceOver has the row's action).
-            List {
-                ForEach(vm.sessionRows(sessions)) { row in
-                    TerminalSessionRow(
-                        row: row,
-                        actions: actions,
-                        openAsks: stack.count(session: row.id),
-                        reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: project.id) : nil,
-                        reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: project.id) : nil,
-                        closedAsks: (closed[row.id] ?? 0) > 0
-                            ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
-                            : nil
-                    )
-                    .panelTab(isSelected: vm.panelSelection == .session(row.id))
+            // The list follows the session on screen, never the asks stack
+            // above it (board #561): a new session is selected before its row
+            // loads, so the policy keeps it pending until the row appears. A
+            // row under the finished group's header brings the header in too.
+            ScrollViewReader { proxy in
+                List {
+                    sessionList(sections)
                 }
-                .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
+                .clearPlainList()
+                // ↑ ↓ Return Esc ⌘⌫ ⌘Z once a click on the list's empty
+                // space, the label, the group header, a ✕ or Undo gave the
+                // panel the keyboard; a row click still sends it into the
+                // terminal (ask #195).
+                .sessionsPanelKeys(vm: vm, projectID: project.id, actions: actions, hasKeyboard: $hasKeyboard)
+                .onChange(of: vm.panelCursor) { _, id in
+                    guard hasKeyboard else { return }
+                    proxy.followSelection(along: sections.panelScrollPath(to: id))
+                }
+                .onChange(of: selectedSessionID, initial: true) { _, id in
+                    let target = scroll.panelScrollTarget(selecting: id, rows: scrollIDs)
+                    proxy.followSelection(along: sections.panelScrollPath(to: target))
+                }
+                .onChange(of: scrollIDs) { _, ids in
+                    proxy.followSelection(along: sections.panelScrollPath(to: scroll.panelScrollTarget(rows: ids)))
+                }
+                // The selected row moved between the group and the main list
+                // with no new selection (a pinned row resumed): follow it.
+                .onChange(of: sections.panelScrollPath(to: selectedSessionID)) { old, new in
+                    guard PanelSelectionScrollPolicy<Int64>.movedSelection(from: old, to: new) != nil else { return }
+                    proxy.followSelection(along: new)
+                }
+                // An opened group shows from its header down, as far as it fits.
+                .onChange(of: sections.expanded) { _, expanded in
+                    guard expanded, let last = sections.finished.last else { return }
+                    proxy.followSelection(along: [last.id, SessionPanelSections.groupHeaderScrollID])
+                }
+                // Same view, another workbench: start the policy afresh.
+                .onChange(of: project.id) {
+                    scroll = PanelSelectionScrollPolicy()
+                    let target = scroll.panelScrollTarget(selecting: selectedSessionID, rows: scrollIDs)
+                    proxy.followSelection(along: sections.panelScrollPath(to: target))
+                }
             }
-            .clearPlainList()
-            WorkbenchFilesSection(vm: vm, project: project)
+            // The delete's Undo in its own bar under the list: it covers no
+            // row and no FILES tree, and a click on it is not a click on
+            // the list's empty space (only Undo hands the panel the keyboard).
+            SessionDeleteToast(vm: vm)
+            WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
+    }
+
+    /// The main list (drag to reorder), then the "▸ N finished" header and
+    /// the open group's rows or the on-screen row pinned under a folded
+    /// header (board #480). Rows drag within the main list only.
+    @ViewBuilder
+    private func sessionList(_ sections: SessionPanelSections) -> some View {
+        let stack = vm.asks.stack(projectID: project.id)
+        let closed = vm.asks.closedCounts[project.id] ?? [:]
+        let mainSessions = sections.main.map(\.session)
+        ForEach(sections.main) { row in
+            SessionsPanelSessionRow(
+                vm: vm, projectID: project.id, row: row, actions: actions,
+                openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0,
+                hoveredRow: $hoveredRow, panelHasKeyboard: hasKeyboard
+            )
+        }
+        .onMove { vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1) }
+        if sections.finishedCount > 0 {
+            SessionsPanelFinishedHeader(count: sections.finishedCount, expanded: sections.expanded) {
+                vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
+                vm.requestPanelKeyboard()
+            }
+            .id(SessionPanelSections.groupHeaderScrollID)
+            ForEach(sections.finished + (sections.pinned.map { [$0] } ?? [])) { row in
+                SessionsPanelSessionRow(
+                    vm: vm, projectID: project.id, row: row, actions: actions,
+                    openAsks: stack.count(session: row.id), closedAsks: closed[row.id] ?? 0,
+                    hoveredRow: $hoveredRow, panelHasKeyboard: hasKeyboard
+                )
+            }
+        }
+    }
+
+    /// The session on screen, if the panel lists it (`.session` only).
+    private var selectedSessionID: Int64? {
+        if case let .session(id)? = vm.panelSelection { id } else { nil }
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
@@ -87,161 +162,4 @@ struct SessionRowActions {
     let open: (TerminalSession) -> Void
     let rename: (TerminalSession) -> Void
     let delete: (TerminalSession) -> Void
-}
-
-/// One terminal session in the panel: its state dot, its state label
-/// ("Stopped", "Not running · 5m"; a standalone terminal's plain caption),
-/// a workbench session's report line ("#314 · 14/15 · PR #147 open"), and
-/// the target it works on. A workbench's
-/// rows also count the session's open asks and offer "▸ N closed"; that
-/// button sits outside the row's open click, which would start the session.
-struct TerminalSessionRow: View {
-    let row: SessionSwitcherPresentation.Row
-    let actions: SessionRowActions
-    var openAsks = 0
-    /// The session report's line (`WorkbenchesViewModel.reportLine`); a
-    /// standalone terminal has none.
-    var reportLine: String?
-    /// The line's mini progress bar (`WorkbenchesViewModel.reportProgress`).
-    var reportProgress: Double?
-    var closedAsks: OwnerAskClosedButton?
-
-    private var session: TerminalSession { row.session }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            opener
-            if openAsks > 0 {
-                Text("\(openAsks)")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .background(Color.accentColor.opacity(0.2), in: Capsule())
-                    .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
-                    .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
-            }
-            closedAsks
-        }
-        .listRowSeparator(.hidden)
-        .contextMenu {
-            Button("Rename…") { actions.rename(session) }
-            Divider()
-            Button("Delete…", role: .destructive) { actions.delete(session) }
-        }
-    }
-
-    private var opener: some View {
-        HStack(spacing: 6) {
-            SessionLiveDot(state: row.state)
-                .frame(width: 16)
-                // The label below reads the state out.
-                .accessibilityHidden(row.showsStateLabel)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.title).lineLimit(1).truncationMode(.tail)
-                if row.showsStateLabel, let caption = row.caption {
-                    SessionStateLabel(state: row.state, caption: caption)
-                    if let reportLine {
-                        HStack(spacing: 4) {
-                            if let reportProgress {
-                                ProgressView(value: reportProgress)
-                                    .progressViewStyle(.linear)
-                                    .controlSize(.mini)
-                                    .frame(width: 32)
-                                    .accessibilityLabel("Progress")
-                            }
-                            Text(reportLine)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
-                    }
-                } else if let caption = row.caption {
-                    // A standalone terminal's caption repeats the dot's label
-                    // for VoiceOver, except a not started one's age.
-                    Text(caption)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .accessibilityHidden(row.state.kind != .notStarted)
-                }
-                if let badge = row.badge {
-                    Text(badge).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let tag = row.agentTag { AgentTag(text: tag) }
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { actions.open(session) }
-        .help(row.state.live ? session.title : "Not running — click to start")
-    }
-}
-
-/// A session's state dot (`SessionStatePresentation`): its kind's colour,
-/// filled while its process runs and a ring when not — the panel's rows,
-/// both session switchers and the go-to palette draw the same one. Its
-/// accessibility label is the state's caption.
-struct SessionLiveDot: View {
-    let state: SessionSwitcherPresentation.State
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Image(systemName: SessionStatePresentation.isRing(state) ? "circle" : "circle.fill")
-            .font(.system(size: 7))
-            .foregroundStyle(SessionStatePresentation.color(for: state).color)
-            // Background agents run: the dot pulses; Reduce Motion keeps it still.
-            .symbolEffect(.pulse, isActive: SessionStatePresentation.pulses(state) && !reduceMotion)
-            .accessibilityLabel(SessionStatePresentation.caption(for: state))
-    }
-}
-
-/// A session's state glyph and caption ("? Waiting for you · ask #12"),
-/// where a site has room for more than the dot: the panel row, the header
-/// switcher button and its popover rows. One accessibility element reading
-/// the caption.
-struct SessionStateLabel: View {
-    let state: SessionSwitcherPresentation.State
-    /// The row's caption (with a not started session's age), else the
-    /// state's own.
-    var caption: String?
-
-    var body: some View {
-        let text = caption ?? SessionStatePresentation.caption(for: state)
-        HStack(spacing: 3) {
-            if let glyph = SessionStatePresentation.glyph(for: state) {
-                Image(systemName: glyph)
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(SessionStatePresentation.color(for: state).color)
-                // The ask count beside `questionmark`, never a 0 beside `person.2.fill`.
-                if state.kind == .working || (state.kind == .background && state.openAsks > 0) {
-                    Text("\(state.openAsks)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(SessionStatePresentation.color(for: state).color)
-                }
-            }
-            Text(text)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(text)
-    }
-}
-
-extension SessionStatePresentation.Tone {
-    /// The system colour of a state's tone, light and dark.
-    var color: Color {
-        switch self {
-        case .green: .green
-        case .orange: .orange
-        case .blue: .blue
-        case .red: .red
-        case .secondary: .secondary
-        }
-    }
 }

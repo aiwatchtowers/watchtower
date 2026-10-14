@@ -7,13 +7,23 @@ protocol GitRefsWatching: AnyObject {
     func stop()
 }
 
+/// What one notifying FSEvents batch may have moved.
+struct GitRefsChange: Equatable, Sendable {
+    /// Something beyond the watched folder's own HEAD and index: a ref,
+    /// packed-refs, another worktree's HEAD, or a rescan — the branch of a
+    /// linked worktree may have moved (board #565). A batch of only the
+    /// folder's HEAD/index leaves the other worktrees as they were.
+    let mayMoveWorktrees: Bool
+}
+
 /// Watches a workbench folder's git dir and common dir with FSEvents and
 /// calls `onChange` when something the header shows may have moved: HEAD,
 /// the index, a local or remote-tracking ref, packed-refs, or another
 /// worktree's HEAD (#233). Object writes, reflogs and `*.lock` files are
 /// ignored, so a commit in progress does not flood the CLI. It never runs
 /// git — the owner of the callback re-reads `workbench git status`.
-/// One callback per FSEvents batch (`latency` coalesces them; NoDefer
+/// One callback per FSEvents batch, saying whether it may concern another
+/// worktree (`GitRefsChange`) (`latency` coalesces them; NoDefer
 /// delivers the first one at once). `stop()` silences it for good.
 @MainActor
 final class GitRefsWatcher: GitRefsWatching {
@@ -26,14 +36,14 @@ final class GitRefsWatcher: GitRefsWatching {
     /// Real paths (FSEvents reports `/private/var/…`, not `/var/…`).
     private let gitDir: String
     private let commonDir: String
-    private let onChange: @MainActor () -> Void
+    private let onChange: @MainActor (GitRefsChange) -> Void
     /// Touched only on the main actor and in deinit, after the last use.
     nonisolated(unsafe) private var stream: FSEventStreamRef?
     /// The journal's last event id when the stream started: fseventsd can
     /// still hand over a change made just before, which is not news.
     private var startEventID: FSEventStreamEventId = 0
 
-    init(gitDir: String, commonDir: String, latency: TimeInterval = 0.5, onChange: @escaping @MainActor () -> Void) {
+    init(gitDir: String, commonDir: String, latency: TimeInterval = 0.5, onChange: @escaping @MainActor (GitRefsChange) -> Void) {
         self.gitDir = Self.realPath(gitDir)
         self.commonDir = Self.realPath(commonDir.isEmpty ? gitDir : commonDir)
         self.onChange = onChange
@@ -93,6 +103,27 @@ final class GitRefsWatcher: GitRefsWatching {
             let (flag, id) = event
             if flag & rescan != 0 { return true }
             return id > startEventID && isRelevant(path: path, gitDir: gitDir, commonDir: commonDir)
+        }
+    }
+
+    /// Whether a notifying batch may have moved a linked worktree's branch:
+    /// a rescan, or a new relevant event other than the watched folder's own
+    /// HEAD or index (relative to `gitDir`). Pure, tested without FSEvents.
+    nonisolated static func mayMoveWorktrees(
+        paths: [String],
+        flags: [FSEventStreamEventFlags],
+        ids: [FSEventStreamEventId],
+        startEventID: FSEventStreamEventId,
+        gitDir: String,
+        commonDir: String
+    ) -> Bool {
+        let rescan = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMustScanSubDirs)
+        let ownFiles = [gitDir + "/HEAD", gitDir + "/index"]
+        return zip(paths, zip(flags, ids)).contains { path, event in
+            let (flag, id) = event
+            if flag & rescan != 0 { return true }
+            guard id > startEventID, !ownFiles.contains(path) else { return false }
+            return isRelevant(path: path, gitDir: gitDir, commonDir: commonDir)
         }
     }
 
@@ -163,10 +194,11 @@ final class GitRefsWatcher: GitRefsWatching {
 
     private func handle(paths: [String], flags: [FSEventStreamEventFlags], ids: [FSEventStreamEventId]) {
         guard stream != nil else { return }
-        if Self.shouldNotify(paths: paths, flags: flags, ids: ids, startEventID: startEventID,
-                             gitDir: gitDir, commonDir: commonDir) {
-            onChange()
-        }
+        guard Self.shouldNotify(paths: paths, flags: flags, ids: ids, startEventID: startEventID,
+                                gitDir: gitDir, commonDir: commonDir) else { return }
+        onChange(GitRefsChange(mayMoveWorktrees: Self.mayMoveWorktrees(
+            paths: paths, flags: flags, ids: ids, startEventID: startEventID, gitDir: gitDir, commonDir: commonDir
+        )))
     }
 
     nonisolated private static func realPath(_ path: String) -> String {

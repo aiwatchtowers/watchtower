@@ -74,6 +74,28 @@ final class TerminalSessionSliceTests: XCTestCase {
         )
     }
 
+    // MARK: - Undo batch (board #480, PROJ-17)
+
+    /// A session deleted on the Mac and waiting for Undo is neither listed
+    /// nor counted; with the batch empty again (Undo) it is back.
+    func testASessionInTheUndoBatchIsNotPublished() throws {
+        let (project, kept, hidden) = try dbPool.write { db -> (Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            return (project, try SliceSeed.insertSession(db, projectID: project), try SliceSeed.insertSession(db, projectID: project))
+        }
+        let box = HiddenSessionIDsBox()
+        box.store([hidden])
+        let source = TerminalSessionSlice(liveness: { SessionLiveness() }, reportSummary: { _, _ in nil },
+                                          hiddenIDs: { box.current })
+
+        XCTAssertEqual(Set(try payloads(source).keys), [kept])
+        let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
+        XCTAssertEqual(counts.notRunning, 1)
+
+        box.store([])
+        XCTAssertEqual(Set(try payloads(source).keys), [kept, hidden], "Undo publishes it again")
+    }
+
     // MARK: - Wire shape
 
     func testPayloadMatchesTheKitFixtureAndHidesTheRawColumns() throws {
@@ -202,6 +224,50 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(over["state_kind"] as? String, "stopped")
     }
 
+    /// #534: a session whose open asks are only checks or reviews goes out
+    /// as its own wire kind with the purple tone; a finished one that is
+    /// not live dates the state at `finished_at`.
+    func testReadyToCheckWiresKindAndPurpleTone() throws {
+        let (checks, reviews) = try dbPool.write { db -> (Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let checks = try SliceSeed.insertSession(db, projectID: project)
+            try self.setState(db, checks, state: nil, finished: true)
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: checks, kind: "check")
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: checks, kind: "review", docPath: "docs/review.md")
+            let reviews = try SliceSeed.insertSession(db, projectID: project)
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: reviews, kind: "review", docPath: "docs/review.md")
+            return (checks, reviews)
+        }
+        let published = try payloads(slice())
+        let ready = try XCTUnwrap(published[checks])
+        XCTAssertEqual(ready["state_kind"] as? String, "ready_to_check")
+        XCTAssertEqual(ready["state_tone"] as? String, "purple")
+        XCTAssertEqual(ready["state_glyph"] as? String, "checklist")
+        XCTAssertEqual(ready["is_ring"] as? Bool, true, "not live: a ring")
+        XCTAssertEqual(ready["open_asks"] as? Int, 2)
+        XCTAssertNotNil(ready["state_at"], "a finished session that reads Ready to check is dated at finished_at")
+        let review = try XCTUnwrap(published[reviews])
+        XCTAssertEqual(review["state_kind"] as? String, "ready_to_check")
+        XCTAssertEqual(review["state_tone"] as? String, "purple")
+        XCTAssertTrue((review["state_caption"] as? String)?.hasPrefix("Ready for review") == true)
+        XCTAssertNil(review["state_at"], "never finished and no hook stamp: unknown")
+    }
+
+    /// #534: Ready to check counts as waiting in the workbench's counts.
+    func testReadyToCheckCountsAsWaiting() throws {
+        let project = try dbPool.write { db -> Int64 in
+            let project = try TestDatabase.insertWorkbench(db)
+            let ready = try SliceSeed.insertSession(db, projectID: project)
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: ready, kind: "check")
+            let question = try SliceSeed.insertSession(db, projectID: project)
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: question)
+            return project
+        }
+        let source = slice()
+        let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
+        XCTAssertEqual(counts, .init(working: 0, waiting: 2, needsApproval: 0, finished: 0, failed: 0, stopped: 0, notRunning: 0))
+    }
+
     /// #411 §10 (board #73): a count the Mac shows over after two failed
     /// probes (`SessionLiveness.displayOver`) goes out as Stopped, the same
     /// row without it as Agents working. Review F8: only for the count it
@@ -239,6 +305,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         case .orange: "orange"
         case .blue: "blue"
         case .red: "red"
+        case .purple: "purple"
         case .secondary: "secondary"
         }
     }

@@ -119,12 +119,15 @@ fi
 
 # --- 5. No LC_BUILD_VERSION --------------------------------------------------
 echo "not a binary" > "$WORK_DIR/text"
-if OUT=$(run_stamp "$WORK_DIR/text" 27.0 2>&1); then
+# Output goes to a file, not OUT=$(...): a command substitution does not keep
+# the if-condition's errexit exemption, so run_stamp's `set -e` would end the
+# subshell at the failing vtool read, before the snippet prints its error.
+if run_stamp "$WORK_DIR/text" 27.0 > "$WORK_DIR/text.out" 2>&1; then
     note_fail "no build version: build did not fail"
-elif [[ "$OUT" == *"no LC_BUILD_VERSION"* ]]; then
+elif [[ "$(cat "$WORK_DIR/text.out")" == *"no LC_BUILD_VERSION"* ]]; then
     echo "ok: missing LC_BUILD_VERSION fails the build"
 else
-    note_fail "no build version: unexpected error: $OUT"
+    note_fail "no build version: unexpected error: $(cat "$WORK_DIR/text.out")"
 fi
 
 echo ""

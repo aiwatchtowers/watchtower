@@ -56,8 +56,9 @@ struct CodeDefinitionRequest: Equatable {
 @MainActor
 @Observable
 final class CodeNavigationCenter {
-    /// Per workbench (one Files pane each).
-    private(set) var histories: [Int64: CodeNavigationHistory] = [:]
+    /// Per code root (#565): a Back entry is a path of the root it was
+    /// recorded in, so a worktree's history never replays into another root.
+    private(set) var histories: [CodeRoot: CodeNavigationHistory] = [:]
     /// "No definition of `w`", shown above the editor for `noticeDuration`.
     private(set) var notices: [Int64: String] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
@@ -120,8 +121,8 @@ final class CodeNavigationCenter {
 
     /// ⌃⌘J: the page posts `definition` for the word at its cursor; a beep
     /// when there is no editor or no word.
-    func goToDefinitionAtCursor(project: Workbench) async {
-        guard let page = pages[project.id]?.page, await page.requestDefinitionAtCursor() else {
+    func goToDefinitionAtCursor(root: CodeRoot) async {
+        guard let page = pages[root.workbenchID]?.page, await page.requestDefinitionAtCursor() else {
             beep()
             return
         }
@@ -132,12 +133,12 @@ final class CodeNavigationCenter {
     /// index does not read (R31), then a beep and the notice. Returns once
     /// the request is settled or superseded; the caller then answers the
     /// page with `definitionDone`.
-    func goToDefinition(_ request: CodeDefinitionRequest, project: Workbench, anchor: DefinitionMenuAnchor?) async {
+    func goToDefinition(_ request: CodeDefinitionRequest, root: CodeRoot, anchor: DefinitionMenuAnchor?) async {
         nextGeneration += 1
         let generation = nextGeneration
-        generations[project.id] = generation
-        searches.removeValue(forKey: project.id)?.cancel()
-        let index = codeIndex.index(for: project.id)
+        generations[root.workbenchID] = generation
+        searches.removeValue(forKey: root.workbenchID)?.cancel()
+        let index = codeIndex.index(for: root)
         var outcome = DefinitionCandidates.outcome(for: index.symbols(named: request.word), from: request.origin.path)
         var fromTextSearch = false
         var failure: String?
@@ -149,8 +150,8 @@ final class CodeNavigationCenter {
         }
         if outcome == .searchText {
             fromTextSearch = true
-            let found = await searchText(request.word, project: project)
-            guard generations[project.id] == generation, let found else { return }
+            let found = await searchText(request.word, root: root)
+            guard generations[root.workbenchID] == generation, let found else { return }
             switch found {
             case let .success(matches):
                 outcome = DefinitionHeuristic.outcome(for: matches, word: request.word, origin: request.origin)
@@ -161,16 +162,16 @@ final class CodeNavigationCenter {
         }
         switch outcome {
         case let .jump(target):
-            jump(to: target, from: request.origin, project: project)
+            jump(to: target, from: request.origin, root: root)
         case let .choose(choices):
             let header = DefinitionCandidates.menuHeader(word: request.word, count: choices.count, fromTextSearch: fromTextSearch)
             let pick = await menu.pickDefinition(header: header, choices: choices, at: anchor)
-            guard generations[project.id] == generation else { return }
+            guard generations[root.workbenchID] == generation else { return }
             switch pick {
             case let .choice(index) where choices.indices.contains(index):
-                jump(to: choices[index].target, from: request.origin, project: project)
+                jump(to: choices[index].target, from: request.origin, root: root)
             case .showAllUsages:
-                usages?.showUsages(of: request.word, project: project)
+                usages?.showUsages(of: request.word, root: root)
             case .choice, .dismissed:
                 break
             }
@@ -178,9 +179,9 @@ final class CodeNavigationCenter {
             beep()
             let notice = Self.isIndexing(index.state) && !fromTextSearch ? DefinitionCandidates.stillIndexingNotice
                 : DefinitionCandidates.noDefinitionNotice(word: request.word)
-            showNotice(failure.map { "\(notice) — text search failed: \($0)" } ?? notice, workbenchID: project.id)
+            showNotice(failure.map { "\(notice) — text search failed: \($0)" } ?? notice, workbenchID: root.workbenchID)
         }
-        if generations[project.id] == generation { generations[project.id] = nil }
+        if generations[root.workbenchID] == generation { generations[root.workbenchID] = nil }
     }
 
     private static func isIndexing(_ state: CodeIndexState) -> Bool {
@@ -190,13 +191,13 @@ final class CodeNavigationCenter {
 
     /// `code search --word --case` for the heuristic; nil when superseded
     /// or cancelled (no answer, no beep).
-    private func searchText(_ word: String, project: Workbench) async -> Result<[CodeSearchMatch], DefinitionSearchError>? {
+    private func searchText(_ word: String, root: CodeRoot) async -> Result<[CodeSearchMatch], DefinitionSearchError>? {
         let search = DefinitionTextSearch()
-        searches[project.id] = search
+        searches[root.workbenchID] = search
         let options = CodeSearchOptions(query: word, word: true, caseSensitive: true, max: DefinitionHeuristic.searchMax, context: 0)
         let result = await withCheckedContinuation { continuation in
             search.continuation = continuation
-            search.run = startSearch(project.folderURL, options, { [weak search] match in
+            search.run = startSearch(root.folder, options, { [weak search] match in
                 search?.matches.append(match)
             }, { [weak search] outcome in
                 guard let search else { return }
@@ -206,21 +207,27 @@ final class CodeNavigationCenter {
                 }
             })
         }
-        if searches[project.id] === search { searches[project.id] = nil }
+        if searches[root.workbenchID] === search { searches[root.workbenchID] = nil }
         return result
     }
 
     /// A jump that is not a definition's (a Usages row, ruling R33): the
     /// cursor of the file on screen goes on Back, as a definition jump's
     /// origin does; nothing when the page has not reported it.
-    func recordJumpFromCurrentLocation(project: Workbench) {
-        guard let origin = currentLocation(project) else { return }
-        histories[project.id, default: CodeNavigationHistory()].recordJump(from: origin)
+    func recordJumpFromCurrentLocation(root: CodeRoot) {
+        guard let origin = currentLocation(root) else { return }
+        histories[root, default: CodeNavigationHistory()].recordJump(from: origin)
     }
 
-    private func jump(to target: CodeNavLocation, from origin: CodeNavLocation, project: Workbench) {
-        histories[project.id, default: CodeNavigationHistory()].recordJump(from: origin)
-        workbenches?.showLocation(target, project: project, keepingTab: true)
+    private func jump(to target: CodeNavLocation, from origin: CodeNavLocation, root: CodeRoot) {
+        histories[root, default: CodeNavigationHistory()].recordJump(from: origin)
+        workbenches?.showLocation(target, root: root, keepingTab: true)
+    }
+
+    /// A removed worktree's Back/Forward history goes: nothing of it can
+    /// be shown again (board #565, spec §7).
+    func codeRootRemoved(_ root: CodeRoot) {
+        histories[root] = nil
     }
 
     private func showNotice(_ text: String, workbenchID: Int64) {
@@ -252,8 +259,8 @@ final class CodeNavigationCenter {
 
     /// ⌃6: the jump bar's file symbol list; a beep when there is no file on
     /// screen or nothing to list.
-    func showFileSymbols(project: Workbench) {
-        guard let bar = jumpBars[project.id]?.bar, bar.presentFileSymbols() else {
+    func showFileSymbols(root: CodeRoot) {
+        guard let bar = jumpBars[root.workbenchID]?.bar, bar.presentFileSymbols() else {
             beep()
             return
         }
@@ -262,47 +269,47 @@ final class CodeNavigationCenter {
     /// A pick in a jump bar menu: a symbol (`line`) or a file (nil: where
     /// its cursor was). A jump like a definition's: the location it leaves
     /// goes on Back.
-    func openFromJumpBar(path: String, line: Int?, col: Int?, project: Workbench) {
-        recordJumpFromCurrentLocation(project: project)
+    func openFromJumpBar(path: String, line: Int?, col: Int?, root: CodeRoot) {
+        recordJumpFromCurrentLocation(root: root)
         if let line {
-            workbenches?.showLocation(CodeNavLocation(path: path, line: line, col: col ?? 1), project: project, keepingTab: true)
+            workbenches?.showLocation(CodeNavLocation(path: path, line: line, col: col ?? 1), root: root, keepingTab: true)
         } else {
-            workbenches?.codeFiles.open(path, project: project, preview: false)
+            workbenches?.codeFiles.open(path, root: root, preview: false)
         }
     }
 
     // MARK: History
 
-    func canGoBack(workbenchID: Int64?) -> Bool {
-        workbenchID.flatMap { histories[$0]?.canGoBack } ?? false
+    func canGoBack(root: CodeRoot?) -> Bool {
+        root.flatMap { histories[$0]?.canGoBack } ?? false
     }
 
-    func canGoForward(workbenchID: Int64?) -> Bool {
-        workbenchID.flatMap { histories[$0]?.canGoForward } ?? false
+    func canGoForward(root: CodeRoot?) -> Bool {
+        root.flatMap { histories[$0]?.canGoForward } ?? false
     }
 
     /// ⌃⌘← (and the jump bar's ‹).
-    func goBack(project: Workbench) {
-        step(project: project) { history, current in history.goBack(from: current) }
+    func goBack(root: CodeRoot) {
+        step(root: root) { history, current in history.goBack(from: current) }
     }
 
     /// ⌃⌘→ (and the jump bar's ›).
-    func goForward(project: Workbench) {
-        step(project: project) { history, current in history.goForward(from: current) }
+    func goForward(root: CodeRoot) {
+        step(root: root) { history, current in history.goForward(from: current) }
     }
 
-    private func step(project: Workbench, _ move: (inout CodeNavigationHistory, CodeNavLocation?) -> CodeNavLocation?) {
-        guard var history = histories[project.id] else { return }
-        guard let target = move(&history, currentLocation(project)) else { return }
-        histories[project.id] = history
-        workbenches?.showLocation(target, project: project, keepingTab: false)
+    private func step(root: CodeRoot, _ move: (inout CodeNavigationHistory, CodeNavLocation?) -> CodeNavLocation?) {
+        guard var history = histories[root] else { return }
+        guard let target = move(&history, currentLocation(root)) else { return }
+        histories[root] = history
+        workbenches?.showLocation(target, root: root, keepingTab: false)
     }
 
     /// The cursor of the file on screen, as the page last reported it; nil
     /// when the page has not reported one for that file.
-    private func currentLocation(_ project: Workbench) -> CodeNavLocation? {
-        guard let files = workbenches?.codeFiles, let active = files.tabs(for: project).active,
-              let cursor = files.cursors[project.id], cursor.path == active else { return nil }
+    private func currentLocation(_ root: CodeRoot) -> CodeNavLocation? {
+        guard let files = workbenches?.codeFiles, let active = files.tabs(for: root).active,
+              let cursor = files.cursors[root], cursor.path == active else { return nil }
         return cursor
     }
 }

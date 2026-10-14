@@ -56,6 +56,19 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         XCTAssertThrowsError(try crumb.inspect().find(WorkbenchBranchButton.self))
     }
 
+    /// A worktree root Go did not place there (board #565): a neutral note
+    /// — neither the warning of a failed read nor a stale mark.
+    func testAScopeNoteIsANeutralIconNotAnError() throws {
+        let vm = makeVM()
+        vm.gitScopeNotes[project.id] = WorkbenchBranchPresentation.folderNotAWorktreeText
+        let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
+        let icon = try crumb.inspect().find(viewWithAccessibilityLabel: "Branch menu unavailable")
+        XCTAssertEqual(try icon.help().string(), WorkbenchBranchPresentation.folderNotAWorktreeText)
+        XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Git status unavailable"))
+        XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Status may be out of date"))
+        XCTAssertThrowsError(try crumb.inspect().find(WorkbenchBranchButton.self))
+    }
+
     func testAStaleStatusKeepsTheButtonMarkedWithTheError() throws {
         let vm = makeVM()
         vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")

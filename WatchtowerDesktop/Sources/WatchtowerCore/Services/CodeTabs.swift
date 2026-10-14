@@ -128,4 +128,8 @@ package struct CodeTabs: Codable, Equatable, Sendable {
     }
 
     package static func key(workbenchID: Int64) -> String { "workbench.files.tabs.\(workbenchID)" }
+
+    /// One tab set per root (owner, ask #188): the main root keeps
+    /// `key(workbenchID:)`, a worktree adds `CodeRoot.defaultsKeySuffix`.
+    package static func key(root: CodeRoot) -> String { key(workbenchID: root.workbenchID) + root.defaultsKeySuffix }
 }

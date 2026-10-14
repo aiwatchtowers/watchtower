@@ -11,6 +11,10 @@ struct WorkbenchPageView: View {
     @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
 
+    /// The folder the code viewer works in: the worktree of the session on
+    /// screen, else the workbench folder.
+    private var activeRoot: CodeRoot { vm.activeCodeRoot(project: project) }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -37,7 +41,14 @@ struct WorkbenchPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
-        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
+        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: activeRoot))
+        // The session on screen moved the page to another folder (#565):
+        // the editor's unsent edits go to the old root's files first.
+        .onChange(of: activeRoot) { old, new in
+            Task { await vm.codeFiles.switchRoot(to: new, from: old) }
+            // The branch menu works on the root on screen (board #565).
+            Task { await vm.followGitRoot(new) }
+        }
         // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in
             HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
@@ -95,7 +106,7 @@ struct WorkbenchPageView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                // Breadcrumbs: 📁 ~/folder › ⎇ branch ● ↑2 ▾ (#233).
+                // Breadcrumbs: 📁 ~/folder › [⑂ worktree ›] ⎇ branch ● ↑2 ▾ (#233, #565).
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
                 } label: {
@@ -110,6 +121,7 @@ struct WorkbenchPageView: View {
                 .buttonStyle(.link)
                 .help("\(project.folderPath)\nShow in Finder")
                 .layoutPriority(-1)
+                WorkbenchPlaceCrumb(vm: vm, project: project)
                 WorkbenchBranchCrumb(vm: vm, project: project)
                 installStatusIcons
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }

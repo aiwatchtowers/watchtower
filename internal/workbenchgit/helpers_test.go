@@ -94,6 +94,7 @@ func newRepo(t *testing.T) string {
 type recorder struct {
 	mu        sync.Mutex
 	calls     [][]string
+	dirs      []string
 	fail      string
 	failAfter string
 	before    func(args []string)
@@ -102,6 +103,7 @@ type recorder struct {
 func (r *recorder) run(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), args...))
+	r.dirs = append(r.dirs, dir)
 	r.mu.Unlock()
 	if r.before != nil {
 		r.before(args)
@@ -123,6 +125,13 @@ func (r *recorder) argv() [][]string {
 	return append([][]string(nil), r.calls...)
 }
 
+// ranIn is every folder a git call ran in, in order.
+func (r *recorder) ranIn() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.dirs...)
+}
+
 // ran reports whether a call with this first argument was recorded.
 func (r *recorder) ran(sub string) bool {
 	for _, c := range r.argv() {
@@ -142,4 +151,17 @@ func sameDir(t *testing.T, a, b string) bool {
 	ra, errA := filepath.EvalSymlinks(a)
 	rb, errB := filepath.EvalSymlinks(b)
 	return errA == nil && errB == nil && ra == rb
+}
+
+// addWorktree adds a linked worktree of repo at a new temp folder on a new
+// branch made from base, and returns its symlink-resolved path.
+func addWorktree(t *testing.T, repo, branch, base string) string {
+	t.Helper()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(parent, branch)
+	gitIn(t, repo, "worktree", "add", "-q", "-b", branch, dir, base)
+	return dir
 }

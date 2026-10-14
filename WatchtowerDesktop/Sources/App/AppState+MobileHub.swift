@@ -44,9 +44,11 @@ extension AppState {
         }
         let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
         let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let hidden = HiddenSessionIDsBox()
         let sessions = TerminalSessionSlice(
             liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
+            hiddenIDs: { hidden.current }
         )
         // Each session's own report (`--session S --json`, scoped by the CLI,
         // PROJ-14) and the timeline's state milestones; no CLI, no reports.
@@ -79,6 +81,7 @@ extension AppState {
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
         )
+        followPendingDeletes(into: hidden)
         // The companions' changes (git status, summaries, reports, phone
         // recording jobs) are normal kinds: the next full tick diffs them.
         let fastLane = FastLane(
@@ -98,6 +101,14 @@ extension AppState {
         )
         wireTyping(hub.linkCenter, inputs: inputs)
         return hub
+    }
+
+    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
+    /// change. Session and workbench records are normal kinds (board #724):
+    /// the next full tick drops the hidden sessions, no nudge.
+    private func followPendingDeletes(into hidden: HiddenSessionIDsBox) {
+        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
+        workbenchesViewModel?.onPendingDeletesChanged = { ids in hidden.store(ids) }
     }
 
     /// The asks', board writes' and session starts' handlers (spec §6).

@@ -30,7 +30,9 @@ protocol TerminalSessionProcess: AnyObject {
     var onOwnerFocus: (() -> Void)? { get set }
     /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
     /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
-    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
+    /// `folder` is asked at each click: the session's root may move to a
+    /// worktree and back (board #565).
+    func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void)
     /// `ask #N` in the output (board #500): hovering one shows a card of the
     /// ask `lookUp` finds for it in the session's workbench, and a click on
     /// it calls `open`. A number `lookUp` finds nothing for is no link.
@@ -43,7 +45,7 @@ extension TerminalSessionProcess {
         set {} // swiftlint:disable:this unused_setter_value
     }
 
-    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
+    func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
 }
 
@@ -177,8 +179,13 @@ final class TerminalCenter {
     /// check). One subscriber.
     @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
-    /// inside its folder (`TerminalPathLinks`): workbench id, location.
-    @ObservationIgnored var onPathLink: ((Int64, TerminalPathLinks.Location) -> Void)?
+    /// inside its folder (`TerminalPathLinks`): workbench id, session id,
+    /// location.
+    @ObservationIgnored var onPathLink: ((Int64, Int64, TerminalPathLinks.Location) -> Void)?
+    /// The folder a workbench session's `path:line` links resolve in — its
+    /// code root (board #565: its worktree when proven): workbench id,
+    /// session id. nil, or no answer, = the session's own folder.
+    @ObservationIgnored var pathLinkRoot: ((Int64, Int64) -> String?)?
     /// The ask an `ask #N` in a workbench session's terminal names, when it
     /// is that workbench's (board #500): workbench id, ask id.
     @ObservationIgnored var askLinkLookUp: ((Int64, Int64) async -> OwnerAsk?)?
@@ -236,15 +243,48 @@ final class TerminalCenter {
     /// package. Symlinks are resolved on both sides (`/tmp` is
     /// `/private/tmp`). The branch switch's agent guard (#233); a `claude`
     /// in the owner's own terminal app is not seen (v1 limit).
-    func hasLiveAgentSession(workbenchID: Int64, workTree: String) -> Bool {
+    ///
+    /// Since board #565 a row of the workbench counts by `place` (its
+    /// session's place, spec §5.3): in the work tree when its folder (the
+    /// main folder, or its worktree) is that work tree; anywhere — maybe
+    /// here — when its place is unknown or removed, so the confirmation is
+    /// skipped only for a session proven to work elsewhere. The default
+    /// knows no place: every row of the workbench counts, as before.
+    func hasLiveAgentSession(
+        workbenchID: Int64,
+        workTree: String,
+        place: (Int64) -> SessionPlace = { _ in .unknown }
+    ) -> Bool {
         let root = Self.resolvedPath(workTree)
         let prefix = root.hasSuffix("/") ? root : root + "/"
+        let inWorkTree = { (path: String) -> Bool in
+            let resolved = Self.resolvedPath(path)
+            return resolved == root || resolved.hasPrefix(prefix)
+        }
         let live = liveIDs
         return rows.values.contains { row in
             guard row.kind.isAgent, live.contains(row.id) else { return false }
-            if row.projectID == workbenchID { return true }
-            let path = Self.resolvedPath(row.folderPath)
-            return path == root || path.hasPrefix(prefix)
+            guard row.projectID == workbenchID else { return inWorkTree(row.folderPath) }
+            return Self.placeMayBeIn(place(row.id), mainFolder: row.folderPath, root: root, inWorkTree: inWorkTree)
+        }
+    }
+
+    /// Whether a workbench row whose agent works at `place` may work in the
+    /// work tree `root`. A worktree is that work tree when its top level is
+    /// (a worktree nested in the main folder, `.claude/worktrees/<name>`, is
+    /// not the main folder's); without a known top level, when its root is
+    /// inside it. The main folder is the row's folder.
+    private static func placeMayBeIn(
+        _ place: SessionPlace, mainFolder: String, root: String, inWorkTree: (String) -> Bool
+    ) -> Bool {
+        switch place {
+        case .unknown, .removed:
+            return true
+        case .main:
+            return inWorkTree(mainFolder)
+        case let .worktree(_, folder, status):
+            guard !status.topLevel.isEmpty else { return inWorkTree(folder.path) }
+            return resolvedPath(status.topLevel) == root
         }
     }
 
@@ -830,10 +870,13 @@ final class TerminalCenter {
         process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
         if let workbenchID = session.projectID {
-            // ⌘-click on `path:line` in a workbench session opens Files.
-            process.setPathLinkHandler(folder: session.folderPath) { [weak self] location in
-                self?.onPathLink?(workbenchID, location)
-            }
+            // ⌘-click on `path:line` in a workbench session opens Files;
+            // the path resolves in the session's code root (board #565).
+            let folder = session.folderPath
+            process.setPathLinkHandler(
+                folder: { [weak self] in self?.pathLinkRoot?(workbenchID, id) ?? folder },
+                open: { [weak self] location in self?.onPathLink?(workbenchID, id, location) }
+            )
             // `ask #N` links to that ask of this workbench (board #500).
             process.setAskLinkHandler(
                 lookUp: { [weak self] askID in await self?.askLinkLookUp?(workbenchID, askID) },
@@ -1026,20 +1069,30 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     // MARK: path:line links (spec 2026-10-02 §9.5)
 
-    /// The workbench folder `path:line` links resolve in; nil = SwiftTerm's
-    /// own handling (a standalone terminal).
-    private(set) var pathLinkFolder: String?
-    /// The folder with symlinks resolved, read once (it is inside the
-    /// workbench): `TerminalPathLinks` refuses outside paths without
+    /// The folder `path:line` links resolve in, asked at each click (the
+    /// session's code root); nil = SwiftTerm's own handling (a standalone
+    /// terminal).
+    private var pathLinkFolderSource: (() -> String)?
+    /// The last folder asked and its path with symlinks resolved, read once
+    /// per folder: `TerminalPathLinks` refuses outside paths without
     /// touching the disk (ruling R53).
-    private var pathLinkFolderRealPath: String?
+    private var pathLinkFolderCache: (folder: String, realPath: String?)?
     private var openPathLink: ((TerminalPathLinks.Location) -> Void)?
     private var openedLinkThisClick = false
 
-    func setPathLinks(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
-        pathLinkFolder = folder
-        pathLinkFolderRealPath = TerminalPathLinks.FileSystem.live.realPath(folder)
+    func setPathLinks(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+        pathLinkFolderSource = folder
+        pathLinkFolderCache = nil
         openPathLink = open
+    }
+
+    /// The folder links resolve in now, with its real path.
+    private func pathLinkFolder() -> (folder: String, realPath: String?)? {
+        guard let folder = pathLinkFolderSource?() else { return nil }
+        if let cache = pathLinkFolderCache, cache.folder == folder { return cache }
+        let entry = (folder: folder, realPath: TerminalPathLinks.FileSystem.live.realPath(folder))
+        pathLinkFolderCache = entry
+        return entry
     }
 
     /// SwiftTerm's ⌘-click on a link it detected: a file of the folder
@@ -1047,7 +1100,8 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// (a path or `file://` outside the folder, a missing file) is no link.
     override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         openedLinkThisClick = true
-        switch Self.linkAction(for: link, folder: pathLinkFolder, folderRealPath: pathLinkFolderRealPath) {
+        let folder = pathLinkFolder()
+        switch Self.linkAction(for: link, folder: folder?.folder, folderRealPath: folder?.realPath) {
         case let .open(location): openPathLink?(location)
         case .systemHandler: super.requestOpenLink(source: source, link: link, params: params)
         case .none: break
@@ -1080,10 +1134,13 @@ final class PalettedTerminalView: LocalProcessTerminalView {
             return
         }
         guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
-              let folder = pathLinkFolder, let openPathLink, let cell = cell(at: event),
+              let openPathLink, let cell = cell(at: event),
               let hit = TerminalPathLinks.logicalLine(rows: screenRows(), row: cell.row, column: cell.col),
               let candidate = TerminalPathLinks.candidate(inLine: hit.line, at: hit.column),
-              let location = TerminalPathLinks.resolve(candidate, folder: folder, folderRealPath: pathLinkFolderRealPath)
+              // Asked only for a path under the cursor: the root lookup
+              // (and its realpath) is not every ⌘-click's cost.
+              let folder = pathLinkFolder(),
+              let location = TerminalPathLinks.resolve(candidate, folder: folder.folder, folderRealPath: folder.realPath)
         else { return }
         openPathLink(location)
     }
@@ -1350,7 +1407,7 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
 
     var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }
 
-    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+    func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {
         terminal.setPathLinks(folder: folder, open: open)
     }
 

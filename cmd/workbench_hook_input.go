@@ -44,6 +44,9 @@ type hookEvent struct {
 	// testdata/stopfailure_rate_limit.json). Raw, so a non-string value
 	// never fails the whole input.
 	Error json.RawMessage `json:"error"`
+	// Cwd is the session's working directory, a common hook input field of
+	// both agents (board #566); hookCwd decides whether it is recorded.
+	Cwd string `json:"cwd"`
 }
 
 // stopHookInput is the Stop hook's input: the shared hook event.

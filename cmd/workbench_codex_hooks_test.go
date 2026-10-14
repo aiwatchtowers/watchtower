@@ -602,3 +602,24 @@ func TestProj11_NestedClaudeHooksNeverTouchACodexRow(t *testing.T) {
 		assert.Equal(t, before, rowSnapshot(t, database, row), "stored %q", stored)
 	}
 }
+
+// Board #566 on a codex row: every Codex hook input carries cwd, so the
+// SessionStart's run mark, a main-thread state event and the Stop record it
+// the Claude Code way, and a subagent's event never does.
+func TestHookCwd_CodexHooksRecordTheMainAgentCwd(t *testing.T) {
+	database, _, row := codexRowFixture(t, "")
+	stepClock(t)
+
+	runCodexBriefHook(t, string(codexHookFixture(t, "session_start_startup")))
+	assert.Equal(t, codexCwd, storedCwd(t, database, row).Path, "the run mark stores the start's cwd")
+
+	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{"cwd": "/tmp/acme/wt-a"}))
+	assert.Equal(t, "/tmp/acme/wt-a", storedCwd(t, database, row).Path, "a main-thread event moves it")
+
+	runCodexState(t, codexPayload(t, "subagent_start", map[string]any{"session_id": codexTUISession, "cwd": "/tmp/acme/sub"}))
+	assert.Equal(t, "/tmp/acme/wt-a", storedCwd(t, database, row).Path, "a subagent's cwd is never recorded")
+
+	_, errOut := runCodexStop(t, codexPayload(t, "stop", map[string]any{"cwd": "/tmp/acme/wt-b"}))
+	assert.Empty(t, errOut)
+	assert.Equal(t, "/tmp/acme/wt-b", storedCwd(t, database, row).Path, "the Stop records it with the state")
+}

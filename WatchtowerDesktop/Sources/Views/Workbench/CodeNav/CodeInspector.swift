@@ -8,6 +8,8 @@ struct CodeInspector: View {
     let usages: CodeUsagesCenter
     let questions: CodeQuestionCenter?
     let project: Workbench
+    /// The Files pane's code root: usages search it, questions read from it.
+    let root: CodeRoot
 
     var body: some View {
         let tab = usages.inspectorTab(workbenchID: project.id)
@@ -26,10 +28,10 @@ struct CodeInspector: View {
             Divider()
             switch tab {
             case .usages:
-                UsagesView(usages: usages, project: project)
+                UsagesView(usages: usages, root: root)
             case .questions:
                 if let questions {
-                    QuestionsView(questions: questions, project: project)
+                    QuestionsView(questions: questions, project: project, root: root)
                 } else {
                     ContentUnavailableView("No questions yet", systemImage: "bubble.left.and.text.bubble.right")
                 }

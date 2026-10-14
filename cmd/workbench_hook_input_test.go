@@ -156,7 +156,8 @@ func TestParseHookEvent_ClaudeFixtureValues(t *testing.T) {
 
 	start, err := parseHookEvent(agentkind.Claude, inputs["session start"])
 	require.NoError(t, err)
-	assert.Equal(t, hookEvent{Event: "SessionStart", SessionID: briefClearedID, Source: "clear", TranscriptPath: "/tmp/x.jsonl"}, start)
+	assert.Equal(t, hookEvent{Event: "SessionStart", SessionID: briefClearedID, Source: "clear", TranscriptPath: "/tmp/x.jsonl",
+		Cwd: "/tmp/acme"}, start)
 }
 
 const (
@@ -166,6 +167,8 @@ const (
 	codexExecRollout  = "/Users/example/.codex/sessions/2026/10/12/rollout-2026-10-12T14-52-51-01a10000-0000-7000-8000-000000000006.jsonl"
 	codexSubagentID   = "01a10000-0000-7000-8000-000000000010"
 	codexBashToolCall = "exec-00000000-0000-4000-8000-000000000004"
+	// codexCwd is every fixture's cwd: Codex sends it on each hook (board #566).
+	codexCwd = "/Users/example/projects/example"
 )
 
 func codexHookFixture(t *testing.T, name string) []byte {
@@ -177,35 +180,35 @@ func codexHookFixture(t *testing.T, name string) []byte {
 
 // codexFixtureWants is every Task 0 fixture's normalized event.
 var codexFixtureWants = map[string]hookEvent{
-	"session_start_startup": {Event: "SessionStart", SessionID: codexTUISession, Source: "startup", TranscriptPath: codexTUIRollout},
-	"session_start_resume":  {Event: "SessionStart", SessionID: codexTUISession, Source: "resume", TranscriptPath: codexTUIRollout},
-	"session_start_compact": {Event: "SessionStart", SessionID: codexTUISession, Source: "compact", TranscriptPath: codexTUIRollout},
-	"session_start_clear": {Event: "SessionStart", SessionID: "01a10000-0000-7000-8000-000000000002", Source: "clear",
+	"session_start_startup": {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "startup", TranscriptPath: codexTUIRollout},
+	"session_start_resume":  {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "resume", TranscriptPath: codexTUIRollout},
+	"session_start_compact": {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "compact", TranscriptPath: codexTUIRollout},
+	"session_start_clear": {Cwd: codexCwd, Event: "SessionStart", SessionID: "01a10000-0000-7000-8000-000000000002", Source: "clear",
 		TranscriptPath: "/Users/example/.codex/sessions/2026/10/12/rollout-2026-10-12T14-59-31-01a10000-0000-7000-8000-000000000002.jsonl"},
-	"user_prompt_submit": {Event: "UserPromptSubmit", SessionID: codexTUISession,
+	"user_prompt_submit": {Cwd: codexCwd, Event: "UserPromptSubmit", SessionID: codexTUISession,
 		TurnID: "01a10000-0000-7000-8000-000000000003", TranscriptPath: codexTUIRollout},
-	"pre_tool_use_bash": {Event: "PreToolUse", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
+	"pre_tool_use_bash": {Cwd: codexCwd, Event: "PreToolUse", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
 		ToolName: "Bash", ToolUseID: codexBashToolCall, TranscriptPath: codexTUIRollout},
-	"permission_request": {Event: "PermissionRequest", SessionID: codexTUISession,
+	"permission_request": {Cwd: codexCwd, Event: "PermissionRequest", SessionID: codexTUISession,
 		TurnID: "01a10000-0000-7000-8000-000000000003", ToolName: "Bash", TranscriptPath: codexTUIRollout},
-	"post_tool_use": {Event: "PostToolUse", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
+	"post_tool_use": {Cwd: codexCwd, Event: "PostToolUse", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
 		ToolName: "Bash", ToolUseID: codexBashToolCall, TranscriptPath: codexTUIRollout},
-	"pre_tool_use_request_user_input": {Event: "PreToolUse", SessionID: codexTUISession,
+	"pre_tool_use_request_user_input": {Cwd: codexCwd, Event: "PreToolUse", SessionID: codexTUISession,
 		TurnID: "01a10000-0000-7000-8000-000000000005", ToolName: "request_user_input",
 		ToolUseID: "call_00000000000000000000000000000001", TranscriptPath: codexTUIRollout},
-	"pre_tool_use_mcp": {Event: "PreToolUse", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000007",
+	"pre_tool_use_mcp": {Cwd: codexCwd, Event: "PreToolUse", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000007",
 		ToolName: "mcp__watchtower_workbench__ping", ToolUseID: "exec-00000000-0000-4000-8000-000000000008",
 		TranscriptPath: codexExecRollout},
-	"stop": {Event: "Stop", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
+	"stop": {Cwd: codexCwd, Event: "Stop", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
 		LastAssistantMessage: "example", TranscriptPath: codexTUIRollout},
-	"stop_hook_active": {Event: "Stop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000007",
+	"stop_hook_active": {Cwd: codexCwd, Event: "Stop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000007",
 		LastAssistantMessage: "example", TranscriptPath: codexExecRollout, StopHookActive: true},
 	// The child's rollout is not the session's transcript.
-	"subagent_start": {Event: "SubagentStart", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
+	"subagent_start": {Cwd: codexCwd, Event: "SubagentStart", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
 		AgentID: codexSubagentID, AgentType: "default"},
-	"subagent_stop": {Event: "SubagentStop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
+	"subagent_stop": {Cwd: codexCwd, Event: "SubagentStop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
 		AgentID: codexSubagentID, AgentType: "default", LastAssistantMessage: "example", TranscriptPath: codexExecRollout},
-	"session_end": {Event: "SessionEnd", SessionID: codexExecSession, TranscriptPath: codexExecRollout},
+	"session_end": {Cwd: codexCwd, Event: "SessionEnd", SessionID: codexExecSession, TranscriptPath: codexExecRollout},
 }
 
 func TestParseHookEvent_CodexFixtures(t *testing.T) {

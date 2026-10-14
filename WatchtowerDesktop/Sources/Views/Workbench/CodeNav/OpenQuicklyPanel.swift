@@ -108,7 +108,7 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
             return true
         case 49 where flags.isEmpty: // Space
             guard case let .toggleQuickLook(path) = session.spaceAction(quickLookShown: Self.quickLookVisible) else { return false }
-            toggleQuickLook(session.project.folderURL.appendingPathComponent(path))
+            toggleQuickLook(session.root.folder.appendingPathComponent(path))
             return true
         default:
             return false
@@ -161,7 +161,7 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
     /// The selection moved under an open Quick Look: it follows.
     private func updateQuickLook() {
         guard Self.quickLookVisible, let session, let path = session.model.selectedRow?.target?.path else { return }
-        quickLook.url = session.project.folderURL.appendingPathComponent(path)
+        quickLook.url = session.root.folder.appendingPathComponent(path)
         QLPreviewPanel.shared()?.reloadData()
     }
 

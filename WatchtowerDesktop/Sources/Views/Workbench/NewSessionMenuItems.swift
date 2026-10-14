@@ -9,7 +9,7 @@ struct NewSessionMenuItems: View {
     let start: (AgentKind) -> Void
 
     var body: some View {
-        ForEach(AgentChoicePresentation.newSession { vm.agentAvailable($0, projectID: projectID) }) { choice in
+        ForEach(AgentChoicePresentation.newSessionAgentChoices { vm.agentAvailable($0, projectID: projectID) }) { choice in
             Button(choice.title) { start(choice.agent) }
                 .disabled(!choice.isAvailable)
                 .help(choice.hint ?? "")

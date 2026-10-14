@@ -10,11 +10,6 @@ extension WorkbenchesViewModel {
         summaries.first { $0.id == drilledWorkbenchID }?.project
     }
 
-    /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
-    var drilledSessions: [TerminalSession] {
-        drilledWorkbenchID.map { orderedSessions(projectID: $0) } ?? []
-    }
-
     /// A session list in the panel's order: stable while the owner switches
     /// sessions — opening one never moves it — and changed only by a drag.
     /// `projectID` nil = the standalone terminals.
@@ -23,18 +18,9 @@ extension WorkbenchesViewModel {
         return TerminalSessionOrder.apply(rows, saved: sessionOrder(projectID: projectID))
     }
 
-    /// A drag in a session list; the new order is saved for that list.
-    /// `displayed` is the list the drag's offsets index — the one the view
-    /// rendered, not a re-read that a reload may have changed meanwhile.
-    func moveSessions(_ displayed: [TerminalSession], projectID: Int64?, from source: IndexSet, to destination: Int) {
-        let order = TerminalSessionOrder.move(displayed, from: source, to: destination)
-        sessionOrders[projectID] = order
-        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(workbenchID: projectID))
-    }
-
     /// Cached once dragged: UserDefaults is not observed, the cache is what
     /// re-renders the list after a drag.
-    private func sessionOrder(projectID: Int64?) -> [Int64] {
+    func sessionOrder(projectID: Int64?) -> [Int64] {
         if let cached = sessionOrders[projectID] { return cached }
         let key = TerminalSessionOrder.key(workbenchID: projectID)
         guard let raw = defaults.array(forKey: key) else { return [] }
@@ -49,17 +35,12 @@ extension WorkbenchesViewModel {
         standaloneSessions.first { $0.id == selectedStandaloneID }
     }
 
-    /// The sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
+    /// The sessions' agent statuses, for `SessionSwitcherPresentation.rows`;
+    /// a session waiting in the Undo batch has none (PROJ-17).
     var sessionStatuses: [Int64: SessionAgentStatus] {
-        agentStates?.statuses ?? [:]
-    }
-
-    /// `sessions` (in the panel's order) as the panel and the switchers
-    /// show them: state, caption, `#id` badge.
-    func sessionRows(_ sessions: [TerminalSession]) -> [SessionSwitcherPresentation.Row] {
-        SessionSwitcherPresentation.rows(
-            sessions, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses, now: now()
-        )
+        let statuses = agentStates?.statuses ?? [:]
+        let hidden = pendingDeletes.ids
+        return hidden.isEmpty ? statuses : statuses.filter { !hidden.contains($0.key) }
     }
 
     /// A session's dot: not started unless live, then what its workbench
@@ -102,7 +83,7 @@ extension WorkbenchesViewModel {
         return activeSessionID(projectID: projectID).flatMap { session($0, projectID: projectID) }
     }
 
-    private func visibleSession(projectID: Int64) -> WorkspacePane? {
+    func visibleSession(projectID: Int64) -> WorkspacePane? {
         let layout = layout(projectID: projectID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
         return candidates.first { if case .session = $0 { true } else { false } }
@@ -148,21 +129,6 @@ extension WorkbenchesViewModel {
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
         panelVisible = true
-    }
-
-    /// ⌘1…⌘9: the n-th session of the workbench on screen, in the panel's
-    /// order, opened like a panel click. Out of range, or no workbench
-    /// page: nothing happens.
-    func openSession(atShortcut n: Int) async {
-        guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
-        let ticket = beginSwitch(projectID: projectID)
-        // With the panel hidden nothing may have read the list yet.
-        if terminalSessions[projectID] == nil {
-            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
-        }
-        let rows = orderedSessions(projectID: projectID)
-        guard n <= rows.count else { return }
-        await showSession(id: rows[n - 1].id, ticket: ticket)
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
@@ -267,12 +233,12 @@ extension WorkbenchesViewModel {
     /// single click, a kept one on a double click) and the Files pane goes
     /// on screen the way the Board does — beside a terminal in a
     /// split, else in place.
-    func openFile(_ relPath: String, project: Workbench, preview: Bool) async {
+    func openFile(_ relPath: String, root: CodeRoot, preview: Bool) async {
         // An edit still unsent in the preview tab keeps it before a preview
         // open could replace it.
-        await codeFiles.pullPending(project)
-        codeFiles.open(relPath, project: project, preview: preview)
-        showFilesPane(projectID: project.id)
+        await codeFiles.pullPending(root)
+        codeFiles.open(relPath, root: root, preview: preview)
+        showFilesPane(projectID: root.workbenchID)
     }
 
     /// Open Quickly's ↩ and ⌥↩ (spec §8.1): the file in a preview tab, the
@@ -281,56 +247,52 @@ extension WorkbenchesViewModel {
     /// screen like a FILES click; ⌥↩ (`beside`) puts it beside the pane on
     /// screen, splitting a single pane (`WorkspaceLayout.openBeside`) — the
     /// Files pane alone stays alone (a workbench has one Files pane).
-    func openFile(at target: OpenQuicklyTarget, project: Workbench, beside: Bool) async {
-        await codeFiles.pullPending(project)
-        codeFiles.open(target.path, project: project, preview: true)
-        codeFiles.requestReveal(target.path, line: target.line, col: target.col, project: project)
+    func openFile(at target: OpenQuicklyTarget, root: CodeRoot, beside: Bool) async {
+        await codeFiles.pullPending(root)
+        codeFiles.open(target.path, root: root, preview: true)
+        codeFiles.requestReveal(target.path, line: target.line, col: target.col, root: root)
         guard beside else {
-            showFilesPane(projectID: project.id)
+            showFilesPane(projectID: root.workbenchID)
             return
         }
-        var updated = layout(projectID: project.id)
+        var updated = layout(projectID: root.workbenchID)
         let kept = updated.visiblePanes.first { $0 != .files } ?? updated.primary
         updated.openBeside(.files, keeping: kept)
-        setLayout(updated, projectID: project.id)
+        setLayout(updated, projectID: root.workbenchID)
     }
 
     /// A ⌘-clicked `path:line` in a workbench session's terminal (spec
     /// §9.5): the file in Files at the line, beside the terminal (⌥↩'s
     /// placement). A workbench no longer listed opens nothing.
-    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64) async {
+    /// It opens in the root of the session it was clicked in (its worktree
+    /// when proven, else the main folder) — the root the page shows once
+    /// that session is on screen.
+    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64, sessionID: Int64) async {
         guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return }
         let target = OpenQuicklyTarget(path: location.path, line: location.line, col: location.col)
-        await openFile(at: target, project: project, beside: true)
+        await openFile(at: target, root: codeRoot(sessionID: sessionID, project: project), beside: true)
     }
 
-    /// A workbench path clicked in an ask's text (#394): the file in Files
-    /// at the line, beside the terminal (a terminal link's placement); an
-    /// expanded drawer goes back beside it so the file shows. The file
-    /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
-    /// False — and nothing opened — for a path that is not a file of the
-    /// folder or a workbench no longer listed.
-    @discardableResult
-    func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64) async -> Bool {
-        guard let project = summaries.first(where: { $0.id == projectID })?.project,
-              let path = WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) else { return false }
-        asks.drawerExpanded = false
-        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), project: project, beside: true)
-        return true
+    /// The folder a session's ⌘-clicked `path:line` resolves in: the root
+    /// `openTerminalLink` opens it in, so a file only the session's worktree
+    /// has is a link (board #565). nil for a workbench no longer listed.
+    func terminalLinkFolder(workbenchID: Int64, sessionID: Int64) -> String? {
+        guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return nil }
+        return codeRoot(sessionID: sessionID, project: project).folder.path
     }
 
     /// Go to definition and back/forward (spec §8.2): `location` in the Files
     /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
     /// a kept tab — keeping a preview tab it lands on; back/forward
     /// activate the tab as it is, reopening a closed file as a kept tab.
-    func showLocation(_ location: CodeNavLocation, project: Workbench, keepingTab: Bool) {
-        if keepingTab || !codeFiles.tabs(for: project).contains(location.path) {
-            codeFiles.open(location.path, project: project, preview: false)
+    func showLocation(_ location: CodeNavLocation, root: CodeRoot, keepingTab: Bool) {
+        if keepingTab || !codeFiles.tabs(for: root).contains(location.path) {
+            codeFiles.open(location.path, root: root, preview: false)
         } else {
-            codeFiles.activate(location.path, project: project)
+            codeFiles.activate(location.path, root: root)
         }
-        codeFiles.requestReveal(location.path, line: location.line, col: location.col, project: project)
-        showFilesPane(projectID: project.id)
+        codeFiles.requestReveal(location.path, line: location.line, col: location.col, root: root)
+        showFilesPane(projectID: root.workbenchID)
     }
 
     /// The Files pane on screen, the way the header's Files button puts it.

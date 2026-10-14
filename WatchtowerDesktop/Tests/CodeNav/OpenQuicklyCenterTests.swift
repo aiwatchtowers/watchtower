@@ -18,6 +18,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
     private var suite: String!
     private var folder: URL!
     private var project: Workbench!
+    private var root: CodeRoot { project.mainCodeRoot }
     private var presenter: RecordingPresenter!
     private var searches: FakeSearches!
 
@@ -54,7 +55,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         )
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         center.workbenches = vm
-        let index = codeIndex.index(for: project.id)
+        let index = codeIndex.index(for: root)
         index.applyIndexLines([
             .file(CodeIndexFileResult(file: "src/save.swift", lang: "swift", symbols: [save])),
             .file(CodeIndexFileResult(file: "README.md", lang: "", symbols: []))
@@ -71,7 +72,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertNil(center.session)
         XCTAssertEqual(presenter.presented, 0)
 
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.pageDisappeared(workbenchID: project.id)
         XCTAssertNil(center.keyWorkbench)
         center.present(scope: .text)
@@ -85,7 +86,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         let (center, _) = makeCenter()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        center.pageAppeared(project, window: window)
+        center.pageAppeared(project, root: root, window: window)
         XCTAssertNil(center.keyWorkbench, "on screen, but another window is key")
 
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
@@ -99,7 +100,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         center.dismiss(restoringFocus: false)
         XCTAssertNil(center.keyWorkbench, "the Settings window (say) is key")
 
-        center.pageAppeared(project, window: window)
+        center.pageAppeared(project, root: root, window: window)
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
         XCTAssertNotNil(center.keyWorkbench, "the same window re-announced keeps its observers")
         center.pageDisappeared(workbenchID: project.id)
@@ -110,7 +111,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testShiftCommandFOpensOnTextAndSwitchesAnOpenPanelToIt() {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .text)
         XCTAssertEqual(center.session?.model.scope, .text)
         center.dismiss(restoringFocus: true)
@@ -128,7 +129,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testThePageLeavingClosesThePanel() {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         center.pageDisappeared(workbenchID: 99)
         XCTAssertNotNil(center.session, "another workbench's page is not this one")
@@ -148,21 +149,21 @@ final class OpenQuicklyCenterTests: XCTestCase {
             resolveExecutable: { stub.executable.path }, environment: { env }, clock: { clock.now }, rulesFile: CodeIndexCenter.testRulesFile
         )
         let center = OpenQuicklyCenter(codeIndex: codeIndex, presenter: presenter, startSearch: searches.start)
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
 
         center.present(scope: .all)
-        let index = codeIndex.index(for: project.id)
+        let index = codeIndex.index(for: root)
         let ready = await eventually { index.state == .ready }
         XCTAssertTrue(ready, "the panel started the index")
         XCTAssertEqual(stub.fullRuns, 1)
         clock.now += 600
         codeIndex.releaseIdleIndexes()
-        XCTAssertTrue(codeIndex.index(for: project.id) === index, "kept while the panel is up")
+        XCTAssertTrue(codeIndex.index(for: root) === index, "kept while the panel is up")
 
         center.dismiss(restoringFocus: false)
         clock.now += 600
         codeIndex.releaseIdleIndexes()
-        XCTAssertFalse(codeIndex.index(for: project.id) === index, "released once the panel went and the TTL passed")
+        XCTAssertFalse(codeIndex.index(for: root) === index, "released once the panel went and the TTL passed")
         codeIndex.stopAll()
         await stub.assertAllGroupsReaped()
     }
@@ -171,7 +172,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testReturnOpensAPreviewTabAtTheSymbolsLineAndCloses() async {
         let (center, vm) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         let session = try? XCTUnwrap(center.session)
         session?.updateQuery("savenow")
@@ -180,16 +181,16 @@ final class OpenQuicklyCenterTests: XCTestCase {
         center.perform(session?.activateSelection(option: false, command: false) ?? .none)
         XCTAssertNil(center.session)
         XCTAssertEqual(presenter.dismissals, [false], "an open leaves the keyboard to the editor")
-        let opened = await eventually { vm.codeFiles.reveals[self.project.id] != nil }
+        let opened = await eventually { vm.codeFiles.reveals[self.root] != nil }
         XCTAssertTrue(opened)
-        let tabs = vm.codeFiles.tabs(for: project)
+        let tabs = vm.codeFiles.tabs(for: root)
         XCTAssertEqual(tabs.active, "src/save.swift")
         XCTAssertEqual(tabs.tabs.first?.isPreview, true, "a preview tab")
-        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.line, 12)
-        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.col, 10)
+        XCTAssertEqual(vm.codeFiles.reveals[root]?.line, 12)
+        XCTAssertEqual(vm.codeFiles.reveals[root]?.col, 10)
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
         XCTAssertFalse(vm.layout(projectID: project.id).isSplit)
-        XCTAssertEqual(vm.codeFiles.recentFiles(for: project), ["src/save.swift"], "a recently opened file")
+        XCTAssertEqual(vm.codeFiles.recentFiles(for: root), ["src/save.swift"], "a recently opened file")
     }
 
     func testOptionReturnOpensBesideThePaneOnScreenCreatingTheSplit() async {
@@ -197,7 +198,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         var single = WorkspaceLayout.default
         single.primary = .session(41)
         vm.setLayout(single, projectID: project.id)
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .files)
         center.session?.updateQuery("readme")
 
@@ -207,14 +208,14 @@ final class OpenQuicklyCenterTests: XCTestCase {
         let layout = vm.layout(projectID: project.id)
         XCTAssertEqual(layout.primary, .session(41), "the terminal stays")
         XCTAssertEqual(layout.secondary, .files)
-        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "README.md")
-        XCTAssertNil(vm.codeFiles.reveals[project.id]?.line, "a file row keeps its cursor")
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).active, "README.md")
+        XCTAssertNil(vm.codeFiles.reveals[root]?.line, "a file row keeps its cursor")
 
         // Files already beside it: nothing moves.
         center.present(scope: .files)
         center.session?.updateQuery("save")
         center.perform(center.session?.activateSelection(option: true, command: false) ?? .none)
-        _ = await eventually { vm.codeFiles.tabs(for: self.project).active == "src/save.swift" }
+        _ = await eventually { vm.codeFiles.tabs(for: self.root).active == "src/save.swift" }
         XCTAssertEqual(vm.layout(projectID: project.id), layout)
     }
 
@@ -223,8 +224,8 @@ final class OpenQuicklyCenterTests: XCTestCase {
     func testAskAIRowAndChordsAreAbsentWhenSwitchedOff() {
         let (center, _) = makeCenter(askAIEnabled: false)
         var handed: [String] = []
-        center.onHandToClaude = { query, _ in handed.append(query) }
-        center.pageAppeared(project, window: nil)
+        center.onHandToClaude = { query, _, _ in handed.append(query) }
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         let session = center.session
         session?.updateQuery("save")
@@ -253,8 +254,8 @@ final class OpenQuicklyCenterTests: XCTestCase {
     func testOptionCommandReturnHandsTheQueryAndClosesThePanel() throws {
         let (center, _) = makeCenter()
         var handed: [(query: String, workbenchID: Int64)] = []
-        center.onHandToClaude = { query, project in handed.append((query, project.id)) }
-        center.pageAppeared(project, window: nil)
+        center.onHandToClaude = { query, project, _ in handed.append((query, project.id)) }
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         let session = try XCTUnwrap(center.session)
         session.updateQuery("why save")
@@ -272,7 +273,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         let ai = ScriptedAIService()
         let questions = makeQuestions(vm, ai: ai)
         center.questions = questions
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         let session = try XCTUnwrap(center.session)
         session.updateQuery("why save")
@@ -304,7 +305,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         let ai = ScriptedAIService()
         let questions = makeQuestions(vm, ai: ai)  // `questions` is weak, as on AppState
         center.questions = questions
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         center.session?.updateQuery("why")
         center.perform(.askAI("why"))
@@ -319,13 +320,13 @@ final class OpenQuicklyCenterTests: XCTestCase {
         await center.openAnswerLink(try XCTUnwrap(URL(string: CodeLineLinks.url(path: "src/save.swift", line: 12, col: nil))))
         XCTAssertNil(center.session)
         XCTAssertEqual(presenter.dismissals, [false])
-        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/save.swift")
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).active, "src/save.swift")
     }
 
     /// No code question center: the panel says the question could not start.
     func testAnAskThatCannotStartSaysSo() {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         center.perform(.askAI("why"))
         XCTAssertNil(center.session?.answerConversationID)
@@ -336,7 +337,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testTextSearchStartsAfterTheDebounceAndTypingCancelsThePreviousOne() async {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .text)
         let session = center.session
         session?.updateQuery("sa")
@@ -366,7 +367,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testFilesAndSymbolsDoNotSearchTextUntilAScopeShowsIt() async {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .symbols)
         let session = center.session
         session?.updateQuery("save")
@@ -395,7 +396,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
                 onMatch: onMatch, onDone: onDone
             )
         }
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .text)
         let session = try XCTUnwrap(center.session)
         session.updateQuery("hit")
@@ -415,7 +416,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testThePreviewReadsTwelveLinesFromTheSymbol() async {
         let (center, _) = makeCenter()
-        center.pageAppeared(project, window: nil)
+        center.pageAppeared(project, root: root, window: nil)
         center.present(scope: .all)
         let session = center.session
         await session?.loadPreview(path: "src/save.swift", line: 12)
@@ -430,16 +431,16 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testRecentlyOpenedFilesPersistPerWorkbenchWithoutGoneFiles() throws {
         let files = CodeFilesCenter(defaults: defaults, watchesFolders: false)
-        files.open("README.md", project: project, preview: true)
-        files.open("src/save.swift", project: project, preview: false)
-        files.activate("README.md", project: project)
-        XCTAssertEqual(files.recentFiles(for: project), ["README.md", "src/save.swift"])
+        files.open("README.md", root: root, preview: true)
+        files.open("src/save.swift", root: root, preview: false)
+        files.activate("README.md", root: root)
+        XCTAssertEqual(files.recentFiles(for: root), ["README.md", "src/save.swift"])
 
         try FileManager.default.removeItem(at: folder.appendingPathComponent("src/save.swift"))
         let relaunched = CodeFilesCenter(defaults: defaults, watchesFolders: false)
-        XCTAssertEqual(relaunched.recentFiles(for: project), ["README.md"], "a gone file is pruned")
+        XCTAssertEqual(relaunched.recentFiles(for: root), ["README.md"], "a gone file is pruned")
         let other = Workbench(row: Row(["id": 6, "name": "other", "folder_path": folder.path]))
-        XCTAssertEqual(relaunched.recentFiles(for: other), [], "per workbench")
+        XCTAssertEqual(relaunched.recentFiles(for: other.mainCodeRoot), [], "per workbench")
     }
 }
 

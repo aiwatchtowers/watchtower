@@ -1,14 +1,16 @@
 import Foundation
 import WatchtowerCore
 
-/// The symbol index of every workbench on screen (spec §7), on `AppState`
-/// so navigating away and back within `idleTTL` (5 minutes) keeps it —
-/// the `EmbeddedChatCenter` idle-release shape. `CodeFilesCenter` reports
-/// when FILES or the Files pane shows a workbench and forwards its
-/// `FolderWatcher` batches; Open Quickly reads `index(for:)`.
+/// The symbol index of every code root on screen (spec §7; a workbench's
+/// folder or one of its worktrees, `CodeRoot`), on `AppState` so navigating
+/// away and back within `idleTTL` (5 minutes) keeps it — the
+/// `EmbeddedChatCenter` idle-release shape, which also frees a worktree no
+/// longer on screen. `CodeFilesCenter` reports when FILES or the Files pane
+/// shows a root and forwards its `FolderWatcher` batches; Open Quickly
+/// reads `index(for:)`.
 ///
-/// One run per workbench at a time: a full `code index --json` (first show,
-/// a rescan, a show after a failure) or one request to the workbench's
+/// One run per root at a time: a full `code index --json` (first show,
+/// a rescan, a show after a failure) or one request to the root's
 /// long-lived `code index --serve` with the changed paths (after a 300 ms
 /// debounce). Changes that arrive meanwhile wait and merge into the next
 /// request, so results are applied in the order the runs were made.
@@ -16,15 +18,15 @@ import WatchtowerCore
 /// The owner's rules file (`code-languages.yaml`, spec §6.5) is read once
 /// per CLI process, so a change to it (500 ms debounce) kills every run in
 /// flight and every `--serve` child — the next update starts a fresh one —
-/// and runs a full index for the workbenches on screen; a hidden one gets
+/// and runs a full index for the roots on screen; a hidden one gets
 /// its full run when it is shown again.
 ///
 /// Not observable itself: views observe the `WorkbenchCodeIndex` they get,
 /// and `index(for:)` may create one while a view body runs.
 @MainActor
 final class CodeIndexCenter {
-    private var indexes: [Int64: WorkbenchCodeIndex] = [:]
-    private var sessions: [Int64: CodeIndexSession] = [:]
+    private var indexes: [CodeRoot: WorkbenchCodeIndex] = [:]
+    private var sessions: [CodeRoot: CodeIndexSession] = [:]
     private let resolveExecutable: () -> String?
     private let environment: () -> [String: String]
     private let debounce: Duration
@@ -76,25 +78,26 @@ final class CodeIndexCenter {
         self.rulesDebounce = rulesDebounce
     }
 
-    /// The workbench's index — empty and `.idle` until a view shows the
-    /// workbench (`markShown`). The same instance until it is released.
-    func index(for workbenchID: Int64) -> WorkbenchCodeIndex {
-        if let index = indexes[workbenchID] { return index }
+    /// The root's index — empty and `.idle` until a view shows the root
+    /// (`markShown`). The same instance until it is released.
+    func index(for root: CodeRoot) -> WorkbenchCodeIndex {
+        if let index = indexes[root] { return index }
         let index = WorkbenchCodeIndex()
-        indexes[workbenchID] = index
+        indexes[root] = index
         return index
     }
 
-    /// A view shows the workbench: the first show (or one after a failure,
-    /// or with a new folder) starts a full run. Balanced by `markHidden`.
-    func markShown(workbenchID: Int64, folder: URL) {
+    /// A view shows the root: the first show (or one after a failure) starts
+    /// a full run. Balanced by `markHidden`.
+    func markShown(root: CodeRoot) {
         watchRulesFile()
-        if let stale = sessions[workbenchID], stale.folder != folder {
-            // The workbench moved to another folder: nothing of the old index holds.
-            releaseIndex(workbenchID)
+        // The workbench moved to another folder: nothing of its old main
+        // index holds.
+        for stale in sessions.keys where stale.isMain && root.isMain && stale.workbenchID == root.workbenchID && stale != root {
+            releaseIndex(stale)
         }
-        let session = sessions[workbenchID] ?? CodeIndexSession(folder: folder, index: index(for: workbenchID))
-        sessions[workbenchID] = session
+        let session = sessions[root] ?? CodeIndexSession(folder: root.folder, index: index(for: root))
+        sessions[root] = session
         session.shownCount += 1
         session.hiddenSince = nil
         switch session.index.state {
@@ -105,22 +108,22 @@ final class CodeIndexCenter {
             break
         }
         // A first show, one after a failure, or one after the rules file
-        // changed while the workbench was hidden.
+        // changed while the root was hidden.
         if session.fullPending { startNextRun(session) }
     }
 
-    func markHidden(workbenchID: Int64) {
-        guard let session = sessions[workbenchID] else { return }
+    func markHidden(root: CodeRoot) {
+        guard let session = sessions[root] else { return }
         session.shownCount = max(0, session.shownCount - 1)
         if session.shownCount == 0 { session.hiddenSince = clock() }
     }
 
-    /// What FSEvents saw in the workbench's folder (from `CodeFilesCenter`).
-    /// Ignored for a workbench with no index. Paths wait `debounce` after
+    /// What FSEvents saw in the root's folder (from `CodeFilesCenter`).
+    /// Ignored for a root with no index. Paths wait `debounce` after
     /// the last batch, but never more than `debounceMaxWait` after the first
     /// one; a rescan's full run covers whatever was waiting.
-    func applyWatcherBatch(_ batch: FolderWatcher.Batch, workbenchID: Int64) {
-        guard let session = sessions[workbenchID] else { return }
+    func applyWatcherBatch(_ batch: FolderWatcher.Batch, root: CodeRoot) {
+        guard let session = sessions[root] else { return }
         if batch.mustRescan {
             session.debounceTask?.cancel()
             session.debounceTask = nil
@@ -149,9 +152,9 @@ final class CodeIndexCenter {
     /// minute timer, like `EmbeddedChatCenter.sweep`).
     func releaseIdleIndexes(now: Date? = nil) {
         let now = now ?? clock()
-        for (id, session) in sessions where session.shownCount == 0 {
+        for (root, session) in sessions where session.shownCount == 0 {
             guard let since = session.hiddenSince, now.timeIntervalSince(since) >= idleTTL else { continue }
-            releaseIndex(id)
+            releaseIndex(root)
         }
     }
 
@@ -161,7 +164,7 @@ final class CodeIndexCenter {
         rulesDebounceTask = nil
         rulesWatcher?.stopWatchingRulesFile()
         rulesWatcher = nil
-        for id in Array(sessions.keys) { releaseIndex(id) }
+        for root in Array(sessions.keys) { releaseIndex(root) }
     }
 
     // MARK: Rules file
@@ -203,7 +206,7 @@ final class CodeIndexCenter {
     }
 
     /// Every CLI process read the old rules: each is killed and a full run
-    /// waits — started now for a workbench on screen.
+    /// waits — started now for a root on screen.
     private func reindexForRules() {
         for session in sessions.values {
             session.dropRunsForRulesChange()
@@ -211,9 +214,9 @@ final class CodeIndexCenter {
         }
     }
 
-    private func releaseIndex(_ workbenchID: Int64) {
-        sessions.removeValue(forKey: workbenchID)?.stopChildren()
-        indexes[workbenchID] = nil
+    private func releaseIndex(_ root: CodeRoot) {
+        sessions.removeValue(forKey: root)?.stopChildren()
+        indexes[root] = nil
     }
 
     // MARK: Runs
@@ -326,7 +329,7 @@ final class CodeIndexCenter {
     }
 }
 
-/// One workbench's runs: what is in flight, what waits, the `--serve` child.
+/// One root's runs: what is in flight, what waits, the `--serve` child.
 @MainActor
 private final class CodeIndexSession {
     enum Run {
