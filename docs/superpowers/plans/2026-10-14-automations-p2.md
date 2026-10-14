@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let an automation change the world only through the registry: the `automation` surface on the ten write tools of spec §6.1, `tool(name, args, {wait})` writes as proposals (trust `ask` by default), the per-(automation, tool) **auto grant** bound to `approval_hash` (migration 00114, granted only by the owner from the Desktop, refused under AGENT-07 markers), the AGENT-03 amendment exactly as spec §14.2, output kinds `briefing`/`target`/`slack` through `RegisterOutputKind`, the briefing section, and automation-labelled proposal cards in the Inbox.
+**Goal:** Let an automation change the world only through the registry: the `automation` surface on the ten write tools of spec §6.1, `tool(name, args, {wait})` writes as proposals (trust `ask` by default), the per-(automation, tool) **auto grant** bound to `approval_hash` (migration 00114, granted only by the owner from the Desktop, refused under AGENT-07 markers), the AGENT-03 amendment exactly as spec §14.2, output kinds `briefing`/`target`/`slack` through `RegisterOutputKind`, the briefing section, and proposal rows that carry their automation run (`context_type='automation_run'`, `context_id=<run>`) so the Inbox labels them `⚙ <automation name> · run #<n>` — the Swift card label itself is P3 Task 12 (`runLabels`, `AgentActionCardLabelTests`), where spec §6.3 puts it and where the P3 plan already implements it.
 
 **Architecture:** Every SDK write is `Registry.Propose` with `Binding{Surface: "automation", ContextType: "automation_run", ContextID: <run>, AutomationRunID: <run>, WorkbenchID: <wb or 0>}`. `resolveTrust` gets an automation-surface branch (AlwaysAsk → grant → External → `tool_trust(tool,'automation')`); a grant row applies only while `grant_hash = automations.approval_hash = automation_runs.recipe_hash`. An inline apply goes through `applyTrusted` → `Apply`'s claim (AGENT-05). `{wait:true}` pauses the run on P1's `Waiter` until the `agent_actions` row is `applied`/`rejected`/`failed`. Grants are written only by `watchtower automations auto <id> <tool> on --hash <sha>`.
 
-**Tech Stack:** Go 1.26, SQLite (goose migration 00114), goja (P1), cobra; Swift (WatchtowerCore) for the surface label and the card label only.
+**Tech Stack:** Go 1.26, SQLite (goose migration 00114), goja (P1), cobra; Swift (WatchtowerCore) for the Settings surface label only.
 
 **Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` — §5 (`tool`, `output.*`), §6 (surface, trust order, auto grants), §9.4, §10 (`automations auto`), §12.6 (briefing), §14.2 (AGENT-03 amendment, owner-approved ask #265), §14.3, §18 P2 tests, §20 (D5, D14). Business spec: `docs/superpowers/specs/2026-10-14-automations-business.md`. P1 plan and its **Seams for later phases**: `docs/superpowers/plans/2026-10-14-automations-p1.md`.
 
@@ -18,7 +18,7 @@
   - **S1 `ToolCapabilities` scope arguments do not match the real tool args.** P1 lists `create_jira_issue` with scope arg `project` (real arg: `project_key`), `send_slack_message` with `account` (real arg: `account_id`, an optional integer; the manifest scope is an account label), and `get_jira_issue`/`get_jira_status_history`/`get_jira_time_in_status` with `project` (real arg: `key`). `ToolCapability` gains `ScopeOf func(ctx context.Context, d *db.DB, args json.RawMessage) (scope string, present bool, err error)` (nil = read `ScopeArg` verbatim), and `(*Manifest).AllowTool` becomes `AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args json.RawMessage) (string, error)`.
   - **S2 `RegisterOutputKind` needs the backends.** P1 declares `func RegisterOutputKind(kind string, fn SDKFunc)` "on the module", but `OutputModule()` returns the `Module` interface and `SDKFunc`'s `Env` carries no `Backends`, so `output.target`/`output.slack` cannot reach the registry. P2 assumes `OutputModule()` returns `*OutputMod` (which implements `Module`) with method `RegisterOutputKind(kind string, fn SDKFunc)`, and `DefaultModules(b)` registers the P2 kinds with closures over `b`.
   - **S3 `ToolWriteModule` and the `tool` path.** P1 says `ToolWriteModule` (P2) "replaces `tool`'s write branch", but two modules defining the path `tool` is undefined in P1's `Definer`. P2 assumes `Definer.Define` on an already-defined path replaces it (last wins, `DefaultModules` order), pinned by `TestDefiner_LaterModuleReplacesPath`; `ToolWriteModule`'s `tool` handles reads by delegating to the P1 read function.
-  - **S4 A step that waits needs a non-final update.** `Journal`/`Step` only have final `OK|Fail|Denied|Finish`. A `{wait:true}` write must mark its step `status='waiting'` with `action_id` before the run pauses (so the run view links the pending card), then finish it once. Proposed: `func (s *Step) Waiting(link db.StepFinish) error` (writes `status='waiting'` plus `ActionID|AskID|SessionID`, leaves `finished_at` NULL). P5's `ask()`/`session()` need the same (spec §13.1 step 1).
+  - **S4 A step that waits needs a non-final update — reconcile with P5's header note 2.** `Journal`/`Step` only have final `OK|Fail|Denied|Finish`. P5 proposes `func (s *Step) ID() int64` and `func (s *Step) Mark(status string)` (non-final, `finished_at` stays NULL); P2 consumes those names. A `{wait:true}` write also needs its `action_id` on the open step before the run pauses (so the run view links the pending card), so the reconciled form is `func (s *Step) Mark(status string, link db.StepFinish) error` (only `ActionID|AskID|SessionID` of `link` are read; P5 passes a zero link). The controller settles the final signature once, in P1's seam section, before P2 Task 5 and P5 Tasks 5–6 run.
 
 ## Global Constraints
 
@@ -36,7 +36,7 @@
   - `{wait:true}` → `waiting_reason='approval'`; resolves `applied` → `{status:"applied", id, result}`, `rejected` → `{status:"rejected", id}`, `failed` → `{status:"failed", id, error}`; waiting time is excluded from active time; past `pause_timeout_hours` → run `expired`; Cancel → run `cancelled`, the proposal stays pending.
   - Dry run: a write never reaches the registry → `{status:"dry_run"}`; `output.*` and `state.set` likewise (AUTO-12).
   - Briefing section "From your automations": `automation_outputs.kind='briefing'` created since the previous briefing's `created_at`, titles + bodies, bounded to **4 KiB** total, oldest dropped first with a `+N more` line.
-  - Inbox card label: `⚙ <automation name> · run #<n>`.
+  - Inbox card label `⚙ <automation name> · run #<n>`: rendered by P3 Task 12 from the row context this plan pins (Task 3).
 - Guard tests named `TestAgent03_…`, `TestAuto0N_…`, `TestAgent01_…` exactly as spec §14.2/§18; never weakened; existing AGENT guards unchanged.
 
 ## Review Focus
@@ -63,7 +63,7 @@
 | `internal/automations/sdk_tool_write.go`, `sdk_output_p2.go`, `modules.go` | `ToolWriteModule`, output kinds |
 | `internal/briefing/automations.go`, `internal/briefing/pipeline.go`, `internal/prompts/defaults.go` | briefing section |
 | `cmd/automations_auto.go`, `cmd/automations.go` (show/list) | CLI |
-| `WatchtowerDesktop/Sources/WatchtowerCore/Models/AssistantToolSurface.swift`, `…/Database/Queries/AgentActionQueries.swift`, `WatchtowerDesktop/Sources/Views/…/AgentActionCardView.swift` | Swift labels |
+| `WatchtowerDesktop/Sources/WatchtowerCore/Models/AssistantToolSurface.swift` | Settings surface label |
 | `docs/inventory/agent-actions.md`, `docs/inventory/automations.md`, `docs/inventory/reaction-commands.md` (changelog only), `docs/features/agent-actions.md`, `docs/features/automations.md` | docs |
 
 ---
@@ -181,13 +181,13 @@
 
 **Files:**
 - Create: `internal/automations/sdk_tool_write.go`, `internal/automations/sdk_tool_write_test.go`
-- Modify: `internal/automations/modules.go` (`DefaultModules` appends `ToolWriteModule`), `internal/automations/sandbox.go` (S3 last-wins `Define`, if P1 refuses duplicates), `internal/automations/journal.go` (S4 `Step.Waiting`), `internal/automations/sandbox.go`'s `(*Env).Binding()` (sets `AutomationRunID`), `internal/automations/automationstest/fakes.go` (`FakeRegistry` records `Propose` with a configurable `Receipt`)
+- Modify: `internal/automations/modules.go` (`DefaultModules` appends `ToolWriteModule`), `internal/automations/sandbox.go` (S3 last-wins `Define`, if P1 refuses duplicates), `internal/automations/journal.go` (S4 `Step.Mark`), `internal/automations/sandbox.go`'s `(*Env).Binding()` (sets `AutomationRunID`), `internal/automations/automationstest/fakes.go` (`FakeRegistry` records `Propose` with a configurable `Receipt`)
 
 **Interfaces:**
 - Consumes: `ToolRegistry.Propose` (P1 interface), `Waiter.Wait(ctx, db.WaitApproval, ready)`, `db.GetAgentAction`, `(*Manifest).AllowTool` (Task 1), `Meter`, `Journal`.
 - Produces:
   - `func ToolWriteModule(b Backends) Module` — defines `tool(name, args, opts?)`; reads delegate to P1's read function unchanged; writes: manifest check → (dry run: step `dry_run`, `{status:"dry_run"}`, registry untouched) → default `reason` when the args have none or a blank one: `"⚙ <automation name> · run #<run id>"` → `Registry.Propose(ctx, name, args, env.Binding())` → step `proposed` with `action_id` (or `applied` + `auto=1` when `Receipt.Auto`, or `applied` without auto for a `tool_trust` execute, or `failed` for an inline apply that failed) → return `{status:"proposed", id}` / `{status:"applied", id, result}` / `{status:"failed", id, error}`.
-  - `opts.wait === true` on a `pending` receipt: `Step.Waiting({ActionID})`, then `env.Wait.Wait(ctx, db.WaitApproval, ready)` where `ready` reads `agent_actions.status` ∈ {`applied`,`rejected`,`failed`}; resumes and finishes the step with that status → `{status:"applied", id, result}` / `{status:"rejected", id}` / `{status:"failed", id, error}`. `wait` on an already applied receipt returns at once. `opts` other than `wait` → `ValidationError`.
+  - `opts.wait === true` on a `pending` receipt: `step.Mark("waiting", db.StepFinish{ActionID: id})`, then `env.Wait.Wait(ctx, db.WaitApproval, ready)` where `ready` reads `agent_actions.status` ∈ {`applied`,`rejected`,`failed`}; resumes and finishes the step with that status → `{status:"applied", id, result}` / `{status:"rejected", id}` / `{status:"failed", id, error}`. `wait` on an already applied receipt returns at once. `opts` other than `wait` → `ValidationError`.
   - `(*Env).Binding()` → `{Surface: "automation", ContextType: "automation_run", ContextID: <run id>, AutomationRunID: <run id>, WorkbenchID: <project id or 0>}`.
   - Registry `*ValidationError` → JS `ValidationError`; `ErrNotWritable`/unknown tool → `ToolError`.
 - Depends on: Tasks 1, 3, 4.
@@ -281,31 +281,13 @@
 - [ ] **Step 4:** Step 2 command → PASS.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): automations auto on/off, owner-only`.
 
-### Task 9: Inbox card label for automation proposals
-
-**Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/AgentActionQueries.swift` (label lookup), the `AgentAction` model or a small `AgentActionAutomationLabel` value in WatchtowerCore, `AgentActionCardView.swift` (one label line)
-- Create: `WatchtowerDesktop/Tests/Core/AgentActionCardLabelTests.swift`
-- Read first: `docs/review/review-rules.md` "Swift / Desktop conventions".
-
-**Interfaces:**
-- Consumes: `agent_actions.context_type/context_id`, `automation_runs`, `automations.name` (GRDB, read-only).
-- Produces: `package static func automationLabels(_ db: Database, runIDs: [Int64]) throws -> [Int64: String]` in `AgentActionQueries` → `"⚙ <automation name> · run #<run id>"`; the strip and chat cards show it above the tool line for rows with `context_type == "automation_run"`; a run whose automation was deleted → `"⚙ deleted automation · run #<n>"`. The link to the run view is P3 (needs the Automations tab). No write anywhere (STRIP-02).
-- Depends on: Task 3 (row shape).
-
-- [ ] **Step 1: Failing tests** (`AgentActionCardLabelTests`, `TestDatabase` with the regenerated schema): `testAutomationRowGetsLabel`, `testNonAutomationRowHasNoLabel`, `testDeletedAutomationLabel`, `testLabelQueryIsBatched` (one query for N rows).
-- [ ] **Step 2:** `make test-swift FILTER=AgentActionCardLabelTests` → FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Step 2 → PASS; `make test-swift FILTER='ActionStripViewModelTests|AgentActionQueriesTests'` → PASS (unchanged).
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): label automation proposals in the Inbox`.
-
-### Task 10: Inventory, feature notes
+### Task 9: Inventory, feature notes
 
 **Files:**
 - Modify: `docs/inventory/agent-actions.md`, `docs/inventory/automations.md`, `docs/inventory/reaction-commands.md` (changelog line only), `docs/features/agent-actions.md`, `docs/features/automations.md`, `docs/inventory/README.md` (module row gains `internal/db/automation_grants.go`, `cmd/automations_auto.go`)
 
 **Interfaces:**
-- Consumes: guard names from Tasks 1–9.
+- Consumes: guard names from Tasks 1–8.
 - Produces:
   - **AGENT-03**: Observable replaced by spec §14.2's text **verbatim** (incl. "owner-approved 2026-10-14 in ask #265; in code with Automations P2"); the Why gains §14.2's added sentence; Test guards append `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`, `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`, `TestAgent03_AlwaysAskIsNeverAuto` (`internal/tools/registry_automation_test.go`), `TestAgent03_AutoGrantRefusedUnderAgentMarkers` (`cmd/automations_auto_test.go`); existing guards unchanged.
   - **AGENT-01** (strengthening): names the `automation` surface and "a dry run never reaches `Propose`"; guard `TestAgent01_AutomationWriteRecordsProposalOnly`, plus `TestAuto12_DryRunWriteNeverReachesRegistry`.
@@ -314,7 +296,7 @@
   - **automations.md**: **AUTO-02** Planned → **Enforced** (write side: `TestAuto02_ToolWriteGoesThroughPropose`, `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`; changelog notes the retirement of P1's interim `TestTool_WriteNotAvailableInP1`); **AUTO-03** Planned → **Enforced** (`TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash` + the five AGENT-03 guards); AUTO-04/12 gain the output and dry-run guards of Tasks 5–6.
   - **reaction-commands.md** changelog: "Automations P2: `agent_actions` rows with `context_type='automation_run'` reach the strip through `Registry.Propose` from a recipe the owner confirmed (AUTO-06), per the approved design §6.3; the STRIP-01 three-table amendment (spec §14.4, `automation_outputs`) lands with P3". STRIP-01's Observable text itself is not edited in P2.
   - `docs/features/agent-actions.md`: the automation surface, trust order and auto grants. `docs/features/automations.md`: P2 section.
-- Depends on: Task 9.
+- Depends on: Task 8.
 
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Every guard named in the inventories exists: `grep -rn '<name>' internal cmd WatchtowerDesktop/Tests` for each → found.
@@ -332,6 +314,6 @@
 
 ## Self-review against the spec
 
-- §5 `tool` writes + `{wait}` → Task 5; `output.briefing/target/slack` → Task 6; §6.1 surface + `AutomationRunID` + `bindingOf` → Tasks 3–5; §6.2 trust order → Task 3; §6.3 labels → Task 9 (text label; run link P3); §6.4 grants + "a save never carries grants over" → Tasks 2, 8; §9.4 00114 → Task 2; §10 `automations auto` → Task 8; §12.6 → Task 7; §14.2 verbatim → Task 10; §14.3 AGENT-01/07 → Task 10; §18 P2 tests: `TestAgent01_AutomationWriteRecordsProposalOnly`, five AGENT-03 guards, `TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash`, `TestAuto02_ToolWriteGoesThroughPropose`, `TestToolWait_AppliedRejectedFailed`, `TestToolWait_PauseExcludedFromActiveTime`, `TestTrustOrder_AutomationSurface`, `TestBriefing_IncludesAutomationOutputsSinceLast`, updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` — all present.
+- §5 `tool` writes + `{wait}` → Task 5; `output.briefing/target/slack` → Task 6; §6.1 surface + `AutomationRunID` + `bindingOf` → Tasks 3–5; §6.2 trust order → Task 3; §6.3 row context → Task 3 (card label and run link: P3 Task 12); §6.4 grants + "a save never carries grants over" → Tasks 2, 8; §9.4 00114 → Task 2; §10 `automations auto` → Task 8; §12.6 → Task 7; §14.2 verbatim → Task 9; §14.3 AGENT-01/07 → Task 9; §18 P2 tests: `TestAgent01_AutomationWriteRecordsProposalOnly`, five AGENT-03 guards, `TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash`, `TestAuto02_ToolWriteGoesThroughPropose`, `TestToolWait_AppliedRejectedFailed`, `TestToolWait_PauseExcludedFromActiveTime`, `TestTrustOrder_AutomationSurface`, `TestBriefing_IncludesAutomationOutputsSinceLast`, updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` — all present.
 - D5 (hash scope), D14 (AlwaysAsk never auto) → Tasks 2, 3, 8.
 - Not in P2 (by spec): the STRIP-01 text amendment and output cards (P3), the run link from the card (P3), the Desktop's SIGUSR2 after an approval on an automation row (P3; P2 relies on the executor's 10 s poll, pinned by `TestToolWait_AppliedRejectedFailed` on the fake clock).

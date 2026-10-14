@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` — §3.1 (`mcp:`, `agent:run`), §3.2 (mcp matching), §3.4 (secrets), §4 (dry run: `mcp` reads run, `agent` without writes), §5 (`mcp`, `agent` rows), §6.5 (`agent()` runtime), §7.5 (tokens), §10 (`templates`, `install-template`), §12.3, §15 (templates), §16, §17, §18 P6 tests, §20 D3/D4/D13. QC-01..04: `docs/inventory/quick-connections.md`. P1 plan and its **Seams for later phases**: `docs/superpowers/plans/2026-10-14-automations-p1.md`; P2 plan `…-p2.md` (`Binding.AutomationRunID`, automation trust order).
 
-**Branch:** `feature/automations-p6` → PR into `feature/automations`. Never `main`. Depends on P1 and P2 merged. Tasks 9–10 (template e2e) additionally depend on **P5** (`SessionModule`/`ShellModule` and their test fakes; templates 2 and 5 call `session()`/`shell()`) and on **P4 Task 3** (`trigger.events`; template 1 is an event recipe).
+**Branch:** `feature/automations-p6` → PR into `feature/automations`. Never `main`. Depends on P1 and P2 merged. Tasks 8–10 (templates) additionally depend on **P5** (`SessionModule`/`ShellModule` and their test fakes; templates 2 and 5 call `session()`/`shell()`) and on **P4 Task 3** (`trigger.events`; template 1 is an event recipe).
 
 **Header notes (seams):**
 - Consumes P1's names exactly: `automations.Backends` (new fields `MCP`, `Agent` — P1: "P6 adds MCP/agent backends as new fields"), `Module`/`Definer`/`SDKFunc`/`Env`, `DefaultModules` (P6 appends `MCPModule`, `AgentModule`), `(*Manifest).AllowMCP`/`AllowCapability`/`AllowLLM`/`AllowTool`, `Meter.BeforeCall|Debit|Remaining|Deadline`, `Journal`, `SourceLLMLight`/`SourceLLMStrong`, `RunEnvMarker`, `PersonalDir`/`WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, `ParseRecipe`, `automationstest.*`. P2's `tools.Binding.AutomationRunID` and the automation trust branch.
@@ -18,6 +18,9 @@
   - **S8 `agent()` writes must stay pending (spec §6.5 "proposals stay pending"), but P2's trust order would auto-apply them under an active grant or a `tool_trust(…,'automation')=execute`.** `tools.Binding` gains `AutomationAgent bool`; on the `automation` surface `resolveTrust` returns `ask` for it right after the AlwaysAsk rule (Task 4). A narrowing of P2's AGENT-03 exception, never a widening.
   - **S9 The list-`limit` injection of P1's `tool()` is unexported** and `agent()`'s per-call gate needs the same clamp (default 50, max 200). Exported as `automations.ClampListLimit(t *tools.Tool, args json.RawMessage) json.RawMessage` (Task 4) — the same function P1's `ToolModule` already uses, not a second one.
   - Consumes P2's S1 signature `(*Manifest).AllowTool(ctx, d, t, args)`.
+- **Cross-plan contracts already pinned by P3 and P5 (consumed here, not re-decided):**
+  - P3 Task 13 pins the gallery JSON: `automations templates --json` → an array of `{"name", "title", "description", "scope": "personal"|"workbench", "trigger_text", "permissions", "outputs"}`; `automations install-template <name> [--workbench N] --json` → `{"automation_id", "path"}`; a placeholder such as `<PROJECT>` is installed as written and surfaces as the parse error the form asks the owner to fix. P6 emits those keys (and may add keys; Swift decoding ignores extras).
+  - P5 header note 5 writes `pr-review-rounds`, `release`, `deploy-test`, `deploy-stage` as fixtures in `internal/automations/testdata/workbench/` with end-to-end tests, and `automationstest.FakeShell` / `FakeSessionDesk`. P6 **moves** those four files byte-for-byte into the embedded templates (no rewrite) and repoints P5's `workbench_e2e_test.go` at the embedded copies without changing an assertion.
 
 ## Global Constraints
 
@@ -40,7 +43,7 @@
 3. **A CLI child that outlives its run** (deadline, cancel, budget, daemon shutdown) — the whole process group (claude/codex plus its `watchtower mcp` child) is killed and reaped. Pinned in Task 6 (`TestCLIAgent_ProcessGroupKilledOnCancel`, `TestCLIAgent_ProcessGroupKilledOnDeadline`).
 4. **An active auto grant and an `execute` trust row must not make an `agent()` write apply** — pending only. Pinned in Task 4 (`TestAgent_WritesStayProposals` grant/trust sub-cases) and Task 7.
 5. **A Quick Connection that was never listed, failed its listing, is disabled, or lists the tool as a write** — `mcp()` fails closed with `NotAvailable`/`PermissionDenied` and spawns nothing. Pinned in Task 2 (`TestMCP_OnlyQC02AllowedTools` table).
-6. **Template parameters** — a missing or unknown `--param`, or a value that breaks the manifest (`PROJECT=a b`), refuses the install and writes no file. Pinned in Task 8 (`TestInstallTemplate_ParamsValidated`).
+6. **Template placeholders** — without `--param` the copy keeps the literal `<PROJECT>` and is indexed with a parse error (not runnable; the P3 form shows it to fix); an unknown `--param`, or a value that breaks the manifest (`PROJECT=a b`), refuses the install and writes no file. Pinned in Task 8 (`TestInstallTemplate_PlaceholdersAndParams`).
 
 ---
 
@@ -233,28 +236,30 @@
 ### Task 8: Templates and the gallery CLI
 
 **Files:**
-- Create: `internal/automations/templates/new-mail-summary.md`, `pr-review-rounds.md`, `jira-state-report.md`, `team-performance-report.md`, `release.md`, `deploy-test.md`, `deploy-stage.md`, `internal/automations/templates/index.json`, `internal/automations/templates.go`, `internal/automations/templates_test.go`, `cmd/automations_templates.go`, `cmd/automations_templates_test.go`
+- Create: `internal/automations/templates/new-mail-summary.md`, `jira-state-report.md`, `team-performance-report.md`, `internal/automations/templates/index.json`, `internal/automations/templates.go`, `internal/automations/templates_test.go`, `cmd/automations_templates.go`, `cmd/automations_templates_test.go`
+- Move (`git mv`, byte-for-byte, P5 header note 5): `internal/automations/testdata/workbench/{pr-review-rounds,release,deploy-test,deploy-stage}.md` → `internal/automations/templates/`; repoint P5's `internal/automations/workbench_e2e_test.go` at the embedded copies (no assertion changes).
 
 **Interfaces:**
-- Consumes: `ParseRecipe`, `PersonalDir`, `WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, P1's atomic write used by `automations save` (temp + rename), `db.GetWorkbench`.
+- Consumes: `ParseRecipe`, `PersonalDir`, `WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, P1's atomic write used by `automations save` (temp + rename), `db.GetWorkbench`; P3 Task 13's JSON contract.
 - Produces:
-  - `type TemplateParam struct { Key, Label, Example string }`; `type Template struct { Name, Title, Summary string; Scope ScopeKind; Files []string /* slugs */; Params []TemplateParam }`; `func Templates() []Template` (index order); `func RenderTemplate(name string, params map[string]string) (map[string][]byte /* slug → recipe bytes */, error)` — substitutes `{{KEY}}`; a missing, unknown or empty param, or a value with a newline, `"` or `@` → error naming it; the rendered bytes must `ParseRecipe` cleanly or the render fails.
+  - `type TemplateParam struct { Key, Label, Example string }`; `type Template struct { Name, Title, Description, TriggerText string; Scope ScopeKind; Files []string /* slugs */; Params []TemplateParam }`; `func Templates() []Template` (index order); `func RenderTemplate(name string, params map[string]string) (map[string][]byte /* slug → recipe bytes */, error)` — replaces each given `<KEY>` placeholder (spec §15 spelling, e.g. `<PROJECT>`); a param the template does not declare, an empty value, or a value with whitespace, a newline, `"`, `@` or `<`/`>` → error naming it; a declared param left out keeps its literal placeholder.
   - Gallery = **five** templates; the fifth (`release-buttons`, workbench) installs three recipes. Index and frontmatter, exactly spec §15:
     1. `new-mail-summary` — personal; `trigger: {event: {type: gmail.new_messages}}`; `permissions: [gmail:read@*, llm:light]`; `outputs: [inbox]`; script keeps a per-account `since` cursor in `state`; the description shows the `schedule` variant.
     2. `pr-review-rounds` — workbench; `trigger: {schedule: "0 10,16 * * 1-5"}`; `permissions: ['shell:"gh pr list --state open --json number,title,url,author,updatedAt"', session:start, llm:light]`; `outputs: [report]`; for each PR updated since the last round (`state`) one `session()` whose prompt tells the agent to review the PR and file its findings as `ask_owner` asks (D13: PR comments go through the session).
-    3. `jira-state-report` — personal; `trigger: {schedule: "0 9 * * 1"}`; `permissions: [jira:read@{{PROJECT}}, llm:strong]`; `outputs: [report, briefing]`; param `PROJECT` (label "Jira project key", example `PAY`).
+    3. `jira-state-report` — personal; `trigger: {schedule: "0 9 * * 1"}`; `permissions: [jira:read@<PROJECT>, llm:strong]`; `outputs: [report, briefing]`; param `PROJECT` (label "Jira project key", example `PAY`).
     4. `team-performance-report` — personal; `trigger: {schedule: "0 17 * * 5"}`; `permissions: [jira:read@*, people:read, slack:read@*, llm:strong]`; `outputs: [report]`.
     5. `release-buttons` → `release`, `deploy-test`, `deploy-stage` — workbench; `trigger: {button: {label: "Release" | "Deploy to test" | "Deploy to stage", confirm: true}}`; `permissions: ['shell:"make release"' | 'shell:"make deploy-test"' | 'shell:"make deploy-stage"', session:start]` (the commands are placeholders the owner edits); `outputs: [report]`; after the command a `session()` runs the follow-up check.
-  - CLI: `watchtower automations templates [--json]` → `[{name, title, summary, scope, files, params}]`; `watchtower automations install-template <name> [--workbench N] [--param KEY=VALUE]… [--json]` — a workbench template needs `--workbench` and a personal one refuses it; any target slug already present (file or index row) → refused before writing anything; writes every file atomically, rescans the folder, leaves each automation **unconfirmed and disabled**; JSON `{installed: [{id, slug, path, needs_confirmation: true}]}`. Not refused under AI-agent markers (it confirms nothing; AUTO-06 keeps the result unrunnable).
-- Depends on: P1 only for the code; the session/shell recipes parse with P1's manifest (P5 is needed to run them, Task 10).
+  - CLI (P3 Task 13's contract, superset allowed): `watchtower automations templates [--json]` → always an array of `{"name", "title", "description", "scope", "trigger_text", "permissions", "outputs"}` plus `"files"` and `"params"`; for `release-buttons`, `trigger_text`/`permissions` describe the `release` recipe and `files` lists all three. `watchtower automations install-template <name> [--workbench N] [--param KEY=VALUE]… [--json]` — a workbench template needs `--workbench` and a personal one refuses it; any target slug already present (file or index row) → refused before writing anything; writes every file atomically, rescans the folder, leaves each automation **unconfirmed and disabled**; JSON `{"automation_id": <first file's id>, "path": <first file's path>, "installed": [{"automation_id", "slug", "path", "parse_error"}]}` (the first entry is the one the P3 form opens). Not refused under AI-agent markers (it confirms nothing; AUTO-06 keeps the result unrunnable).
+- Depends on: P1 for the code; P5 merged for the four moved workbench files (they parse with P1's manifest; P5 is needed to run them).
 
 - [ ] **Step 1: Failing tests:**
-  - `TestTemplates_AllParseAndValidate` — every template rendered with its examples parses under its scope (`workbench:1` for workbench ones) with the §15 trigger, permissions and outputs asserted field by field; `index.json` names exactly the seven files; five gallery entries.
-  - `TestInstallTemplate_ParamsValidated` — `jira-state-report` without `--param PROJECT` / with `PROJECT=a b` / with an unknown `--param X=1` → refused, no file; `PROJECT=PAY` → installed, manifest `jira:read@PAY`.
+  - `TestTemplates_AllParseAndValidate` — every template rendered with its param examples parses under its scope (`workbench:1` for workbench ones) with the §15 trigger, permissions and outputs asserted field by field; `index.json` names exactly the seven files; five gallery entries; `jira-state-report` rendered **without** params is a parse error naming `<PROJECT>`.
+  - `TestInstallTemplate_PlaceholdersAndParams` — `jira-state-report` with no `--param` → installed, `parse_error` names `<PROJECT>`, not runnable; `PROJECT=PAY` → installed, manifest `jira:read@PAY`, no parse error; `PROJECT=a b` and an unknown `--param X=1` → refused, no file.
   - `TestInstallTemplate_InstalledUnconfirmedAndDisabled` — `show --json` → `needs_confirmation: true`, `enabled: false`; `run` → queued then `cancelled`/`not_runnable` by the executor (AUTO-06).
   - `TestInstallTemplate_WorkbenchScopeRules` — `pr-review-rounds` without `--workbench` refused; `new-mail-summary` with `--workbench 1` refused; `release-buttons --workbench 1` writes three files under `<folder>/.watchtower/automations/`.
   - `TestInstallTemplate_RefusesExistingSlug` — a second install → refused, the first file byte-identical.
-  - `TestTemplatesCLI_JSON`.
+  - `TestTemplatesCLI_JSON` — the P3 keys present on every entry (`name`, `title`, `description`, `scope`, `trigger_text`, `permissions`, `outputs`); `install-template --json` carries `automation_id` and `path` at the top level.
+  - P5's `workbench_e2e_test.go` passes unchanged against the moved files.
 - [ ] **Step 2:** `go test ./internal/automations -run 'TestTemplates_AllParse|TestRenderTemplate'` and `go test ./cmd -run 'TestInstallTemplate|TestTemplatesCLI'` → FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Step 2 commands → PASS.
@@ -266,16 +271,15 @@
 - Create: `internal/automations/templates_e2e_test.go`, `internal/automations/testdata/template_fixtures/` (seeded rows: one Gmail account `work` with three messages, Jira project `PAY` with five issues, two people, Slack messages in `#releases`)
 
 **Interfaces:**
-- Consumes: Tasks 7–8; `automationstest.FakeGenerator`; P5's `SessionModule`/`ShellModule` and their fakes (names from P5's seams); P4's `trigger.events` (S5).
+- Consumes: Tasks 7–8; `automationstest.FakeGenerator`; P5's `SessionModule`/`ShellModule` and `automationstest.FakeShell`/`FakeSessionDesk`; P4's `trigger.events` (S5).
 - Produces: nothing new — pins each template's dry-run journal.
 - Depends on: Task 8, P5 merged, P4 Task 3 merged.
 
 - [ ] **Step 1: Failing test `TestTemplates_DryRunE2E`** — for each of the seven recipes, installed + `ExecuteInline` on a `dry_run` row (event recipe: `trigger.events` seeded on the row), FakeGenerator replies scripted; pinned step kinds in order and final outputs:
   - `new-mail-summary`: `tool(list_emails)` `ok` → `llm` `ok` → `output` (`inbox`) `dry_run` → `state` `dry_run`; no `automation_outputs` row.
-  - `pr-review-rounds`: `shell` `dry_run` → (dry-run shell yields no PR list) `output` (`report`) `dry_run` with the "dry run: no PRs listed" summary; zero `session` steps that are not `dry_run`; no `terminal_sessions` row.
-  - `jira-state-report`: `tool(list_jira_issues{project:"PAY"})` `ok` → `llm` (strong source tag `automation.llm.strong`) `ok` → `output` `report` and `briefing` `dry_run`.
+  - `jira-state-report` (`PROJECT=PAY`): `tool(list_jira_issues{project:"PAY"})` `ok` → `llm` (strong source tag `automation.llm.strong`) `ok` → `output` `report` and `briefing` `dry_run`.
   - `team-performance-report`: Jira, people, Slack reads `ok` → `llm` strong → `output` `report` `dry_run`.
-  - `release`, `deploy-test`, `deploy-stage`: `shell` `dry_run` → `session` `dry_run` → `output` `report` `dry_run`.
+  - `pr-review-rounds`, `release`, `deploy-test`, `deploy-stage` (moved from P5, whose `TestAuto12_DryRunStartsNoSessionOrShell` already pins their journals): here only the invariants — FakeShell 0 calls, no `waiting` session step, no `terminal_sessions`/`owner_asks` row, every `shell`/`session`/`output` step `dry_run`.
   - For every template: zero `agent_actions`, `automation_state` unchanged, real `llm` tokens counted on the run (AUTO-12).
 - [ ] **Step 2:** `go test ./internal/automations -run TestTemplates_DryRunE2E` → FAIL; adjust template scripts (never the assertions) until it passes.
 - [ ] **Step 3:** Step 2 → PASS.
@@ -287,18 +291,16 @@
 - Create: `internal/automations/templates_run_e2e_test.go`
 
 **Interfaces:**
-- Consumes: as Task 9, plus P5's fake shell (canned stdout) and fake session (finishes with a summary).
-- Produces: `TestTemplates_RunE2E` — each recipe confirmed, enabled and run by the `Executor` with fakes:
-  - `new-mail-summary` (event run with one `gmail.new_messages{account: work}`) → `succeeded`, one `inbox` output, `state.since:work` set.
-  - `pr-review-rounds` — fake `gh` JSON with two PRs, one updated since the stored round → exactly one `session` step (`finished`), one `report` output, `state` round advanced; a second run with no updates → zero sessions.
-  - `jira-state-report` → `report` + `briefing` outputs.
-  - `team-performance-report` → `report` output.
-  - `release` → fake `make release` exit 0 → session → `report`; exit 2 → the script reports the failure in the report and skips the session (pinned).
+- Consumes: as Task 9.
+- Produces: `TestTemplates_RunE2E` — the three personal recipes confirmed, enabled and run by the `Executor` with fakes (the four workbench recipes' real runs are already pinned by P5's `TestPRReviewRounds_E2E` and its release/deploy tests, now running against the embedded copies — not duplicated here):
+  - `new-mail-summary` (event run with one `gmail.new_messages{account: work}`) → `succeeded`, one `inbox` output, `state` cursor for `work` set; a second event run with no newer mail → no output, cursor unchanged.
+  - `jira-state-report` (`PROJECT=PAY`) → `report` + `briefing` outputs.
+  - `team-performance-report` → one `report` output.
 - Depends on: Task 9.
 
-- [ ] **Step 1:** Write `TestTemplates_RunE2E` → FAIL; fix template scripts only.
+- [ ] **Step 1:** Write `TestTemplates_RunE2E` → FAIL; fix template scripts only (never the moved P5 files).
 - [ ] **Step 2:** `go test ./internal/automations -run TestTemplates_RunE2E` → PASS.
-- [ ] **Step 3:** `make lint-diff`; commit `test(automations): run end-to-end over the five templates`.
+- [ ] **Step 3:** `make lint-diff`; commit `test(automations): run end-to-end over the personal templates`.
 
 ### Task 11: Inventory and docs
 
