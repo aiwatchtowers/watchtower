@@ -187,6 +187,13 @@ package enum SessionCleanupPresentation {
             .reduce(Int64(0)) { $0 + $1.bytes }
     }
 
+    /// True when every worktree a sweep plan could remove was measured: a
+    /// plan with an unmeasured one (over Go's size budget, a read error)
+    /// cannot tell that the workbench holds 1 GB or less.
+    package static func sweepSizesKnown(_ plan: SessionCleanupPlan) -> Bool {
+        !plan.items.contains { $0.kind == .worktree && $0.isPendingRemoval && !$0.bytesKnown }
+    }
+
     /// The workbench's one-time hint: "Old worktrees use ~38 GB." Nil when
     /// the plan's removable worktrees hold no more than 1 GB.
     package static func sweepHint(_ plan: SessionCleanupPlan) -> String? {

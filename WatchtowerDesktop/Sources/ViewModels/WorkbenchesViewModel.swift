@@ -147,6 +147,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var cleanupHintDelay: Duration = .seconds(30)
     /// The hint's wait; throws once its page goes away. A seam for tests.
     @ObservationIgnored var cleanupHintSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// The longest a hint plan may run before it is stopped and the slot
+    /// freed.
+    @ObservationIgnored var cleanupHintTimeLimit: Duration = .seconds(5 * 60)
     /// The hint's clock (the 7-day re-check). A seam for tests.
     @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line

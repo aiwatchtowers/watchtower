@@ -33,7 +33,7 @@ struct SessionCleanupSheet: View {
         .onAppear { vm.cleanupSheetAppeared(session) }
         .onDisappear { vm.cleanupSheetDisappeared(session) }
         .onChange(of: phase, initial: true) { _, now in
-            if case let .ready(plan) = now { ticked = plan.initialTicks }
+            if case let .ready(plan) = now { ticked = plan.initialTicks(sweep: false) }
         }
     }
 

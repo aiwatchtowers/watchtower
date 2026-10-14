@@ -36,6 +36,15 @@ private enum SweepFixture {
     ]}
     """.utf8)
 
+    /// Under the line by what was measured, but one removable worktree went
+    /// over Go's size budget.
+    static let unmeasuredPlan = Data("""
+    {"workbench_id":2,"mode":"plan","sweep":true,"items":[
+      {"key":"\(oldWorktree)","kind":"worktree","name":"old","bytes":0,"bytes_known":false,"action":"remove"},
+      {"key":"\(recentWorktree)","kind":"worktree","name":"recent","bytes":100,"bytes_known":true,"action":"remove"}
+    ]}
+    """.utf8)
+
     static let applied = Data("""
     {"workbench_id":2,"mode":"apply","sweep":true,"items":[
       {"key":"\(oldWorktree)","kind":"worktree","name":"old","action":"remove","done":true}
@@ -109,15 +118,19 @@ final class SessionCleanupSweepTests: XCTestCase {
         let plan = try readyPlan(cleanup)
         XCTAssertFalse(plan.knownRemovableKeys.isEmpty, "the fixture has removable items")
 
-        XCTAssertEqual(plan.initialTicks, [], "a sweep arrives with nothing ticked")
-        XCTAssertEqual(vm.sweepCleanupChoice(projectID: workbenchID, ticked: plan.initialTicks), [])
-        let ok = await vm.applySweepCleanup(projectID: workbenchID, ticked: plan.initialTicks)
+        // The sweep sheet's rule, whatever the JSON's flag says.
+        var flagless = plan
+        flagless.sweep = false
+        let ticks = flagless.initialTicks(sweep: true)
+        XCTAssertEqual(ticks, [], "a sweep arrives with nothing ticked")
+        XCTAssertEqual(vm.sweepCleanupChoice(projectID: workbenchID, ticked: ticks), [])
+        let ok = await vm.applySweepCleanup(projectID: workbenchID, ticked: ticks)
         XCTAssertFalse(ok)
         XCTAssertEqual(applyCalls(runner), [], "with nothing ticked nothing runs")
 
         // The session sheet still ticks every removable item of a known kind.
         let sessionPlan = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.plan)
-        XCTAssertEqual(sessionPlan.initialTicks, Set(CleanupFixture.plannedKeys))
+        XCTAssertEqual(sessionPlan.initialTicks(sweep: false), Set(CleanupFixture.plannedKeys))
     }
 
     func testSweepAppliesOnlyTickedKeys() async throws {
@@ -276,6 +289,69 @@ final class SessionCleanupSweepTests: XCTestCase {
         sevenDaysOn.cleanupHintNow = { start.addingTimeInterval(7 * 86400) }
         await sevenDaysOn.watchCleanupHint(projectID: workbenchID)
         XCTAssertEqual(runner.calls.count, 2, "7 days on: planned again")
+    }
+
+    /// An unmeasured removable worktree leaves the answer open: no hint,
+    /// and no 7-day snooze either.
+    func testUnmeasuredWorktreeIsNotSnoozed() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.unmeasuredPlan)])
+        let (vm, _) = makeVM(runner)
+
+        await vm.watchCleanupHint(projectID: workbenchID)
+
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertNil(defaults.object(forKey: WorkbenchesViewModel.cleanupHintCheckedAtKey(workbenchID)))
+    }
+
+    /// A check stamp in the future (the clock was set back since) is due.
+    func testFutureCheckStampIsDue() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        defaults.set(now.timeIntervalSince1970 + 86400, forKey: WorkbenchesViewModel.cleanupHintCheckedAtKey(workbenchID))
+        let (vm, _) = makeVM(runner)
+        vm.cleanupHintNow = { now }
+
+        await vm.watchCleanupHint(projectID: workbenchID)
+
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(defaults.double(forKey: WorkbenchesViewModel.cleanupHintCheckedAtKey(workbenchID)),
+                       now.timeIntervalSince1970, "the stamp is corrected")
+    }
+
+    /// The page went away just after the plan landed: the plan is not kept,
+    /// so the next visit can hint.
+    func testPageLeftAfterThePlanLandedLetsTheNextVisitHint() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let (vm, cleanup) = makeVM(runner)
+        await cleanup.planSweep(workbenchID: workbenchID)
+        guard case .ready = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("no plan") }
+
+        vm.finishCleanupHint(projectID: workbenchID, center: cleanup, pageLeft: true)
+
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "the landed plan is forgotten")
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertNotNil(vm.cleanupHints[workbenchID], "the next visit hints")
+    }
+
+    /// A stalled hint plan is stopped at its time limit and frees the slot.
+    func testHintPlanStopsAtItsTimeLimit() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+        vm.cleanupHintTimeLimit = .milliseconds(20)
+
+        let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(300))
+        runner.release()
+        await page.value
+
+        XCTAssertEqual(runner.cancelledCount, 1, "the CLI was stopped")
+        XCTAssertNil(vm.cleanupHintRunning, "the slot is free")
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
     }
 
     /// The plan starts only once the page stayed on screen 30 s; leaving it

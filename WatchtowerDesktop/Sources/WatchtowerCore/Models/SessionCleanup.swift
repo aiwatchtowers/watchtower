@@ -99,10 +99,11 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         return items.filter { ticked.contains($0.key) && removable.contains($0.key) }
     }
 
-    /// What a cleanup sheet ticks when this plan arrives: nothing for a
-    /// sweep — the owner picks by hand (spec §9) — else every pending
-    /// removal of a known kind.
-    package var initialTicks: Set<String> {
+    /// What a cleanup sheet ticks when this plan arrives: nothing in the
+    /// sweep sheet — the owner picks by hand (spec §9) — else every pending
+    /// removal of a known kind. `sweep` is the sheet's own mode, never the
+    /// JSON's flag: a destructive default does not key off a wire field.
+    package func initialTicks(sweep: Bool) -> Set<String> {
         sweep ? [] : Set(knownRemovableKeys)
     }
 }

@@ -35,11 +35,10 @@ struct WorkbenchSweepSheet: View {
         .task(id: project.id) { await vm.planSweepForSheet(projectID: project.id) }
         .onAppear { vm.sweepSheetAppeared(projectID: project.id) }
         .onDisappear { vm.sweepSheetDisappeared(projectID: project.id) }
-        // A new plan starts with nothing ticked — whatever the JSON's
-        // `sweep` flag says: this sheet is a sweep, and a destructive
-        // default never keys off a wire field (fail closed).
+        // A new plan starts with nothing ticked, whatever the JSON's
+        // `sweep` flag says: this sheet is a sweep.
         .onChange(of: phase, initial: true) { _, now in
-            if case .ready = now { ticked = [] }
+            if case let .ready(plan) = now { ticked = plan.initialTicks(sweep: true) }
         }
     }
 
