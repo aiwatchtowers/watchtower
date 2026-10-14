@@ -127,6 +127,14 @@ type ReactionCommandsConfig struct {
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls; <= 0 = every daemon cycle (default: 0)
 }
 
+// AutomationsConfig controls Automations — owner-written recipes the daemon
+// runs on a schedule or on demand (spec 2026-10-14). On by default (§20 D12):
+// nothing runs until the owner confirms a recipe.
+type AutomationsConfig struct {
+	Enabled           bool  `mapstructure:"enabled"`             // start the scheduler and executor in the daemon (default: true)
+	DailyBudgetTokens int64 `mapstructure:"daily_budget_tokens"` // token cap over every run of one local calendar day, dry runs included (default: 2000000)
+}
+
 // CatchupConfig controls the on-demand absence recap.
 type CatchupConfig struct {
 	Caps           CatchupCaps `mapstructure:"caps"`
@@ -374,6 +382,7 @@ type Config struct {
 	Ideas            IdeasConfig                 `mapstructure:"ideas"`
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
+	Automations      AutomationsConfig           `mapstructure:"automations"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -454,6 +463,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
+	v.SetDefault("automations.enabled", DefaultAutomationsEnabled)
+	v.SetDefault("automations.daily_budget_tokens", DefaultAutomationsDailyBudgetTokens)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)

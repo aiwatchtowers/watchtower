@@ -84,6 +84,9 @@ type Daemon struct {
 	logger              *log.Logger
 	wakeCh              <-chan struct{}
 	triggerCh           <-chan struct{}
+	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
+	automationScheduler AutomationRunner // nil = automations not wired
+	automationExecutor  AutomationRunner
 	pidPath             string
 	db                  *db.DB
 	digestPipe          *digest.Pipeline
@@ -312,6 +315,9 @@ func (d *Daemon) SetPIDPath(path string) {
 // The caller is responsible for wiring signal handling into the context.
 // Each tick or wake event triggers an incremental sync.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Before the PID file exists: a process that finds the daemon through it
+	// may send AutomationWakeSignal at once.
+	d.watchAutomationWake(ctx)
 	if d.pidPath != "" {
 		if err := WritePID(d.pidPath); err != nil {
 			return fmt.Errorf("writing pid file: %w", err)
@@ -345,6 +351,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.reapStalePipelineRuns()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
+
+	// Automations run beside the sync loop, not in it; stopped and reaped
+	// before Run returns (and before the PID file is removed).
+	stopAutomations := d.startAutomations(ctx)
+	defer stopAutomations()
 
 	// Calendars first on startup: a calendar sync takes seconds, while the
 	// first cycle's Slack sync of a fresh install takes minutes and runSync

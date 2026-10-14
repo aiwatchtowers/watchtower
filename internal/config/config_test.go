@@ -150,6 +150,21 @@ func TestLoad_ReactionCommandsDefaults(t *testing.T) {
 	assert.Equal(t, 0, cfg.ReactionCommands.IntervalHours, "absent interval = every cycle")
 }
 
+// TestConfig_AutomationsDefaults pins the Automations defaults through the
+// real load path (spec 2026-10-14 §20 D12, D4): an absent block is on with a
+// 2,000,000-token daily cap, and explicit keys are read.
+func TestConfig_AutomationsDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, cfg.Automations.Enabled, "absent block = on")
+	assert.Equal(t, int64(2000000), cfg.Automations.DailyBudgetTokens)
+
+	set, err := Load(writeTestConfig(t, "automations:\n  enabled: false\n  daily_budget_tokens: 5000\n"))
+	require.NoError(t, err)
+	assert.False(t, set.Automations.Enabled)
+	assert.Equal(t, int64(5000), set.Automations.DailyBudgetTokens)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",
