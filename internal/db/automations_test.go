@@ -38,7 +38,7 @@ func TestMigration00113_AutomationTables(t *testing.T) {
 	for _, name := range []string{
 		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs",
 		"idx_automations_scope_slug", "idx_automation_runs_automation_status", "idx_automation_runs_status_queued",
-		"idx_automation_runs_event_cycle", "idx_automation_runs_queued_trigger",
+		"idx_automation_runs_event_cycle", "idx_automation_runs_queued_trigger", "idx_automation_runs_rerun_of",
 		"idx_automation_outputs_kind", "idx_automation_outputs_automation", "idx_automation_outputs_run",
 	} {
 		var got string
@@ -402,4 +402,143 @@ func TestAutomationIndex_ScheduleAndFilterAndDelete(t *testing.T) {
 			t.Errorf("%s has %d rows after DeleteAutomation, want 0", table, n)
 		}
 	}
+}
+
+func TestMigration00113_PartialUniqueIndexes(t *testing.T) {
+	d := openTestDB(t)
+	id := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h")
+
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger) VALUES (?, 'manual')`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger) VALUES (?, 'manual')`, id); err == nil {
+		t.Error("second queued manual run of one automation accepted; want unique error")
+	}
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger) VALUES (?, 'button')`, id); err != nil {
+		t.Errorf("queued button run beside a queued manual run refused: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'succeeded')`, id); err != nil {
+		t.Errorf("finished manual run beside a queued one refused: %v", err)
+	}
+
+	cycle := time.Now().UTC().Format(time.RFC3339)
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, event_cycle) VALUES (?, 'event', 'succeeded', ?)`, id, cycle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, event_cycle) VALUES (?, 'event', ?)`, id, cycle); err == nil {
+		t.Error("second run of one event cycle accepted; want unique error")
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'event', 'failed')`, id); err != nil {
+			t.Errorf("event run %d without a cycle refused: %v", i, err)
+		}
+	}
+}
+
+func TestAutomationIndex_UpsertChangedApprovalHashNeedsConfirmation(t *testing.T) {
+	d := openTestDB(t)
+	path := filepath.Join(t.TempDir(), "digest.md")
+	id := seedAutomationRow(t, d, "digest", path, "h1")
+	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetAutomationEnabled(id, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !mustGetAutomation(t, d, id).Runnable() {
+		t.Fatal("confirmed, enabled row is not runnable")
+	}
+	seedAutomationRow(t, d, "digest", path, "h2")
+	a := mustGetAutomation(t, d, id)
+	if a.ConfirmedHash != "h1" || a.ApprovalHash != "h2" {
+		t.Errorf("after an edit: confirmed=%q approval=%q, want h1/h2", a.ConfirmedHash, a.ApprovalHash)
+	}
+	if a.Runnable() {
+		t.Error("row with a changed approval hash is still runnable")
+	}
+	if list, err := d.ListAutomations(AutomationFilter{RunnableOnly: true}); err != nil || len(list) != 0 {
+		t.Errorf("RunnableOnly after an edit = %+v, %v; want none", list, err)
+	}
+}
+
+func TestAutomationIndex_UpsertRefusesEmptySlugOrPath(t *testing.T) {
+	d := openTestDB(t)
+	for _, a := range []Automation{
+		{Slug: "", Scope: "personal", Path: filepath.Join(t.TempDir(), "x.md")},
+		{Slug: "x", Scope: "personal", Path: ""},
+	} {
+		if _, err := d.UpsertAutomationIndex(a); err == nil {
+			t.Errorf("UpsertAutomationIndex(slug %q, path %q) accepted", a.Slug, a.Path)
+		}
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM automations`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d rows written by refused upserts, want 0", n)
+	}
+}
+
+func TestAutomationIndex_ListEmptyIsNonNil(t *testing.T) {
+	d := openTestDB(t)
+	list, err := d.ListAutomations(AutomationFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list == nil || len(list) != 0 {
+		t.Errorf("ListAutomations on an empty index = %#v, want a non-nil empty slice", list)
+	}
+}
+
+func TestAutomationIndex_ConfirmSetsLastScheduledForNow(t *testing.T) {
+	d := openTestDB(t)
+	path := filepath.Join(t.TempDir(), "digest.md")
+	id := seedAutomationRow(t, d, "digest", path, "h1")
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := d.SetAutomationEnabled(id, true, old); err != nil {
+		t.Fatal(err)
+	}
+
+	inWindow := func(label string, before time.Time) {
+		t.Helper()
+		after := time.Now().Add(time.Second)
+		a := mustGetAutomation(t, d, id)
+		if a.LastScheduledFor == nil || a.LastScheduledFor.Before(before.Truncate(time.Second)) || a.LastScheduledFor.After(after) {
+			t.Errorf("%s: last_scheduled_for = %v, want within [%v, %v]", label, a.LastScheduledFor, before, after)
+		}
+	}
+
+	before := time.Now()
+	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	inWindow("first confirm", before)
+
+	// Confirming the already confirmed hash keeps the schedule point.
+	if err := d.SetAutomationSchedule(id, &old, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ConfirmAutomation(id, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if a := mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(old) {
+		t.Errorf("re-confirm moved last_scheduled_for to %v, want %v", a.LastScheduledFor, old)
+	}
+
+	// A refused confirm moves nothing.
+	if err := d.ConfirmAutomation(id, "h2"); !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("ConfirmAutomation(h2) before the edit = %v, want ErrHashMismatch", err)
+	}
+	if a := mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(old) {
+		t.Errorf("refused confirm moved last_scheduled_for to %v", a.LastScheduledFor)
+	}
+
+	// Confirming an edited recipe's new hash moves it to now.
+	seedAutomationRow(t, d, "digest", path, "h2")
+	before = time.Now()
+	if err := d.ConfirmAutomation(id, "h2"); err != nil {
+		t.Fatal(err)
+	}
+	inWindow("confirm after edit", before)
 }

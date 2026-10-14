@@ -170,8 +170,12 @@ func withAutomationDefaults(a Automation) Automation {
 // next_run_at: a new row starts unconfirmed and disabled, and an existing one
 // keeps them, so a changed approval_hash leaves it not runnable until the
 // owner confirms again. It clears removed_at (the file is back). A zero
-// numeric/JSON field stores the column default.
+// numeric/JSON field stores the column default. An empty Slug or Path is
+// refused before anything is written.
 func (db *DB) UpsertAutomationIndex(a Automation) (int64, error) {
+	if a.Slug == "" || a.Path == "" {
+		return 0, fmt.Errorf("indexing automation: slug %q and path %q must both be set", a.Slug, a.Path)
+	}
 	a = withAutomationDefaults(a)
 	var id int64
 	err := db.QueryRow(`INSERT INTO automations
@@ -266,7 +270,7 @@ func (db *DB) ListAutomations(f AutomationFilter) ([]Automation, error) {
 		return nil, fmt.Errorf("listing automations: %w", err)
 	}
 	defer rows.Close()
-	var out []Automation
+	out := []Automation{}
 	for rows.Next() {
 		a, err := scanAutomation(rows)
 		if err != nil {
@@ -325,12 +329,18 @@ func (db *DB) SetAutomationEnabled(id int64, enabled bool, now time.Time) error 
 // ConfirmAutomation records the owner's confirmation of hash. A hash that is
 // empty or not the row's current approval_hash fails with ErrHashMismatch and
 // leaves the row unchanged; a missing row fails with ErrAutomationNotFound.
+// A confirmation that changes confirmed_hash also sets last_scheduled_for to
+// the database's current time, so the scheduler never catches up on the ticks
+// the recipe spent unconfirmed (the same rule as enabling); confirming the
+// already confirmed hash again keeps the schedule point.
 func (db *DB) ConfirmAutomation(id int64, hash string) error {
 	if hash == "" {
 		return fmt.Errorf("automation %d: empty hash: %w", id, ErrHashMismatch)
 	}
-	res, err := db.Exec(`UPDATE automations SET confirmed_hash = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ? AND approval_hash = ?`, hash, id, hash)
+	res, err := db.Exec(`UPDATE automations SET
+		last_scheduled_for = CASE WHEN confirmed_hash != ? THEN strftime('%Y-%m-%dT%H:%M:%SZ','now') ELSE last_scheduled_for END,
+		confirmed_hash = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND approval_hash = ?`, hash, hash, id, hash)
 	if err != nil {
 		return fmt.Errorf("confirming automation %d: %w", id, err)
 	}
