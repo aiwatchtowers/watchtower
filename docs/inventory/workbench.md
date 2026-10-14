@@ -8,9 +8,11 @@
 > `workbench_comments.go`, `workbench_board.go`, the `project_id` exclusions in
 > the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
 > `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`,
-> `internal/gitbin/`, `internal/workbenchgit/`, `internal/sessionreport/`, or
+> `internal/gitbin/`, `internal/workbenchgit/`, `internal/sessionreport/`,
+`internal/sessioncleanup/`, or
 > `WatchtowerDesktop/Sources/**/Workbench*`,
-> `WatchtowerDesktop/Sources/WatchtowerCore/Services/{PendingSessionDeletes,SessionDeletePolicy}.swift`, read this file first. Any proposed change that would break a guard test or
+> `WatchtowerDesktop/Sources/WatchtowerCore/Services/{PendingSessionDeletes,SessionDeletePolicy}.swift`,
+`WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
 A workbench is a folder with a board of targets, owner↔agent target
@@ -23,14 +25,18 @@ the session state hooks (PROJ-11) and the ask guard (a `Stop` command hook
 that reads whether the owner is in the session — a prompt hook until
 2026-10-11 — and a `PreToolUse` block of `AskUserQuestion`, PROJ-13). Each Desktop terminal session
 has a report of its own work, and the agent marks it finished with
-`finish_session` (PROJ-14). Design:
+`finish_session` (PROJ-14); before it finishes, the agent removes the
+worktrees and branches its session left with `watchtower workbench cleanup`,
+which never removes unsaved, unpushed, in-use or someone else's work
+(PROJ-18). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`; owner asks:
 `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`; session
 report and states: `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; board
 archive: `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md`; owner
 asks v2 (levels, presence, Quick asks, asks for other clients):
 `docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md`; Codex as a Workbench agent:
-`docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md` (§15: what shipped).
+`docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md` (§15: what shipped); session
+cleanup: `docs/superpowers/specs/2026-10-12-session-cleanup-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
 Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
@@ -69,7 +75,12 @@ under `mcp --project N`) until the owner resyncs it; see
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/AgentKind,Services/AgentInputProfile,Services/CodexRollout,Services/AgentChoicePresentation}.swift` +
 `internal/workbenchgit/folder.go` + `internal/db/migrations/00110_terminal_session_cwd.sql` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionPlace,Models/CodeRoot,Services/SessionPlacePresentation,Services/CodeRootPolicy}.swift` +
-`WatchtowerDesktop/Sources/Services/SessionPlaceCenter.swift`
+`WatchtowerDesktop/Sources/Services/SessionPlaceCenter.swift` +
+`internal/sessioncleanup/` + `cmd/workbench_cleanup.go` + `internal/db/terminal_session_worktrees.go` +
+`internal/db/migrations/00111_session_cleanup.sql` + `internal/devpack/workbench_cleanup_permission.go` +
+`WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionCleanup,Services/SessionCleanupPresentation,Services/SessionDeleteCleanupChoice}.swift` +
+`WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+SessionCleanup.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
@@ -101,7 +112,7 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
@@ -150,6 +161,15 @@ entries in a `.codex` hook file codex's import copied (PROJ-04). It never
 touches the hook trust entries in `~/.codex/config.toml`: one trust key per
 event covers every folder, so they stay (harmless once no workbench uses
 them). The codex rows go with the workbench like every terminal session row.
+Since 2026-10-14 (board #535, PROJ-18) the folder removal also deletes our
+cleanup allow rule (`devpack.RemoveCleanupPermission`: every
+`permissions.allow` string of ours, PROJ-04 — the owner's allow and deny
+entries stay, and a `permissions` object left empty is dropped), and the
+row delete removes each session's worktree ledger
+(`terminal_session_worktrees`, migration `00111`) by `ON DELETE CASCADE`
+from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
+itself. The worktrees and branches a cleanup removed are not brought back
+by anything; a workbench delete never runs a cleanup.
 
 **Exception (owner approved 2026-10-14, ask #118, target 156):** a file or
 directory the removal would write or remove through that is a symlink
@@ -177,13 +197,14 @@ must be able to undo the whole feature for a folder in one step.
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
 - `internal/mcp/workbench_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
-- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled` (the fixture asserts every hook, the state hooks and both ask guard hooks included, is installed before the removal)
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled` (the fixture asserts every hook, the state hooks and both ask guard hooks included, is installed before the removal; since 2026-10-14, board #535, the fixture also asserts the cleanup allow rule is installed, and the status reads `CleanupPermission` false after the removal — assertions added, none relaxed)
 - `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
 - `internal/devpack/workbench_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook` (two owner `PreToolUse` groups — an `AskUserQuestion` command and a `Bash` prompt hook — come back exactly the owner's)
 - `cmd/integrate_workbench_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
 - `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (no hook of the deleted workbench — brief, drift check, session state or ask guard — survives in `settings.local.json`; the owner's own `Stop`, `UserPromptSubmit` and `PreToolUse` hooks and keys do)
 - `internal/devpack/workbench_legacy_test.go::TestProj02_RemoveLegacyFolderLeavesNothingInstalled` (a never-resynced pre-rename folder: legacy hooks, skill, registration and exclude lines gone, `git status` clean, `integrate status` reports nothing installed)
 - `cmd/workbench_delete_outside_test.go::TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks` (since 2026-10-14, ask #118: the delete completes, `removal_ok` false, `removal_hints` and stderr name the outside file, which stays byte-identical); supporting: `internal/devpack/skill_symlink_test.go::TestOutsideFolderHints_NameTheLeftovers`, Desktop `WorkbenchCLITests.testDeleteWarningNamesTheFileLinkedOutside`
+- Session cleanup (2026-10-14, board #535): supporting `internal/db/session_cleanup_migration_test.go::TestMigrationSessionCleanup_LedgerCascadesWithTheSession` (a session delete leaves no ledger row), `internal/devpack/workbench_cleanup_permission_test.go::TestCleanupPermission_RemoveLeavesNoFileOrOnlyTheOwners`
 - Codex (2026-10-12, board #399): `cmd/integrate_workbench_test.go::TestProj02_WorkbenchDeleteRemovesTheCodexSkill`; supporting: `internal/devpack/codex_install_test.go` (`TestRemoveCodex_RemovesSkillExcludeAndNeverTrust`, `TestRemoveCodex_KeepsAnEditedSkillAndItsExcludeLine`)
 
 **Locked since:** 2026-09-29
@@ -273,7 +294,7 @@ owner fix a line by hand.
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156)
+**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156; amended 2026-10-14 for the cleanup allow rule, owner approved 2026-10-12 in ask #193, board #535)
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
@@ -373,6 +394,34 @@ followed. A dangling link is refused as before. The
 git `info/exclude` file is not held to the folder: it lives in the git dir,
 often outside the folder anyway, and only our marked block is written there.
 
+Since 2026-10-14 (board #535, session cleanup, PROJ-18): the entries the
+install writes gain one `permissions.allow` string,
+`Bash(<bin> workbench cleanup:*)` (`devpack.InstallCleanupPermission(dir,
+bin)`, run by `integrate claude-code --workbench N`, `workbench resync`,
+Re-run Setup and Repair), so the session's agent may run the cleanup command
+in auto mode — that command only. `<bin>` is the same absolute binary the
+hooks name, quoted the same way: single-quoted only when it holds a
+character outside `[A-Za-z0-9/._-+:@%,=]`, so the rule matches the brief's
+`Cleanup:` command text (`devpack.CleanupCommand`). The rule is added only
+when no rule of ours is there; a rule of ours naming another binary (a stale
+bin) is replaced in place and a duplicate of ours dropped; an exact match is
+a no-op. A rule is ours only when its bin — optionally single-quoted — is an
+**absolute** path whose basename is `watchtower`; a bare or relative form
+(`Bash(watchtower workbench cleanup:*)`) is never one we write, so it is the
+owner's and is never rewritten or removed. The owner's allow and deny
+entries and every other key are never touched or reordered, and an entry
+added between our read and our write (Claude Code writes the same file) is
+kept: the edit is applied to a fresh read right before the atomic write.
+The install, the removal and the status take no workbench id for it (one
+rule serves the folder). A `permissions` or `permissions.allow` of the wrong
+type is refused by every workbench step like a malformed `hooks`
+(`ErrMalformedSettings`, the file byte-identical, the status reporting it
+once), and the symlink rule above holds for it. `integrate status --json`
+reports `cleanup_permission`, and the Desktop's Repair offer counts a
+missing rule (`claudeNeedsRepair`), so a folder set up before #535 gets the
+rule from one Repair or Re-run Setup; `workbench resync --json` reports
+`cleanup_permission_added`.
+
 **Why locked:** The workbench folder is the owner's repository. An installer
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
 skill, would make every later `integrate` a risk to the owner's own setup.
@@ -395,6 +444,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt` (since 2026-10-11: with no command entry of ours yet, the fresh one carries every key of our replaced prompt but `type`, `prompt` and `command`, its `timeout` among them; a `command` key on the prompt never replaces ours (pinned by `TestProj04_AskGuardNeverCarriesACommandKeyOfOurPrompt`); a second resync changes nothing)
 - `internal/devpack/workbench_ask_guard_test.go::TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical` and its `Stop` twin `TestProj04_MalformedStopWithOurPromptLeavesTheFileByteIdentical` (since 2026-10-11: a malformed `hooks.Stop` holding our old marker prompt is neither upgraded nor removed, and is reported once by the install, the removal and the status)
 - Codex (2026-10-12, board #399) — in `internal/devpack/codex_install_test.go`: `TestProj04_CodexTrustNeverTouchesOtherConfigKeys`, `TestProj04_DedupeKeepsForeignHooks`, `TestProj04_DedupeDeletesAFileThatWasOursAlone`, `TestProj04_DedupeEditsConfigTOMLInPlace`, `TestProj04_DedupeRefusesATOMLShapeItCannotEdit`, `TestProj04_MalformedImportedHooksNeverWritten`, `TestProj04_MalformedForeignFileIsNoDuplicate`; supporting: `TestCodexTrust_HashedStringsAreTheLaunchStrings` (I5), `TestInstallCodex_SkillBytesEqualClaudeCopy`, `TestInstallCodex_Idempotent`, `TestRemoveCodex_KeepsAnEditedSkillAndItsExcludeLine`, `TestRemoveCodex_RemovesSkillExcludeAndNeverTrust`; `internal/codex/appserver_test.go::TestAppServer_TrustSkipsForeignAndAlreadyTrusted`
+- Session cleanup (2026-10-14, board #535) — in `internal/devpack/workbench_cleanup_permission_test.go`: `TestProj04_CleanupPermissionKeepsOwnerPermissions` (the owner's allow and deny entries, their order and other keys stay next to exactly one rule of ours), `TestProj04_MalformedPermissionsRefusedByEveryWorkbenchStep`, `TestProj04_CleanupPermissionRefusesASymlinkOutsideTheFolder`; supporting: `TestCleanupAllowRuleAndCommandQuoteTheBinaryTheSameWay`, `TestCleanupPermission_IdempotentAndReplacesStaleBin`, `TestCleanupPermission_MalformedSettingsIsAnErrorNotAnOverwrite`, `TestCleanupPermission_WriteKeepsAnEntryAddedMeanwhile`, `TestCleanupPermission_OwnerBareOrRelativeRuleIsNeverOurs`, `TestCleanupPermission_SymlinkInsideTheFolderIsFollowed`, `TestCleanupPermission_DirectoryLinkOutsideWithNoFile`
 - supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept), `TestRemoveAskGuardHooksKeepsTheOwnerEntries`, `TestStatusWorkbench_AskGuardFlagsEachMissingHook` (a marker prompt alone is not installed, Repair replaces it)
 
 **Locked since:** 2026-09-29
@@ -834,7 +884,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566; amended 2026-10-14 for the worktree ledger of the session cleanup, owner approved 2026-10-12 in ask #193, board #535)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -991,6 +1041,24 @@ row's own run mark (`agent_turns`' `since`), never a Desktop launch time; a
 live row without a readable run mark or stamp has no trusted cwd, and its
 place is unknown. Output and exit code are unchanged.
 
+Since 2026-10-14 (board #535, session cleanup, PROJ-18): the state hooks
+also record, for any agent of the session, the worktree root and branch its
+event's `cwd` resolves to (`terminal_session_worktrees`, migration `00111`),
+only when that pair is new for the session, at most 64 pairs, resolved
+without running git; a ledger failure is one stderr line and never fails or
+changes the state write. Unlike the session's place above, subagents and
+teammates count here (a worktree-isolated subagent's worktree is the one a
+cleanup must find), and a codex row records too. The pair comes from the
+symlink-resolved `cwd` (or its nearest existing ancestor), a walk up for
+`.git` (`internal/gitdir`; an unreadable `.git` stops the walk) and a read
+of the worktree's `HEAD` file — `""` for a detached HEAD or an unreadable
+one, still recorded. A known pair or a full session is seen by one
+read-only read and writes nothing (no write lock); a new pair is written by
+`INSERT OR IGNORE` in its own transaction after the event's state write has
+committed, never inside it. No `cwd`, an unresolvable one, one outside any
+repository or a conversation that is not the row's records nothing. The
+"session full" stderr line comes at most once per hook process.
+
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees
 from codex's own hooks, passed as launch flags (`workbench <verb> --agent
 codex`, no `--workbench`): they find their row only through
@@ -1057,6 +1125,7 @@ it again once it was cleared; only Go writes it.
 - supporting (board #411): `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllSixCoreNeedsFour`); `WatchtowerDesktop/Tests/Core/SessionStatePresentationTests.swift::testBackgroundIsGreenWithAgentCount`; `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift::testBackgroundEndsOnTheClockWithoutAWrite` (the 120 s grace, one notice, no write); `cmd/workbench_check_test.go::TestBackgroundAgentsCountTable` (was `TestBackgroundSubagentsCountsSubagentsAndWorkflows`; its type and malformed-input cases kept, its `except` cases moved to `TestBackgroundAgentsLeavesOutTheStoppingAgent`), `TestStopHookInputParsesTheCapturedFixtures`
 - Board #543, teammates in their turn (2026-10-11, ask #167) — in `cmd/workbench_session_state_test.go`: `TestProj11_TeammateCountsOnlyInItsTurn` (a replay of the captured inputs: two teammates in their turn at the Stop → 2, each `SubagentStop` lowers by one, the next Stop with both idle → NULL, an internal agent's stop changes nothing, a teammate's start over Stopped raises nothing until the next Stop), `TestProj11_FinishedSubagentStillListedIsNotCounted` (the last `SubagentStop` lowers to 0 although the list still carries the subagent that stopped before it), `TestProj11_SubagentStartNeverStartsOrRaisesTheCount` (over a counted `waiting` and over `working`: every column but `agent_turns` byte-identical), `TestProj11_LostTeammateStopIsCappedByTheList`, and in `internal/db/terminal_sessions_test.go` `TestProj11_LateHookOfThePreviousRunWritesNoTurn` (a turn stamped before the run mark writes nothing); `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_HookNeverWritesStdoutAndExitsZero` and `TestProj11_NestedSessionNeverMovesTheRow` extended with `SubagentStart`; in `internal/db/terminal_sessions_test.go`: `TestProj11_AgentTurnStampsOnlyMoveForward`, `TestProj11_AgentTurnsCapDropsOldestClosed`, `TestProj11_AgentTurnWriteNeverTouchesTheState`, and `TestProj11_NewRunAndConversationSwitchClearTheCount` extended (the three resets NULL `agent_turns`; a row holding only turns is cleared)
 - Board #565/#566, the session's working directory (2026-10-12, ask #188) — in `cmd/workbench_session_state_test.go`: `TestProj11_CwdNeverChangesTheState`, `TestProj11_UnchangedCwdWritesNothing`, `TestProj11_SubagentCwdIsNeverRecorded`; in `internal/db/terminal_sessions_test.go`: `TestProj11_OlderCwdNeverOverwritesANewerOne`, `TestProj11_CwdWriteNeverTouchesTheState`, `TestProj11_LateHookOfThePreviousRunWritesNoCwd`; `TestProj11_HookNeverWritesStdoutAndExitsZero` (a relative cwd and a recorded one among its inputs) and `TestProj11_NestedSessionNeverMovesTheRow` (the nested run's cwd moves nothing) extended with `cwd`; supporting: `cmd/workbench_session_state_test.go::TestHookCwdTable`, `cmd/workbench_brief_session_test.go` (`TestSessionStartRecordsTheRunsCwd`, `TestSessionStartWithoutCwdKeepsALateHooksCwdOut`), `cmd/workbench_check_test.go::TestStopHookRecordsTheCwd`, `cmd/workbench_codex_hooks_test.go::TestHookCwd_CodexHooksRecordTheMainAgentCwd`, `internal/db/terminal_sessions_test.go` (`TestSetTerminalAgentCwdWritesOnlyAChange`, `TestRunMarkStoresTheRunsCwdClearRemovesIt`, `TestConversationSwitchKeepsTheCwd`, `TestGetTerminalSessionNeedsNoCwdColumns`), `WatchtowerDesktop/Tests/Core/SessionPlaceTests.swift` (`testTrustedCwdTable`, `testResolveTable`); every existing PROJ-11 guard above unchanged
+- Board #535, the worktree ledger (2026-10-14, ask #193) — in `cmd/workbench_session_ledger_test.go`: `TestProj11_LedgerRecordsANewWorktreeOnce` (two events in one worktree → one row; a new branch → a second row), `TestProj11_LedgerFailureNeverCostsTheStateWrite` (the ledger table dropped: the state is written, exit 0, one stderr line), `TestProj11_SubagentCwdIsRecordedButNeverMovesTheSessionPlace` (a subagent event in a worktree: a ledger row, the session's place unchanged — `TestProj11_SubagentCwdIsNeverRecorded` keeps pinning the place half); supporting in the same file: `TestSessionStateLedger_Resolver`, `TestSessionStateLedger_ResolvesSymlinks`, `TestSessionStateLedger_ResolvesASymlinkIntoASubdirectory`, `TestSessionStateLedger_OutsideARepositoryRecordsNothing`, `TestSessionStateLedger_NoCwdRecordsNothing`, `TestSessionStateLedger_ForeignConversationRecordsNothing`, `TestSessionStateLedger_StopsAtTheCap`, `TestSessionStateLedger_AFullSessionTakesNoWriteLock`, `TestSessionStateLedger_UsesTheFixture`, `TestCodexSessionStateLedger_RecordsTheCwd`; `internal/db/terminal_session_worktrees_test.go` (`TestRecordSessionWorktree_InsertsOnceAndIgnoresRepeats`, `TestRecordSessionWorktree_StopsAt64`, `TestHasSessionWorktree_UsesAReadOnlyTx`); every existing PROJ-11 guard above unchanged
 
 **Locked since:** 2026-10-03
 
@@ -1539,7 +1608,109 @@ asks would be worse than the dialog it replaces.
 - `WatchtowerDesktop/Tests/Core/SessionDeletePolicyTests.swift::testProj17_QuickDeleteTable`
 - supporting: `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` (`testBatchUndoRestoresEverySessionOfTheBatch`, `testFailedCommitBringsTheRowBackWithAnError`, `testPendingRowIsInNoListGoToOrTargetLookup`, `testUndoStateSurvivesLeavingTheWorkbench`, `testAWorkbenchGoneElsewhereDropsItsPendingSessions`, `testADeleteDuringAnotherClosesGraceWaitsForThatClose`, `testUndoWhileTheCloseIsPendingCommitsNothing`, `testAskOfAPendingSessionSaysTheSessionIsGone`, `testQuitWaitsForTheWindowsCommitInFlight`, `testQuitIsBoundedWhenTheWriteHangs`, `testQuitWriteFailureKeepsTheRow`, `testHiddenIDsChangesAreReportedOnDeleteAndUndo`), `WatchtowerDesktop/Tests/MobileHub/TerminalSessionSliceTests.swift::testASessionInTheUndoBatchIsNotPublished`, `WatchtowerDesktop/Tests/WorkbenchesViewModelDeleteTests.swift::testWorkbenchDeleteDropsItsPendingSessions`, `WatchtowerDesktop/Tests/MobileHub/SessionStartHandlerTests.swift::testOpenExistingNeverPicksAPendingDelete`, `WatchtowerDesktop/Tests/Core/PendingSessionDeletesTests.swift`
 
+**Note (2026-10-14, board #535, PROJ-18 — for the owner's sight; the
+contract above unchanged):** a row a session cleanup runs on is busy
+(`WorkbenchesViewModel.cleaningUpSessions`: from **Delete and Clean Up**
+until it ends, or while a **Clean Up…** sheet's apply runs).
+`WorkbenchesViewModel.delete` — and so the ✕, ⌘⌫ and **Delete Only** — is a
+silent no-op on a busy row (the panel's quick delete reads it as busy and
+does nothing), and **Start fresh** is refused on it. While **Delete and
+Clean Up** has closed the row's terminal (`closedForCleanup`) every resume
+of that row is refused as well (`reopen`: a click, ⌘N, Work on It, the
+phone's `open_existing` — dropped silently on the Mac, the phone told "This
+session is being cleaned up on the Mac"), so
+its worktree is not re-entered while it is removed; a **Clean Up…** apply
+does not stop a resume (a live session's terminal stays reachable). Delete
+and Clean Up deletes the row through this contract's deferred delete only
+after the cleanup succeeded: Undo then brings the row back, never the
+removed worktrees and branches (the dialog says so). A failed cleanup
+deletes nothing (PROJ-18). Guards: `WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift`
+(`testBusyRowRefusesDeleteAndResume`, `testWorkOnDuringTheCleanupDoesNotResume`,
+`testSheetApplyMarksTheRowBusy`, `testQuickDeleteNeverCleansUp`); the
+PROJ-17 guards above unchanged.
+
 **Locked since:** 2026-10-12
+
+## PROJ-18 — session cleanup never removes unsaved, unpushed, in-use or someone else's work
+
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13 — open questions 1 and 2 answered there: **Delete and Clean Up** is the default button, and the one-time sweep hint ships)
+
+**Observable:** `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
+repository and local branches, and only after every catch passes, checked again immediately before the removal:
+a worktree with uncommitted or untracked changes, a HEAD not in the default branch nor on a remote, a locked
+worktree, an operation in progress, a live process in it that is not an orphan of the session, a session working
+in it, or another worktree or repository nested inside it is kept and reported with its reason; a branch whose tip is in neither the default branch nor a remote ref,
+the default branch, or a branch checked out anywhere is kept. Outside the owner's sweep it removes only what the
+session observed and what was created after the session started. It never removes the main worktree, a workbench
+folder, anything under `~/.claude`, a path that is not a linked worktree, or a remote ref; never fetches; never
+uses `--force` or an unconditional ref delete; signals only orphan processes (ppid 1, the current user, inside the
+session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A plan writes nothing; an apply acts
+only on items eligible at that moment and, when items are named, only on those.
+
+As shipped (each stricter than, never weaker than, the wording above):
+- **Fail closed.** A catch git could not answer keeps the item `check_failed`
+  with git's error in `detail`; an unknown default branch (no `origin/HEAD`,
+  `main` or `master`, or a `symbolic-ref` failure other than "not a symbolic
+  ref") keeps every branch (`default_branch_unknown`); a branch's birth comes
+  only from its reflog's creation entry, so no reflog or an expired creation
+  entry keeps it (`created_unknown`); an unreadable session start is an
+  error (nothing is planned), never read as "no start"; a
+  worktree whose directory is gone (`prunable`) still meets the folder,
+  ownership and unpushed catches, and one with an unreadable admin `HEAD` is
+  kept. A worktree that is, or holds, the user's `~/.claude` is kept
+  (`claude_home`; an unknown home is `check_failed`). A process of the
+  current user whose cwd the scan could not read keeps every worktree under
+  consideration (`process_unknown`); a process with its cwd inside but its
+  executable outside (a shell, tmux, `node`-run `claude`/`codex`) is a
+  blocker and is never signalled.
+- **The other sessions** a worktree is checked against are every terminal
+  session of every workbench, standalone ones included (a second workbench
+  over the same repository counts).
+- **A caller inside a terminal session acts only on that session.** With
+  `WATCHTOWER_TERMINAL_SESSION_ID` set (the agent's terminal, where the auto
+  mode allow rule of PROJ-04 applies), `--session` must equal it,
+  `--workbench` must be its workbench and `--sweep` is refused; an empty
+  variable is refused too — each exit 2, nothing done. There is no flag that
+  lifts this. The Desktop drops the variable from its own cleanup calls
+  (`SessionCleanupCenter.cleanupEnvironment`).
+- **Git runs nothing from the folder.** A planted `.git/config` (an
+  fsmonitor command, a filter driver) never runs during a plan or an apply.
+- **Order.** In an apply, `.app` bundles inside a worktree are unregistered
+  (`lsregister -u`) before `git worktree remove` and registered again when
+  the worktree stays; a git run that fails (not git's refusal) stops the
+  apply and leaves the rest untouched and reported; a branch is deleted with
+  `git update-ref -d refs/heads/<name> <checked sha>`, so one that moved is
+  kept (`moved`).
+- **Desktop.** **Delete and Clean Up** applies exactly the keys the Delete
+  dialog showed that are still removable (after the terminal closed, a
+  re-plan decides the ones kept only by it); a failed cleanup keeps the
+  session row and shows the failure on the page. A **Clean Up…** sheet and
+  the sweep sheet apply exactly the ticked keys of a known kind; the sweep
+  ticks nothing by itself. An item of a kind this build does not know is
+  listed but never offered, ticked or applied. The Desktop never runs git,
+  `lsof` or `lsregister` and never writes the database.
+- **Result.** An apply stores its JSON in `terminal_sessions.cleanup_result`
+  with `cleanup_at` (Go only, best effort: `result_saved`/`result_error`);
+  the session report only reads it (PROJ-14 unchanged).
+
+**Why locked:** Owner decision (board #535): sessions left ~38 GB of
+forgotten worktrees and 22 branches, and the agent could not remove them in
+auto mode. Giving it a removal command is safe only if nothing it removes
+could be the owner's or another session's work: one wrong `worktree remove`
+loses uncommitted work for good, so every doubt keeps the item.
+
+**Test guards:**
+- `internal/sessioncleanup/plan_test.go` — `TestProj18_UncommittedWorktreeIsKept`, `TestProj18_UntrackedFileKeepsTheWorktree`, `TestProj18_UnpushedCommitKeepsWorktreeAndBranch`, `TestProj18_LockedWorktreeIsKept`, `TestProj18_WorktreeOlderThanTheSessionIsKept`, `TestProj18_BranchOlderThanTheSessionIsKept`, `TestProj18_BranchCheckedOutElsewhereIsKept`, `TestProj18_DefaultBranchIsNeverDeleted`, `TestProj18_MainFolderAndWorkbenchFoldersAreNeverCandidates`, `TestProj18_SessionInTheWorktreeKeepsIt`, `TestProj18_LiveProcessKeepsTheWorktree`, `TestProj18_PlanWritesNothing`, `TestProj18_ClaudeHomeIsNeverRemoved`
+- `internal/sessioncleanup/apply_test.go` — `TestProj18_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1), `TestProj18_ClaudeHistoryAndMainBuildUntouched`, `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems`, `TestProj18_BranchThatMovedAfterThePlanIsKept`, `TestProj18_NoForceNoFetchAnywhere`, `TestProj18_LsregisterRunsBeforeWorktreeRemove`, `TestProj18_FailureMidwayLeavesTheRestUntouched`
+- `internal/sessioncleanup/failclosed_test.go` — `TestProj18_UnknownDefaultBranchKeepsEveryBranch`, `TestProj18_OriginHeadReadFailureKeepsEveryBranch`, `TestProj18_PrunableDetachedWorktreeWithUnpushedCommitIsKept`, `TestProj18_PrunableWorktreeWithUnreadableHeadIsKept`, `TestProj18_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt`, `TestProj18_BranchWhoseCreationEntryExpiredIsKept`, `TestProj18_GitFailureInACatchKeepsTheItem`
+- `internal/sessioncleanup/nested_test.go::TestProj18_WorktreeHoldingANestedWorktreeIsKept` (W9)
+- `internal/sessioncleanup/procs_test.go::TestProj18_OnlyOrphansAreSignalled`
+- `internal/sessioncleanup/untrusted_test.go::TestProj18_PlantedGitConfigRunsNoCommand`
+- `cmd/workbench_cleanup_test.go` — `TestProj18_CallerSessionCannotCleanAnotherSession`, `TestProj18_CallerSessionCannotSweep`, `TestProj18_CallerSessionCannotNameAnotherWorkbench`, `TestProj18_CallerSessionEmptyVariableIsRefused`
+- `WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift` — `testProj18_DeleteAppliesOnlyThePlannedItems`, `testProj18_FailedCleanupKeepsTheSessionRow`
+- supporting: the rest of `internal/sessioncleanup/*_test.go` and `cmd/workbench_cleanup_test.go`; `internal/db/terminal_session_worktrees_test.go` (`TestSaveCleanupResult_WritesOnlyItsRow`, `TestTerminalSessionStart_UnreadableIsAnError`, `TestGetTerminalSessionNeedsNoCleanupColumns`); `cmd/workbench_brief_cleanup_test.go` (the brief's `Cleanup:` line); Desktop `WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift` (the other tests: Delete Only, unknown kinds, the closing terminal's re-plan, the sheet, the report line), `WatchtowerDesktop/Tests/SessionCleanupCenterTests.swift`, `WatchtowerDesktop/Tests/Core/{SessionCleanupPlanDecodingTests,SessionCleanupPresentationTests,SessionDeleteCleanupChoiceTests}.swift`; the sweep sheet and its one-time hint (Task 12): `testSweepTicksNothingByDefault`, `testSweepAppliesOnlyTickedKeys`, `testSweepHintShownOnceAboveOneGigabyte`
+
+**Locked since:** 2026-10-14
 
 ## v1 limits and notes (accepted)
 
@@ -1809,8 +1980,33 @@ asks would be worse than the dialog it replaces.
   shows an undone one again only on the next tick; a late async hook of the
   killed process may still write the row's state, which Undo then shows.
 
+- **Session cleanup (board #535, PROJ-18; spec
+  `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §1).**
+  Deferred, recorded and not built: Xcode DerivedData of `WatchtowerMobile`
+  builds made from a worktree; scratch files and binaries in `/tmp` and the
+  Claude scratchpad; squash-merged branches whose remote branch is already
+  deleted (kept, reported as not on the remote and not in the default
+  branch — delete by hand; a later version can match the PR cache once it
+  stores the head sha); LaunchServices entries of builds outside the
+  workbench folder (sibling `../<repo>-<name>` worktrees removed by hand
+  earlier); an automatic prompt when a session turns Finished; a fetch
+  inside the command (the skill tells the agent to `git fetch` first, so a
+  branch merged on the remote but not fetched is kept as unpushed); cleanup
+  of a `kind = 'shell'` session (no hooks, so no ledger — the sweep covers
+  it). Also: the ledger keeps at most 64 worktree/branch pairs per session
+  (later ones are dropped with one stderr line; declared `--worktree`/
+  `--branch` candidates and the sweep still reach them); a worktree made and
+  entered by a tool that sent no hook from inside it is found only through a
+  target's branch, a declared candidate or the sweep; sizes are allocated
+  blocks with a 20 s walk budget per worktree ("size unknown" past it) and
+  APFS clones share blocks, so the space actually freed can be less than the
+  "~" figure; the sweep never signals processes; the one-time sweep hint
+  runs one background sweep plan per workbench per launch until the banner
+  is shown or the sweep sheet opened (`projects.cleanupHintShown.<id>`).
+
 ## Changelog
 
+- 2026-10-14 (board #535, session cleanup; spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13, business page `…-business.md`, plan `docs/superpowers/plans/2026-10-12-session-cleanup.md`; **PROJ-18 added, PROJ-11, PROJ-04 and PROJ-02 amended, owner approved 2026-10-12, ask #193**): `watchtower workbench cleanup` (`internal/sessioncleanup`, migration `00111`: `terminal_session_worktrees` + `terminal_sessions.cleanup_result`/`cleanup_at`) plans, then with `--apply` removes, the linked worktrees and local branches a session's agents created — never unsaved, unpushed, in-use or someone else's work (PROJ-18, the approved wording verbatim plus the stricter as-shipped list); the skill pack's finishing step runs it (DEV-04 changelog: pack v8); the Desktop offers it on Delete Session (**Delete and Clean Up**, the default, or **Delete Only**), per session (**Clean Up…**) and as the owner's sweep (**Clean Up Old Worktrees…**, with a one-time hint above 1 GB). **PROJ-11:** the state hooks record each new (worktree root, branch) of any agent of the session, at most 64, without git; a ledger failure never costs the state write. **PROJ-04:** the install adds one `permissions.allow` rule `Bash(<bin> workbench cleanup:*)` (the bin quoted only when unsafe, ours only with an absolute `watchtower` bin, the owner's entries never touched). **PROJ-02:** the folder removal deletes that rule; the ledger goes with the session row by cascade (`TestProj02_RemoveProjectLeavesNothingInstalled` extended, assertions added). **PROJ-17:** note only — `delete` (✕, ⌘⌫, Delete Only) is a no-op and Start fresh refused on a row a cleanup runs on, and every resume of a row whose terminal Delete and Clean Up closed is refused. **PROJ-14** unchanged (the report only reads `cleanup_result`). No guard relaxed.
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).
 - 2026-10-14 (target 156; **approved by the owner 2026-10-14, ask #118**): **PROJ-02 amended — an exception for links leaving the folder.** When the removal refuses a file or directory linked outside the folder (PROJ-04), the delete still completes and names the exact outside file and what to remove by hand: `devpack.OutsideFolderError` (an `ErrSymlinkOutsideFolder` refusal carrying the outside path; the error text is unchanged) and `devpack.OutsideFolderHints`, printed by `workbench delete` (stderr, `--json` `removal_hints`) and `integrate remove --workbench N`, shown by the Desktop's delete warning in place of the raw error. New guard `TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks`; no guard changed.
 - 2026-10-14 (target 156, security review group 146; **approved by the owner 2026-10-14, ask #109**, "refuse with an error"): **PROJ-04 amended** — a `settings.local.json` (or imported `.codex` hook file) symlink is followed only while its target stays inside the workbench folder; one leaving it (e.g. to `~/.claude/settings.json`, which made our hooks global) is refused by install and removal before any write, with an error naming the link, its target and the fix (`devpack.ErrSymlinkOutsideFolder`); likewise a `.claude`/`.codex` directory (any directory between the folder and the file) that is a symlink leaving the folder, and a `.claude`/`.claude/skills`/`.agents/skills` (or skill) directory linked outside it: the skill install and removal refuse before writing or removing a skill file (guard `TestProj04_SkillDirectoryLinkOutsideTheFolderIsRefused`, with `TestProj04_SkillDirectoryLinkInsideTheFolderIsFollowed` for a link inside). The two symlink guards `TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink` and `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget` had their link target moved inside the folder — the intended change, their assertions unchanged (a link is kept and written through); new guards `TestProj04_SymlinkOutsideTheFolderIsRefused` and `TestProj04_DedupeRefusesASymlinkOutsideTheFolder`. The git `info/exclude` file keeps following its link (it lives in the git dir). No other guard changed.
