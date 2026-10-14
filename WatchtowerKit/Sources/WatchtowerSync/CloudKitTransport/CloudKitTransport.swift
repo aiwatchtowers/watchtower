@@ -1308,6 +1308,32 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
     #endif
 
+    // MARK: - Direct save
+
+    /// Saves one record into `hubID`'s zone of `scope`'s database with one
+    /// request, outside any engine and store: nothing is fetched first, and
+    /// the save overwrites whatever the server holds (`.allKeys`, no change
+    /// tag compared). The phone's unlink farewell kept after its hub's files
+    /// went (#143) goes out this way. Throws the CloudKit error, the
+    /// record's own included. The caller checks the entitlement first.
+    public static func saveDirectly(
+        _ record: CloudRecord,
+        scope: CloudDatabaseScope,
+        hubID: String,
+        containerID: String = WatchtowerCloud.containerID
+    ) async throws {
+        let ck = directSaveRecord(record, scope: scope, hubID: hubID)
+        let database = scope.database(in: CKContainer(identifier: containerID))
+        let (saves, _) = try await database.modifyRecords(saving: [ck], deleting: [], savePolicy: .allKeys, atomically: false)
+        try saves[ck.recordID]?.get()
+    }
+
+    /// The record a direct save sends: a fresh one (no system fields) in
+    /// the hub's zone of the record's kind.
+    static func directSaveRecord(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) -> CKRecord {
+        ckRecord(from: record, in: HubZones(scope: scope, hubID: hubID).zoneID(for: record.zone), systemFields: nil)
+    }
+
     // MARK: - Mapping (pure, unit-tested)
 
     /// Builds the outgoing CKRecord, seeded from archived system fields when

@@ -733,6 +733,123 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(host.removals.map(\.keepRecordings), [true], "an unlink holds the hub's recordings")
     }
 
+    // MARK: - Kept farewells (#143)
+
+    /// A kept farewell of `hubID`, made on `account` at `since`.
+    private func keptFarewell(
+        _ hubID: String = acme, scope: CloudDatabaseScope = .private, account: String = "_colleague-a", since: Date? = nil
+    ) -> PendingFarewell {
+        PendingFarewell(
+            hubID: hubID, scope: scope, userRecordName: account,
+            record: CloudRecord(recordName: "wire-\(hubID)", zone: .relay, kind: "wt", modifiedAt: start, payload: Data([1])),
+            since: since ?? start
+        )
+    }
+
+    /// #143: a shared unlink whose farewell did not go out keeps the shares:
+    /// the kept record still needs the Mac's zones.
+    func testASharedUnlinkWhoseFarewellIsKeptKeepsTheShares() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+        host.keepsFarewell = true
+
+        await model.unlink(acme)
+
+        XCTAssertEqual(host.removedHubIDs, [acme], "the hub goes all the same")
+        XCTAssertTrue(container.left.isEmpty, "the shares wait for the kept farewell")
+        XCTAssertEqual(model.phase, .idle)
+    }
+
+    /// #143: a kept farewell sent again at launch stops being kept, and its
+    /// shared link leaves the shares then.
+    func testAKeptFarewellSentAgainLeavesTheSharesAndIsNoLongerKept() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        host.keptFarewells = [keptFarewell(scope: .shared(ownerName: owner))]
+        host.resendSucceeds = true
+        let model = makeModel()
+
+        await model.retryFarewells()
+
+        XCTAssertEqual(log.events, ["resend \(acme)", "leave \(owner)"])
+        XCTAssertEqual(container.leftHubIDs, [acme])
+        XCTAssertTrue(host.keptFarewells.isEmpty)
+    }
+
+    /// #143: a resend that fails keeps the farewell (and the shares) for the
+    /// next launch.
+    func testAKeptFarewellThatFailsAgainStaysKept() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        host.keptFarewells = [keptFarewell(scope: .shared(ownerName: owner))]
+        let model = makeModel()
+
+        await model.retryFarewells()
+
+        XCTAssertEqual(log.events, ["resend \(acme)"])
+        XCTAssertTrue(container.left.isEmpty)
+        XCTAssertEqual(host.keptFarewells.map(\.hubID), [acme])
+    }
+
+    /// #143: a farewell past its lifetime is dropped unsent and its shares
+    /// are left; one of another iCloud account, or of a hub linked again,
+    /// is dropped with its shares untouched.
+    func testKeptFarewellsExpireOrAreDroppedForAnotherAccountOrARelink() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        host.seed(LinkRecord(
+            hubID: homeID, macName: "Home Mac", scope: .shared, ownerName: owner, userRecordName: "_colleague-a",
+            nonce: "n", dataShareURL: nil, relayShareURL: nil, deviceID: nil, linkedAt: nil
+        ))
+        let expiredSince = start.addingTimeInterval(-LinkingViewModel.farewellLifetime - 1)
+        host.keptFarewells = [
+            keptFarewell(acme, scope: .shared(ownerName: owner), since: expiredSince),
+            keptFarewell(homeID, scope: .shared(ownerName: owner)),
+            keptFarewell(studio, scope: .shared(ownerName: owner), account: "_someone-else")
+        ]
+        host.resendSucceeds = true
+        let model = makeModel()
+
+        await model.retryFarewells()
+
+        XCTAssertEqual(
+            log.events,
+            ["drop farewell \(acme)", "leave \(owner)", "drop farewell \(homeID)", "drop farewell \(studio)"],
+            "nothing is sent again; only the expired one's shares are left"
+        )
+        XCTAssertEqual(container.leftHubIDs, [acme])
+        XCTAssertTrue(host.keptFarewells.isEmpty)
+    }
+
+    /// Review round 1 (F1/F2): each kept farewell is decided on the state
+    /// read at its turn and again after its resend. While Home's resend is
+    /// out, Acme is linked again (its kept farewell dropped) and Home is
+    /// scanned again (its link waiting): Home's shares, now the new link's,
+    /// are not left, and Acme's stale farewell is not sent.
+    func testAFarewellRetryObservesLinksBegunWhileAResendIsOut() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        host.keptFarewells = [keptFarewell(homeID, scope: .shared(ownerName: owner)), keptFarewell(scope: .shared(ownerName: owner))]
+        host.resendSucceeds = true
+        host.parksResend = true
+        let model = makeModel()
+        let retry = Task { await model.retryFarewells() }
+        try await poll { self.host.resendParked }
+
+        let acmeCode = code()
+        macLinks(acmeCode)
+        await model.open(acmeCode.url())
+        await model.finish()
+        XCTAssertEqual(host.keptFarewells.map(\.hubID), [homeID], "the relink dropped Acme's")
+        clock.parked = true
+        let homeScan = Task { await model.open(code(hubID: homeID, macName: "Home Mac").url()) }
+        try await poll { model.phase == .waiting(macName: "Home Mac") }
+
+        host.releaseResend()
+        await retry.value
+
+        XCTAssertEqual(log.events.filter { $0.hasPrefix("resend") }, ["resend \(homeID)"], "Acme's farewell is not sent after its relink")
+        XCTAssertTrue(container.left.isEmpty, "Home is being linked again: its shares stay")
+        homeScan.cancel()
+        await homeScan.value
+    }
+
     /// Shares that could not be left: the hub is gone all the same (its
     /// files and its row), and the phone does nothing more for it.
     func testUnlinkInSharedScopeWhoseSharesStayStillRemovesTheHub() async throws {
@@ -1220,6 +1337,20 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.evaluate(hubID: acme, heartbeat: heartbeat(updatedAt: start), isActive: false)
         XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"), "only the active hub's fetch clears it")
+    }
+
+    /// Review round 1 (F3): a removal with nothing to report keeps a stale
+    /// notice only while another hub is on screen; removing the stale hub
+    /// with no successor clears it.
+    func testUnlinkingTheStaleHubWithNoSuccessorClearsTheStaleNotice() async throws {
+        let model = try await linkedModel(code())
+        await model.evaluate(hubID: acme, heartbeat: heartbeat(updatedAt: start.addingTimeInterval(-86_400)), isActive: true)
+        XCTAssertEqual(model.notice, .stale(macName: "Acme Mac"))
+
+        await model.unlink(acme)
+
+        XCTAssertNil(host.activeHubID)
+        XCTAssertNil(model.notice, "no Mac left on screen: nothing is stale")
     }
 
     /// A switch re-evaluates the stale notice for the hub it puts on screen,
