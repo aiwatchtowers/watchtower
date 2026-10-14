@@ -720,6 +720,29 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
     }
 
+    /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`).
+    /// A refusal or failure exits 0 with the envelope's `refused`/`error`.
+    func worktreeCreate(projectID: Int64, name: String) async throws -> WorktreeCreateResult {
+        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name, "--json"]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
+    }
+
+    /// Re-creates a placed worktree at `path` on `branch` when it is gone from disk.
+    func worktreeEnsure(projectID: Int64, path: String, branch: String) async throws -> WorktreeCreateResult {
+        let args = ["workbench", "worktree", "ensure", "--workbench", String(projectID),
+                    "--path", path, "--branch", branch, "--json"]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
+    }
+
+    /// Drops the placed worktree at `path` from the workbench's records.
+    func worktreeForget(projectID: Int64, path: String) async throws -> WorktreeForgetResult {
+        let args = ["workbench", "worktree", "forget", "--workbench", String(projectID), "--path", path, "--json"]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorktreeForgetResult.self, from: data)
+    }
+
     /// The local branches, newest commit first. `folder`: a session's
     /// worktree, as for `gitStatus` — a folder in none of the repository's
     /// worktrees comes back refused (`folder_not_a_worktree`), exit 0.
