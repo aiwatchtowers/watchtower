@@ -123,6 +123,9 @@ final class WorkbenchesViewModel {
     /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
     /// Up… apply), per session: a view going away never cancels one.
     @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The automatic cleanups of finished placed sessions whose agent
+    /// exited (session worktrees spec §9), per session; gone when done.
+    @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
     /// The sessions whose Clean Up… sheet is on screen: an apply ending
     /// while it is not shows its failure on the page instead.
     @ObservationIgnored var openCleanupSheets: Set<Int64> = []

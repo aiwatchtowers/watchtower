@@ -82,6 +82,15 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
     }
 
+    /// Whether row `id`'s agent called `finish_session` and has not worked
+    /// since (`finished_at` set; Go clears it on any `working` write). False
+    /// for a missing row. Read-only: Go writes the column.
+    package static func isFinished(_ db: Database, id: Int64) throws -> Bool {
+        try Bool.fetchOne(
+            db, sql: "SELECT finished_at IS NOT NULL FROM terminal_sessions WHERE id = ?", arguments: [id]
+        ) ?? false
+    }
+
     package static func fetchForWorkbench(_ db: Database, projectID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
