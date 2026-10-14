@@ -34,7 +34,9 @@ package enum FeatureReadiness {
             }
             if run.status == "error" { return .error(message: run.errorMessage) }
         }
-        if feature.readsSyncedData, inputs.lastSyncTime == nil { return .waitingForSync(detail: syncDetail) }
+        if feature.readsSyncedData, inputs.connected.slack, inputs.lastSyncTime == nil {
+            return .waitingForSync(detail: syncDetail)
+        }
         return .scheduled(eta(of: feature, inputs, syncing: syncing))
     }
 

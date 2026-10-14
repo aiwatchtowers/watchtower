@@ -117,6 +117,25 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.digests, input), .waitingForSync(detail: progress.summary))
     }
 
+    func testSlackConnectedWaitsForFirstSync() {
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(slack: true, calendar: true)
+        input.lastSyncTime = nil
+        XCTAssertEqual(evaluate(.briefing, input), .waitingForSync(detail: nil))
+    }
+
+    func testNoSlackNeverWaitsForSync() {
+        // `last_sync.json` is written only by the Slack sync: without Slack
+        // it never appears, so nothing may wait on it.
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(calendar: true)
+        input.lastSyncTime = nil
+        input.syncProgress = heartbeat(now: input.now)
+        let readiness = evaluate(.briefing, input)
+        if case .waitingForSync = readiness { XCTFail("\(String(describing: readiness))") }
+        XCTAssertEqual(readiness, .scheduled(.afterCurrentSync))
+    }
+
     // MARK: - Briefing hour gate and freshness (dual path with Go)
 
     func testBriefingBeforeHourNotFreshSaysTodayAtHour() {
@@ -211,6 +230,9 @@ final class FeatureReadinessTests: XCTestCase {
 
     // MARK: - Degenerate input
 
+    /// Nothing connected: every feature is off or needs a source, except the
+    /// knowledge index (it needs none and, with no Slack, waits on no sync),
+    /// which is scheduled for the next cycle.
     func testEmptyInputsAllOffOrWaiting() {
         let result = FeatureReadiness.evaluate(ReadinessInputs(now: today(10)))
         XCTAssertEqual(Set(result.keys), Set(ReadinessFeature.allCases))
@@ -218,6 +240,7 @@ final class FeatureReadinessTests: XCTestCase {
         for (feature, readiness) in result {
             switch readiness {
             case .off, .needsSource, .waitingForSync: break
+            case .scheduled(.nextCycle(minutes: 15)) where feature.source == .none: break
             default: XCTFail("\(feature): \(readiness)")
             }
         }

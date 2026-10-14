@@ -54,8 +54,8 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
         }
     }
 
-    /// Whether the feature has nothing to work on until the first sync
-    /// finishes. Slack sync is that sync itself.
+    /// Whether the feature has nothing to work on until the first Slack sync
+    /// finishes (when Slack is connected). Slack sync is that sync itself.
     package var readsSyncedData: Bool { self != .slackSync }
 }
 
@@ -138,6 +138,10 @@ package struct ReadinessInputs: Equatable {
     package var connected: ConnectedSources
     package var daemonRunning: Bool
     package var syncProgress: SyncProgress?
+    /// When the last Slack sync finished (`last_sync.json`, written only by
+    /// the daemon's Slack sync phase); nil = the first Slack sync hasn't
+    /// finished. Without Slack it stays nil forever, so it only gates
+    /// `waitingForSync` while Slack is connected.
     package var lastSyncTime: Date?
     /// Keyed by pipeline name.
     package var latestRuns: [String: RunSnapshot]
