@@ -515,14 +515,15 @@ func TestAuto08_RestartSparesLiveDryRun(t *testing.T) {
 	// budget 5 minutes + 1 minute grace = a 6-minute deadline.
 	live := claimDryRunAt(t, d, seedRunAutomation(t, d, "live", 1), runTestNow.Add(-2*time.Minute), 5)
 	stale := claimDryRunAt(t, d, seedRunAutomation(t, d, "stale", 1), runTestNow.Add(-7*time.Minute), 5)
-	// budget_minutes 0 on the run falls back to the automation's 5.
-	fallback := claimDryRunAt(t, d, seedRunAutomation(t, d, "fallback", 1), runTestNow.Add(-7*time.Minute), 0)
-	if n, err := d.MarkInterruptedAutomationRuns(runTestNow); err != nil || n != 2 {
-		t.Fatalf("MarkInterruptedAutomationRuns = (%d, %v); want 2", n, err)
+	// budget_minutes 0 on the run falls back to the automation's 5, so a run
+	// started 3 minutes ago is still live (with 0 it would be past 0 + 1).
+	fallback := claimDryRunAt(t, d, seedRunAutomation(t, d, "fallback", 1), runTestNow.Add(-3*time.Minute), 0)
+	if n, err := d.MarkInterruptedAutomationRuns(runTestNow); err != nil || n != 1 {
+		t.Fatalf("MarkInterruptedAutomationRuns = (%d, %v); want 1", n, err)
 	}
 	wantAutomationRun(t, d, live, RunRunning, "")
 	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
-	wantAutomationRun(t, d, fallback, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, fallback, RunRunning, "")
 }
 
 func TestNextQueued_SkipsDryRun(t *testing.T) {

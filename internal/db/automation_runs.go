@@ -183,7 +183,7 @@ const closeOpenStepsSQL = `UPDATE automation_run_steps SET status = 'error', err
 	WHERE finished_at IS NULL AND run_id IN (SELECT id FROM automation_runs WHERE `
 
 func closeOpenStepsTx(tx *sql.Tx, runStatus, stamp, runPredicate string, args ...any) error {
-	all := append([]any{"the run ended " + runStatus + " before the step finished", stamp}, args...)
+	all := append([]any{"the run ended (" + runStatus + ") before this step finished", stamp}, args...)
 	if _, err := tx.Exec(closeOpenStepsSQL+runPredicate+`)`, all...); err != nil {
 		return fmt.Errorf("closing open steps of ended automation runs: %w", err)
 	}
