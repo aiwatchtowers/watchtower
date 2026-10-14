@@ -124,11 +124,18 @@ extension WorkbenchesViewModel {
         if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row, ticket: ticket) }
     }
 
-    /// The switcher's "All Workbenches": back to level 1, the panel
-    /// shown if hidden; the page stays on screen.
+    /// The switcher's "All Workbenches" — and the back button, ⌘[ and the
+    /// swipe (board #743): back to level 1, the panel shown if hidden; the
+    /// page stays on screen.
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
         panelVisible = true
+    }
+
+    /// Whether the workbench list is off screen — the panel at level 2, or
+    /// hidden — so the way back to it (board #743) has somewhere to go.
+    var canShowAllWorkbenches: Bool {
+        drilledWorkbenchID != nil || !panelVisible
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
