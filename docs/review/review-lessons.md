@@ -1471,3 +1471,13 @@ Entry format:
 - weak-dimension: 8 (security) on CI diffs: the token-scope and destructive-step questions came only from the prosecutor.
 - rule-gap (candidate, dim 8): *a workflow change that grants a job a write permission states which steps need it and on which events; when that is narrower than the job, the steps move to a separate gated job.*
 - outcome: TBD
+
+## 2026-10-14 — feat/755-onboarding-defaults (owner decisions #755/#757/#758: Meetings goal on by default, `calendar.enabled`/`gmail.enabled` default true in Go and Swift, About you step + late sheet removed with a persisted `aboutYou` → `.connect` resume; OWNER-01 writer kept; 26 files +289/−1181; panel: prosecutor + 3 specialists, codex DOWN (HTTP 400, model unsupported); judge verified by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held minor, code-reviewer had it Important): `OnboardingProfileWriter.current` has no caller after the removal, yet the owner-identity inventory note says it "stays" for the guards. The guards call only `done`/`later`. The brief named `current` as kept, so the fix is the note's wording (or an owner-approved delete), not a silent removal. **A "kept for the guards" claim in an inventory note is checkable: grep the guard file for each kept symbol.** [5/8]
+- contested (held minor + Needs human, silent-failure MEDIUM 2): a flipped config default does not reach installs whose Desktop `save()` already wrote the old value explicitly. Whether "default on" meant new installs only is an owner call; the docs must say which. [6/8]
+- false-positive: silent-failure MEDIUM 1 "roster `.failed` has no reader" is half-true. The Connect step's Slack card still renders `isFailure` with Retry; only a failure after leaving Connect goes unseen. Held minor (add a log), not medium. [9]
+- miss: every lane missed `scripts/install.sh:204` ("Goals, Connect and About you"), a user-visible string; the prosecutor caught README only. A removed-step PR needs a repo-wide grep of the step's name outside changelog/history sections.
+- weak-dimension: 5 (codebase fit) for removals: stale mentions of the removed thing in install scripts and Go comments.
+- rule-gap (candidate, dim 5): *a PR that removes a user-facing step or screen greps its display name across README, scripts and docs, and every hit outside a dated changelog/history entry is updated or explicitly kept.*
+- outcome: TBD
