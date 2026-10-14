@@ -38,8 +38,13 @@ struct WorkbenchDeleted: Decodable, Equatable {
     let filesError: String
 
     init(
-        id: Int64, deleted: Bool, removalOK: Bool, removalError: String, removalHints: [String] = [],
-        filesOK: Bool = true, filesError: String = ""
+        id: Int64,
+        deleted: Bool,
+        removalOK: Bool,
+        removalError: String,
+        removalHints: [String] = [],
+        filesOK: Bool = true,
+        filesError: String = ""
     ) {
         self.id = id
         self.deleted = deleted
