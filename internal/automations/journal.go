@@ -33,6 +33,7 @@ type Journal struct {
 	dryRun bool
 	clock  Clock // nil = RealClock until UseClock/adoptClock
 	steps  []db.AutomationRunStep
+	kinds  map[string]int // steps begun per kind
 	totals db.RunUsage
 	err    error
 }
@@ -107,6 +108,10 @@ func (j *Journal) Begin(kind, name string, args any) *Step {
 		row.ID = id
 	}
 	j.steps = append(j.steps, row)
+	if j.kinds == nil {
+		j.kinds = map[string]int{}
+	}
+	j.kinds[kind]++
 	return &Step{j: j, idx: len(j.steps) - 1, id: row.ID, started: now}
 }
 
@@ -129,6 +134,14 @@ func (j *Journal) Count() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return len(j.steps)
+}
+
+// CountKind is the number of steps of kind begun (log() enforces its
+// per-run cap with it).
+func (j *Journal) CountKind(kind string) int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.kinds[kind]
 }
 
 // Steps returns the recorded steps in seq order, as they stand now.

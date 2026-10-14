@@ -1,6 +1,6 @@
 // Package automationstest holds the fakes automation tests share across
-// packages (P1–P6): a settable clock, a recording generator and, later, the
-// registry fake and the seed helper.
+// packages (P1–P6): a settable clock, a recording generator, a tool-registry
+// fake and the seed helper.
 package automationstest
 
 import (
