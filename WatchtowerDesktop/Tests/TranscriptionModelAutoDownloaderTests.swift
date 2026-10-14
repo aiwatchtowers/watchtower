@@ -71,7 +71,7 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
     }
 
     private func settle(_ auto: TranscriptionModelAutoDownloader) async {
-        await auto.task?.value
+        await auto.pendingRun?.value
     }
 
     /// Wall-clock patience, not a yield count: the download runs on a
@@ -90,13 +90,13 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         let (auto, provisioner) = make(download)
 
         goals = [.development]
-        auto.run()
+        auto.askAndDownload()
         await settle(auto)
         XCTAssertEqual(download.calls, 0, "no Meetings goal: nothing downloads")
-        XCTAssertNil(auto.task)
+        XCTAssertNil(auto.pendingRun)
 
         goals = [.development, .meetings]   // a re-run added the goal
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the download to start") { download.isHeld }
         XCTAssertNotNil(provisioner.download(for: key))
         download.finish()
@@ -109,14 +109,14 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         goals = [.meetings]
         synced = false
 
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the wait") { sleep.waiting }
         goals = [.development]
         sleep.wake()
         await settle(auto)
 
         XCTAssertEqual(download.calls, 0)
-        XCTAssertNil(auto.task, "the next trigger asks afresh")
+        XCTAssertNil(auto.pendingRun, "the next trigger asks afresh")
     }
 
     func testTheFirstSyncFinishingStartsTheDownload() async {
@@ -126,7 +126,7 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         goals = [.meetings]
         synced = false
 
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the wait") { sleep.waiting }
         XCTAssertEqual(download.calls, 0, "the first sync goes first")
         synced = true
@@ -144,12 +144,12 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         goals = [.meetings]
         synced = false
 
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the wait") { sleep.waiting }
-        let first = auto.task
+        let first = auto.pendingRun
         clock = clock.addingTimeInterval(TranscriptionModelAutoDownload.firstSyncMaxWait - 60)
-        auto.run()
-        XCTAssertEqual(auto.task, first, "a second trigger joins the wait")
+        auto.askAndDownload()
+        XCTAssertEqual(auto.pendingRun, first, "a second trigger joins the wait")
 
         sleep.wake()
         await waitUntil("the next wait") { sleep.waiting }
@@ -169,12 +169,12 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         goals = [.meetings]
         modelKey = nil
 
-        auto.run()
+        auto.askAndDownload()
         await settle(auto)
-        XCTAssertNil(auto.task)
+        XCTAssertNil(auto.pendingRun)
 
         modelKey = key
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the download to start") { download.isHeld }
         download.finish()
     }
@@ -190,13 +190,13 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         modelKey = apple
         XCTAssertTrue(provisioner.isDownloaded(apple), "a recording never waits on it")
 
-        auto.run()
+        auto.askAndDownload()
         await waitUntil("the install to start") { download.isHeld }
         download.finish()
-        await provisioner.task(for: apple)?.value
+        await provisioner.downloadTask(for: apple)?.value
         XCTAssertTrue(provisioner.isConfirmedOnDisk(apple))
 
-        auto.run()
+        auto.askAndDownload()
         await settle(auto)
         XCTAssertEqual(download.calls, 1, "installed once")
     }

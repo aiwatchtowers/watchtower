@@ -208,7 +208,7 @@ final class TrayMenuViewTests: XCTestCase {
 
     // MARK: - Model download line (#744)
 
-    private static func download(_ state: TranscriptionModelProvisioner.State, startedAt: Date)
+    private static func download(_ state: TranscriptionModelProvisioner.DownloadState, startedAt: Date)
         -> TranscriptionModelProvisioner.Download {
         TranscriptionModelProvisioner.Download(
             key: .init(providerID: "whisperkit", model: "large-v3"), purpose: .meetings, label: "Large v3",

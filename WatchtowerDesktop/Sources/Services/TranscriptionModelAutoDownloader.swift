@@ -4,7 +4,7 @@ import WatchtowerCore
 /// Downloads the meeting model ahead of use when the Meetings goal is
 /// chosen (#744). It asks `TranscriptionModelAutoDownload.decide` and, while
 /// the very first sync runs, asks again every `recheck` until it may start
-/// or the cap runs out. A `run()` while one is waiting is a no-op, so the
+/// or the cap runs out. An `askAndDownload()` while one is waiting is a no-op, so the
 /// cap counts from the first trigger. Without the goal nothing downloads
 /// until the first recording or dictation.
 @MainActor
@@ -28,7 +28,7 @@ final class TranscriptionModelAutoDownloader {
     private let now: () -> Date
 
     /// The ask in progress (waiting for the first sync); nil when none.
-    private(set) var task: Task<Void, Never>?
+    private(set) var pendingRun: Task<Void, Never>?
 
     init(
         inputs: Inputs,
@@ -42,11 +42,11 @@ final class TranscriptionModelAutoDownloader {
         self.now = now
     }
 
-    func run() {
-        guard task == nil else { return }
+    func askAndDownload() {
+        guard pendingRun == nil else { return }
         let startedAt = now()
-        task = Task { [weak self] in
-            defer { self?.task = nil }
+        pendingRun = Task { [weak self] in
+            defer { self?.pendingRun = nil }
             while !Task.isCancelled {
                 guard let self else { return }
                 guard let key = inputs.modelKey() else {

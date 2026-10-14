@@ -7,7 +7,7 @@ final class HeldDownload {
     private(set) var calls = 0
     private var release: CheckedContinuation<Void, Never>?
 
-    func call(_: String, _: String, _ progress: @escaping @Sendable (Double) -> Void) async throws {
+    func hold(_: String, _: String, _ progress: @escaping @Sendable (Double) -> Void) async throws {
         calls += 1
         progress(0.25)
         await withCheckedContinuation { release = $0 }
@@ -37,7 +37,7 @@ extension TranscriptionModelProvisioner {
         downloadsModel: @escaping (ModelKey) -> Bool = { _ in true }
     ) -> TranscriptionModelProvisioner {
         TranscriptionModelProvisioner(
-            downloadFn: { try await download.call($0, $1, $2) },
+            downloadFn: { try await download.hold($0, $1, $2) },
             describe: { _ in (label: label, sizeBytes: nil) },
             downloadsModel: downloadsModel,
             filesMissing: { _ in false },

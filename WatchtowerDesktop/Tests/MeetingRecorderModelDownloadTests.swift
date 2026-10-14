@@ -99,7 +99,7 @@ final class MeetingRecorderModelDownloadTests: MeetingRecorderTestCase {
         models.ensureDownloaded(modelKey)
         await waitUntil("the download to start") { download.isHeld }
         download.finish()
-        await models.task(for: modelKey)?.value
+        await models.downloadTask(for: modelKey)?.value
 
         center.warmPolicyTick(config: config)
         await waitUntil("the prewarm to park its engine") { center.isEngineWarm }

@@ -120,7 +120,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         for _ in 0..<8 { await Task.yield() }
     }
 
-    private func state(_ provisioner: TranscriptionModelProvisioner, _ key: Key) -> TranscriptionModelProvisioner.State? {
+    private func downloadState(_ provisioner: TranscriptionModelProvisioner, _ key: Key) -> TranscriptionModelProvisioner.DownloadState? {
         provisioner.download(for: key)?.state
     }
 
@@ -133,12 +133,12 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         _ = await entered.next()
         await drainMainActor()
 
-        XCTAssertEqual(state(provisioner, large), .downloading(progress: 0.5))
+        XCTAssertEqual(downloadState(provisioner, large), .downloading(progress: 0.5))
         XCTAssertEqual(provisioner.download(for: large)?.label, "Model large-v3")
         XCTAssertFalse(provisioner.isDownloaded(large))
 
         downloader.release("large-v3")
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: large)?.value
 
         XCTAssertTrue(provisioner.downloads.isEmpty, "a finished download leaves the list")
         XCTAssertTrue(provisioner.isDownloaded(large))
@@ -158,7 +158,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
 
         XCTAssertEqual(downloader.callCount, 1, "a duplicate request for the same in-flight model must be a no-op")
         downloader.release("large-v3")
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: large)?.value
         XCTAssertTrue(provisioner.downloads.isEmpty)
     }
 
@@ -169,7 +169,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
 
         provisioner.ensureDownloaded(large)
         _ = await entered.next()
-        let staleTask = provisioner.task(for: large)
+        let staleTask = provisioner.downloadTask(for: large)
 
         provisioner.ensureDownloaded(distil)
         _ = await entered.next()
@@ -186,7 +186,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         XCTAssertEqual(provisioner.downloads.map(\.key), [distil])
 
         downloader.release("distil-large-v3")
-        await provisioner.task(for: distil)?.value
+        await provisioner.downloadTask(for: distil)?.value
         XCTAssertTrue(provisioner.isDownloaded(distil))
     }
 
@@ -209,7 +209,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
 
         downloader.release("large-v3", providerID: "whisperkit")
         downloader.release("large-v3", providerID: "apple")
-        await provisioner.task(for: apple)?.value
+        await provisioner.downloadTask(for: apple)?.value
         XCTAssertTrue(provisioner.isDownloaded(apple))
         XCTAssertFalse(provisioner.isDownloaded(large))
     }
@@ -230,8 +230,8 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         XCTAssertEqual(Set(provisioner.downloads.map(\.key)), [large, small])
         downloader.release("small")
         downloader.release("large-v3")
-        await provisioner.task(for: small)?.value
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: small)?.value
+        await provisioner.downloadTask(for: large)?.value
         XCTAssertTrue(provisioner.isDownloaded(small))
         XCTAssertTrue(provisioner.isDownloaded(large))
     }
@@ -244,21 +244,21 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         provisioner.ensureDownloaded(large)
         _ = await entered.next()
         downloader.release("large-v3", error: WrappingHubError.networkError(URLError(.networkConnectionLost)))
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: large)?.value
 
-        guard case let .failed(message) = state(provisioner, large) else {
-            return XCTFail("expected .failed, got \(String(describing: state(provisioner, large)))")
+        guard case let .failed(message) = downloadState(provisioner, large) else {
+            return XCTFail("expected .failed, got \(String(describing: downloadState(provisioner, large)))")
         }
         XCTAssertTrue(message.contains("connection dropped"), message)
 
         provisioner.retry(large)
         _ = await entered.next()
         await drainMainActor()
-        XCTAssertEqual(state(provisioner, large), .downloading(progress: 0.5), "retry must download the same model again")
+        XCTAssertEqual(downloadState(provisioner, large), .downloading(progress: 0.5), "retry must download the same model again")
         XCTAssertEqual(downloader.calledModels, ["large-v3", "large-v3"])
 
         downloader.release("large-v3")
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: large)?.value
         XCTAssertTrue(provisioner.isDownloaded(large))
     }
 
@@ -270,8 +270,8 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         provisioner.ensureDownloaded(large)
         _ = await entered.next()
         downloader.release("large-v3", error: FakeDownloadError())
-        await provisioner.task(for: large)?.value
-        guard case let .failed(message) = state(provisioner, large) else {
+        await provisioner.downloadTask(for: large)?.value
+        guard case let .failed(message) = downloadState(provisioner, large) else {
             return XCTFail("expected .failed")
         }
         XCTAssertEqual(message, "Couldn't download the model: server said no")
@@ -290,7 +290,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         first.ensureDownloaded(large)
         _ = await entered.next()
         downloader.release("large-v3")
-        await first.task(for: large)?.value
+        await first.downloadTask(for: large)?.value
 
         let relaunched = makeProvisioner(downloader)
         XCTAssertTrue(relaunched.isDownloaded(large))
@@ -335,7 +335,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let firstUse = Task { @MainActor in try await provisioner.prepare(small, purpose: .dictation) }
         _ = await entered.next()
         await drainMainActor()
-        XCTAssertEqual(state(provisioner, small), .downloading(progress: 0.5), "first use shows its download")
+        XCTAssertEqual(downloadState(provisioner, small), .downloading(progress: 0.5), "first use shows its download")
 
         downloader.release("small", error: URLError(.notConnectedToInternet))
         do {
@@ -369,9 +369,9 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
             XCTFail("a cancelled wait must throw")
         } catch is CancellationError {}
 
-        XCTAssertEqual(state(provisioner, small), .downloading(progress: 0.5))
+        XCTAssertEqual(downloadState(provisioner, small), .downloading(progress: 0.5))
         downloader.release("small")
-        await provisioner.task(for: small)?.value
+        await provisioner.downloadTask(for: small)?.value
         XCTAssertTrue(provisioner.isDownloaded(small))
     }
 
@@ -416,7 +416,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         XCTAssertNil(download.secondsLeft(now: clock), "no progress since the start: no estimate")
 
         downloader.release("large-v3")
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: large)?.value
     }
 
     /// A cache deleted by hand behind the marker downloads again, visibly,
@@ -435,7 +435,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         let firstUse = Task { @MainActor in try await provisioner.prepare(large, purpose: .meetings) }
         _ = await entered.next()
         await drainMainActor()
-        XCTAssertEqual(state(provisioner, large), .downloading(progress: 0.5))
+        XCTAssertEqual(downloadState(provisioner, large), .downloading(progress: 0.5))
         missing = false
         downloader.release("large-v3")
         try await firstUse.value
@@ -478,7 +478,7 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         provisioner.ensureDownloaded(small, purpose: .dictation)
         _ = await entered.next()
         downloader.release("small", error: FakeDownloadError())
-        await provisioner.task(for: small)?.value
+        await provisioner.downloadTask(for: small)?.value
         provisioner.ensureDownloaded(large, purpose: .meetings)
         _ = await entered.next()
 
@@ -486,12 +486,12 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
         _ = await entered.next()
         await drainMainActor()
         XCTAssertEqual(Set(provisioner.downloads.map(\.key)), [large, small])
-        XCTAssertNotNil(provisioner.task(for: large), "the meeting download keeps running")
+        XCTAssertNotNil(provisioner.downloadTask(for: large), "the meeting download keeps running")
 
         downloader.release("small")
         downloader.release("large-v3")
-        await provisioner.task(for: small)?.value
-        await provisioner.task(for: large)?.value
+        await provisioner.downloadTask(for: small)?.value
+        await provisioner.downloadTask(for: large)?.value
         XCTAssertTrue(provisioner.isDownloaded(small))
         XCTAssertTrue(provisioner.isDownloaded(large))
     }

@@ -48,7 +48,7 @@ final class TranscriptionModelProvisioner {
         case dictation
     }
 
-    enum State: Equatable {
+    enum DownloadState: Equatable {
         case downloading(progress: Double)
         case failed(String)
     }
@@ -60,7 +60,7 @@ final class TranscriptionModelProvisioner {
         let purpose: Purpose
         let label: String
         let sizeBytes: Int64?
-        var state: State
+        var state: DownloadState
         let startedAt: Date
         /// The first progress reported, so a resumed download's time left
         /// counts from where it resumed.
@@ -98,11 +98,11 @@ final class TranscriptionModelProvisioner {
     /// Per running download: its generation (a superseded or restarted
     /// download's late progress and outcome are dropped against it), the
     /// work, and the first-use callers waiting on it.
-    private var running: [ModelKey: Running] = [:]
+    private var inFlight: [ModelKey: Running] = [:]
 
     private struct Running {
         let generation: UUID
-        let task: Task<Void, Never>
+        let work: Task<Void, Never>
         var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
     }
 
@@ -178,10 +178,10 @@ final class TranscriptionModelProvisioner {
     /// download of another model with the same purpose unless a first use is
     /// waiting on it.
     func ensureDownloaded(_ key: ModelKey, purpose: Purpose = .meetings) {
-        guard running[key] == nil, !isConfirmedOnDisk(key) else { return }
+        guard inFlight[key] == nil, !isConfirmedOnDisk(key) else { return }
         for other in downloads where other.key != key && other.purpose == purpose {
-            guard running[other.key]?.waiters.isEmpty ?? true else { continue }
-            running.removeValue(forKey: other.key)?.task.cancel()
+            guard inFlight[other.key]?.waiters.isEmpty ?? true else { continue }
+            inFlight.removeValue(forKey: other.key)?.work.cancel()
             downloads.removeAll { $0.key == other.key }
         }
         let info = describe(key)
@@ -193,7 +193,7 @@ final class TranscriptionModelProvisioner {
             downloads.append(download)
         }
         let generation = UUID()
-        running[key] = Running(generation: generation, task: startTask(key, generation: generation, purpose: purpose))
+        inFlight[key] = Running(generation: generation, work: startTask(key, generation: generation, purpose: purpose))
     }
 
     /// Convenience for the Settings pickers.
@@ -209,19 +209,19 @@ final class TranscriptionModelProvisioner {
     func prepare(_ key: ModelKey, purpose: Purpose) async throws {
         if isDownloaded(key) { return }
         ensureDownloaded(key, purpose: purpose)
-        guard running[key] != nil else { return }
+        guard inFlight[key] != nil else { return }
         let waiterID = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                guard !Task.isCancelled, running[key] != nil else {
+                guard !Task.isCancelled, inFlight[key] != nil else {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                running[key]?.waiters[waiterID] = continuation
+                inFlight[key]?.waiters[waiterID] = continuation
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.running[key]?.waiters.removeValue(forKey: waiterID)?.resume(throwing: CancellationError())
+                self?.inFlight[key]?.waiters.removeValue(forKey: waiterID)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -240,8 +240,8 @@ final class TranscriptionModelProvisioner {
     }
 
     /// Test hook: the running download's task, awaited to let it settle.
-    func task(for key: ModelKey) -> Task<Void, Never>? {
-        running[key]?.task
+    func downloadTask(for key: ModelKey) -> Task<Void, Never>? {
+        inFlight[key]?.work
     }
 
     // MARK: - Private
@@ -261,7 +261,7 @@ final class TranscriptionModelProvisioner {
             }
             await withTaskCancellationHandler {
                 for await progress in stream {
-                    self?.apply(progress: progress, to: key, generation: generation)
+                    self?.applyProgress(progress, to: key, generation: generation)
                 }
                 let result = await work.value
                 self?.finish(key, generation: generation, purpose: purpose, result: result)
@@ -272,10 +272,10 @@ final class TranscriptionModelProvisioner {
     }
 
     private func isCurrent(_ key: ModelKey, _ generation: UUID) -> Bool {
-        running[key]?.generation == generation
+        inFlight[key]?.generation == generation
     }
 
-    private func apply(progress: Double, to key: ModelKey, generation: UUID) {
+    private func applyProgress(_ progress: Double, to key: ModelKey, generation: UUID) {
         guard isCurrent(key, generation), let index = downloads.firstIndex(where: { $0.key == key }) else { return }
         downloads[index].state = .downloading(progress: progress)
         if downloads[index].startFraction == nil {
@@ -284,7 +284,7 @@ final class TranscriptionModelProvisioner {
     }
 
     private func finish(_ key: ModelKey, generation: UUID, purpose: Purpose, result: Result<Void, Error>) {
-        guard isCurrent(key, generation), let done = running.removeValue(forKey: key) else { return }
+        guard isCurrent(key, generation), let done = inFlight.removeValue(forKey: key) else { return }
         switch result {
         case .success:
             downloads.removeAll { $0.key == key }

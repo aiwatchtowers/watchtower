@@ -190,21 +190,6 @@ final class AppState {
     /// Hand to Claude Code (⌥⌘↩): the hand-off sheet's request per workbench.
     let codeHandoffCenter = CodeHandoffCenter()
 
-    /// Diarizer models are prefetched only while speaker roles are on, the
-    /// speech-gate VAD model only while the gate is on; a failure is fine —
-    /// the post-pass retries the diarizer download and degrades to a
-    /// role-less transcript, the gate retries its download per recording and
-    /// falls back to the energy detector.
-    @Sendable private static func prefetchDiarizerModels() async {
-        let config = TranscriptionConfig.fromDefaults()
-        if config.diarization {
-            try? await FluidAudioDiarizer.prefetchModels()
-        }
-        if config.speechGate {
-            try? await SileroSpeechDetector.prefetchModel()
-        }
-    }
-
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
@@ -756,8 +741,7 @@ final class AppState {
         meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
-        meetingRecorderCenter.modelProvisioner = transcriptionModelProvisioner
-        dictationCenter.modelProvisioner = transcriptionModelProvisioner
+        wireTranscriptionModelDownloads()
         installLifecycleHooks()
         launchTask = Task {
             await syncCLIBinaryStore()
