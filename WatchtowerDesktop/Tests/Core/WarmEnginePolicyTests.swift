@@ -21,6 +21,7 @@ final class WarmEnginePolicyTests: XCTestCase {
         warmPresent: Bool = false,
         prewarmInFlight: Bool = false,
         keyMatches: Bool = true,
+        modelOnDisk: Bool = true,
         window: WarmMeetingWindow = .noMeetings
     ) -> WarmEnginePolicy.Decision {
         WarmEnginePolicy.decide(
@@ -29,6 +30,7 @@ final class WarmEnginePolicyTests: XCTestCase {
             warmPresent: warmPresent,
             prewarmInFlight: prewarmInFlight,
             keyMatches: keyMatches,
+            modelOnDisk: modelOnDisk,
             window: window,
             now: now
         )
@@ -58,6 +60,13 @@ final class WarmEnginePolicyTests: XCTestCase {
 
     func testNoPrewarmBeyondTheLead() {
         XCTAssertEqual(decide(window: startingIn(WarmEnginePolicy.prewarmLead + 1)), .none)
+    }
+
+    /// A prewarm never downloads (#744): with the model not on disk yet the
+    /// tick waits for the Meetings download or the first recording.
+    func testNoPrewarmWhileTheModelIsNotOnDisk() {
+        XCTAssertEqual(decide(modelOnDisk: false, window: ongoing()), .none)
+        XCTAssertEqual(decide(modelOnDisk: false, window: startingIn(60)), .none)
     }
 
     func testNoPrewarmWithNoMeetings() {

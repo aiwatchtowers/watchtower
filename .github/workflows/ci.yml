@@ -154,12 +154,12 @@ jobs:
         # feature-branch CI fast. -timeout is per package: a package whose
         # tests open in-memory DBs must install db.InitTestTemplate (pinned by
         # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh
-        # goose migration costs seconds per test under -race. cmd stays out:
-        # it is CLI glue over file-backed SQLite fixtures whose concurrency
-        # all lives in internal/*, which is race-covered here.
+        # goose migration costs seconds per test under -race. Scope — cmd
+        # out, internal/db's migration tests without -race — is in
+        # `make test-race`, shared with the release workflow.
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         timeout-minutes: 40
-        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+        run: make test-race
 
   # Whether this change touches the code index or its grammar modules — the
   # only reason to pay for the full grammar set (codeindex-full below). A
@@ -335,8 +335,13 @@ jobs:
 
       # Three concurrent xctest processes over round-robin slices of the test
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
+      # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
+      # (the step's own timeout would kill the script with every log unread).
+      # Two phases (shards, then the timing-bound classes) fit the step's 25.
       - name: Test
-        timeout-minutes: 20
+        timeout-minutes: 25
+        env:
+          LANE_TIMEOUT: "600"
         run: ../scripts/swift-test-sharded.sh 3
 
       # The process-spawning suites again on a one-thread concurrency pool,
@@ -352,7 +357,10 @@ jobs:
   prune-spm-cache:
     name: Prune SPM build cache
     needs: swift-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # always(): the build is saved before the tests run, so a red test run
+    # still leaves a new entry behind; the KEEP guard below covers a run that
+    # never saved one.
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.swift-test.outputs.spm-key != ''
     runs-on: ubuntu-latest
     permissions:
       actions: write

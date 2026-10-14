@@ -137,7 +137,7 @@ final class ExternalConnectionsViewModel {
     // MARK: - OAuth sign-in
 
     /// Builds the `connections oauth <id>` args — always `--app-return` (the
-    /// OAuth success page redirects to watchtower-auth:// so macOS brings the
+    /// CLI opens watchtower-auth:// once consent is done, so macOS brings the
     /// app back to the foreground). Pure and side-effect-free so the flag
     /// assembly is directly testable without shelling out to a real process.
     static func oauthArgs(id: Int64) -> [String] {

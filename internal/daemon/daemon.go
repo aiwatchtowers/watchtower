@@ -346,6 +346,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
+	// Calendars first on startup: a calendar sync takes seconds, while the
+	// first cycle's Slack sync of a fresh install takes minutes and runSync
+	// puts it ahead of the calendar phases. A daemon (re)started right after
+	// a calendar connect — onboarding's finish, the Add sheet — so shows
+	// events within seconds (#740). The cycle below syncs them a second time —
+	// a few API calls per account, accepted on a (re)start for that latency.
+	d.phaseCalendarSync(ctx)
+	d.phaseCalDAVSync(ctx)
+
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)
 

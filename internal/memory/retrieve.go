@@ -68,7 +68,7 @@ func RankByImportance(candidates []ScoredCandidate, limit int) []db.MemoryNodeRo
 // never give a high-importance-but-slightly-weaker-match node a chance to
 // outrank a trivially-better-ranked but unimportant one, because it would
 // never make the window at all. maxCandidateWindow caps the widened window
-// (mirrors internal/tools/limit.go's maxListLimit=200 — a single query should
+// (mirrors internal/tools/limit.go's MaxListLimit=200 — a single query should
 // never scan an effectively unbounded result set).
 const candidateWindowMultiplier = 4
 const maxCandidateWindow = 200

@@ -29,7 +29,11 @@ func TierForSource(source string) Tier {
 		// same shape/size class as ideas.digest_email/ideas.digest_jira above,
 		// not the free-form synthesis the rest of the strong tier does
 		// (decision 9, fix wave 4, task 6).
-		"catchup.learn":
+		"catchup.learn",
+		// automation.llm: an owner automation's llm() call without
+		// tier: strong (spec 2026-10-14-automations-design §5); the strong
+		// twin automation.llm.strong stays strong by absence.
+		"automation.llm":
 		return TierLight
 	default:
 		return TierStrong

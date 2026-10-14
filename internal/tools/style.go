@@ -13,7 +13,8 @@ type getWritingStyleArgs struct{}
 // NewGetWritingStyle returns the owner's communication style profile — what
 // the assistant drafts in before proposing a message sent as the owner
 // (send_slack_message). Registered beside that tool, never in ReadTools(): it
-// serves only the surfaces that can send, and dev-mode MCP stays unchanged.
+// serves the surfaces that can send plus automations (spec 2026-10-14 §20.1
+// D23), and dev-mode MCP stays unchanged.
 func NewGetWritingStyle() *Tool {
 	return &Tool{
 		Name: "get_writing_style",
@@ -21,7 +22,7 @@ func NewGetWritingStyle() *Tool {
 			"you draft to be sent as them (send_slack_message) sounds like them. Call it before drafting.",
 		InputSchema: mustSchema[getWritingStyleArgs]("get_writing_style"),
 		Access:      AccessRead,
-		Surfaces:    []string{"main", WorkbenchSurface},
+		Surfaces:    []string{"main", WorkbenchSurface, AutomationSurface},
 		Execute: func(_ context.Context, d *db.DB, _ Call) (any, error) {
 			profile, err := d.GetStyleProfile()
 			if err != nil {

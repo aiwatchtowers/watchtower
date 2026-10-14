@@ -35,6 +35,19 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// An audio file in `.held/unreadable` (`RecordingHold.protectUnreadable`):
+/// its ledger could not be read, so it is never sent; Recordings lists it
+/// for the owner to share or delete (board #171). The uploader's sealed
+/// copies moved there with it are never listed.
+struct UnreadableAudio: Equatable, Identifiable, Sendable {
+    let url: URL
+    let byteCount: Int?
+    let modifiedAt: Date?
+
+    var id: String { url.lastPathComponent }
+    var name: String { url.lastPathComponent }
+}
+
 /// The hold: recordings carried across a wipe, kept outside the replica in
 /// a hidden `.held` folder with a JSON manifest, shared by every hub
 /// (`HubPaths.holdDirectory`). A hidden folder is out of the launch sweep's
@@ -55,9 +68,14 @@ struct HeldRecording: Codable, Equatable, Identifiable, Sendable {
 struct RecordingHold {
     /// The `.held` folder itself.
     let directory: URL
+    /// A hub's own recordings folder (`HubPaths.recordingsDirectory`),
+    /// where a crash mid-move leaves a held recording's audio; nil when
+    /// unknown (the demo, tests), then only the hold is looked in.
+    let hubRecordingsDirectory: (@Sendable (String) -> URL)?
 
-    init(directory: URL) {
+    init(directory: URL, hubRecordingsDirectory: (@Sendable (String) -> URL)? = nil) {
         self.directory = directory
+        self.hubRecordingsDirectory = hubRecordingsDirectory
     }
 
     private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
@@ -103,6 +121,16 @@ struct RecordingHold {
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
+    /// Where a held recording's audio is now: the hold, or its hub's own
+    /// recordings folder after a crash mid-move; nil when it is gone.
+    func audioURL(of recording: HeldRecording) -> URL? {
+        guard let hubFolder = hubRecordingsDirectory?(recording.hubID) else {
+            let url = directory.appendingPathComponent(recording.fileName)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+        return audioURL(of: recording, recordingsDirectory: hubFolder)
+    }
+
     /// Moves a held recording's audio back into `recordingsDirectory` and
     /// returns it there; nil when the audio is gone.
     func restoreAudio(of recording: HeldRecording, to recordingsDirectory: URL) throws -> URL? {
@@ -119,6 +147,66 @@ struct RecordingHold {
     func remove(ids: Set<String>) throws {
         guard !ids.isEmpty else { return }
         try save(try load().filter { !ids.contains($0.id) })
+    }
+
+    /// Deletes a held recording the owner gave up on (its Mac is no longer
+    /// linked, board #171): its audio first, wherever `audioURL(of:)`
+    /// finds it (the hold, or its hub's folder after a crash mid-move),
+    /// then its manifest entry, so a failed delete leaves it listed.
+    func discard(id: String) throws {
+        guard let recording = try load().first(where: { $0.id == id }) else { return }
+        if let audio = audioURL(of: recording) {
+            try FileManager.default.removeItem(at: audio)
+        }
+        try remove(ids: [id])
+    }
+
+    private var unreadableDirectory: URL { directory.appendingPathComponent("unreadable", isDirectory: true) }
+
+    /// The uploader's sealed copy of a recording (`<id>.enc`,
+    /// `<id>-<n>.enc`): named by the ledger row, so with the ledger
+    /// unreadable it cannot be matched to its audio.
+    private static func isSealed(_ url: URL) -> Bool { url.pathExtension == "enc" }
+
+    private func unreadableFiles() throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: unreadableDirectory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(
+            at: unreadableDirectory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+    }
+
+    /// The audio in `.held/unreadable`, by name; empty when there is none.
+    /// Sealed copies are not audio the owner can play: never listed, so a
+    /// folder holding only those shows no row.
+    func unreadableAudio() throws -> [UnreadableAudio] {
+        try unreadableFiles()
+            .filter { !Self.isSealed($0) }
+            .map { url in
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                return UnreadableAudio(url: url, byteCount: values?.fileSize, modifiedAt: values?.contentModificationDate)
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// Deletes audio files from `.held/unreadable` by name; a name that is
+    /// not a plain audio file name there deletes nothing, and the first
+    /// failure stops the rest. Once no audio is left, the sealed copies
+    /// go too: they belong to the deleted audio, and which to which cannot
+    /// be told (`isSealed`).
+    func deleteUnreadable(named names: [String]) throws {
+        for name in names {
+            guard !name.isEmpty, !name.hasPrefix("."), URL(fileURLWithPath: name).lastPathComponent == name else { continue }
+            let file = unreadableDirectory.appendingPathComponent(name)
+            guard !Self.isSealed(file), FileManager.default.fileExists(atPath: file.path) else { continue }
+            try FileManager.default.removeItem(at: file)
+        }
+        let left = try unreadableFiles()
+        guard !left.contains(where: { !Self.isSealed($0) }) else { return }
+        for sealed in left {
+            try FileManager.default.removeItem(at: sealed)
+        }
     }
 
     /// Deletes every held recording and its audio (an iCloud account
@@ -144,7 +232,7 @@ struct RecordingHold {
     /// failures.
     @discardableResult
     func protectUnreadable(in recordingsDirectory: URL) throws -> (moved: Int, failures: [String]) {
-        let unreadable = directory.appendingPathComponent("unreadable", isDirectory: true)
+        let unreadable = unreadableDirectory
         let files = try FileManager.default.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: nil,

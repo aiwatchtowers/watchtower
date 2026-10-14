@@ -9,9 +9,9 @@ import WatchtowerCore
 /// so the accounts list and any in-flight connect survive navigating away from
 /// Settings. Deliberate structural copy of `SlackAccountsViewModel` (house
 /// pattern) — `jira add`/`jira login` are browser-consent flows like
-/// `slack add`/`slack login`, both passing `--app-return` so the OAuth success
-/// page redirects to watchtower-auth:// and macOS brings the app back to the
-/// foreground when consent finishes.
+/// `slack add`/`slack login`, both passing `--app-return` so the CLI opens
+/// watchtower-auth:// and macOS brings the app back to the foreground when
+/// consent finishes.
 @MainActor
 @Observable
 final class JiraAccountsViewModel {

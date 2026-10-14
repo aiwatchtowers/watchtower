@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/imap"
+	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
 )
@@ -48,7 +49,7 @@ var outlookLogoutCmd = &cobra.Command{
 
 func init() {
 	outlookLoginCmd.Flags().BoolVar(&outlookLoginFlagNoOpen, "no-open", false, "print the authorize URL instead of opening a browser")
-	outlookLoginCmd.Flags().BoolVar(&outlookLoginFlagAppReturn, "app-return", false, "redirect the browser back to the Watchtower app when done")
+	outlookLoginCmd.Flags().BoolVar(&outlookLoginFlagAppReturn, "app-return", false, "bring the Watchtower app back to the front when done")
 	outlookLoginCmd.Flags().StringVar(&outlookLoginFlagLabel, "label", "", "display name for this account")
 
 	outlookCmd.AddCommand(outlookLoginCmd)
@@ -84,6 +85,7 @@ func runOutlookLogin(cmd *cobra.Command, _ []string) error {
 
 	token, email, err := imap.LoginOutlook(cmd.Context(), resolveMicrosoftOAuthConfig(), out,
 		imap.OutlookLoginOptions{SkipBrowserOpen: outlookLoginFlagNoOpen, AppReturn: outlookLoginFlagAppReturn})
+	oauthpage.ReturnAfterLogin(outlookLoginFlagAppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("outlook login: %w", err)
 	}

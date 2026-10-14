@@ -45,6 +45,22 @@ struct WorkbenchSwitcher: View {
     }
 }
 
+/// `‹` left of the workbench's name (board #743): one click back to the
+/// workbench list, the visible twin of ⌘[ and the switcher's "All
+/// Workbenches".
+struct WorkbenchBackButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.backward")
+        }
+        .buttonStyle(.borderless)
+        .help("All Workbenches (⌘[)")
+        .accessibilityLabel("Back to Workbenches")
+    }
+}
+
 /// The switcher's button: grid icon, the workbench's name in semibold (long
 /// names truncate, the tooltip has it all), a chevron; the whole width is
 /// the click target.

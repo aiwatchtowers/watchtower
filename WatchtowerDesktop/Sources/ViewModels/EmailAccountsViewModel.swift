@@ -122,8 +122,8 @@ final class EmailAccountsViewModel {
             args.append(contentsOf: ["--label", label])
         }
 
-        // --app-return: the success page redirects to watchtower-auth:// so
-        // macOS brings the app back to the foreground after the browser step.
+        // --app-return: the CLI opens watchtower-auth:// once the browser step
+        // is done, so macOS brings the app back to the foreground.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
