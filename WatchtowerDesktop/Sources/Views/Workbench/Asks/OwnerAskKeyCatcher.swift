@@ -35,6 +35,9 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
     /// goes back — false while the drawer only moved to another host (a
     /// session's pane, the page's).
     var canHandBack: (() -> Bool)?
+    /// Where the lender is kept: the workbench's, so a drawer moved to
+    /// another host still hands back on its real close. nil: its own.
+    var loan: OwnerAskKeyboardLoan?
     /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone. Last:
     /// a lone trailing closure (`OwnerAskKeyCatcher { … }`) is this one.
     var onKey: ((Bool) -> Void)?
@@ -64,6 +67,7 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         view.onMouseDown = onMouseDown
         view.resizeEdge = resizeEdge
         view.canHandBack = canHandBack
+        view.loan = loan
     }
 
     enum Key {
@@ -106,6 +110,8 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         }
         var resizeEdge: CGFloat = 0
         var canHandBack: (() -> Bool)?
+        var loan: OwnerAskKeyboardLoan?
+        private let ownLoan = OwnerAskKeyboardLoan()
         /// Whether its window takes keys as the key window — not as the main
         /// window behind a key panel (Open Quickly), which AppKit also
         /// offers key equivalents. `!isVisible` is for never-shown test
@@ -114,7 +120,10 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         private var clickMonitor: Any?
         /// What a click inside took the keyboard from, until
         /// `handBackKeyboard` or a later click takes it from something else.
-        private weak var keyboardLender: NSView?
+        private var keyboardLender: NSView? {
+            get { (loan ?? ownLoan).lender }
+            set { (loan ?? ownLoan).lender = newValue }
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -235,4 +244,11 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
             return isInside(NSPoint(x: visible.midX, y: visible.midY))
         }
     }
+}
+
+/// What a click in an ask drawer took the keyboard from (board #536),
+/// held weakly; one per workbench (`OwnerAsksViewModel.keyboardLoan`).
+@MainActor
+final class OwnerAskKeyboardLoan {
+    weak var lender: NSView?
 }

@@ -512,6 +512,35 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertTrue(page.window.firstResponder === page.window)
     }
 
+    /// The drawer moved to another host (a session-less ask, the page's
+    /// host) with terminal A still on screen: the move hands nothing back,
+    /// but the new host's drawer closing really does — the loan is the
+    /// workbench's, not the first catcher's.
+    func testTheDrawerClosingInItsNextHostHandsTheKeyboardBack() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.inDrawer)
+        vm.asks.openDrawer(askID: ask.id + 1, projectID: project)
+        try await removeDrawer(page)
+        XCTAssertTrue(page.window.firstResponder === page.window, "moved: nothing handed back")
+
+        let nextShown = DrawerShown()
+        let next = NSHostingView(rootView: RemovableDrawer(shown: nextShown, vm: vm, ask: ask).frame(width: 320, height: 400))
+        next.frame = page.drawer.frame
+        page.window.contentView?.addSubview(next)
+        next.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(catchers(in: next).isEmpty)
+
+        vm.asks.closeDrawer(projectID: project)
+        nextShown.isOn = false
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(catchers(in: next).isEmpty, "the next host's catcher is gone")
+        XCTAssertTrue(page.window.firstResponder === page.terminal)
+    }
+
     /// The owner put the keyboard somewhere since: left alone.
     func testTheDrawerGoingLeavesAKeyboardTakenSince() async throws {
         let (vm, ask) = try await makeVM("question", payload: Self.questions)

@@ -188,6 +188,10 @@ final class OwnerAsksViewModel {
     /// active; a click elsewhere or the drawer going ends it. Read at key
     /// time only.
     @ObservationIgnored private(set) var drawerKeysActive: Set<Int64> = []
+    /// Per workbench, what a click in its drawer took the keyboard from
+    /// (board #536): shared by every host the drawer moves through, so the
+    /// real close hands it back. Never observed.
+    @ObservationIgnored private var keyboardLoans: [Int64: OwnerAskKeyboardLoan] = [:]
     /// The drawer's width, kept across launches under `drawerWidthKey`.
     private(set) var drawerWidth: Double
 
@@ -471,6 +475,14 @@ final class OwnerAsksViewModel {
         guard let request = stackKeyboardRequest, request.projectID == projectID else { return false }
         stackKeyboardRequest = nil
         return now.timeIntervalSince(request.at) < Self.stackKeyboardWindow
+    }
+
+    /// `projectID`'s keyboard loan, made on first use.
+    func keyboardLoan(projectID: Int64) -> OwnerAskKeyboardLoan {
+        if let loan = keyboardLoans[projectID] { return loan }
+        let loan = OwnerAskKeyboardLoan()
+        keyboardLoans[projectID] = loan
+        return loan
     }
 
     func setDrawerKeysActive(_ active: Bool, projectID: Int64) {
