@@ -145,15 +145,47 @@ final class GitStatusSnapshotReadTests: XCTestCase {
             let result = await ProcessPipes.run(process)
             XCTAssertEqual(result.exitCode, 0, result.stderr)
         }
+        // A submodule with a driver of its own, in a config the listing of
+        // the folder never reads: the status must not recurse into it.
+        let origin = repo.appendingPathComponent("origin-sub")
+        try FileManager.default.createDirectory(at: origin, withIntermediateDirectories: true)
+        try "hello\n".write(to: origin.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let commitArgs = ["-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i"]
+        let subGit = repo.appendingPathComponent(".git/modules/sub")
+        for (dir, args) in [
+            (origin, ["init", "-q"]), (origin, ["add", "b.txt"]), (origin, commitArgs),
+            (repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", origin.path, "sub"]),
+            (repo, commitArgs),
+            (repo, ["--git-dir", subGit.path, "config", "filter.subplanted.clean", filter.path]),
+            (repo, ["--git-dir", subGit.path, "config", "filter.subplanted.required", "true"])
+        ] {
+            let result = await Self.git(git, in: dir, args)
+            XCTAssertEqual(result.exitCode, 0, "\(args): \(result.stderr)")
+        }
+        try FileManager.default.createDirectory(at: subGit.appendingPathComponent("info"), withIntermediateDirectories: true)
+        try "* filter=subplanted\n".write(to: subGit.appendingPathComponent("info/attributes"), atomically: true, encoding: .utf8)
+        // Planted last, so the setup's own add and commit run no filter.
         try "* filter=planted\n".write(to: repo.appendingPathComponent(".git/info/attributes"), atomically: true, encoding: .utf8)
         // Same size as the commit: only hashing the content tells it changed.
         try "HELLO\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "HELLO\n".write(to: repo.appendingPathComponent("sub/b.txt"), atomically: true, encoding: .utf8)
 
         guard case let .snapshot(snapshot) = await GitStatusSnapshot.read(folder: repo) else {
             return XCTFail("expected a snapshot")
         }
         XCTAssertEqual(snapshot.files["a.txt"], .modified)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "git ran the repository's filter driver")
+    }
+
+    private static func git(_ git: String, in dir: URL, _ args: [String]) async -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: git)
+        process.arguments = ["-C", dir.path] + args
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        process.environment = environment
+        return await ProcessPipes.run(process)
     }
 
     func testFilterOverridesSkipTheOwnersScopesAndRefuseAnUnoverridableKey() {
@@ -164,6 +196,7 @@ final class GitStatusSnapshotReadTests: XCTestCase {
             "-c", "filter.env.smudge=", "-c", "filter.env.required=false"
         ])
         XCTAssertEqual(MemoryVaultGit.filterOverrides(""), [])
+        XCTAssertEqual(MemoryVaultGit.filterOverrides("local\u{0}lfs.extension.x.clean\u{0}"), ["-c", "lfs.extension.x.clean="])
         XCTAssertNil(MemoryVaultGit.filterOverrides("local\u{0}filter.a=b.clean\u{0}"))
     }
 

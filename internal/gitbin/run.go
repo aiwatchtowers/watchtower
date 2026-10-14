@@ -36,20 +36,27 @@ var (
 // diff also pass --no-ext-diff and --no-textconv themselves.
 func ReadArgs(args ...string) []string { return append(slices.Clone(readConfig), args...) }
 
-// filterDriverKeys matches the config keys that name a filter driver's
-// command; a .gitattributes `filter=<x>` makes status, ls-files or a diff
-// run filter.<x>.clean (or .process) on the folder's files.
-const filterDriverKeys = `^filter\..*\.(clean|smudge|process)$`
+// filterDriverKeys matches the config keys that name a command run on file
+// content: a filter driver's (a .gitattributes `filter=<x>` makes status,
+// ls-files or a diff run filter.<x>.clean or .process on the folder's
+// files), and a git-lfs extension's, which the owner's own git-lfs reads
+// from the repository's config.
+const filterDriverKeys = `^(filter\..*\.(clean|smudge|process)|lfs\.extension\..*\.(clean|smudge))$`
 
-// ReadArgsIn is ReadArgs for a read in dir that may touch file content: it
-// also blanks every filter driver command the folder's config names (and
-// lifts its `required`, so the read still answers), each key read fresh
-// for this call. The owner's global and system config are left alone —
-// their drivers (git-lfs) are the owner's own; anything else (the
-// repository's config, its includes, an inherited -c) is the folder's.
-// Listing config runs no filter. An error fails the read rather than run
-// it unprotected.
+// ReadArgsIn is ReadArgs for a read in dir. When the subcommand reads file
+// content (contentReads), it also blanks every filter driver and git-lfs
+// extension command the folder's config names (lifting a driver's
+// `required`, so the read still answers), each key read fresh for this
+// call. Only the global and system scopes are the owner's and left alone;
+// everything else — the repository's config and its includes, an
+// inherited -c — is the folder's. So a repository-local `filter.lfs.*`
+// (`git lfs install --local`) is blanked too, and in such a repository an
+// lfs file whose stat changed may read as modified. Listing config runs no
+// filter. An error fails the read rather than run it unprotected.
 func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string, error) {
+	if !readsContent(args) {
+		return ReadArgs(args...), nil
+	}
 	overrides, err := filterOverrides(ctx, bin, dir)
 	if err != nil {
 		return nil, err
@@ -58,8 +65,24 @@ func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string,
 	return append(argv, args...), nil
 }
 
-// filterOverrides lists the filter driver keys outside the global and
-// system scopes as `-c <key>=` and `-c filter.<x>.required=false` pairs.
+// contentReads are the subcommands that can run a filter driver on the
+// folder's files; log only with a patch.
+var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index"}
+
+// readsContent: args (subcommand first) may run a filter driver.
+func readsContent(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "log" || args[0] == "show" {
+		return slices.ContainsFunc(args[1:], func(a string) bool { return a == "-p" || a == "--patch" || a == "-u" })
+	}
+	return slices.Contains(contentReads, args[0])
+}
+
+// filterOverrides lists the filter driver and lfs extension keys outside
+// the global and system scopes as `-c <key>=` pairs, plus
+// `-c filter.<x>.required=false` per filter driver.
 func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
 	stdout, stderr, err := Exec(ctx, dir, nil, bin,
 		ReadArgs("config", "--show-scope", "-z", "--name-only", "--get-regexp", filterDriverKeys)...)
@@ -80,12 +103,13 @@ func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
 			continue
 		}
 		// -c splits at the first '=': a key holding one could not be blanked.
-		if strings.ContainsAny(key, "=\n") || !strings.HasPrefix(key, "filter.") {
+		isFilter := strings.HasPrefix(key, "filter.")
+		if strings.ContainsAny(key, "=\n") || !isFilter && !strings.HasPrefix(key, "lfs.extension.") {
 			return nil, fmt.Errorf("the folder's git config names a filter driver key git -c cannot override: %q", key)
 		}
 		out = append(out, "-c", key+"=")
 		name := key[:strings.LastIndex(key, ".")]
-		if !lifted[name] {
+		if isFilter && !lifted[name] {
 			lifted[name] = true
 			out = append(out, "-c", name+".required=false")
 		}

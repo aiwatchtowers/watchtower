@@ -76,7 +76,10 @@ func readStatus(ctx context.Context, o Options) (Status, *repo) {
 		st.StatusError = clip("checking for an operation in progress: " + err.Error())
 		return st, r
 	}
-	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal")
+	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal",
+		// A submodule is its own repository with its own config: status
+		// would run its filter drivers, which ReadArgsIn never listed.
+		"--ignore-submodules=all")
 	if err == nil {
 		st.StatusFields, err = parseStatus(out)
 	}

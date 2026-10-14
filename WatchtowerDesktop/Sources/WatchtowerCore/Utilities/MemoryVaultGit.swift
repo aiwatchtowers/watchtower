@@ -67,11 +67,12 @@ package enum MemoryVaultGit {
     }
 
     /// `readArgs` for a read of `folder`'s file content (a status): it also
-    /// blanks every filter driver command the folder's config names — a
-    /// `.gitattributes` `filter=<x>` would otherwise make git run
-    /// filter.<x>.clean on the folder's files — and lifts its `required`.
-    /// The twin of Go's `gitbin.ReadArgsIn`, read fresh for each call; the
-    /// owner's global and system drivers (git-lfs) are left alone. nil when
+    /// blanks every filter driver and git-lfs extension command the folder's
+    /// config names — a `.gitattributes` `filter=<x>` would otherwise make
+    /// git run filter.<x>.clean on the folder's files — and lifts a driver's
+    /// `required`. The twin of Go's `gitbin.ReadArgsIn`, read fresh for each
+    /// call. Only the global and system scopes are the owner's and left
+    /// alone, so a repository-local `filter.lfs.*` is blanked too. nil when
     /// the drivers cannot be listed: the caller fails the read rather than
     /// run it unprotected.
     package static func readArgs(git: String, folder: URL, _ arguments: [String]) async -> [String]? {
@@ -91,7 +92,7 @@ package enum MemoryVaultGit {
     }
 
     /// Go `gitbin.filterDriverKeys`.
-    static let filterDriverKeys = #"^filter\..*\.(clean|smudge|process)$"#
+    static let filterDriverKeys = #"^(filter\..*\.(clean|smudge|process)|lfs\.extension\..*\.(clean|smudge))$"#
 
     /// `-c <key>=` per listed key outside the global and system scopes, and
     /// `-c filter.<x>.required=false` once per driver, from `git config
@@ -107,11 +108,12 @@ package enum MemoryVaultGit {
             let scope = fields[index], key = fields[index + 1]
             index += 2
             if scope == "global" || scope == "system" { continue }
-            guard key.hasPrefix("filter."), !key.contains("="), !key.contains("\n"),
+            let isFilter = key.hasPrefix("filter.")
+            guard isFilter || key.hasPrefix("lfs.extension."), !key.contains("="), !key.contains("\n"),
                   let dot = key.lastIndex(of: ".") else { return nil }
             out += ["-c", key + "="]
             let name = String(key[..<dot])
-            if lifted.insert(name).inserted { out += ["-c", name + ".required=false"] }
+            if isFilter, lifted.insert(name).inserted { out += ["-c", name + ".required=false"] }
         }
         return out
     }

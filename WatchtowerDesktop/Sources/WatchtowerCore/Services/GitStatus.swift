@@ -111,7 +111,10 @@ extension GitStatusSnapshot {
         // Status hashes edited files through their filter driver: the
         // folder's own drivers are blanked (MemoryVaultGit.readArgs(git:folder:)).
         guard let statusArgs = await MemoryVaultGit.readArgs(git: git, folder: folder, [
-            "--no-optional-locks", "-C", folder.path, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."
+            // A submodule's own config and drivers are never listed: status
+            // does not recurse into one.
+            "--no-optional-locks", "-C", folder.path, "status", "--porcelain=v2", "-z", "--untracked-files=all",
+            "--ignore-submodules=all", "--", "."
         ]) else {
             return .failed("could not list the folder's git filter drivers, so its status was not read")
         }

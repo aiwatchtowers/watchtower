@@ -74,13 +74,25 @@ func TestUntrustedConfig_NoFilterDriverRuns(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "filter-ran")
 	script := filepath.Join(t.TempDir(), "planted")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\ncat\n"), 0o755))
-	gitIn(t, dir, "config", "filter.planted.clean", script)
-	gitIn(t, dir, "config", "filter.planted.process", script)
-	gitIn(t, dir, "config", "filter.planted.required", "true")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "info", "attributes"), []byte("* filter=planted\n"), 0o644))
+	// A submodule is its own repository with its own config and attributes,
+	// which the superproject's listing never sees: status must not recurse.
+	sub := newRepo(t)
+	gitIn(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub")
+	gitIn(t, dir, "commit", "-q", "-m", "submodule")
+	subGit := filepath.Join(dir, ".git", "modules", "sub")
+	// The submodule's driver has a name the superproject never configures,
+	// so no superproject -c blank reaches it.
+	for gitDir, name := range map[string]string{filepath.Join(dir, ".git"): "planted", subGit: "subplanted"} {
+		gitIn(t, dir, "--git-dir", gitDir, "config", "filter."+name+".clean", script)
+		gitIn(t, dir, "--git-dir", gitDir, "config", "filter."+name+".process", script)
+		gitIn(t, dir, "--git-dir", gitDir, "config", "filter."+name+".required", "true")
+		require.NoError(t, os.MkdirAll(filepath.Join(gitDir, "info"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(gitDir, "info", "attributes"), []byte("* filter="+name+"\n"), 0o644))
+	}
 	// Same size as the committed "hello\n": only hashing the content (the
 	// clean filter's moment) tells it changed.
 	writeFile(t, dir, "README.md", "HELLO\n")
+	writeFile(t, filepath.Join(dir, "sub"), "README.md", "HELLO\n")
 
 	st := ReadStatus(context.Background(), Options{Folder: dir})
 	require.True(t, st.Git, "%+v", st)

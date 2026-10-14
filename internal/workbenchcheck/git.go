@@ -449,7 +449,7 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	// -U0 on both sides: patch-id hashes context lines, so a line main
 	// changed next to the branch's hunks would make an otherwise identical
 	// squash differ.
-	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", fork, sha)
+	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "-U0", fork, sha)
 	if err != nil {
 		return unknown
 	}
@@ -460,7 +460,7 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	if !ok || len(want) != 1 {
 		return unknown
 	}
-	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv",
+	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
 		"--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
 	if err != nil {
 		return unknown

@@ -84,8 +84,21 @@ func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
 	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "init", "-q"); err != nil {
 		t.Fatalf("git init: %v %s", err, stderr)
 	}
-	marker := plantFilter(t, bin, dir)
+	// Committed before the filter is planted; then edited to the same size,
+	// so only hashing the content (the clean filter's moment) tells.
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "a.txt"}, {"-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i"}} {
+		if _, stderr, err := Exec(context.Background(), dir, nil, bin, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, stderr)
+		}
+	}
+	marker := plantFilter(t, bin, dir)
+	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "config", "lfs.extension.planted.clean", "planted %f"); err != nil {
+		t.Fatalf("git config: %v %s", err, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,19 +107,21 @@ func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(argv, " ")
-	for _, want := range []string{"-c filter.planted.clean=", "-c filter.planted.process=", "-c filter.planted.required=false"} {
+	for _, want := range []string{
+		"-c filter.planted.clean=", "-c filter.planted.process=", "-c filter.planted.required=false",
+		"-c lfs.extension.planted.clean=",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv %q lacks %q", joined, want)
 		}
 	}
-	if strings.Contains(joined, "filter.lfs") {
-		t.Errorf("the owner's global lfs driver was blanked: %q", joined)
+	if strings.Contains(joined, "filter.lfs") || strings.Contains(joined, "lfs.extension.planted.required") {
+		t.Errorf("argv %q blanks the owner's global lfs driver or lifts an extension", joined)
 	}
 	if !strings.HasSuffix(joined, " status --porcelain") {
 		t.Errorf("argv %q does not end with the subcommand", joined)
 	}
-	// add stages the file: the clean filter's moment.
-	for _, args := range [][]string{{"add", "a.txt"}, {"status", "--porcelain"}, {"ls-files", "-z", "--cached", "--others"}} {
+	for _, args := range [][]string{{"status", "--porcelain"}, {"diff", "--stat"}, {"ls-files", "-z", "--cached", "--others", "--modified"}} {
 		read, err := ReadArgsIn(context.Background(), bin, dir, args...)
 		if err != nil {
 			t.Fatal(err)
@@ -117,6 +132,27 @@ func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("a filter driver from the folder's config ran")
+	}
+
+	// A subcommand that reads no file content lists nothing.
+	plain, err := ReadArgsIn(context.Background(), bin, dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(plain, " "), strings.Join(ReadArgs("rev-parse", "HEAD"), " "); got != want {
+		t.Errorf("rev-parse argv = %q, want %q", got, want)
+	}
+}
+
+func TestReadsContent(t *testing.T) {
+	for args, want := range map[string]bool{
+		"status --porcelain": true, "ls-files -z": true, "check-ignore --stdin": true, "diff a b": true,
+		"log -p a..b": true, "log -1 --format=%ct": false, "rev-parse HEAD": false, "branch --list": false,
+		"remote get-url origin": false, "": false,
+	} {
+		if got := readsContent(strings.Fields(args)); got != want {
+			t.Errorf("readsContent(%q) = %v, want %v", args, got, want)
+		}
 	}
 }
 
