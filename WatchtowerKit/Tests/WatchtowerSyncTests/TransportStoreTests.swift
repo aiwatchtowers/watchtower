@@ -265,6 +265,34 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(names, ["chunk-new"], "within-window event must survive the sweep")
     }
 
+    /// The server's date is buffered and decides the sweep (target 168): a writer's far-future `modifiedAt`
+    /// cannot keep an aged event, nor a far-past one sweep a fresh event.
+    func testSweepEventsAgesByTheServersDate() throws {
+        let store = try TransportStore.inMemory()
+        let now = Date()
+        let claimsFresh = CloudRecord(
+            recordName: "action-claims-fresh", zone: .relay, kind: "action",
+            modifiedAt: now.addingTimeInterval(365 * 86_400), payload: Data("{}".utf8),
+            serverModifiedAt: now.addingTimeInterval(-35 * 86_400)
+        )
+        let claimsAged = CloudRecord(
+            recordName: "action-claims-aged", zone: .relay, kind: "action",
+            modifiedAt: Date(timeIntervalSince1970: 1), payload: Data("{}".utf8),
+            serverModifiedAt: now.addingTimeInterval(-60)
+        )
+        try store.bufferChanged([claimsFresh, claimsAged])
+        let batch = try store.changes(in: .relay, since: nil)
+        let buffered = batch.changed.compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
+        let expected = [claimsFresh, claimsAged].compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
+        XCTAssertEqual(buffered.count, 2)
+        for (got, want) in zip(buffered, expected) { XCTAssertEqual(got, want, accuracy: 0.001) }
+
+        let swept = try store.sweepEvents(in: .relay, olderThan: now.addingTimeInterval(-31 * 86_400), upTo: batch.newToken)
+
+        XCTAssertEqual(swept, 1)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["action-claims-aged"])
+    }
+
     func testSweepEventsSparesUnconsumedEventsRegardlessOfAge() throws {
         // A desktop that was off for weeks buffers old-modifiedAt records on its
         // first pull; their seqs sit ABOVE the stored relay token. The sweep must

@@ -43,6 +43,45 @@ public enum ExternalConnectionSecretBuilder {
     }
 }
 
+/// The add sheet's mirror of the CLI's refusal (`netsec.RequireSecureURL` in
+/// `watchtower connections add`): headers are a secret, so an http server
+/// that gets them must be https unless it is on this Mac (a loopback host).
+/// Checked inline so the sheet disables Add instead of only failing in the CLI.
+public enum ExternalConnectionTransportRule {
+    public static let caption =
+        "Headers are a secret: the server URL must use https. Plain http is allowed only for "
+            + "localhost, 127.0.0.1 or ::1."
+
+    /// True when `url` is plain http to a host other than loopback — headers
+    /// sent there would travel in cleartext — and, failing closed like Go's
+    /// refusal of a URL it cannot parse, when `url` does not parse at all.
+    public static func sendsSecretInCleartext(url: String) -> Bool {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let components = URLComponents(string: trimmed) else { return true }
+        guard components.scheme?.lowercased() == "http" else { return false }
+        return !isLoopbackHost(components.host ?? "")
+    }
+
+    /// "localhost" or a loopback IP literal (127.0.0.0/8, ::1, ::ffff:127.x),
+    /// as Go's `netsec.IsLoopbackHost`.
+    public static func isLoopbackHost(_ host: String) -> Bool {
+        var trimmed = host
+        if trimmed.hasPrefix("["), trimmed.hasSuffix("]") { trimmed = String(trimmed.dropFirst().dropLast()) }
+        if trimmed.lowercased() == "localhost" { return true }
+        var v4 = in_addr()
+        if inet_pton(AF_INET, trimmed, &v4) == 1 {
+            return UInt32(bigEndian: v4.s_addr) >> 24 == 127
+        }
+        var v6 = in6_addr()
+        guard inet_pton(AF_INET6, trimmed, &v6) == 1 else { return false }
+        let bytes = withUnsafeBytes(of: v6) { Array($0) }
+        if bytes[0 ..< 15].allSatisfy({ $0 == 0 }), bytes[15] == 1 { return true }
+        // IPv4-mapped (::ffff:a.b.c.d): loopback when the IPv4 part is.
+        return bytes[0 ..< 10].allSatisfy { $0 == 0 } && bytes[10] == 0xFF && bytes[11] == 0xFF && bytes[12] == 127
+    }
+}
+
 /// Shell-like tokenizer for the add-sheet's arguments field: whitespace splits
 /// tokens unless inside single or double quotes, so a quoted path containing a
 /// space stays one argument. Explicit empty quotes (`""`) yield one empty

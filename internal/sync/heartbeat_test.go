@@ -74,3 +74,12 @@ func TestProgressFromSnapshot_PhaseDetail(t *testing.T) {
 		})
 	}
 }
+
+// The heartbeat's directory is the workspace: created private.
+func TestWriteSyncProgress_CreatesAPrivateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "workspace")
+	require.NoError(t, WriteSyncProgress(filepath.Join(dir, "sync_progress.json"), SyncProgress{}))
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}

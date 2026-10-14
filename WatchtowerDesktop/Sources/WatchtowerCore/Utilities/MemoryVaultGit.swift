@@ -57,6 +57,67 @@ package enum MemoryVaultGit {
         return candidates.first(where: isExecutable)
     }
 
+    /// A background read's argv: the Desktop twin of Go's `gitbin.ReadArgs`
+    /// (internal/gitbin/run.go — keep the two in sync). A folder's own
+    /// .git/config can name commands git runs by itself (core.fsmonitor on a
+    /// status, core.hooksPath, a gpg.program behind log.showSignature); a
+    /// command-line -c outranks it, so a read never runs one.
+    package static func readArgs(_ arguments: [String]) -> [String] {
+        ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"] + arguments
+    }
+
+    /// `readArgs` for a read of `folder`'s file content (a status): it also
+    /// blanks every filter driver and git-lfs extension command the folder's
+    /// config names — a `.gitattributes` `filter=<x>` would otherwise make
+    /// git run filter.<x>.clean on the folder's files — and lifts a driver's
+    /// `required`. The twin of Go's `gitbin.ReadArgsIn`, read fresh for each
+    /// call. Only the global and system scopes are the owner's and left
+    /// alone, so a repository-local `filter.lfs.*` is blanked too. nil when
+    /// the drivers cannot be listed: the caller fails the read rather than
+    /// run it unprotected.
+    package static func readArgs(git: String, folder: URL, _ arguments: [String]) async -> [String]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: git)
+        process.arguments = readArgs([
+            "-C", folder.path, "config", "--show-scope", "-z", "--name-only", "--get-regexp", filterDriverKeys
+        ])
+        let listed = await ProcessPipes.run(process)
+        switch listed.exitCode {
+        case 0: break
+        case 1: return readArgs(arguments) // no filter driver configured
+        default: return nil
+        }
+        guard let overrides = filterOverrides(listed.stdout) else { return nil }
+        return readArgs(overrides + arguments)
+    }
+
+    /// Go `gitbin.filterDriverKeys`.
+    static let filterDriverKeys = #"^(filter\..*\.(clean|smudge|process)|lfs\.extension\..*\.(clean|smudge))$"#
+
+    /// `-c <key>=` per listed key outside the global and system scopes, and
+    /// `-c filter.<x>.required=false` once per driver, from `git config
+    /// --show-scope -z --name-only` output (scope NUL key NUL). nil when a
+    /// key cannot be overridden by `-c` (it holds a '=' or a newline).
+    static func filterOverrides(_ output: String) -> [String]? {
+        var fields = output.components(separatedBy: "\u{0}")
+        if fields.last?.isEmpty == true { fields.removeLast() }
+        var out: [String] = []
+        var lifted: Set<String> = []
+        var index = 0
+        while index + 1 < fields.count {
+            let scope = fields[index], key = fields[index + 1]
+            index += 2
+            if scope == "global" || scope == "system" { continue }
+            let isFilter = key.hasPrefix("filter.")
+            guard isFilter || key.hasPrefix("lfs.extension."), !key.contains("="), !key.contains("\n"),
+                  let dot = key.lastIndex(of: ".") else { return nil }
+            out += ["-c", key + "="]
+            let name = String(key[..<dot])
+            if isFilter, lifted.insert(name).inserted { out += ["-c", name + ".required=false"] }
+        }
+        return out
+    }
+
     /// `xcode-select -p`: the active developer directory, nil when none is
     /// set. Unlike the shims it only prints, never prompts.
     static func developerDir() async -> String? {
@@ -71,7 +132,7 @@ package enum MemoryVaultGit {
     private static func run(git: String, arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = arguments
+        process.arguments = readArgs(arguments)
         return await ProcessPipes.run(process)
     }
 }

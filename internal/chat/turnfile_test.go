@@ -23,3 +23,19 @@ func TestTurnFile_WriteThenRead(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
+
+// A symlink planted at the old fixed temp name (path+".tmp") never redirects
+// the write: the turn id lands only in path, the link's target is not created.
+func TestTurnFile_NeverWritesThroughAPlantedTempLink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "turn.txt")
+	outside := filepath.Join(t.TempDir(), "outside")
+	require.NoError(t, os.Symlink(outside, path+".tmp"))
+
+	require.NoError(t, WriteTurnFile(path, "turn-1"))
+	assert.Equal(t, "turn-1", TurnFileReader(path)())
+	assert.NoFileExists(t, outside, "the planted link's target must not be written")
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().IsRegular(), "the turn file is a regular file")
+}

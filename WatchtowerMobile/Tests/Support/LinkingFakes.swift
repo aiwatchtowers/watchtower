@@ -92,7 +92,7 @@ final class FakeLinkContainer: LinkContainer {
 
     func userRecordName() async throws -> String { userRecordNameValue }
 
-    func acceptShares(_ urls: [URL]) async throws {
+    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
         log.append("accept \(urls.count)")
         if let acceptError { throw acceptError }
         accepted.append(urls)

@@ -6,6 +6,8 @@ import (
 	"io"
 	"time"
 
+	"watchtower/internal/netsec"
+
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/mail"
@@ -35,6 +37,11 @@ func Dial(cfg AccountConfig, auth Authenticator) (client *Client, uidValidity ui
 	case SecurityStartTLS:
 		c, err = imapclient.DialStartTLS(addr, nil)
 	case SecurityNone:
+		// Authenticate sends the password (or token): never in cleartext
+		// to a remote host.
+		if err := netsec.RequireTLS(cfg.Host, `security "none" (choose ssl or starttls)`); err != nil {
+			return nil, 0, fmt.Errorf("imap: %w", err)
+		}
 		c, err = imapclient.DialInsecure(addr, nil)
 	default:
 		return nil, 0, fmt.Errorf("imap: unknown security mode %q", cfg.Security)

@@ -99,6 +99,12 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, w := range append(jiraWrites, "get_confluence_page", "edit_confluence_page") {
 		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
+	// The seeded dictionary (migration 00063) maps :white_check_mark: and
+	// :ticket: to these; Propose admits only a tool the calling surface lists.
+	for _, w := range []string{"create_target", "create_jira_issue"} {
+		assert.True(t, reaction[w], "%s is a seeded reaction command", w)
+	}
+	assert.False(t, reaction["connect_jira_board"], "connect_jira_board is main-only")
 
 	// The workbench surface (`mcp --workbench N`, DEV-06): exactly the workbench
 	// tools, the Slack pair and the surface-less read tools — no other write

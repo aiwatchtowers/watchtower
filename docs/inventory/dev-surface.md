@@ -344,6 +344,12 @@ DEV-06's scoping is a guardrail on Watchtower's own tools only: the agent runs
 as the owner with a shell, so Claude Code's own permission prompt is the real
 boundary. A workbench session also mounts the full read tool set plain
 `watchtower mcp` does (`workbench.md`, "v1 limits and notes").
+That read set includes the owner's DMs, transcripts, memory and writing
+style, and the session's agent also holds Bash and WebFetch, so a prompt
+injection in the folder could read them and send them off the machine. This
+is an accepted risk (security review board #152, owner decision 2026-10-14,
+ask #106 «Оставить как есть»): the reads are not narrowed for the workbench
+surface, and the agent's own permission prompts remain the boundary.
 
 Since 2026-10-12 (board #399) the mode also takes `--agent claude|codex`
 (only with `--workbench`; any other value is refused). It changes no tool,
@@ -374,6 +380,7 @@ unreviewed write path into the owner's whole app — or off the machine.
 
 ## Changelog
 
+- 2026-10-14 (security review board #146/#152, owner decision in ask #106): note only, no contract semantics changed. DEV-06 now names the full read set on the workbench surface (DMs, transcripts, memory, writing style next to an agent with Bash/WebFetch) as an accepted risk rather than leaving it implicit.
 - 2026-10-12 (board #399, Codex as a Workbench agent, spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md`, owner approved in ask #189): note only, no contract semantics changed. DEV-05's hook amendment covers a Codex session's hooks, which arrive as launch flags of the owner-started session and are trusted by `integrate codex`. DEV-06 gains the `--agent claude|codex` flag (comment labels only; tools, scope and apply unchanged) and notes that a Codex session approves Watchtower's tools without a per-call prompt (D3). The workbench skill is pack **v7** (names both tool spellings and Codex's `request_user_input`).
 - 2026-10-11 (owner asks v2, board #395, spec `docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md` Part 7): the workbench skill is pack **v6** (`x-watchtower-pack: v6`; `origin/main` already shipped v5 with board #499, so the spec's "v5" became the next free version) — "Asking the owner" teaches the Chat / Quick / Full levels, a do-not-ask list, one ask with up to 4 questions, re-filing a withdrawn ask only as a revision with `changes`, and asks raised from chat (`origin: chat`); the `ask_owner` line names `level`. The shipped v4 and v5 texts join the DEV-04 re-install fixtures (`watchtower-workbench-v4.md`, `-v5.md`), so an un-edited v1–v5 copy is updated by resync/Repair and an edited one is kept. No DEV-04 wording change; no guard relaxed. DEV-06's `ask_owner` gains the optional `level` argument and the `level`/`level_note`/`hint` result keys, `get_ask`/`list_asks` add `level`, `origin` and `chat_asked_at`; the tool set is unchanged.
 - 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; owner-approved via asks #2 and #4): DEV-06's workbench tool set grows from fourteen to **fifteen** — `finish_session` (a workbench write, applied directly and audited like the others; `summary` 1–600 runes in at most 4 lines, optional `target_id` of workbench N) marks the calling terminal session finished. Rule 1 names its session resolution: only a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`, else it is refused with `finish_session needs a Watchtower terminal session` before any row or audit row (PROJ-14 in `workbench.md`). `update_target`, `create_targets`, `add_comment` and `ask_owner` now also link their targets to that session, best-effort after their own write (PROJ-14). `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames` was renamed in place to `…FifteenTools…` (count only); no guard relaxed.

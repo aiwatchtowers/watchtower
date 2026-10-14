@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
-	"golang.org/x/net/http2"
 )
 
 // Client wraps the slack-go client with rate limiting.
@@ -50,11 +49,11 @@ const (
 func newHTTPClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = responseHeaderTimeout
-	// Best-effort: a transport that cannot be h2-configured still works, it
-	// just falls back to the HTTP/1.1 bounds above.
-	if h2, err := http2.ConfigureTransports(tr); err == nil {
-		h2.ReadIdleTimeout = h2ReadIdleTimeout
-		h2.PingTimeout = h2PingTimeout
+	// HTTP/2 health checks: a ping after ReadIdleTimeout of silence, the
+	// connection dropped when it goes unanswered for PingTimeout.
+	tr.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: h2ReadIdleTimeout,
+		PingTimeout:     h2PingTimeout,
 	}
 	return &http.Client{Timeout: httpTimeout, Transport: tr}
 }

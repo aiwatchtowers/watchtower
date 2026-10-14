@@ -185,6 +185,63 @@ final class MobileLinkPairingCodeTests: XCTestCase {
         XCTAssertTrue(center.pendingLinks.contains { $0.id == identityD.deviceID.uuidString }, "a new code, new tries")
     }
 
+    /// Refusals are bounded (target 168): a hello can carry a fresh key at will, so one code publishes at most
+    /// `maxRefusalsPerCode` refusals beyond its nonces; later fresh phones go unanswered. A phone already refused is
+    /// rewritten in place, and the total stays under `maxLinkRefusals`.
+    func testRefusalsPerCodeAreCapped() async throws {
+        let code = try await center.issueCode()
+        for phone in [identityA, identityB, identityC] {
+            try await handle(try hello(phone, nonce: code.nonce))
+        }
+        let flood = (0 ..< MobileLinkCenter.maxRefusalsPerCode + 2).map { _ in TestHello.newPhone() }
+        for phone in flood {
+            try await handle(try hello(phone, nonce: code.nonce))
+        }
+
+        XCTAssertEqual(try sidecar.linkRefusals().count, MobileLinkCenter.maxRefusalsPerCode)
+        let answered = try await openedKeybox(flood[0])
+        XCTAssertEqual(answered.grant.linkRefused, .tooManyRequests)
+        let unanswered = try await TestHello.keybox(for: try XCTUnwrap(flood.last), in: grantRecords(), keyring: keyring)
+        XCTAssertNil(unanswered, "past the cap a hello gets no keybox")
+
+        // An already-refused phone is answered again in place: no new row.
+        try await handle(try hello(flood[0], nonce: code.nonce))
+        XCTAssertEqual(try sidecar.linkRefusals().count, MobileLinkCenter.maxRefusalsPerCode)
+    }
+
+    func testRefusalsAreCappedInTotal() throws {
+        let max = 3
+        try sidecar.addLinkCode(nonce: "code-1", issuedAt: clock.now, exp: clock.now, keeping: 50)
+        func refusal(_ id: String) -> HubSyncState.LinkRefusalRecord {
+            HubSyncState.LinkRefusalRecord(
+                deviceID: id, name: "iPhone", scope: .private, reason: .expiredCode, at: clock.now, agreementKey: nil)
+        }
+        for index in 0 ..< max {
+            XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+                refusal("phone-\(index)"), codeNonce: "code-1", maxAnswersPerCode: 100, maxRefusals: max))
+        }
+        XCTAssertFalse(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-new"), codeNonce: "code-1", maxAnswersPerCode: 100, maxRefusals: max))
+        XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-0"), codeNonce: "code-1", maxAnswersPerCode: 100, maxRefusals: max), "a known phone is rewritten")
+        XCTAssertEqual(try sidecar.linkRefusals().count, max)
+    }
+
+    /// A code pruned while its hello was being checked has no counter: its phone is still refused (it hears why
+    /// instead of timing out), within the total cap.
+    func testARefusalForACodeNoLongerKeptStillAnswers() throws {
+        func refusal(_ id: String) -> HubSyncState.LinkRefusalRecord {
+            HubSyncState.LinkRefusalRecord(
+                deviceID: id, name: "iPhone", scope: .private, reason: .expiredCode, at: clock.now, agreementKey: nil)
+        }
+        XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-1"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2))
+        XCTAssertTrue(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-2"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2))
+        XCTAssertFalse(try sidecar.saveBoundedLinkRefusal(
+            refusal("phone-3"), codeNonce: "pruned-code", maxAnswersPerCode: 1, maxRefusals: 2), "the total cap holds")
+    }
+
     /// Review I-1: the device id hashes only the signing key, so one device can re-roll its agreement key under one
     /// code. Each re-roll draws one of the code's nonces; the 4th gets none: the request stays the 3rd one, the
     /// keybox stays sealed to the 3rd key (the 4th cannot open it), and no fresh code is shown.

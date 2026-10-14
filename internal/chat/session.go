@@ -72,11 +72,7 @@ type inbound struct {
 func (s *Session) Run(ctx context.Context, in io.Reader) error {
 	sid, err := s.b.Start(ctx)
 	if err != nil {
-		code, retry := ClassifyClaudeError(err.Error())
-		if code == CodeInternal {
-			code = CodeProviderUnavailable
-		}
-		_ = s.w.Emit(Event{Type: EventError, Code: code, Message: err.Error(), Retryable: retry})
+		_ = s.w.Emit(startErrorEvent(err))
 		_ = s.b.Close()
 		return err
 	}
@@ -228,12 +224,29 @@ func (s *Session) runTurn(ctx context.Context, c Command, st *turnState) {
 	emit(fallbackTerminal(ctx, c.TurnID, err))
 }
 
+// startErrorEvent is the error a session that could not start reports: an
+// unsafe work dir's own non-retryable code, else the classified claude
+// failure, an unclassified one reading as provider_unavailable.
+func startErrorEvent(err error) Event {
+	if ev, ok := workDirErrorEvent("", err); ok {
+		return ev
+	}
+	code, retry := ClassifyClaudeError(err.Error())
+	if code == CodeInternal {
+		code = CodeProviderUnavailable
+	}
+	return Event{Type: EventError, Code: code, Message: err.Error(), Retryable: retry}
+}
+
 // fallbackTerminal is the terminal event for a turn whose backend returned
 // without emitting one. A rejected attachment is checked before ctx: stdin
 // EOF right after the turn cancels turnCtx on the same race, and the
 // attachment error must still win (A21).
 func fallbackTerminal(ctx context.Context, turnID string, err error) Event {
 	if ev, ok := attachmentErrorEvent(turnID, err); ok {
+		return ev
+	}
+	if ev, ok := workDirErrorEvent(turnID, err); ok {
 		return ev
 	}
 	switch {

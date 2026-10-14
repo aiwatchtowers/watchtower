@@ -162,12 +162,6 @@ struct AgentActionCardView: View {
         onApproveEdited == nil ? nil : SlackSendProposal(action: action)
     }
 
-    /// The summary, minus the Slack text while the editor shows it.
-    private var displayLines: [String] {
-        if action.isPending, let slack = editableSlack { return [slack.recipientLine] }
-        return Self.summaryLines(for: action)
-    }
-
     /// After a sign-in that reported no error — which a cancelled one does
     /// not either, and a grant Slack still refused send for neither.
     static let reconnectDoneNote = "Sign-in closed. Press Retry — if sending is still refused, Slack has not "
@@ -207,8 +201,16 @@ struct AgentActionCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            ForEach(displayLines, id: \.self) { line in
-                Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
+            if let slack = SlackSendProposal(action: action) {
+                SlackRecipientLine(proposal: slack)
+                // The text is in the editor while the row can still be edited.
+                if !(action.isPending && editableSlack != nil) {
+                    Text(slack.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                ForEach(Self.summaryLines(for: action), id: \.self) { line in
+                    Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
             }
             if let edit = Self.confluenceEdit(for: action) {
                 ConfluenceEditChangesView(edit: edit)

@@ -1,7 +1,7 @@
 # Watchtower — Developer Notes
 
 **Project:** `watchtower` (Go module: `watchtower`)
-**Backend:** Go 1.25, SQLite via `modernc.org/sqlite` (`database/sql`), see `go.mod`
+**Backend:** Go 1.26, SQLite via `modernc.org/sqlite` (`database/sql`), see `go.mod`
 **Desktop:** SwiftUI macOS app (Swift 5.10 language mode, macOS 14+; building requires a Swift 6+ toolchain / Xcode 16+ — the FluidAudio dependency's manifest declares swift-tools 6.0), GRDB.swift, see `WatchtowerDesktop/Package.swift`
 **Mobile (POC):** shared Swift package `WatchtowerKit/` (`WatchtowerSync` + `WatchtowerKit`, macOS 14 / iOS 17) and the iPhone app `WatchtowerMobile/` (SwiftUI, iOS 17+, xcodegen `project.yml` with the generated `.xcodeproj` committed), see `docs/features/mobile-companion.md`
 
@@ -37,7 +37,7 @@ Detailed per-feature notes — architecture, contracts, dual paths, v1 limits �
 - [Voice Dictation (2026-08-11)](docs/features/voice-dictation.md) — `DictationCenter`, shared engine slot handshake, `MicRecorder`, `dictate clean`, Carbon hotkey, Quick Capture.
 - [Target Brief Chat (2026-08-19)](docs/features/target-brief-chat.md) — Composer-based target creation, `TargetBriefCenter`, propose/execute action modes; TGT-BRIEF-01..03.
 - [Persona Merge — one assistant (2026-08-19)](docs/features/persona-merge.md) — One assistant replacing two personas; per-surface capability contracts, persona-agnostic skills, stable legacy identifiers.
-- [Agent Actions — tool registry + controlled writes (2026-09-04)](docs/features/agent-actions.md) — `internal/tools/` registry, `agent_actions` propose/apply-exactly-once, trust, `buildToolRegistry`; AGENT-01..06.
+- [Agent Actions — tool registry + controlled writes (2026-09-04)](docs/features/agent-actions.md) — `internal/tools/` registry, `agent_actions` propose/apply-exactly-once, trust, `buildToolRegistry`, CLI approve refused under an agent; AGENT-01..07.
 - [Quick Connections — owner-managed external MCP servers (2026-09-09)](docs/features/quick-connections.md) — `external_connections`, secret files, MCP config merge, `internal/mcpoauth` sign-in and refresh; QC-01..04.
 - [Reaction Commands + Inbox Action Strip (Wave 1 2026-09-05, Wave 2 2026-09-06)](docs/features/reaction-commands.md) — `internal/reactioncmd/` ledger and dispatch, Wave 2 tools, reminders, inbox action strip; REACT/STRIP/REMIND contracts.
 - [Strong-tier cost fixes — daemon cadence gates + attempt budgets (2026-09-13)](docs/features/strong-tier-cost-fixes.md) — Daily rollup gate, day plan/briefing and next-step attempt budgets, memory step memo pointer.

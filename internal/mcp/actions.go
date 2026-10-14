@@ -139,17 +139,24 @@ func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Sche
 }
 
 // actionVisible decides whether get_action may show row to this session. A
-// workbench session sees only its own workbench's rows. A binding with no
-// conversation (conversation_id 0: a CLI-only install, spec §12, or a
-// dev/test session with none bound) sees every other row; otherwise a row
-// from a different conversation answers the same not-found error as a
-// missing row, so the model cannot learn that an id it invented belongs to
-// someone else's chat.
+// workbench session sees only its own workbench's rows. A chat session sees
+// only its own conversation's rows; a binding with no conversation
+// (conversation_id 0: a CLI-only install, spec §12) sees only the
+// conversation-less rows of its own surface — never a conversation's, a
+// reaction's or a workbench's. Any other row answers the same not-found error
+// as a missing row, so the model cannot learn that an id it invented belongs
+// to someone else's chat.
 func actionVisible(row db.AgentAction, binding tools.Binding) bool {
 	if binding.WorkbenchID != 0 {
 		return row.ContextType == tools.WorkbenchContextType && row.ContextID == strconv.FormatInt(binding.WorkbenchID, 10)
 	}
-	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
+	if row.ConversationID != binding.ConversationID {
+		return false
+	}
+	if binding.ConversationID != 0 {
+		return true
+	}
+	return row.Surface == binding.Surface && row.ContextType != tools.WorkbenchContextType
 }
 
 // actionView is the model-facing shape of an agent_actions row.

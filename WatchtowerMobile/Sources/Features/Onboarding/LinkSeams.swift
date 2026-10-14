@@ -8,8 +8,9 @@ protocol LinkContainer: Sendable {
     /// `CKContainer.userRecordID().recordName`.
     func userRecordName() async throws -> String
     /// Fetches every URL's share metadata, then accepts them all; throws if
-    /// any metadata fetch or accept fails.
-    func acceptShares(_ urls: [URL]) async throws
+    /// any metadata fetch or accept fails, or if the shares are not exactly
+    /// `hubID`'s two zone-wide shares owned by `ownerName` (nothing accepted).
+    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws
     /// Leaves the Mac's shares: deletes the accepted zone-wide share records
     /// of `hubID`'s two zones from this phone's shared database.
     func leaveShares(ownerName: String, hubID: String) async throws

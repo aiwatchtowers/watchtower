@@ -199,6 +199,33 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(announced.map(\.1), [false], "no first-run terminal after a failed install")
     }
 
+    /// A symlink leading outside the folder fails Repair too: the note shows
+    /// the CLI's fix instead of pointing at Repair.
+    func testInstallRefusedOverAnOutsideLinkShowsTheCLIFixNotRepair() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let stderr = "/tmp/acme/.claude/skills links to /tmp/elsewhere, outside the workbench folder: replace the link "
+            + "with a regular directory, or point it at one inside the folder (symlink leads outside the workbench folder)"
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: stderr)),
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        let note = try XCTUnwrap(vm.installErrors[id])
+        XCTAssertFalse(note.contains("Repair"), note)
+        XCTAssertTrue(note.contains("replace the link with a regular directory"), note)
+    }
+
+    func testCreateInstallNoteForASymlinkedSkillFileSkipsRepair() {
+        let note = WorkbenchesViewModel.createInstallNote(
+            "/tmp/acme/.claude/skills/watchtower-workbench/SKILL.md is a symlink; not writing through it "
+                + "(remove the link and run the install again)")
+        XCTAssertFalse(note.contains("Repair"))
+        XCTAssertTrue(note.contains("remove the link"))
+        XCTAssertTrue(WorkbenchesViewModel.createInstallNote("claude not found").contains("use Repair"))
+    }
+
     func testCreateFailureShowsTheCLIErrorAndAnnouncesNothing() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
         let vm = makeVM(runner)
