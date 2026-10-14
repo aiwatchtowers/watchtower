@@ -45,6 +45,15 @@ final class AppState {
     let daemonManager = DaemonManager()
     var isDBAvailable: Bool { databaseManager != nil }
 
+    /// Live per-feature readiness behind the tabs' empty states, here so a
+    /// reading survives tab switches. Started with the main app's DB wiring.
+    /// Lazy only because it reads `daemonManager` and `featureVisibility`.
+    @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
+        environment: LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
+            Constants.activeWorkspaceDir()
+        }
+    )
+
     /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
     /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
     /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
@@ -702,6 +711,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.readinessCenter.stop()
                 }
             }
         }
@@ -1472,6 +1482,7 @@ final class AppState {
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
+        readinessCenter.start(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never
@@ -2044,37 +2055,6 @@ final class AppState {
         let center = MeetingReminderCenter(dbPool: dbPool, recorderCenter: meetingRecorderCenter)
         meetingReminderCenter = center
         center.start()
-    }
-
-    /// Hands the recorder Center its real meetings provider (the Center is
-    /// created before the dbPool exists — the `wireMeetingRecorderLoaders`
-    /// precedent) and starts the warm-engine policy poll. A read failure is
-    /// treated as "no meetings" and logged (the MeetingReminder convention):
-    /// the worst outcome is a missed prewarm or a one-tick-late unload, both
-    /// self-correcting — never a crash, never an unload mid-recording (the
-    /// policy never touches a busy engine regardless of the window).
-    private func startWarmEnginePolicy(dbPool: DatabasePool) {
-        meetingRecorderCenter.configureWarmPolicy { now in
-            do {
-                // Candidate events overlapping the prewarm lookahead:
-                // fetchEvents matches start_time <= to AND end_time >= from,
-                // so this returns both ongoing meetings and ones starting
-                // within the lead; the pure logic sorts out which is which.
-                let events = try dbPool.read { db in
-                    try CalendarQueries.fetchEvents(
-                        db,
-                        from: now,
-                        to: now.addingTimeInterval(WarmEnginePolicy.prewarmLead)
-                    )
-                }
-                return WarmEnginePolicy.window(events: events, now: now)
-            } catch {
-                print("[AppState] warm-policy event read failed, treating as no meetings: "
-                      + error.localizedDescription)
-                return .noMeetings
-            }
-        }
-        meetingRecorderCenter.startWarmPolicy()
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {
