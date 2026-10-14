@@ -271,7 +271,7 @@ jobs:
 
       # CodeNavRealCLITests builds the CLI from this checkout (go build .):
       # the Go the other jobs use, not whatever the image carries (go.mod
-      # needs 1.25), so the suite runs here instead of skipping or failing.
+      # needs 1.26), so the suite runs here instead of skipping or failing.
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"

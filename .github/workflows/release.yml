@@ -75,7 +75,7 @@ jobs:
           xcode-version: "26.4.1"
 
       # CodeNavRealCLITests builds the CLI from this checkout (go build .):
-      # the Go the other jobs use (go.mod needs 1.25), so the suite runs here
+      # the Go the other jobs use (go.mod needs 1.26), so the suite runs here
       # instead of skipping or failing.
       - uses: actions/setup-go@v5
         with:
