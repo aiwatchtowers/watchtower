@@ -141,6 +141,8 @@ struct OwnerAskDrawer: View {
                 .background(OwnerAskKeyCatcher(
                     onPress: { keys.press($0) },
                     onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
+                    resizeEdge: PanelResizeHandle.thickness,
+                    canHandBack: { [asks, projectID = ask.projectID] in asks.drawerAskIDs[projectID] == nil },
                     onKey: pressAnswerKey
                 ))
                 .onChange(of: cursor) { _, _ in

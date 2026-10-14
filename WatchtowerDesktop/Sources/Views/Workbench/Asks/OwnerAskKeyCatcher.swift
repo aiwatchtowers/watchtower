@@ -21,12 +21,19 @@ import WatchtowerCore
 /// `onMouseDown` it reports each click in its window and whether it fell
 /// inside its own frame (the drawer's active state, board #412), and a
 /// click inside takes the keyboard to the drawer (`takeKeyboard`, board
-/// #536), handed back when the drawer goes.
+/// #536), handed back when the workbench's drawer goes (`canHandBack`).
 struct OwnerAskKeyCatcher: NSViewRepresentable {
     /// A bare key while no field has the keyboard; true when it acted.
     var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
     /// A click in the window; true when inside this view.
     var onMouseDown: ((Bool) -> Void)?
+    /// A strip along the leading edge (the drawer's resize handle) whose
+    /// clicks take no keyboard.
+    var resizeEdge: CGFloat = 0
+    /// Read once the catcher is gone: whether the keyboard a click took
+    /// goes back — false while the drawer only moved to another host (a
+    /// session's pane, the page's).
+    var canHandBack: (() -> Bool)?
     /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone. Last:
     /// a lone trailing closure (`OwnerAskKeyCatcher { … }`) is this one.
     var onKey: ((Bool) -> Void)?
@@ -43,14 +50,19 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
 
     static func dismantleNSView(_ view: CatcherView, coordinator: ()) {
         view.stopWatchingClicks()
-        // Once SwiftUI has finished taking the drawer down.
-        DispatchQueue.main.async { view.handBackKeyboard() }
+        // Once SwiftUI has finished taking the drawer down — and put up
+        // the next host's, when it only moved.
+        DispatchQueue.main.async {
+            if view.canHandBack?() != false { view.handBackKeyboard() }
+        }
     }
 
     private func update(_ view: CatcherView) {
         view.onKey = onKey
         view.onPress = onPress
         view.onMouseDown = onMouseDown
+        view.resizeEdge = resizeEdge
+        view.canHandBack = canHandBack
     }
 
     enum Key {
@@ -91,14 +103,16 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         var onMouseDown: ((Bool) -> Void)? {
             didSet { watchClicks() }
         }
+        var resizeEdge: CGFloat = 0
+        var canHandBack: (() -> Bool)?
         /// Whether its window takes keys as the key window — not as the main
         /// window behind a key panel (Open Quickly), which AppKit also
         /// offers key equivalents. `!isVisible` is for never-shown test
         /// windows only: in the app only a visible key window gets keys.
         var isKey: @MainActor (NSWindow) -> Bool = { $0.isKeyWindow || !$0.isVisible }
         private var clickMonitor: Any?
-        /// What a click inside took the keyboard from, until a click
-        /// outside or `handBackKeyboard`.
+        /// What a click inside took the keyboard from, until
+        /// `handBackKeyboard` or a later click takes it from something else.
         private weak var keyboardLender: NSView?
 
         override func viewDidMoveToWindow() {
@@ -122,15 +136,13 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// Not private: tests call it with the event the monitor would see.
         func clicked(_ event: NSEvent) {
             guard let window, event.window === window else { return }
-            let inside = isInside(event.locationInWindow)
-            onMouseDown?(inside)
-            guard inside else {
-                keyboardLender = nil
-                return
-            }
-            // After AppKit has handled the click: it may have put the
-            // keyboard in a field of the drawer.
-            DispatchQueue.main.async { [weak self] in self?.takeKeyboard(in: window) }
+            let point = event.locationInWindow
+            onMouseDown?(isInside(point))
+            guard isInside(point), point.x >= convert(bounds, to: nil).minX + resizeEdge else { return }
+            // Who has the keyboard before AppKit handles the click, which
+            // may move it (into a field, or onto the control itself).
+            let before = window.firstResponder
+            DispatchQueue.main.async { [weak self] in self?.takeKeyboard(in: window, before: before) }
         }
 
         /// A click inside moves the keyboard here, as a click into any
@@ -141,19 +153,25 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// the drawer's own text keeps it (a field the click hit, the
         /// document); anything else lets go, so ⌘↩ and the bare keys work
         /// as with nothing focused, while a terminal or Monaco that still
-        /// has the keyboard — clicked last — keeps every key.
-        func takeKeyboard(in window: NSWindow) {
+        /// has the keyboard — clicked last — keeps every key. Keyboard the
+        /// click moved out of the drawer (an answered session's terminal)
+        /// stays there. The lender is what had it before the click: under
+        /// Full Keyboard Access that is the terminal, not the control.
+        func takeKeyboard(in window: NSWindow, before: NSResponder?) {
             guard let responder = window.firstResponder, responder !== window, !isOwnText(responder) else { return }
+            guard responder === before || liesInside(responder) else { return }
             guard window.makeFirstResponder(nil) else { return }
+            guard let before, before !== window, !liesInside(before) else { return }
             // A text field lends the keyboard, not the editor it borrowed.
-            let editor = responder as? NSText
-            keyboardLender = editor?.isFieldEditor == true ? editor?.delegate as? NSView : responder as? NSView
+            let editor = before as? NSText
+            keyboardLender = editor?.isFieldEditor == true ? editor?.delegate as? NSView : before as? NSView
         }
 
         /// The drawer going: the keyboard back to what a click in it took
         /// it from, unless the owner put it somewhere since.
         func handBackKeyboard() {
-            guard let lender = keyboardLender, let window = lender.window, window.firstResponder === window else { return }
+            guard let lender = keyboardLender, !lender.isHiddenOrHasHiddenAncestor,
+                  let window = lender.window, window.firstResponder === window else { return }
             keyboardLender = nil
             window.makeFirstResponder(lender)
         }
@@ -189,13 +207,17 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
             return isOwnText(text)
         }
 
-        /// Text inside the drawer, editable or not — told by where its
-        /// visible part's middle is. Clipped to its own bounds: outside a
-        /// scroll view a text view's `visibleRect` can reach past them,
-        /// over the drawer.
+        /// Text inside the drawer, editable or not.
         private func isOwnText(_ responder: NSResponder) -> Bool {
-            guard let text = responder as? NSTextView else { return false }
-            let visible = text.convert(text.visibleRect.intersection(text.bounds), to: nil)
+            responder is NSTextView && liesInside(responder)
+        }
+
+        /// A view inside the drawer — told by where its visible part's
+        /// middle is. Clipped to its own bounds: outside a scroll view a
+        /// text view's `visibleRect` can reach past them, over the drawer.
+        private func liesInside(_ responder: NSResponder) -> Bool {
+            guard let view = responder as? NSView, view.window === window else { return false }
+            let visible = view.convert(view.visibleRect.intersection(view.bounds), to: nil)
             return isInside(NSPoint(x: visible.midX, y: visible.midY))
         }
     }
