@@ -599,7 +599,17 @@ func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
 		t.Fatalf("parsing authorize URL: %v", err)
 	}
 	q := u.Query()
-	go hitCallback(t, q.Get("redirect_uri"), map[string]string{"code": as.AuthCode, "state": q.Get("state")})
+	cb, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		t.Fatalf("parsing redirect_uri: %v", err)
+	}
+	cb.RawQuery = url.Values{"code": {as.AuthCode}, "state": {q.Get("state")}}.Encode()
+	// In a goroutine: the callback only answers once the exchange gives up.
+	go func() {
+		if resp, err := http.Get(cb.String()); err == nil { //nolint:gosec,noctx
+			resp.Body.Close()
+		}
+	}()
 
 	select {
 	case <-inToken:
