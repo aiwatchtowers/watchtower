@@ -578,6 +578,76 @@ func TestClaudeBackend_NarrowsItsOwnGroupWritableWorkDir(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(warn.String(), "narrowed it to 0700"), warn.String())
 }
 
+// A group-writable work dir may already hold what another user planted while
+// it was open (hooks in .claude/settings.json, a CLAUDE.md): it is narrowed,
+// but refused when anything in it is open to others or a symlink.
+func TestClaudeBackend_RefusesAGroupWritableWorkDirWithOpenContents(t *testing.T) {
+	for name, plant := range map[string]func(dir string) error{
+		"group-writable settings": func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o700); err != nil {
+				return err
+			}
+			p := filepath.Join(dir, ".claude", "settings.json")
+			if err := os.WriteFile(p, []byte(`{"hooks":{}}`), 0o600); err != nil {
+				return err
+			}
+			return os.Chmod(p, 0o666)
+		},
+		"group-writable .claude dir": func(dir string) error {
+			p := filepath.Join(dir, ".claude")
+			if err := os.Mkdir(p, 0o700); err != nil {
+				return err
+			}
+			return os.Chmod(p, 0o777)
+		},
+		"symlinked CLAUDE.md": func(dir string) error {
+			return os.Symlink(filepath.Join(t.TempDir(), "CLAUDE.md"), filepath.Join(dir, "CLAUDE.md"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts, f := fakeClaude(t, "normal")
+			require.NoError(t, os.Mkdir(f.workDir, 0o700))
+			require.NoError(t, plant(f.workDir))
+			require.NoError(t, os.Chmod(f.workDir, 0o777))
+			b, ok := NewClaudeBackend(opts).(*claudeBackend)
+			require.True(t, ok)
+			b.mu.Lock()
+			p, err := b.spawnLocked()
+			b.mu.Unlock()
+			assert.Nil(t, p)
+			var we *WorkDirError
+			require.ErrorAs(t, err, &we)
+			assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
+			info, err := os.Stat(f.workDir)
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "narrowed before the contents were judged")
+		})
+	}
+}
+
+// A respawn at turn time (the child died) re-checks the work dir: a folder
+// swapped for a symlink meanwhile fails that turn as workdir_unsafe, with no
+// Retry.
+func TestClaudeBackend_RespawnIntoAnUnsafeWorkDirFailsTheTurn(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_once")
+	opts.ResumeSessionID = "sess-0"
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+	h.next(EventError)
+
+	require.NoError(t, os.RemoveAll(f.workDir))
+	require.NoError(t, os.Symlink(t.TempDir(), f.workDir))
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
+	e := h.next(EventError)
+	assert.Equal(t, "t2", e.TurnID)
+	assert.Equal(t, CodeWorkDirUnsafe, e.Code)
+	assert.False(t, e.Retryable)
+	assert.Contains(t, e.Message, f.workDir)
+	require.NoError(t, h.finish())
+	assert.Len(t, argvRuns(t, f.argv), 1, "no child started in the swapped folder")
+}
+
 // A refused work dir reaches the Desktop as its own non-retryable code with
 // the folder in the message — not provider_unavailable with a Retry that can
 // never succeed.

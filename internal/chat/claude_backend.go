@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -946,9 +947,11 @@ func workDirErrorEvent(turnID string, err error) (Event, bool) {
 
 // checkPrivateDir accepts dir only as a real directory (not a symlink) owned
 // by this user that nobody else can write to. A directory of ours that is
-// merely group/other-writable (an old umask, a manual chmod) is narrowed to
-// 0700 in place, with one line on warn — nobody else owns it, so nothing
-// else could have planted it; anything else is a *WorkDirError.
+// group/other-writable (an old umask, a manual chmod) may already hold what
+// another user planted there — a .claude/settings.json with hooks, a
+// CLAUDE.md — so it is narrowed to 0700 first (closing the door) and then
+// kept only if everything in it is ours, private and no symlink
+// (narrowWorkDir); anything else is a *WorkDirError.
 func checkPrivateDir(dir string, warn io.Writer) error {
 	info, err := os.Lstat(dir)
 	if err != nil {
@@ -965,12 +968,80 @@ func checkPrivateDir(dir string, warn io.Writer) error {
 		return &WorkDirError{Dir: dir, Reason: fmt.Sprintf("it belongs to another user, uid %d", st.Uid)}
 	}
 	if perm := info.Mode().Perm(); perm&0o022 != 0 {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return fmt.Errorf("narrowing chat work dir %s (mode %v) to 0700: %w", dir, perm, err)
+		if err := narrowWorkDir(dir); err != nil {
+			return err
 		}
 		_, _ = fmt.Fprintf(warn, "chat work dir %s was writable by other users (mode %v); narrowed it to 0700\n", dir, perm)
 	}
 	return nil
+}
+
+// narrowWorkDir sets dir to 0700 through a descriptor opened without
+// following a link (fchmod, so a directory swapped for a symlink since the
+// Lstat is never what gets changed), then walks its contents without
+// following links: every entry must be ours and not group/other-writable,
+// and none may be a symlink. Finally the path must still name the directory
+// it narrowed.
+func narrowWorkDir(dir string) error {
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+			return &WorkDirError{Dir: dir, Reason: "it is a symlink, not a folder"}
+		}
+		return fmt.Errorf("opening chat work dir %s: %w", dir, err)
+	}
+	defer func() { _ = syscall.Close(fd) }()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+	}
+	if int(st.Uid) != os.Getuid() {
+		return &WorkDirError{Dir: dir, Reason: fmt.Sprintf("it belongs to another user, uid %d", st.Uid)}
+	}
+	if err := syscall.Fchmod(fd, 0o700); err != nil {
+		return fmt.Errorf("narrowing chat work dir %s to 0700: %w", dir, err)
+	}
+	if err := checkWorkDirEntries(dir); err != nil {
+		return err
+	}
+	var now syscall.Stat_t
+	if err := syscall.Lstat(dir, &now); err != nil {
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+	}
+	if now.Dev != st.Dev || now.Ino != st.Ino {
+		return &WorkDirError{Dir: dir, Reason: "it was replaced while being checked"}
+	}
+	return nil
+}
+
+// checkWorkDirEntries refuses dir when anything under it is a symlink,
+// belongs to another user, or is group/other-writable: it was open to other
+// users, so such an entry may be theirs to control.
+func checkWorkDirEntries(dir string) error {
+	uid := os.Getuid()
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+		}
+		if path == dir {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if d.Type()&fs.ModeSymlink != 0 {
+			return &WorkDirError{Dir: dir, Reason: "it holds a symlink, " + rel}
+		}
+		info, err := d.Info() // Lstat: WalkDir never follows links
+		if err != nil {
+			return fmt.Errorf("inspecting chat work dir entry %s: %w", path, err)
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
+			return &WorkDirError{Dir: dir, Reason: "it holds " + rel + ", which belongs to another user"}
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			return &WorkDirError{Dir: dir, Reason: "it holds " + rel + ", which other users can write to"}
+		}
+		return nil
+	})
 }
 
 // Close ends the child (stdin EOF → SIGTERM → SIGKILL, CloseGrace apart),
