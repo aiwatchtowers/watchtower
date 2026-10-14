@@ -46,8 +46,8 @@ final class SlackSendProposalTests: XCTestCase {
         XCTAssertEqual(dm.target?.realName, "Alice Example")
         XCTAssertEqual(dm.recipientLine, "To: @Alice (Alice Example, @alice · U123) in Acme")
         // The card shows these two apart.
-        XCTAssertEqual(dm.target?.place, "@Alice in Acme")
-        XCTAssertEqual(dm.target?.identity, "Alice Example, @alice · U123")
+        XCTAssertEqual(dm.target?.place, "@Alice (Alice Example) in Acme")
+        XCTAssertEqual(dm.target?.identity, "@alice · U123", "only what the person cannot set")
 
         // A real name the label already shows is not repeated.
         let same = try XCTUnwrap(SlackSendProposal(action: action(args:

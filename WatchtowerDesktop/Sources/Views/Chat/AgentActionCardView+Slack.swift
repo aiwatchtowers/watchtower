@@ -58,10 +58,11 @@ struct SlackSendEditor: View {
     }
 }
 
-/// A recipient as the card shows it: the free-text label and workspace, and
-/// for a DM the real name, handle and user id on their own line in a
-/// secondary monospaced style — a display name cannot change its font, so
-/// one imitating "(…, @handle · U…)" never reads as the pinned identity.
+/// A recipient as the card shows it: what the person can set (label, real
+/// name) and the workspace, then for a DM the handle and user id alone on
+/// their own line in a secondary monospaced style — a display name cannot
+/// change its font, so one imitating "@handle · U…" never reads as the
+/// pinned identity.
 struct SlackRecipientText: View {
     let recipient: SlackSendProposal.Recipient
     var prefix = ""

@@ -401,8 +401,8 @@ final class AgentActionCardViewTests: XCTestCase {
         }
         let card = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
                                        onApproveEdited: { _ in })
-        XCTAssertNoThrow(try card.inspect().find(text: "To: @Alice in Acme"))
-        XCTAssertNoThrow(try card.inspect().find(text: "Alice Example, @alice · U123"))
+        XCTAssertNoThrow(try card.inspect().find(text: "To: @Alice (Alice Example) in Acme"))
+        XCTAssertNoThrow(try card.inspect().find(text: "@alice · U123"))
 
         let candidates = ##"{"text":"hi","candidates":["##
             + ##"{"account_id":1,"workspace":"A","user_id":"U1","label":"@Alice","handle":"alice"},"##

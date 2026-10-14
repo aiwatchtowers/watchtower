@@ -32,26 +32,28 @@ package struct SlackSendProposal: Equatable, Sendable {
         /// shows `place` and `identity` apart instead (`SlackRecipientText`),
         /// so a display name imitating the suffix cannot blend into it.
         package var line: String {
-            let who = isDM ? label + (identity.isEmpty ? "" : " (\(identity))") : threadLabel
+            let parts = [shownRealName, identity].filter { !$0.isEmpty }
+            let who = isDM && !parts.isEmpty ? "\(label) (\(parts.joined(separator: ", ")))" : isDM ? label : threadLabel
             return workspace.isEmpty ? who : "\(who) in \(workspace)"
         }
 
-        /// "@Alice in Acme", "a thread in #general in Acme": the free-text
-        /// label and the workspace, without the DM's identity.
+        /// "@Alice (Alice Example) in Acme", "a thread in #general in Acme":
+        /// everything the person can set — label, real name — and the
+        /// workspace, without the unforgeable identity.
         package var place: String {
-            let who = isDM ? label : threadLabel
+            let who = isDM ? (shownRealName.isEmpty ? label : "\(label) (\(shownRealName))") : threadLabel
             return workspace.isEmpty ? who : "\(who) in \(workspace)"
         }
 
         private var threadLabel: String { threadTS.isEmpty ? label : "a thread in \(label)" }
 
-        /// "Alice Example, @alice · U123" for a DM: the real name unless the
-        /// label already is it, then the unforgeable handle and id; "" when
-        /// none was pinned.
+        /// The real name unless the label already is it.
+        private var shownRealName: String { realName.isEmpty || label == "@" + realName ? "" : realName }
+
+        /// "@alice · U123" for a DM: only what is unique within the workspace
+        /// and set by Slack, not the person; "" when none was pinned.
         package var identity: String {
-            let unique = [handle.isEmpty ? "" : "@" + handle, userID].filter { !$0.isEmpty }.joined(separator: " · ")
-            let name = realName.isEmpty || label == "@" + realName ? "" : realName
-            return [name, unique].filter { !$0.isEmpty }.joined(separator: ", ")
+            [handle.isEmpty ? "" : "@" + handle, userID].filter { !$0.isEmpty }.joined(separator: " · ")
         }
     }
 
