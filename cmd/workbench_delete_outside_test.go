@@ -51,6 +51,7 @@ func TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks(t *testing.T
 	assert.True(t, got.Deleted)
 	assert.False(t, got.RemovalOK)
 	assert.Equal(t, []string{hint}, got.RemovalHints)
+	assert.Empty(t, got.RemovalError, "the hinted refusal is not repeated as an error")
 	assert.Contains(t, stderr, "warning: "+hint)
 	_, err = database.GetWorkbench(pid)
 	assert.Error(t, err, "the workbench row is deleted anyway")

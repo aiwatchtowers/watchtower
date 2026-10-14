@@ -161,7 +161,10 @@ Watchtower put there stays. The delete still completes, and the CLI
 remove by hand — "Watchtower's hooks stay in <file> — remove the entries
 marked watchtower by hand" (or the skill's directory to remove);
 `devpack.OutsideFolderHints`, only for an outside path that exists.
-`integrate remove --workbench N` prints the same lines under its problems.
+`removal_error` then carries only the other failures
+(`devpack.WithoutHinted`), so an unrelated cleanup failure is still shown
+beside the hints. `integrate remove --workbench N` and
+`integrate codex --remove` print the same lines under their problems.
 
 **Why locked:** Owner decision D7. A half-deleted workbench — orphan targets, a
 hook that briefs about a workbench that no longer exists, an MCP server

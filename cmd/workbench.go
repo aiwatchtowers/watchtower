@@ -507,8 +507,10 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	}
 	if workbenchFlagJSON {
 		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, RemovalHints: hints, FilesOK: ferr == nil}
-		if rerr != nil {
-			out.RemovalError = rerr.Error()
+		// The hints already say what the link refusals left; the error
+		// carries every other failure, so none is hidden behind them.
+		if rest := devpack.WithoutHinted(rerr); rest != nil {
+			out.RemovalError = rest.Error()
 		}
 		if ferr != nil {
 			out.FilesError = ferr.Error()

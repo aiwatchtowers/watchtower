@@ -333,6 +333,9 @@ func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error
 	}
 	if rmErr != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", rmErr)
+		for _, h := range devpack.OutsideFolderHints(rmErr) {
+			fmt.Fprintf(w, "  %s\n", h)
+		}
 	}
 	return rmErr
 }

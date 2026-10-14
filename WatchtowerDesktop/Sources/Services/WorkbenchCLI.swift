@@ -76,14 +76,17 @@ struct WorkbenchDeleted: Decodable, Equatable {
     }
 
     /// The non-blocking warning for a delete whose cleanup partly failed, or
-    /// nil when everything was removed. Hints, when the CLI sent any, replace
-    /// the raw removal error: they name the exact file and what to remove.
+    /// nil when everything was removed. Hints name the exact file linked
+    /// outside the folder and what to remove; `removal_error` then carries
+    /// only the other failures (Go's `devpack.WithoutHinted`), so none hides
+    /// behind the hints.
     var cleanupWarning: String? {
         var parts: [String] = []
         if !removalHints.isEmpty {
             parts.append("Watchtower could not clean a file linked outside its folder. "
                 + removalHints.map { $0 + "." }.joined(separator: " "))
-        } else if !removalOK {
+        }
+        if !removalOK, !removalError.isEmpty || removalHints.isEmpty {
             parts.append("cleaning its folder failed: \(removalError)")
         }
         if !filesOK { parts.append("removing its stored images failed: \(filesError)") }

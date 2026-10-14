@@ -249,7 +249,7 @@ func requireSecure(rawURL string) error {
 		return nil
 	case "http":
 		if err := netsec.RequireSecureURL(rawURL, "an OAuth exchange"); err != nil {
-			return fmt.Errorf("mcpoauth: %s must use https (plain http is only allowed for loopback hosts): %w", rawURL, netsec.ErrCleartext)
+			return fmt.Errorf("mcpoauth: %s must use https: %w", rawURL, err)
 		}
 		return nil
 	}

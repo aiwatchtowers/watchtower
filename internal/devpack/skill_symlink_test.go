@@ -2,6 +2,7 @@ package devpack
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -127,4 +128,22 @@ func TestOutsideFolderHints_NameTheLeftovers(t *testing.T) {
 
 	gone := &OutsideFolderError{Outside: filepath.Join(outside, "missing.json"), leftover: leftoverHooks}
 	assert.Empty(t, OutsideFolderHints(gone))
+}
+
+// WithoutHinted leaves every failure the hints do not already name, so a
+// caller showing the hints still reports an unrelated failure.
+func TestWithoutHinted_KeepsOnlyUnhintedFailures(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(t, os.WriteFile(outside, []byte("{}"), 0o600))
+	hinted := &OutsideFolderError{Outside: outside, leftover: leftoverHooks, msg: "link refused"}
+	other := errors.New("unregistering the MCP server failed")
+
+	assert.NoError(t, WithoutHinted(nil))
+	assert.NoError(t, WithoutHinted(hinted))
+	assert.NoError(t, WithoutHinted(errors.Join(hinted)))
+	rest := WithoutHinted(errors.Join(hinted, other))
+	require.Error(t, rest)
+	assert.Equal(t, other.Error(), rest.Error())
+	gone := &OutsideFolderError{Outside: filepath.Join(t.TempDir(), "missing.json"), leftover: leftoverHooks, msg: "gone"}
+	assert.Equal(t, gone, WithoutHinted(gone), "a refusal with no hint stays an error")
 }

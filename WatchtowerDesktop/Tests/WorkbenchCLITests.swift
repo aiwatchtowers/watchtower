@@ -168,7 +168,7 @@ final class WorkbenchCLITests: XCTestCase {
     /// instead of the raw error (PROJ-02's exception, ask #118).
     func testDeleteWarningNamesTheFileLinkedOutside() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"""
-        {"id":3,"deleted":true,"removal_ok":false,"removal_error":"x links to /tmp/a/settings.json, outside the workbench folder",\#
+        {"id":3,"deleted":true,"removal_ok":false,"removal_error":"",\#
         "removal_hints":["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"],\#
         "files_ok":true,"files_error":""}
         """#.utf8))
@@ -179,6 +179,22 @@ final class WorkbenchCLITests: XCTestCase {
             result.cleanupWarning,
             "The workbench was deleted, but Watchtower could not clean a file linked outside its folder. "
                 + "Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand."
+        )
+    }
+
+    /// Hints never hide another cleanup failure: Go's removal_error carries
+    /// whatever the hints do not name, and the warning shows both.
+    func testDeleteWarningKeepsAnUnrelatedFailureBesideTheHints() {
+        let deleted = WorkbenchDeleted(
+            id: 3, deleted: true, removalOK: false, removalError: "unregistering the MCP server failed",
+            removalHints: ["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"],
+            filesOK: true, filesError: ""
+        )
+        XCTAssertEqual(
+            deleted.cleanupWarning,
+            "The workbench was deleted, but Watchtower could not clean a file linked outside its folder. "
+                + "Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand.; "
+                + "cleaning its folder failed: unregistering the MCP server failed"
         )
     }
 

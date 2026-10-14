@@ -89,6 +89,28 @@ func OutsideFolderHints(err error) []string {
 	return hints
 }
 
+// WithoutHinted is err minus every OutsideFolderError OutsideFolderHints
+// names (a joined error is filtered part by part), or nil when nothing else
+// failed: a caller that shows the hints reports only the rest.
+func WithoutHinted(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var rest []error
+		for _, e := range joined.Unwrap() {
+			if r := WithoutHinted(e); r != nil {
+				rest = append(rest, r)
+			}
+		}
+		return errors.Join(rest...)
+	}
+	if len(OutsideFolderHints(err)) > 0 {
+		return nil
+	}
+	return err
+}
+
 // hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
 // workbench (after the watchtower binary), and the entry's timeout.
