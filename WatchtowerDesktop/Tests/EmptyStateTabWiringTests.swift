@@ -167,7 +167,10 @@ final class EmptyStateTabWiringTests: XCTestCase {
         try assertSharedState(BlockerMapView.emptyState(context: context), .blockers)
         try assertSharedState(ProjectMapView.emptyState(isFiltered: false, context: context), .projectMap)
         try assertSharedState(ReleaseDashboardView.emptyState(isFiltered: false, context: context), .releases)
-        try assertSharedState(BoardsView.notConnectedState(context: context), .boards)
+        // Boards knows Jira isn't connected: its readiness line says so whatever the center read.
+        let boards = BoardsView.notConnectedState(context: context)
+        XCTAssertNoThrow(try boards.inspect().find(text: try copy(.boards).landsHere))
+        XCTAssertNoThrow(try boards.inspect().find(text: "Connect Jira to get this"))
 
         // Jira data present: no blockers is good news, said in the tab's own words.
         XCTAssertNoThrow(try BlockerMapView.emptyState(context: withReadiness(.ready)).inspect().find(text: "No blockers"))
@@ -212,5 +215,17 @@ final class EmptyStateTabWiringTests: XCTestCase {
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, emptyState: context)
         try assertSharedState(view, .inbox)
         XCTAssertNoThrow(try view.inspect().find(ReactionCheatSheetView.self))
+    }
+
+    func testBoardsNotConnectedShowsConnectWithNilReadiness() throws {
+        var performed: EmptyStateAction?
+        var neutral = EmptyStateContext.neutral
+        neutral.perform = { performed = $0 }
+        for context in [neutral, withReadiness(.ready)] {
+            let view = BoardsView.notConnectedState(context: context)
+            XCTAssertNoThrow(try view.inspect().find(text: try copy(.boards).title))
+            try view.inspect().find(button: "Connect Jira").tap()
+        }
+        XCTAssertEqual(performed, .connect(.jira))
     }
 }

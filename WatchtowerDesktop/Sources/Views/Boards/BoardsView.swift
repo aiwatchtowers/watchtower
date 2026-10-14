@@ -3,13 +3,18 @@ import WatchtowerCore
 
 struct BoardsView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.openSettings) private var openSettings
     @State private var jiraConnected = JiraQueries.isConnected()
     @State private var activeDetail: BoardsNavItem?
 
     /// No Jira: the shared empty state (Connect Jira → Settings → Connections).
+    /// The view already knows Jira is not connected, so Jira's readiness is
+    /// pinned to `.needsSource(.jira)`: the Connect button shows even before
+    /// `ReadinessCenter` has evaluated, or while it still disagrees.
     static func notConnectedState(context: EmptyStateContext) -> some View {
-        TabEmptyState(.boards, context: context)
+        var context = context
+        let readiness = context.readiness
+        context.readiness = { $0 == .jira ? .needsSource(.jira) : readiness($0) }
+        return TabEmptyState(.boards, context: context)
     }
 
     var body: some View {
