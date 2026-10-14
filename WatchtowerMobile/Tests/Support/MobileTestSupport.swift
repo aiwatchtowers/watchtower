@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GRDB
 import Observation
 import WatchtowerE2ETesting
 import WatchtowerSync
@@ -121,6 +122,15 @@ extension XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         return dir.appendingPathComponent("replica.sqlite").path
+    }
+
+    /// `reader` was closed (#216): a read fails as on a closed connection,
+    /// not with the disk I/O error of one left open on deleted files.
+    func assertClosed(_ reader: (any DatabaseReader)?, file: StaticString = #filePath, line: UInt = #line) {
+        guard let reader else { return XCTFail("no database", file: file, line: line) }
+        XCTAssertThrowsError(try reader.read { _ in }, file: file, line: line) { error in
+            XCTAssertEqual((error as? DatabaseError)?.resultCode, .SQLITE_MISUSE, "\(error)", file: file, line: line)
+        }
     }
 
     /// A private UserDefaults suite, wiped on teardown.

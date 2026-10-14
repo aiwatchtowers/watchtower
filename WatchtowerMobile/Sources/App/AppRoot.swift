@@ -486,6 +486,9 @@ final class AppRoot {
                 problem: handover.problem,
                 farewellKept: farewellKept
             )
+            // The last read of its databases is done: closed before their
+            // files go (or before the next launch's orphan pass opens them).
+            session.closeDatabases()
             env.remove(hubID)
             // Audio the hold could not take may still be in the hub's
             // folder: its files stay for the next launch's orphan pass.

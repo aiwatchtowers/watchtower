@@ -591,6 +591,12 @@ public final class TransportStore: Sendable {
         )
     }
 
+    /// Closes the database for good, before its files are deleted (the
+    /// phone's hub removal); later calls throw.
+    public func close() throws {
+        try queue.close()
+    }
+
     // MARK: - Reset / retention / eviction
 
     /// Clears ALL adapter state in one transaction (schema stays). Called on

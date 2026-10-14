@@ -21,6 +21,8 @@ final class HubBootTests: XCTestCase {
     )
     /// Hubs the test factory built, in order.
     private var built: [String] = []
+    /// The sessions it built, in the same order.
+    private var sessions: [HubSession] = []
 
     // MARK: - Fixtures
 
@@ -131,6 +133,7 @@ final class HubBootTests: XCTestCase {
                 },
                 sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
             )
+            self?.sessions.append(session)
             self?.addTeardownBlock { @MainActor in session.stop() }
             return session
         }
@@ -328,6 +331,7 @@ final class HubBootTests: XCTestCase {
         let held = try RecordingHold(directory: paths.holdDirectory).load()
         XCTAssertEqual(held.map(\.id), [recordingID], "its unsent recording is held")
         XCTAssertEqual(held.first?.hubID, TestHub.orphan)
+        assertClosed(sessions.first?.store.reader)
         for directory in [paths.hubDirectory(TestHub.orphan), paths.localHubDirectory(TestHub.orphan), paths.recordingsDirectory(TestHub.orphan)] {
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), directory.path)
         }

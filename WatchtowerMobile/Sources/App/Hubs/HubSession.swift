@@ -1200,6 +1200,25 @@ final class HubSession {
         await (transport as? CloudKitTransport)?.stop()
     }
 
+    /// Closes the replica and the transport store, after `shutDown()` and
+    /// the last read of them: the caller deletes their files next. A
+    /// connection left open on the unlinked files, touched while a new
+    /// database opens at the same path (the hub's re-link), breaks that one
+    /// on iOS with `disk I/O error` or `database is locked` (#216). Later
+    /// reads of a closed store throw without touching any file.
+    func closeDatabases() {
+        do {
+            try store.reader.close()
+        } catch {
+            Self.logger.error("replica not closed: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try transportStore?.close()
+        } catch {
+            Self.logger.error("transport store not closed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     /// Stops the safety poll and the CloudKit engine for good and turns
     /// writes off, keeping the replica open for reading: later pushes fetch
     /// nothing (`handlePush`), and the screens still show what it holds.

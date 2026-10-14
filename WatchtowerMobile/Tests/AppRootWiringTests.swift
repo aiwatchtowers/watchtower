@@ -401,6 +401,7 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "its replica, transport and audio folders are gone")
         XCTAssertEqual(hubFilesExist(TestHub.home), [true, true, true], "the other hub's stay")
+        assertClosed(built.first { $0.hubID == TestHub.acme }?.session.store.reader)
         let held = try XCTUnwrap(try hold.load().first, "the hold manifest names the unsent recording")
         XCTAssertEqual(held.id, id)
         XCTAssertEqual(held.hubID, TestHub.acme)

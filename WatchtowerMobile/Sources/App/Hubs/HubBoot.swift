@@ -164,6 +164,7 @@ enum HubBoot {
             session.stop()
             await session.shutDown()
             let handover = await session.handOverRecordings(stoppedCapture: nil, keep: true)
+            session.closeDatabases()
             if let problem = handover.problem {
                 // Audio the hold could not take may still be in the hub's
                 // folder: nothing is deleted, the next launch tries again.
