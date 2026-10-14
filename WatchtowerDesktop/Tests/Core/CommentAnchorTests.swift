@@ -127,6 +127,14 @@ final class CommentAnchorTests: XCTestCase {
     /// complete near-instantly. The bound is generous to avoid flakiness —
     /// this is a regression guard against reintroducing quadratic behavior,
     /// not a tight performance budget.
+    ///
+    /// The bound applies to the fastest of three runs on a monotonic clock.
+    /// Noise on a shared CI runner (parallel shards, preemption) only ever adds
+    /// time, so the minimum is the closest reading of the real cost and a
+    /// single descheduled run no longer fails the test. The guard still holds:
+    /// the slow implementation pays its >1 s on every run, so its minimum stays
+    /// above the bound too. (A relative 1 MB vs 2 MB check would not catch it:
+    /// with the quote length fixed, O(n·m) also scales linearly in n.)
     func testReflowMatchOnLargeDocumentCompletesQuickly() throws {
         let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
         let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.
@@ -140,11 +148,17 @@ final class CommentAnchorTests: XCTestCase {
         let insertAt = padding.index(padding.startIndex, offsetBy: padding.count / 2)
         let big = String(padding[..<insertAt]) + reflowedSentence + String(padding[insertAt...])
 
-        let start = Date()
-        let found = made.locate(in: big)
-        let elapsed = Date().timeIntervalSince(start)
+        let clock = ContinuousClock()
+        var fastest = Duration.seconds(Int64.max)
+        var found: Range<String.Index>?
+        for _ in 0..<3 {
+            let start = clock.now
+            found = made.locate(in: big)
+            fastest = min(fastest, clock.now - start)
+        }
+        let elapsed = Double(fastest.components.seconds) + Double(fastest.components.attoseconds) / 1e18
 
-        XCTAssertLessThan(elapsed, 0.5, "reflow locate on a ~1 MB document should stay near-linear, took \(elapsed)s")
+        XCTAssertLessThan(elapsed, 0.5, "reflow locate on a ~1 MB document should stay near-linear, fastest of 3 runs took \(elapsed)s")
         XCTAssertEqual(found.map { String(big[$0]) }, reflowedQuote)
     }
 
