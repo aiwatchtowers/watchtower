@@ -99,7 +99,13 @@ func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
 		return nil, fmt.Errorf("%w: listing them: %w: %s", ErrFilterGuard, err, stderr)
 	}
 	// -z: scope NUL key NUL, per entry.
-	fields := strings.Split(strings.TrimSuffix(string(stdout), "\x00"), "\x00")
+	return overridesFor(strings.Split(strings.TrimSuffix(string(stdout), "\x00"), "\x00"))
+}
+
+// overridesFor turns `git config --show-scope -z --name-only` fields (scope,
+// key, scope, key, …) into the `-c` pairs that blank every key set outside
+// the owner's global and system config.
+func overridesFor(fields []string) ([]string, error) {
 	var out []string
 	lifted := map[string]bool{}
 	for i := 0; i+1 < len(fields); i += 2 {
