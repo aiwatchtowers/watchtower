@@ -8,6 +8,8 @@ import Foundation
 /// false: an absent measurement is not a known size), and an unknown kind,
 /// action or reason decodes to its `.unknown(raw)` case rather than failing
 /// the whole plan — a newer CLI never blanks the Desktop's sheet.
+/// The memberwise initialisers take the same zero values, so a value built
+/// in code reads as the same JSON with those fields left out.
 package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
     package var sessionID: Int64
     package var workbenchID: Int64
@@ -28,12 +30,12 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
     package init(
         sessionID: Int64 = 0,
         workbenchID: Int64 = 0,
-        mode: String = "plan",
+        mode: String = "",
         sweep: Bool = false,
         items: [SessionCleanupItem] = [],
         defaultBranch: String = "",
         removedBytes: Int64 = 0,
-        removedBytesKnown: Bool = true,
+        removedBytesKnown: Bool = false,
         summary: String = "",
         resultSaved: Bool = false,
         resultError: String = ""
@@ -135,8 +137,9 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
 
     package var id: String { key }
 
-    /// Still to remove: planned for removal, neither done nor failed.
-    package var isPendingRemoval: Bool { action == .remove && !done && error.isEmpty }
+    /// Still to remove: planned for removal, neither done nor failed, and
+    /// with a key an apply can name (an item without one fails closed).
+    package var isPendingRemoval: Bool { action == .remove && !done && error.isEmpty && !key.isEmpty }
 
     package init(
         key: String,
@@ -144,7 +147,7 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         name: String = "",
         branch: String = "",
         bytes: Int64 = 0,
-        bytesKnown: Bool = true,
+        bytesKnown: Bool = false,
         action: Action,
         reason: SessionCleanupReason? = nil,
         detail: String = "",

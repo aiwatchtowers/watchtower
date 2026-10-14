@@ -153,10 +153,12 @@ package enum SessionCleanupPresentation {
 
     // MARK: Session report
 
-    /// The session report's "Cleanup" line: Go's stored summary, nil when
-    /// the session has no readable result.
+    /// The session report's "Cleanup" line: Go's stored summary; a neutral
+    /// line when a result is stored but does not decode (a cleanup ran — it
+    /// must not read as never cleaned up); nil when the decoded result has
+    /// no summary.
     package static func reportLine(_ record: SessionCleanupRecord) -> String? {
-        guard let summary = record.result?.summary, !summary.isEmpty else { return nil }
-        return summary
+        guard let result = record.result else { return "Cleanup ran — result unreadable" }
+        return result.summary.isEmpty ? nil : result.summary
     }
 }

@@ -95,4 +95,24 @@ final class SessionCleanupPlanDecodingTests: XCTestCase {
             XCTAssertEqual(SessionCleanupReason(code: code.rawValue).code, code.rawValue)
         }
     }
+
+    /// An item to remove without a key cannot be named by an apply: it is
+    /// not pending and is not offered (fails closed).
+    func testARemoveItemWithoutAKeyIsNotPending() throws {
+        let plan = try decode("""
+            {"items":[{"kind":"worktree","action":"remove","bytes":5,"bytes_known":true},
+                      {"key":"","kind":"branch","action":"remove"}]}
+            """)
+        XCTAssertFalse(plan.items[0].isPendingRemoval)
+        XCTAssertFalse(plan.items[1].isPendingRemoval)
+        XCTAssertEqual(plan.removableKeys, [])
+        XCTAssertNil(SessionCleanupPresentation.offerLine(plan))
+    }
+
+    /// The memberwise defaults are the decoder's zero values.
+    func testMemberwiseDefaultsMatchTheDecoder() throws {
+        XCTAssertEqual(SessionCleanupPlan(), try decode("{}"))
+        let decoded = try decode(#"{"items":[{"key":"k","kind":"worktree","action":"remove"}]}"#)
+        XCTAssertEqual(decoded.items, [SessionCleanupItem(key: "k", kind: .worktree, action: .remove)])
+    }
 }

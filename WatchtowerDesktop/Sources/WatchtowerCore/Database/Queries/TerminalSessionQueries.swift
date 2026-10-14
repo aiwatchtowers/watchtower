@@ -191,7 +191,13 @@ package enum TerminalSessionQueries {
         )
         guard let row else { return nil }
         let json: String = row["cleanup_result"]
-        let result = try? JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        var result: SessionCleanupPlan?
+        do {
+            result = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        } catch {
+            NSLog("TerminalSessionQueries: session %lld cleanup_result does not decode: %@",
+                  sessionID, String(describing: error))
+        }
         return SessionCleanupRecord(result: result, at: row["cleanup_at"] ?? "")
     }
 

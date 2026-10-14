@@ -57,19 +57,26 @@ final class SessionCleanupPresentationTests: XCTestCase {
         XCTAssertEqual(Presentation.reasonText(.unknown("cosmic_rays_hit")), "cosmic rays hit")
     }
 
-    /// The Go sources themselves: every `Reason* = "…"` constant in
-    /// `internal/sessioncleanup` is a Swift code, and every entry of Go's
-    /// `reasonPhrases` map reads the same in Swift — so a reason or phrase
-    /// changed on the Go side fails here.
+    /// The Go sources themselves, both ways: Go's `Reason* = "…"` constants
+    /// in `internal/sessioncleanup` are exactly the Swift codes, and every
+    /// Swift code reads as Go's `ReasonPhrase` does (its `reasonPhrases`
+    /// entry, or the code with spaces) — so a reason or phrase changed on
+    /// either side fails here.
     func testTheGoSourcesAgreeWithSwift() throws {
         let constants = try Self.goReasonConstants()
-        XCTAssertGreaterThanOrEqual(constants.count, 20, "the Go reason parse found too few constants")
-        for (name, code) in constants {
-            XCTAssertNotNil(SessionCleanupReason.Code(rawValue: code), "Go's \(name) = \(code) has no Swift code")
-        }
-        for (name, phrase) in try Self.goPhraseMap() {
+        let swiftCodes = Set(SessionCleanupReason.Code.allCases.map(\.rawValue))
+        XCTAssertEqual(constants.count, swiftCodes.count, "the Go reason parse found a different number of constants")
+        XCTAssertEqual(Set(constants.values), swiftCodes, "the Go constants and the Swift codes differ")
+        let goPhrases = try Self.goPhraseMap()
+        XCTAssertFalse(goPhrases.isEmpty, "Go's reasonPhrases map was not found or parsed to nothing")
+        var phraseByCode: [String: String] = [:]
+        for (name, phrase) in goPhrases {
             let code = try XCTUnwrap(constants[name], "reasonPhrases names an unknown constant \(name)")
-            XCTAssertEqual(Presentation.reasonText(SessionCleanupReason(code: code)), phrase, code)
+            phraseByCode[code] = phrase
+        }
+        for code in swiftCodes {
+            let goText = phraseByCode[code] ?? code.replacingOccurrences(of: "_", with: " ")
+            XCTAssertEqual(Presentation.reasonText(SessionCleanupReason(code: code)), goText, code)
         }
     }
 
@@ -106,8 +113,8 @@ final class SessionCleanupPresentationTests: XCTestCase {
         return out
     }
 
-    /// Constant name → phrase, from Go's `reasonPhrases` map; required to
-    /// parse to something once the map exists.
+    /// Constant name → phrase, from Go's `reasonPhrases` map; fails the
+    /// test when the map is missing or parses to nothing.
     private static func goPhraseMap() throws -> [String: String] {
         var out: [String: String] = [:]
         var mapSeen = false
@@ -117,6 +124,7 @@ final class SessionCleanupPresentationTests: XCTestCase {
                 out[name] = phrase
             }
         }
+        if !mapSeen { XCTFail("Go's reasonPhrases map is not in internal/sessioncleanup") }
         if mapSeen, out.isEmpty { XCTFail("Go's reasonPhrases map is there but parsed to nothing") }
         return out
     }
@@ -213,7 +221,19 @@ final class SessionCleanupPresentationTests: XCTestCase {
     func testReportLine() {
         let done = SessionCleanupRecord(result: SessionCleanupPlan(summary: "2 worktrees removed (~3.0 GB)"), at: "")
         XCTAssertEqual(Presentation.reportLine(done), "2 worktrees removed (~3.0 GB)")
-        XCTAssertNil(Presentation.reportLine(SessionCleanupRecord(result: nil, at: "2026-10-12T10:00:00Z")))
         XCTAssertNil(Presentation.reportLine(SessionCleanupRecord(result: SessionCleanupPlan(), at: "")))
+    }
+
+    /// A stored result that does not decode still says a cleanup ran.
+    func testReportLineForAnUnreadableResult() {
+        let unreadable = SessionCleanupRecord(result: nil, at: "2026-10-12T10:00:00Z")
+        XCTAssertEqual(Presentation.reportLine(unreadable), "Cleanup ran — result unreadable")
+    }
+
+    /// Decoded JSON without `bytes_known`: the size is unknown, not "~0 B".
+    func testOfferLineFromDecodedJSONWithoutBytesKnown() throws {
+        let json = #"{"items":[{"key":"a","kind":"worktree","action":"remove","bytes":0}]}"#
+        let plan = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 worktree (size unknown).")
     }
 }
