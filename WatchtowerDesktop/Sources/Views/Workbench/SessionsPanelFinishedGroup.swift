@@ -22,7 +22,7 @@ struct SessionsPanelSessionRow: View {
             row: row,
             actions: actions,
             openAsks: openAsks,
-            reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: projectID) : nil,
+            reportLine: row.showsStateLabel ? reportLine : nil,
             reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
@@ -40,6 +40,13 @@ struct SessionsPanelSessionRow: View {
                 hoveredRow = nil
             }
         }
+    }
+
+    /// The report line, or "Cleaning up…" while Delete and Clean Up runs
+    /// on this row (board #535).
+    private var reportLine: String? {
+        if vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
+        return vm.reportLine(sessionID: row.id, projectID: projectID)
     }
 
     private var hasCursor: Bool {

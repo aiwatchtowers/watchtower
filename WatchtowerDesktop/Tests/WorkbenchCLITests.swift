@@ -93,6 +93,25 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// Board #535: a folder set up before the cleanup permission is offered
+    /// Repair (the Claude Code part); an older CLI without the key has
+    /// nothing to install.
+    func testMissingCleanupPermissionNeedsRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"cleanup_permission\":false}".utf8))
+        XCTAssertFalse(missing.cleanupPermission)
+        XCTAssertTrue(missing.claudeNeedsRepair)
+        XCTAssertTrue(missing.repairHelp.contains("cleanup permission missing"), missing.repairHelp)
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"cleanup_permission\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        XCTAssertTrue(present.repairHelp.contains("cleanup permission on"), present.repairHelp)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.cleanupPermission)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)

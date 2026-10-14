@@ -103,6 +103,14 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Session cleanup (board #535): the Delete dialog's plan and apply, the
+    /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
+    /// run survives navigating away. AppState wires its own; nil = Delete
+    /// Only.
+    @ObservationIgnored var sessionCleanup: SessionCleanupCenter?
+    /// The sessions' stored cleanup results (`cleanup_result`), for the
+    /// report's Cleanup line; a session without one has no entry.
+    var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter
