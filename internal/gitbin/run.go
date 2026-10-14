@@ -3,6 +3,8 @@ package gitbin
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -29,9 +31,91 @@ var (
 )
 
 // ReadArgs is a background read's argv: no fsmonitor command, no hook, no
-// signature check. Callers producing a diff also pass --no-ext-diff and
-// --no-textconv themselves.
+// signature check. It does not stop the folder's filter drivers — a read of
+// file content (status, ls-files, diff) uses ReadArgsIn. Callers producing a
+// diff also pass --no-ext-diff and --no-textconv themselves.
 func ReadArgs(args ...string) []string { return append(slices.Clone(readConfig), args...) }
+
+// filterDriverKeys matches the config keys that name a command run on file
+// content: a filter driver's (a .gitattributes `filter=<x>` makes status,
+// ls-files or a diff run filter.<x>.clean or .process on the folder's
+// files), and a git-lfs extension's, which the owner's own git-lfs reads
+// from the repository's config.
+const filterDriverKeys = `^(filter\..*\.(clean|smudge|process)|lfs\.extension\..*\.(clean|smudge))$`
+
+// ReadArgsIn is ReadArgs for a read in dir. When the subcommand reads file
+// content (contentReads), it also blanks every filter driver and git-lfs
+// extension command the folder's config names (lifting a driver's
+// `required`, so the read still answers), each key read fresh for this
+// call. Only the global and system scopes are the owner's and left alone;
+// everything else — the repository's config and its includes, an
+// inherited -c — is the folder's. So a repository-local `filter.lfs.*`
+// (`git lfs install --local`) is blanked too, and in such a repository an
+// lfs file whose stat changed may read as modified. Listing config runs no
+// filter. An error fails the read rather than run it unprotected.
+func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string, error) {
+	if !readsContent(args) {
+		return ReadArgs(args...), nil
+	}
+	overrides, err := filterOverrides(ctx, bin, dir)
+	if err != nil {
+		return nil, err
+	}
+	argv := append(slices.Clone(readConfig), overrides...)
+	return append(argv, args...), nil
+}
+
+// contentReads are the subcommands that can run a filter driver on the
+// folder's files; log only with a patch.
+var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index"}
+
+// readsContent: args (subcommand first) may run a filter driver.
+func readsContent(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "log" || args[0] == "show" {
+		return slices.ContainsFunc(args[1:], func(a string) bool { return a == "-p" || a == "--patch" || a == "-u" })
+	}
+	return slices.Contains(contentReads, args[0])
+}
+
+// filterOverrides lists the filter driver and lfs extension keys outside
+// the global and system scopes as `-c <key>=` pairs, plus
+// `-c filter.<x>.required=false` per filter driver.
+func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
+	stdout, stderr, err := Exec(ctx, dir, nil, bin,
+		ReadArgs("config", "--show-scope", "-z", "--name-only", "--get-regexp", filterDriverKeys)...)
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(err, &exitErr) && exitErr.ExitCode() == 1:
+		return nil, nil // no filter driver configured
+	case err != nil:
+		return nil, fmt.Errorf("listing the folder's filter drivers: %w: %s", err, stderr)
+	}
+	// -z: scope NUL key NUL, per entry.
+	fields := strings.Split(strings.TrimSuffix(string(stdout), "\x00"), "\x00")
+	var out []string
+	lifted := map[string]bool{}
+	for i := 0; i+1 < len(fields); i += 2 {
+		scope, key := fields[i], fields[i+1]
+		if scope == "global" || scope == "system" {
+			continue
+		}
+		// -c splits at the first '=': a key holding one could not be blanked.
+		isFilter := strings.HasPrefix(key, "filter.")
+		if strings.ContainsAny(key, "=\n") || !isFilter && !strings.HasPrefix(key, "lfs.extension.") {
+			return nil, fmt.Errorf("the folder's git config names a filter driver key git -c cannot override: %q", key)
+		}
+		out = append(out, "-c", key+"=")
+		name := key[:strings.LastIndex(key, ".")]
+		if isFilter && !lifted[name] {
+			lifted[name] = true
+			out = append(out, "-c", name+".required=false")
+		}
+	}
+	return out, nil
+}
 
 // OwnerArgs is the argv of a command the owner asked for (a branch switch):
 // the repository's hooks run, as they would from a terminal; the fsmonitor

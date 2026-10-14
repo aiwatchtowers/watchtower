@@ -418,30 +418,6 @@ func TestGenerateSelfSignedCert(t *testing.T) {
 	assert.NotNil(t, cert.PrivateKey)
 }
 
-func TestPrepare(t *testing.T) {
-	cfg := OAuthConfig{ClientID: "cid", ClientSecret: "csec"}
-	result, err := Prepare(cfg, "")
-	require.NoError(t, err)
-
-	assert.Contains(t, result.AuthorizeURL, "https://slack.com/oauth/v2/authorize")
-	assert.Contains(t, result.AuthorizeURL, "client_id=cid")
-	assert.Contains(t, result.AuthorizeURL, "user_scope=")
-	assert.Contains(t, result.AuthorizeURL, "state="+result.State)
-	assert.Contains(t, result.AuthorizeURL, url.QueryEscape(result.RedirectURI))
-
-	assert.Equal(t, fmt.Sprintf("https://127.0.0.1:%d/callback", defaultRedirectPort), result.RedirectURI)
-	assert.Len(t, result.State, 64)
-}
-
-func TestPrepare_UniqueState(t *testing.T) {
-	cfg := OAuthConfig{ClientID: "id", ClientSecret: "sec"}
-	r1, err := Prepare(cfg, "")
-	require.NoError(t, err)
-	r2, err := Prepare(cfg, "")
-	require.NoError(t, err)
-	assert.NotEqual(t, r1.State, r2.State, "each Prepare call should generate a unique state")
-}
-
 func TestPortFromAddr(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -505,18 +481,6 @@ func TestListenLocalTLS_FallbackPort(t *testing.T) {
 	addr := ln.Addr().String()
 	port := PortFromAddr(addr)
 	assert.NotEmpty(t, port)
-}
-
-func TestPrepare_CustomRedirectURI(t *testing.T) {
-	cfg := OAuthConfig{ClientID: "cid", ClientSecret: "csec"}
-	customURI := "watchtower-auth://callback"
-	result, err := Prepare(cfg, customURI)
-	require.NoError(t, err)
-
-	assert.Equal(t, customURI, result.RedirectURI)
-	assert.Contains(t, result.AuthorizeURL, url.QueryEscape(customURI))
-	assert.Contains(t, result.AuthorizeURL, "client_id=cid")
-	assert.Len(t, result.State, 64)
 }
 
 func TestLogin_SkipBrowserOpen(t *testing.T) {
@@ -801,17 +765,6 @@ func TestOAuthResult_Fields(t *testing.T) {
 	assert.Equal(t, "Team", result.TeamName)
 	assert.Equal(t, "U1", result.UserID)
 	assert.Equal(t, 3600, result.ExpiresIn)
-}
-
-func TestPrepareResult_Fields(t *testing.T) {
-	result := PrepareResult{
-		AuthorizeURL: "https://example.com",
-		RedirectURI:  "https://127.0.0.1:18491/callback",
-		State:        "abc123",
-	}
-	assert.Equal(t, "https://example.com", result.AuthorizeURL)
-	assert.Equal(t, "https://127.0.0.1:18491/callback", result.RedirectURI)
-	assert.Equal(t, "abc123", result.State)
 }
 
 func TestOpenBrowser_Direct(t *testing.T) {

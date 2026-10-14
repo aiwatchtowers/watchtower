@@ -3,7 +3,9 @@ package gitbin
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,5 +41,138 @@ func TestExec_EnvironmentStdinAndExitCode(t *testing.T) {
 	// not found" note depends on it).
 	if _, _, err := Exec(context.Background(), t.TempDir(), nil, "wt-no-such-binary"); !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("a missing tool must be exec.ErrNotFound, got %v", err)
+	}
+}
+
+// plantFilter makes every *.txt of the repository at dir go through a
+// filter driver named in its own config whose commands leave a marker
+// file; it returns the marker's path. A filter driver is a command a
+// background status or ls-files would otherwise run.
+func plantFilter(t *testing.T, bin, dir string) string {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "filter-ran")
+	script := filepath.Join(t.TempDir(), "planted")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range [][2]string{{"filter.planted.clean", script}, {"filter.planted.process", script}, {"filter.planted.required", "true"}} {
+		if out, _, err := Exec(context.Background(), dir, nil, bin, "config", kv[0], kv[1]); err != nil {
+			t.Fatalf("git config %s: %v %s", kv[0], err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.txt filter=planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return marker
+}
+
+// A read through ReadArgsIn runs no filter driver the folder's config names
+// (clean, process; `required` lifted so the read still answers), while a
+// driver from the owner's global config is left alone.
+func TestReadArgsIn_BlanksTheFoldersFilterDrivers(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, []byte("[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	dir := t.TempDir()
+	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "init", "-q"); err != nil {
+		t.Fatalf("git init: %v %s", err, stderr)
+	}
+	// Committed before the filter is planted; then edited to the same size,
+	// so only hashing the content (the clean filter's moment) tells.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "a.txt"}, {"-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i"}} {
+		if _, stderr, err := Exec(context.Background(), dir, nil, bin, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, stderr)
+		}
+	}
+	marker := plantFilter(t, bin, dir)
+	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "config", "lfs.extension.planted.clean", "planted %f"); err != nil {
+		t.Fatalf("git config: %v %s", err, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	argv, err := ReadArgsIn(context.Background(), bin, dir, "status", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{
+		"-c filter.planted.clean=", "-c filter.planted.process=", "-c filter.planted.required=false",
+		"-c lfs.extension.planted.clean=",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argv %q lacks %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "filter.lfs") || strings.Contains(joined, "lfs.extension.planted.required") {
+		t.Errorf("argv %q blanks the owner's global lfs driver or lifts an extension", joined)
+	}
+	if !strings.HasSuffix(joined, " status --porcelain") {
+		t.Errorf("argv %q does not end with the subcommand", joined)
+	}
+	for _, args := range [][]string{{"status", "--porcelain"}, {"diff", "--stat"}, {"ls-files", "-z", "--cached", "--others", "--modified"}} {
+		read, err := ReadArgsIn(context.Background(), bin, dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, err := Exec(context.Background(), dir, nil, bin, read...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, stderr)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("a filter driver from the folder's config ran")
+	}
+
+	// A subcommand that reads no file content lists nothing.
+	plain, err := ReadArgsIn(context.Background(), bin, dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(plain, " "), strings.Join(ReadArgs("rev-parse", "HEAD"), " "); got != want {
+		t.Errorf("rev-parse argv = %q, want %q", got, want)
+	}
+}
+
+func TestReadsContent(t *testing.T) {
+	for args, want := range map[string]bool{
+		"status --porcelain": true, "ls-files -z": true, "check-ignore --stdin": true, "diff a b": true,
+		"log -p a..b": true, "log -1 --format=%ct": false, "rev-parse HEAD": false, "branch --list": false,
+		"remote get-url origin": false, "": false,
+	} {
+		if got := readsContent(strings.Fields(args)); got != want {
+			t.Errorf("readsContent(%q) = %v, want %v", args, got, want)
+		}
+	}
+}
+
+// No filter configured: ReadArgsIn is ReadArgs.
+func TestReadArgsIn_NoFilterIsReadArgs(t *testing.T) {
+	bin, ok := Locate()
+	if !ok {
+		t.Skip("no git")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	dir := t.TempDir()
+	if _, stderr, err := Exec(context.Background(), dir, nil, bin, "init", "-q"); err != nil {
+		t.Fatalf("git init: %v %s", err, stderr)
+	}
+	argv, err := ReadArgsIn(context.Background(), bin, dir, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(argv, " "), strings.Join(ReadArgs("status"), " "); got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }

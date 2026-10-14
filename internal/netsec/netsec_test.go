@@ -1,6 +1,7 @@
 package netsec
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,24 @@ func TestRequireSecureURL(t *testing.T) {
 		if strings.Contains(msg, ":pw@") {
 			t.Errorf("RequireSecureURL(%q) message leaks the URL password: %q", u, msg)
 		}
+	}
+}
+
+func TestRequireTLSAndStatusMessage(t *testing.T) {
+	if err := RequireTLS("127.0.0.1", "x"); err != nil {
+		t.Errorf("loopback refused: %v", err)
+	}
+	err := RequireTLS("imap.example.com", `security "none"`)
+	if !errors.Is(err, ErrCleartext) {
+		t.Fatalf("RequireTLS(remote) = %v, want ErrCleartext", err)
+	}
+	if got := StatusMessage(err); !strings.HasPrefix(got, StatusPrefix) {
+		t.Errorf("StatusMessage(cleartext) = %q, want the %q prefix", got, StatusPrefix)
+	}
+	if !errors.Is(RequireSecureURL("http://mcp.example.com/", "x"), ErrCleartext) {
+		t.Error("RequireSecureURL's refusal does not wrap ErrCleartext")
+	}
+	if got := StatusMessage(errors.New("auth failed")); got != "auth failed" {
+		t.Errorf("StatusMessage(other) = %q, want the bare message", got)
 	}
 }

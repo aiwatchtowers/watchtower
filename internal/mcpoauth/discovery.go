@@ -3,12 +3,13 @@ package mcpoauth
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
+
+	"watchtower/internal/netsec"
 )
 
 // httpClient is used for discovery's GET requests, which may legitimately
@@ -245,21 +246,11 @@ func requireSecure(rawURL string) error {
 	case "https":
 		return nil
 	case "http":
-		if isLoopbackHost(u.Hostname()) {
+		if netsec.IsLoopbackHost(u.Hostname()) {
 			return nil
 		}
 	}
 	return fmt.Errorf("mcpoauth: %s must use https (plain http is only allowed for loopback hosts)", rawURL)
-}
-
-// isLoopbackHost reports whether h (a URL hostname, no port) names the
-// local machine: "localhost" or a loopback IP literal (127.0.0.1, ::1).
-func isLoopbackHost(h string) bool {
-	if h == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(h)
-	return ip != nil && ip.IsLoopback()
 }
 
 // originOf returns the scheme+host of rawURL (no path), e.g.

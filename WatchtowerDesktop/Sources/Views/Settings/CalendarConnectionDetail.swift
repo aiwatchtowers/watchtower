@@ -41,6 +41,12 @@ struct CalendarConnectionDetail: View {
                                 Text(account.isICS ? "ICS feed" : "CalDAV \u{00B7} \(account.url)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if account.isStoppedForCleartext {
+                                    Text(CleartextRefusal.calendarStopped)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Circle()

@@ -65,11 +65,15 @@ func (e *runError) Unwrap() error { return e.err }
 // inherited repository variables) and keeps git's stderr apart in a
 // runError. The owner's own writes (a switch, its stash and restore) run
 // the repository's hooks as a terminal would; every other call is a
-// background read that runs none (gitbin.ReadArgs).
+// background read that runs none, nor a filter driver (gitbin.ReadArgsIn).
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-	argv := gitbin.ReadArgs(args...)
-	if ownerWrite(args) {
-		argv = gitbin.OwnerArgs(args...)
+	argv := gitbin.OwnerArgs(args...)
+	if !ownerWrite(args) {
+		read, err := gitbin.ReadArgsIn(ctx, name, dir, args...)
+		if err != nil {
+			return nil, -1, &runError{args: args, err: err}
+		}
+		argv = read
 	}
 	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, name, argv...)
 	var exitErr *exec.ExitError

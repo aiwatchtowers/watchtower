@@ -206,8 +206,8 @@ const toolsListRetryAfter = time.Hour
 // logged and, unless it is a credential problem applyOAuthCredentials already
 // recorded, written to the row ("error") so Settings shows it.
 func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
-	server, ok := connectionServer(cfg, database, c)
-	if !ok {
+	server, err := connectionServer(cfg, database, c)
+	if err != nil {
 		return server, false
 	}
 	if !c.ToolsListed {
@@ -269,9 +269,11 @@ func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string
 
 // connectionServer builds c's ai.ExternalMCPServer with its credentials: the
 // secret's static env/headers, or a verified/refreshed OAuth bearer (QC-04).
-// false means "skip this one", already logged (and recorded where it is the
-// grant's fault).
-func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+// An error means "skip this one", already logged and, where it is the
+// grant's or the URL's fault, recorded on the row: errNoCredentials for an
+// unusable secret or grant, errInsecureTransport for headers bound for plain
+// http to a remote host.
+func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, error) {
 	server := ai.ExternalMCPServer{
 		Name:    c.Name,
 		Kind:    c.Kind,
@@ -283,24 +285,46 @@ func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnecti
 	secret, err := store.Load()
 	if err != nil {
 		log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
-		return server, false
+		return server, errNoCredentials
+	}
+	// Headers (a static secret or the OAuth bearer) never go to a remote
+	// host over plain http — a connection added before add refused that.
+	// Checked before any OAuth refresh, so nothing is sent at all.
+	if c.Kind == "http" && secret != nil && (secret.OAuth != nil || len(secret.Headers) > 0) {
+		if err := netsec.RequireSecureURL(c.URL, "a connection with headers"); err != nil {
+			recordInsecureTransport(database, c, err)
+			return server, fmt.Errorf("%w: %v", errInsecureTransport, err)
+		}
 	}
 	if secret != nil && secret.OAuth != nil {
 		if !applyOAuthCredentials(database, store, &server, c) {
-			return server, false
+			return server, errNoCredentials
 		}
 	} else if secret != nil {
 		server.Env = secret.Env
 		server.Headers = secret.Headers
 	}
-	// Headers (a static secret or the OAuth bearer) never go to a remote
-	// host over plain http — a connection added before add refused that.
-	if server.Kind == "http" && len(server.Headers) > 0 {
-		if err := netsec.RequireSecureURL(server.URL, "a connection with headers"); err != nil {
-			return server, connectionUnmounted(database, c, err.Error())
-		}
+	return server, nil
+}
+
+// errInsecureTransport: the connection's headers would go to a remote host
+// over plain http; the row says so (transportReasonPrefix).
+var errInsecureTransport = errors.New("refusing to send the connection's headers over plain http")
+
+// transportReasonPrefix marks the row error recordInsecureTransport writes.
+// It is not toolsReasonPrefix: no tool-policy change clears it, only a
+// launch that finds the URL fixed (or the headers gone).
+const transportReasonPrefix = netsec.StatusPrefix
+
+// insecureTransportReason is the row's copy, for the owner, after the prefix.
+const insecureTransportReason = "Uses plain http, so its headers (a secret) would be sent unencrypted — " +
+	"remove it and add it again with an https URL."
+
+func recordInsecureTransport(database *db.DB, c db.ExternalConnection, err error) {
+	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
+	if serr := database.SetExternalConnectionStatus(c.ID, "error", transportReasonPrefix+insecureTransportReason); serr != nil {
+		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, serr)
 	}
-	return server, true
 }
 
 // toolsListTimeout bounds one tools/list exchange (connect, list, stop) the

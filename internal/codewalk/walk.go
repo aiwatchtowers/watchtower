@@ -297,7 +297,11 @@ func checkIgnoreInput(rels []string) (in []byte, asked map[string][]string) {
 // paths of stdin and returns the ignored ones, NUL-separated. Its exit 1
 // (none ignored) is not a failure.
 func gitCheckIgnore(ctx context.Context, bin, root string, stdin []byte) ([]byte, error) {
-	c := exec.CommandContext(ctx, bin, gitbin.ReadArgs("check-ignore", "--stdin", "-z")...)
+	argv, err := gitbin.ReadArgsIn(ctx, bin, root, "check-ignore", "--stdin", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git check-ignore: %w", err)
+	}
+	c := exec.CommandContext(ctx, bin, argv...)
 	c.Dir = root
 	c.Env = gitEnv()
 	c.Stdin = bytes.NewReader(stdin)
@@ -397,7 +401,11 @@ func gitEnv() []string {
 // gitListFiles runs ls-files from the folder, so the paths come back
 // relative to it and limited to it.
 func gitListFiles(ctx context.Context, bin, root string) ([]string, error) {
-	c := exec.CommandContext(ctx, bin, gitbin.ReadArgs("ls-files", "-z", "--cached", "--others", "--exclude-standard")...)
+	argv, err := gitbin.ReadArgsIn(ctx, bin, root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	c := exec.CommandContext(ctx, bin, argv...)
 	c.Dir = root
 	c.Env = gitEnv()
 	out, err := c.Output()
