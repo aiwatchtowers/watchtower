@@ -314,41 +314,54 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if !isDir(o.Folder) {
 		return folderGone(o)
 	}
-	var errs []error
-	// The hook recognizer matches the pre-rename commands too.
-	_, startErr := RemoveSessionStartHook(o.Folder, o.WorkbenchID)
-	if startErr != nil {
-		errs = append(errs, startErr)
-	}
-	if _, err := RemoveStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	if _, err := RemoveStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	if _, err := RemoveAskGuardHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	skillsErr := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill())
+	errs := removeWorkbenchHooks(o)
+	skillsErr := removeWorkbenchSkills(o)
 	if skillsErr != nil {
 		errs = append(errs, skillsErr)
-	} else {
-		for _, s := range []Skill{workbenchSkill(), legacySkill()} {
-			if _, err := removeSkill(o.skillsDir(), s); err != nil {
-				errs = append(errs, err)
-			}
-		}
 	}
 	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
 		errs = append(errs, err)
 	}
-	if skillsErr == nil {
+	if !errors.Is(skillsErr, ErrSymlinkOutsideFolder) {
 		removeIfEmpty(o.skillsDir())
 		removeIfEmpty(filepath.Join(o.Folder, ".claude"))
 	}
 	lines := append(append([]string{}, workbenchExcludeLines...), legacySkillExcludeLine)
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, lines)); err != nil {
 		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// removeWorkbenchHooks takes out every hook of the workbench (the
+// recognizer matches the pre-rename commands too). A settings file that is
+// malformed is reported once, not per hook.
+func removeWorkbenchHooks(o WorkbenchInstallOptions) []error {
+	var errs []error
+	_, startErr := RemoveSessionStartHook(o.Folder, o.WorkbenchID)
+	if startErr != nil {
+		errs = append(errs, startErr)
+	}
+	for _, remove := range []func(string, int64) (bool, error){RemoveStopHook, RemoveStateHooks, RemoveAskGuardHooks} {
+		if _, err := remove(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+// removeWorkbenchSkills removes our un-edited skills in both vocabularies,
+// unless the skills directory leads outside the folder: then nothing is
+// removed and that refusal is returned (PROJ-04).
+func removeWorkbenchSkills(o WorkbenchInstallOptions) error {
+	if err := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
+		return err
+	}
+	var errs []error
+	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
+		if _, err := removeSkill(o.skillsDir(), s); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }

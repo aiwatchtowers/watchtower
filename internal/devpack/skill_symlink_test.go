@@ -26,7 +26,7 @@ func treeSnapshot(t *testing.T, root string) map[string]string {
 			out[rel] = "<dir>"
 			return nil
 		}
-		b, err := os.ReadFile(p)
+		b, err := os.ReadFile(p) //nolint:gosec // G122: a test snapshot of its own temp dir; no other writer races it
 		out[rel] = string(b)
 		return err
 	}))
