@@ -49,15 +49,22 @@ enum HubListModel {
 
     /// The problem line of a hub whose session could not be built.
     static let unopenedProblem = "Couldn't open this Mac's data on this iPhone"
+    /// The name and problem line of a registry row that cannot be read (a
+    /// newer build's link, a damaged value): its Mac's name is in it.
+    static let unreadableName = "Unknown Mac"
+    static let unreadableProblem = "Couldn't read this Mac's link on this iPhone"
 
     /// The items in registry order. A hub's last heartbeat is the newer of
     /// its session's (fresh after every fetch) and its row's (kept across
     /// launches); online follows the phone's rule (`MacStatus.isOnline`).
     /// A hub the Mac removed is never online. A hub in `unopened` (its
     /// data could not be opened at launch, `AppEnvironment.unopenedHubIDs`)
-    /// says so and can be forgotten.
+    /// says so and can be forgotten. The hub ids of rows that cannot be
+    /// read (`unreadable`, `HubRegistry.unreadableHubIDs`) follow, each
+    /// unopened and forgettable (#222).
     static func items(
         rows: [HubRow],
+        unreadable: [String] = [],
         sessions: [String: HubSession],
         unopened unopenedHubIDs: Set<String> = [],
         activeHubID: String?,
@@ -85,6 +92,11 @@ enum HubListModel {
                 canForget: removed || unopened || (offlineDays ?? 0) >= forgetAfterDays,
                 problem: unopened ? unopenedProblem : session?.lastFetchError
             )
+        } + unreadable.map { hubID in
+            HubListItem(
+                id: hubID, name: unreadableName, flavor: nil, online: false, offlineDays: nil, openAsks: 0,
+                isActive: false, removedByMac: false, unopened: true, canForget: true, problem: unreadableProblem
+            )
         }
     }
 
@@ -99,8 +111,9 @@ enum HubListModel {
         return "\(name), Mac. \(otherAsks) \(otherAsks == 1 ? "ask" : "asks") waiting on other Macs"
     }
 
-    /// Add Mac is off at `HubRegistry.limit` linked Macs.
-    static func canAddMac(rows: [HubRow]) -> Bool {
-        rows.count < HubRegistry.limit
+    /// Add Mac is off at `HubRegistry.limit` linked Macs, those whose row
+    /// cannot be read (`unreadable`) included.
+    static func canAddMac(rows: [HubRow], unreadable: [String] = []) -> Bool {
+        rows.count + unreadable.count < HubRegistry.limit
     }
 }

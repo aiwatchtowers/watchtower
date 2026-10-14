@@ -43,6 +43,9 @@ struct SystemLinkClock: LinkClock {
 protocol LinkHost: AnyObject {
     /// The saved links, in registry order (rows of both states).
     func linkedHubs() -> [HubRow]
+    /// The hub ids of the registry rows that cannot be read, in order
+    /// (`HubRegistry.unreadableHubIDs`): listed for Forget only (#222).
+    func unreadableHubIDs() -> [String]
     /// Settings → Macs: `hubID` moves to `index` in the registry's order.
     func moveHub(_ hubID: String, to index: Int)
     /// `hubID`'s transport in `scope`'s database, sealing with the phone's

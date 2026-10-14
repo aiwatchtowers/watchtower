@@ -102,8 +102,12 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-a", "hub-c"])
         XCTAssertNil(try? registry.row("hub-b"))
         XCTAssertEqual(try registry.hubIDs(), ["hub-a", "hub-b", "hub-c"])
+        XCTAssertEqual(try registry.unreadableHubIDs(), ["hub-b"], "listed for Forget (#222)")
         try registry.upsert(link("hub-d"), now: now)
         XCTAssertTrue(try registry.isFull(adding: "hub-e"), "the unreadable row still takes a place")
+        try registry.remove("hub-b")
+        XCTAssertTrue(try registry.unreadableHubIDs().isEmpty, "Forget frees its place")
+        XCTAssertFalse(try registry.isFull(adding: "hub-e"))
     }
 
     func testRemovingTheActiveHubClearsActive() throws {

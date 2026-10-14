@@ -135,6 +135,22 @@ final class HubRegistry {
         }
     }
 
+    /// The hub ids of the rows `rows()` skips, in order: listed with Forget
+    /// in Settings → Macs and on the unopened-Macs screen (#222), so an
+    /// unreadable row never holds one of the `limit` places out of reach.
+    func unreadableHubIDs() throws -> [String] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM hubs ORDER BY sort_order").compactMap { row in
+                do {
+                    _ = try Self.hubRow(row)
+                    return nil
+                } catch {
+                    return row["hub_id"] as String?
+                }
+            }
+        }
+    }
+
     func row(_ hubID: String) throws -> HubRow? {
         try queue.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM hubs WHERE hub_id = ?", arguments: [hubID]).map(Self.hubRow)

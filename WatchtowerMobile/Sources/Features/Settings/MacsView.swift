@@ -12,7 +12,7 @@ struct MacsView: View {
     var body: some View {
         // Online turns offline by the clock alone.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            list(env.hubListItems(linking.links, now: context.date))
+            list(env.hubListItems(linking.links, unreadable: linking.unreadableHubIDs, now: context.date))
         }
         .navigationTitle("Macs")
         .toolbar {
@@ -38,7 +38,7 @@ struct MacsView: View {
     }
 
     private func list(_ items: [HubListItem]) -> some View {
-        let canAdd = HubListModel.canAddMac(rows: linking.links)
+        let canAdd = HubListModel.canAddMac(rows: linking.links, unreadable: linking.unreadableHubIDs)
         return List {
             Section {
                 ForEach(items) { item in
@@ -90,5 +90,79 @@ struct MacsView: View {
     private func move(_ items: [HubListItem], from source: IndexSet, to destination: Int) {
         guard let from = source.first, let to = MacsModel.targetIndex(from: from, destination: destination) else { return }
         linking.moveHub(items[from].id, to: to)
+    }
+}
+
+/// No hub on screen while the registry still holds Macs, none of which
+/// opens (`AppRoot.showsUnopenedMacs`, #222): at launch, or after the last
+/// Mac that opened went. Each is listed with its problem and **Forget**;
+/// **Try Again** builds their sessions again (`AppRoot.reopenHubs`), and
+/// **Add Mac** scans while a place is free. Forgetting the last one leaves
+/// Welcome.
+struct UnopenedMacsView: View {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(LinkingViewModel.self) private var linking
+    let retry: @MainActor () async -> Void
+    @State private var asking: MacsModel.Ask?
+    @State private var retrying = false
+
+    var body: some View {
+        let items = env.hubListItems(linking.links, unreadable: linking.unreadableHubIDs, now: .now)
+        let canAdd = HubListModel.canAddMac(rows: linking.links, unreadable: linking.unreadableHubIDs)
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(items) { item in
+                        HubListRow(item: item)
+                            .listRowInsets(RowInsets.flat)
+                            .swipeActions(edge: .trailing) { forget(item) }
+                            .contextMenu { forget(item) }
+                    }
+                } header: {
+                    Text("Watchtower couldn't open the data of these Macs on this iPhone. Try again, or forget a Mac and link it again.")
+                        .textCase(nil)
+                }
+                Section {
+                    Button {
+                        retrying = true
+                        Task {
+                            await retry()
+                            retrying = false
+                        }
+                    } label: {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(retrying || linking.isBusy)
+                    Button {
+                        linking.startScan()
+                    } label: {
+                        Label("Add Mac", systemImage: "qrcode.viewfinder")
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(!canAdd || linking.isBusy)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Macs")
+        }
+        .confirmationDialog(
+            asking?.title ?? "", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
+            titleVisibility: .visible, presenting: asking
+        ) { ask in
+            Button(ask.button, role: .destructive) {
+                Task { await linking.forget(ask.hubID) }
+            }
+        } message: { ask in
+            Text(ask.message)
+        }
+    }
+
+    /// Every unopened Mac's one action: Forget.
+    private func forget(_ item: HubListItem) -> some View {
+        Button("Forget", role: .destructive) {
+            asking = MacsModel.Ask(action: .forget, item: item)
+        }
+        .disabled(linking.isBusy)
     }
 }

@@ -213,6 +213,13 @@ final class FakeLinkHost: LinkHost {
         rows
     }
 
+    /// Registry rows that do not read (#222).
+    var unreadable: [String] = []
+
+    func unreadableHubIDs() -> [String] {
+        unreadable
+    }
+
     func moveHub(_ hubID: String, to index: Int) {}
 
     /// When true, `prepare` waits until its task is cancelled (the app

@@ -295,7 +295,9 @@ struct WatchtowerMobileApp: App {
     }
 }
 
-/// Full-screen state for a replica that cannot open.
+/// Full-screen state for a boot that failed (the Keychain, the hub registry,
+/// the app group). A hub whose replica cannot open is unopened instead
+/// (`UnopenedMacsView`).
 struct BootFailureView: View {
     let message: String
 

@@ -136,6 +136,42 @@ final class AppRoot {
     /// link, or none on screen (the last one was just removed).
     var showsOnboarding: Bool { !isDemo && (linking.links.isEmpty || env.active == nil) }
 
+    /// With no hub on screen, the registry still holds Macs: every one left
+    /// could not be opened or its row cannot be read (at launch, or after
+    /// the last that opened went). The idle onboarding shows them with
+    /// Forget and Try Again instead of Welcome (`UnopenedMacsView`, #222):
+    /// the links still exist.
+    var showsUnopenedMacs: Bool {
+        showsOnboarding && !(linking.links.isEmpty && linking.unreadableHubIDs.isEmpty)
+    }
+
+    /// Try Again on the unopened Macs: each readable row with no session is
+    /// built again as the launch builds it (`AppEnvironment.makeSession`);
+    /// one that opens is wired and added, and with no hub on screen the
+    /// first in order goes on screen. One that fails stays unopened. A row
+    /// that cannot be read stays as it is (a build that reads it opens it).
+    /// A reopened link made before encryption is dropped as at launch.
+    func reopenHubs() async {
+        let rows = linkedHubs()
+        var opened = false
+        for row in rows where env.session(row.hubID) == nil && env.unopenedHubIDs.contains(row.hubID) {
+            do {
+                let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+                wire(session)
+                env.add(session)
+                opened = true
+            } catch {
+                env.markUnopened(row.hubID, error: error)
+            }
+        }
+        guard opened else { return }
+        env.nameHubs(rows)
+        if env.active == nil, let first = rows.first(where: { env.session($0.hubID) != nil }) {
+            env.activate(first.hubID)
+        }
+        await linking.dropUnencryptedLinks()
+    }
+
     /// The app's root: the demo on an unsigned build, else every linked
     /// hub from the registry (an F1 phone's link moved into it first), then
     /// the orphans' clean-up and a link a kill interrupted. Throws
@@ -639,6 +675,15 @@ extension AppRoot: LinkHost {
     func linkedHubs() -> [HubRow] {
         do {
             return try registry.rows()
+        } catch {
+            Self.logger.error("hub registry unreadable: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    func unreadableHubIDs() -> [String] {
+        do {
+            return try registry.unreadableHubIDs()
         } catch {
             Self.logger.error("hub registry unreadable: \(error.localizedDescription, privacy: .public)")
             return []

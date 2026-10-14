@@ -84,11 +84,12 @@ final class AppRootWiringTests: XCTestCase {
     private func linkRecord(
         _ hubID: String = TestHub.acme,
         macName: String = "Acme Mac",
+        scope: DeviceScope = .private,
         deviceID: String? = TestPhone.deviceID(),
         linkedAt: Date? = Date(timeIntervalSince1970: 1_800_000_000)
     ) -> LinkRecord {
         LinkRecord(
-            hubID: hubID, macName: macName, scope: .private, ownerName: "_owner-acme",
+            hubID: hubID, macName: macName, scope: scope, ownerName: "_owner-acme",
             userRecordName: "_owner-acme", nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil,
             deviceID: deviceID, linkedAt: linkedAt
         )
@@ -144,9 +145,10 @@ final class AppRootWiringTests: XCTestCase {
             // Runs before the temp directory's removal (teardown blocks run
             // last-in first-out): the boot has ended and the replica's
             // handles are closed, so nothing writes a file already unlinked.
-            self?.addTeardownBlock { @MainActor in
-                await session.shutDown()
-                try? session.store.reader.close()
+            // Weak: a test may check that a session is freed.
+            self?.addTeardownBlock { @MainActor [weak session] in
+                await session?.shutDown()
+                try? session?.store.reader.close()
             }
             self?.built.append((session, scope, hubID, memory))
             return session
@@ -160,6 +162,7 @@ final class AppRootWiringTests: XCTestCase {
         links: [LinkRecord] = [],
         active: String? = nil,
         frozen: Set<String> = [],
+        unreadable: Set<String> = [],
         linkClock: any LinkClock = SystemLinkClock(),
         persistentTransport: Bool = false,
         keyStore given: InMemoryPhoneKeyStore? = nil,
@@ -175,6 +178,12 @@ final class AppRootWiringTests: XCTestCase {
             try registry.upsert(link, now: Date())
             if frozen.contains(link.hubID) {
                 try registry.setState(.unlinkedByMac, for: link.hubID)
+            }
+        }
+        for hubID in unreadable {
+            // A newer build's link, a damaged value: the row does not decode.
+            try DatabaseQueue(path: paths.registryPath).write { db in
+                try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = ?", arguments: [Data("{not json".utf8), hubID])
             }
         }
         if let active {
@@ -1379,17 +1388,96 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "then its files go")
     }
 
-    /// Every hub failing fails the boot (`BootFailureView`), never Welcome:
-    /// the links still exist.
-    func testEveryHubFailingFailsTheBoot() throws {
+    /// Every hub failing leaves no hub on screen and the unopened Macs
+    /// shown with Forget and Try Again, never Welcome and never a boot
+    /// failure with no way out (#222): the links still exist. Try Again
+    /// opens a hub once its data opens.
+    func testEveryHubFailingShowsTheUnopenedMacsAndTryAgainOpensThem() async throws {
         failingHubs = [TestHub.acme, TestHub.home]
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])
+        try [TestHub.acme, TestHub.home].forEach { _ = try TestHub.keys($0, store: keyStore) }
 
-        XCTAssertThrowsError(try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")])) { error in
-            guard case .noHubOpened = error as? AppEnvironmentError else {
-                return XCTFail("expected noHubOpened, got \(error)")
-            }
-        }
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsUnopenedMacs, "the Macs with Forget, not Welcome")
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme, TestHub.home])
         XCTAssertEqual(try registry.hubIDs(), [TestHub.acme, TestHub.home], "the links are kept")
+
+        await root.reopenHubs()
+        XCTAssertTrue(root.showsUnopenedMacs, "still failing: nothing changes")
+
+        failingHubs = [TestHub.home]
+        await root.reopenHubs()
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertFalse(root.showsOnboarding)
+        XCTAssertFalse(root.showsUnopenedMacs)
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.home])
+    }
+
+    /// The last Mac that opened going leaves the unopened one on screen
+    /// with Forget, not Welcome (#222); forgetting it then leaves Welcome.
+    /// A linked one in `shared` scope leaves its shares: no farewell can
+    /// reach its Mac (no session), and nothing else would remove this
+    /// phone's seat in its zones.
+    func testTheLastOpenedHubGoingLeavesTheUnopenedOnesWithForget() async throws {
+        failingHubs = [TestHub.home]
+        let root = try makeRoot(
+            links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac", scope: .shared)], active: TestHub.acme
+        )
+        _ = try TestHub.keys(TestHub.home, store: keyStore)
+        try await poll { root.env.activeSession.isBootstrapped }
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsUnopenedMacs)
+        let items = root.env.hubListItems(root.linking.links, unreadable: root.linking.unreadableHubIDs, now: Date())
+        XCTAssertEqual(items.map(\.id), [TestHub.home])
+        XCTAssertEqual(items.first.map(MacsModel.action(for:)), .forget)
+
+        await root.linking.forget(TestHub.home)
+
+        XCTAssertTrue(try registry.hubIDs().isEmpty)
+        XCTAssertNil(try keyStore.hubLink(TestHub.home), "its keys are gone")
+        XCTAssertEqual(container.leftHubIDs, [TestHub.home], "the shares are left (Acme's link is private)")
+        XCTAssertFalse(root.showsUnopenedMacs)
+        XCTAssertTrue(root.showsOnboarding, "Welcome")
+    }
+
+    /// A registry row that cannot be read is listed (an unknown Mac,
+    /// unopened, Forget only) and counts toward the limit; Forget removes it
+    /// and its keys, and its place is free again (#222).
+    func testAnUnreadableRowIsListedAndCanBeForgotten() async throws {
+        let root = try makeRoot(
+            links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme, unreadable: [TestHub.home]
+        )
+        _ = try TestHub.keys(TestHub.home, store: keyStore)
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertEqual(root.linking.unreadableHubIDs, [TestHub.home])
+        let items = root.env.hubListItems(root.linking.links, unreadable: root.linking.unreadableHubIDs, now: Date())
+        let unreadable = try XCTUnwrap(items.first { $0.id == TestHub.home }, "listed in Settings → Macs")
+        XCTAssertEqual(unreadable.name, HubListModel.unreadableName)
+        XCTAssertEqual(unreadable.problem, HubListModel.unreadableProblem)
+        XCTAssertTrue(unreadable.unopened)
+        XCTAssertEqual(MacsModel.action(for: unreadable), .forget)
+
+        await root.linking.forget(TestHub.home)
+
+        XCTAssertEqual(try registry.hubIDs(), [TestHub.acme])
+        XCTAssertTrue(root.linking.unreadableHubIDs.isEmpty)
+        XCTAssertNil(try keyStore.hubLink(TestHub.home), "its keys are gone")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertTrue(container.leftHubIDs.isEmpty, "its link is unknown: no share is touched")
+    }
+
+    /// Only unreadable rows: the unopened Macs, not Welcome (#222).
+    func testOnlyUnreadableRowsShowTheUnopenedMacs() throws {
+        let root = try makeRoot(links: [linkRecord()], unreadable: [TestHub.acme])
+
+        XCTAssertTrue(root.linking.links.isEmpty)
+        XCTAssertTrue(root.showsUnopenedMacs)
+        XCTAssertEqual(root.env.unopenedHubIDs, [TestHub.acme])
     }
 
     // MARK: - The last hub's removal (the forwarders)
@@ -1443,7 +1531,44 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(env.activeSession === env.session(TestHub.home), "a new hub on screen ends the retained one")
     }
 
+    /// Welcome on screen lets go of the session the last hub's removal
+    /// kept for the forwarders (#222): its replica closes then, not at the
+    /// next activation.
+    func testReleasingTheRetainedSessionLetsTheRemovedSessionGo() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+        try await poll { root.env.activeSession.isBootstrapped }
+        await root.linking.unlink(TestHub.acme)
+        weak var removed = root.env.activeSession
+        built.removeAll()
+        XCTAssertTrue(root.env.holdsRetainedSession)
+
+        root.env.releaseRetained()
+
+        XCTAssertFalse(root.env.holdsRetainedSession)
+        try await poll({ removed == nil }, "the removed session (and its replica) is freed")
+    }
+
     // MARK: - The stale notice on a switch
+
+    /// An unlink of the hub on screen that has nothing to report keeps the
+    /// stale notice the activation of the next hub set (#222).
+    func testAnUnlinkKeepsTheSuccessorsStaleNotice() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+        await root.env.waitForBoot()
+        try await TestHub.hub(over: transport(TestHub.home), TestHub.home).save([
+            try CloudRecordFactory.record(
+                for: heartbeat(updatedAt: Date().addingTimeInterval(-2 * 86_400), hubID: TestHub.home, macName: "Home Mac"),
+                modifiedAt: Date()
+            )
+        ])
+        try await fetch(root, TestHub.home)
+        XCTAssertNil(root.linking.notice, "Home Mac is not on screen")
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.linking.notice, .stale(macName: "Home Mac"), "the next hub's stale notice is not overwritten")
+    }
 
     /// A switch re-evaluates the stale notice for the new hub at once, with
     /// no fetch (`AppEnvironment.onActivate`).

@@ -73,6 +73,9 @@ final class LinkingViewModel {
     /// (refreshed after every change); empty while unlinked (Welcome). A
     /// pending link is not a link.
     private(set) var links: [HubRow] = []
+    /// The hub ids of the saved links that cannot be read (#222), refreshed
+    /// with `links`: listed with Forget only, never linked through.
+    private(set) var unreadableHubIDs: [String] = []
 
     /// Set by the owner right after init (it owns this model).
     @ObservationIgnored weak var host: (any LinkHost)? {
@@ -116,6 +119,7 @@ final class LinkingViewModel {
     /// Reads the saved links again from the host.
     func refreshLinks() {
         links = host?.linkedHubs() ?? []
+        unreadableHubIDs = host?.unreadableHubIDs() ?? []
     }
 
     /// `hubID`'s row as the host holds it now (not the cached `links`).
@@ -237,7 +241,7 @@ final class LinkingViewModel {
         // its removal lost, so a refused or unanswered re-pair leaves no row
         // whose keys open nothing. Other hubs are untouched.
         if let row = row(payload.hubID), !ending.contains(row.hubID) {
-            notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
+            report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName))
         }
         await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
     }
@@ -689,22 +693,56 @@ final class LinkingViewModel {
     func unlink(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
         phase = .unlinking
-        notice = LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName)
+        report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName))
         phase = .idle
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell
     /// and no share leave (its zones are gone), its keys with it; a
-    /// long-offline linked one is unlinked.
+    /// long-offline linked one, or one whose data could not be opened, is
+    /// unlinked. A row that cannot be read goes with its keys and nothing
+    /// else: its link (the scope, the shares) is unknown (#222).
     func forget(_ hubID: String) async {
-        guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
+        guard !isBusy, !ending.contains(hubID) else { return }
+        guard let row = row(hubID) else {
+            await forgetUnreadable(hubID)
+            return
+        }
         guard row.state == .unlinkedByMac else {
             await unlink(hubID)
             return
         }
         phase = .unlinking
-        notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
+        report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName))
         phase = .idle
+    }
+
+    /// Forget of a registry row that cannot be read: the host removes it
+    /// (no session, so its files wait for the next launch's orphan pass),
+    /// then its keys go.
+    private func forgetUnreadable(_ hubID: String) async {
+        guard let host, host.unreadableHubIDs().contains(hubID) else { return }
+        phase = .unlinking
+        ending.insert(hubID)
+        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
+        removeKeys(hubID)
+        ending.remove(hubID)
+        refreshLinks()
+        report(LinkNotice.after(wipe))
+        phase = .idle
+    }
+
+    /// A removal's report (`LinkNotice.after`), or, with nothing to report,
+    /// no report: a stale notice stays, as the activation of the hub that
+    /// took the screen set it (#222), never cleared by the removal.
+    private func report(_ found: LinkNotice?) {
+        if let found {
+            notice = found
+        } else if case .stale = notice {
+            return
+        } else {
+            notice = nil
+        }
     }
 
     /// `TransportEvent.unlinked` for `hubID`: its zones are gone (the phone
