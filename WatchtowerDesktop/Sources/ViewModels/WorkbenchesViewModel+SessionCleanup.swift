@@ -208,6 +208,25 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Keeps `cleanupRecords[sessionID]` in step with the database while the
+    /// caller's task runs — a cleanup the agent ran (`finish_session`) while
+    /// the report is open shows at once. Returns when cancelled.
+    func observeCleanupRecord(sessionID: Int64) async {
+        let observation = ValueObservation
+            .tracking { try TerminalSessionQueries.fetchCleanupRecord($0, sessionID: sessionID) }
+            .removeDuplicates()
+        do {
+            for try await record in observation.values(in: dbPool) {
+                cleanupRecords[sessionID] = record
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            NSLog("WorkbenchesViewModel: watching session %lld's cleanup result failed: %@",
+                  sessionID, error.localizedDescription)
+        }
+    }
+
     /// The report's Cleanup line: Go's summary, or "Cleanup ran — result
     /// unreadable"; nil when the session has no cleanup result.
     func cleanupReportLine(sessionID: Int64) -> String? {

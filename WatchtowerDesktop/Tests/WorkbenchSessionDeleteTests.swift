@@ -494,4 +494,26 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertEqual(vm.cleanupReportLine(sessionID: other), "Cleanup ran — result unreadable")
     }
 
+    func testReportWatchesTheStoredResult() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        let watch = Task { await vm.observeCleanupRecord(sessionID: row.id) }
+        defer { watch.cancel() }
+
+        // The agent's `finish_session` cleanup writes the result meanwhile.
+        try await pool.write { db in
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
+                arguments: [String(bytes: CleanupFixture.applied, encoding: .utf8), "2026-10-12T10:00:00Z", row.id]
+            )
+        }
+        for _ in 0..<200 where vm.cleanupReportLine(sessionID: row.id) == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(vm.cleanupReportLine(sessionID: row.id), "1 worktree, 1 branch removed (~2.0 GB)")
+        watch.cancel()
+        await watch.value
+    }
 }

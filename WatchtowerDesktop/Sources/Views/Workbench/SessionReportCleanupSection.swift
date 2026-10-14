@@ -4,15 +4,16 @@ import WatchtowerCore
 /// The session report's "Cleanup" section (board #535, spec
 /// 2026-10-12-session-cleanup §12): Go's summary of the session's last
 /// cleanup (`cleanup_result`) and when it ran, or "Cleanup ran — result
-/// unreadable"; nothing when the session was never cleaned up. It reads
-/// the stored result on show and again after each cleanup run.
+/// unreadable"; nothing when the session was never cleaned up. It watches
+/// the stored result while shown, so a cleanup run from anywhere (the app,
+/// the agent's `finish_session`) shows at once.
 struct SessionReportCleanupSection: View {
     let vm: WorkbenchesViewModel
     let sessionID: Int64
 
     var body: some View {
         content
-            .task(id: runPhase) { await vm.loadCleanupRecord(sessionID: sessionID) }
+            .task(id: sessionID) { await vm.observeCleanupRecord(sessionID: sessionID) }
     }
 
     @ViewBuilder
@@ -34,9 +35,5 @@ struct SessionReportCleanupSection: View {
             // the report stacks it with no spacing.
             Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
         }
-    }
-
-    private var runPhase: SessionCleanupPhase {
-        vm.sessionCleanup?.cleanupPhase(for: .session(sessionID)) ?? .idle
     }
 }
