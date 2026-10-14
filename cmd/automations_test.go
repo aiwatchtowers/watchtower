@@ -582,3 +582,74 @@ func TestAutomationsCLI_WakeSignalsCapableDaemon(t *testing.T) {
 		t.Fatal("no SIGUSR2 reached the capable daemon")
 	}
 }
+
+// guardWorkbenchFolder binds a workbench to a folder under the fake HOME's
+// Documents that does not exist and fails the test if the CLI canonicalises
+// anything inside it: a command about another folder must never touch a
+// workbench folder (TCC: ~/Documents asks the user before an app reads it).
+func guardWorkbenchFolder(t *testing.T, d *db.DB) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	folder := filepath.Join(home, "Documents", "acme")
+	_, err = d.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+	orig := automationsCanonicalDir
+	automationsCanonicalDir = func(dir string) (string, error) {
+		if dir == folder || strings.HasPrefix(dir, folder+string(filepath.Separator)) {
+			t.Errorf("canonicalised %s inside a workbench folder the command is not about", dir)
+		}
+		return orig(dir)
+	}
+	t.Cleanup(func() { automationsCanonicalDir = orig })
+	return folder
+}
+
+func TestAutomationsCLI_PersonalCommandsNeverTouchWorkbenchFolders(t *testing.T) {
+	c := newAutoCLI(t)
+	folder := guardWorkbenchFolder(t, c.d)
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`llm("x"); return 1`))
+
+	saved := runAutomationsJSON(t, "save", "--file", src, "--path", filepath.Join(c.personal, "saved.md"))
+	id := int64(saved["automation_id"].(float64))
+	_, err := runAutomations(t, "save", "--file", src, "--path", filepath.Join(t.TempDir(), "elsewhere.md"))
+	require.Error(t, err, "a path outside the recipe folders is refused")
+
+	a, err := c.d.GetAutomation(id)
+	require.NoError(t, err)
+	out, err := runAutomations(t, "confirm", idArg(id), "--hash", a.ApprovalHash)
+	require.NoError(t, err, out)
+	out, err = runAutomations(t, "dry-run", "--file", filepath.Join(c.personal, "saved.md"))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "succeeded")
+
+	out, err = runAutomations(t, "delete", idArg(id))
+	require.NoError(t, err, out)
+	assert.NoFileExists(t, a.Path)
+	assert.NoDirExists(t, folder, "nothing created the workbench folder")
+}
+
+// A recipe saved into a workbench's folder is matched to that workbench by
+// its path; the other (guarded) workbench folder is never touched, and
+// delete removes the file through the automation's own scope.
+func TestAutomationsCLI_SaveAndDeleteInWorkbenchFolder(t *testing.T) {
+	c := newAutoCLI(t)
+	guardWorkbenchFolder(t, c.d)
+	folder, err := filepath.EvalSymlinks(t.TempDir()) // stored resolved, as ResolveWorkbenchFolder does
+	require.NoError(t, err)
+	wbID, err := c.d.CreateWorkbench("beta", folder)
+	require.NoError(t, err)
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))
+	target := filepath.Join(automations.WorkbenchDir(folder), "wb.md")
+
+	saved := runAutomationsJSON(t, "save", "--file", src, "--path", target)
+	assert.FileExists(t, target)
+	a, err := c.d.GetAutomation(int64(saved["automation_id"].(float64)))
+	require.NoError(t, err)
+	assert.Equal(t, string(automations.ScopeWorkbench), a.Scope)
+	assert.Equal(t, wbID, a.ProjectID)
+
+	out, err := runAutomations(t, "delete", idArg(a.ID))
+	require.NoError(t, err, out)
+	assert.NoFileExists(t, target)
+}

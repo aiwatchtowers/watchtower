@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -325,35 +326,81 @@ func orNone(s string) string {
 	return s
 }
 
+// automationsCanonicalDir is automations.CanonicalDir behind a test seam.
+var automationsCanonicalDir = automations.CanonicalDir
+
 // recipeFolderOf resolves the recipe folder file lies in — the personal folder
 // or a known workbench's .watchtower/automations — and returns its scope, the
 // canonical folder and the file's canonical path (how its index row keys
 // it). ok is false when file lies in neither.
+//
+// It touches only file's own folder, the personal folder and at most one
+// workbench folder: workbenches are matched lexically (their stored folder is
+// already symlink-resolved), and only the one whose recipe folder spells the
+// file's folder — as given or canonical — is canonicalised to confirm. A
+// workbench folder may sit under a TCC-protected location (~/Documents,
+// iCloud Drive, /Volumes…), and a command about another folder must not stat
+// it: the prompt would be attributed to Watchtower.
 func recipeFolderOf(cfg *config.Config, database *db.DB, file string) (scope automations.Scope, dir, path string, ok bool, err error) {
-	dir, err = automations.CanonicalDir(filepath.Dir(file))
+	dir, err = automationsCanonicalDir(filepath.Dir(file))
 	if err != nil {
 		return scope, "", "", false, fmt.Errorf("resolving %s: %w", file, err)
 	}
 	path = filepath.Join(dir, filepath.Base(file))
-	personal, err := automations.CanonicalDir(automations.PersonalDir(cfg.WorkspaceDir()))
+	personal, err := automationsCanonicalDir(automations.PersonalDir(cfg.WorkspaceDir()))
 	if err != nil {
 		return scope, "", "", false, fmt.Errorf("resolving the personal recipe folder: %w", err)
 	}
 	if dir == personal {
 		return automations.Scope{Kind: automations.ScopePersonal}, dir, path, true, nil
 	}
+	given, err := filepath.Abs(filepath.Dir(file))
+	if err != nil {
+		return scope, "", "", false, fmt.Errorf("resolving %s: %w", file, err)
+	}
+	w, err := workbenchSpellingRecipeDir(database, given, dir)
+	if err != nil || w == nil {
+		return scope, dir, path, false, err
+	}
+	wdir, err := automationsCanonicalDir(automations.WorkbenchDir(w.FolderPath))
+	if err != nil {
+		return scope, "", "", false, fmt.Errorf("resolving workbench %d's recipe folder: %w", w.ID, err)
+	}
+	if dir != wdir {
+		return scope, dir, path, false, nil
+	}
+	return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, dir, path, true, nil
+}
+
+// workbenchSpellingRecipeDir is the workbench whose recipe folder, by its
+// stored path alone, is one of dirs (nil when none) — no filesystem call.
+func workbenchSpellingRecipeDir(database *db.DB, dirs ...string) (*db.Workbench, error) {
 	workbenches, err := database.ListWorkbenches()
 	if err != nil {
-		return scope, "", "", false, err
+		return nil, err
 	}
-	for _, w := range workbenches {
-		wdir, err := automations.CanonicalDir(automations.WorkbenchDir(w.FolderPath))
-		if err != nil {
-			return scope, "", "", false, fmt.Errorf("resolving workbench %d's recipe folder: %w", w.ID, err)
-		}
-		if dir == wdir {
-			return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, dir, path, true, nil
+	for i := range workbenches {
+		wdir := filepath.Clean(automations.WorkbenchDir(workbenches[i].FolderPath))
+		if slices.Contains(dirs, wdir) {
+			return &workbenches[i], nil
 		}
 	}
-	return scope, dir, path, false, nil
+	return nil, nil
+}
+
+// scopeRecipeDir is scope's recipe folder as stored (not canonicalised): the
+// personal folder, or the workbench's .watchtower/automations. ok is false
+// for a workbench that no longer exists.
+func scopeRecipeDir(cfg *config.Config, database *db.DB, scope automations.Scope) (dir string, ok bool, err error) {
+	if scope.Kind != automations.ScopeWorkbench {
+		return automations.PersonalDir(cfg.WorkspaceDir()), true, nil
+	}
+	w, err := database.GetWorkbench(scope.WorkbenchID)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return automations.WorkbenchDir(w.FolderPath), true, nil
 }
