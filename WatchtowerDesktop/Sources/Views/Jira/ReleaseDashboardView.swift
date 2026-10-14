@@ -4,6 +4,41 @@ struct ReleaseDashboardView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: ReleaseDashboardViewModel?
 
+    /// A search that hides everything keeps its own state; with Jira data
+    /// but nothing here, the tab's own words; before any, the shared state.
+    @ViewBuilder
+    static func emptyState(isFiltered: Bool, context: EmptyStateContext) -> some View {
+        if isFiltered {
+            ownEmptyState(isFiltered: true)
+        } else {
+            ContentAwareEmptyState(.releases, context: context) {
+                ownEmptyState(isFiltered: false)
+            }
+        }
+    }
+
+    private static func ownEmptyState(isFiltered: Bool) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: isFiltered ? "magnifyingglass" : "shippingbox")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+
+            Text(isFiltered ? "No matching releases" : "No releases found")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            Text(
+                isFiltered
+                    ? "Try adjusting your search"
+                    : "Unreleased versions from Jira will appear here"
+            )
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -69,7 +104,7 @@ struct ReleaseDashboardView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if vm.filteredReleases.isEmpty {
-                emptyState(isFiltered: !vm.searchText.isEmpty)
+                Self.emptyState(isFiltered: !vm.searchText.isEmpty, context: appState.emptyStateContext)
             } else {
                 releaseList(vm)
             }
@@ -162,29 +197,6 @@ struct ReleaseDashboardView: View {
         .background(color.opacity(0.1), in: Capsule())
     }
 
-    // MARK: - Empty State
-
-    private func emptyState(isFiltered: Bool) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: isFiltered ? "magnifyingglass" : "shippingbox")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-
-            Text(isFiltered ? "No matching releases" : "No releases found")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-
-            Text(
-                isFiltered
-                    ? "Try adjusting your search"
-                    : "Unreleased versions from Jira will appear here"
-            )
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
 
 // MARK: - Release Card

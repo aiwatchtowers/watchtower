@@ -12,7 +12,8 @@ extension AppState {
     /// are no-ops unless a test passes its own. The workbench page's state
     /// (layouts, inspector) lives in the same suite. One suite per test
     /// process, emptied per instance, so a run leaves no per-test plist
-    /// behind.
+    /// behind. Readiness reads a fake environment, never the live config,
+    /// workspace directory or stamps.
     static func isolated(
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { throw CocoaError(.fileNoSuchFile) },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
@@ -31,6 +32,7 @@ extension AppState {
         )
         appState.daemonControlOverride = FakeDaemon()
         appState.wireAppDatabaseOverride = { _ in }
+        appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         return appState
     }
 
