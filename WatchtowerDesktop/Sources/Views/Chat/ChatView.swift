@@ -59,8 +59,15 @@ struct ChatSplitView: View {
                     toolbar
                     Divider()
                     if chatVM.isInspectorExpanded {
-                        // The open panel in place of the conversation (#786).
+                        // The open panel in place of the conversation (#786);
+                        // the thread view that feeds it the live turn is gone,
+                        // so the feed comes along.
                         ChatInspectorContent(chatVM: chatVM)
+                            .background {
+                                if let live = chatVM.liveTurn {
+                                    ChatLiveArtifactFeed(turn: live) { chatVM.updateLiveArtifacts(streamingText: $0) }
+                                }
+                            }
                     } else if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
                         ProjectDetailView(
                             projectID: projectID,
@@ -129,9 +136,8 @@ struct ChatSplitView: View {
             Button("Cancel", role: .cancel) {}
         }
         .inspector(isPresented: Binding(
-            get: { chatVM.inspectorMode != nil && !chatVM.isInspectorExpanded },
-            // Expanding hides the column without closing the panel.
-            set: { if !$0 && !chatVM.isInspectorExpanded { chatVM.closeInspector() } }
+            get: { chatVM.showsInspectorColumn },
+            set: { if !$0 { chatVM.inspectorColumnDismissed() } }
         )) {
             ChatInspectorContent(chatVM: chatVM)
                 .persistedInspectorColumnWidth(key: "chat.inspectorWidth", range: 320...900, ideal: 460)

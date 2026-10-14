@@ -69,3 +69,15 @@ struct ChatInspectorExpandButton: View {
         .accessibilityLabel(isExpanded ? "Collapse panel" : "Expand panel")
     }
 }
+
+/// Hands the live turn's text to the artifact panel while the thread view —
+/// its usual feed (`LiveAssistantRow`) — is off screen (#786). Only this
+/// empty view re-renders per delta.
+struct ChatLiveArtifactFeed: View {
+    let turn: LiveTurn
+    let onText: (String) -> Void
+
+    var body: some View {
+        Color.clear.onChange(of: turn.text, initial: true) { _, text in onText(text) }
+    }
+}

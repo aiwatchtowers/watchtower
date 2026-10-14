@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
@@ -804,8 +806,12 @@ final class ChatViewModelTests: XCTestCase {
 
         vm.openArtifact(key: "q3")
         vm.openSources(messageID: 7, sources: [source])
+        XCTAssertTrue(vm.showsInspectorColumn)
         vm.toggleInspectorExpanded()
         XCTAssertTrue(vm.isInspectorExpanded)
+        XCTAssertFalse(vm.showsInspectorColumn, "the column steps aside for the expanded panel")
+        vm.inspectorColumnDismissed()
+        XCTAssertEqual(vm.inspectorMode, .sources, "hiding the column to expand closes nothing")
         vm.closeSourcesPanel()
         XCTAssertTrue(vm.isInspectorExpanded, "the artifact still open keeps the expanded panel")
         vm.toggleInspectorExpanded()
@@ -821,6 +827,31 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.newConversation())
         vm.openSources(messageID: 8, sources: [source])
         XCTAssertFalse(vm.isInspectorExpanded, "a conversation switch closes the expanded panel too")
+        vm.inspectorColumnDismissed()
+        XCTAssertNil(vm.inspectorMode, "dismissing the column closes the panels")
+    }
+
+    /// With the thread view off screen the expanded panel still gets the
+    /// live text (#786): the feed reports every published delta.
+    @MainActor
+    func testTheLiveArtifactFeedReportsTheStreamingText() {
+        let turn = LiveTurn(messageID: 1, turnID: "t", startedAt: Date(), publishInterval: 0)
+        var received: [String] = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { received.append($0) })
+        window.orderFront(nil)
+        defer { window.close() }
+
+        let expected = ":::artifact key=q3\nline"
+        turn.appendDelta(":::artifact key=q3", now: Date())
+        turn.appendDelta("\nline", now: Date())
+        let deadline = Date().addingTimeInterval(2)
+        while received.last != expected, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(received.last, expected)
     }
 
     func testOpeningASearchHitShowsItsBranchAndScrollsToIt() async throws {
@@ -1165,9 +1196,12 @@ final class ChatViewModelTests: XCTestCase {
                 BEGIN SELECT RAISE(ABORT, 'boom'); END
                 """)
         }
+        vm.toggleInspectorExpanded()
+        XCTAssertTrue(vm.isInspectorExpanded)
         vm.sendArtifactComments()
         XCTAssertTrue(try lastFake().turns.isEmpty)
         XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(vm.isInspectorExpanded, "the expanded panel steps aside so the error shows (#786)")
         XCTAssertEqual(try commentStatuses(), ["open"])
     }
 
@@ -1176,7 +1210,9 @@ final class ChatViewModelTests: XCTestCase {
         _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
         XCTAssertTrue(vm.send(text: "q"))
         _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        vm.toggleInspectorExpanded()
         vm.sendArtifactComments()
+        XCTAssertFalse(vm.isInspectorExpanded, "the refusal shows in the conversation (#786)")
         XCTAssertEqual(try lastFake().turns.count, 1, "only the first question went out")
         XCTAssertEqual(try commentStatuses(), ["open"])
         XCTAssertNotNil(vm.errorMessage, "a refused send says why instead of doing nothing")

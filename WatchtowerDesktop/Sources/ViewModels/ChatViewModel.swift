@@ -508,6 +508,9 @@ final class ChatViewModel {
     /// start is refused out loud, never silently.
     func sendArtifactComments() {
         guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
+        // The answer — or the reason it was not sent — shows in the
+        // conversation, which an expanded panel covers (#786).
+        isInspectorExpanded = false
         guard !isStreaming else {
             errorMessage = "Wait for the current answer to finish, then send the comments."
             return
@@ -550,6 +553,16 @@ final class ChatViewModel {
     /// goes back to the inspector column.
     func toggleInspectorExpanded() {
         isInspectorExpanded = inspectorMode != nil && !isInspectorExpanded
+    }
+
+    /// The inspector column is on screen: a panel is open and not expanded.
+    var showsInspectorColumn: Bool { inspectorMode != nil && !isInspectorExpanded }
+
+    /// The inspector column was dismissed. Expanding hides the column too,
+    /// which must not close the panel it moves.
+    func inspectorColumnDismissed() {
+        guard !isInspectorExpanded else { return }
+        closeInspector()
     }
 
     private func collapseInspectorIfClosed() {
