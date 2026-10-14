@@ -1222,6 +1222,7 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
 
 -- Multi-account Google source: one row per connected Google account (Gmail
 -- and/or Calendar). Replaces the calendar_auth_state / gmail_auth_state
@@ -1302,6 +1303,7 @@ CREATE TABLE IF NOT EXISTS imap_messages (
     PRIMARY KEY (account_id, uidvalidity, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_imap_messages_synced ON imap_messages(synced_at);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
 
 -- Multi-account open-protocol calendar sources: one row per connected CalDAV
 -- server or secret ICS feed (the calendar analog of email_accounts). Events

@@ -1885,6 +1885,8 @@ CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
