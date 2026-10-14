@@ -48,7 +48,8 @@ func parseToolCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (toolCall
 	req := toolCall{args: json.RawMessage(`{}`)}
 	name, _, err := argAt(env, rt, call, 0)
 	if err != nil {
-		return req, tooLargeAs(err, ErrNameValidation, "tool(): the tool name is too large")
+		return req, tooLargeAs(err, ErrNameValidation,
+			fmt.Sprintf("tool(): the tool name is larger than %d bytes", maxSDKArgBytes))
 	}
 	var ok bool
 	if req.name, ok = name.(string); !ok || req.name == "" {
@@ -104,7 +105,7 @@ func admitTool(env *Env, b Backends, step *Step, req toolCall) (*tools.Tool, err
 func readTool(env *Env, b Backends, t *tools.Tool, args json.RawMessage) (any, error) {
 	res, err := b.Registry.CallRead(env.Ctx, t.Name, ClampListLimit(t, args), env.Binding())
 	if err == nil {
-		return res, nil
+		return jsonValue(res), nil
 	}
 	var ve *tools.ValidationError
 	if errors.As(err, &ve) {

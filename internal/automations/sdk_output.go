@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"unicode/utf8"
 
 	"github.com/dop251/goja"
 
@@ -63,7 +64,8 @@ func bufferedOutput(kind string, withPriority bool) SDKFunc {
 			step.SetPermission(entry)
 			if argErr != nil {
 				return nil, tooLargeAs(argErr, ErrNameResultTooLarge,
-					fmt.Sprintf("%s(): the body is larger than %d bytes", fn, MaxOutputBodyBytes))
+					fmt.Sprintf("%s(): the argument is larger than %d bytes; a body may be at most %d bytes",
+						fn, maxSDKArgBytes, MaxOutputBodyBytes))
 			}
 			o, err := outputRow(env, fn, kind, arg, withPriority)
 			if err != nil {
@@ -93,17 +95,14 @@ func outputRow(env *Env, fn, kind string, arg any, withPriority bool) (db.Automa
 	if !ok {
 		return o, validationf("%s() takes an object {title, body}", fn)
 	}
-	allowed := []string{"title", "body"}
-	if withPriority {
-		allowed = append(allowed, "priority")
-	}
-	for k := range fields {
-		if !slices.Contains(allowed, k) {
-			return o, validationf("%s(): unknown field %q", fn, k)
-		}
+	if err := checkOutputFields(fn, fields, withPriority); err != nil {
+		return o, err
 	}
 	if o.Title, ok = fields["title"].(string); !ok || o.Title == "" {
 		return o, validationf("%s(): title must be a non-empty string", fn)
+	}
+	if n := utf8.RuneCountInString(o.Title); n > MaxOutputTitleChars {
+		return o, validationf("%s(): the title is %d characters; the limit is %d", fn, n, MaxOutputTitleChars)
 	}
 	if o.Body, ok = fields["body"].(string); !ok {
 		return o, validationf("%s(): body must be a string", fn)
@@ -115,4 +114,18 @@ func outputRow(env *Env, fn, kind string, arg any, withPriority bool) (db.Automa
 		}
 	}
 	return o, nil
+}
+
+// checkOutputFields refuses a field output.<kind> does not take.
+func checkOutputFields(fn string, fields map[string]any, withPriority bool) error {
+	allowed := []string{"title", "body"}
+	if withPriority {
+		allowed = append(allowed, "priority")
+	}
+	for k := range fields {
+		if !slices.Contains(allowed, k) {
+			return validationf("%s(): unknown field %q", fn, k)
+		}
+	}
+	return nil
 }

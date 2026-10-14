@@ -32,7 +32,7 @@ const llmSystemPrompt = "You are one step of an automation script the owner wrot
 
 // LLMModule defines llm(prompt, {input?, schema?, tier?}) (spec §5): the
 // permission llm:<tier> (default light), input JSON-serialised after the
-// prompt (≤ MaxLLMInputBytes), one metered Generate call per attempt
+// prompt (prompt + input + schema ≤ MaxLLMInputBytes), one metered Generate call per attempt
 // (Env.MeteredModelCall) and, with a schema, the reply parsed and validated
 // with one retry before a ValidationError. It returns the reply string, or
 // the parsed value with a schema.
@@ -56,6 +56,10 @@ type llmCall struct {
 	tier   string
 }
 
+// size is what MaxLLMInputBytes bounds: the prompt, the serialised input and
+// the serialised schema together (a stricter reading of spec §5's "input").
+func (r llmCall) size() int { return len(r.prompt) + len(r.input) + len(r.schema) }
+
 func (r llmCall) stepArgs() map[string]any {
 	a := map[string]any{"prompt": r.prompt, "tier": r.tier}
 	if r.input != nil {
@@ -75,7 +79,9 @@ func parseLLMCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (llmCall, 
 	req := llmCall{tier: tierLight}
 	p, _, err := argAt(env, rt, call, 0)
 	if err != nil {
-		return req, tooLargeAs(err, ErrNameValidation, "llm(): the prompt is too large")
+		return req, tooLargeAs(err, ErrNameValidation,
+			fmt.Sprintf("llm(): input too large: the prompt is larger than %d bytes; prompt, input and schema may be at most %d bytes together",
+				maxSDKArgBytes, MaxLLMInputBytes))
 	}
 	var ok bool
 	if req.prompt, ok = p.(string); !ok || strings.TrimSpace(req.prompt) == "" {
@@ -84,7 +90,8 @@ func parseLLMCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (llmCall, 
 	o, present, err := argAt(env, rt, call, 1)
 	if err != nil {
 		return req, tooLargeAs(err, ErrNameValidation,
-			fmt.Sprintf("llm(): input too large (the limit is %d bytes)", MaxLLMInputBytes))
+			fmt.Sprintf("llm(): input too large: the options object is larger than %d bytes; prompt, input and schema may be at most %d bytes together",
+				maxSDKArgBytes, MaxLLMInputBytes))
 	}
 	if !present || o == nil {
 		return req, nil
@@ -136,8 +143,9 @@ func runLLM(env *Env, b Backends, step *Step, req llmCall) (any, error) {
 		return nil, err
 	}
 	step.SetPermission(entry)
-	if len(req.input) > MaxLLMInputBytes {
-		return nil, validationf("llm(): input too large: %d bytes serialised; the limit is %d", len(req.input), MaxLLMInputBytes)
+	if n := req.size(); n > MaxLLMInputBytes {
+		return nil, validationf("llm(): input too large: prompt, input and schema are %d bytes serialised; the limit is %d",
+			n, MaxLLMInputBytes)
 	}
 	if b.Generator == nil {
 		return nil, notAvailable("no model provider is configured")
@@ -155,7 +163,7 @@ func runLLM(env *Env, b Backends, step *Step, req llmCall) (any, error) {
 	}
 	v, verr := parseReply(reply, schema)
 	if verr == nil {
-		return v, nil
+		return jsonValue(v), nil
 	}
 	retry := user + "\n\nYour previous reply was not accepted: " + verr.Error() +
 		"\nReply again with only the JSON value."
@@ -165,7 +173,7 @@ func runLLM(env *Env, b Backends, step *Step, req llmCall) (any, error) {
 	if v, verr = parseReply(reply, schema); verr != nil {
 		return nil, validationf("llm(): the reply does not match the schema after one retry: %v", verr)
 	}
-	return v, nil
+	return jsonValue(v), nil
 }
 
 // llmUserMessage is the prompt, then the input as JSON, then the schema
@@ -221,18 +229,19 @@ func stripCodeFence(s string) string {
 	return strings.TrimSpace(body)
 }
 
-// generateMetered is one metered Generate call; usage the provider does not
-// report is estimated as ceil(len(prompt+reply)/4) tokens.
+// generateMetered is one metered Generate call; a successful call whose
+// usage the provider does not report is estimated as
+// ceil(len(prompt+reply)/4) tokens, a failed one debits only reported usage.
 func generateMetered(env *Env, b Backends, step *Step, tier, user string) (string, error) {
 	var reply string
 	err := env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
 		r, usage, err := generateTier(ctx, b.Generator, tier, user)
-		reply = r
-		u := modelUsage(usage, len(llmSystemPrompt)+len(user), len(r))
 		if err != nil {
-			return u, &SDKError{Name: ErrNameTool, Message: "the model call failed: " + err.Error()}
+			// A failed call debits only the usage the provider reported.
+			return reportedUsage(usage), &SDKError{Name: ErrNameTool, Message: "the model call failed: " + err.Error()}
 		}
-		return u, nil
+		reply = r
+		return modelUsage(usage, len(llmSystemPrompt)+len(user), len(r)), nil
 	})
 	return reply, err
 }
@@ -256,6 +265,14 @@ func modelUsage(u *digest.Usage, promptBytes, replyBytes int) ModelUsage {
 		total := int64(promptBytes+replyBytes+3) / 4
 		out := min(total, int64(replyBytes+3)/4)
 		return ModelUsage{InputTokens: total - out, OutputTokens: out, Estimated: true}
+	}
+	return reportedUsage(u)
+}
+
+// reportedUsage is exactly what the provider reported (zero for nil).
+func reportedUsage(u *digest.Usage) ModelUsage {
+	if u == nil {
+		return ModelUsage{}
 	}
 	mu := ModelUsage{InputTokens: int64(u.InputTokens), OutputTokens: int64(u.OutputTokens)}
 	if u.CostUSD > 0 {

@@ -28,6 +28,9 @@ const (
 	MaxStateBytes = 64 * 1024
 	// MaxOutputBodyBytes caps the body of one output.* call.
 	MaxOutputBodyBytes = 64 * 1024
+	// MaxOutputTitleChars caps the title of one output.* call, in characters
+	// (Task 7 review decision; not in the spec's list — Task 13 docs).
+	MaxOutputTitleChars = 200
 	// MaxLogBytes caps one log() call.
 	MaxLogBytes = 4 * 1024
 	// MaxLogCalls caps log() calls per run.

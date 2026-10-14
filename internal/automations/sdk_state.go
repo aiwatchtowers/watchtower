@@ -26,7 +26,8 @@ func StateModule() Module {
 func stateKey(env *Env, rt *goja.Runtime, call goja.FunctionCall, fn string) (string, error) {
 	v, _, err := argAt(env, rt, call, 0)
 	if err != nil {
-		return "", err
+		return "", tooLargeAs(err, ErrNameValidation,
+			fmt.Sprintf("%s(key): the key is larger than %d bytes", fn, maxSDKArgBytes))
 	}
 	key, ok := v.(string)
 	if !ok || key == "" {

@@ -19,16 +19,31 @@ func LogModule() Module {
 }
 
 func logCall(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
-	n := env.Journal.CountKind(StepKindLog)
-	capErr := validationf("log() was called more than %d times in this run", MaxLogCalls)
-	if n > MaxLogCalls {
-		return nil, capErr
-	}
-	if n == MaxLogCalls {
-		return env.Call(StepKindLog, "log", nil, func(*Step) (any, error) { return nil, capErr })
+	if v, err, capped := logCapped(env); capped {
+		return v, err
 	}
 	msg := logMessage(env, rt, call.Arguments)
+	// Converting the arguments runs script code (getters, toJSON) that may
+	// log itself: check the cap again right before the step begins.
+	if v, err, capped := logCapped(env); capped {
+		return v, err
+	}
 	return env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil })
+}
+
+// logCapped applies the per-run cap: the call after MaxLogCalls is an error
+// step, later ones throw without a step.
+func logCapped(env *Env) (any, error, bool) {
+	n := env.Journal.CountKind(StepKindLog)
+	if n < MaxLogCalls {
+		return nil, nil, false
+	}
+	capErr := validationf("log() was called more than %d times in this run", MaxLogCalls)
+	if n > MaxLogCalls {
+		return nil, capErr, true
+	}
+	v, err := env.Call(StepKindLog, "log", nil, func(*Step) (any, error) { return nil, capErr })
+	return v, err, true
 }
 
 // logMessage renders the arguments like a console line: a value JSON cannot

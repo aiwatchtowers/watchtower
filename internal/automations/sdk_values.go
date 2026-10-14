@@ -2,6 +2,7 @@ package automations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -223,6 +224,15 @@ func tooLargeAs(err error, name, msg string) error {
 		return &SDKError{Name: name, Message: msg}
 	}
 	return err
+}
+
+// jsonValue keeps a decoded JSON null a null for the script: a nil result
+// would reach it as undefined.
+func jsonValue(v any) any {
+	if v == nil {
+		return json.RawMessage("null")
+	}
+	return v
 }
 
 // validationf is a ValidationError with a formatted message.

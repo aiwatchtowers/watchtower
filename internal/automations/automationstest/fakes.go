@@ -20,9 +20,12 @@ type FakeCall struct {
 // FakeGenerator is a digest.Generator that records its calls. Call i replies
 // Replies[i] with Usage[i]; past the end of a slice it repeats the slice's
 // last element (an empty reply and nil usage when the slice is empty).
+// Errors[i], when non-nil, makes call i fail with it (and Usage[i], if any);
+// Errors is not repeated past its end.
 type FakeGenerator struct {
 	Replies []string
 	Usage   []digest.Usage
+	Errors  []error
 	Calls   []FakeCall
 
 	mu sync.Mutex
@@ -45,6 +48,9 @@ func (g *FakeGenerator) Generate(ctx context.Context, systemPrompt, userMessage,
 	if n := len(g.Usage); n > 0 {
 		u := g.Usage[min(i, n-1)]
 		usage = &u
+	}
+	if i < len(g.Errors) && g.Errors[i] != nil {
+		return "", usage, sessionID, g.Errors[i]
 	}
 	return reply, usage, sessionID, nil
 }

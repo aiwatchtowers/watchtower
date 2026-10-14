@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -187,16 +188,88 @@ func TestLLM_SchemaRetryOnceThenValidationError(t *testing.T) {
 }
 
 func TestLLM_InputTooLarge(t *testing.T) {
-	r := mustReturn(t, `try { llm("sum", {input: "x".repeat(201 * 1024)}); return "called" } catch (e) {
-		return e.name + "|" + (e.message.indexOf("input too large") >= 0) }`,
-		sdkCase{perms: []string{"llm:light"}}, "ValidationError|true")
-	if n := r.gen.CallCount(); n != 0 {
-		t.Fatalf("generator called %d times; want 0", n)
+	// The limit covers prompt + input + schema together (stricter than §5).
+	cases := map[string]struct{ call, wantMsg string }{
+		"input":            {`llm("sum", {input: "x".repeat(201 * 1024)})`, "input too large"},
+		"prompt":           {`llm("x".repeat(201 * 1024))`, "input too large"},
+		"prompt and input": {`llm("x".repeat(100 * 1024), {input: "y".repeat(101 * 1024)})`, "input too large"},
+		"options object":   {`llm("p", {schema: {description: "x".repeat(300 * 1024)}})`, "options object is larger than 262144 bytes"},
 	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := runSDK(t, `try { `+tc.call+`; return "called" } catch (e) {
+				return e.name + "|" + (e.message.indexOf(`+strconv.Quote(tc.wantMsg)+`) >= 0) + "|" + e.message.slice(0, 200) }`,
+				sdkCase{perms: []string{"llm:light"}})
+			if r.err != nil {
+				t.Fatalf("Run: %v", r.err)
+			}
+			if got := fmt.Sprint(r.out); !strings.HasPrefix(got, "ValidationError|true|") {
+				t.Fatalf("script returned %q; want a ValidationError naming %q", got, tc.wantMsg)
+			}
+			if n := r.gen.CallCount(); n != 0 {
+				t.Fatalf("generator called %d times; want 0", n)
+			}
+			if steps := r.env.Journal.Steps(); len(steps) != 1 || steps[0].Status != automations.StepError {
+				t.Fatalf("steps = %v; want one error step", stepStatuses(steps))
+			}
+		})
+	}
+}
+
+func TestLLM_FailedCallDebitsOnlyReportedUsage(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage []digest.Usage
+		want  int64
+	}{
+		{"no usage", nil, 0},
+		{"reported usage", []digest.Usage{{InputTokens: 10, OutputTokens: 5}}, 15},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := &automationstest.FakeGenerator{Errors: []error{errors.New("provider down")}, Usage: tc.usage}
+			r := mustReturn(t, `try { llm("x"); return "called" } catch (e) { return e.name + "|" + e.message }`,
+				sdkCase{perms: []string{"llm:light"}, gen: gen}, "ToolError|the model call failed: provider down")
+			tot := r.env.Journal.Totals()
+			if got := tot.InputTokens + tot.OutputTokens; got != tc.want || tot.Estimated {
+				t.Fatalf("debited %d (estimated %v); want %d, not estimated", got, tot.Estimated, tc.want)
+			}
+			if rem := r.env.Meter.Remaining().Tokens; rem != 50000-int(tc.want) {
+				t.Fatalf("meter remaining = %d; want %d", rem, 50000-int(tc.want))
+			}
+		})
+	}
+}
+
+func TestLLM_ReportedCostRecorded(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"a", "b"},
+		Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5, CostUSD: 0.25}, {InputTokens: 10, OutputTokens: 5}}}
+	r := mustReturn(t, `llm("x"); llm("y"); return 1`, sdkCase{perms: []string{"llm:light"}, gen: gen}, 1)
 	steps := r.env.Journal.Steps()
-	if len(steps) != 1 || steps[0].Status != automations.StepError {
-		t.Fatalf("steps = %v; want one error step", stepStatuses(steps))
+	if steps[0].ReportedCostUSD == nil || *steps[0].ReportedCostUSD != 0.25 || steps[1].ReportedCostUSD != nil {
+		t.Fatalf("step costs = %v, %v; want 0.25 and none", steps[0].ReportedCostUSD, steps[1].ReportedCostUSD)
 	}
+	if c := r.env.Journal.Totals().ReportedCostUSD; c == nil || *c != 0.25 {
+		t.Fatalf("run cost = %v; want 0.25", c)
+	}
+}
+
+func TestLLM_SchemaRetryDebitsBothCalls(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"x", `{"a":1}`},
+		Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	r := mustReturn(t, `return llm("give", {schema: {type: "object"}}).a`, sdkCase{perms: []string{"llm:light"}, gen: gen}, 1)
+	if tot := r.env.Journal.Totals(); tot.InputTokens+tot.OutputTokens != 30 {
+		t.Fatalf("debited %d; want 30 (both calls)", tot.InputTokens+tot.OutputTokens)
+	}
+	if steps := r.env.Journal.Steps(); len(steps) != 1 || steps[0].InputTokens+steps[0].OutputTokens != 30 {
+		t.Fatalf("steps = %+v; want one llm step carrying both calls' tokens", steps)
+	}
+}
+
+func TestLLM_SchemaNullReplyIsNull(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"null"}}
+	mustReturn(t, `return String(llm("nothing", {schema: {type: "null"}}) === null)`,
+		sdkCase{perms: []string{"llm:light"}, gen: gen}, "true")
 }
 
 // openRunDB opens a file DB with a claimed run of a seeded automation.
@@ -322,6 +395,12 @@ func TestTool_LimitInjectedAndClamped(t *testing.T) {
 	}
 }
 
+func TestTool_NullResultIsNull(t *testing.T) {
+	reg := fakeTools()
+	reg.ReadResults["list_targets"] = nil
+	mustReturn(t, `return String(tool("list_targets") === null)`, sdkCase{perms: []string{"targets:read"}, reg: reg}, "true")
+}
+
 func TestTool_WriteNotAvailableInP1(t *testing.T) {
 	r := mustReturn(t, `try { tool("create_target", {title: "x"}); return "called" } catch (e) { return e.name }`,
 		sdkCase{perms: []string{"tool:create_target"}}, "NotAvailable")
@@ -397,6 +476,11 @@ func TestState_RejectsUnserialisableValues(t *testing.T) {
 	}
 }
 
+func TestState_OversizedKeyIsValidationError(t *testing.T) {
+	mustReturn(t, `try { state.set("k".repeat(300 * 1024), 1); return "set" } catch (e) { return e.name }`,
+		sdkCase{}, "ValidationError")
+}
+
 func TestState_TooLargeValueIsStateTooLarge(t *testing.T) {
 	for _, n := range []int{65 * 1024, 300 * 1024} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
@@ -437,7 +521,7 @@ func TestOutput_GateAndBodyLimit(t *testing.T) {
 
 func TestOutput_FieldsAreValidated(t *testing.T) {
 	for _, arg := range []string{`{body: "b"}`, `{title: "t", body: 1}`, `{title: "t", body: "b", priority: "urgent"}`,
-		`{title: "t", body: "b", extra: 1}`, `"text"`} {
+		`{title: "t", body: "b", extra: 1}`, `"text"`, `{title: "t".repeat(201), body: "b"}`} {
 		t.Run(arg, func(t *testing.T) {
 			mustReturn(t, `try { output.inbox(`+arg+`); return "ok" } catch (e) { return e.name }`,
 				sdkCase{outputs: []string{"inbox"}}, "ValidationError")
@@ -445,6 +529,13 @@ func TestOutput_FieldsAreValidated(t *testing.T) {
 	}
 	mustReturn(t, `try { output.report({title: "t", body: "b", priority: "high"}); return "ok" } catch (e) { return e.name }`,
 		sdkCase{outputs: []string{"report"}}, "ValidationError")
+	mustReturn(t, `output.inbox({title: "é".repeat(200), body: "b"}); return "ok"`, sdkCase{outputs: []string{"inbox"}}, "ok")
+}
+
+func TestOutput_OversizedArgumentNamesBodyLimit(t *testing.T) {
+	mustReturn(t, `try { output.inbox({title: "t", body: "x".repeat(300 * 1024)}) } catch (e) {
+		return e.name + "|" + (e.message.indexOf("at most 65536 bytes") >= 0) }`,
+		sdkCase{outputs: []string{"inbox"}}, "ResultTooLarge|true")
 }
 
 func TestOutput_BufferedRows(t *testing.T) {
@@ -485,6 +576,24 @@ func TestLog_Capped(t *testing.T) {
 	}
 	if steps[3].ArgsJSON != `line 3 {"i":3}` {
 		t.Fatalf("log message = %q", steps[3].ArgsJSON)
+	}
+}
+
+func TestLog_CapHoldsAgainstNestedGetterLogs(t *testing.T) {
+	r := mustReturn(t, `var o = { get x() { for (var k = 0; k < 5; k++) { try { log("inner") } catch (e) {} } return 1 } };
+		for (var i = 0; i < 300; i++) { try { log(o) } catch (e) {} }
+		return 1`, sdkCase{}, 1)
+	ok, total := 0, 0
+	for _, s := range r.env.Journal.Steps() {
+		if s.Kind == automations.StepKindLog {
+			total++
+			if s.Status == automations.StepOK {
+				ok++
+			}
+		}
+	}
+	if ok != automations.MaxLogCalls || total != automations.MaxLogCalls+1 {
+		t.Fatalf("log steps: %d ok of %d; want %d ok and one cap error", ok, total, automations.MaxLogCalls)
 	}
 }
 
