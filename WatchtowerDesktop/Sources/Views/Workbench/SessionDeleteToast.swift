@@ -45,6 +45,11 @@ struct SessionDeleteToast: View {
                 let notice = vm.pendingCleanupNotice.map { " \($0)." } ?? ""
                 AccessibilityNotification.Announcement("\(text).\(notice) Undo is available.").post()
             }
+            // Delete and Clean Up sets its kept-items notice after the row
+            // joined the bar (board #535): announce it when it arrives.
+            .onChange(of: vm.pendingCleanupNotice) { _, notice in
+                if let notice { AccessibilityNotification.Announcement("\(notice). Undo is available.").post() }
+            }
         }
     }
 }

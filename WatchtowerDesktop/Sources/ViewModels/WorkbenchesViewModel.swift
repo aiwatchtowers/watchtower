@@ -111,10 +111,15 @@ final class WorkbenchesViewModel {
     /// The sessions' stored cleanup results (`cleanup_result`), for the
     /// report's Cleanup line; a session without one has no entry.
     var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
-    /// The sessions a Delete and Clean Up runs on (board #535): from the
-    /// click until the row is deleted or kept, the row is busy — it neither
-    /// opens nor deletes, and shows "Cleaning up…".
+    /// The sessions a cleanup runs on (board #535) — Delete and Clean Up,
+    /// or a Clean Up… apply: the row is busy, it does not delete (✕, ⌘⌫,
+    /// Delete, Delete and Clean Up) or start fresh, and shows "Cleaning
+    /// up…".
     var cleaningUpSessions: Set<Int64> = []
+    /// The subset whose terminal Delete and Clean Up closed: the row does
+    /// not resume either, until it is deleted or kept. A Clean Up… apply
+    /// leaves a live session's terminal reachable.
+    var closedForCleanup: Set<Int64> = []
     /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
     /// Up… apply), per session: a view going away never cancels one.
     @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]

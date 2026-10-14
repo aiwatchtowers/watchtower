@@ -76,6 +76,7 @@ extension WorkbenchesViewModel {
             }
         }
         cleaningUpSessions.insert(session.id)
+        closedForCleanup.insert(session.id)
         let run = Task {
             await self.runDeleteAndCleanUp(session, workbenchID: workbenchID, center: center, choice: choice)
         }
@@ -132,6 +133,7 @@ extension WorkbenchesViewModel {
 
     private func endCleanupRun(_ sessionID: Int64) {
         cleaningUpSessions.remove(sessionID)
+        closedForCleanup.remove(sessionID)
         cleanupRuns[sessionID] = nil
     }
 
@@ -156,8 +158,8 @@ extension WorkbenchesViewModel {
 
     /// The sheet's **Clean Up**: applies exactly the ticked pending
     /// removals in a run this view model owns, then reloads the report's
-    /// Cleanup line. The row is busy meanwhile, as under Delete and Clean
-    /// Up. A failure the sheet did not show (it was closed when the apply
+    /// Cleanup line. The row is busy meanwhile — no delete, no start fresh —
+    /// but a live session's terminal stays reachable. A failure the sheet did not show (it was closed when the apply
     /// ended) goes on the page; once the sheet is gone the phase is
     /// forgotten. True when nothing failed.
     @discardableResult

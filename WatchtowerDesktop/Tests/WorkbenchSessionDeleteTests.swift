@@ -363,6 +363,14 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         await waitForHeldCall(runner)
         await vm.workOn(targetID: target, targetText: "Ship it", projectID: p)
         await vm.startFresh(row)
+        do {
+            _ = try await vm.startForTarget(targetID: target, prompt: nil, mode: .openExisting, placement: .background)
+            XCTFail("the phone's open_existing must be refused")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            XCTAssertEqual(error, .cleaningUp, "refused as a cleanup, not as a start in flight")
+            XCTAssertEqual(SessionStartStopHandlers.outcome(error),
+                           .failed(.conflict, message: "This session is being cleaned up on the Mac"))
+        }
 
         XCTAssertFalse(terminals.liveIDs.contains(row.id), "the closed agent is not resumed")
         let rows = try await pool.read { try TerminalSessionQueries.fetchForTarget($0, targetID: target) }
@@ -372,11 +380,14 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
-    /// A Clean Up… apply makes the row busy too.
+    /// A Clean Up… apply makes the row busy for deleting, but its terminal
+    /// stays reachable: the row still opens and resumes.
     func testSheetApplyMarksTheRowBusy() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
         let (vm, _) = makeVM(runner)
         let (_, row) = try await liveSession(vm)
+        await terminals.close(sessionID: row.id)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id))
         vm.cleanupSheetAppeared(row)
         await vm.planCleanupForSheet(row)
 
@@ -390,6 +401,8 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertFalse(vm.pendingDeletes.ids.contains(row.id), "no delete while the apply runs")
         let deleteAndCleanUp = await vm.startDeleteAndCleanUp(row, choice: nil).value
         XCTAssertFalse(deleteAndCleanUp, "no Delete and Clean Up either")
+        await vm.open(row)
+        XCTAssertTrue(terminals.liveIDs.contains(row.id), "the session still resumes during a Clean Up… apply")
 
         runner.release()
         let ok = await apply.value
