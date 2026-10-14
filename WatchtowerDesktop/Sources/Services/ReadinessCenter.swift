@@ -31,6 +31,10 @@ protocol ReadinessEnvironment: AnyObject {
 final class ReadinessCenter {
     /// Empty until the first evaluation, which waits for the first DB read.
     private(set) var readiness: [ReadinessFeature: Readiness] = [:]
+    /// The hours the last evaluation read, for the empty states' "at or
+    /// after HH:00" (Go's `config.DefaultBriefingHour`/`DefaultDayPlanHour` until then).
+    private(set) var briefingHour = 8
+    private(set) var dayPlanHour = 8
 
     /// The daemon's throttle stamps read here, a subset of
     /// `DaemonStampFiles.names`.
@@ -121,6 +125,8 @@ final class ReadinessCenter {
         }
         let next = FeatureReadiness.evaluate(inputs)
         if next != readiness { readiness = next }
+        if inputs.briefingHour != briefingHour { briefingHour = inputs.briefingHour }
+        if inputs.dayPlanHour != dayPlanHour { dayPlanHour = inputs.dayPlanHour }
     }
 
     func readiness(for feature: ReadinessFeature) -> Readiness? {

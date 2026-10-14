@@ -181,6 +181,28 @@ struct DigestListView: View {
         }
     }
 
+    /// Why the digests feed shows nothing: no digests at all, or a search /
+    /// the unread filter hiding every one.
+    enum EmptyKind: Equatable { case noData, noMatches }
+
+    static func emptyKind(feedIsEmpty: Bool, visibleIsEmpty: Bool) -> EmptyKind? {
+        if feedIsEmpty { return .noData }
+        return visibleIsEmpty ? .noMatches : nil
+    }
+
+    @ViewBuilder
+    static func emptyFeed(_ kind: EmptyKind, context: EmptyStateContext) -> some View {
+        switch kind {
+        case .noData:
+            TabEmptyState(.digests, context: context)
+        case .noMatches:
+            Text("No matches")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     /// The merged feed, filtered by the read toggle and search text. Backs
     /// both the row list and (via `filteredDigests` below) the digests-only
     /// batch-select toolbar. Order follows `vm.feedEntries` (already sorted
@@ -283,7 +305,13 @@ struct DigestListView: View {
             // List content
             switch activeTab {
             case .digests:
-                feedList(vm)
+                if let kind = Self.emptyKind(
+                    feedIsEmpty: vm.feedEntries.isEmpty, visibleIsEmpty: filteredFeedEntries.isEmpty
+                ) {
+                    Self.emptyFeed(kind, context: appState.emptyStateContext)
+                } else {
+                    feedList(vm)
+                }
             case .decisions:
                 DecisionsListView(
                     viewModel: vm,

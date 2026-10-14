@@ -237,7 +237,7 @@ struct MainNavigationView: View {
             ChatView()
         case .catchUp:
             if let vm = appState.catchUpViewModel {
-                CatchUpView(vm: vm, firstSync: catchUpFirstSync)
+                CatchUpView(vm: vm, firstSync: catchUpFirstSync, emptyState: appState.emptyStateContext)
             } else {
                 Text("Catch Up unavailable")
                     .foregroundStyle(.secondary)
@@ -289,7 +289,7 @@ struct MainNavigationView: View {
             PeopleListView()
         case .memory:
             if let vm = appState.memoryViewModel {
-                MemoryView(vm: vm)
+                MemoryView(vm: vm, emptyState: appState.emptyStateContext)
             } else {
                 Text("Memory unavailable")
                     .foregroundStyle(.secondary)

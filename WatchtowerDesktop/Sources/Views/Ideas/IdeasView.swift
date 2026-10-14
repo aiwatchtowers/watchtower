@@ -362,44 +362,44 @@ struct IdeasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lightbulb")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("No ideas yet")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Ideas and proposals mined from Slack, meetings, email, and Jira will collect here for review.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+    static func emptyState<Badge: View>(
+        context: EmptyStateContext,
+        onFindIdeas: @escaping () -> Void,
+        onCreate: @escaping () -> Void,
+        @ViewBuilder badge: () -> Badge
+    ) -> some View {
+        let badge = badge()
+        return TabEmptyState(.ideas, context: context) {
             // The header buttons live in filterBar, which the empty state
             // replaces wholesale — without these a fresh install (zero mined
             // ideas) has no way to trigger a backfill or create an idea.
             HStack(spacing: 12) {
-                Button {
-                    showBackfillSheet = true
-                } label: {
+                Button(action: onFindIdeas) {
                     Label("Find Ideas", systemImage: "sparkle.magnifyingglass")
                 }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    showCreateSheet = true
-                } label: {
+                .buttonStyle(.bordered)
+                Button(action: onCreate) {
                     Label("Create", systemImage: "plus.circle")
                 }
                 .buttonStyle(.bordered)
             }
-            .padding(.top, 4)
-            // The empty state replaces filterBar wholesale, and a fresh
-            // install's very first backfill runs exactly here — without this
-            // the dismissed sheet leaves no trace of the run (or its failure).
-            backfillStatusBadge
-                .padding(.top, 8)
+            // A fresh install's very first backfill runs exactly here —
+            // without this the dismissed sheet leaves no trace of the run (or
+            // its failure).
+            badge
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        Self.emptyState(
+            context: appState.emptyStateContext,
+            onFindIdeas: { showBackfillSheet = true },
+            onCreate: { showCreateSheet = true },
+            badge: {
+                backfillStatusBadge
+                    .padding(.top, 8)
+            }
+        )
     }
 
     private static func isoDateString(_ date: Date) -> String {

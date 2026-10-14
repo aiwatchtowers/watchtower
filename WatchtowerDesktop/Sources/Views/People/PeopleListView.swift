@@ -73,6 +73,11 @@ struct PeopleListView: View {
         }
     }
 
+    /// No cards at all (a filter that hides every card is not this).
+    static func emptyState(context: EmptyStateContext) -> some View {
+        TabEmptyState(.people, context: context)
+    }
+
     /// Current user's card (for "My Card" pinned row).
     private var myCard: PeopleCard? {
         guard let vm = viewModel, let uid = vm.currentUserID else { return nil }
@@ -99,7 +104,11 @@ struct PeopleListView: View {
             windowPicker(vm)
             statsAndSearch(vm)
             Divider()
-            userListScrollView(vm)
+            if vm.cards.isEmpty {
+                Self.emptyState(context: appState.emptyStateContext)
+            } else {
+                userListScrollView(vm)
+            }
         }
         .frame(minWidth: 300, idealWidth: 360)
     }

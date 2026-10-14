@@ -1185,32 +1185,38 @@ final class AppState {
 
     private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
 
-    /// Why the last Turn on from a tab's empty state didn't work; nil after a success.
-    private(set) var emptyStateTurnOnError: String?
-    private(set) var isTurningOnFromEmptyState = false
+    /// Why the last Turn on from a tab's empty state didn't work, per feature
+    /// id, so one tab's error never shows under another's Turn on; cleared
+    /// by that feature's next success.
+    private(set) var emptyStateTurnOnErrors: [String: String] = [:]
+    /// The feature an empty-state Turn on is running for (one at a time).
+    private(set) var turningOnFeatureID: String?
+    var isTurningOnFromEmptyState: Bool { turningOnFeatureID != nil }
+
+    func emptyStateTurnOnError(for featureID: String) -> String? { emptyStateTurnOnErrors[featureID] }
 
     /// Turn on from a tab's empty state: `features enable` right away (never
     /// Settings → Features' staged changes) and one daemon restart, as
     /// `acceptFeatureSuggestion` does. A retry after a failed restart finds
     /// the feature on and only restarts.
     func turnOnFeatureFromEmptyState(_ featureID: String) async {
-        guard !isTurningOnFromEmptyState else { return }
-        isTurningOnFromEmptyState = true
-        defer { isTurningOnFromEmptyState = false }
+        guard turningOnFeatureID == nil else { return }
+        turningOnFeatureID = featureID
+        defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
         let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
         if result.busy {
-            emptyStateTurnOnError = Self.featureChangesBusy
+            emptyStateTurnOnErrors[featureID] = Self.featureChangesBusy
             return
         }
         if let error = featureManager.loadError {
-            emptyStateTurnOnError = error
+            emptyStateTurnOnErrors[featureID] = error
             return
         }
         if result.enabled.isEmpty {
             if featureManager.disabledFeatureIDs.contains(featureID) {
-                emptyStateTurnOnError = featureManager.pending[featureID] == false
+                emptyStateTurnOnErrors[featureID] = featureManager.pending[featureID] == false
                     ? Self.featureStagedInSettings
                     : Self.featureChangesBusy
                 return
@@ -1218,11 +1224,11 @@ final class AppState {
             do {
                 try await daemon.restartWaiting()
             } catch {
-                emptyStateTurnOnError = error.localizedDescription
+                emptyStateTurnOnErrors[featureID] = error.localizedDescription
                 return
             }
         }
-        emptyStateTurnOnError = nil
+        emptyStateTurnOnErrors[featureID] = nil
     }
 
     /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).

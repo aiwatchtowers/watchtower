@@ -144,7 +144,7 @@ final class FeatureEmptyStateViewTests: XCTestCase {
 
         await appState.turnOnFeatureFromEmptyState("memory")
 
-        XCTAssertEqual(appState.emptyStateTurnOnError, AppState.featureChangesBusy)
+        XCTAssertEqual(appState.emptyStateTurnOnError(for: "memory"), AppState.featureChangesBusy)
         XCTAssertFalse(appState.isTurningOnFromEmptyState)
         XCTAssertEqual(daemon.restarts, 0)
         XCTAssertFalse(runner.calls.contains(["features", "enable", "memory"]))
@@ -158,16 +158,28 @@ final class FeatureEmptyStateViewTests: XCTestCase {
 
         await appState.turnOnFeatureFromEmptyState("memory")
 
-        XCTAssertEqual(appState.emptyStateTurnOnError, failure.localizedDescription)
+        XCTAssertEqual(appState.emptyStateTurnOnError(for: "memory"), failure.localizedDescription)
         XCTAssertFalse(appState.isTurningOnFromEmptyState)
         XCTAssertEqual(daemon.restarts, 1)
 
         // The retry finds memory on and only restarts.
         daemon.restartError = nil
         await appState.turnOnFeatureFromEmptyState("memory")
-        XCTAssertNil(appState.emptyStateTurnOnError)
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
         XCTAssertEqual(daemon.restarts, 2)
         XCTAssertEqual(runner.calls.filter { $0 == ["features", "enable", "memory"] }.count, 1)
+    }
+
+    func testTurnOnErrorShowsOnlyForItsFeature() async {
+        let runner = LiveFeaturesRunner(disabled: ["memory", "ideas"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+
+        await appState.turnOnFeatureFromEmptyState("memory")
+
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "memory"))
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "ideas"), "another tab's Turn on shows no error")
+        XCTAssertNil(appState.turningOnFeatureID)
     }
 
     func testTurnOnSuccessClearsError() async {
@@ -175,12 +187,12 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         let (appState, daemon) = makeAppState(runner)
         appState.featureManager.isApplying = true
         await appState.turnOnFeatureFromEmptyState("memory")
-        XCTAssertNotNil(appState.emptyStateTurnOnError)
+        XCTAssertNotNil(appState.emptyStateTurnOnError(for: "memory"))
         appState.featureManager.isApplying = false
 
         await appState.turnOnFeatureFromEmptyState("memory")
 
-        XCTAssertNil(appState.emptyStateTurnOnError)
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
         XCTAssertFalse(appState.isTurningOnFromEmptyState)
         XCTAssertEqual(daemon.restarts, 1, "exactly one daemon restart")
         XCTAssertTrue(runner.calls.contains(["features", "enable", "memory"]))
