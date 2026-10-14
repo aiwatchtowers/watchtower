@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/oauthpage"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -308,7 +310,7 @@ func (b *syncTestBuffer) String() string {
 // runLoginCaptureSuccessBody drives a full Login(opts) with a mocked token
 // endpoint and browser, POSTing the OAuth callback back to the loopback server,
 // and returns the HTML body served on the success page. The slack.TestLogin_
-// AppReturn_SuccessPageRedirects analog on Jira's plain-HTTP loopback flow.
+// AppReturn_SuccessPageLinksBack analog on Jira's plain-HTTP loopback flow.
 func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
 	t.Helper()
 	_, body := runLoginCapture(t, opts)
@@ -384,17 +386,17 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	return authorizeURL, string(body)
 }
 
-// With AppReturn set, the success page must send the browser back to the app
-// via the watchtower-auth:// scheme (the slack/gmail app-return precedent).
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+// With AppReturn set, the callback serves the shared oauthpage success page
+// with its "Back to Watchtower" link (the slack/gmail app-return precedent).
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	body := runLoginCaptureSuccessBody(t, LoginOptions{AppReturn: true})
-	assert.Contains(t, body, "watchtower-auth://connected")
+	assert.Equal(t, oauthpage.Success("Jira", true), body)
 }
 
-// Without it the page just self-closes and never touches the app scheme, so a
-// plain browser consent is byte-for-byte the pre-feature behaviour.
+// Without it the page never touches the app scheme — a plain CLI consent.
 func TestLogin_NoAppReturn_SuccessPageIsPlain(t *testing.T) {
 	body := runLoginCaptureSuccessBody(t, LoginOptions{})
+	assert.Equal(t, oauthpage.Success("Jira", false), body)
 	assert.NotContains(t, body, "watchtower-auth://")
 }
 
@@ -459,4 +461,14 @@ func TestExchangeCode_PostsJSONBody(t *testing.T) {
 	_, err := exchangeCode(context.Background(), JiraOAuthConfig{ClientID: "c", ClientSecret: "s"}, "code", "http://cb")
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(got, "{"), "expected JSON body, got: %q", got)
+}
+
+// A login nobody completes returns ErrLoginTimedOut, which keeps
+// oauthpage.ReturnAfterLogin from pulling the app forward (#741).
+func TestLogin_TimeoutIsErrLoginTimedOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Login(ctx, JiraOAuthConfig{ClientID: "x"}, io.Discard, LoginOptions{SkipBrowserOpen: true})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut)
 }

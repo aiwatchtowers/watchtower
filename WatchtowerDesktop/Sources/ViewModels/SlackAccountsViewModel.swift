@@ -66,9 +66,9 @@ final class SlackAccountsViewModel {
 
     // MARK: - Add
 
-    /// The `slack add` args — always `--app-return` (the OAuth success page
-    /// redirects to watchtower-auth:// so macOS brings the app back to the
-    /// foreground). No `--label`: the CLI names the workspace after its team
+    /// The `slack add` args — always `--app-return` (the CLI opens
+    /// watchtower-auth:// once consent is done, so macOS brings the app back to
+    /// the foreground). No `--label`: the CLI names the workspace after its team
     /// (`db.SlackAccountLabel`); the owner renames it in Settings.
     static let addArgs = ["slack", "add", "--app-return"]
 

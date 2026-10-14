@@ -78,8 +78,8 @@ final class GoogleConnectFlow {
     /// independent account is a Settings → Google Accounts action
     /// (AddGoogleAccountView / GoogleAccountsViewModel.addAccount), not this flow.
     static func connectArgs(accounts: [GoogleAccount], wantCalendar: Bool, wantGmail: Bool) -> [String] {
-        // --app-return: the success page redirects to watchtower-auth:// so
-        // macOS brings the app back to the foreground after the browser step.
+        // --app-return: the CLI opens watchtower-auth:// once the browser step
+        // is done, so macOS brings the app back to the foreground.
         var args = accounts.first.map { ["google", "login", "--account", String($0.id), "--app-return"] }
             ?? ["google", "add", "--app-return"]
         if wantCalendar { args.append("--calendar") }

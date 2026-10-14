@@ -427,7 +427,9 @@ struct SlackConnectionDetail: View {
             // Run auth login (opens browser) — keep reference to process for cancellation
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = ["auth", "login"]
+            // --app-return: the CLI brings the app back to the front once the
+            // browser consent is done, and the page links back to it.
+            process.arguments = ["auth", "login", "--app-return"]
             process.environment = Constants.resolvedEnvironment()
 
             // Published before launch so Cancel can reach it; cancelling

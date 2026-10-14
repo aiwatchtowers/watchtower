@@ -70,6 +70,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"meeting.extract_topics", "splits raw pasted text into discussion topics — judgment over arbitrary text; low-frequency, owner-invoked, not a hot loop"},
 	{"tasks.generate", "CLI 'targets generate' — extracts a target list from free text, judgment-heavy, low-frequency owner-invoked action"},
 	{"tasks.update", "CLI 'targets update' — applies a free-text instruction to a target's fields, judgment-heavy, low-frequency owner-invoked action"},
+	{"automation.llm.strong", "the owner chose tier: strong in the recipe (automations spec §5); a recipe without it calls the light automation.llm"},
 	{"prompts.tune", "meta-call that reruns whichever prompt is being tuned, itself invoked only by the owner (watchtower prompts tune); the highest-quality model is the right default for something that rewrites a live prompt template"},
 }
 

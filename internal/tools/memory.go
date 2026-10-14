@@ -173,8 +173,12 @@ func NewMemoryOpen(vaultPath string) *Tool {
 			// Open is "use", so it counts toward the node's stats — always for
 			// the canonical node, even when the caller passed a stale id. The
 			// bump is best-effort telemetry: on a query_only session the write
-			// fails and the open must still return the node.
-			_ = d.BumpMemoryAccess(n.ID)
+			// fails and the open must still return the node. An automation's
+			// open writes nothing (spec 2026-10-14 §6.1: automation reads stay
+			// writes-free, AUTO-02/AUTO-12).
+			if call.Binding.Surface != AutomationSurface {
+				_ = d.BumpMemoryAccess(n.ID)
+			}
 
 			var links []memoryLinkResult
 			for _, l := range n.Links() {
@@ -221,8 +225,8 @@ func NewMemoryRecall(vaultPath string, shadowDB *db.DB) *Tool {
 			switch {
 			case limit <= 0:
 				limit = defaultRecallLimit
-			case limit > maxListLimit:
-				limit = maxListLimit
+			case limit > MaxListLimit:
+				limit = MaxListLimit
 			}
 
 			// An exact alias match (case-insensitive) ranks first: aliases are

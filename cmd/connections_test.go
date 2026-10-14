@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/mcpoauth"
+	"watchtower/internal/oauthpage"
 )
 
 // writeConnectionsConfig points flagConfig at a temp workspace whose DB path
@@ -521,6 +522,37 @@ func TestConnectionsOAuth_SignsInAndEnables(t *testing.T) {
 	require.NotNil(t, secret.OAuth, "a successful sign-in must persist the OAuth grant")
 	assert.Equal(t, "access-tok", secret.OAuth.AccessToken)
 	assert.Equal(t, "refresh-tok", secret.OAuth.RefreshToken)
+}
+
+// --app-return brings the app back once the sign-in returns (#741); a plain
+// CLI sign-in never touches the app.
+func TestConnectionsOAuth_AppReturnOpensApp(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags []string
+		opens int
+	}{
+		{"with app-return", []string{"--app-return"}, 1},
+		{"without", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
+			cfg := writeConnectionsConfig(t)
+			as := newConnectionsFakeOAuthServer(t)
+			captureConnectionsAuthorizeCallback(t)
+			var opened []string
+			t.Cleanup(oauthpage.SetOpenURLForTest(func(u string) error { opened = append(opened, u); return nil }))
+
+			conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+			args := append([]string{"oauth", strconv.FormatInt(conn.ID, 10)}, tc.flags...)
+			out, err := runConnections(t, "", args...)
+			require.NoError(t, err, out)
+			assert.Len(t, opened, tc.opens)
+			for _, u := range opened {
+				assert.Equal(t, "watchtower-auth://connected", u)
+			}
+		})
+	}
 }
 
 // TestConnectionsOAuth_ScopeFlagRequestsScope pins I2: --scope threads
