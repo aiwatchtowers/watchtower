@@ -451,7 +451,7 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
             return process
         }
         appState.terminalCenter.transcriptExists = { _ in true }
-        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
+        appState.workbenchDefaults.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         appState.initWorkbenches(
             dbPool: pool, cliRunner: nil, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
@@ -464,7 +464,7 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         appState.ownerPresenceCenter?.stop()
         // The settle write lands before the database file goes.
         await appState.ownerPresenceCenter?.flushWrites()
-        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
+        appState.workbenchDefaults.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
         appState = nil

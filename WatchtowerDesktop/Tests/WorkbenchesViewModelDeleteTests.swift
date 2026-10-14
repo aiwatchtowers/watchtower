@@ -263,7 +263,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertFalse(usages.isInspectorShown(workbenchID: id), "the deleted workbench's inspector is pruned")
         XCTAssertEqual(usages.inspectorTab(workbenchID: id), .usages)
         XCTAssertTrue(usages.isInspectorShown(workbenchID: other))
-        let relaunched = CodeUsagesCenter()
+        let relaunched = CodeUsagesCenter(defaults: AppState.isolatedDefaults)
         relaunched.useWorkspace(pool.path)
         XCTAssertFalse(relaunched.isInspectorShown(workbenchID: id), "and gone from its defaults")
         XCTAssertEqual(relaunched.inspectorTab(workbenchID: id), .usages)
@@ -272,9 +272,9 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
 
     private static func dropInspectorState(of workspace: String) {
         for key in [CodeUsagesCenter.shownInspectorsKey, CodeUsagesCenter.inspectorTabsKey] {
-            guard var stored = UserDefaults.standard.dictionary(forKey: key) else { continue }
+            guard var stored = AppState.isolatedDefaults.dictionary(forKey: key) else { continue }
             stored[workspace] = nil
-            UserDefaults.standard.set(stored, forKey: key)
+            AppState.isolatedDefaults.set(stored, forKey: key)
         }
     }
 }

@@ -346,7 +346,7 @@ jobs:
       # the boot starts, so starting it here overlaps the boot with the build;
       # mobile-test's own boot is then a no-op.
       - name: Boot simulator
-        run: xcrun simctl boot "$SIM"
+        run: xcrun simctl boot "$SIM" 2>/dev/null || true
 
       # Unsigned: Base.xcconfig and the recipe set CODE_SIGNING_ALLOWED=NO.
       - name: Build
