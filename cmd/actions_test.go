@@ -19,9 +19,13 @@ import (
 // lives under a temp HOME (the writeFeaturesConfig precedent).
 func writeActionsConfig(t *testing.T) *db.DB {
 	t.Helper()
-	// The suite may itself run under an agent; approve/apply refuse there (AGENT-07).
+	// The suite may itself run under an agent; approve/apply refuse there
+	// (AGENT-07). Unset, not empty: an empty WATCHTOWER_TERMINAL_SESSION_ID
+	// reads as a malformed caller to `workbench cleanup` (PROJ-18).
+	// t.Setenv registers the restore of the original value.
 	for _, name := range agentEnvMarkers {
 		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
 	}
 	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
