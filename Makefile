@@ -80,11 +80,18 @@ test-cover:
 # migration and schema-snapshot tests: they replay goose migrations — one
 # goroutine of SQL — and were 2 910 of the package's 3 170 s under -race
 # (local, 2026-10-14), past the 25 m per-package timeout on a CI runner.
-# They run without -race in test-cover.
+# They run without -race in test-cover. The skip matches top-level names, so
+# an internal/db test of concurrency keeps those words out of its name.
+# internal/db runs alongside the rest (as one invocation did before) and both
+# results count; its log follows the rest's.
 RACE_SKIP := Migration|DownUp|SchemaGolden|DesktopTestSchema
 test-race:
-	go test $$(go list ./... | grep -v -e '^watchtower/cmd$$' -e '^watchtower/internal/db$$') -race -count=1 -timeout 25m
-	go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)'
+	@db_log="$$(mktemp)"; \
+	go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)' > "$$db_log" 2>&1 & db_pid=$$!; \
+	rc=0; go test $$(go list ./... | grep -v -e '^watchtower/cmd$$' -e '^watchtower/internal/db$$') -race -count=1 -timeout 25m || rc=$$?; \
+	db_rc=0; wait $$db_pid || db_rc=$$?; \
+	cat "$$db_log"; rm -f "$$db_log"; \
+	[ $$rc -eq 0 ] && [ $$db_rc -eq 0 ]
 
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
