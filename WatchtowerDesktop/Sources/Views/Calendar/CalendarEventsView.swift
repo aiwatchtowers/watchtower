@@ -22,8 +22,6 @@ private final class NowLineFrameBox {
 /// see `MeetingListBuilder`), with `MeetingDetailView` as the right pane.
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
-    @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
-    @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var userNotes: String = ""
@@ -238,7 +236,7 @@ struct CalendarEventsView: View {
             // would likewise never trigger `.onChange(of: recordings)`
             // (`[] == []`). Sections must exist on first appearance regardless.
             rebuildSections(vm)
-            appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
+            appState.autoDownloadTranscriptionModel()
         }
         // Keyed on the save counter, not on the recorder settling: with capture
         // decoupled from the queue, a transcript can land while another job is

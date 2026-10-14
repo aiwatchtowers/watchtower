@@ -190,25 +190,12 @@ final class AppState {
     /// Hand to Claude Code (⌥⌘↩): the hand-off sheet's request per workbench.
     let codeHandoffCenter = CodeHandoffCenter()
 
-    /// Diarizer models are prefetched only while speaker roles are on, the
-    /// speech-gate VAD model only while the gate is on; a failure is fine —
-    /// the post-pass retries the diarizer download and degrades to a
-    /// role-less transcript, the gate retries its download per recording and
-    /// falls back to the energy detector.
-    @Sendable private static func prefetchDiarizerModels() async {
-        let config = TranscriptionConfig.fromDefaults()
-        if config.diarization {
-            try? await FluidAudioDiarizer.prefetchModels()
-        }
-        if config.speechGate {
-            try? await SileroSpeechDetector.prefetchModel()
-        }
-    }
-
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
     let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
+    /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
+    @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
     /// Provider/model registry from `watchtower ai models --json`, shared by
     /// the chat model picker and Settings suggestions. Loaded lazily.
@@ -754,6 +741,7 @@ final class AppState {
         meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
+        wireTranscriptionModelDownloads()
         installLifecycleHooks()
         launchTask = Task {
             await syncCLIBinaryStore()
@@ -783,6 +771,7 @@ final class AppState {
                 // meeting reminders, polling) waits for completeOnboarding().
                 if !needsOnboarding {
                     wireAppDatabase(manager)
+                    autoDownloadTranscriptionModel()
                 }
                 // The daemon's cycle generates everything itself: a launch
                 // needs nothing more than a running daemon.
@@ -1269,6 +1258,8 @@ final class AppState {
         // related-features offer.
         lastReadConnectedSources = nil
         connectedSourcesRefresh = Task { await refreshConnectedSources() }
+        // A re-run may have just added the Meetings goal.
+        autoDownloadTranscriptionModel()
     }
 
     /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
