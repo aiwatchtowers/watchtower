@@ -7,6 +7,9 @@ import WatchtowerTestSupport
 final class AgentActionFeedTests: XCTestCase {
     private func makePool() throws -> (DatabasePool, String) { try TestDatabase.createPool() }
 
+    /// sha256 of "{}", the args the approve tests say the card showed.
+    private static let emptyDigest = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+
     /// Wait for the observation to deliver `count` rows (ValueObservation is
     /// asynchronous; poll on the main actor with a bounded budget).
     private func waitForRows(_ feed: AgentActionFeed, count: Int) async {
@@ -45,8 +48,8 @@ final class AgentActionFeedTests: XCTestCase {
         feed.start(conversationID: 1)
         await waitForRows(feed, count: 1)
 
-        await feed.approve(1)
-        XCTAssertEqual(runner.invocations, [["actions", "approve", "1", "--json"]])
+        await feed.approve(1, shownArgs: "{}")
+        XCTAssertEqual(runner.invocations, [["actions", "approve", "1", "--args-sha256", Self.emptyDigest, "--json"]])
         XCTAssertTrue(feed.inFlight.isEmpty)
         XCTAssertNil(feed.lastError)
 
@@ -67,8 +70,10 @@ final class AgentActionFeedTests: XCTestCase {
         feed.start(conversationID: 1)
         await waitForRows(feed, count: 1)
 
-        await feed.approve(1, patch: #"{"text":"-edited"}"#)
-        XCTAssertEqual(runner.invocations, [["actions", "approve", "1", "--patch", #"{"text":"-edited"}"#, "--json"]])
+        await feed.approve(1, shownArgs: "{}", patch: #"{"text":"-edited"}"#)
+        XCTAssertEqual(runner.invocations, [
+            ["actions", "approve", "1", "--args-sha256", Self.emptyDigest, "--patch", #"{"text":"-edited"}"#, "--json"]
+        ])
         feed.stop()
     }
 
@@ -79,7 +84,7 @@ final class AgentActionFeedTests: XCTestCase {
         let json = #"{"ok":true,"applied_ok":false,"error":"issuetype: invalid","action":{"id":1,"status":"failed"}}"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
-        await feed.approve(1)
+        await feed.approve(1, shownArgs: "{}")
         XCTAssertEqual(feed.rowErrors[1]?.message, "issuetype: invalid", "the failure belongs on the row's card")
         XCTAssertNil(feed.lastError, "a row's failure is not a feed-wide banner")
     }
@@ -89,7 +94,7 @@ final class AgentActionFeedTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         struct Boom: Error {}
         let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(error: Boom()))
-        await feed.approve(1)
+        await feed.approve(1, shownArgs: "{}")
         XCTAssertNotNil(feed.rowErrors[1])
         XCTAssertTrue(feed.inFlight.isEmpty)
     }
@@ -104,14 +109,14 @@ final class AgentActionFeedTests: XCTestCase {
         struct Busy: LocalizedError { var errorDescription: String? { "database is locked (5) (SQLITE_BUSY)" } }
         let runner = FakeCLIRunner(error: Busy())
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
-        await feed.approve(1)
-        await feed.approve(2)
+        await feed.approve(1, shownArgs: "{}")
+        await feed.approve(2, shownArgs: "{}")
         XCTAssertEqual(feed.rowErrors[1], AgentActionFeed.RowError(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
         XCTAssertNotNil(feed.rowErrors[2])
 
         runner.shouldThrow = nil
-        await feed.approve(1)
-        XCTAssertEqual(runner.invocations.last, ["actions", "approve", "1", "--json"])
+        await feed.approve(1, shownArgs: "{}")
+        XCTAssertEqual(runner.invocations.last, ["actions", "approve", "1", "--args-sha256", Self.emptyDigest, "--json"])
         XCTAssertNil(feed.rowErrors[1], "a successful retry clears the card's error")
         XCTAssertNotNil(feed.rowErrors[2], "another card's failure stays until that card is retried")
 
@@ -131,6 +136,22 @@ final class AgentActionFeedTests: XCTestCase {
         XCTAssertEqual(feed.rowErrors[1]?.isApprove, false)
     }
 
+    /// The approve carries the digest of the exact args text the card
+    /// rendered (UTF-8 bytes, as Go's `tools.ArgsSHA256` hashes the stored
+    /// `args_json`), so Go refuses it if the row changed underneath.
+    func testApprovePinsTheShownArgsDigest() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
+        let shown = #"{"text":"Привет — café","reason":"r"}"#
+        // `printf '%s' '<shown>' | shasum -a 256`, and Go's ArgsSHA256 alike.
+        let digest = "7ff923b64f06b45831333de401fd4ab47effe47fd0781d3ba3cc9b5a313aa98e"
+        XCTAssertEqual(AgentActionFeed.argsSHA256(shown), digest)
+        await feed.approve(5, shownArgs: shown)
+        XCTAssertEqual(runner.invocations, [["actions", "approve", "5", "--args-sha256", digest, "--json"]])
+    }
+
     func testApproveAllPendingForTurn() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
@@ -146,6 +167,9 @@ final class AgentActionFeedTests: XCTestCase {
         await waitForRows(feed, count: 4)
         await feed.approveAllPending(forTurn: "t")
         XCTAssertEqual(runner.invocations.map { $0[2] }.sorted(), ["1", "3"])
+        // Each approve pins its own row's args (the helper's default args_json).
+        let rowDigest = "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91"
+        XCTAssertEqual(runner.invocations.map { Array($0[3...4]) }, [["--args-sha256", rowDigest], ["--args-sha256", rowDigest]])
     }
 
     // MARK: - Cross-process writes
@@ -195,7 +219,7 @@ final class AgentActionFeedTests: XCTestCase {
         try await otherPool.write { db in
             try db.execute(sql: "UPDATE agent_actions SET status = 'applied' WHERE id = ?", arguments: [id])
         }
-        await feed.approve(id)
+        await feed.approve(id, shownArgs: "{}")
         XCTAssertEqual(feed.rows.first?.status, "applied", "the card must reflect what the CLI wrote")
         XCTAssertNil(feed.lastError)
         feed.stop()
