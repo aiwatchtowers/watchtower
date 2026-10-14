@@ -15,9 +15,9 @@ until the next morning's hour.
 
 - **Pure evaluator.** `FeatureReadiness.evaluate(_:)`
   (`WatchtowerDesktop/Sources/WatchtowerCore/Services/FeatureReadiness.swift:19`)
-  maps `ReadinessInputs` (`Models/Readiness.swift:146`) to a `Readiness` per
+  maps `ReadinessInputs` (`WatchtowerDesktop/Sources/WatchtowerCore/Models/Readiness.swift:146`) to a `Readiness` per
   `ReadinessFeature`. No GRDB, no AppState, no clock read: `now` is an input, so
-  every rule is a table test in `Tests/Core/FeatureReadinessTests.swift`.
+  every rule is a table test in `WatchtowerDesktop/Tests/Core/FeatureReadinessTests.swift`.
 - **Precedence** (`FeatureReadiness.swift:23-41`), first match wins:
   1. `off` — the feature's registry id is in `disabledFeatureIDs` (features
      without a switch — Slack sync, calendar, Jira — are never off);
@@ -35,8 +35,9 @@ until the next morning's hour.
   7. `scheduled(Eta)` — the next run time from the feature's gate.
 - **`lastSyncTime` means "the first Slack sync finished".** It is the mtime of
   `last_sync.json` (`DaemonManager.readLastSyncTime`,
-  `Services/DaemonManager.swift:95`), which only the daemon's Slack sync phase
-  writes (`internal/daemon/daemon.go:631`). Without Slack it stays nil for ever,
+  `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift:95`), which only the Slack sync paths
+  write: the daemon's Slack sync phase (`internal/daemon/daemon.go:631`) and
+  a foreground `watchtower sync` (`cmd/sync.go:608`, `:628`). Without Slack it stays nil for ever,
   so rule 6 applies only while Slack is connected (`FeatureReadiness.swift:37`);
   a mail/Jira-only install goes straight to `scheduled`.
 - **`Eta` is a vocabulary, not a duration** (`Readiness.swift:91`):
@@ -52,14 +53,14 @@ until the next morning's hour.
   `error` is not built.
 - **Pipeline names and content tables.** `ReadinessFeature.pipelineName`
   (`Readiness.swift:28`) and `ReadinessQueries.contentTable`
-  (`Database/Queries/ReadinessQueries.swift:11`). Calendar is the one untracked
+  (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/ReadinessQueries.swift:11`). Calendar is the one untracked
   feature (no pipeline name, so never `preparing`/`error`). Day plan **is**
   tracked, as `day_plan` (plan correction 1; the spec said it was not). Content
   is whole-table `EXISTS` (one owner per workspace); briefing and day plan count
   **any** row, not today's (plan correction 4 — "today's" is a Home concern). A
   table missing mid-migration reads as no content.
 - **`ReadinessCenter`** (`WatchtowerDesktop/Sources/Services/ReadinessCenter.swift`)
-  is app-wide on `AppState` (`App/AppState.swift:53`), so a reading survives tab
+  is app-wide on `AppState` (`WatchtowerDesktop/Sources/App/AppState.swift:53`), so a reading survives tab
   switches. It re-evaluates on a GRDB `ValueObservation` of the content tables
   and `pipeline_runs`, on any change of the observable inputs it reads
   (`DaemonManager` status poll, `FeatureVisibilityStore`) and on a 60 s tick. A
@@ -103,7 +104,7 @@ Change both sides together.
 
 ### Stamp-file parsing contract
 
-`LiveReadinessEnvironment.stamp` (`Services/ReadinessCenter.swift:200`) reads
+`LiveReadinessEnvironment.stamp` (`WatchtowerDesktop/Sources/Services/ReadinessCenter.swift:200`) reads
 `last_people.txt`, `last_briefing.txt`, `last_ideas.txt`, `last_streams.txt`
 from the active workspace directory. Format = what Go's `saveLast*` writes
 (`internal/daemon/daemon.go:1692`, `:1716`, `:1740`, `:1816`): decimal unix
@@ -124,11 +125,11 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `search`, `usage`, `mcpServer`, `chat` (`EmptyStateCopy.swift:61`).
   `EmptyStateCopyCoverageTests` sweeps `SidebarDestination.allCases`: every tab
   has copy XOR is exempt, and the icon matches the sidebar's.
-- **Views.** `FeatureEmptyState` (`Views/Components/FeatureEmptyState.swift`) is
+- **Views.** `FeatureEmptyState` (`WatchtowerDesktop/Sources/Views/Components/FeatureEmptyState.swift`) is
   values and closures only (ViewInspector-driven, no `@Environment(AppState)`);
-  `TabEmptyState` (`Views/Components/TabEmptyState.swift`) binds it to one tab
+  `TabEmptyState` (`WatchtowerDesktop/Sources/Views/Components/TabEmptyState.swift`) binds it to one tab
   from an `EmptyStateContext` that `AppState.emptyStateContext`
-  (`App/AppState+EmptyState.swift:8`) builds. Tab-specific content stays inside
+  (`WatchtowerDesktop/Sources/App/AppState+EmptyState.swift:8`) builds. Tab-specific content stays inside
   as `extra`: Catch-Up's first-sync line, the Inbox reaction cheat sheet,
   `NoOwnerEmptyState` and Generate on Briefings/Day Plan, Ideas' Find
   Ideas/Create, Calendar's connect options, Targets' "React with an emoji in
@@ -145,7 +146,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   label —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
 - **Turn on** goes through `AppState.turnOnFeatureFromEmptyState`
-  (`App/AppState.swift:1215`, plan correction 6): `FeatureManagerService.enableNow`
+  (`WatchtowerDesktop/Sources/App/AppState.swift:1215`, plan correction 6): `FeatureManagerService.enableNow`
   (the direct `features enable` path, FEAT-03 fast-forward included, never
   Settings → Features' staged changes) and one daemon restart, like
   `acceptFeatureSuggestion`. One at a time: a second click elsewhere says
@@ -193,7 +194,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - Go: `internal/daemon/daemon_first_run_test.go` (no-data people runs, the
   briefing/day-plan bypass and its limits), `internal/guide/pipeline_outcome_test.go`
   (`RunOutcome`, `HasData` ≡ not `OutcomeNoData`), `internal/db/first_run_test.go`.
-- Swift: `Tests/Core/FeatureReadinessTests.swift`, `ReadinessQueriesTests`,
+- Swift: `WatchtowerDesktop/Tests/Core/FeatureReadinessTests.swift`, `ReadinessQueriesTests`,
   `EmptyStateCopyTests` (Core); `ReadinessCenterTests`, `FeatureEmptyStateViewTests`,
   `EmptyStateTabWiringTests`, `EmptyStateCopyCoverageTests` (Desktop).
 

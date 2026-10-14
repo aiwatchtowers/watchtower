@@ -599,8 +599,6 @@ The Slack sync also shows up in **Usage & Pipeline Progress** now, as a "Slack S
 ## Background Processes
 
 Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Slack data. After each sync, AI pipelines run automatically:
-**The first cycles after setup** — a new install does not wait a day for its first results. People cards come in the first cycle that has channel digests to work from (a cycle with nothing to work on yet is simply tried again next cycle instead of holding cards back for 24 hours), and the first briefing and the first day plan come in the first cycle that can make them, without waiting for their morning hour. From then on they follow their usual once-a-day schedule. The tabs' empty states say the same ("Within ~15 min" before the first one, "Today at 08:00" after).
-
 1. **Calendar sync** — fetches Google Calendar events for the configured days ahead (runs after Slack sync, before pipelines)
 2. **Attention detection** — finds the mentions, DMs, thread replies, Jira comment mentions, calendar invites and mail addressed to you, and closes the ones you have already answered in the source. **Makes no AI calls at all.** Its output has no screen of its own; it feeds Catch Up's "needs you" list and the Briefing's attention section
 3. **Digest pipeline** — generates per-channel summaries (MAP phase for people signals)
@@ -611,6 +609,8 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 8. **Maintenance** — unsnoozes tasks and attention items whose snooze period has passed, returning them to active status; deletes meeting-recording audio files past the retention window (transcript text is kept)
 
 When Memory is enabled (see below), a **Memory consolidation** step also runs each cycle, right after attention detection.
+
+**The first cycles after setup** — a new install does not wait a day for its first results. People cards come in the first cycle that has channel digests to work from (a cycle with nothing to work on yet is simply tried again next cycle instead of holding cards back for 24 hours), and the first briefing and the first day plan come in the first cycle that can make them, without waiting for their morning hour. From then on they follow their usual once-a-day schedule. The tabs' empty states say the same ("Within ~15 min" before the first one, "Today at 08:00" after).
 
 ## Memory
 
