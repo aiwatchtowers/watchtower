@@ -231,7 +231,7 @@ package final class DaemonManager {
     /// Whether the active workspace's own daemon runs — not just any
     /// workspace's (see `activeWorkspaceDaemonPID()`).
     package nonisolated static func checkActiveWorkspaceDaemonRunning() -> Bool {
-        activeWorkspaceDaemonPID() != nil
+        activeWorkspaceDaemonPID(logAmbiguity: false) != nil
     }
 
     /// Restart the detached daemon. Source syncers (Calendar, Gmail, Jira) are
@@ -436,10 +436,14 @@ package final class DaemonManager {
     /// spin out the full `restartStopGrace` and refuse to bring the actual
     /// daemon back. Falls back to the broad scan (logged) only when the
     /// active workspace itself cannot be resolved — still safer than
-    /// skipping the liveness check outright.
-    nonisolated private static func activeWorkspaceDaemonPID() -> pid_t? {
+    /// skipping the liveness check outright. `logAmbiguity: false` is for a
+    /// caller polling on a loop (the Calendar tab's health check), which
+    /// would otherwise repeat that line every few seconds.
+    nonisolated private static func activeWorkspaceDaemonPID(logAmbiguity: Bool = true) -> pid_t? {
         guard let dir = Constants.activeWorkspaceDir() else {
-            NSLog("DaemonManager: restart: active workspace is ambiguous; falling back to a scan of every workspace's daemon.pid")
+            if logAmbiguity {
+                NSLog("DaemonManager: restart: active workspace is ambiguous; falling back to a scan of every workspace's daemon.pid")
+            }
             return runningDaemonPID()
         }
         return livePID(atPath: "\(dir)/daemon.pid")

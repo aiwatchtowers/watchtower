@@ -130,13 +130,16 @@ struct CalendarEventsView: View {
     private func restartSync() async {
         isRestartingSync = true
         defer { isRestartingSync = false }
+        var failure: String?
         do {
             try await DaemonManager.restart()
-            syncHealthError = nil
         } catch {
-            syncHealthError = "Couldn't start the sync: \(error.localizedDescription)"
+            failure = "Couldn't start the sync: \(error.localizedDescription)"
         }
+        // Refresh first: the state change it may bring clears older errors,
+        // never the one this restart just raised.
         await refreshSyncHealth()
+        syncHealthError = failure
     }
 
     /// Resolves a `MeetingSelection` (row tap, deep link) to its
@@ -653,7 +656,13 @@ struct CalendarEventsView: View {
     private var syncHealthBanner: some View {
         switch syncHealth {
         case .ok:
-            EmptyView()
+            // A failed restart can land on an otherwise healthy state (the
+            // calendars synced before) — it must still be seen.
+            if let syncHealthError {
+                healthBanner(icon: "exclamationmark.triangle", text: "The sync isn't running.", error: syncHealthError) {
+                    syncButton("Start Sync") { await restartSync() }
+                }
+            }
         case .syncOff:
             healthBanner(
                 icon: "exclamationmark.triangle",

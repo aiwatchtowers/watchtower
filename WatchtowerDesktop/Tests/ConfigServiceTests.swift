@@ -422,12 +422,15 @@ struct ConfigServiceTests {
         #expect(ConfigService(configPath: path).calendarSyncReadsOff == false)
     }
 
-    /// Degenerate: an empty file is a fresh install, not a broken one.
-    @Test("An empty config reads the switch as off, without an error")
+    /// Degenerate: an empty document — blank, comments only, `null` — is an
+    /// empty config (as the Go CLI reads it), not a broken one.
+    @Test("An empty config document reads the switch as off, without an error")
     func emptyConfigSwitchIsOff() {
-        let svc = ConfigService(configPath: makeTempConfig(""))
-        #expect(svc.parseError == nil)
-        #expect(svc.calendarSyncReadsOff == true)
+        for yaml in ["", "  \n", "# just a comment\n", "---\n", "null\n"] {
+            let svc = ConfigService(configPath: makeTempConfig(yaml))
+            #expect(svc.parseError == nil, "\(yaml.debugDescription) is an empty config")
+            #expect(svc.calendarSyncReadsOff == true)
+        }
     }
 
     @Test("Turn on calendar sync writes the switch and keeps other keys")

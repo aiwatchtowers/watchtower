@@ -108,8 +108,11 @@ final class ConfigService {
         guard let str = readConfigText() else { return }
 
         do {
-            guard let yaml = try Yams.load(yaml: str) as? [String: Any] else {
-                if !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let loaded = try Yams.load(yaml: str)
+            guard let yaml = loaded as? [String: Any] else {
+                // An empty document (blank, comments only, `null`) is an
+                // empty config, as the Go CLI reads it — not an error.
+                if let loaded, !(loaded is NSNull) {
                     parseError = "config.yaml is not a YAML mapping"
                 }
                 return
