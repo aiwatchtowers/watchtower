@@ -59,11 +59,14 @@ type Executor struct {
 	// replace it.
 	abandoned func() int
 
-	gated   atomic.Bool // claims refused for abandoned goroutines (logged once per change)
-	wakeCh  chan struct{}
-	nudgeMu sync.Mutex
-	nudge   chan struct{} // closed and replaced by every Wake
-	wg      sync.WaitGroup
+	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
+	// readyWaits counts waits whose ready check passed and that wait for a
+	// running slot: resumes take priority, so Step leaves them those slots.
+	readyWaits atomic.Int64
+	wakeCh     chan struct{}
+	nudgeMu    sync.Mutex
+	nudge      chan struct{} // closed and replaced by every Wake
+	wg         sync.WaitGroup
 }
 
 // NewExecutor returns an executor over d. b.Clock defaults to RealClock and
@@ -218,7 +221,7 @@ func (e *Executor) claimsGated() bool {
 }
 
 // freeSlots is MaxConcurrent minus the runs in status running (waiting runs
-// hold no slot).
+// hold no slot) and minus the ready waits about to resume (they go first).
 func (e *Executor) freeSlots() (int, error) {
 	active, err := e.db.ListActiveAutomationRuns()
 	if err != nil {
@@ -230,7 +233,7 @@ func (e *Executor) freeSlots() (int, error) {
 			running++
 		}
 	}
-	return e.maxConcurrent - running, nil
+	return e.maxConcurrent - running - int(e.readyWaits.Load()), nil
 }
 
 // poll is one Step's walk over the queued runs.
@@ -260,7 +263,7 @@ func (p *poll) consider(r db.AutomationRun) error {
 	if p.free <= 0 {
 		return nil
 	}
-	claimed, err := p.e.claim(r.ID, a, p.now)
+	claimed, err := p.e.claim(r.ID, a, p.now, p.e.maxConcurrent)
 	if err != nil || !claimed {
 		return err // not claimed: another executor won, or the automation is at its concurrency
 	}
@@ -285,9 +288,12 @@ func (e *Executor) cancelNotRunnable(runID int64, now time.Time) error {
 }
 
 // claim moves the run to running with a snapshot of a's indexed recipe and
-// budgets; the run executes that snapshot, never the file (AUTO-06).
-func (e *Executor) claim(runID int64, a *db.Automation, now time.Time) (bool, error) {
-	return e.db.ClaimAutomationRun(runID, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, now)
+// budgets; the run executes that snapshot, never the file (AUTO-06). The
+// daemon's claims pass maxRunning (the global running bound is part of the
+// claim's UPDATE); ExecuteInline's dry-run claim passes 0 (no global bound).
+func (e *Executor) claim(runID int64, a *db.Automation, now time.Time, maxRunning int) (bool, error) {
+	return e.db.ClaimAutomationRunWithin(runID, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes,
+		maxRunning, now)
 }
 
 // ExecuteInline claims run runID and executes it in the caller's goroutine
@@ -312,7 +318,7 @@ func (e *Executor) ExecuteInline(ctx context.Context, runID int64) (*db.Automati
 		}
 		return e.db.GetAutomationRun(runID)
 	}
-	claimed, err := e.claim(runID, a, now)
+	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
 	}

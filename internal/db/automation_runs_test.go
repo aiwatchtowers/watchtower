@@ -925,3 +925,17 @@ func TestResumeIfSlot_WaitsForAFreeRunningSlot(t *testing.T) {
 		t.Fatalf("resume of a running run = %v; want ErrRunNotActive", err)
 	}
 }
+
+func TestClaimWithin_HonoursTheGlobalRunningBound(t *testing.T) {
+	d := openTestDB(t)
+	_, _ = seedRunningAutomationRun(t, d) // one run of another automation is running
+	a := seedRunAutomation(t, d, "second", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	if ok, err := d.ClaimAutomationRunWithin(run, "h", "s", 50000, 5, 1, runTestNow); err != nil || ok {
+		t.Fatalf("claim at the global bound = (%v, %v); want (false, nil)", ok, err)
+	}
+	wantAutomationRun(t, d, run, RunQueued, "")
+	if ok, err := d.ClaimAutomationRunWithin(run, "h", "s", 50000, 5, 2, runTestNow); err != nil || !ok {
+		t.Fatalf("claim under the global bound = (%v, %v); want (true, nil)", ok, err)
+	}
+}

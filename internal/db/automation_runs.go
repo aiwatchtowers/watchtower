@@ -416,6 +416,18 @@ func runExistsTx(q interface {
 // CancelQueuedNotRunnable before claiming, and a dry run of an unconfirmed but
 // parsable recipe must still be claimable (AUTO-06's dry-run exemption).
 func (db *DB) ClaimAutomationRun(runID int64, recipeHash, recipeSnapshot string, budgetTokens, budgetMinutes int, now time.Time) (bool, error) {
+	return db.claimAutomationRun(runID, recipeHash, recipeSnapshot, budgetTokens, budgetMinutes, 0, now)
+}
+
+// ClaimAutomationRunWithin is ClaimAutomationRun with one more condition in
+// the same UPDATE: fewer than maxRunning runs (across every automation) are
+// running — the daemon executor's maxConcurrentRuns, so a slot count read
+// before the claim cannot go stale. maxRunning ≤ 0 means no global bound.
+func (db *DB) ClaimAutomationRunWithin(runID int64, recipeHash, recipeSnapshot string, budgetTokens, budgetMinutes, maxRunning int, now time.Time) (bool, error) {
+	return db.claimAutomationRun(runID, recipeHash, recipeSnapshot, budgetTokens, budgetMinutes, maxRunning, now)
+}
+
+func (db *DB) claimAutomationRun(runID int64, recipeHash, recipeSnapshot string, budgetTokens, budgetMinutes, maxRunning int, now time.Time) (bool, error) {
 	if err := requireRunTime(now, fmt.Sprintf("claiming automation run %d", runID)); err != nil {
 		return false, err
 	}
@@ -429,8 +441,9 @@ func (db *DB) ClaimAutomationRun(runID int64, recipeHash, recipeSnapshot string,
 		WHERE id = ? AND status = 'queued'
 		  AND (SELECT COUNT(*) FROM automation_runs a WHERE a.automation_id = automation_runs.automation_id
 		       AND a.status IN ('running','waiting'))
-		    < (SELECT concurrency FROM automations WHERE id = automation_runs.automation_id)`,
-		formatAutomationTime(now), recipeHash, recipeSnapshot, budgetTokens, budgetMinutes, runID)
+		    < (SELECT concurrency FROM automations WHERE id = automation_runs.automation_id)
+		  AND (? <= 0 OR (SELECT COUNT(*) FROM automation_runs g WHERE g.status = 'running') < ?)`,
+		formatAutomationTime(now), recipeHash, recipeSnapshot, budgetTokens, budgetMinutes, runID, maxRunning, maxRunning)
 	if err != nil {
 		return false, fmt.Errorf("claiming automation run %d: %w", runID, err)
 	}

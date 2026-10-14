@@ -21,3 +21,6 @@ func SetExecutorZone(e *Executor, zone func() *time.Location) { e.zone = zone }
 
 // SetExecutorAbandoned replaces the executor's AbandonedRuns count (tests).
 func SetExecutorAbandoned(e *Executor, count func() int) { e.abandoned = count }
+
+// ExecutorReadyWaits is how many ready waits wait for a running slot (tests).
+func ExecutorReadyWaits(e *Executor) int64 { return e.readyWaits.Load() }

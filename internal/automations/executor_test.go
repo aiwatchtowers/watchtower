@@ -757,3 +757,101 @@ func TestExecutor_ExecuteInlineStopSaysDryRunStopped(t *testing.T) {
 		t.Fatalf("run = %s/%s (%s); want failed/interrupted saying the dry run was stopped", r.Status, r.ErrorKind, r.Error)
 	}
 }
+
+// holdModule defines hold(): a native call that blocks until gate closes.
+func holdModule(gate <-chan struct{}) automations.Module {
+	return exModule{name: "hold", fns: map[string]automations.SDKFunc{
+		"hold": func(env *automations.Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+			select {
+			case <-gate:
+			case <-env.Ctx.Done():
+			}
+			return nil, nil
+		},
+	}}
+}
+
+// slotFixture: MaxConcurrent 2, waitFor() and hold() installed, two ready
+// waits owed a slot while two dry runs claimed by another process hold both
+// running slots.
+type slotFixture struct {
+	*exFixture
+	ready            *atomic.Bool
+	gate             chan struct{}
+	waiters, holders []int64
+}
+
+func newSlotFixture(t *testing.T) *slotFixture {
+	t.Helper()
+	sf := &slotFixture{ready: &atomic.Bool{}, gate: make(chan struct{})}
+	sf.exFixture = newExFixture(t, exOpts{maxConcurrent: 2, modules: func(*exFixture) []automations.Module {
+		return []automations.Module{waitModule(sf.ready), holdModule(sf.gate)}
+	}})
+	for _, slug := range []string{"wait-one", "wait-two"} {
+		sf.waiters = append(sf.waiters, sf.enqueue(t, sf.seed(t, slug, `waitFor(); hold(); return 1`, false), db.TriggerManual))
+	}
+	sf.stepNoWait(t, 2)
+	for _, id := range sf.waiters {
+		sf.waitStatus(t, id, db.RunWaiting)
+	}
+	for _, slug := range []string{"held-one", "held-two"} {
+		a := sf.seed(t, slug, `return 1`, false)
+		id := sf.enqueue(t, a, db.TriggerDryRun)
+		sf.claimAt(t, a, id, sf.clock.Now())
+		sf.holders = append(sf.holders, id)
+	}
+	sf.ready.Store(true)
+	sf.e.Wake()
+	deadline := time.Now().Add(10 * time.Second)
+	for automations.ExecutorReadyWaits(sf.e) != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("ready waits = %d; want 2 waiting for a slot", automations.ExecutorReadyWaits(sf.e))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return sf
+}
+
+// freeHolders ends the holders' runs directly in the store: no Wake, so the
+// waits are not told.
+func (sf *slotFixture) freeHolders(t *testing.T) {
+	t.Helper()
+	for _, id := range sf.holders {
+		if err := sf.d.FinishAutomationRun(id, db.RunFinish{Status: db.RunSucceeded, Now: sf.clock.Now()}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns: slots freed while
+// ready waits are owed them are not given to a queued run.
+func TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns(t *testing.T) {
+	sf := newSlotFixture(t)
+	queued := sf.enqueue(t, sf.seed(t, "queued", `return 1`, false), db.TriggerManual)
+	sf.freeHolders(t)
+	sf.stepNoWait(t, 0) // the freed slots belong to the ready waits
+	sf.wantRun(t, queued, db.RunQueued, "")
+	sf.e.Wake()
+	for _, id := range sf.waiters {
+		sf.waitStatus(t, id, db.RunRunning)
+	}
+	close(sf.gate)
+	sf.e.Wait()
+	sf.step(t, 1)
+	for _, id := range append(sf.waiters, queued) {
+		sf.wantRun(t, id, db.RunSucceeded, "")
+	}
+}
+
+// TestWaiter_SlotWaitStillExpires: a ready wait that never gets a slot still
+// ends expired after pause_timeout_hours.
+func TestWaiter_SlotWaitStillExpires(t *testing.T) {
+	sf := newSlotFixture(t)
+	sf.clock.Advance(73 * time.Hour)
+	sf.e.Wake()
+	sf.e.Wait()
+	for _, id := range sf.waiters {
+		sf.wantRun(t, id, db.RunExpired, db.ErrKindExpired)
+	}
+	close(sf.gate)
+}

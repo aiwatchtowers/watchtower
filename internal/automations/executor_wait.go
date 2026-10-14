@@ -56,7 +56,7 @@ func (w executorWaiter) Wait(ctx context.Context, reason string, ready func(cont
 	if err != nil {
 		return err
 	}
-	if err := w.e.resumeWhenSlotFree(ctx, rw.runID); err != nil {
+	if err := w.e.resumeWhenSlotFree(ctx, rw, since); err != nil {
 		return errors.Join(readyErr, err)
 	}
 	if readyErr != nil {
@@ -90,11 +90,16 @@ func (e *Executor) pollReady(ctx context.Context, rw *runWait, since time.Time,
 
 // resumeWhenSlotFree moves the run back to running once fewer than
 // MaxConcurrent runs are running, re-checking every PollInterval and on Wake
-// (a finishing run wakes it).
-func (e *Executor) resumeWhenSlotFree(ctx context.Context, runID int64) error {
+// (a finishing run wakes it). Meanwhile it counts in readyWaits, so Step
+// claims no queued run into the slot it is owed; the pause_timeout_hours
+// expiry still applies (waiting_reason keeps its value: no reason names a
+// slot wait).
+func (e *Executor) resumeWhenSlotFree(ctx context.Context, rw *runWait, since time.Time) error {
+	e.readyWaits.Add(1)
+	defer e.readyWaits.Add(-1)
 	for {
 		nudge := e.nudged()
-		resumed, err := e.db.ResumeAutomationRunIfSlot(runID, e.maxConcurrent)
+		resumed, err := e.db.ResumeAutomationRunIfSlot(rw.runID, e.maxConcurrent)
 		if errors.Is(err, db.ErrRunNotActive) {
 			return &RunInterrupted{Reason: InterruptCancel} // ended (cancelled) while waiting for a slot
 		}
@@ -103,6 +108,9 @@ func (e *Executor) resumeWhenSlotFree(ctx context.Context, runID int64) error {
 		}
 		if resumed {
 			return nil
+		}
+		if e.clock.Now().Sub(since) >= rw.pauseTimeout {
+			return &RunInterrupted{Reason: InterruptExpired}
 		}
 		if err := e.idle(ctx, nudge); err != nil {
 			return err
