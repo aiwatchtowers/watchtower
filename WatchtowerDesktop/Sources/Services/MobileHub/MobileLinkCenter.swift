@@ -54,6 +54,10 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 /// - Every share call is bounded (`shareTimeout`): offline CloudKit waits
 ///   for connectivity, and `handleDevice` runs inside the relay pass, which a
 ///   hub stop waits for. The close after a link runs outside the pass.
+///   A timed-out call may still land, so the public link's changes are
+///   ordered (`setPublicLink(open:)`, #262): an open waits for the calls
+///   still running, and a call landing after a later one re-applies the
+///   wanted state once.
 /// - Mobile E2E (spec §2.3): the QR carries the hub's public keys. A phone
 ///   asks to link with a hello sealed to `hub_kx` under the scanned code's
 ///   nonce; `handleHello(_:)` opens it with each kept code's nonce (F4),
@@ -369,7 +373,7 @@ final class MobileLinkCenter {
             let urls = try await share { try await shares.ensureShares() }
             // Marked before it opens: a crash in between still closes it.
             try markSweepPending()
-            try await share { try await shares.setPublicLink(open: true) }
+            try await setPublicLink(open: true)
             report(.available)
             return urls
         } catch {
@@ -467,8 +471,7 @@ final class MobileLinkCenter {
             return true
         }
         do {
-            let shares = self.shares
-            try await share { try await shares.setPublicLink(open: false) }
+            try await setPublicLink(open: false)
         } catch {
             let why = error.localizedDescription
             logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried: \(why, privacy: .public)")
@@ -487,8 +490,7 @@ final class MobileLinkCenter {
                 guard !Task.isCancelled, let self, !self.yieldsToIssue else { return }
                 guard (try? self.sidecar.metaValue(forKey: Self.sweepPendingKey)) == "1" else { return }
                 do {
-                    let shares = self.shares
-                    try await self.share { try await shares.setPublicLink(open: false) }
+                    try await self.setPublicLink(open: false)
                     return
                 } catch {
                     let why = error.localizedDescription
@@ -511,7 +513,7 @@ final class MobileLinkCenter {
             guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return true }
             let epoch = sweepEpoch
             let shares = self.shares
-            try await share { try await shares.setPublicLink(open: false) }
+            try await setPublicLink(open: false)
             if deferred, yieldsToIssue { return true }
             let bound = Set(try sidecar.linkedDevices().filter { $0.scope == .shared }.map(\.userRecordName))
             for zone in [CloudZoneID.data, .relay] {
@@ -552,6 +554,68 @@ final class MobileLinkCenter {
         sweepRetry = nil
         linkCloseRetry?.cancel()
         linkCloseRetry = nil
+        linkReapply?.cancel()
+        linkReapply = nil
+    }
+
+    /// Public-link calls not yet ended, by request number; a timed-out one keeps running (`share`).
+    @ObservationIgnored private var linkCalls: [Int: Task<Result<Void, Error>, Never>] = [:]
+    @ObservationIgnored private var linkRequests = 0
+    /// The newest public-link request that went through.
+    @ObservationIgnored private var lastLandedLinkRequest = 0
+    /// The re-apply after a public-link call landed out of order; cancelled with `sweepRetry`.
+    @ObservationIgnored private var linkReapply: Task<Void, Never>?
+
+    /// Opens or closes both shares' public link, bounded like every share call (#262). An open first waits (bounded)
+    /// for the calls still running, so a close that started before it (a deferred sweep, a retry, a timed-out close)
+    /// lands first and never shuts the new code's link. A call that still lands after a later one (it outran that
+    /// wait) re-applies, once, the state the center wants: open while a code is being issued or on screen, closed
+    /// otherwise.
+    private func setPublicLink(open: Bool) async throws {
+        if open, !linkCalls.isEmpty {
+            let earlier = Array(linkCalls.values)
+            _ = await MobileHubService.bounded(shareTimeout) { for call in earlier { _ = await call.value } }
+        }
+        linkRequests &+= 1
+        let request = linkRequests
+        let shares = self.shares
+        let call = Task { [weak self] () -> Result<Void, Error> in
+            let result: Result<Void, Error>
+            do {
+                try await shares.setPublicLink(open: open)
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            self?.linkCallEnded(request, open: open, landed: (try? result.get()) != nil)
+            return result
+        }
+        linkCalls[request] = call
+        try await share {
+            try await withTaskCancellationHandler { try await call.value.get() } onCancel: { call.cancel() }
+        }
+    }
+
+    private func linkCallEnded(_ request: Int, open: Bool, landed: Bool) {
+        linkCalls[request] = nil
+        guard landed else { return }
+        guard request < lastLandedLinkRequest else {
+            lastLandedLinkRequest = request
+            return
+        }
+        let wanted = yieldsToIssue
+        guard open != wanted else { return }
+        let landedState = open ? "open" : "close", wantedState = wanted ? "open" : "closed"
+        logger.warning("public link \(landedState, privacy: .public) landed late, set \(wantedState, privacy: .public) again")
+        linkReapply?.cancel()
+        linkReapply = Task { [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            do {
+                try await self.setPublicLink(open: self.yieldsToIssue)
+            } catch {
+                self.logger.error("public link not set again: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - Device records (spec §2.3, §5.1)

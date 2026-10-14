@@ -169,4 +169,41 @@ extension MobileLinkCenterTests {
         XCTAssertTrue(waits.all.contains(MobileLinkCenter.linkCloseRetryDelays[0]))
         XCTAssertEqual(shares.participantNames(in: .data), ["_colleague-b"], "the sweep still waits for the grace")
     }
+
+    /// #262: a public-link close that outran its bounded call and lands after a new code's open is undone: the new
+    /// code's link ends open.
+    func testALateLinkCloseNeverLeavesANewCodesLinkShut() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100), answerGrace: MobileLinkCenter.answerGrace)
+        _ = try await center.issueCode()
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        await center.closeLink(reason: .sheetClosed)
+        await fulfillment(of: [late.arrived], timeout: 5)
+
+        let code = try await center.issueCode()
+        XCTAssertTrue(shares.isLinkOpen, "the new code opened past the parked close")
+        late.release()
+
+        await awaitHubCondition("the late close is undone") {
+            shares.calls.filter { $0 == "setPublicLink:true" }.count == 3 && shares.isLinkOpen
+        }
+        XCTAssertEqual(center.openCode, code)
+    }
+
+    /// #262: an open that outran its bounded call and lands after the code's close is undone: no link stays open
+    /// without a code on screen.
+    func testALateLinkOpenAfterTheCloseIsClosedAgain() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100))
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .restart)
+        XCTAssertFalse(shares.isLinkOpen)
+        late.release()
+
+        await awaitHubCondition("the late open is undone") {
+            shares.calls.filter { $0 == "setPublicLink:false" }.count == 2 && !shares.isLinkOpen
+        }
+        XCTAssertNil(center.openCode)
+    }
 }
