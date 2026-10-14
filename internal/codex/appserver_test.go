@@ -126,6 +126,9 @@ func reapFakeGroup(t *testing.T, f fakeServer) {
 		return
 	}
 	alive := func() bool { return !errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) }
+	if !alive() {
+		return
+	}
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	deadline := time.Now().Add(5 * time.Second)
 	for alive() {
