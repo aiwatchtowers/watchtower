@@ -2265,14 +2265,14 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     finish_summary    TEXT NOT NULL DEFAULT '', -- the agent's last finish_session summary, kept after finished_at is cleared
     agent_failed_at   TEXT, -- = agent_state_at of the StopFailure write that set it; NULL = no error
     agent_error       TEXT NOT NULL DEFAULT '', -- the StopFailure error type, clipped to 60 runes; '' = unknown
-    agent_turn_end    INTEGER, -- the transcript's size in bytes at the last Stop hook of this run; NULL = none (Go only)
-    agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (Go only)
-    agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (hooks only)
+    agent_turn_end    INTEGER, -- the transcript's size in bytes at the last Stop hook of this run; NULL = none (written by Go; the Desktop's Start fresh clears it)
+    agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (written by Go; the Desktop's Start fresh resets it to 0)
+    agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (written by the hooks; the Desktop's Start fresh clears it)
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
-    chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (Go only)
+    chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (written by Go; the Desktop's Start fresh clears it)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
-    agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (Go only)
-    agent_transcript_path TEXT, -- the transcript path the agent's SessionStart hook reported (00109); NULL = none (Go only)
+    agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (written by Go; the Desktop's Start fresh clears it)
+    agent_transcript_path TEXT, -- the transcript path the agent's SessionStart hook reported (00109); NULL = none (written by Go; the Desktop's Start fresh clears it)
     agent_cwd         TEXT, -- the main agent's working directory as the last main-thread hook reported it (absolute; Go only); NULL = unknown
     agent_cwd_at      TEXT, -- that report's event time, agent_state_at format; NULL with agent_cwd
     cleanup_result    TEXT, -- JSON of the last `workbench cleanup --apply` of this session (Go only); NULL = never
