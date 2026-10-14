@@ -17,7 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
+	"html/template"
 	"io"
 	"os/exec"
 	"runtime"
@@ -44,13 +44,13 @@ var ErrLoginTimedOut = errors.New("login timed out")
 // Desktop started the sign-in with --app-return).
 func Success(service string, appReturn bool) string {
 	return render(page{
-		title:      "Connected",
-		iconClass:  "icon-ok",
-		icon:       "✓",
-		heading:    "Connected",
-		message:    html.EscapeString(service) + " is connected to Watchtower. You can close this tab.",
-		appReturn:  appReturn,
-		tryToClose: true,
+		Title:      "Connected",
+		IconClass:  "icon-ok",
+		Icon:       "✓",
+		Heading:    "Connected",
+		Message:    service + " is connected to Watchtower. You can close this tab.",
+		AppReturn:  appReturn,
+		TryToClose: true,
 	})
 }
 
@@ -60,60 +60,43 @@ func Success(service string, appReturn bool) string {
 // readable.
 func Error(reason string, appReturn bool) string {
 	return render(page{
-		title:     "Authorization failed",
-		iconClass: "icon-err",
-		icon:      "✕",
-		heading:   "Authorization failed",
-		message:   html.EscapeString(reason),
-		hint:      "You can close this tab and try again in Watchtower.",
-		appReturn: appReturn,
+		Title:     "Authorization failed",
+		IconClass: "icon-err",
+		Icon:      "✕",
+		Heading:   "Authorization failed",
+		Message:   reason,
+		Hint:      "You can close this tab and try again in Watchtower.",
+		AppReturn: appReturn,
 	})
 }
 
 type page struct {
-	title, iconClass, icon, heading, message, hint string
-	appReturn, tryToClose                          bool
+	Title, IconClass, Icon, Heading, Message, Hint string
+	AppReturn, TryToClose                          bool
 }
+
+// pageTemplate is html/template, so every field — Message carries the
+// provider's error text or a service name — is escaped on output.
+var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watchtower — {{.Title}}</title>` + style + `</head><body>
+<div class="card">
+<div class="icon {{.IconClass}}">{{.Icon}}</div>
+<h1>{{.Heading}}</h1>
+<p>{{.Message}}</p>
+{{if .AppReturn}}<a class="btn" href="` + appReturnURL + `">Back to Watchtower</a>
+{{end}}{{if .Hint}}<div class="hint">{{.Hint}}</div>
+{{end}}</div>
+{{if .TryToClose}}<script>setTimeout(function(){try{window.close()}catch(e){}},` + closeAttemptMS + `);</script>
+{{end}}</body></html>`))
 
 func render(p page) string {
 	var b strings.Builder
-	b.WriteString(`<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Watchtower — `)
-	b.WriteString(p.title)
-	b.WriteString(`</title>` + style + `</head><body>
-<div class="card">
-<div class="icon `)
-	b.WriteString(p.iconClass)
-	b.WriteString(`">`)
-	b.WriteString(p.icon)
-	b.WriteString(`</div>
-<h1>`)
-	b.WriteString(p.heading)
-	b.WriteString(`</h1>
-<p>`)
-	b.WriteString(p.message)
-	b.WriteString(`</p>
-`)
-	if p.appReturn {
-		b.WriteString(`<a class="btn" href="` + appReturnURL + `">Back to Watchtower</a>
-`)
+	// Execute only fails on a template/data mismatch, which the tests over
+	// every page shape would catch.
+	if err := pageTemplate.Execute(&b, p); err != nil {
+		panic(fmt.Sprintf("oauthpage: rendering %q: %v", p.Title, err))
 	}
-	if p.hint != "" {
-		b.WriteString(`<div class="hint">`)
-		b.WriteString(p.hint)
-		b.WriteString(`</div>
-`)
-	}
-	b.WriteString(`</div>
-`)
-	if p.tryToClose {
-		// Best effort only: browsers ignore window.close() on a tab no script
-		// opened, which is nearly every tab here — hence the honest text.
-		b.WriteString(`<script>setTimeout(function(){try{window.close()}catch(e){}},` + closeAttemptMS + `);</script>
-`)
-	}
-	b.WriteString(`</body></html>`)
 	return b.String()
 }
 

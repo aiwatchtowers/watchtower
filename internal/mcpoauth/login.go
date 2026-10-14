@@ -229,7 +229,7 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			default:
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, page)
+			fmt.Fprint(w, page) //nolint:gosec // G705: page is oauthpage output, rendered by html/template
 		}
 		fail := func(userMsg, errText string) {
 			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, oauthpage.Error(userMsg, p.appReturn))

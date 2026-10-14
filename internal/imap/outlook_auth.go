@@ -297,10 +297,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 		if errMsg := q.Get("error"); errMsg != "" {
 			resultCh <- outlookCallbackResult{err: errMsg}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// #nosec G705 -- errMsg is html.EscapeString-encoded before
-			// interpolation, so this isn't an XSS sink despite the taint
-			// analysis (it doesn't track through html.EscapeString).
-			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error escapes the reason
+			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error renders the reason through html/template
 			return
 		}
 		resultCh <- outlookCallbackResult{

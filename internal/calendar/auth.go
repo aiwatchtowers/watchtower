@@ -376,7 +376,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 		if errMsg := q.Get("error"); errMsg != "" {
 			resultCh <- callbackResult{err: errMsg}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error escapes the reason
+			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error renders the reason through html/template
 			return
 		}
 		resultCh <- callbackResult{
