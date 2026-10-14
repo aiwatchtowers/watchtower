@@ -1738,11 +1738,17 @@ func (d *Daemon) saveLastStreams() {
 	}
 }
 
-// shouldRunBriefing checks if the daily briefing should run.
-// Runs at most once per calendar day, after the configured briefing.hour.
+// shouldRunBriefing checks if the daily briefing should run now.
 func (d *Daemon) shouldRunBriefing() bool {
-	now := time.Now()
+	return d.shouldRunBriefingAt(time.Now())
+}
 
+// shouldRunBriefingAt is the briefing gate at a given clock. Runs at most once
+// per calendar day, after the configured briefing.hour — except the first
+// briefing on a fresh install (briefingFresh), which does not wait for the
+// hour. The budget still applies, so the bypass moves the first run earlier
+// without adding a run.
+func (d *Daemon) shouldRunBriefingAt(now time.Time) bool {
 	if !d.lastBriefing.IsZero() && sameCalendarDay(d.lastBriefing, now) {
 		return false
 	}
@@ -1751,11 +1757,31 @@ func (d *Daemon) shouldRunBriefing() bool {
 	if targetHour <= 0 {
 		targetHour = config.DefaultBriefingHour
 	}
-	if now.Hour() < targetHour {
+	// briefingFresh queries the DB, so it is asked only when the hour refuses.
+	if now.Hour() < targetHour && !d.briefingFresh() {
 		return false
 	}
 
 	return !d.briefingAttemptsExhausted(now.Format("2006-01-02"))
+}
+
+// briefingFresh reports a fresh install: no briefing ever generated, neither
+// a last_briefing.txt stamp nor a briefings row. A nil DB or a DB error reads
+// as not fresh, so the hour gate keeps applying.
+//
+// Dual path: the Desktop's readiness model mirrors this rule in
+// WatchtowerDesktop/Sources/WatchtowerCore/Services/FeatureReadiness.swift —
+// change both together.
+func (d *Daemon) briefingFresh() bool {
+	if d.db == nil || !d.lastBriefing.IsZero() {
+		return false
+	}
+	has, err := d.db.HasAnyBriefing()
+	if err != nil {
+		d.logger.Printf("briefing: fresh-install check failed, keeping the hour gate: %v", err)
+		return false
+	}
+	return !has
 }
 
 func sameCalendarDay(a, b time.Time) bool {

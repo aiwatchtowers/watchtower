@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -191,4 +192,84 @@ func TestDaemon_PeopleNoDataRunLeavesNoPipelineRun(t *testing.T) {
 	seedFirstRunSituation(t, database)
 	d.phasePeopleCards(context.Background())
 	assert.Equal(t, 1, peopleRunCount(t, database), "the first cycle with data is tracked")
+}
+
+// briefingClock is today at the given local hour: a fixed clock for the
+// briefing gate, never a hard-coded date.
+func briefingClock(hour int) time.Time {
+	return firstRunDayStart().Add(time.Duration(hour) * time.Hour)
+}
+
+// briefingFirstRunSetup is a fresh-install daemon with briefings on at 08:00.
+func briefingFirstRunSetup(t *testing.T) (*Daemon, *db.DB) {
+	t.Helper()
+	d, database := firstRunTestSetup(t)
+	d.config.Briefing = config.BriefingConfig{Enabled: true, Hour: 8}
+	return d, database
+}
+
+func seedFirstRunBriefing(t *testing.T, database *db.DB) {
+	t.Helper()
+	_, err := database.UpsertBriefing(db.Briefing{
+		WorkspaceID: "T1", UserID: "U1", Date: firstRunDayStart().AddDate(0, 0, -1).Format("2006-01-02"),
+	})
+	require.NoError(t, err)
+}
+
+func TestShouldRunBriefingAt_FreshInstallIgnoresHour(t *testing.T) {
+	d, _ := briefingFirstRunSetup(t)
+
+	assert.True(t, d.shouldRunBriefingAt(briefingClock(6)), "the first briefing does not wait for briefing.hour")
+}
+
+func TestShouldRunBriefingAt_HourGateAppliesAfterFirst(t *testing.T) {
+	d, database := briefingFirstRunSetup(t)
+	seedFirstRunBriefing(t, database)
+
+	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)))
+	assert.True(t, d.shouldRunBriefingAt(briefingClock(9)))
+}
+
+func TestShouldRunBriefingAt_StampWipedRowsExistKeepsHourGate(t *testing.T) {
+	d, database := briefingFirstRunSetup(t)
+	seedFirstRunBriefing(t, database)
+	require.True(t, d.lastBriefing.IsZero())
+
+	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)), "a lost last_briefing.txt is not a fresh install")
+}
+
+func TestShouldRunBriefingAt_NilDBIsNotFresh(t *testing.T) {
+	d := newQuietDaemon(t)
+	d.config.Briefing = config.BriefingConfig{Enabled: true, Hour: 8}
+
+	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)))
+}
+
+func TestShouldRunBriefingAt_FreshButBudgetExhaustedFalse(t *testing.T) {
+	d, _ := briefingFirstRunSetup(t)
+	now := briefingClock(6)
+	for range maxDailyAIAttempts {
+		d.recordBriefingAttempt(now.Format("2006-01-02"))
+	}
+
+	assert.False(t, d.shouldRunBriefingAt(now))
+}
+
+// The fresh-install bypass adds no run: a first briefing with nothing to
+// summarise yet is a benign skip that keeps the budget and the stamp clear,
+// so the next cycle tries again.
+func TestDaemon_FirstBriefingNoDataKeepsBudget(t *testing.T) {
+	d, database := briefingFirstRunSetup(t)
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+	gen := &erroringGenerator{}
+	d.SetBriefingPipeline(briefing.New(database, d.config, gen, d.logger))
+
+	d.phaseBriefing(context.Background())
+
+	assert.Equal(t, 0, gen.calls, "no digests: the AI is not reached")
+	assert.Equal(t, 0, d.briefingAttempts)
+	assert.True(t, d.lastBriefing.IsZero())
+	assert.True(t, d.shouldRunBriefingAt(briefingClock(6)), "still fresh on the next cycle")
 }

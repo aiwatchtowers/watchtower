@@ -375,6 +375,8 @@ Separate AI call across all cards → overall team health overview, areas of att
 3. There is at least some data (digests, tracks, tasks, or inbox)
 4. Briefing for this date doesn't yet exist (deduplication by user + date)
 
+**First briefing on a fresh install (2026-10-14):** condition 2 is skipped while no briefing has ever been generated — no `last_briefing.txt` and no `briefings` row at all — so the first briefing comes in the first cycle that has data instead of waiting for `briefing.hour`. Once one exists (or if only the stamp file was lost and rows remain), the hour gate applies as usual. A no-data first run is a benign skip: it spends no budget and the next cycle tries again. The Desktop's readiness model mirrors this rule (`FeatureReadiness.swift`).
+
 **Attempt budget (2026-09-13):** a real failure (the generate call itself erroring, not one of the conditions above skipping cleanly) counts against a 3-per-day budget, persisted to `briefing_attempts.txt` so it survives a daemon restart. Once the 3rd failure spends the day's budget, the daemon logs a one-time "giving up" line and stops trying until the next calendar day — it does not retry on every subsequent cycle.
 
 ### Data Collection from All Previous Stages
