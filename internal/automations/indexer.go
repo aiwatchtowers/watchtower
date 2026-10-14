@@ -412,6 +412,12 @@ func triggerSpecJSON(t Trigger) (string, error) {
 	return string(b), nil
 }
 
+// CanonicalDir is the indexer's folder path policy (see Indexer), exported so
+// the CLI can tell whether a path lies in a recipe folder and key a file the
+// way its index row does: filepath.Join(CanonicalDir(filepath.Dir(f)),
+// filepath.Base(f)).
+func CanonicalDir(dir string) (string, error) { return canonicalDir(dir) }
+
 // canonicalDir makes dir absolute and resolves symlinks through its deepest
 // existing ancestor; the part that does not exist yet is appended as is.
 func canonicalDir(dir string) (string, error) {

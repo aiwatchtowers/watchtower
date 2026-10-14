@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
@@ -346,8 +347,10 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 // Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
 // it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
 // workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
-// terminal does not get it).
-var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv}
+// terminal does not get it); a child an automation run starts carries
+// automations.RunEnvMarker.
+var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv,
+	automations.RunEnvMarker}
 
 // refuseUnderAgent keeps the owner's decision the owner's (AGENT-07): an
 // agent that can run `watchtower` could otherwise approve or apply its own
