@@ -85,18 +85,17 @@ func (db *DB) GetGoogleAccount(id int64) (GoogleAccount, error) {
 // services were actually approved and the account's email address — and
 // gives a still-unlabeled account its automatic label (MailAccountLabel).
 func (db *DB) UpdateGoogleAccountConnection(id int64, email string, calendarEnabled, gmailEnabled bool) error {
-	return db.inLabelTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE google_accounts SET email = ?, calendar_enabled = ?, gmail_enabled = ?,
+	res, err := db.Exec(`UPDATE google_accounts SET email = ?, calendar_enabled = ?, gmail_enabled = ?,
         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-			email, calendarEnabled, gmailEnabled, id)
-		if err != nil {
-			return fmt.Errorf("updating google account %d connection: %w", id, err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return fmt.Errorf("updating google account connection: no google_accounts row %d", id)
-		}
-		return fillAccountLabel(tx, "google_accounts", id, MailAccountLabel(email, ""))
-	})
+		email, calendarEnabled, gmailEnabled, id)
+	if err != nil {
+		return fmt.Errorf("updating google account %d connection: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("updating google account connection: no google_accounts row %d", id)
+	}
+	db.fillAccountLabelBestEffort("google_accounts", id, MailAccountLabel(email, ""))
+	return nil
 }
 
 // DeleteGoogleAccount removes a connected Google account along with its

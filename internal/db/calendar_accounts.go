@@ -39,23 +39,18 @@ func (db *DB) CreateCalendarAccount(a CalendarAccount) (int64, error) {
 	if a.Provider == "caldav" {
 		base = CalDAVAccountLabel(a.URL, a.Username)
 	}
-	var id int64
-	err := db.inLabelTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`INSERT INTO calendar_accounts
+	res, err := db.Exec(`INSERT INTO calendar_accounts
         (provider, username, url, label)
         VALUES (?,?,?,?)`,
-			a.Provider, a.Username, a.URL, a.Label)
-		if err != nil {
-			return fmt.Errorf("creating calendar account: %w", err)
-		}
-		if id, err = res.LastInsertId(); err != nil {
-			return fmt.Errorf("reading new calendar account id: %w", err)
-		}
-		return fillAccountLabel(tx, "calendar_accounts", id, base)
-	})
+		a.Provider, a.Username, a.URL, a.Label)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("creating calendar account: %w", err)
 	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("reading new calendar account id: %w", err)
+	}
+	db.fillAccountLabelBestEffort("calendar_accounts", id, base)
 	return id, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -236,6 +237,19 @@ func (db *DB) inLabelTx(fn func(tx *sql.Tx) error) error {
 	return nil
 }
 
+// fillAccountLabelBestEffort fills the automatic label of a row whose
+// identity is already saved, in its own transaction. The label is cosmetic:
+// a failure here must never undo the connect or stop a sync, so it is logged
+// and the account shows under its fallback name until the next try (every
+// Slack sync, the daemon-start backfill).
+func (db *DB) fillAccountLabelBestEffort(table string, id int64, base string) {
+	if err := db.inLabelTx(func(tx *sql.Tx) error {
+		return fillAccountLabel(tx, table, id, base)
+	}); err != nil {
+		slog.Warn("account label not set", "table", table, "id", id, "error", err)
+	}
+}
+
 // FillEmptyAccountLabels gives every account still without a label (one
 // connected before labels were automatic) its automatic label, oldest account
 // first so the older one keeps the plain name. An ICS feed stays empty: its
@@ -281,6 +295,11 @@ func (db *DB) FillEmptyAccountLabels() error {
 	// One transaction per account: one that fails leaves the others named.
 	var errs []error
 	for _, p := range todo {
+		if strings.TrimSpace(p.base) == "" {
+			slog.Info("account has nothing to name it by yet; it shows under its fallback name",
+				"table", p.table, "id", p.id)
+			continue
+		}
 		if err := db.inLabelTx(func(tx *sql.Tx) error {
 			return fillAccountLabel(tx, p.table, p.id, p.base)
 		}); err != nil {
@@ -292,7 +311,8 @@ func (db *DB) FillEmptyAccountLabels() error {
 
 // RenameAccount sets the label of account id in table ("slack_accounts", …)
 // to label, trimmed. An empty label is refused — the automatic label is only
-// given at connect — and a missing account is an error.
+// given at connect — and so are a missing account and a removed Slack/Jira
+// one (its row is kept, but nothing shows it).
 func (db *DB) RenameAccount(table string, id int64, label string) error {
 	if !accountLabelTables[table] {
 		return fmt.Errorf("rename account: unknown table %q", table)
@@ -302,12 +322,20 @@ func (db *DB) RenameAccount(table string, id int64, label string) error {
 		return errors.New("rename account: the name must not be empty")
 	}
 	// #nosec G202 -- table is checked against accountLabelTables above.
-	res, err := db.Exec(`UPDATE `+table+` SET label = ? WHERE id = ?`, label, id)
+	res, err := db.Exec(`UPDATE `+table+` SET label = ? WHERE id = ?`+notRemoved(table), label, id)
 	if err != nil {
 		return fmt.Errorf("renaming account %d: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("renaming account: no account %d", id)
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
 	}
-	return nil
+	var exists bool
+	// #nosec G202 -- table is checked against accountLabelTables above.
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id = ?)`, id).Scan(&exists); err != nil {
+		return fmt.Errorf("renaming account %d: %w", id, err)
+	}
+	if exists {
+		return fmt.Errorf("renaming account: account %d was removed — reconnect it to use it again", id)
+	}
+	return fmt.Errorf("renaming account: no account %d", id)
 }

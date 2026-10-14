@@ -215,3 +215,39 @@ func TestRenameAccount(t *testing.T) {
 	require.Error(t, d.RenameAccount("slack_accounts", 999, "X"), "a missing account is an error")
 	require.Error(t, d.RenameAccount("users", id, "X"), "only account tables")
 }
+
+// The label is cosmetic: when its step fails, the connect's identity write
+// (and with it a sync cycle or `slack add`) still succeeds; the account shows
+// under its fallback name until a later try.
+func TestAccountLabel_FailureNeverUndoesTheIdentity(t *testing.T) {
+	d := openTestDB(t)
+	for _, table := range []string{"slack_accounts", "email_accounts"} {
+		_, err := d.Exec(`CREATE TRIGGER fail_label_` + table + ` BEFORE UPDATE OF label ON ` + table + `
+            WHEN NEW.label != '' BEGIN SELECT RAISE(ABORT, 'label write refused'); END`)
+		require.NoError(t, err)
+	}
+
+	id, err := d.CreateSlackAccount(SlackAccount{})
+	require.NoError(t, err)
+	require.NoError(t, d.UpdateSlackAccountConnection(id, "T1", "Acme", "acme", "1:U1"))
+	a := must(d.GetSlackAccount(id))(t)
+	assert.Equal(t, "T1", a.TeamID)
+	assert.Equal(t, "1:U1", a.CurrentUserID, "the current user id is saved")
+	assert.Equal(t, "", a.Label)
+
+	eid, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "a@example.com", Security: "ssl"})
+	require.NoError(t, err, "the mailbox is created")
+	assert.Equal(t, "", must(d.GetEmailAccount(eid))(t).Label)
+}
+
+func TestRenameAccount_RefusesARemovedAccount(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateJiraAccount(JiraAccount{Label: "Acme"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetJiraAccountRemoved(id))
+
+	err = d.RenameAccount("jira_accounts", id, "Other")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "removed")
+	assert.Equal(t, "Acme", must(d.GetJiraAccount(id))(t).Label)
+}
