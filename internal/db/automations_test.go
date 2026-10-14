@@ -573,3 +573,76 @@ func TestAutomationIndex_ConfirmSetsLastScheduledForNow(t *testing.T) {
 	}
 	lastIs("confirm after edit", later)
 }
+
+func TestAutomationIndex_PrimeScheduleOnlyWhileNotRunnableSchedule(t *testing.T) {
+	d := openTestDB(t)
+	path := filepath.Join(t.TempDir(), "digest.md")
+	id := seedAutomationRow(t, d, "digest", path, "h1")
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := d.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`UPDATE automations SET trigger_kind = 'schedule', trigger_spec = '{"schedule":"0 9 * * *"}' WHERE id = ?`, id)
+	base := time.Now().Truncate(time.Second)
+
+	// Not runnable (unconfirmed): primed.
+	if ok, err := d.PrimeAutomationSchedule(id, base); err != nil || !ok {
+		t.Fatalf("prime unconfirmed = %v, %v; want true", ok, err)
+	}
+	if err := d.ConfirmAutomation(id, "h1", base); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetAutomationEnabled(id, true, base); err != nil {
+		t.Fatal(err)
+	}
+	advanced := base.Add(time.Hour)
+	if err := d.SetAutomationSchedule(id, &advanced, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A runnable schedule row: refused, the scheduler's point stays.
+	if ok, err := d.PrimeAutomationSchedule(id, base.Add(30*time.Minute)); err != nil || ok {
+		t.Fatalf("prime runnable = %v, %v; want false", ok, err)
+	}
+	if a := mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(advanced) {
+		t.Errorf("last_scheduled_for = %v, want %v", a.LastScheduledFor, advanced)
+	}
+	// A runnable manual row is not a schedule: primed.
+	mustExec(`UPDATE automations SET trigger_kind = 'manual' WHERE id = ?`, id)
+	if ok, err := d.PrimeAutomationSchedule(id, base); err != nil || !ok {
+		t.Fatalf("prime manual = %v, %v; want true", ok, err)
+	}
+	if _, err := d.PrimeAutomationSchedule(9999, base); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("prime missing = %v, want ErrAutomationNotFound", err)
+	}
+}
+
+func TestAutomationIndex_ScopeGenerationChangesOnWrites(t *testing.T) {
+	d := openTestDB(t)
+	gen := func() string {
+		t.Helper()
+		g, err := d.AutomationScopeGeneration("personal", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	empty := gen()
+	dir := t.TempDir()
+	a := seedAutomationRow(t, d, "a", filepath.Join(dir, "a.md"), "h1")
+	seedAutomationRow(t, d, "b", filepath.Join(dir, "b.md"), "h1")
+	two := gen()
+	if two == empty {
+		t.Error("generation unchanged after inserts")
+	}
+	if err := d.DeleteAutomation(a); err != nil {
+		t.Fatal(err)
+	}
+	if gen() == two {
+		t.Error("generation unchanged after a delete")
+	}
+	if g, err := d.AutomationScopeGeneration("workbench", 7); err != nil || g != empty {
+		t.Errorf("other scope generation = %q, %v; want %q", g, err, empty)
+	}
+}
