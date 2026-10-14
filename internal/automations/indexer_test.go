@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -466,6 +467,12 @@ func TestIndexer_ChangedTracksFolder(t *testing.T) {
 		{"rescanned", func() { f.rescan(t) }, false},
 		{"file rewritten in place", func() { f.write(t, "a.md", recipeText("longer description", "1")) }, true},
 		{"rescanned again", func() { f.rescan(t) }, false},
+		{"file chmod only (ctime)", func() {
+			if err := os.Chmod(filepath.Join(f.dir, "a.md"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"rescanned after chmod", func() { f.rescan(t) }, false},
 	}
 	for _, s := range steps {
 		s.act()
@@ -494,5 +501,200 @@ func TestTriggerSpecJSON_Shapes(t *testing.T) {
 	}
 	if _, err := triggerSpecJSON(Trigger{}); err == nil {
 		t.Error("empty trigger kind encoded")
+	}
+}
+
+func TestRescan_OversizedFileHashesWholeFile(t *testing.T) {
+	f := newIndexerFixture(t)
+	head := strings.Repeat("x", MaxRecipeBytes+10)
+	f.write(t, "big.md", head+"A")
+	f.rescan(t)
+	first := f.row(t, "big").ContentHash
+	if first != ContentHash([]byte(head+"A")) {
+		t.Errorf("content_hash = %s, want the hash of the whole file", first)
+	}
+	f.write(t, "big.md", head+"B") // differs only past the cap
+	if rep := f.rescan(t); rep.Indexed != 1 {
+		t.Errorf("edit past the cap: %+v, want Indexed=1", rep)
+	}
+	if f.row(t, "big").ContentHash == first {
+		t.Error("an edit past the cap kept the content hash")
+	}
+}
+
+// rescanWithin fails the test instead of hanging when a rescan blocks.
+func rescanWithin(t *testing.T, f *indexerFixture, d time.Duration) RescanReport {
+	t.Helper()
+	type result struct {
+		rep RescanReport
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rep, err := f.ix.RescanPersonal(context.Background())
+		done <- result{rep, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("RescanPersonal: %v", r.err)
+		}
+		return r.rep
+	case <-time.After(d):
+		t.Fatalf("rescan still blocked after %s", d)
+		return RescanReport{}
+	}
+}
+
+func TestRescan_SymlinksAndSpecialFilesSkipped(t *testing.T) {
+	f := newIndexerFixture(t)
+	f.write(t, "real.md", recipeText("d", "1"))
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte(recipeText("d", "2")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{
+		"inside.md":   filepath.Join(f.dir, "real.md"),
+		"outside.md":  outside,
+		"dangling.md": filepath.Join(f.dir, "nowhere.md"),
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(f.dir, "pipe.md"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep := rescanWithin(t, f, 10*time.Second)
+	wantCounts(t, rep, 1, 0, 0)
+	skipped := map[string]bool{}
+	for _, n := range rep.Skipped {
+		skipped[filepath.Base(n.Path)] = n.Reason == specialEntryReason
+	}
+	for _, name := range []string{"inside.md", "outside.md", "dangling.md", "pipe.md"} {
+		if !skipped[name] {
+			t.Errorf("%s not skipped with the special-entry note (Skipped = %+v)", name, rep.Skipped)
+		}
+	}
+	all, err := f.d.ListAutomations(db.AutomationFilter{IncludeRemoved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Slug != "real" {
+		t.Errorf("rows = %+v, want only real", all)
+	}
+	if _, _, err := readRecipeFile(filepath.Join(f.dir, "pipe.md")); err == nil {
+		t.Error("readRecipeFile read a FIFO")
+	}
+}
+
+func TestRescan_FileReplacedBySymlinkIsRemoved(t *testing.T) {
+	f := newIndexerFixture(t)
+	p := f.write(t, "job.md", recipeText("d", "1"))
+	f.rescan(t)
+	other := filepath.Join(t.TempDir(), "job.md")
+	if err := os.WriteFile(other, []byte(recipeText("d", "evil")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, p); err != nil {
+		t.Fatal(err)
+	}
+	rep := f.rescan(t)
+	if rep.Removed != 1 || f.row(t, "job").RemovedAt == nil {
+		t.Errorf("report %+v: a recipe replaced by a symlink must be removed, not re-read", rep)
+	}
+}
+
+func TestRescan_UnreadableFileKeepsRow(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 000 file")
+	}
+	f := newIndexerFixture(t)
+	p := f.write(t, "job.md", recipeText("d", "1"))
+	f.rescan(t)
+	before := f.row(t, "job")
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+	rep := f.rescan(t)
+	wantCounts(t, rep, 0, 0, 0)
+	if len(rep.Skipped) != 1 || !strings.Contains(rep.Skipped[0].Reason, "cannot read the recipe") {
+		t.Errorf("Skipped = %+v, want the unreadable file", rep.Skipped)
+	}
+	after := f.row(t, "job")
+	if after.RemovedAt != nil || after.ContentHash != before.ContentHash {
+		t.Errorf("unreadable file: removed_at=%v, content changed=%v; want the row kept as indexed",
+			after.RemovedAt, after.ContentHash != before.ContentHash)
+	}
+}
+
+// TestRescan_StaleIndexerCannotRewindSchedule simulates two indexers
+// interleaved: A restores a confirmed recipe (primes, makes it runnable), the
+// scheduler advances last_scheduled_for, then B — working from the snapshot
+// it took before A's write — applies the same restore. B must not rewind the
+// scheduler's point.
+func TestRescan_StaleIndexerCannotRewindSchedule(t *testing.T) {
+	f := newIndexerFixture(t)
+	good := recipeText("d", `log("ok")`)
+	path := f.write(t, "job.md", good)
+	f.rescan(t)
+	f.confirmEnable(t, "job")
+	f.write(t, "job.md", recipeText("d", `log("evil")`))
+	f.rescan(t)
+	f.write(t, "job.md", good)
+
+	stale := *f.row(t, "job") // B's snapshot: not runnable
+	cand, err := (&folderScan{ix: f.ix, scope: Scope{Kind: ScopePersonal}, dir: f.dir}).
+		candidate("job", path, []byte(good), ContentHash([]byte(good)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.clock.now = f.clock.now.Add(time.Hour)
+	f.rescan(t) // indexer A
+	if !f.row(t, "job").Runnable() {
+		t.Fatal("A did not restore the row")
+	}
+	advanced := f.clock.now.Add(2 * time.Hour)
+	if err := f.d.SetAutomationSchedule(stale.ID, &advanced, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &folderScan{ix: f.ix, scope: Scope{Kind: ScopePersonal}, dir: f.dir, now: f.clock.now.Add(time.Hour)}
+	if err := b.update(stale, cand); err != nil {
+		t.Fatal(err)
+	}
+	if a := f.row(t, "job"); a.LastScheduledFor == nil || !a.LastScheduledFor.Equal(advanced) {
+		t.Errorf("last_scheduled_for = %v, want the scheduler's %v", a.LastScheduledFor, advanced)
+	}
+}
+
+func TestIndexer_ChangedSeesDBDeleteThatFreesSlug(t *testing.T) {
+	f := newIndexerFixture(t)
+	old, err := f.d.UpsertAutomationIndex(db.Automation{Slug: "mail", Scope: "personal", Path: filepath.Join(t.TempDir(), "mail.md")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "mail.md", recipeText("d", "1"))
+	if rep := f.rescan(t); len(rep.Skipped) != 1 {
+		t.Fatalf("Skipped = %+v, want the slug collision", rep.Skipped)
+	}
+	dir := PersonalDir(f.ws)
+	if f.ix.Changed(dir) {
+		t.Fatal("Changed right after a rescan")
+	}
+	if err := f.d.DeleteAutomation(old); err != nil {
+		t.Fatal(err)
+	}
+	if !f.ix.Changed(dir) {
+		t.Fatal("Changed missed the delete that freed the slug")
+	}
+	if rep := f.rescan(t); rep.Indexed != 1 || len(rep.Skipped) != 0 {
+		t.Errorf("rescan after the delete: %+v, want mail indexed", rep)
 	}
 }

@@ -1,7 +1,10 @@
 package automations
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"watchtower/internal/db"
@@ -52,20 +56,30 @@ type RescanReport struct {
 // Path policy: a folder is made absolute and its symlinks are resolved
 // (filepath.EvalSymlinks on the deepest existing ancestor, so a folder that
 // does not exist yet keys the same once it does); a recipe's path is that
-// canonical folder joined with the file's own name. A symlinked file is
-// followed for reading but keeps the in-folder name — its stem is the slug.
+// canonical folder joined with the file's own name. Entries inside the
+// folder are never followed: only a regular file named *.md is a recipe; a
+// symlink or a special file (FIFO, socket, device) named *.md is skipped
+// with a note and never opened.
 type Indexer struct {
 	db           *db.DB
 	workspaceDir string
 	clock        Clock
 
 	mu   sync.Mutex
-	seen map[string]string // canonical folder → fingerprint at its last scan
+	seen map[string]folderState // canonical folder → its state at the last scan
+}
+
+// folderState is what Changed compares: the folder's entries and the DB
+// generation of the scope it was scanned under.
+type folderState struct {
+	fingerprint string
+	scope       Scope
+	generation  string
 }
 
 // NewIndexer returns an indexer over d; workspaceDir locates the personal folder.
 func NewIndexer(d *db.DB, workspaceDir string, clock Clock) *Indexer {
-	return &Indexer{db: d, workspaceDir: workspaceDir, clock: clock, seen: map[string]string{}}
+	return &Indexer{db: d, workspaceDir: workspaceDir, clock: clock, seen: map[string]folderState{}}
 }
 
 // RescanPersonal rescans the personal folder.
@@ -74,22 +88,28 @@ func (ix *Indexer) RescanPersonal(ctx context.Context) (RescanReport, error) {
 }
 
 // Changed reports whether dir looks different from its last rescan: never
-// scanned, appeared or vanished, or an entry added, removed, renamed, resized
-// or touched. It is the scheduler's cheap check; when dir cannot be inspected
-// it answers true, so the rescan reports the real error.
+// scanned, appeared or vanished, an entry added, removed, renamed, resized,
+// touched or its inode changed (mtime/ctime), or the scope's rows changed in
+// the database (e.g. a CLI delete freed a slug). It is the scheduler's cheap
+// check; when dir or the database cannot be inspected it answers true, so the
+// rescan reports the real error.
 func (ix *Indexer) Changed(dir string) bool {
 	canon, err := canonicalDir(dir)
 	if err != nil {
 		return true
 	}
-	fp, err := folderFingerprint(canon)
-	if err != nil {
+	ix.mu.Lock()
+	last, ok := ix.seen[canon]
+	ix.mu.Unlock()
+	if !ok {
 		return true
 	}
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	last, ok := ix.seen[canon]
-	return !ok || last != fp
+	fp, err := folderFingerprint(canon)
+	if err != nil || fp != last.fingerprint {
+		return true
+	}
+	gen, err := ix.db.AutomationScopeGeneration(string(last.scope.Kind), last.scope.WorkbenchID)
+	return err != nil || gen != last.generation
 }
 
 // RescanFolder indexes every recipe in dir under scope. A missing folder is
@@ -116,8 +136,14 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 	if err := scan.run(ctx); err != nil {
 		return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
 	}
+	// The generation is read after the scan's own writes, so only a later
+	// change shows up as Changed.
+	gen, err := ix.db.AutomationScopeGeneration(string(scope.Kind), scope.WorkbenchID)
+	if err != nil {
+		return RescanReport{}, fmt.Errorf("rescanning %s: %w", canon, err)
+	}
 	ix.mu.Lock()
-	ix.seen[canon] = fp
+	ix.seen[canon] = folderState{fingerprint: fp, scope: scope, generation: gen}
 	ix.mu.Unlock()
 	return scan.report, nil
 }
@@ -149,10 +175,11 @@ func (s *folderScan) run(ctx context.Context) error {
 		s.byPath[a.Path] = a
 		s.bySlug[a.Slug] = a
 	}
-	names, err := recipeDirNames(s.dir)
+	names, notes, err := listRecipeEntries(s.dir)
 	if err != nil {
 		return err
 	}
+	s.report.Skipped = append(s.report.Skipped, notes...)
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -186,7 +213,7 @@ func (s *folderScan) indexEntry(name string) error {
 		s.skip(path, slugTakenReason(slug, other))
 		return nil
 	}
-	data, err := readRecipeFile(path)
+	data, contentHash, err := readRecipeFile(path)
 	if err != nil {
 		// An unreadable file keeps its row (not removed): what was indexed
 		// stays what runs until the file can be read again.
@@ -195,7 +222,7 @@ func (s *folderScan) indexEntry(name string) error {
 		return nil
 	}
 	s.keep = append(s.keep, path)
-	cand, err := s.candidate(slug, path, data)
+	cand, err := s.candidate(slug, path, data, contentHash)
 	if err != nil {
 		return err
 	}
@@ -217,10 +244,12 @@ func slugTakenReason(slug string, other db.Automation) string {
 }
 
 // candidate is the index row the file's bytes produce.
-func (s *folderScan) candidate(slug, path string, data []byte) (db.Automation, error) {
+// contentHash is over the whole file even when data holds only its first
+// MaxRecipeBytes+1 bytes.
+func (s *folderScan) candidate(slug, path string, data []byte, contentHash string) (db.Automation, error) {
 	a := db.Automation{
 		Slug: slug, Scope: s.scopeName(), ProjectID: s.scope.WorkbenchID, Path: path,
-		RecipeText: string(data), ContentHash: ContentHash(data),
+		RecipeText: string(data), ContentHash: contentHash,
 	}
 	r, perr := ParseRecipe(slug, data, s.scope)
 	if perr != nil {
@@ -269,7 +298,7 @@ func (s *folderScan) insert(cand db.Automation) error {
 		return err
 	}
 	if cand.TriggerKind == string(TriggerSchedule) {
-		if err := s.ix.db.SetAutomationSchedule(id, &s.now, nil); err != nil {
+		if _, err := s.ix.db.PrimeAutomationSchedule(id, s.now); err != nil {
 			return err
 		}
 	}
@@ -284,7 +313,9 @@ func (s *folderScan) insert(cand db.Automation) error {
 // trigger became a schedule) gets last_scheduled_for = now first, so the
 // scheduler never catches up on the window it spent not runnable. Priming
 // before the upsert is race-free: the scheduler ignores the row until the
-// upsert makes it runnable.
+// upsert makes it runnable, and PrimeAutomationSchedule writes only while
+// the row is still not a runnable schedule, so an indexer working from a
+// stale snapshot cannot rewind a schedule point the scheduler advanced.
 func (s *folderScan) update(prev, cand db.Automation) error {
 	if sameIndexFields(prev, cand) && prev.RemovedAt == nil {
 		s.report.Unchanged++
@@ -296,7 +327,7 @@ func (s *folderScan) update(prev, cand db.Automation) error {
 	next.ID, next.ConfirmedHash, next.Enabled = prev.ID, prev.ConfirmedHash, prev.Enabled
 	next.LastScheduledFor, next.NextRunAt = prev.LastScheduledFor, prev.NextRunAt
 	if becameRunnableSchedule(prev, next) {
-		if err := s.ix.db.SetAutomationSchedule(prev.ID, &s.now, prev.NextRunAt); err != nil {
+		if _, err := s.ix.db.PrimeAutomationSchedule(prev.ID, s.now); err != nil {
 			return err
 		}
 	}
@@ -398,51 +429,77 @@ func canonicalDir(dir string) (string, error) {
 	}
 }
 
-// recipeDirNames lists the *.md entries of dir in name order that are files
-// (a symlink counts when it points at a regular file); a missing dir has none.
-func recipeDirNames(dir string) ([]string, error) {
+// specialEntryReason is the skip note of a *.md entry that is not a regular file.
+const specialEntryReason = "symlinks and special files are not read; put the recipe file itself in the folder"
+
+// listRecipeEntries lists, in name order, the entries of dir named *.md that
+// are regular files, without following any of them (lstat semantics). A
+// symlink or special file named *.md is returned as a skip note; a directory
+// and any other name are ignored. A missing dir has none.
+func listRecipeEntries(dir string) ([]string, []SkipNote, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var names []string
+	var (
+		names []string
+		notes []SkipNote
+	)
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) != recipeExt || e.IsDir() {
-			continue
+		switch {
+		case filepath.Ext(e.Name()) != recipeExt || e.IsDir():
+		case e.Type().IsRegular():
+			names = append(names, e.Name())
+		default:
+			notes = append(notes, SkipNote{Path: filepath.Join(dir, e.Name()), Reason: specialEntryReason})
 		}
-		if e.Type()&fs.ModeSymlink != 0 {
-			if fi, err := os.Stat(filepath.Join(dir, e.Name())); err == nil && fi.IsDir() {
-				continue
-			}
-		}
-		names = append(names, e.Name())
 	}
-	return names, nil
+	return names, notes, nil
 }
 
-// readRecipeFile reads at most MaxRecipeBytes+1 bytes of a regular file:
-// enough for ParseRecipe to refuse an oversized one without loading it whole.
-func readRecipeFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+// readRecipeFile reads a regular file that is not a symlink: lstat, open
+// without following and without blocking (a FIFO swapped in cannot hang the
+// scan), then fstat must still show a regular file with the same inode. It
+// returns the first MaxRecipeBytes+1 bytes — enough for ParseRecipe to refuse
+// an oversized file without holding it whole — and the ContentHash of the
+// whole file, streamed.
+func readRecipeFile(path string) ([]byte, string, error) {
+	before, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, "", errors.New(specialEntryReason)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, "", err
 	}
 	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
+	after, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file (%s)", fi.Mode().Type())
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, "", errors.New("the file changed while it was being opened")
 	}
-	return io.ReadAll(io.LimitReader(f, MaxRecipeBytes+1))
+	h := sha256.New()
+	var head bytes.Buffer
+	if _, err := io.Copy(h, io.TeeReader(io.LimitReader(f, MaxRecipeBytes+1), &head)); err != nil {
+		return nil, "", err
+	}
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, "", err
+	}
+	return head.Bytes(), hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // folderFingerprint summarises dir for Changed: its mtime plus every entry's
-// name, size and mtime (symlinks followed). A missing dir has a fixed one.
+// name, size, mtime and ctime, read with lstat (nothing is followed). A
+// missing dir has a fixed one.
 func folderFingerprint(dir string) (string, error) {
 	fi, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -458,12 +515,12 @@ func folderFingerprint(dir string) (string, error) {
 	var b strings.Builder
 	b.WriteString(strconv.FormatInt(fi.ModTime().UnixNano(), 10))
 	for _, e := range entries {
-		efi, err := os.Stat(filepath.Join(dir, e.Name()))
+		efi, err := e.Info()
 		if err != nil {
 			fmt.Fprintf(&b, "\x00%s:?", e.Name())
 			continue
 		}
-		fmt.Fprintf(&b, "\x00%s:%d:%d", e.Name(), efi.Size(), efi.ModTime().UnixNano())
+		fmt.Fprintf(&b, "\x00%s:%s:%d:%d:%d", e.Name(), efi.Mode().Type(), efi.Size(), efi.ModTime().UnixNano(), changeTimeNanos(efi))
 	}
 	return b.String(), nil
 }
