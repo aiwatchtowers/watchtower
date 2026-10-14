@@ -336,7 +336,7 @@ func TestMigrateFeatureGates_LegacyDetectedEvenWhenWriteFails(t *testing.T) {
 	assert.False(t, v.IsSet("features.migrated"), "nothing was persisted, so the next start retries")
 }
 
-func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
+func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
 	base := Config{
 		ActiveWorkspace: "keep-me",
 		Digest:          DigestConfig{Enabled: false, MinMessages: 7, Language: "English"},
@@ -369,7 +369,7 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 		assert.False(t, on, "%s must be forced off", name)
 	}
 
-	// Nothing else moved: restoring exactly the nine gates must reproduce
+	// Nothing else moved: restoring exactly the ten gates must reproduce
 	// the original config field for field — including the integration
 	// switches (calendar/gmail/jira), which are deliberately NOT part of
 	// the mapping (stopping an owner's data sync is worse than a degraded
@@ -384,7 +384,7 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 	got.DayPlan.Enabled = true
 	got.Targets.NextStep.Enabled = true
 	got.Automations.Enabled = true
-	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the nine feature gates and automations.enabled")
+	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the ten feature gates")
 }
 
 // TestApplyLegacyDigestOff_MatchesOnDiskMigration is the lockstep pin: the
