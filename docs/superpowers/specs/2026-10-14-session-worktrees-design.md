@@ -142,8 +142,7 @@ worktree when it is removed. Repository-specific fix-ups (for this repo: drop th
 - `projects.worktree_setup TEXT NOT NULL DEFAULT ''` — the setup command.
 
 Mirrored into `schema.sql`, the golden snapshot and the Swift test schema. No "kept" or "removed"
-column: #535's `cleanup_result` already records what the last cleanup kept and why, and the
-session report shows it.
+column: #535's `cleanup_result` already records what the last cleanup kept and why.
 
 **Start.** For `.worktree` the Desktop calls `worktree create` first, then inserts the row with
 `folder_path = cwd`, `worktree_branch` and `worktree_base` (D9). When `create` refuses or errors,
@@ -187,20 +186,29 @@ does not write `~/.claude.json` by hand.
 ## 9. End of a session: #535's cleanup
 
 No cleanup code of our own. The Desktop runs `watchtower workbench cleanup --session N --apply
---item worktree:<root> --item branch:wt/<slug> --json` (through `SessionCleanupCenter`, which
-already strips `WATCHTOWER_TERMINAL_SESSION_ID`) when:
+--item worktree:<root> --item branch:wt/<slug> --json` when the cases below happen. The call
+removes `WATCHTOWER_TERMINAL_SESSION_ID` from its environment, as #535 §4 requires of every Desktop
+caller. **What exists on main:** #535 Tasks 1–7 (ledger, `internal/sessioncleanup`, the CLI).
+#535 Tasks 8–14 (permission entry, skill v7, `SessionCleanupCenter`, the Delete Session dialog,
+**Clean Up…**, the sweep) are still open on board #535. This feature calls the CLI through the
+Desktop's CLI runner directly and moves onto `SessionCleanupCenter` if that has landed by
+implementation time. It never builds a second center.
+
+The cases:
 
 - the agent process of a row with `worktree_branch` exits while the row is finished — the normal
   end. The agent itself cannot remove its own placed worktree: its process's cwd is inside it
   (#535's W5/W6 keep it), so this is the Desktop's job, after the exit;
-- the owner deletes the row: #535's Delete Session dialog already plans and offers the cleanup;
-  with this feature the placed worktree and branch are on its list.
+- the owner deletes the row: the same two items are cleaned up before the row goes, unless the
+  owner picks Delete Only. Once #535's Delete Session dialog lands, it covers this case: the
+  placed worktree and branch are on its list.
 
 Only those two items are named, so the automatic run never touches anything else the session saw.
 Every PROJ-18 catch applies: uncommitted changes, an operation in progress, unpushed commits, a
-process in it, another session in it — each keeps the item, and `cleanup_result` (shown in the
-session report) says why. A kept worktree is removed by a later cleanup (**Clean Up…** on the row,
-the next finish, the workbench sweep). After a removed worktree, the Desktop unregisters that
+process in it, another session in it — each keeps the item, and `cleanup_result` says why. The
+Desktop shows the run's `summary` line ("kept 1 worktree — uncommitted changes") as the row's note;
+#535's report line takes over once it lands. A kept worktree is removed by a later cleanup (the next finish, or #535's
+**Clean Up…** and sweep once they land). After a removed worktree, the Desktop unregisters that
 path's local MCP entry (`watchtower workbench worktree forget --workbench N --path P`, which runs
 only `claude mcp remove --scope local` for that path and nothing in git).
 
@@ -220,8 +228,8 @@ the rows go; kept worktrees stay on disk and the delete confirmation lists them 
   (D8), disabled with the reason when §4 rule 1 holds.
 - Workbench settings: a **Worktree setup command** field (`projects.worktree_setup`), with a
   one-line hint pointing at `.worktreeinclude`.
-- The place label, the code viewer's root, the branch menu and **Clean Up…** are #565's and #535's,
-  unchanged. A placed session's row additionally gets **Show Worktree in Finder**.
+- The place label, the code viewer's root and the branch menu are #565's, unchanged; **Clean Up…**
+  and the sweep come with #535's open Tasks 11–12. A placed session's row additionally gets **Show Worktree in Finder**.
 
 ## 11. Changes to existing contracts
 
