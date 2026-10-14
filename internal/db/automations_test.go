@@ -251,30 +251,12 @@ func TestAutomationIndex_MarkRemovedExcept(t *testing.T) {
 	if n != 1 {
 		t.Errorf("marked %d rows, want 1", n)
 	}
-	if a := mustGetAutomation(t, d, gone); a.RemovedAt == nil || !a.RemovedAt.Equal(now) {
-		t.Errorf("gone.removed_at = %v, want %v", a.RemovedAt, now)
-	}
-	if a := mustGetAutomation(t, d, keep); a.RemovedAt != nil {
-		t.Errorf("kept row got removed_at %v", a.RemovedAt)
-	}
-	if a := mustGetAutomation(t, d, other); a.RemovedAt != nil {
-		t.Errorf("another scope's row got removed_at %v", a.RemovedAt)
-	}
+	assertRemovedStamps(t, d, now, gone, keep, other)
 	// A second pass does not re-stamp an already removed row.
 	if n, err = d.MarkAutomationsRemovedExcept("personal", 0, []string{keepPath}, now.Add(time.Hour)); err != nil || n != 0 {
 		t.Errorf("second pass = (%d, %v), want (0, nil)", n, err)
 	}
-
-	listed, err := d.ListAutomations(AutomationFilter{Scope: "personal"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(listed) != 1 || listed[0].ID != keep {
-		t.Errorf("default list = %+v, want only the kept row", listed)
-	}
-	if listed, err = d.ListAutomations(AutomationFilter{Scope: "personal", IncludeRemoved: true}); err != nil || len(listed) != 2 {
-		t.Errorf("IncludeRemoved list = %d rows (%v), want 2", len(listed), err)
-	}
+	assertRemovedListing(t, d, keep)
 
 	seedAutomationRow(t, d, "gone", gonePath, "h")
 	if a := mustGetAutomation(t, d, gone); a.RemovedAt != nil {
@@ -284,6 +266,37 @@ func TestAutomationIndex_MarkRemovedExcept(t *testing.T) {
 	// An empty keep list removes every row of the scope.
 	if n, err = d.MarkAutomationsRemovedExcept("personal", 0, nil, now); err != nil || n != 2 {
 		t.Errorf("empty keep list = (%d, %v), want (2, nil)", n, err)
+	}
+}
+
+// assertRemovedStamps checks that only gone carries removed_at = now; keep
+// (still on disk) and other (another scope) stay unstamped.
+func assertRemovedStamps(t *testing.T, d *DB, now time.Time, gone, keep, other int64) {
+	t.Helper()
+	if a := mustGetAutomation(t, d, gone); a.RemovedAt == nil || !a.RemovedAt.Equal(now) {
+		t.Errorf("gone.removed_at = %v, want %v", a.RemovedAt, now)
+	}
+	if a := mustGetAutomation(t, d, keep); a.RemovedAt != nil {
+		t.Errorf("kept row got removed_at %v", a.RemovedAt)
+	}
+	if a := mustGetAutomation(t, d, other); a.RemovedAt != nil {
+		t.Errorf("another scope's row got removed_at %v", a.RemovedAt)
+	}
+}
+
+// assertRemovedListing checks that the default personal list hides removed
+// rows (only keep) and IncludeRemoved shows both personal rows.
+func assertRemovedListing(t *testing.T, d *DB, keep int64) {
+	t.Helper()
+	listed, err := d.ListAutomations(AutomationFilter{Scope: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != keep {
+		t.Errorf("default list = %+v, want only the kept row", listed)
+	}
+	if listed, err = d.ListAutomations(AutomationFilter{Scope: "personal", IncludeRemoved: true}); err != nil || len(listed) != 2 {
+		t.Errorf("IncludeRemoved list = %d rows (%v), want 2", len(listed), err)
 	}
 }
 
@@ -313,7 +326,13 @@ func TestAutomationIndex_SlugUniquePerScope(t *testing.T) {
 	if _, err := d.UpsertAutomationIndex(Automation{Slug: "triage", Scope: "personal", Path: filepath.Join(dir, "p2", "triage.md")}); err == nil {
 		t.Error("duplicate personal slug accepted")
 	}
+	assertSlugLookupsPerScope(t, d, wb1, wb2)
+}
 
+// assertSlugLookupsPerScope checks GetAutomationBySlug and ListAutomations
+// resolve the same slug per scope and workbench.
+func assertSlugLookupsPerScope(t *testing.T, d *DB, wb1, wb2 int64) {
+	t.Helper()
 	got, err := d.GetAutomationBySlug("workbench", wb2, "triage")
 	if err != nil || got.ProjectID != wb2 || got.Scope != "workbench" {
 		t.Errorf("GetAutomationBySlug(workbench %d) = %+v, %v", wb2, got, err)
@@ -350,6 +369,15 @@ func TestAutomationIndex_ScheduleAndFilterAndDelete(t *testing.T) {
 	if _, err := d.UpsertAutomationIndex(Automation{Slug: "a-btn", Scope: "personal", Path: filepath.Join(dir, "a.md"), TriggerKind: "button"}); err != nil {
 		t.Fatal(err)
 	}
+	assertScheduleRoundTrip(t, d, id)
+	assertListOrderAndTriggerFilter(t, d)
+	assertDeleteCascades(t, d, id)
+}
+
+// assertScheduleRoundTrip sets last/next schedule times, reads them back, then
+// clears next_run_at with nil.
+func assertScheduleRoundTrip(t *testing.T, d *DB, id int64) {
+	t.Helper()
 	last := time.Date(2026, 10, 14, 8, 0, 0, 0, time.UTC)
 	next := last.Add(time.Hour)
 	if err := d.SetAutomationSchedule(id, &last, &next); err != nil {
@@ -365,7 +393,12 @@ func TestAutomationIndex_ScheduleAndFilterAndDelete(t *testing.T) {
 	if a = mustGetAutomation(t, d, id); a.NextRunAt != nil {
 		t.Errorf("next_run_at = %v after nil, want NULL", a.NextRunAt)
 	}
+}
 
+// assertListOrderAndTriggerFilter checks slug ordering and the trigger filter
+// over the two seeded rows (a-btn, b-sched).
+func assertListOrderAndTriggerFilter(t *testing.T, d *DB) {
+	t.Helper()
 	all, err := d.ListAutomations(AutomationFilter{})
 	if err != nil || len(all) != 2 || all[0].Slug != "a-btn" || all[1].Slug != "b-sched" {
 		t.Errorf("ListAutomations() = %+v, %v; want slug order", all, err)
@@ -374,8 +407,12 @@ func TestAutomationIndex_ScheduleAndFilterAndDelete(t *testing.T) {
 	if err != nil || len(btn) != 1 || btn[0].Slug != "a-btn" {
 		t.Errorf("TriggerKind filter = %+v, %v", btn, err)
 	}
+}
 
-	// Delete cascades to runs, steps, state and outputs.
+// assertDeleteCascades checks DeleteAutomation cascades to runs, steps, state
+// and outputs.
+func assertDeleteCascades(t *testing.T, d *DB, id int64) {
+	t.Helper()
 	res, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger) VALUES (?, 'manual')`, id)
 	if err != nil {
 		t.Fatal(err)
