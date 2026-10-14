@@ -155,6 +155,9 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 		}
 		rep.Findings = append(rep.Findings, found...)
 	})
+	if g.guardNote != "" {
+		rep.Notes = append(rep.Notes, g.guardNote)
+	}
 	if pr != nil {
 		if note := pr.summary(); note != "" {
 			rep.PRChecked = false

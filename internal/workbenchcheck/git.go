@@ -78,6 +78,10 @@ type gitState struct {
 	bases       []string // resolved commits of origin/<default> and <default>, whichever exist
 	baseLabel   string   // e.g. "origin/main"
 	notes       []string
+	// guardNote is set once when a file-content read was refused because
+	// the folder's filter drivers could not be switched off
+	// (gitbin.ErrFilterGuard): Check names it instead of degrading silently.
+	guardNote string
 }
 
 func newGitState(ctx context.Context, o Options) *gitState {
@@ -184,6 +188,9 @@ func (g *gitState) baseName() string { return g.baseLabel }
 
 func (g *gitState) git(ctx context.Context, args ...string) (string, int, error) {
 	out, code, err := g.o.Run(ctx, g.o.Folder, nil, "git", args...)
+	if errors.Is(err, gitbin.ErrFilterGuard) && g.guardNote == "" {
+		g.guardNote = "squash-merge checks skipped: " + err.Error()
+	}
 	return string(out), code, err
 }
 

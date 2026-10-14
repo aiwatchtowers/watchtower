@@ -43,6 +43,11 @@ func ReadArgs(args ...string) []string { return append(slices.Clone(readConfig),
 // from the repository's config.
 const filterDriverKeys = `^(filter\..*\.(clean|smudge|process)|lfs\.extension\..*\.(clean|smudge))$`
 
+// ErrFilterGuard is what ReadArgsIn wraps when it cannot switch the
+// folder's filter drivers off — the listing failed, or a key -c cannot
+// override — so the read is refused rather than run unprotected.
+var ErrFilterGuard = errors.New("the folder's filter drivers could not be switched off")
+
 // ReadArgsIn is ReadArgs for a read in dir. When the subcommand reads file
 // content (contentReads), it also blanks every filter driver and git-lfs
 // extension command the folder's config names (lifting a driver's
@@ -91,7 +96,7 @@ func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
 	case errors.As(err, &exitErr) && exitErr.ExitCode() == 1:
 		return nil, nil // no filter driver configured
 	case err != nil:
-		return nil, fmt.Errorf("listing the folder's filter drivers: %w: %s", err, stderr)
+		return nil, fmt.Errorf("%w: listing them: %w: %s", ErrFilterGuard, err, stderr)
 	}
 	// -z: scope NUL key NUL, per entry.
 	fields := strings.Split(strings.TrimSuffix(string(stdout), "\x00"), "\x00")
@@ -105,7 +110,7 @@ func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
 		// -c splits at the first '=': a key holding one could not be blanked.
 		isFilter := strings.HasPrefix(key, "filter.")
 		if strings.ContainsAny(key, "=\n") || !isFilter && !strings.HasPrefix(key, "lfs.extension.") {
-			return nil, fmt.Errorf("the folder's git config names a filter driver key git -c cannot override: %q", key)
+			return nil, fmt.Errorf("%w: the folder's git config names a filter driver key git -c cannot override: %q", ErrFilterGuard, key)
 		}
 		out = append(out, "-c", key+"=")
 		name := key[:strings.LastIndex(key, ".")]

@@ -600,3 +600,25 @@ func TestCheck_UntrustedConfigRunsNoCommand(t *testing.T) {
 		t.Fatal("a command from the folder's git config ran")
 	}
 }
+
+// A filter driver key git -c cannot blank (it holds a '=') refuses the
+// squash check's diff reads: the check names it once in Notes rather than
+// silently reading the squash as unknown (target 155).
+func TestCheck_FilterGuardFailureIsANote(t *testing.T) {
+	dir := newRepo(t)
+	gitRun(t, dir, "config", "filter.a=b.clean", "cat")
+	board := []db.BoardNode{node(2, "in_review", "squash", time.Hour), node(22, "in_progress", "nearsquash", time.Hour)}
+	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
+	var guard []string
+	for _, n := range r.Notes {
+		if strings.Contains(n, "squash-merge checks skipped") {
+			guard = append(guard, n)
+		}
+	}
+	if len(guard) != 1 || !strings.Contains(guard[0], "cannot override") {
+		t.Fatalf("want one filter-guard note, got notes %v", r.Notes)
+	}
+	if got := kinds(r); len(got[2]) != 0 {
+		t.Fatalf("an unread squash is never a finding, got %v", got)
+	}
+}
