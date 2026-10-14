@@ -43,6 +43,14 @@ const (
 	TrustExecute Trust = "execute"
 )
 
+// AutomationSurface is the surface an automation run calls tools on; a
+// proposal it records carries AutomationContextType with the run id as its
+// context id (spec 2026-10-14-automations-design §6.1).
+const (
+	AutomationSurface     = "automation"
+	AutomationContextType = "automation_run"
+)
+
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
 // read at propose time and wins over TurnID — a warm `ai session` spans many
