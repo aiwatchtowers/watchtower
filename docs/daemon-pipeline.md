@@ -336,7 +336,7 @@ Synthesizes observations about people from all channels into personal cards. Thi
 - Cards for the given 7-day window already exist
 - No situations from digests (digests haven't run yet or didn't produce situations)
 
-**First cycle note:** People Cards are almost always skipped. Reason: throttling (24h) and lack of situations — the first cycle hasn't accumulated enough data yet. Cards will appear on the next people pipeline run (after 24h).
+**First cycle note:** on a fresh install the first cycles usually have no situations yet (digests have not run) or no users with enough messages, so the people pipeline skips. A no-data cycle does not start the 24h throttle, does not spend the daily attempt budget and writes no `pipeline_runs` row: the phase retries on the next cycle, and cards appear in the first cycle that has situations. Only a run that reached the AI stage, or found every active user already covered for the window, stamps `last_people.txt`.
 
 ### Data Collection (7-Day Window)
 
@@ -370,10 +370,12 @@ Separate AI call across all cards → overall team health overview, areas of att
 **Last stage.** Waits for both parallel groups to complete.
 
 **Throttling:** once per day after `briefing.hour` (default 8:00). Conditions:
-1. ≥ 24h since last briefing
+1. No briefing yet today (calendar-day check against `last_briefing.txt`)
 2. Current hour ≥ configured hour
 3. There is at least some data (digests, tracks, tasks, or inbox)
 4. Briefing for this date doesn't yet exist (deduplication by user + date)
+
+**First briefing on a fresh install (2026-10-14):** condition 2 is skipped while no briefing has ever been generated — no `last_briefing.txt` and no `briefings` row at all — so the first briefing comes in the first cycle that has data instead of waiting for `briefing.hour`. Once one exists (or if only the stamp file was lost and rows remain), the hour gate applies as usual. A no-data first run is a benign skip: it spends no budget and the next cycle tries again. The Desktop's readiness model mirrors this rule (`FeatureReadiness.swift`).
 
 **Attempt budget (2026-09-13):** a real failure (the generate call itself erroring, not one of the conditions above skipping cleanly) counts against a 3-per-day budget, persisted to `briefing_attempts.txt` so it survives a daemon restart. Once the 3rd failure spends the day's budget, the daemon logs a one-time "giving up" line and stops trying until the next calendar day — it does not retry on every subsequent cycle.
 
@@ -444,8 +446,8 @@ With each cycle:
 | Daily Rollup | Every 15 min, but skipped without a newer channel digest; capped at 3 real attempts/UTC day | DB: `digests.created_at` (today's daily row) + File: `rollup_attempts.txt` | Regenerates only on new/changed channel digests for the day; date,attempt-count |
 | Tracks | Every 15 min | DB: `pipeline_runs.period_to` | End of last window |
 | People Cards | Once per 24h | File: `last_people.txt` | Unix timestamp |
-| Briefing | Once per day, capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
-| Day Plan | Once per day after `day_plan.hour` (default 8), capped at 3 real attempts/day; runs right after Briefing in the same cycle | DB: `day_plans` UNIQUE(user, date) + File: `day_plan_attempts.txt` | date,attempt-count |
+| Briefing | Once per day after `briefing.hour` (the first briefing on a fresh install — no stamp and no `briefings` row at all — skips the hour gate, mirrored in the Desktop's `FeatureReadiness.swift`), capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
+| Day Plan | Once per day after `day_plan.hour` (default 8; the first plan on a fresh install — no `day_plans` row at all — skips the hour gate, mirrored in the Desktop's `FeatureReadiness.swift`), capped at 3 real attempts/day; runs right after Briefing in the same cycle | DB: `day_plans` UNIQUE(user, date) + File: `day_plan_attempts.txt` | date,attempt-count |
 
 Files `last_people.txt` and `last_briefing.txt` survive daemon restarts, as do `day_plan_attempts.txt`, `briefing_attempts.txt`, and `rollup_attempts.txt`.
 
