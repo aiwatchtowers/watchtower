@@ -82,6 +82,8 @@ final class AppRoot {
     /// The resend of a kept farewell running per hub: a scan of that hub
     /// waits for it.
     @ObservationIgnored private var resends: [String: Task<Bool, Never>] = [:]
+    /// The launch's orphan pass (`launch`): a `prepare` waits for it.
+    @ObservationIgnored private(set) var orphanPass: Task<Void, Never>?
     /// The link check of each hub's last fetch (`checkLink`); a test awaits
     /// it.
     @ObservationIgnored private(set) var linkChecks: [String: Task<Void, Never>] = [:]
@@ -182,18 +184,7 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
-        Task {
-            // Links made before E2E go first (their sessions were built
-            // stopped), so the orphan pass sees the pending link that is left.
-            await root.linking.dropUnencryptedLinks()
-            let pendingHubID = store.pending?.link.hubID
-            do {
-                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
-            } catch {
-                logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
-            }
-            await root.resumeLink()
-        }
+        root.launch { store.pending?.link.hubID }
         return root
     }
 
@@ -229,6 +220,33 @@ final class AppRoot {
             startWork: nil,
             farewellDelivery: FarewellDelivery { _, _ in false }
         )
+    }
+
+    /// The launch's clean-up: links saved before encryption go first (their
+    /// sessions were built stopped), so the orphan pass sees the pending link
+    /// that is left (`pendingHubID`, read once they are gone); then the hub
+    /// files with no row are removed inside background work (a push launch
+    /// runs it too), then `resumeLink`. The pass is kept in `orphanPass`
+    /// before the first await: a `prepare` for a hub (a cold launch by a
+    /// link URL) waits for it, so the pass never deletes the files of the
+    /// hub being linked. Returns the whole launch (a test awaits it).
+    @discardableResult
+    func launch(pendingHubID: @escaping @MainActor () -> String?) -> Task<Void, Never> {
+        let pass = Task { [linking, registry, paths, factory, startWork] in
+            await linking.dropUnencryptedLinks()
+            let end = startWork?("hub-orphans")
+            defer { end?() }
+            do {
+                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID(), factory: factory)
+            } catch {
+                Self.logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        orphanPass = pass
+        return Task {
+            await pass.value
+            await resumeLink()
+        }
     }
 
     /// At launch: links saved before encryption are dropped (scan again),
@@ -642,8 +660,11 @@ extension AppRoot: LinkHost {
 
     func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
-        // A removal of this hub still running decides what is left; a kept
-        // farewell being sent again lands before the new link's records.
+        // The launch's orphan pass never deletes the files of a hub being
+        // linked (a cold launch by a link URL); a removal of this hub still
+        // running decides what is left; a kept farewell being sent again
+        // lands before the new link's records.
+        await orphanPass?.value
         _ = await removals[hubID]?.value
         _ = await resends[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac

@@ -639,6 +639,30 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(Set(workBegun), ["hub-remove"])
     }
 
+    /// #220: the launch's orphan pass runs inside background work, and a
+    /// link's `prepare` for the same hub started while it runs (a cold
+    /// launch by a link URL) waits for it: the pass removes the orphan's
+    /// files first, never the new session's.
+    func testAPrepareStartedDuringTheOrphanPassWaitsForIt() async throws {
+        let root = try makeRoot()
+        try paths.prepare(TestHub.acme)
+        let leftover = paths.hubDirectory(TestHub.acme).appendingPathComponent("leftover")
+        try Data("old".utf8).write(to: leftover)
+
+        let launch = root.launch { nil }
+        XCTAssertNotNil(root.orphanPass, "kept before the launch's first await")
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+
+        // The launch's account check (`resumeLink`) holds its own work.
+        XCTAssertEqual(workBegun.filter { $0 == "hub-orphans" }, ["hub-orphans"], "the pass held background work")
+        XCTAssertEqual(workEnded.filter { $0 == "hub-orphans" }, ["hub-orphans"], "and ended it before the prepare went on")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path), "the orphan's files went first")
+        XCTAssertNotNil(root.env.session(TestHub.acme))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(TestHub.acme)), "the new session's replica stays")
+        await launch.value
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [true, true, true])
+    }
+
     // MARK: - The grant check per hub (#64)
 
     /// One fetch of `hubID`'s session and its link check, awaited.
