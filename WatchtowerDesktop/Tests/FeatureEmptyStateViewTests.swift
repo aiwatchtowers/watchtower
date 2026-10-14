@@ -178,6 +178,23 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertEqual(runner.calls.filter { $0 == ["features", "enable", "memory"] }.count, 1)
     }
 
+    func testSecondTurnOnWhileOneRunsSaysBusy() async {
+        let runner = LiveFeaturesRunner(disabled: ["memory", "ideas"])
+        let (appState, daemon) = makeAppState(runner)
+        daemon.holdRestart = true
+        let first = Task { await appState.turnOnFeatureFromEmptyState("memory") }
+        for _ in 0..<2000 where !daemon.isRestartParked { await Task.yield() }
+        XCTAssertTrue(daemon.isRestartParked)
+
+        await appState.turnOnFeatureFromEmptyState("ideas")
+
+        XCTAssertEqual(appState.emptyStateTurnOnError(for: "ideas"), AppState.featureChangesBusy)
+        XCTAssertFalse(runner.calls.contains(["features", "enable", "ideas"]))
+        daemon.releaseRestart()
+        await first.value
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
+    }
+
     func testTurnOnErrorShowsOnlyForItsFeature() async {
         let runner = LiveFeaturesRunner(disabled: ["memory", "ideas"])
         let (appState, daemon) = makeAppState(runner)

@@ -1200,7 +1200,11 @@ final class AppState {
     /// `acceptFeatureSuggestion` does. A retry after a failed restart finds
     /// the feature on and only restarts.
     func turnOnFeatureFromEmptyState(_ featureID: String) async {
-        guard turningOnFeatureID == nil else { return }
+        guard turningOnFeatureID == nil else {
+            // Another tab's Turn on is running: say so under this one.
+            emptyStateTurnOnErrors[featureID] = Self.featureChangesBusy
+            return
+        }
         turningOnFeatureID = featureID
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
