@@ -131,8 +131,12 @@ type ReactionCommandsConfig struct {
 // runs on a schedule or on demand (spec 2026-10-14). On by default (§20 D12):
 // nothing runs until the owner confirms a recipe.
 type AutomationsConfig struct {
-	Enabled           bool  `mapstructure:"enabled"`             // start the scheduler and executor in the daemon (default: true)
-	DailyBudgetTokens int64 `mapstructure:"daily_budget_tokens"` // token cap over every run of one local calendar day, dry runs included (default: 2000000)
+	Enabled bool `mapstructure:"enabled"` // start the scheduler and executor in the daemon (default: true)
+	// DailyBudgetTokens caps the tokens of every run of one local calendar
+	// day, dry runs included (default: 2000000). 0 means automations may
+	// spend nothing: every run is refused by the daily cap. A negative value
+	// is a mistake: Load logs a warning and uses the default.
+	DailyBudgetTokens int64 `mapstructure:"daily_budget_tokens"`
 }
 
 // CatchupConfig controls the on-demand absence recap.
@@ -410,6 +414,15 @@ type Config struct {
 	workspaceLookupErr error
 }
 
+// normalizeAutomationsBudget replaces a negative automations.daily_budget_tokens
+// with the default and logs a warning; 0 stays (spend nothing).
+func normalizeAutomationsBudget(cfg *Config) {
+	if n := cfg.Automations.DailyBudgetTokens; n < 0 {
+		log.Printf("config: automations.daily_budget_tokens is negative (%d); using the default %d", n, DefaultAutomationsDailyBudgetTokens)
+		cfg.Automations.DailyBudgetTokens = DefaultAutomationsDailyBudgetTokens
+	}
+}
+
 // DBConfig captures database-runtime state that the binary tracks across
 // installs. Currently only schema_format, bumped when the migration engine
 // is replaced (legacy PRAGMA → goose). The runtime triggers a one-shot
@@ -565,6 +578,7 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
+	normalizeAutomationsBudget(cfg)
 	// Snapshot the yaml provider before any --provider flag mutation.
 	cfg.AI.ConfiguredProvider = cfg.AI.Provider
 

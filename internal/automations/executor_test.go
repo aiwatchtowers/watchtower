@@ -186,6 +186,38 @@ func TestAuto08_DailyCap(t *testing.T) {
 	}
 }
 
+// TestExecutor_DailyCapZeroSpendsNothing: daily_budget_tokens 0 refuses
+// every run before its script starts, with a reason naming the setting; a
+// negative value falls back to the default cap (the run succeeds).
+func TestExecutor_DailyCapZeroSpendsNothing(t *testing.T) {
+	zero, negative := int64(0), int64(-5)
+	cases := []struct {
+		name   string
+		cap    *int64
+		status string
+		kind   string
+		calls  int
+	}{
+		{"zero", &zero, db.RunBudgetExceeded, db.ErrKindDailyCap, 0},
+		{"negative uses the default", &negative, db.RunSucceeded, "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := usageGen(10, 5)
+			f := newExFixture(t, exOpts{gen: gen, dailyBudget: tc.cap})
+			id := f.enqueue(t, f.seed(t, "digest", `llm("a"); return 1`, false), db.TriggerManual)
+			f.step(t, 1)
+			r := f.wantRun(t, id, tc.status, tc.kind)
+			if tc.calls == 0 && !strings.Contains(r.Error, "daily_budget_tokens is 0") {
+				t.Fatalf("error = %q; want it to name automations.daily_budget_tokens", r.Error)
+			}
+			if n := gen.CallCount(); n != tc.calls {
+				t.Fatalf("generator calls = %d; want %d", n, tc.calls)
+			}
+		})
+	}
+}
+
 // spendingGen records another run's spend (as a concurrent run would) during
 // its first call, then replies with 5 tokens.
 type spendingGen struct {

@@ -667,3 +667,47 @@ func TestAutomationIndex_ScopeGenerationChangesOnWrites(t *testing.T) {
 		t.Errorf("other scope generation = %q, %v; want %q", g, err, empty)
 	}
 }
+
+// TestFastForwardAutomations_PrimesSchedulesAndCancelsQueued pins the
+// automations feature's enable hook (FEAT-03): every schedule automation
+// restarts from now and queued non-dry runs left from the off period are
+// cancelled; a queued dry run (a live CLI's) and other automations' schedule
+// columns are left alone.
+func TestFastForwardAutomations_PrimesSchedulesAndCancelsQueued(t *testing.T) {
+	d := openTestDB(t)
+	now := runTestNow
+	old := now.Add(-72 * time.Hour)
+	sched := seedAutomationRow(t, d, "nightly", "/acme/automations/nightly.md", "h-n")
+	if _, err := d.Exec(`UPDATE automations SET trigger_kind = 'schedule', trigger_spec = '{"schedule":"0 9 * * *"}' WHERE id = ?`, sched); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetAutomationSchedule(sched, &old, nil); err != nil {
+		t.Fatal(err)
+	}
+	manual := seedAutomationRow(t, d, "by-hand", "/acme/automations/by-hand.md", "h-m")
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: manual, Trigger: TriggerManual, Now: old})
+	dry, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: manual, Trigger: TriggerDryRun, Now: old})
+
+	primed, cancelled, err := d.FastForwardAutomations(now)
+	if err != nil {
+		t.Fatalf("FastForwardAutomations: %v", err)
+	}
+	if primed != 1 || cancelled != 1 {
+		t.Fatalf("primed, cancelled = %d, %d; want 1, 1", primed, cancelled)
+	}
+	if got := mustGetAutomation(t, d, sched).LastScheduledFor; !sameAutomationTime(got, now) {
+		t.Fatalf("schedule last_scheduled_for = %v, want %v", got, now)
+	}
+	if got := mustGetAutomation(t, d, manual).LastScheduledFor; got != nil {
+		t.Fatalf("manual automation last_scheduled_for = %v, want NULL", got)
+	}
+	r := wantAutomationRun(t, d, queued, RunCancelled, ErrKindCancelled)
+	if r.Error != automationsFeatureOffError || r.FinishedAt == nil {
+		t.Fatalf("cancelled run error %q finished %v", r.Error, r.FinishedAt)
+	}
+	wantAutomationRun(t, d, dry, RunQueued, "")
+
+	if _, _, err := d.FastForwardAutomations(time.Time{}); err == nil {
+		t.Fatal("a zero time must be refused")
+	}
+}

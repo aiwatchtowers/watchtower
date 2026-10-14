@@ -37,6 +37,7 @@ func exRecipeText(script, extra string) string {
 type exOpts struct {
 	gen           digest.Generator // nil = a FakeGenerator replying "done" with 10+5 tokens
 	maxConcurrent int
+	dailyBudget   *int64                                  // nil = the executor default
 	modules       func(f *exFixture) []automations.Module // appended to DefaultModules
 }
 
@@ -85,7 +86,8 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 	f.ix = automations.NewIndexer(d, ws, f.clock)
 	f.e = automations.NewExecutor(d, automations.Backends{DB: d, Generator: o.gen, Registry: f.reg, Clock: f.clock},
 		automations.ExecutorOptions{
-			MaxConcurrent: o.maxConcurrent,
+			MaxConcurrent:     o.maxConcurrent,
+			DailyBudgetTokens: o.dailyBudget,
 			Modules: func(b automations.Backends) []automations.Module {
 				mods := automations.DefaultModules(b)
 				if o.modules != nil {

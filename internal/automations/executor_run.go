@@ -100,6 +100,10 @@ func (e *Executor) newMeter(run *db.AutomationRun, r *Recipe) (*Meter, *runEnd) 
 	if err != nil {
 		return nil, failedEnd(db.ErrKindBackend, err)
 	}
+	if e.dailyCap == 0 {
+		return nil, &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindDailyCap,
+			msg: "automations.daily_budget_tokens is 0: automations may spend no tokens"}
+	}
 	if e.dailyCap-used <= 0 {
 		return nil, &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindDailyCap,
 			msg: fmt.Sprintf("today's automation token cap of %d is spent (%d used)", e.dailyCap, used)}

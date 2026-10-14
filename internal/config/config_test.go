@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,6 +165,18 @@ func TestConfig_AutomationsDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, set.Automations.Enabled)
 	assert.Equal(t, int64(5000), set.Automations.DailyBudgetTokens)
+
+	zero, err := Load(writeTestConfig(t, "automations:\n  daily_budget_tokens: 0\n"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), zero.Automations.DailyBudgetTokens, "an explicit 0 means spend nothing, not the default")
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	neg, err := Load(writeTestConfig(t, "automations:\n  daily_budget_tokens: -1\n"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2000000), neg.Automations.DailyBudgetTokens, "a negative value falls back to the default")
+	assert.Contains(t, logged.String(), "automations.daily_budget_tokens is negative")
 }
 
 func TestValidate_Valid(t *testing.T) {

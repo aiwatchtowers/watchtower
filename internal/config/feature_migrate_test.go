@@ -349,6 +349,7 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 		Briefing:        BriefingConfig{Enabled: true, Hour: 9},
 		DayPlan:         DayPlanConfig{Enabled: true, Hour: 8},
 		Targets:         TargetsConfig{NextStep: TargetsNextStepConfig{Enabled: true}},
+		Automations:     AutomationsConfig{Enabled: true, DailyBudgetTokens: 1234},
 		Calendar:        CalendarConfig{Enabled: true},
 		Gmail:           GmailConfig{Enabled: true},
 		Jira:            JiraConfig{Enabled: true},
@@ -362,7 +363,8 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 		"tracks": got.Tracks.Enabled, "people": got.People.Enabled,
 		"ideas": got.Ideas.Enabled, "memory": got.Memory.Enabled,
 		"briefing": got.Briefing.Enabled, "day_plan": got.DayPlan.Enabled,
-		"next_step": got.Targets.NextStep.Enabled,
+		"next_step":   got.Targets.NextStep.Enabled,
+		"automations": got.Automations.Enabled,
 	} {
 		assert.False(t, on, "%s must be forced off", name)
 	}
@@ -381,7 +383,8 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 	got.Briefing.Enabled = true
 	got.DayPlan.Enabled = true
 	got.Targets.NextStep.Enabled = true
-	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the nine feature gates")
+	got.Automations.Enabled = true
+	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the nine feature gates and automations.enabled")
 }
 
 // TestApplyLegacyDigestOff_MatchesOnDiskMigration is the lockstep pin: the

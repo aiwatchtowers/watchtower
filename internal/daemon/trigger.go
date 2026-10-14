@@ -8,10 +8,12 @@ import (
 )
 
 // TriggerSignal asks a running daemon to start a sync immediately instead of
-// waiting for the next poll tick. SIGUSR1 is the whole IPC surface: the daemon
-// already owns an exclusive flock on sync.lock (cmd/sync.go), so a second
-// process cannot simply run a sync of its own — it has to ask the one holding
-// the lock.
+// waiting for the next poll tick. SIGUSR1 is the whole sync IPC surface: the
+// daemon already owns an exclusive flock on sync.lock (cmd/sync.go), so a
+// second process cannot simply run a sync of its own — it has to ask the one
+// holding the lock. The daemon's only other signal is SIGUSR2
+// (AutomationWakeSignal), which wakes the automations scheduler and executor
+// and never starts a sync.
 const TriggerSignal = syscall.SIGUSR1
 
 // WatchTrigger returns a channel that fires once per TriggerSignal received.
