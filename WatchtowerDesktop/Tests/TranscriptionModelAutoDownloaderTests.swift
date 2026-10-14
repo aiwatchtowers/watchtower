@@ -70,8 +70,11 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         await auto.task?.value
     }
 
+    /// Wall-clock patience, not a yield count: the download runs on a
+    /// detached task that a loaded machine may schedule late.
     private func waitUntil(_ what: String, _ condition: () -> Bool) async {
-        for _ in 0..<400 {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
             if condition() { return }
             await Task.yield()
         }

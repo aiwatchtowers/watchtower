@@ -56,7 +56,7 @@ final class TranscriptionModelAutoDownloader {
                 let decision = TranscriptionModelAutoDownload.decide(
                     goals: inputs.goals(),
                     onboardingComplete: inputs.onboardingComplete(),
-                    modelOnDisk: provisioner.isDownloaded(key),
+                    modelOnDisk: provisioner.isConfirmedOnDisk(key),
                     firstSyncFinished: inputs.firstSyncFinished(),
                     waited: now().timeIntervalSince(startedAt)
                 )

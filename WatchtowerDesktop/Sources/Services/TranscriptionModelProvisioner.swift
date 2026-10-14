@@ -158,11 +158,13 @@ final class TranscriptionModelProvisioner {
     }
 
     /// A finished download recorded the model, and its files are still
-    /// there (or the provider cannot tell). The files are looked at only for
+    /// there (or the provider cannot tell). What a background download asks:
+    /// unlike `isDownloaded`, it is false for an engine with no model of
+    /// ours until its assets were installed once. The files are looked at only for
     /// a recorded model — never, for an owner who never transcribed, in a
     /// folder macOS guards — and a cache deleted by hand downloads again,
     /// with its progress, instead of silently inside an engine load.
-    private func isConfirmedOnDisk(_ key: ModelKey) -> Bool {
+    func isConfirmedOnDisk(_ key: ModelKey) -> Bool {
         downloaded.contains(key.id) && !filesMissing(key)
     }
 
