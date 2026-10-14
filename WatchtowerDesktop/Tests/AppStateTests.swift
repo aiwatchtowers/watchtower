@@ -474,6 +474,23 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(done, true)
     }
 
+    /// Parked on the removed About you with Development-only goals: Connect
+    /// does not apply to them, so the install resumes at Goals, still
+    /// onboarding.
+    func testLaunchOnTheRemovedAboutYouStepWithDevelopmentOnlyGoalsResumesAtGoals() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("aboutYou", forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["development"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertTrue(appState.needsOnboarding)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
     /// Run setup again: back to Goals; finish brings the daemon up again.
     func testStartOnboardingResetsToGoals() async throws {
         let (defaults, suiteName) = try onboardingSuite()
@@ -587,7 +604,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(launches.accounts, [Int(id)])
     }
 
-    /// A relaunch on Connect / About you: the connected account's load runs
+    /// A relaunch on Connect: the connected account's load runs
     /// once.
     func testResumePeopleRosterStartsOnceForAConnectedAccount() async throws {
         let launches = RosterLaunches()

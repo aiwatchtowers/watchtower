@@ -156,7 +156,7 @@ type PeopleConfig struct {
 
 // CalendarConfig holds Google Calendar integration settings.
 type CalendarConfig struct {
-	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: false)
+	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: true)
 	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
 	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: DefaultCalendarSyncDaysAhead)
 	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
@@ -178,7 +178,7 @@ func (c CalendarConfig) EffectiveHistoryDays() int {
 
 // GmailConfig holds Gmail integration settings.
 type GmailConfig struct {
-	Enabled            bool `mapstructure:"enabled"`               // enable gmail sync (default: false)
+	Enabled            bool `mapstructure:"enabled"`               // enable gmail sync (default: true)
 	InitialHistoryDays int  `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
 	MaxMessagesPerSync int  `mapstructure:"max_messages_per_sync"` // per-cycle cap
 	MaxBodyBytes       int  `mapstructure:"max_body_bytes"`        // truncate body_text beyond this

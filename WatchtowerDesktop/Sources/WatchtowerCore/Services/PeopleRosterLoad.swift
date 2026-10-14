@@ -92,7 +92,9 @@ package final class PeopleRosterLoad {
                 state = .done(count: lastTotal)
             } else {
                 let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                state = .failed(lastError ?? (stderr.isEmpty ? "exit code \(result.exitCode)" : String(stderr.prefix(300))))
+                let reason = lastError ?? (stderr.isEmpty ? "exit code \(result.exitCode)" : String(stderr.prefix(300)))
+                NSLog("PeopleRosterLoad: roster load for account %ld failed: %@", accountID, reason)
+                state = .failed(reason)
             }
         }
         return true

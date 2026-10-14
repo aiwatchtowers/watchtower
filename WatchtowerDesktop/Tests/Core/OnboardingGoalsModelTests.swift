@@ -339,7 +339,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(model.cliCheck, .checking)
         XCTAssertNil(model.continueError)
         XCTAssertFalse(model.isCustomizingFeatures)
-        XCTAssertFalse(model.selection.goals.contains(.meetings), "the goals stay")
+        XCTAssertFalse(model.selection.goals.contains(.meetings), "the deselected goal stays deselected (no reset to defaults)")
         await model.prepareGoalsStep(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")

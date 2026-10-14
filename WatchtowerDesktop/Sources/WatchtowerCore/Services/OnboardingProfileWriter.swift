@@ -52,11 +52,6 @@ package enum OnboardingProfileWriter {
         try write(db) { _ in }
     }
 
-    /// The row `done`/`later` would write over.
-    package static func current(_ db: Database) throws -> UserProfile? {
-        try target(db).existing
-    }
-
     private static func target(_ db: Database) throws -> (owner: Owner, key: String, existing: UserProfile?) {
         let owner = try OwnerQueries.resolve(db)
         let key = owner.isKnown ? owner.id : try ProfileQueries.noOwnerProfileKey(db)
