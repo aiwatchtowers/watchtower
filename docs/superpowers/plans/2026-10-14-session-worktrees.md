@@ -1,143 +1,146 @@
-# Session Worktrees Implementation Plan
+# Session Worktrees Implementation Plan (rev 2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A second (and every further) concurrent agent session of a workbench starts in its own git worktree, prepared from `.worktreeinclude` and an optional setup command, and a clean worktree is removed when the session ends.
+**Goal:** A second (and every further) concurrent agent session of a workbench starts in its own git worktree, prepared from `.worktreeinclude`, the workbench integration and an optional setup command; when the finished session's agent exits, #535's cleanup removes the worktree and branch if nothing can be lost.
 
-**Architecture:** Go owns every git and install write: `internal/workbenchgit/worktree*.go` (create, include, remove, ensure) behind `watchtower workbench worktree create|ensure|remove --json`, which also installs the workbench integration into the worktree through `devpack`. The Desktop decides placement with a pure `SessionPlacement.decide` (WatchtowerCore), calls the CLI before inserting the session row, stores the worktree on the row (migration 00110), runs cleanup when a finished worktree session's agent exits or its row is deleted, and shows a badge and menu items.
+**Architecture:** Go owns every git and install write: `internal/workbenchgit/worktree*.go` (create, include, ensure) behind `watchtower workbench worktree create|ensure|forget --json`, which also installs (or unregisters) the workbench integration through `devpack`. `internal/sessioncleanup` learns that a row's own placed worktree and `wt/` branch are the session's by record. The Desktop decides placement with a pure `SessionStartPlacement.decide` (WatchtowerCore) fed by #565's `SessionPlaceCenter`, calls the CLI before inserting the row (migration 00113 stores `worktree_branch`/`worktree_base`), runs the setup command on the first launch, re-adds a cleaned-up worktree on resume, and runs `SessionCleanupCenter.applyCleanup` for the two placed items when a finished placed session's agent exits.
 
 **Tech Stack:** Go 1.25 (cobra, `database/sql` + modernc SQLite, goose migrations, `golang.org/x/sys/unix` for `clonefile`), SwiftUI + GRDB (WatchtowerCore / WatchtowerDesktop).
 
-**Spec:** `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` (approved in ask #115). Board target #229.
+**Spec:** `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` rev 2 (approved in ask #124; direction in ask #122). Board target #229. Builds on #565 (`docs/superpowers/specs/2026-10-12-session-worktree-design.md`) and #535 (`docs/superpowers/specs/2026-10-12-session-cleanup-design.md`), both on main.
 
 ## Global Constraints
 
-- Worktree path: `<top_level>/.claude/worktrees/<slug>`; branch `wt/<slug>`; slug ASCII, ≤ 40 characters, suffix `-2`, `-3`, … when the branch or path exists.
-- Base = the main folder's `HEAD` commit (`git worktree add -b wt/<slug> <path> HEAD`).
-- Exclude line `/.claude/worktrees/` appended once to `<common_dir>/info/exclude`.
-- `.worktreeinclude`: `.gitignore` syntax at the repository root; a path is copied only if it matches **and** is ignored; `clonefile(2)`; non-clone fallback copies at most 1 GiB in total.
-- Never: `worktree remove --force`, `branch -D`, `reset`, `clean`, `checkout --`, `stash`. Branch deletion only `git branch -d` of a `wt/…` branch with zero commits beyond its base.
-- A worktree with any `git status --porcelain` entry (ignored files excluded) or an operation in progress is kept.
-- CLI: every git outcome is an exit-0 JSON envelope; non-zero only when the workbench/folder does not resolve. Write budget 60 s.
-- Migration `00110_terminal_session_worktrees.sql`: `terminal_sessions.worktree_branch TEXT`, `terminal_sessions.worktree_base TEXT`, `terminal_sessions.worktree_state TEXT CHECK (worktree_state IN ('kept'))`, `terminal_sessions.worktree_removed_at TEXT`, `projects.worktree_setup TEXT NOT NULL DEFAULT ''`.
-- Inner loop only per task (`go test ./internal/<pkg>`, `make test-swift FILTER=…`, `make lint-diff`); the full gate runs once at the end (CLAUDE.md).
-- Tests that spawn processes reap them; git tests use `helpers_test.go`'s `gitBin`/`newRepo` (owner's git config isolated).
+- Worktree path: `<top_level>/.claude/worktrees/<slug>`; branch `wt/<slug>`; slug `^[a-z0-9][a-z0-9-]*$`, ≤ 40 characters, suffix `-2`, `-3`, … when the branch or path exists.
+- Base = the main folder's `HEAD` commit (`git worktree add -b wt/<slug> <path> <base sha>`).
+- Exclude line `/.claude/worktrees/` appended once to `<common_dir>/info/exclude`; the owner's lines are never rewritten.
+- `.worktreeinclude`: `.gitignore` syntax at the repository root; a path is copied only if it matches **and** is ignored; `clonefile(2)`; the non-clone fallback copies at most 1 GiB in total.
+- Placement code (create, ensure, forget) never runs `worktree remove`, `--force`, `branch -D`/`-d`, `reset`, `clean`, `checkout`, `stash`. Removal is only #535's `workbench cleanup` with every PROJ-18 catch.
+- `devpack.RemoveWorkbench` is never called for a worktree path (it drops shared `info/exclude` lines).
+- CLI: every git outcome is an exit-0 JSON envelope; non-zero only when the workbench/folder does not resolve. Write budget 60 s (`workbenchGitWriteBudget`).
+- Migration `00113_terminal_session_placement.sql` (re-check the next free number before writing it): `terminal_sessions.worktree_branch TEXT`, `terminal_sessions.worktree_base TEXT`, `projects.worktree_setup TEXT NOT NULL DEFAULT ''`.
+- A placed row stores the worktree cwd as its `folder_path` (spec D9); every other row keeps the workbench folder (#565's pinning tests stay green).
+- Desktop never runs git itself for this feature; it calls the CLI (`WorkbenchCLI`, `SessionCleanupCenter`).
+- Inner loop only per task (`go test ./internal/<pkg>`, `make test-swift FILTER=…`, `make lint-diff`); the full gate runs once at the end (CLAUDE.md). Never `run_in_background` for builds or tests.
+- Tests that spawn processes reap them; git tests use `internal/workbenchgit/helpers_test.go`'s `newRepo`/`recorder`/`options` (owner's git config isolated).
 - Docs and code comments in English; no live-install data in the repo.
-
-## Spec deviation found while planning
-
-- **Spec §11 PROJ-14 needs no code change.** `internal/sessionreport` checks `branch:<name>` and `pr:` refs, which resolve repository-wide (`gh pr list --head <branch>`, `BranchMerge`), so the main folder sees `wt/…` branches. Task 9 pins this with a test instead of changing the folder.
 
 ## Review Focus
 
-1. **The workbench folder is a subfolder of the repository** → the session must start in `<worktree>/<prefix>`, and `.worktreeinclude` is read from the repository root, not the workbench folder. (Task 2 test `TestWorktreeCreate_SubfolderWorkbench`.)
-2. **The main folder has uncommitted changes** → the new worktree does not have them, and the envelope says `base_dirty: true` so the Desktop can say so. (Task 2 test `TestWorktreeCreate_BaseDirty`, Task 10 note.)
-3. **The worktree directory was deleted by hand while the row remains** → resume recreates it from the branch through `ensure`; with the branch gone too, the row is unavailable with a clear message, never a crash or a silent start in the main folder. (Task 4 tests, Task 10 resume test.)
-4. **Removing a worktree must not drop exclude lines the main folder still needs** → worktree removal only unregisters the MCP entry; it never calls `devpack.RemoveWorkbench` (which drops `info/exclude` lines whose paths are gone — and `info/exclude` is shared by every worktree). (Task 5 test `TestWorktreeRemove_KeepsSharedExcludeLines`.)
-5. **Two sessions start at the same moment in an idle folder** → both see the folder free and both start in it. The Desktop serialises placement per workbench (one decision in flight), so the second sees the first's row as live. (Task 10 test `testConcurrentStartsSecondGetsWorktree`.)
+1. **The workbench folder is a subfolder of the repository** → the session starts in `<worktree>/<prefix>`, `.worktreeinclude` is read from the repository root, and cleanup's by-record ownership finds the worktree from that subfolder cwd. (Task 2 `TestWorktreeCreate_SubfolderWorkbench`, Task 6 `TestCleanupPlacedSubfolderRowOwnsItsWorktree`.)
+2. **The main folder has uncommitted changes** → the new worktree does not have them, `base_dirty: true`, and the Desktop says so. (Task 2 `TestWorktreeCreate_BaseDirty`, Task 11 `testBaseDirtyShowsTheNote`.)
+3. **The worktree was cleaned up or deleted by hand while the row remains** → resume re-adds it from the branch through `ensure`; with the branch gone too the row is unavailable with a clear message, never a silent start in the main folder. (Task 4 tests, Task 12 `testResumeOfACleanedUpWorktreeReAddsIt`, `testResumeWithTheBranchGoneIsUnavailable`.)
+4. **Two sessions start at the same moment in an idle folder** → placement is serialised per workbench, so the second sees the first's row as live and gets a worktree. (Task 11 `testConcurrentStartsSecondGetsWorktree`.)
+5. **The automatic cleanup touches only what Watchtower made** → it names exactly `worktree:<root>` and `branch:wt/<slug>`, and an unplaced worktree born before the session is still kept. (Task 6 `TestCleanupUnplacedOldWorktreeStillKept`, Task 13 `testFinishedPlacedSessionExitCleansExactlyItsTwoItems`.)
+
+## Task order and lanes
+
+Go lane: 1 → 2 → 3 → 4 → 5 → 6 → 7. Swift lane (after 1 and 5): 8 → 9 → 10 → 11 → 12 → 13 → 14. One implementer at a time (this plan runs sequentially). Task 15 is the gate.
 
 ---
 
-### Task 1: Migration 00110 and the Go/Swift row fields
+### Task 1: Migration 00113 and the Go/Swift row fields
+
+**Depends on:** none.
 
 **Files:**
-- Create: `internal/db/migrations/00110_terminal_session_worktrees.sql`
-- Modify: `internal/db/schema.sql` (the `terminal_sessions` and `projects` tables)
-- Modify: `internal/db/terminal_sessions.go` (struct `TerminalSession`, its scan; new `SessionWorktrees`)
-- Test: `internal/db/terminal_sessions_worktree_test.go`
+- Create: `internal/db/migrations/00113_terminal_session_placement.sql`
+- Modify: `internal/db/schema.sql` (`terminal_sessions`, `projects`)
+- Modify: `internal/db/terminal_sessions.go` (`TerminalSession.WorktreeBranch`, `GetTerminalSession`'s SELECT/Scan; new `PlacedSessions`)
+- Test: `internal/db/terminal_sessions_placement_test.go`
 - Regenerate: schema golden + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/TerminalSession.swift`, `.../Models/Workbench.swift`
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift` (`NewSession`, `create`, new `setWorktreeState`), `.../Queries/WorkbenchQueries.swift` (new `setWorktreeSetup`)
-- Test: `WatchtowerDesktop/Tests/Core/TerminalSessionWorktreeQueriesTests.swift`
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift` (`NewSession`, `create`), `.../Queries/WorkbenchQueries.swift` (new `setWorktreeSetup`)
+- Test: `WatchtowerDesktop/Tests/Core/TerminalSessionPlacementQueriesTests.swift`
 
 **Interfaces:**
-- Produces (Go): `TerminalSession.WorktreeBranch sql.NullString`; `func (db *DB) SessionWorktrees(workbenchID int64) ([]SessionWorktree, error)` with `type SessionWorktree struct{ ID int64; FolderPath, Branch, Base string }` — rows with `worktree_branch IS NOT NULL AND worktree_removed_at IS NULL`.
-- Produces (Swift): `TerminalSession.worktreeBranch: String?`, `.worktreeBase: String?`, `.worktreeKept: Bool` (`worktree_state == "kept"`), `.worktreeRemovedAt: String?`; `NewSession.worktreeBranch: String?`, `NewSession.worktreeBase: String?`; `TerminalSessionQueries.setWorktreeState(_ db:, id:, kept: Bool, removedAt: String?)`; `Workbench.worktreeSetup: String`; `WorkbenchQueries.setWorktreeSetup(_ db:, projectID:, command:)`.
+- Produces (Go): `TerminalSession.WorktreeBranch sql.NullString` (read by `GetTerminalSession`); `type PlacedSession struct{ ID int64; FolderPath, Branch string }`; `func (db *DB) PlacedSessions(workbenchID int64) ([]PlacedSession, error)` — rows of the workbench with `worktree_branch IS NOT NULL`, by id. (`db.SessionWorktree` already exists — #535's ledger type; do not reuse the name.)
+- Produces (Swift): `TerminalSession.worktreeBranch: String?`, `.worktreeBase: String?` (CodingKeys `worktree_branch`, `worktree_base`); `NewSession.worktreeBranch: String?`, `.worktreeBase: String?` (init params, default nil, after `claudeSessionID`); `Workbench.worktreeSetup: String`; `WorkbenchQueries.setWorktreeSetup(_ db: Database, projectID: Int64, command: String) throws`.
 
 - [ ] **Step 1: Write the migration**
 
+Check `ls internal/db/migrations | tail -1` first; if 00113 is taken, use the next free number everywhere in this plan.
+
 ```sql
 -- +goose Up
--- Session worktrees (spec 2026-10-14-session-worktrees-design.md §7).
--- worktree_branch non-NULL = the row owns the worktree its folder_path is in.
+-- Session placement (board #229, spec 2026-10-14-session-worktrees-design.md §7).
+-- worktree_branch non-NULL = Watchtower created the worktree this row's
+-- folder_path is in, on this wt/<slug> branch; #535's cleanup owns that
+-- worktree and branch by record. NULL = every other row.
 ALTER TABLE terminal_sessions ADD COLUMN worktree_branch TEXT;
--- The commit the branch was cut from (for the empty-branch check, §9).
+-- The commit the branch was cut from; NULL with worktree_branch.
 ALTER TABLE terminal_sessions ADD COLUMN worktree_base TEXT;
--- 'kept' = the agent ended but the worktree had uncommitted changes.
-ALTER TABLE terminal_sessions ADD COLUMN worktree_state TEXT CHECK (worktree_state IN ('kept'));
--- When Watchtower removed the worktree (the branch stays); NULL = on disk.
-ALTER TABLE terminal_sessions ADD COLUMN worktree_removed_at TEXT;
--- The command run in a new worktree before the agent's first launch; '' = none.
+-- The command run in a new session worktree before the agent's first launch; '' = none.
 ALTER TABLE projects ADD COLUMN worktree_setup TEXT NOT NULL DEFAULT '';
 
 -- +goose Down
 ALTER TABLE projects DROP COLUMN worktree_setup;
-ALTER TABLE terminal_sessions DROP COLUMN worktree_removed_at;
-ALTER TABLE terminal_sessions DROP COLUMN worktree_state;
 ALTER TABLE terminal_sessions DROP COLUMN worktree_base;
 ALTER TABLE terminal_sessions DROP COLUMN worktree_branch;
 ```
 
-Mirror the five columns, with the same comments, into `internal/db/schema.sql` (end of each table's column list, before the `CHECK` lines of `terminal_sessions`).
+Mirror the three columns, with the same comments, into `internal/db/schema.sql` (end of each table's column list, before any table-level `CHECK` lines).
 
 - [ ] **Step 2: Write the failing Go test**
 
 ```go
 package db
 
-func TestSessionWorktrees_ListsLiveWorktreeRowsOnly(t *testing.T) {
+func TestPlacedSessions_ListsRowsWithAWorktreeBranch(t *testing.T) {
 	d := openTestDB(t)
 	wb := createTestWorkbench(t, d, t.TempDir())
 	plain := insertTerminalSession(t, d, wb.ID, "/repo")
-	wt := insertTerminalSession(t, d, wb.ID, "/repo/.claude/worktrees/a")
-	gone := insertTerminalSession(t, d, wb.ID, "/repo/.claude/worktrees/b")
-	_, err := d.Exec(`UPDATE terminal_sessions SET worktree_branch = 'wt/a', worktree_base = 'abc' WHERE id = ?`, wt)
-	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE terminal_sessions SET worktree_branch = 'wt/b', worktree_removed_at = '2026-10-14T00:00:00Z' WHERE id = ?`, gone)
+	placed := insertTerminalSession(t, d, wb.ID, "/repo/.claude/worktrees/a")
+	_, err := d.Exec(`UPDATE terminal_sessions SET worktree_branch = 'wt/a', worktree_base = 'abc' WHERE id = ?`, placed)
 	require.NoError(t, err)
 
-	got, err := d.SessionWorktrees(wb.ID)
+	got, err := d.PlacedSessions(wb.ID)
 	require.NoError(t, err)
-	assert.Equal(t, []SessionWorktree{{ID: wt, FolderPath: "/repo/.claude/worktrees/a", Branch: "wt/a", Base: "abc"}}, got)
-	_ = plain
+	assert.Equal(t, []PlacedSession{{ID: placed, FolderPath: "/repo/.claude/worktrees/a", Branch: "wt/a"}}, got)
+
+	row, err := d.GetTerminalSession(placed)
+	require.NoError(t, err)
+	assert.Equal(t, "wt/a", row.WorktreeBranch.String)
+	other, err := d.GetTerminalSession(plain)
+	require.NoError(t, err)
+	assert.False(t, other.WorktreeBranch.Valid)
 }
 ```
 
-Use the helpers `terminal_sessions_test.go` already has; if `insertTerminalSession` does not exist under that name, use the existing insert helper of that file (read it first) — do not add a second one.
+Read `internal/db/terminal_sessions_test.go` first and use its existing helpers for opening a DB, creating a workbench and inserting a session row; rename `openTestDB`/`createTestWorkbench`/`insertTerminalSession` above to those names. Add no second helper for something that exists.
 
 - [ ] **Step 3: Run it to see it fail**
 
-Run: `go test ./internal/db -run TestSessionWorktrees`
-Expected: FAIL — `d.SessionWorktrees undefined`.
+Run: `go test ./internal/db -run TestPlacedSessions`
+Expected: FAIL — `d.PlacedSessions undefined`.
 
 - [ ] **Step 4: Implement**
 
-In `internal/db/terminal_sessions.go` add `WorktreeBranch sql.NullString` to `TerminalSession`, extend the `SELECT` column list and `Scan` in `GetTerminalSession` with `worktree_branch`, and add:
+In `internal/db/terminal_sessions.go` add `WorktreeBranch sql.NullString` to `TerminalSession` (after `TranscriptPath`), extend `GetTerminalSession`'s column list and `Scan` with `worktree_branch`, and add:
 
 ```go
-// SessionWorktree is a session row that owns a worktree still on disk.
-type SessionWorktree struct {
+// PlacedSession is a session row Watchtower started in a worktree it
+// created (board #229): folder_path is the agent's cwd inside it.
+type PlacedSession struct {
 	ID         int64
 	FolderPath string
 	Branch     string
-	Base       string // "" when not recorded
 }
 
-// SessionWorktrees lists the workbench's session rows whose worktree
-// Watchtower has not removed (spec §9: workbench deletion cleans them).
-func (db *DB) SessionWorktrees(workbenchID int64) ([]SessionWorktree, error) {
-	rows, err := db.Query(`SELECT id, folder_path, worktree_branch, COALESCE(worktree_base, '') FROM terminal_sessions
-		WHERE project_id = ? AND worktree_branch IS NOT NULL AND worktree_removed_at IS NULL
-		ORDER BY id`, workbenchID)
+// PlacedSessions lists the workbench's placed session rows, by id.
+func (db *DB) PlacedSessions(workbenchID int64) ([]PlacedSession, error) {
+	rows, err := db.Query(`SELECT id, folder_path, worktree_branch FROM terminal_sessions
+		WHERE project_id = ? AND worktree_branch IS NOT NULL ORDER BY id`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("listing session worktrees: %w", err)
+		return nil, fmt.Errorf("listing placed sessions: %w", err)
 	}
 	defer rows.Close()
-	var out []SessionWorktree
+	var out []PlacedSession
 	for rows.Next() {
-		var s SessionWorktree
-		if err := rows.Scan(&s.ID, &s.FolderPath, &s.Branch, &s.Base); err != nil {
-			return nil, fmt.Errorf("listing session worktrees: %w", err)
+		var s PlacedSession
+		if err := rows.Scan(&s.ID, &s.FolderPath, &s.Branch); err != nil {
+			return nil, fmt.Errorf("listing placed sessions: %w", err)
 		}
 		out = append(out, s)
 	}
@@ -152,66 +155,53 @@ Expected: PASS.
 
 - [ ] **Step 6: Swift model and queries (failing test first)**
 
-`WatchtowerDesktop/Tests/Core/TerminalSessionWorktreeQueriesTests.swift`:
+`WatchtowerDesktop/Tests/Core/TerminalSessionPlacementQueriesTests.swift`:
 
 ```swift
 import GRDB
 import XCTest
 @testable import WatchtowerCore
 
-final class TerminalSessionWorktreeQueriesTests: XCTestCase {
-    func testCreateStoresWorktreeAndStateRoundTrips() throws {
+final class TerminalSessionPlacementQueriesTests: XCTestCase {
+    func testCreateStoresTheWorktreeBranchAndBase() throws {
         let db = try TestDatabase.make()
         let projectID = try TestDatabase.insertWorkbench(db, folder: "/repo")
         let row = try db.write { db in
             try TerminalSessionQueries.create(db, .init(
                 projectID: projectID, kind: .claude, title: "t", folderPath: "/repo/.claude/worktrees/a",
-                claudeSessionID: "s", worktreeBranch: "wt/a", worktreeBase: "abc1234"))
+                claudeSessionID: UUID().uuidString, worktreeBranch: "wt/a", worktreeBase: "abc1234"))
         }
         XCTAssertEqual(row.worktreeBranch, "wt/a")
         XCTAssertEqual(row.worktreeBase, "abc1234")
-        XCTAssertFalse(row.worktreeKept)
-        try db.write { try TerminalSessionQueries.setWorktreeState($0, id: row.id, kept: true, removedAt: nil) }
-        XCTAssertTrue(try db.read { try TerminalSessionQueries.fetch($0, id: row.id) }!.worktreeKept)
-        try db.write { try TerminalSessionQueries.setWorktreeState($0, id: row.id, kept: false, removedAt: "2026-10-14T00:00:00Z") }
-        let removed = try db.read { try TerminalSessionQueries.fetch($0, id: row.id) }!
-        XCTAssertFalse(removed.worktreeKept)
-        XCTAssertEqual(removed.worktreeRemovedAt, "2026-10-14T00:00:00Z")
+        let plain = try db.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: projectID, kind: .claude, title: "p", folderPath: "/repo", claudeSessionID: UUID().uuidString))
+        }
+        XCTAssertNil(plain.worktreeBranch)
     }
 
-    func testWorktreeSetupRoundTrips() throws {
+    func testWorktreeSetupRoundTripsTrimmed() throws {
         let db = try TestDatabase.make()
         let projectID = try TestDatabase.insertWorkbench(db, folder: "/repo")
-        try db.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: projectID, command: "npm install") }
+        try db.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: projectID, command: "  npm install \n") }
         XCTAssertEqual(try db.read { try WorkbenchQueries.fetch($0, id: projectID) }?.worktreeSetup, "npm install")
     }
 }
 ```
 
-Use the existing `TestDatabase` helpers (read `WatchtowerDesktop/Tests/Support/` first; use the names that exist).
+Read `WatchtowerDesktop/Tests/Support/` and an existing `Tests/Core` queries test first; use the `TestDatabase` helper names that exist (rename `make`/`insertWorkbench`/`fetch` above accordingly).
 
-Run: `make test-swift FILTER=TerminalSessionWorktreeQueriesTests` → FAIL (no such members).
+Run: `make test-swift FILTER=TerminalSessionPlacementQueriesTests` → FAIL (no such members).
 
-Implement: decode the four columns in `TerminalSession` (`row["worktree_branch"]`, …; `worktreeKept = (row["worktree_state"] as String?) == "kept"`); add `worktreeBranch`/`worktreeBase` (default nil) to `NewSession.init` and to the `INSERT` column list; add
+Implement: `TerminalSession` gains `package let worktreeBranch: String?` and `package let worktreeBase: String?` with CodingKeys `worktree_branch`/`worktree_base` (synthesised Codable decodes a missing optional as nil; keep any memberwise init callers compiling by giving the new parameters `= nil` defaults if the type has an explicit init). `NewSession` gains the two fields (init params default nil) and `create`'s `INSERT` lists `worktree_branch, worktree_base`. `Workbench.worktreeSetup = row["worktree_setup"] ?? ""`. `WorkbenchQueries.setWorktreeSetup` mirrors `setArchiveAfterDays` (same `updated_at` write and `workbenchNotFound` guard), storing `command.trimmingCharacters(in: .whitespacesAndNewlines)`.
 
-```swift
-package static func setWorktreeState(_ db: Database, id: Int64, kept: Bool, removedAt: String?) throws {
-    try db.execute(
-        sql: "UPDATE terminal_sessions SET worktree_state = ?, worktree_removed_at = COALESCE(?, worktree_removed_at) WHERE id = ?",
-        arguments: [kept ? "kept" : nil, removedAt, id]
-    )
-}
-```
-
-`Workbench.worktreeSetup = row["worktree_setup"] ?? ""`; `WorkbenchQueries.setWorktreeSetup` mirrors `setArchiveAfterDays` (`UPDATE projects SET worktree_setup = ? WHERE id = ?`, trimmed).
-
-Run: `make test-swift FILTER=TerminalSessionWorktreeQueriesTests` → PASS.
+Run: `make test-swift FILTER=TerminalSessionPlacementQueriesTests` → PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add internal/db WatchtowerDesktop/Sources/WatchtowerCore WatchtowerDesktop/Tests
-git commit -m "feat(db): session worktree columns (migration 00110)"
+git commit -m "feat(db): session placement columns (migration 00113)"
 ```
 
 ---
@@ -855,46 +845,19 @@ git add internal/workbenchgit go.mod go.sum
 git commit -m "feat(workbenchgit): clone .worktreeinclude paths into a new worktree"
 ```
 
+
 ---
 
-### Task 4: `RemoveWorktree`, `EnsureWorktree` and the PROJ-17 guard
+### Task 4: `EnsureWorktree` and the placement argv guard
 
 **Depends on:** Task 3.
 
 **Files:**
 - Modify: `internal/workbenchgit/worktree.go`
-- Test: `internal/workbenchgit/worktree_remove_test.go`
-- Modify: `docs/inventory/workbench.md` (new PROJ-17 after PROJ-16)
+- Test: `internal/workbenchgit/worktree_ensure_test.go`
 
 **Interfaces:**
-- Produces:
-
-```go
-type RemoveRequest struct {
-	Path   string // the worktree's top level, as stored (CreateWorktree's Path)
-	Branch string // wt/<slug>
-	Base   string // the commit the branch was cut from ("" = never delete the branch)
-}
-
-type RemoveResult struct {
-	WorkbenchID   int64  `json:"workbench_id"`
-	Removed       bool   `json:"removed"`
-	Kept          bool   `json:"kept"`
-	Changes       int    `json:"changes"`
-	Operation     string `json:"operation"`
-	Gone          bool   `json:"gone"` // the directory was already gone; only pruned
-	BranchDeleted bool   `json:"branch_deleted"`
-	Refused       string `json:"refused"`
-	RefusedDetail string `json:"refused_detail"`
-	Error         string `json:"error"`
-	Warning       string `json:"warning"`
-}
-
-func RemoveWorktree(ctx context.Context, o Options, req RemoveRequest) RemoveResult
-func EnsureWorktree(ctx context.Context, o Options, path, branch string) WorktreeResult
-```
-
-`o.Folder` is the **main** workbench folder for both.
+- Produces: `func EnsureWorktree(ctx context.Context, o Options, path, branch string) WorktreeResult` — `o.Folder` is the **main** workbench folder; `path` is the worktree's top level (`<top>/.claude/worktrees/<slug>`); an existing directory at `path` is left alone (`Created: false`, no error); a missing branch is `RefusedUnknownBranch` (the constant `switch.go` already has); a `path` outside `<top>/.claude/worktrees/` or a branch not under `wt/` is `RefusedInvalidName`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -905,74 +868,16 @@ func made(t *testing.T, dir string) WorktreeResult {
 	return res
 }
 
-func TestWorktreeRemove_CleanRemovedEmptyBranchDeleted(t *testing.T) {
-	dir := newRepo(t)
-	wt := made(t, dir)
-	res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
-	assert.True(t, res.Removed, "%+v", res)
-	assert.True(t, res.BranchDeleted)
-	assert.NoDirExists(t, wt.Path)
-	assert.Empty(t, gitIn(t, dir, "branch", "--list", wt.Branch))
-}
-
-func TestWorktreeRemove_BranchWithCommitsKept(t *testing.T) {
-	dir := newRepo(t)
-	wt := made(t, dir)
-	commit(t, wt.Path, "work.txt", "done\n", "work")
-	res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
-	assert.True(t, res.Removed)
-	assert.False(t, res.BranchDeleted)
-	assert.NotEmpty(t, gitIn(t, dir, "branch", "--list", wt.Branch))
-}
-
-func TestWorktreeRemove_UncommittedKept(t *testing.T) {
-	for name, edit := range map[string]func(t *testing.T, p string){
-		"modified":  func(t *testing.T, p string) { writeFile(t, p, "README.md", "x\n") },
-		"untracked": func(t *testing.T, p string) { writeFile(t, p, "new.txt", "x\n") },
-		"staged":    func(t *testing.T, p string) { writeFile(t, p, "s.txt", "x\n"); gitIn(t, p, "add", "s.txt") },
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := newRepo(t)
-			wt := made(t, dir)
-			edit(t, wt.Path)
-			res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
-			assert.True(t, res.Kept, "%+v", res)
-			assert.False(t, res.Removed)
-			assert.DirExists(t, wt.Path)
-			assert.NotEmpty(t, gitIn(t, dir, "branch", "--list", wt.Branch))
-		})
-	}
-}
-
-func TestWorktreeRemove_IgnoredFilesDoNotKeep(t *testing.T) {
-	dir := includeRepo(t)
-	wt := made(t, dir)
-	writeFile(t, wt.Path, ".env", "changed\n")
-	res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
-	assert.True(t, res.Removed, "%+v", res)
-}
-
-func TestWorktreeRemove_GoneDirectoryPruned(t *testing.T) {
-	dir := newRepo(t)
-	wt := made(t, dir)
-	require.NoError(t, os.RemoveAll(wt.Path))
-	res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
-	assert.True(t, res.Gone && res.Removed, "%+v", res)
-	assert.NotContains(t, gitIn(t, dir, "worktree", "list"), wt.Path)
-}
-
-func TestWorktreeRemove_RefusesPathOutsideWorktreesDir(t *testing.T) {
-	dir := newRepo(t)
-	res := RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: dir, Branch: "main"})
-	assert.Equal(t, RefusedInvalidName, res.Refused)
-	assert.DirExists(t, dir)
+// dropWorktree removes a worktree the way a cleanup would, for the test only.
+func dropWorktree(t *testing.T, dir string, wt WorktreeResult) {
+	gitIn(t, dir, "worktree", "remove", wt.Path)
 }
 
 func TestWorktreeEnsure_RecreatesFromBranch(t *testing.T) {
 	dir := newRepo(t)
 	wt := made(t, dir)
 	commit(t, wt.Path, "work.txt", "done\n", "work")
-	RemoveWorktree(context.Background(), options(dir, &recorder{}), RemoveRequest{Path: wt.Path, Branch: wt.Branch, Base: wt.Base})
+	dropWorktree(t, dir, wt)
 	res := EnsureWorktree(context.Background(), options(dir, &recorder{}), wt.Path, wt.Branch)
 	require.True(t, res.Created, "%+v", res)
 	assert.Equal(t, "done\n", readFile(t, wt.Path, "work.txt"))
@@ -981,116 +886,80 @@ func TestWorktreeEnsure_RecreatesFromBranch(t *testing.T) {
 	assert.Empty(t, again.Error)
 }
 
+func TestWorktreeEnsure_DeletedByHandIsReAdded(t *testing.T) {
+	dir := newRepo(t)
+	wt := made(t, dir)
+	require.NoError(t, os.RemoveAll(wt.Path))
+	res := EnsureWorktree(context.Background(), options(dir, &recorder{}), wt.Path, wt.Branch)
+	require.True(t, res.Created, "%+v", res)
+	assert.Equal(t, wt.Branch, gitIn(t, wt.Path, "branch", "--show-current"))
+}
+
+func TestWorktreeEnsure_CopiesIncludePathsAgain(t *testing.T) {
+	dir := includeRepo(t)
+	wt := made(t, dir)
+	dropWorktree(t, dir, wt)
+	res := EnsureWorktree(context.Background(), options(dir, &recorder{}), wt.Path, wt.Branch)
+	assert.ElementsMatch(t, []string{".env", "node_modules/"}, res.Included)
+}
+
 func TestWorktreeEnsure_BranchGone(t *testing.T) {
 	dir := newRepo(t)
 	res := EnsureWorktree(context.Background(), options(dir, &recorder{}), filepath.Join(dir, ".claude", "worktrees", "z"), "wt/z")
 	assert.Equal(t, RefusedUnknownBranch, res.Refused)
+	assert.NoDirExists(t, filepath.Join(dir, ".claude", "worktrees", "z"))
 }
 
-func TestProj17_NeverForcesOrDiscards(t *testing.T) {
+func TestWorktreeEnsure_RefusesPathsOutsideTheWorktreesDir(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "branch", "wt/q")
+	for _, p := range []string{dir, filepath.Join(dir, "elsewhere"), filepath.Join(dir, ".claude", "worktrees")} {
+		res := EnsureWorktree(context.Background(), options(dir, &recorder{}), p, "wt/q")
+		assert.Equal(t, RefusedInvalidName, res.Refused, p)
+	}
+	assert.Equal(t, RefusedInvalidName, EnsureWorktree(context.Background(), options(dir, &recorder{}),
+		filepath.Join(dir, ".claude", "worktrees", "q"), "main").Refused)
+}
+
+func TestProj18_PlacementNeverForcesOrDiscards(t *testing.T) {
 	dir := includeRepo(t)
 	rec := &recorder{}
 	o := options(dir, rec)
 	ctx := context.Background()
-	clean := CreateWorktree(ctx, o, WorktreeRequest{Slug: "a"})
-	dirtyWT := CreateWorktree(ctx, o, WorktreeRequest{Slug: "b"})
-	writeFile(t, dirtyWT.Path, "README.md", "x\n")
-	RemoveWorktree(ctx, o, RemoveRequest{Path: clean.Path, Branch: clean.Branch, Base: clean.Base})
-	RemoveWorktree(ctx, o, RemoveRequest{Path: dirtyWT.Path, Branch: dirtyWT.Branch, Base: dirtyWT.Base})
-	EnsureWorktree(ctx, o, clean.Path, clean.Branch)
+	a := CreateWorktree(ctx, o, WorktreeRequest{Slug: "a"})
+	b := CreateWorktree(ctx, o, WorktreeRequest{Slug: "b"})
+	writeFile(t, b.Path, "README.md", "x\n")
+	require.NoError(t, os.RemoveAll(a.Path))
+	EnsureWorktree(ctx, o, a.Path, a.Branch)
+	EnsureWorktree(ctx, o, b.Path, b.Branch)
 
-	forbidden := []string{"--force", "-f", "-D", "--hard", "reset", "clean", "checkout", "stash", "--discard-changes"}
+	forbidden := []string{"remove", "--force", "-f", "-D", "-d", "--hard", "reset", "clean", "checkout", "stash", "--discard-changes"}
 	require.NotEmpty(t, rec.argv())
 	for _, c := range rec.argv() {
-		for _, a := range c {
-			assert.NotContains(t, forbidden, a, "git %s", strings.Join(c, " "))
+		for _, arg := range c {
+			assert.NotContains(t, forbidden, arg, "git %s", strings.Join(c, " "))
 		}
 	}
-	assert.DirExists(t, dirtyWT.Path, "a dirty worktree survives")
+	assert.Equal(t, "x\n", readFile(t, b.Path, "README.md"), "an existing worktree's changes are untouched")
 }
 ```
 
+`TestProj18_PlacementNeverForcesOrDiscards` is a PROJ-18 guard (Task 7 lists it in the inventory). `-d` is forbidden because `worktree add -b` is the only branch write; check the recorder's argv shape (`helpers_test.go`) — if it records `-b` and the branch name as separate elements, the list above is right as written.
+
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./internal/workbenchgit -run 'TestWorktreeRemove|TestWorktreeEnsure|TestProj17'`
-Expected: FAIL — undefined `RemoveWorktree`, `EnsureWorktree`.
+Run: `go test ./internal/workbenchgit -run 'TestWorktreeEnsure|TestProj18'`
+Expected: FAIL — `undefined: EnsureWorktree`.
 
 - [ ] **Step 3: Implement (append to `worktree.go`)**
 
 ```go
-// RemoveWorktree removes a session worktree that has no uncommitted work
-// (spec §9, PROJ-17): git status in it lists nothing (ignored files do not
-// count) and no operation is in progress, else nothing is written and Kept
-// is set. The branch stays unless Watchtower made it and it carries no
-// commit beyond Base (`branch -d`, never -D). Never --force.
-func RemoveWorktree(ctx context.Context, o Options, req RemoveRequest) (res RemoveResult) {
-	main, r := readStatus(ctx, o)
-	switch {
-	case !main.GitAvailable:
-		res.Refused = RefusedGitUnavailable
-		return res
-	case r == nil:
-		res.Refused = RefusedNotGit
-		return res
-	case !main.StatusOK:
-		res.Refused, res.Error = RefusedGitFailed, main.StatusError
-		return res
-	}
-	root := filepath.Join(main.TopLevel, filepath.FromSlash(worktreesDir)) + string(filepath.Separator)
-	if !strings.HasPrefix(filepath.Clean(req.Path)+string(filepath.Separator), root) || filepath.Clean(req.Path)+string(filepath.Separator) == root ||
-		!strings.HasPrefix(req.Branch, worktreeBranchRoot) {
-		res.Refused, res.RefusedDetail = RefusedInvalidName, "not a session worktree: "+req.Path
-		return res
-	}
-	if _, err := os.Stat(req.Path); os.IsNotExist(err) {
-		res.Gone = true
-		if _, err := r.git(ctx, "worktree", "prune"); err != nil {
-			res.Error = gitError(err)
-			return res
-		}
-	} else {
-		wt := readStatusIn(ctx, o, req.Path)
-		switch {
-		case !wt.StatusOK:
-			res.Kept, res.Error = true, wt.StatusError
-			return res
-		case wt.Changes > 0 || wt.Operation != "":
-			res.Kept, res.Changes, res.Operation = true, wt.Changes, wt.Operation
-			return res
-		}
-		if _, err := r.git(ctx, "worktree", "remove", req.Path); err != nil {
-			res.Kept, res.Error = true, gitError(err)
-			return res
-		}
-	}
-	res.Removed = true
-	if req.Base != "" && r.branchIsEmpty(ctx, req.Branch, req.Base) {
-		if _, err := r.git(ctx, "branch", "-d", req.Branch); err != nil {
-			res.Warning = gitError(err)
-		} else {
-			res.BranchDeleted = true
-		}
-	}
-	return res
-}
-
-// readStatusIn is the status of another worktree of the same repository.
-func readStatusIn(ctx context.Context, o Options, folder string) Status {
-	o.Folder = folder
-	return ReadStatus(ctx, o)
-}
-
-// branchIsEmpty: the branch's tip is base (no commit of its own). Any
-// failure reads as not empty, so the branch is kept.
-func (r *repo) branchIsEmpty(ctx context.Context, branch, base string) bool {
-	out, err := r.git(ctx, "rev-list", "--count", base+".."+"refs/heads/"+branch)
-	return err == nil && strings.TrimSpace(string(out)) == "0"
-}
-
-// EnsureWorktree puts a removed session worktree back at path from its
-// branch (a resume after cleanup, spec §7) and copies the include paths
-// again. An existing worktree at path is left alone (Created false, no
-// error); a missing branch is RefusedUnknownBranch.
+// EnsureWorktree puts a placed session's worktree back at path from its
+// branch — a resume after #535's cleanup removed it, or after the owner
+// deleted the directory (spec §7) — and copies the include paths again. An
+// existing directory at path is left alone (Created false, no error); a
+// missing branch is RefusedUnknownBranch. It writes nothing but the new
+// worktree: no remove, prune of other entries, reset or checkout.
 func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res WorktreeResult) {
 	res = WorktreeResult{Path: path, Branch: branch, Included: []string{}, IncludeWarnings: []string{}}
 	st, r := readStatus(ctx, o)
@@ -1105,7 +974,12 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 		res.Refused, res.Error = RefusedGitFailed, st.StatusError
 		return res
 	}
-	if _, err := os.Stat(path); err == nil {
+	root := filepath.Join(st.TopLevel, filepath.FromSlash(worktreesDir))
+	if filepath.Dir(filepath.Clean(path)) != root || !strings.HasPrefix(branch, worktreeBranchRoot) {
+		res.Refused, res.RefusedDetail = RefusedInvalidName, "not a session worktree: "+path
+		return res
+	}
+	if _, err := os.Lstat(path); err == nil {
 		return res
 	}
 	if _, code, err := r.run(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); code == 1 {
@@ -1115,6 +989,10 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 		res.Refused, res.Error = RefusedGitFailed, gitError(err)
 		return res
 	}
+	// A directory deleted by hand leaves its admin entry: `worktree add`
+	// refuses a registered path, and --force is never used, so the stale
+	// entry goes first — `worktree prune` drops only entries whose directory
+	// is gone, never a worktree on disk.
 	if _, err := r.git(ctx, "worktree", "prune"); err != nil {
 		res.Error = gitError(err)
 		return res
@@ -1130,52 +1008,23 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 }
 ```
 
-`EnsureWorktree` leaves `Cwd` empty: the Desktop keeps the row's stored `folder_path`.
+`EnsureWorktree` leaves `Cwd` empty: the Desktop keeps the row's stored `folder_path`. (Note `worktree prune` is not on the forbidden list; #535 §4 avoids it because a prune drops *every* prunable entry — here that is acceptable only because every such entry's directory is already gone and nothing on disk is touched. Say so in the code comment as written.)
 
 - [ ] **Step 4: Run the tests**
 
 Run: `go test ./internal/workbenchgit`
 Expected: PASS (all, including PROJ-10's).
 
-- [ ] **Step 5: Write PROJ-17 into the inventory**
-
-Append to `docs/inventory/workbench.md` after PROJ-16, in the file's entry format (read PROJ-10's entry first and match its headings: Status, Observable, Guard tests, Why):
-
-```markdown
-## PROJ-17 — a session worktree never loses work
-
-**Status:** Enforced (Go; owner approved 2026-10-14 in ask #115 with the spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9, §11)
-
-**Observable:** `workbench worktree remove` removes a session worktree only
-when `git status` in it lists nothing (ignored files do not count) and no
-merge, rebase, cherry-pick, revert or bisect is in progress; otherwise it
-writes nothing and answers `kept`. It only touches paths under
-`<top level>/.claude/worktrees/` on `wt/…` branches. It never runs
-`worktree remove --force`, `branch -D`, `reset`, `clean`, `checkout` or
-`stash`, and deletes a branch (`branch -d`) only when that `wt/…` branch has
-no commit beyond the base it was cut from. `ensure` re-adds a removed
-worktree from its branch and never touches an existing one.
-
-**Guard tests:** `internal/workbenchgit/worktree_remove_test.go` —
-`TestProj17_NeverForcesOrDiscards`, `TestWorktreeRemove_UncommittedKept`,
-`TestWorktreeRemove_BranchWithCommitsKept`,
-`TestWorktreeRemove_RefusesPathOutsideWorktreesDir`.
-
-**Why:** the worktree is where an agent's unfinished work lives; Watchtower
-cleans up after it automatically, so the cleanup must never be the thing
-that loses that work.
-```
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add internal/workbenchgit docs/inventory/workbench.md
-git commit -m "feat(workbenchgit): remove and ensure session worktrees (PROJ-17)"
+git add internal/workbenchgit
+git commit -m "feat(workbenchgit): ensure — re-add a placed session's worktree from its branch"
 ```
 
 ---
 
-### Task 5: `watchtower workbench worktree create|ensure|remove` with the integration
+### Task 5: `watchtower workbench worktree create|ensure|forget` with the integration
 
 **Depends on:** Task 4.
 
@@ -1186,17 +1035,17 @@ git commit -m "feat(workbenchgit): remove and ensure session worktrees (PROJ-17)
 - Test: `internal/devpack/workbench_test.go` (one test for the export)
 
 **Interfaces:**
-- Consumes: `workbenchgit.CreateWorktree/EnsureWorktree/RemoveWorktree`; `workbenchInstallOptions(p)`, `devpack.InstallWorkbench`, `devpack.InstallCodex`, `codexAppServerFor`, `codexFindBinary`, `devpack.CodexFound`, `workbenchGitContext`, `workbenchGitWriteBudget`, `writeJSON`, `addWorkbenchIDFlag`, `checkWorkbenchIDFlags`, `workbenchWithFolder`, `openJiraCmdDB` (all in `cmd/`).
-- Produces: `func UnregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error` (devpack). CLI:
-  - `workbench worktree create --workbench N --name <slug> --json` → `WorktreeResult` + `"integration_error": string`
-  - `workbench worktree ensure --workbench N --path P --branch B --json` → `WorktreeResult` + `"integration_error"`
-  - `workbench worktree remove --workbench N --path P --branch B [--base SHA] --json` → `RemoveResult`
+- Consumes: `workbenchgit.CreateWorktree/EnsureWorktree`, `workbenchgit.ReadStatus`; in `cmd/`: `workbenchGitTarget`, `workbenchGitContext`, `workbenchGitWriteBudget`, `workbenchGitFlagWorkbench`, `workbenchGitFlagJSON`, `writeJSON`, `addWorkbenchIDFlag`, `workbenchInstallOptions(p *db.Workbench)` (`cmd/integrate_workbench.go:52`, reads only `ID` and `FolderPath`), `devpack.InstallWorkbench` (already installs #535's cleanup permission), `devpack.InstallCodex`, `devpack.CodexFound`, `codexFindBinary`, `codexAppServerFor`.
+- Produces: `func UnregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error` (devpack). CLI (all `--json`):
+  - `workbench worktree create --workbench N --name <slug>` → `WorktreeResult` + `"integration_error": string`
+  - `workbench worktree ensure --workbench N --path P --branch B` → `WorktreeResult` + `"cwd"` (filled when re-added) + `"integration_error"`
+  - `workbench worktree forget --workbench N --path P` → `{"workbench_id", "forgot": bool, "error": string}` — runs only `claude mcp remove --scope local` for P's session cwd, no git; P must be under the workbench repository's `.claude/worktrees/`, else `error` and nothing run.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestWorkbenchWorktree_CreateInstallsIntegrationThenRemoveUnregisters(t *testing.T) {
-	folder := newGitWorkbenchFolder(t) // existing cmd test helper for a git folder; if none, init one like workbench_git_test.go does
+func TestWorkbenchWorktree_CreateInstallsTheIntegration(t *testing.T) {
+	folder := newGitWorkbenchFolder(t)
 	id := createTestWorkbenchRow(t, folder)
 	var calls []string
 	stubWorkbenchCommandRunner(t, func(dir, name string, args ...string) {
@@ -1210,33 +1059,61 @@ func TestWorkbenchWorktree_CreateInstallsIntegrationThenRemoveUnregisters(t *tes
 	}
 	require.NoError(t, json.Unmarshal(out, &created))
 	require.True(t, created.Created, "%s", out)
-	assert.FileExists(t, filepath.Join(created.Cwd, ".claude", "settings.local.json"), "hooks installed in the worktree")
+	assert.Empty(t, created.IntegrationError)
+	assert.FileExists(t, filepath.Join(created.Cwd, ".claude", "settings.local.json"), "hooks and the cleanup permission installed in the worktree")
 	assert.DirExists(t, filepath.Join(created.Cwd, ".claude", "skills", "watchtower-workbench"))
 	assert.Contains(t, strings.Join(calls, "\n"), created.Cwd+" :: claude mcp add --scope local watchtower-workbench")
-
-	calls = nil
-	out = runCmd(t, "workbench", "worktree", "remove", "--workbench", fmt.Sprint(id),
-		"--path", created.Path, "--branch", created.Branch, "--base", created.Base, "--json")
-	var removed workbenchgit.RemoveResult
-	require.NoError(t, json.Unmarshal(out, &removed))
-	assert.True(t, removed.Removed, "%s", out)
-	assert.Contains(t, strings.Join(calls, "\n"), created.Cwd+" :: claude mcp remove --scope local watchtower-workbench")
 }
 
-func TestWorktreeRemove_KeepsSharedExcludeLines(t *testing.T) {
+func TestWorkbenchWorktree_EnsureReinstallsAndReportsTheCwd(t *testing.T) {
 	folder := newGitWorkbenchFolder(t)
 	id := createTestWorkbenchRow(t, folder)
 	stubWorkbenchCommandRunner(t, nil)
+	var c workbenchgit.WorktreeResult
+	require.NoError(t, json.Unmarshal(runCmd(t, "workbench", "worktree", "create", "--workbench", fmt.Sprint(id), "--name", "s2", "--json"), &c))
+	require.NoError(t, os.RemoveAll(c.Path))
+
+	out := runCmd(t, "workbench", "worktree", "ensure", "--workbench", fmt.Sprint(id), "--path", c.Path, "--branch", c.Branch, "--json")
+	var e workbenchgit.WorktreeResult
+	require.NoError(t, json.Unmarshal(out, &e))
+	require.True(t, e.Created, "%s", out)
+	assert.Equal(t, c.Cwd, e.Cwd)
+	assert.FileExists(t, filepath.Join(c.Cwd, ".claude", "settings.local.json"))
+}
+
+func TestWorkbenchWorktree_ForgetUnregistersOnlyAndKeepsSharedExcludeLines(t *testing.T) {
+	folder := newGitWorkbenchFolder(t)
+	id := createTestWorkbenchRow(t, folder)
+	var calls []string
+	stubWorkbenchCommandRunner(t, func(dir, name string, args ...string) {
+		calls = append(calls, dir+" :: "+name+" "+strings.Join(args, " "))
+	})
 	runCmd(t, "integrate", "claude-code", "--workbench", fmt.Sprint(id)) // the main folder's own install
 	before := readExclude(t, folder)
-	out := runCmd(t, "workbench", "worktree", "create", "--workbench", fmt.Sprint(id), "--name", "s2", "--json")
 	var c workbenchgit.WorktreeResult
-	require.NoError(t, json.Unmarshal(out, &c))
-	runCmd(t, "workbench", "worktree", "remove", "--workbench", fmt.Sprint(id), "--path", c.Path, "--branch", c.Branch, "--base", c.Base, "--json")
+	require.NoError(t, json.Unmarshal(runCmd(t, "workbench", "worktree", "create", "--workbench", fmt.Sprint(id), "--name", "s3", "--json"), &c))
+	calls = nil
+
+	out := runCmd(t, "workbench", "worktree", "forget", "--workbench", fmt.Sprint(id), "--path", c.Path, "--json")
+	assert.Contains(t, string(out), `"forgot": true`)
+	joined := strings.Join(calls, "\n")
+	assert.Contains(t, joined, c.Cwd+" :: claude mcp remove --scope local watchtower-workbench")
+	assert.NotContains(t, joined, ":: git ", "forget runs no git")
+	assert.DirExists(t, c.Path, "forget never removes the worktree")
 	after := readExclude(t, folder)
 	for _, line := range strings.Split(strings.TrimSpace(before), "\n") {
 		assert.Contains(t, after, line, "a line the main folder needs survives")
 	}
+}
+
+func TestWorkbenchWorktree_ForgetRefusesAPathOutsideTheWorktreesDir(t *testing.T) {
+	folder := newGitWorkbenchFolder(t)
+	id := createTestWorkbenchRow(t, folder)
+	var calls []string
+	stubWorkbenchCommandRunner(t, func(dir, name string, args ...string) { calls = append(calls, name) })
+	out := runCmd(t, "workbench", "worktree", "forget", "--workbench", fmt.Sprint(id), "--path", folder, "--json")
+	assert.Contains(t, string(out), `"forgot": false`)
+	assert.Empty(t, calls)
 }
 
 func TestWorkbenchWorktree_UnknownWorkbenchExitsNonZero(t *testing.T) {
@@ -1245,21 +1122,21 @@ func TestWorkbenchWorktree_UnknownWorkbenchExitsNonZero(t *testing.T) {
 }
 ```
 
-Before writing these, read `cmd/workbench_git_test.go` and `cmd/integrate_workbench_test.go` and use **their** helper names for: making a git workbench folder, inserting the workbench row, running a command and capturing stdout, stubbing `workbenchCommandRunner` (the claude CLI) and `workbenchExecutable`. Rename `newGitWorkbenchFolder` / `createTestWorkbenchRow` / `runCmd` / `runCmdErr` / `stubWorkbenchCommandRunner` / `readExclude` in the tests above to those names; add only the helpers that do not exist (`readExclude` reads `<folder>/.git/info/exclude`).
+Before writing these, read `cmd/workbench_git_test.go` and `cmd/integrate_workbench_test.go` and use **their** helper names for: a git workbench folder, inserting the workbench row, running a command and capturing stdout (and the error form), stubbing `workbenchCommandRunner` (the claude CLI) and `workbenchExecutable`. Rename `newGitWorkbenchFolder` / `createTestWorkbenchRow` / `runCmd` / `runCmdErr` / `stubWorkbenchCommandRunner` / `readExclude` above to those names; add only helpers that do not exist (`readExclude` reads `<folder>/.git/info/exclude`). Whether `workbenchCommandRunner` also sees git calls depends on the stub — if git does not go through it, drop the `NotContains(":: git ")` line and instead assert `forget` does not reach `workbenchgit` (it calls no `workbenchgit` function except `ReadStatus` for the top level; see Step 4).
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./cmd -run 'TestWorkbenchWorktree|TestWorktreeRemove_KeepsShared'`
+Run: `go test ./cmd -run TestWorkbenchWorktree`
 Expected: FAIL — unknown command "worktree".
 
 - [ ] **Step 3: Export the MCP unregistration (devpack)**
 
-In `internal/devpack/workbench.go` add, next to `unregisterWorkbenchMCP`:
+In `internal/devpack/workbench.go`, next to `unregisterWorkbenchMCP`:
 
 ```go
 // UnregisterWorkbenchMCP removes the folder's local registration of the
-// workbench MCP server (both names). A session worktree's cleanup uses it
-// instead of RemoveWorkbench: the worktree's files go with the worktree, and
+// workbench MCP server. A removed session worktree uses it instead of
+// RemoveWorkbench: the worktree's files went with the worktree, and
 // RemoveWorkbench would also drop exclude lines that every worktree of the
 // repository shares (info/exclude lives in the common git dir).
 func UnregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error {
@@ -1270,7 +1147,7 @@ func UnregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) erro
 }
 ```
 
-Test in `internal/devpack/workbench_test.go`, using that file's fake runner: after `InstallWorkbench`, `UnregisterWorkbenchMCP` issues `claude mcp remove --scope local watchtower-workbench` in `o.Folder` and leaves `settings.local.json` and the exclude block untouched. Run `go test ./internal/devpack -run UnregisterWorkbenchMCP` → PASS.
+If `o.validate` does not exist under that name, use what `RemoveWorkbench` checks first. Test in `internal/devpack/workbench_test.go` with that file's fake runner: after `InstallWorkbench`, `UnregisterWorkbenchMCP` issues `claude mcp remove --scope local watchtower-workbench` in `o.Folder` and leaves `settings.local.json` and the exclude block untouched. Run `go test ./internal/devpack -run UnregisterWorkbenchMCP` → PASS.
 
 - [ ] **Step 4: Implement `cmd/workbench_worktree.go`**
 
@@ -1281,6 +1158,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -1292,35 +1171,34 @@ import (
 
 var workbenchWorktreeCmd = &cobra.Command{
 	Use:   "worktree",
-	Short: "Create, restore and remove session worktrees (parallel agent sessions)",
+	Short: "Create and restore session worktrees (parallel agent sessions)",
 	Long: "A session worktree is <repository>/.claude/worktrees/<name> on branch wt/<name>,\n" +
 		"cut from the workbench folder's HEAD, with the .worktreeinclude paths cloned in and\n" +
-		"the workbench integration installed. remove never discards work (PROJ-17). Every\n" +
-		"command exits 0 once the workbench and its folder resolve.",
+		"the workbench integration installed. Removal is `workbench cleanup` (PROJ-18); forget\n" +
+		"only unregisters a removed worktree's MCP entry. Every command exits 0 once the\n" +
+		"workbench and its folder resolve.",
 }
 
 var (
 	workbenchWorktreeFlagName   string
 	workbenchWorktreeFlagPath   string
 	workbenchWorktreeFlagBranch string
-	workbenchWorktreeFlagBase   string
 )
 
 func init() {
 	create := &cobra.Command{Use: "create", Short: "Create a session worktree", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeCreate}
 	ensure := &cobra.Command{Use: "ensure", Short: "Put a removed session worktree back from its branch", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeEnsure}
-	remove := &cobra.Command{Use: "remove", Short: "Remove a session worktree that has no uncommitted work", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeRemove}
-	for _, c := range []*cobra.Command{create, ensure, remove} {
+	forget := &cobra.Command{Use: "forget", Short: "Unregister a removed session worktree's MCP entry (no git)", Args: cobra.NoArgs, RunE: runWorkbenchWorktreeForget}
+	for _, c := range []*cobra.Command{create, ensure, forget} {
 		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		workbenchWorktreeCmd.AddCommand(c)
 	}
 	create.Flags().StringVar(&workbenchWorktreeFlagName, "name", "", "the worktree's name (lowercase letters, digits, dashes)")
-	for _, c := range []*cobra.Command{ensure, remove} {
+	for _, c := range []*cobra.Command{ensure, forget} {
 		c.Flags().StringVar(&workbenchWorktreeFlagPath, "path", "", "the worktree's top level")
-		c.Flags().StringVar(&workbenchWorktreeFlagBranch, "branch", "", "its wt/… branch")
 	}
-	remove.Flags().StringVar(&workbenchWorktreeFlagBase, "base", "", "the commit the branch was cut from (an empty branch is deleted)")
+	ensure.Flags().StringVar(&workbenchWorktreeFlagBranch, "branch", "", "its wt/… branch")
 	workbenchCmd.AddCommand(workbenchWorktreeCmd)
 }
 
@@ -1340,7 +1218,7 @@ func runWorkbenchWorktreeCreate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
 	res := workbenchgit.CreateWorktree(ctx, o, workbenchgit.WorktreeRequest{Slug: workbenchWorktreeFlagName})
-	return writeWorktreeEnvelope(ctx, cmd, id, res, res.Cwd)
+	return writeWorktreeEnvelope(ctx, cmd, id, res)
 }
 
 func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {
@@ -1351,34 +1229,53 @@ func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
 	res := workbenchgit.EnsureWorktree(ctx, o, workbenchWorktreeFlagPath, workbenchWorktreeFlagBranch)
-	cwd := ""
 	if res.Created {
-		cwd = sessionCwdIn(o.Folder, res.Path)
+		res.Cwd = sessionCwdIn(ctx, o, res.Path)
 	}
-	return writeWorktreeEnvelope(ctx, cmd, id, res, cwd)
+	return writeWorktreeEnvelope(ctx, cmd, id, res)
 }
 
-func runWorkbenchWorktreeRemove(cmd *cobra.Command, _ []string) error {
+type worktreeForgetResult struct {
+	WorkbenchID int64  `json:"workbench_id"`
+	Forgot      bool   `json:"forgot"`
+	Error       string `json:"error"`
+}
+
+func runWorkbenchWorktreeForget(cmd *cobra.Command, _ []string) error {
 	id, o, err := workbenchGitTarget(cmd)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	req := workbenchgit.RemoveRequest{Path: workbenchWorktreeFlagPath, Branch: workbenchWorktreeFlagBranch, Base: workbenchWorktreeFlagBase}
-	// Unregister first, while the folder exists: claude keys the local
-	// registration by the directory it runs in.
-	var unregErr error
-	cwd := sessionCwdIn(o.Folder, req.Path)
-	if isExistingDir(cwd) {
-		unregErr = unregisterWorktreeMCP(ctx, id, cwd)
+	res := worktreeForgetResult{WorkbenchID: id}
+	top := workbenchgit.ReadStatus(ctx, o).TopLevel
+	root := filepath.Join(top, ".claude", "worktrees")
+	if top == "" || filepath.Dir(filepath.Clean(workbenchWorktreeFlagPath)) != root {
+		res.Error = "not a session worktree: " + workbenchWorktreeFlagPath
+		return writeJSON(cmd.OutOrStdout(), res)
 	}
-	res := workbenchgit.RemoveWorktree(ctx, o, req)
-	res.WorkbenchID = id
-	if unregErr != nil && res.Warning == "" {
-		res.Warning = "the MCP registration of " + cwd + " was not removed: " + unregErr.Error()
+	opts, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: sessionCwdIn(ctx, o, workbenchWorktreeFlagPath)})
+	if err == nil {
+		err = devpack.UnregisterWorkbenchMCP(ctx, opts)
+	}
+	if err != nil {
+		res.Error = err.Error()
+	} else {
+		res.Forgot = true
 	}
 	return writeJSON(cmd.OutOrStdout(), res)
+}
+
+// sessionCwdIn is the worktree top joined with the main folder's path below
+// its own top level (a workbench bound to a repository subfolder).
+func sessionCwdIn(ctx context.Context, main workbenchgit.Options, worktreeTop string) string {
+	top := workbenchgit.ReadStatus(ctx, main).TopLevel
+	rel, err := filepath.Rel(top, main.Folder)
+	if top == "" || err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return worktreeTop
+	}
+	return filepath.Join(worktreeTop, rel)
 }
 
 // installWorktreeIntegration is `integrate claude-code` (and codex's skill,
@@ -1400,19 +1297,11 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string) er
 	return err
 }
 
-func unregisterWorktreeMCP(ctx context.Context, id int64, folder string) error {
-	o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: folder})
-	if err != nil {
-		return err
-	}
-	return devpack.UnregisterWorkbenchMCP(ctx, o)
-}
-
-func writeWorktreeEnvelope(ctx context.Context, cmd *cobra.Command, id int64, res workbenchgit.WorktreeResult, cwd string) error {
+func writeWorktreeEnvelope(ctx context.Context, cmd *cobra.Command, id int64, res workbenchgit.WorktreeResult) error {
 	res.WorkbenchID = id
 	env := worktreeEnvelope{WorktreeResult: res}
-	if cwd != "" {
-		if err := installWorktreeIntegration(ctx, id, cwd); err != nil {
+	if res.Created && res.Cwd != "" {
+		if err := installWorktreeIntegration(ctx, id, res.Cwd); err != nil {
 			env.IntegrationError = err.Error()
 		}
 	}
@@ -1424,138 +1313,235 @@ func writeWorktreeEnvelope(ctx context.Context, cmd *cobra.Command, id int64, re
 }
 ```
 
-`workbenchInstallOptions` reads only `ID` and `FolderPath` of the `*db.Workbench`. `sessionCwdIn(mainFolder, worktreeTop)` = `worktreeTop` joined with the main folder's path relative to its repository top level — compute it with `workbenchgit.ReadStatus(ctx, Options{Folder: mainFolder}).TopLevel` and `filepath.Rel`; put it in this file with a one-line comment.
-
-`workbenchInstallOptions` in `cmd/integrate_workbench.go` reads `workbenchCommandRunner` and `workbenchExecutable` — the tests' stubs therefore cover the worktree install too.
+Check the real names of `config.Load`, `flagConfig`, `devpack.CodexFound`, `codexFindBinary`, `codexAppServerFor` against how `cmd/integrate_workbench.go` installs Codex today and copy that call shape exactly; the above is the intent. `forget` uses `ReadStatus` only to read the top level (no write); it must not touch `workbenchgit` beyond that.
 
 - [ ] **Step 5: Trust prompt spike (spec §8 open item)**
 
-Manually, once: `go build -o /tmp/wt ./ && /tmp/wt workbench worktree create --workbench <a test workbench> --name trust --json`, then run `claude` in the printed `cwd` from a terminal. Record in the plan's execution notes (and in `docs/features/workbench.md`, Task 12) whether Claude Code shows its folder-trust prompt. Do **not** write to `~/.claude.json` to suppress it: if it appears, it is a documented v1 limit (the owner accepts it once per worktree in the embedded terminal). Remove the test worktree with `remove`.
+Manually, once: `go build -o "$TMPDIR/wt" . && "$TMPDIR/wt" workbench worktree create --workbench <a scratch workbench on a scratch repo> --name trust --json`, then run `claude` in the printed `cwd` from a terminal. Record in the ledger (and later in `docs/features/workbench.md`, Task 14) whether Claude Code shows its folder-trust prompt. Do **not** write `~/.claude.json` to suppress it: if it appears it is a documented v1 limit. Clean up with `git worktree remove` in the scratch repo and `"$TMPDIR/wt" workbench worktree forget …`.
 
 - [ ] **Step 6: Run the tests**
 
-Run: `go test ./cmd -run 'TestWorkbenchWorktree|TestWorktreeRemove_KeepsShared' && go test ./internal/devpack`
+Run: `go test ./cmd -run TestWorkbenchWorktree && go test ./internal/devpack`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add cmd/workbench_worktree.go cmd/workbench_worktree_test.go internal/devpack
-git commit -m "feat(cmd): workbench worktree create|ensure|remove with the workbench integration"
+git commit -m "feat(cmd): workbench worktree create|ensure|forget with the workbench integration"
 ```
 
 ---
 
-### Task 6: Workbench deletion cleans session worktrees (PROJ-02)
+### Task 6: Cleanup owns a placed row's worktree and branch by record (PROJ-18)
 
-**Depends on:** Tasks 1, 5.
+**Depends on:** Task 1.
 
 **Files:**
-- Modify: `cmd/workbench.go` (`runWorkbenchDelete`, ~l.471)
-- Test: `cmd/workbench_test.go`
-- Modify: `docs/inventory/workbench.md` (PROJ-02 amendment)
+- Modify: `internal/sessioncleanup/deps.go` (`SessionInfo`), `internal/sessioncleanup/store.go` (`DBStore.CleanupSession`), `internal/sessioncleanup/ownership.go`, `internal/sessioncleanup/catches.go` (`catchOwnWorktree`, `catchOwnBranch`), `internal/sessioncleanup/plan.go` (`listsWorktree`, `branchCandidates` if they filter by `sawWorktree`/`branches`)
+- Test: `internal/sessioncleanup/placed_test.go`
+- Modify: `docs/inventory/workbench.md` (PROJ-18 amendment)
 
 **Interfaces:**
-- Consumes: `db.SessionWorktrees` (Task 1), `workbenchgit.RemoveWorktree` (Task 4), `unregisterWorktreeMCP` (Task 5).
-- Produces: `workbench delete` JSON gains `"kept_worktrees": [path…]`.
+- Consumes: `db.TerminalSession.WorktreeBranch`, `.FolderPath` (Task 1).
+- Produces: `SessionInfo` gains `PlacedCwd string` (the row's `folder_path` when `worktree_branch` is set, else "") and `PlacedBranch string`; `observed` gains `placedCwd`, `placedBranch` (resolved like other roots); `func (o observed) placedWorktree(w worktree, all []worktree) bool` — `w` is the longest listed linked worktree root containing `placedCwd`.
 
-- [ ] **Step 1: Write the failing test**
+Read `ownership.go`, `catches.go` (`catchOwnWorktree` ~l.102, `catchOwnBranch` ~l.293), `plan.go` (`loadSession` ~l.132, `loadObserved` ~l.226, `listsWorktree` ~l.272, `branchCandidates` ~l.367) and `plan_test.go` (`WorktreeOlderThanTheSessionIsKept` ~l.111 — its fixture builder is the model for the new tests) before starting.
+
+- [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestWorkbenchDelete_RemovesCleanSessionWorktreesKeepsDirty(t *testing.T) {
-	folder := newGitWorkbenchFolder(t)
-	id := createTestWorkbenchRow(t, folder)
-	stubWorkbenchCommandRunner(t, nil)
-	clean := createWorktreeRow(t, id, folder, "c") // runs `workbench worktree create`, inserts a terminal_sessions row with worktree_branch/base
-	dirty := createWorktreeRow(t, id, folder, "d")
-	writeTestFile(t, dirty.Path, "README.md", "edited\n")
+// A placed row: Watchtower created the worktree and its wt/ branch before
+// inserting the row, so both are born before created_at; by record they are
+// the session's anyway (spec §9). Every other catch still runs.
+func TestCleanupPlacedRowOwnsItsWorktreeAndBranch(t *testing.T) {
+	fx := newFixture(t)                                   // the plan_test.go fixture builder
+	wt := fx.addWorktree("wt/p", ".claude/worktrees/p")   // born now
+	fx.pushBranch("wt/p")                                 // so W7/B4 do not keep it
+	s := fx.newSessionAfter(time.Minute, sessionPlaced(wt.Root, "wt/p")) // row created after the worktree
+	plan := fx.plan(s)
+	assert.Equal(t, "remove", plan.item("worktree:"+wt.Root).Action, plan.item("worktree:"+wt.Root).Reason)
+	assert.Equal(t, "remove", plan.item("branch:wt/p").Action)
+}
 
-	out := runCmd(t, "workbench", "delete", fmt.Sprint(id), "--json")
-	assert.NoDirExists(t, clean.Path)
-	assert.DirExists(t, dirty.Path, "PROJ-17: uncommitted work survives the delete")
-	assert.Contains(t, string(out), dirty.Path, "the kept worktree is named")
+func TestCleanupPlacedSubfolderRowOwnsItsWorktree(t *testing.T) {
+	fx := newFixture(t)
+	wt := fx.addWorktree("wt/s", ".claude/worktrees/s")
+	fx.pushBranch("wt/s")
+	s := fx.newSessionAfter(time.Minute, sessionPlaced(filepath.Join(wt.Root, "app", "web"), "wt/s"))
+	assert.Equal(t, "remove", fx.plan(s).item("worktree:"+wt.Root).Action)
+}
+
+func TestCleanupPlacedRowStillKeepsUncommittedWork(t *testing.T) {
+	fx := newFixture(t)
+	wt := fx.addWorktree("wt/d", ".claude/worktrees/d")
+	fx.pushBranch("wt/d")
+	fx.writeFile(wt.Root, "README.md", "edited\n")
+	s := fx.newSessionAfter(time.Minute, sessionPlaced(wt.Root, "wt/d"))
+	it := fx.plan(s).item("worktree:" + wt.Root)
+	assert.Equal(t, "keep", it.Action)
+	assert.Equal(t, ReasonUncommittedChanges, it.Reason)
+}
+
+func TestCleanupUnplacedOldWorktreeStillKept(t *testing.T) {
+	fx := newFixture(t)
+	wt := fx.addWorktree("wt/o", ".claude/worktrees/o")
+	fx.pushBranch("wt/o")
+	other := fx.addWorktree("wt/p2", ".claude/worktrees/p2")
+	s := fx.newSessionAfter(time.Minute, sessionPlaced(other.Root, "wt/p2"), sessionObserved(wt.Root, "wt/o"))
+	assert.Equal(t, ReasonExistedBeforeSession, fx.plan(s).item("worktree:"+wt.Root).Reason,
+		"by-record ownership covers only the row's own placed worktree")
 }
 ```
 
-Use the delete command's real flag shape (read `runWorkbenchDelete` first; it may confirm differently).
+These names (`newFixture`, `addWorktree`, `pushBranch`, `newSessionAfter`, `sessionPlaced`, `sessionObserved`, `plan`, `item`, `writeFile`, `ReasonUncommittedChanges`) are the intent: map each onto what `plan_test.go`/`helpers_test.go` already provide (the fake `Store`, the clock, the repo builder, the reason constant names in `catches.go`), and add only the two option helpers (`sessionPlaced` sets `SessionInfo.PlacedCwd/PlacedBranch` on the fake store's session) that do not exist.
 
-- [ ] **Step 2: Run it to see it fail**
+- [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./cmd -run TestWorkbenchDelete_RemovesCleanSessionWorktrees`
-Expected: FAIL — clean worktree still on disk.
+Run: `go test ./internal/sessioncleanup -run 'TestCleanupPlaced|TestCleanupUnplaced'`
+Expected: FAIL — the placed items are kept `existed_before_session` (or the fields are undefined).
 
 - [ ] **Step 3: Implement**
 
-In `runWorkbenchDelete`, before the row deletion and before `workbenchRemoveInstall`, read `database.SessionWorktrees(p.ID)`; for each: `unregisterWorktreeMCP(ctx, p.ID, s.FolderPath)` when the folder exists, then `workbenchgit.RemoveWorktree(ctx, Options{Folder: p.FolderPath}, RemoveRequest{Path: <top of s.FolderPath>, Branch: s.Branch, Base: s.Base})` — the stored `folder_path` is the session cwd; its worktree top is `<main top>/.claude/worktrees/<the path component right after it>` (write a small `worktreeTopOf(cwd, mainTop string) (string, bool)` helper in `cmd/workbench_worktree.go` and use it in Task 5's remove too). Collect `res.Kept` paths into `kept_worktrees` in the output (JSON and text). Failures are joined into the command's error like `workbenchRemoveInstall`'s.
+- `SessionInfo` gains `PlacedCwd, PlacedBranch string`. `DBStore.CleanupSession` fills them from `GetTerminalSession`: when `row.WorktreeBranch.Valid`, `PlacedCwd = row.FolderPath`, `PlacedBranch = row.WorktreeBranch.String`.
+- `observe` (or `loadObserved` right after it) records the placed pair: `placedCwd = resolvePath(PlacedCwd)` (empty stays empty), `placedBranch`. The placed root also counts as seen (`roots[...]`) once found, and the placed branch as seen (`branches[...]`), so `listsWorktree`/`branchCandidates` list them.
+- `placedWorktree(w, all)`: `placedCwd != ""`, `w` is a linked worktree (never the main one — W1 runs first anyway), `within(placedCwd, w.Root)`, and no other listed worktree root containing `placedCwd` is longer than `w.Root` (reuse `longestContaining`/`within` from `internal/workbenchgit/folder.go` if exported, else a local helper with the same rule).
+- `catchOwnWorktree`: if `b.seen.placedWorktree(w, b.worktrees)` → return no catch (skip both the seen check and `bornReason`). `catchOwnBranch`: if `br.Name == b.seen.placedBranch` → no catch. Every other catch is unchanged and still runs.
+- Doc comment on `placedWorktree`: "Watchtower created this worktree and branch for this row (board #229); by record they are the session's, although born before the row (spec 2026-10-14-session-worktrees-design.md §9)."
 
-PROJ-02 amendment in `docs/inventory/workbench.md` (append to PROJ-02's Observable): "Since 2026-10-14 (spec session worktrees §9): deleting a workbench also removes each of its session worktrees that has no uncommitted work and unregisters their MCP entries; a worktree with uncommitted work stays on disk (PROJ-17) and is listed in `kept_worktrees`." Add the test name to its guard tests.
+- [ ] **Step 4: Run the package**
 
-- [ ] **Step 4: Run the tests**
+Run: `go test ./internal/sessioncleanup && go test ./cmd -run TestWorkbenchCleanup`
+Expected: PASS (all existing PROJ-18 guards unchanged).
 
-Run: `go test ./cmd -run 'TestWorkbenchDelete'`
-Expected: PASS.
+- [ ] **Step 5: Amend PROJ-18 in the inventory**
 
-- [ ] **Step 5: Commit**
+In `docs/inventory/workbench.md`, PROJ-18 (`## PROJ-18 — session cleanup never removes …`): add to **Observable**, after the ownership rule, one paragraph:
+
+> *2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch` — although both were born before the row. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
+
+Add to **Test guards**: `internal/sessioncleanup/placed_test.go` — `TestCleanupPlacedRowOwnsItsWorktreeAndBranch`, `TestCleanupPlacedSubfolderRowOwnsItsWorktree`, `TestCleanupPlacedRowStillKeepsUncommittedWork`, `TestCleanupUnplacedOldWorktreeStillKept`; `internal/workbenchgit/worktree_ensure_test.go` — `TestProj18_PlacementNeverForcesOrDiscards`. Append `; amended 2026-10-14 (placed sessions, board #229, asks #122/#124)` to its Status line.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/workbench.go cmd/workbench_test.go internal/db docs/inventory/workbench.md
-git commit -m "feat(cmd): workbench delete removes clean session worktrees (PROJ-02)"
+git add internal/sessioncleanup docs/inventory/workbench.md
+git commit -m "feat(sessioncleanup): a placed row owns its worktree and wt/ branch by record (PROJ-18)"
 ```
 
 ---
 
-### Task 7: WatchtowerCore — envelopes and `SessionPlacement`
+### Task 7: Workbench deletion cleans placed worktrees (PROJ-02); PROJ-14 pin
 
-**Depends on:** none (pure Swift).
+**Depends on:** Tasks 1, 5, 6.
+
+**Files:**
+- Modify: `cmd/workbench.go` (`runWorkbenchDelete`, ~l.472)
+- Test: `cmd/workbench_test.go` (or the file holding the `workbench delete` tests)
+- Test: `internal/sessionreport/` (the package's existing test file for branch refs)
+- Modify: `docs/inventory/workbench.md` (PROJ-02 amendment; PROJ-14 guard line)
+
+**Interfaces:**
+- Consumes: `db.PlacedSessions` (Task 1); the in-process cleanup entry `cmd/workbench_cleanup.go` uses (read it: the function that builds a `sessioncleanup.Request` and calls the plan/apply — reuse it, do not re-implement); `devpack.UnregisterWorkbenchMCP` (Task 5).
+- Produces: `workbench delete --json` gains `"kept_worktrees": [path…]` (never null).
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes(t *testing.T) {
+	folder := newGitWorkbenchFolder(t)
+	id := createTestWorkbenchRow(t, folder)
+	stubWorkbenchCommandRunner(t, nil)
+	clean := createPlacedSession(t, id, "c")   // worktree create + a row with worktree_branch, branch pushed to a bare remote
+	dirty := createPlacedSession(t, id, "d")
+	writeFileAt(t, dirty.Path, "README.md", "edited\n")
+
+	out := runCmd(t, "workbench", "delete", fmt.Sprint(id), "--json")
+	var res struct{ KeptWorktrees []string `json:"kept_worktrees"` }
+	require.NoError(t, json.Unmarshal(out, &res))
+	assert.NoDirExists(t, clean.Path)
+	assert.DirExists(t, dirty.Path)
+	assert.Equal(t, []string{dirty.Path}, res.KeptWorktrees)
+}
+```
+
+`createPlacedSession` is a new test helper in this test file: run `workbench worktree create`, push its branch to a bare remote the fixture sets up (so PROJ-18's W7/B4 allow removal — read how `internal/sessioncleanup/apply_test.go::MergedAndPushedWorkIsRemoved` makes work "pushed"), and insert a `terminal_sessions` row with `folder_path = cwd`, `worktree_branch`, `worktree_base`. Use the existing helper names for the rest.
+
+Session report pin (spec §11 PROJ-14): in `internal/sessionreport`'s test file for `branch:` refs, add `TestSessionReport_ReportsAWorktreeBranch`: a target linked with `branch: wt/x` where `wt/x` exists only as a branch checked out in a linked worktree resolves the same as any branch (read the nearest existing branch-ref test and copy its fixture; only the branch's location differs).
+
+- [ ] **Step 2: Run them to see them fail**
+
+Run: `go test ./cmd -run TestWorkbenchDelete_CleansPlaced && go test ./internal/sessionreport -run TestSessionReport_ReportsAWorktreeBranch`
+Expected: the delete test FAILs (worktrees left, no `kept_worktrees`); the report test is expected to PASS already (it pins existing behaviour) — if it fails, stop and report it as a spec deviation instead of changing `internal/sessionreport`.
+
+- [ ] **Step 3: Implement**
+
+In `runWorkbenchDelete`, before the install removal and `DeleteWorkbench`: for each `PlacedSessions(id)` row, run the session cleanup **apply** in process for that session with exactly two items, `worktree:<root>` and `branch:<branch>` (root = the plan item whose key starts with `worktree:` and whose root contains the row's `folder_path`; take it from a plan of that session — plan first, then apply only those keys, as the CLI's `--item` path does). An item that is not removed → its path goes into `kept_worktrees`; a removed worktree → `devpack.UnregisterWorkbenchMCP` for the row's `folder_path` (best effort, a failure is one stderr warning). A cleanup error is a stderr warning and the path goes into `kept_worktrees`; deletion continues (PROJ-02: the workbench is deleted anyway, as the install-removal failure already is).
+
+- [ ] **Step 4: Run the tests**
+
+Run: `go test ./cmd -run 'TestWorkbenchDelete|TestProj02' && go test ./internal/sessionreport`
+Expected: PASS.
+
+- [ ] **Step 5: Inventory**
+
+PROJ-02 (`docs/inventory/workbench.md` ~l.115): add to Observable: "*2026-10-14 (board #229, asks #122/#124):* deleting a workbench first runs the session cleanup (PROJ-18) for every placed session's worktree and `wt/` branch; a worktree the cleanup keeps stays on disk and is listed in `kept_worktrees`; a removed one's local MCP entry is unregistered." Add the test to its guards. PROJ-14: add `TestSessionReport_ReportsAWorktreeBranch` to its guards with "(a placed session's `wt/` branch, board #229)".
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cmd internal/sessionreport docs/inventory/workbench.md
+git commit -m "feat(workbench): deleting a workbench cleans its placed worktrees (PROJ-02)"
+```
+
+---
+
+### Task 8: WatchtowerCore — envelopes and `SessionStartPlacement`
+
+**Depends on:** Task 5 (envelope shape).
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Models/WorkbenchWorktree.swift`
-- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionPlacement.swift`
-- Test: `WatchtowerDesktop/Tests/Core/SessionPlacementTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchWorktreeDecodingTests.swift`
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionStartPlacement.swift`
+- Test: `WatchtowerDesktop/Tests/Core/SessionStartPlacementTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchWorktreeDecodingTests.swift`
 
 **Interfaces:**
-- Consumes: `WorkbenchGitStatus` (`WatchtowerCore/Models/WorkbenchGit.swift`: `gitAvailable`, `git`, `unborn` — read the file for the exact property names).
+- Consumes: `WorkbenchGitStatus` (`gitAvailable`, `git`, `unborn`, `statusOK`), `SessionPlace` (`.unknown`, `.main`, `.worktree(name:root:status:)`, `.removed(name:path:)`), `TerminalSession.folderPath`, `.worktreeBranch`, `.kind.isAgent`.
 - Produces:
 
 ```swift
 package struct WorktreeCreateResult: Decodable, Equatable, Sendable {
-    package var created: Bool
-    package var path: String
-    package var cwd: String
-    package var branch: String
-    package var base: String
-    package var baseDirty: Bool
-    package var included: [String]
-    package var includeWarnings: [String]
-    package var refused: String
-    package var refusedDetail: String
-    package var error: String
-    package var warning: String
-    package var integrationError: String
+    package let workbenchID: Int64
+    package let created: Bool
+    package let path: String
+    package let cwd: String
+    package let branch: String
+    package let base: String
+    package let baseBranch: String
+    package let baseDirty: Bool
+    package let included: [String]
+    package let includeWarnings: [String]
+    package let refused: String
+    package let refusedDetail: String
+    package let error: String
+    package let warning: String
+    package let integrationError: String
+}
+package struct WorktreeForgetResult: Decodable, Equatable, Sendable {
+    package let workbenchID: Int64
+    package let forgot: Bool
+    package let error: String
 }
 
-package struct WorktreeRemoveResult: Decodable, Equatable, Sendable {
-    package var removed: Bool
-    package var kept: Bool
-    package var changes: Int
-    package var gone: Bool
-    package var branchDeleted: Bool
-    package var refused: String
-    package var error: String
-    package var warning: String
-}
+package enum WorktreeChoice: String, Sendable, CaseIterable { case auto, folder, worktree }
 
-package enum WorktreeChoice: String, Sendable { case auto, folder, worktree }
-
-package enum SessionPlacement: Equatable, Sendable {
-    case folder
+package enum SessionStartPlacement: Equatable, Sendable {
+    case folder(note: String?)   // note: why a worktree was not used, when one was asked for or implied
     case worktree
-    /// The folder cannot have worktrees; `reason` is shown when the owner asked for one.
-    case folderOnly(reason: String)
 
-    package static func decide(choice: WorktreeChoice, git: WorkbenchGitStatus?, occupied: Bool) -> SessionPlacement
-
-    /// Lowercase ASCII slug, ≤ 40: "<targetID>-<first words>" or "session-<n>".
+    package static func decide(choice: WorktreeChoice, gitStatus: WorkbenchGitStatus?, occupied: Bool) -> Self
+    package static func occupies(row: TerminalSession, place: SessionPlace, workbenchFolder: String) -> Bool
+    package static func unavailableReason(_ gitStatus: WorkbenchGitStatus?) -> String?
     package static func slug(targetID: Int64?, targetText: String?, sessionNumber: Int) -> String
 }
 ```
@@ -1563,77 +1549,141 @@ package enum SessionPlacement: Equatable, Sendable {
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
-final class SessionPlacementTests: XCTestCase {
-    private func status(git: Bool = true, available: Bool = true, unborn: Bool = false) -> WorkbenchGitStatus {
-        // build through JSON so the test does not depend on the memberwise init
-        let json = #"{"workbench_id":1,"git_available":\#(available),"git":\#(git),"unborn":\#(unborn)}"#
+import XCTest
+@testable import WatchtowerCore
+
+final class SessionStartPlacementTests: XCTestCase {
+    private func status(git: Bool = true, available: Bool = true, unborn: Bool = false, ok: Bool = true) -> WorkbenchGitStatus {
+        // build through JSON so the test does not depend on a memberwise init
+        let json = """
+        {"workbench_id":1,"git_available":\(available),"git":\(git),"unborn":\(unborn),"status_ok":\(ok)}
+        """
         return try! JSONDecoder().decode(WorkbenchGitStatus.self, from: Data(json.utf8))
     }
 
-    func testLoneSessionStaysInFolder() {
-        XCTAssertEqual(SessionPlacement.decide(choice: .auto, git: status(), occupied: false), .folder)
+    func testAutoUsesTheFolderWhenFree() {
+        XCTAssertEqual(SessionStartPlacement.decide(choice: .auto, gitStatus: status(), occupied: false), .folder(note: nil))
     }
-    func testOccupiedFolderGetsWorktree() {
-        XCTAssertEqual(SessionPlacement.decide(choice: .auto, git: status(), occupied: true), .worktree)
+
+    func testAutoUsesAWorktreeWhenOccupied() {
+        XCTAssertEqual(SessionStartPlacement.decide(choice: .auto, gitStatus: status(), occupied: true), .worktree)
     }
+
     func testOverridesWin() {
-        XCTAssertEqual(SessionPlacement.decide(choice: .folder, git: status(), occupied: true), .folder)
-        XCTAssertEqual(SessionPlacement.decide(choice: .worktree, git: status(), occupied: false), .worktree)
+        XCTAssertEqual(SessionStartPlacement.decide(choice: .folder, gitStatus: status(), occupied: true), .folder(note: nil))
+        XCTAssertEqual(SessionStartPlacement.decide(choice: .worktree, gitStatus: status(), occupied: false), .worktree)
     }
-    func testNoGitNeverWorktree() {
-        for st in [status(git: false), status(available: false), status(unborn: true), nil] {
-            guard case .folderOnly = SessionPlacement.decide(choice: .worktree, git: st, occupied: true) else {
-                return XCTFail("expected folderOnly for \(String(describing: st))")
+
+    func testNoWorktreeWithoutGitOrACommit() {
+        for s in [status(git: false), status(available: false), status(unborn: true), status(ok: false), nil] {
+            guard case .folder(let note) = SessionStartPlacement.decide(choice: .auto, gitStatus: s, occupied: true) else {
+                return XCTFail("\(String(describing: s))")
             }
+            XCTAssertNotNil(note, "an implied worktree that cannot be made says why")
+            XCTAssertNotNil(SessionStartPlacement.unavailableReason(s))
         }
+        XCTAssertEqual(SessionStartPlacement.decide(choice: .auto, gitStatus: status(git: false), occupied: false), .folder(note: nil),
+                       "a lone session in a plain folder needs no note")
     }
+
+    func testOccupancyFollowsThePlace() {
+        let folder = "/repo"
+        let plain = TestRows.session(folderPath: folder)
+        let placed = TestRows.session(folderPath: "/repo/.claude/worktrees/a", worktreeBranch: "wt/a")
+        XCTAssertTrue(SessionStartPlacement.occupies(row: plain, place: .unknown, workbenchFolder: folder), "fresh, before its first hook")
+        XCTAssertTrue(SessionStartPlacement.occupies(row: plain, place: .main, workbenchFolder: folder))
+        XCTAssertFalse(SessionStartPlacement.occupies(row: placed, place: .unknown, workbenchFolder: folder), "placed, before its first hook")
+        XCTAssertTrue(SessionStartPlacement.occupies(row: placed, place: .main, workbenchFolder: folder), "an agent that cd'd back")
+        XCTAssertFalse(SessionStartPlacement.occupies(row: plain, place: .removed(name: "x", path: "/repo/.claude/worktrees/x"), workbenchFolder: folder))
+    }
+
     func testSlug() {
-        XCTAssertEqual(SessionPlacement.slug(targetID: 229, targetText: "Параллельные сессии: worktree!", sessionNumber: 3), "229-worktree")
-        XCTAssertEqual(SessionPlacement.slug(targetID: 12, targetText: "Fix the Login Bug in Settings view", sessionNumber: 1), "12-fix-the-login-bug")
-        XCTAssertEqual(SessionPlacement.slug(targetID: nil, targetText: nil, sessionNumber: 4), "session-4")
-        XCTAssertLessThanOrEqual(SessionPlacement.slug(targetID: 1, targetText: String(repeating: "abcdefghij ", count: 10), sessionNumber: 1).count, 40)
+        XCTAssertEqual(SessionStartPlacement.slug(targetID: 229, targetText: "Параллельные Sessions & worktrees!", sessionNumber: 3), "229-sessions-worktrees")
+        XCTAssertEqual(SessionStartPlacement.slug(targetID: nil, targetText: nil, sessionNumber: 3), "session-3")
+        XCTAssertLessThanOrEqual(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "word ", count: 30), sessionNumber: 1).count, 40)
+        XCTAssertFalse(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "ab ", count: 30), sessionNumber: 1).hasSuffix("-"))
     }
 }
 ```
 
-`WorkbenchWorktreeDecodingTests`: decode a create envelope with every key (snake_case, via `keyDecodingStrategy = .convertFromSnakeCase` or explicit `CodingKeys` — match what `WorkbenchGit.swift` does) and one with keys missing → defaults (`false`, `""`, `[]`), as `WorkbenchGit.swift`'s envelopes tolerate older Go.
+`TestRows.session(...)` stands for however `Tests/Core` builds a `TerminalSession` today (read an existing Core test that needs one — JSON decoding or a test factory); use that, adding the `worktreeBranch` argument to the factory if one exists. `WorkbenchWorktreeDecodingTests`: decode a full `create` envelope (every key, snake_case) and one with `refused: "unborn"` and empty arrays; decode `WorktreeForgetResult`.
 
-- [ ] **Step 2: Run them to see them fail**
+Run: `make test-swift FILTER='SessionStartPlacementTests|WorkbenchWorktreeDecodingTests'` → FAIL (undefined).
 
-Run: `make test-swift FILTER='SessionPlacementTests|WorkbenchWorktreeDecodingTests'`
-Expected: FAIL — types not found.
+- [ ] **Step 2: Implement**
 
-- [ ] **Step 3: Implement**
+`WorkbenchWorktree.swift`: the two structs with `CodingKeys` in snake_case (`workbench_id`, `base_branch`, `base_dirty`, `include_warnings`, `refused_detail`, `integration_error`); a custom `init(from:)` that defaults every missing key (`""`, `false`, `[]`) the way `WorkbenchGitStatus.init(from:)` does, so an older CLI decodes.
 
-`decide`: `guard let git, git.gitAvailable else { return .folderOnly(reason: "git is not available") }`; `guard git.git else { .folderOnly(reason: "the folder is not a git repository") }`; `guard !git.unborn else { .folderOnly(reason: "the repository has no commit yet") }`; then `switch choice { case .folder: .folder; case .worktree: .worktree; case .auto: occupied ? .worktree : .folder }`. Note `.folderOnly` is returned for `.auto` too; callers treat it as `.folder` and show the reason only when `choice == .worktree`.
+`SessionStartPlacement.swift`:
 
-`slug`: fold `targetText` with `.applyingTransform(.toLatin, reverse: false)` then `.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)`, lowercase, map any non `[a-z0-9]` run to one `-`, keep the first four words, trim dashes; prefix `"\(targetID)-"`; if the word part is empty use `"\(targetID)"`; cap to 40 by dropping whole trailing words, then hard-cut and trim a trailing dash. No target → `"session-\(sessionNumber)"`.
+```swift
+/// Where a new workbench agent session starts (board #229, spec
+/// 2026-10-14-session-worktrees-design.md §4). Pure; the view model feeds it
+/// the folder's git status and whether a live agent already works in it.
+package enum SessionStartPlacement: Equatable, Sendable {
+    case folder(note: String?)
+    case worktree
 
-Note on the first `testSlug` assertion: Cyrillic transliterates to Latin words ("parallelnye sessii worktree") — adjust the expected value to the transliteration your implementation produces with the first four words, e.g. `"229-parallelnye-sessii-worktree"`. Write the expectation after running once, then keep it fixed.
+    package static func decide(choice: WorktreeChoice, gitStatus: WorkbenchGitStatus?, occupied: Bool) -> Self {
+        let wants = choice == .worktree || (choice == .auto && occupied)
+        if choice == .folder || !wants { return .folder(note: nil) }
+        if let reason = unavailableReason(gitStatus) { return .folder(note: "Started in the folder: \(reason)") }
+        return .worktree
+    }
 
-Envelopes: mirror `WorkbenchGit.swift`'s decoding style exactly (its `init(from:)` with `decodeIfPresent ?? default`).
+    /// nil when a worktree can be made; else the reason in words.
+    package static func unavailableReason(_ s: WorkbenchGitStatus?) -> String? {
+        guard let s else { return "the folder's git status could not be read." }
+        if !s.gitAvailable { return "git is not available." }
+        if !s.git { return "the folder is not in a git repository." }
+        if !s.statusOK { return "the folder's git status could not be read." }
+        if s.unborn { return "the repository has no commit yet." }
+        return nil
+    }
 
-- [ ] **Step 4: Run the tests**
+    /// A live agent row works in the main folder: its place is the main
+    /// folder, or unknown and it was not placed in a worktree.
+    package static func occupies(row: TerminalSession, place: SessionPlace, workbenchFolder: String) -> Bool {
+        switch place {
+        case .main: return true
+        case .unknown: return row.worktreeBranch == nil && SessionPlace.isWorkbenchFolder(row.folderPath, workbenchFolder: workbenchFolder)
+        case .worktree, .removed: return false
+        }
+    }
 
-Run: `make test-swift FILTER='SessionPlacementTests|WorkbenchWorktreeDecodingTests'`
-Expected: PASS.
+    /// `<target id>-<words>` or `session-<n>`: lowercase ASCII letters,
+    /// digits and single dashes, at most 40 characters, no trailing dash.
+    package static func slug(targetID: Int64?, targetText: String?, sessionNumber: Int) -> String {
+        guard let targetID else { return "session-\(sessionNumber)" }
+        let folded = (targetText ?? "").folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .init(identifier: "en_US_POSIX")).lowercased()
+        let words = folded.split(whereSeparator: { !($0.isASCII && ($0.isLetter || $0.isNumber)) }).map(String.init)
+        var out = "\(targetID)"
+        for w in words where out.count + 1 + w.count <= 40 { out += "-" + w }
+        return out
+    }
+}
+```
 
-- [ ] **Step 5: Commit**
+(Non-ASCII words drop out — the test's Cyrillic word does.) Check the test's expectation against this code once by hand and adjust the test, not the rule, if they disagree on a detail the spec does not fix.
+
+Run: `make test-swift FILTER='SessionStartPlacementTests|WorkbenchWorktreeDecodingTests'` → PASS.
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add WatchtowerDesktop/Sources/WatchtowerCore WatchtowerDesktop/Tests/Core
-git commit -m "feat(core): session placement rule and worktree envelopes"
+git commit -m "feat(core): session start placement and worktree envelopes"
 ```
 
 ---
 
-### Task 8: `WorkbenchCLI` worktree calls
+### Task 9: `WorkbenchCLI` worktree calls
 
-**Depends on:** Tasks 5, 7.
+**Depends on:** Tasks 5, 8.
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/Services/WorkbenchCLI.swift` (next to `gitCreateBranch`, ~l.710)
-- Test: the existing `WorkbenchCLI` test file (find it: `grep -l "gitCreateBranch" WatchtowerDesktop/Tests`)
+- Modify: `WatchtowerDesktop/Sources/Services/WorkbenchCLI.swift` (next to `gitStatus`, ~l.715)
+- Test: the existing `WorkbenchCLI` tests file (find it: `grep -rl "gitStatus(projectID" WatchtowerDesktop/Tests`)
 
 **Interfaces:**
 - Produces:
@@ -1641,179 +1691,184 @@ git commit -m "feat(core): session placement rule and worktree envelopes"
 ```swift
 func worktreeCreate(projectID: Int64, name: String) async throws -> WorktreeCreateResult
 func worktreeEnsure(projectID: Int64, path: String, branch: String) async throws -> WorktreeCreateResult
-func worktreeRemove(projectID: Int64, path: String, branch: String, base: String?) async throws -> WorktreeRemoveResult
+func worktreeForget(projectID: Int64, path: String) async throws -> WorktreeForgetResult
 ```
 
-- [ ] **Step 1: Failing test** — with the test file's fake `CLIRunnerProtocol`, assert each call's argv:
-  `["workbench","worktree","create","--workbench","7","--name","s1","--json"]`,
-  `["workbench","worktree","ensure","--workbench","7","--path","/r/.claude/worktrees/s1","--branch","wt/s1","--json"]`,
-  `["workbench","worktree","remove","--workbench","7","--path","/r/.claude/worktrees/s1","--branch","wt/s1","--base","abc","--json"]` (no `--base` when nil), and that the stub's JSON decodes.
-- [ ] **Step 2:** `make test-swift FILTER=<that test class>` → FAIL.
-- [ ] **Step 3: Implement** — same shape as `gitCreateBranch`:
+Args: `["workbench","worktree","create","--workbench",id,"--name",name,"--json"]`, `[…,"ensure","--workbench",id,"--path",p,"--branch",b,"--json"]`, `[…,"forget","--workbench",id,"--path",p,"--json"]`; run through the same `runner.run(args:)` and `JSONDecoder` as `gitStatus`.
 
-```swift
-/// Creates a session worktree (`workbench worktree create`); a refusal is in the envelope.
-func worktreeCreate(projectID: Int64, name: String) async throws -> WorktreeCreateResult {
-    let data = try await runner.run(args: ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name, "--json"])
-    return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
-}
-
-/// Puts a removed session worktree back from its branch before a resume.
-func worktreeEnsure(projectID: Int64, path: String, branch: String) async throws -> WorktreeCreateResult {
-    let data = try await runner.run(args: ["workbench", "worktree", "ensure", "--workbench", String(projectID),
-                                           "--path", path, "--branch", branch, "--json"])
-    return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
-}
-
-/// Removes a session worktree with no uncommitted work (PROJ-17); `kept` otherwise.
-func worktreeRemove(projectID: Int64, path: String, branch: String, base: String?) async throws -> WorktreeRemoveResult {
-    var args = ["workbench", "worktree", "remove", "--workbench", String(projectID), "--path", path, "--branch", branch]
-    if let base, !base.isEmpty { args += ["--base", base] }
-    args.append("--json")
-    let data = try await runner.run(args: args)
-    return try JSONDecoder().decode(WorktreeRemoveResult.self, from: data)
-}
-```
-
-- [ ] **Step 4:** run the filter → PASS.
-- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): WorkbenchCLI worktree calls"`.
+- [ ] **Step 1: Failing test** — with the file's fake runner, assert each call's exact argv and that a canned envelope decodes. Run `make test-swift FILTER=<that test class>` → FAIL.
+- [ ] **Step 2: Implement** the three methods mirroring `gitStatus`. Run → PASS.
+- [ ] **Step 3: Commit** `git commit -m "feat(desktop): WorkbenchCLI worktree create/ensure/forget"`.
 
 ---
 
-### Task 9: Session report sees worktree branches (spec §11 PROJ-14 check)
+### Task 10: Launch — the setup command before the agent's first start
 
-**Depends on:** Task 2.
-
-**Files:**
-- Test: `internal/sessionreport/refresh_test.go`
-
-- [ ] **Step 1: Write the test** — in `refresh_test.go`'s style (read it first; it fakes `gh`), create a repo, a workbench row on it, a worktree via `workbenchgit.CreateWorktree`, a commit on `wt/<slug>` merged into main, and call `Refresh` with ref `branch:wt/<slug>`: the cached state reads `merged` without any change to `refresh.go`. Name: `TestRefresh_WorktreeBranchResolvesFromTheMainFolder`.
-- [ ] **Step 2:** `go test ./internal/sessionreport -run TestRefresh_WorktreeBranch` → PASS on first run is the expected outcome (it pins existing behaviour). If it fails, stop and report to the controller: the spec's PROJ-14 change is needed after all.
-- [ ] **Step 3: Commit** — `git commit -m "test(sessionreport): worktree branches resolve from the main folder"`.
-
----
-
-### Task 10: Desktop — placement at start, setup command, resume, PROJ-10 guard
-
-**Depends on:** Tasks 1, 7, 8.
+**Depends on:** Task 1.
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`newSession`, `startNewSession`, `startTarget`, `createAndActivate`, `reopen`/`open` resume path)
-- Create: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Worktrees.swift` (placement + cleanup helpers; keeps `+Sessions.swift` from growing)
-- Modify: `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`hasLiveAgentSession` ~l.239; first-launch setup command in `run` ~l.852)
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift` (`make` gains `setupCommand: String?`)
-- Modify: `docs/inventory/workbench.md` (PROJ-10 amendment)
-- Test: `WatchtowerDesktop/Tests/WorkbenchesViewModelWorktreeTests.swift`, `WatchtowerDesktop/Tests/Core/TerminalLaunchTests.swift` (existing; add cases)
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift` (`make`, ~l.71)
+- Modify: `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`launch`/`run`, ~l.751–866: pass the prelude through)
+- Test: the existing `TerminalLaunch` tests (`grep -rl "TerminalLaunch.make" WatchtowerDesktop/Tests`)
 
 **Interfaces:**
-- Consumes: `SessionPlacement`, `WorktreeChoice`, `WorktreeCreateResult` (Task 7); `cli.worktreeCreate/worktreeEnsure` (Task 8); `NewSession.worktreeBranch/worktreeBase`, `Workbench.worktreeSetup` (Task 1); `cli.gitStatus(projectID:)`.
-- Produces: `newSession(projectID:placement:agent:worktree: WorktreeChoice = .auto)`, `workOn(…, worktree: WorktreeChoice = .auto)`; `startNotice[projectID]: String?` (a one-line note shown above the sessions panel, e.g. "Started in the folder: …" / "New worktree wt/x does not have the folder's uncommitted changes."); `TerminalCenter.isOccupying(folder:)`.
+- Produces: `TerminalLaunch.make(shell:folder:mode:rowID:codex:setup: String? = nil)`; `TerminalCenter.launch(…, setup: String? = nil)` (new trailing parameter, default nil, forwarded to `run` → `make`).
 
-- [ ] **Step 1: Write the failing tests** (`WorkbenchesViewModelWorktreeTests`, using the fakes `WorkbenchesViewModelSessionsTests` and `WorkbenchesViewModelGitTests` already use — read both first):
-  - `testLoneSessionStartsInFolder` — no live rows → row's `folderPath == project.folderPath`, `worktreeBranch == nil`, no `worktree create` call.
-  - `testSecondSessionGetsWorktree` — a live claude row in the folder → `worktree create --name session-2`, the row's `folderPath == cwd`, `worktreeBranch == "wt/session-2"`, `worktreeBase` stored.
-  - `testWorkOnUsesTargetSlug` — occupied folder, Work on It for target 229 → `--name 229-…`.
-  - `testRefusedCreateFallsBackWithNotice` — fake returns `refused: "not_git"` with `.auto` → folder row, no notice; with `.worktree` → folder row and `startNotice` names the reason.
-  - `testBaseDirtyNotice` — `base_dirty: true` → notice mentions uncommitted changes.
-  - `testConcurrentStartsSecondGetsWorktree` — two `newSession` calls started together on an idle folder: exactly one row in the folder, one in a worktree (placement is serialised per workbench).
-  - `testResumeEnsuresRemovedWorktree` — a row with `worktreeBranch` whose folder is missing → `worktree ensure` is called before launch; `refused: "unknown_branch"` → the row is `.unavailable` with "The worktree and its branch wt/… no longer exist."
-  - `testBranchSwitchGuardIgnoresWorktreeSessions` — a live agent row whose folder is a worktree → `gitSwitch(agentRunning: false)`; a live row in the main folder → `true`.
-  - `TerminalLaunchTests.testSetupCommandRunsBeforeAgentOnFirstLaunch` — `make(…, setupCommand: "npm install")` builds `-l -c "npm install || echo '…setup command failed…'; exec claude --session-id …"`; nil/empty → today's argv unchanged.
-- [ ] **Step 2:** `make test-swift FILTER='WorkbenchesViewModelWorktreeTests|TerminalLaunchTests'` → FAIL.
-- [ ] **Step 3: Implement**
+Rule: `setup` non-nil and non-blank, and the mode is a **new** agent start (`.newClaude` or a new Codex run — never `.resumeClaude`, a Codex resume or `.shell`) → the `-c` string becomes `<setup-block>; <the existing exec …>`, where
 
-  - `TerminalCenter.isOccupying(folder:)`: true when a live agent row's resolved `folderPath` equals the resolved `folder` (exact match, not "under": a worktree under `.claude/worktrees` does not occupy).
-  - `TerminalCenter.hasLiveAgentSession(workbenchID:workTree:)`: drop the `row.projectID == workbenchID` clause; keep only "resolved folder equals or is under `workTree`" **and** not under `<workTree>/.claude/worktrees/`. (Its only caller is the branch switch guard.)
-  - In `+Worktrees.swift`:
-
-```swift
-extension WorkbenchesViewModel {
-    /// Where a new agent session of `project` runs (spec §4): the folder, or
-    /// a fresh worktree whose row fields come back filled in. One decision
-    /// per workbench at a time, so two starts never both take the folder.
-    func placeNewSession(_ new: TerminalSessionQueries.NewSession, project: Workbench,
-                         choice: WorktreeChoice, slugTarget: (id: Int64, text: String)?) async -> TerminalSessionQueries.NewSession
-}
+```
+{ printf '\033[2mwatchtower: running the worktree setup command…\033[0m\n'; <setup>; } || printf 'watchtower: the worktree setup command failed (exit %s); starting the agent anyway.\n' "$?"
 ```
 
-    It awaits a per-workbench `placementLock` (an `[Int64: Task<Void, Never>]` chain on the VM), reads `cli.gitStatus` (failure → `nil` → `.folderOnly`), computes `occupied` from `terminalCenter.isOccupying(folder: project.folderPath)` **plus** rows this VM created in the folder whose launch is still pending (`pendingFolderStarts[projectID]` counter, incremented before `createAndActivate` and decremented after `activate` returns), decides, and for `.worktree` calls `cli.worktreeCreate(projectID:name:)`. Success → returns `new` with `folderPath = res.cwd`, `worktreeBranch = res.branch`, `worktreeBase = res.base`, and sets `startNotice` when `baseDirty`, `includeWarnings`, `integrationError` or `warning` is non-empty (one line, the first of them). Refusal/error/throw → returns `new` unchanged and, when `choice == .worktree`, sets `startNotice = "Started in the folder: \(reason)"`.
-  - Call it from `createAndActivate` only for rows with `projectID != nil` and `kind` `.claude`/`.codex` (standalone and shell rows untouched). Thread `choice` and the target (id, text) from `newSession` / `startNewSession` / `startTarget` as new defaulted parameters; `CodeHandoffCenter` and the setup session keep `.auto`.
-  - Setup command: `TerminalLaunch.make` gets `setupCommand: String?`; `TerminalCenter.run` passes `project.worktreeSetup` only when the row has `worktreeBranch != nil` **and** this is the row's fresh start (`fresh: true` from `createAndActivate`), never on resume.
-  - Resume: in the open/reopen path, before `activate(row, fresh: false…)`, if `row.worktreeBranch != nil` and the folder does not exist, call `cli.worktreeEnsure(projectID:path:branch:)` with `path` = the worktree top (strip the session's prefix: the top is `<main top>/.claude/worktrees/<slug>`, derivable from `folderPath` by taking the path up to the component after `.claude/worktrees`). `refused == "unknown_branch"` → set the row unavailable with the message above; after a successful ensure clear `worktreeRemovedAt` (`setWorktreeState(kept: false, removedAt: nil)` leaves it; add a `clearWorktreeRemoved` query in `TerminalSessionQueries` setting `worktree_removed_at = NULL`).
-  - PROJ-10 amendment in `docs/inventory/workbench.md` (append to PROJ-10 Observable): "Since 2026-10-14: an agent session working in its own session worktree (under `<top level>/.claude/worktrees/`) does not count as running in the folder; only an agent whose folder is the work tree or below it outside that directory does."
-- [ ] **Step 4:** run the filter → PASS; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): start concurrent sessions in their own worktree"`.
-
----
-
-### Task 11: Desktop — cleanup on finish, on delete, Remove Worktree
-
-**Depends on:** Task 10.
-
-**Files:**
-- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Worktrees.swift`
-- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`sessionExited` ~l.592, `delete` ~l.492)
-- Test: `WatchtowerDesktop/Tests/WorkbenchesViewModelWorktreeTests.swift` (add)
-
-**Interfaces:**
-- Produces: `func cleanUpWorktree(_ row: TerminalSession) async` (VM); `func removeWorktree(_ row: TerminalSession) async` (menu action, same call, but refuses while live).
+The setup text goes in verbatim (it is the owner's shell command, like a Makefile recipe); the agent's `exec …` is unchanged after it. Codex: prefix the same block inside `codexLoginCommand`'s shell before its `eval`/`exec` (read `codexScript`/`codexLoginCommand` and put the block where the existing `PATH=…` prefix goes, before the `exec`).
 
 - [ ] **Step 1: Failing tests**
-  - `testExitWhileFinishedRemovesCleanWorktree` — row with `worktreeBranch`, `finishedAt` set; `sessionExited(id, 0)` → `worktree remove --path <top> --branch wt/… --base <sha>`; envelope `removed` → row `worktreeRemovedAt` set.
-  - `testExitWhileNotFinishedDoesNothing` — `finishedAt == nil` → no remove call.
-  - `testKeptMarksRow` — envelope `kept: true` → `worktreeKept == true`; a later successful remove clears it.
-  - `testDeleteRowRemovesWorktreeFirst` — `delete(row)` calls remove before the row deletion; a `kept` worktree does not block the row deletion, and `startNotice` says "The worktree at … has uncommitted changes and was left on disk."
-  - `testRemoveWorktreeRefusedWhileLive` — live row → no CLI call, notice "Stop the agent first".
-- [ ] **Step 2:** filter → FAIL.
-- [ ] **Step 3: Implement** — `sessionExited`: after its existing body, `if let row = rowsByID[id], row.worktreeBranch != nil, row.worktreeRemovedAt == nil, row.finishedAt != nil { Task { await cleanUpWorktree(row) } }` (re-read the row from the DB first: `finished_at` is written by Go hooks, the in-memory copy may be stale). `cleanUpWorktree` calls `cli.worktreeRemove(projectID:path:branch:base:)` and writes `setWorktreeState(kept: res.kept, removedAt: res.removed ? now ISO : nil)`; a thrown error is logged with `NSLog` and leaves the row alone. `delete` runs `cleanUpWorktree` after closing the process and before the row deletion. Reload the panel's rows after each write.
-- [ ] **Step 4:** filter → PASS.
-- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): remove a finished session's clean worktree"`.
+
+```swift
+func testSetupRunsBeforeANewClaudeStart() {
+    let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: "u", prompt: nil), setup: "npm install")
+    let script = l.args.last!
+    XCTAssertTrue(script.contains("npm install; }"), script)
+    XCTAssertTrue(script.range(of: "npm install")!.lowerBound < script.range(of: "exec claude")!.lowerBound)
+}
+func testSetupNeverRunsOnResumeOrShell() {
+    XCTAssertFalse(TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .resumeClaude(uuid: "u"), setup: "npm install").args.joined().contains("npm install"))
+    XCTAssertFalse(TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .shell, setup: "npm install").args.joined().contains("npm install"))
+}
+func testBlankSetupChangesNothing() {
+    let a = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: "u", prompt: nil))
+    let b = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: "u", prompt: nil), setup: "  ")
+    XCTAssertEqual(a.args, b.args)
+}
+```
+
+Plus one Codex case (new run contains the block; read the Codex mode's case name). Use the real `Mode` case names (read `TerminalLaunch.Mode`). Also one test that actually runs the composed script with `/bin/sh -c` replacing `exec claude …` by `exec echo started` is **not** needed — keep it string-level.
+
+Run: `make test-swift FILTER=<TerminalLaunch test class>` → FAIL.
+
+- [ ] **Step 2: Implement**, then → PASS. `make test-swift FILTER=TerminalCenter` must stay green (the new parameter defaults to nil).
+- [ ] **Step 3: Commit** `git commit -m "feat(desktop): run a workbench's worktree setup command before a new agent start"`.
 
 ---
 
-### Task 12: Desktop UI, settings field and docs
+### Task 11: Desktop — placement at start
 
-**Depends on:** Tasks 10, 11.
+**Depends on:** Tasks 1, 8, 9, 10.
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/Views/Workbench/WorkbenchSessionsPanel.swift` (row badge ~row view; `.contextMenu` ~l.125)
-- Modify: the new-session and Work on It menus (find with `grep -rn "Work on It" WatchtowerDesktop/Sources/Views`), the workbench settings view (where `archive_after_days` is edited: `grep -rn "setArchiveAfterDays" WatchtowerDesktop/Sources/Views`)
-- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/WorktreeBadgePresentation.swift` (pure text)
-- Test: `WatchtowerDesktop/Tests/Core/WorktreeBadgePresentationTests.swift`
-- Modify: `docs/features/workbench.md` (new bullet), `CLAUDE.md` (append "session worktrees (2026-10-14 …)" to the Workbench feature line)
+- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`startNewSession` ~l.224, `startTarget` ~l.342, `createAndActivate` ~l.630, `newSession` ~l.194, `workOn` ~l.257, `startForTarget` ~l.321)
+- Create: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Placement.swift`
+- Test: `WatchtowerDesktop/Tests/WorkbenchesViewModelPlacementTests.swift`; update `WatchtowerDesktop/Tests/WorkbenchesViewModelSessionsTests.swift` only by adding cases (its #565 pins `testPlusStartsInTheMainFolderWhileAWorktreeSessionIsShown` and `testWorkOnItStartsInTheMainFolder` must stay green unchanged: no live agent occupies the main folder in them — if one does, give that test `worktree: .folder` explicitly and say so in the report)
 
 **Interfaces:**
-- Consumes: Tasks 1, 7, 10, 11.
-- Produces: `WorktreeBadgePresentation.badge(branch:) -> String` (`"⎇ " + middle-truncated to 24`), `.keptHelp` ("Uncommitted changes left in the worktree"), `.menuTitles` for the choices ("In This Folder", "In Its Own Worktree").
+- Consumes: `SessionStartPlacement`, `WorktreeChoice`, `WorktreeCreateResult` (Task 8); `cli.worktreeCreate` (Task 9); `cli.gitStatus(projectID:)`; `sessionPlaces.currentPlace(sessionID:)` (#565, `WorkbenchesViewModel.sessionPlaces`); `terminalCenter.liveAgentIDs`, its `rows` (or `TerminalSessionQueries.fetchForWorkbench`); `NewSession.worktreeBranch/worktreeBase`; `TerminalCenter.launch(…, setup:)` (Task 10); `Workbench.worktreeSetup`.
+- Produces: `worktree: WorktreeChoice = .auto` parameter on `newSession`, `startNewSession`, `workOn`, `startForTarget`, `startTarget`; `private(set) var startNotice: [Int64: String]` (per workbench, one line shown above the sessions panel; Task 14 renders it); `func placementForNewSession(project: Workbench, choice: WorktreeChoice, targetID: Int64?, targetText: String?) async -> (folderPath: String, worktreeBranch: String?, worktreeBase: String?, notice: String?)`; serialisation: one placement decision in flight per workbench (an `actor`-free `[Int64: Task<…>]` chain on the main actor: a second start awaits the first's insert before deciding).
 
-- [ ] **Step 1: Failing test** — `WorktreeBadgePresentationTests`: `badge(branch: "wt/229-parallel-sessions-in-worktrees")` is ≤ 26 characters, starts with `"⎇ wt/"`, contains `"…"`; short names unchanged.
-- [ ] **Step 2:** `make test-swift FILTER=WorktreeBadgePresentationTests` → FAIL; implement; → PASS.
-- [ ] **Step 3: Views**
-  - Session row: when `worktreeBranch != nil && worktreeRemovedAt == nil`, a secondary-colour badge text; when `worktreeKept`, an orange dot with `.help(keptHelp)`.
-  - Row context menu, before "Delete…": **Show Worktree in Finder** (`NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.folderPath)])`), **Open Terminal in Worktree** (`newStandalone(kind: .shell, folder: URL(fileURLWithPath: row.folderPath))`), **Remove Worktree** (`removeWorktree(row)`, disabled while the row is live). Shown only for worktree rows.
-  - New session menu and Work on It: add a submenu or two items **In This Folder** / **In Its Own Worktree** passing `.folder` / `.worktree`; the plain button stays `.auto`.
-  - Settings: a `TextField("Worktree setup command", …)` saved through `WorkbenchQueries.setWorktreeSetup` on commit, with the caption "Runs in a new session worktree before the agent starts. Ignored files to copy go in .worktreeinclude at the repository root."
-  - The `startNotice` line above the sessions panel (same style as the existing session error line, dismissible).
-- [ ] **Step 4: Docs** — `docs/features/workbench.md`: a "Session worktrees (2026-10-14, board #229, PROJ-17; spec/plan paths)" bullet covering §2–§10 of the spec in the file's dense style, the trust-prompt finding from Task 5 Step 5, and the v1 limits of spec §13. `CLAUDE.md`: append to the Workbench line "; session worktrees (2026-10-14, board #229: migration 00110, `workbench worktree create|ensure|remove`, `.worktreeinclude` clones, `SessionPlacement`, PROJ-17, PROJ-02/10 amended)".
-- [ ] **Step 5:** `make test-swift FILTER='WorktreeBadgePresentationTests|WorkbenchesViewModelWorktreeTests'`, `make lint-diff` → clean.
-- [ ] **Step 6: Commit** — `git commit -m "feat(desktop): worktree badge, menus and setup command field; docs"`.
+Behaviour:
+1. `occupied` = any live agent row of the workbench (`liveAgentIDs`, `row.projectID == project.id`) with `SessionStartPlacement.occupies(row:place:workbenchFolder:)` true.
+2. `.worktree` → `cli.worktreeCreate(projectID:name: slug)`; `created` → folder = `cwd`, branch, base; notice: `base_dirty` → "The new worktree does not have the folder's uncommitted changes."; non-empty `include_warnings`/`warning`/`integration_error` → the first of them, prefixed "Worktree: ". Not created (refused, error, or the call threw) → main folder + notice "Started in the folder: <refused_detail | error | refused>".
+3. `.folder(note)` → main folder, notice = note.
+4. The row is inserted with that folder/branch/base; the first launch passes `setup: project.worktreeSetup` **only** when `worktreeBranch != nil` (fresh start).
+5. Reopening an existing row (`.openExisting`, `openMostRecentSession`) never re-decides.
+6. Shell sessions and standalone terminals are never placed.
+7. The setup session (`WorkbenchesViewModel.swift:735`) and `CodeHandoffCenter` (`.newSession(agent)`) go through `startNewSession` and so get `.auto`.
+
+- [ ] **Step 1: Failing tests** (`WorkbenchesViewModelPlacementTests`, using the fakes `WorkbenchesViewModelSessionsTests` uses — `SessionPlaceViewModelTests.RoutingRunner`, the fake CLI runner, a live-row helper; read them first):
+
+- `testALoneSessionStartsInTheFolder` — no live agent → `folderPath == folder`, no CLI `worktree` call, `worktreeBranch == nil`.
+- `testASecondSessionGetsAWorktree` — one live claude row in the folder (place `.main`) → the CLI got `worktree create --name session-2` (or the target slug), the row's `folderPath` is the envelope's `cwd`, `worktreeBranch == "wt/…"`, `worktreeBase` set, and the launch's `currentDirectory` is the `cwd`.
+- `testAPlacedLiveSessionDoesNotOccupyTheFolder` — the only live row is placed (place `.unknown`, `worktreeBranch` set) → the next start goes to the folder.
+- `testOverrideFolderAndWorktree` — `worktree: .folder` with an occupied folder → folder; `worktree: .worktree` with a free folder → worktree.
+- `testRefusedCreateFallsBackWithANote` — envelope `refused: "unborn"` → folder + `startNotice[projectID]` starts "Started in the folder:".
+- `testBaseDirtyShowsTheNote` — `base_dirty: true` → notice "The new worktree does not have the folder's uncommitted changes."
+- `testConcurrentStartsSecondGetsWorktree` — two `newSession` calls started together on a free folder: the first goes to the folder, the second to a worktree (the second's decision runs after the first row is live).
+- `testSetupRunsOnlyOnAPlacedFirstLaunch` — `worktreeSetup = "make deps"`: the placed launch's args contain it; a folder start's args do not.
+- `testWorkOnItPassesTheTargetSlug` — `workOn(targetID: 229, targetText: "Fix the thing")` in an occupied folder → `--name 229-fix-the-thing`.
+
+Run: `make test-swift FILTER='WorkbenchesViewModelPlacementTests|WorkbenchesViewModelSessionsTests'` → the new tests FAIL.
+
+- [ ] **Step 2: Implement** in `+Placement.swift` (the decision, the CLI call, the notice, the per-workbench chain) and thread `worktree:` through the start paths; `createAndActivate` gains the `setup:` pass-through to `activate`/`launch`. Run → PASS.
+- [ ] **Step 3: Commit** `git commit -m "feat(desktop): start a second agent session in its own worktree"`.
 
 ---
 
-### Task 13: Gate and manual check
+### Task 12: Desktop — resume re-adds a cleaned-up worktree
+
+**Depends on:** Task 11.
+
+**Files:**
+- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`activate`, ~l.690, before the launch of an existing row)
+- Test: `WatchtowerDesktop/Tests/WorkbenchesViewModelPlacementTests.swift`
+
+**Interfaces:**
+- Consumes: `cli.worktreeEnsure` (Task 9); the row's `worktreeBranch`, `folderPath`.
+- Produces: an existing placed row whose `folderPath` does not exist is re-added before its launch; `TerminalCenter.launch`'s existing "The folder … no longer exists." stays the last resort.
+
+Rule: before launching an existing (non-fresh) row with `worktreeBranch != nil` whose `folderPath` is not a directory: the worktree top = the ancestor of `folderPath` whose parent's last two components are `.claude/worktrees` (pure helper in `SessionStartPlacement`: `worktreeTop(ofCwd:) -> String?`, tested in Core); call `worktreeEnsure(path: top, branch:)`. `created` → launch as usual (the transcript resolves at the same path). `refused == "unknown_branch"` → the row shows `.unavailable("The worktree and its branch \(branch) were cleaned up — start a new session.")` and nothing launches. Any other failure → `.unavailable("The worktree \(top) could not be restored: \(error)")`. Never a fallback to the main folder. A setup command never runs here.
+
+- [ ] **Step 1: Failing tests** — `testResumeOfACleanedUpWorktreeReAddsIt` (folder missing → ensure called with the top and branch → launch in `folderPath`), `testResumeWithTheBranchGoneIsUnavailable` (exact text, no launch), `testResumeOfAnExistingWorktreeCallsNothing`, `testResumeNeverRunsTheSetupCommand`; Core: `worktreeTop(ofCwd:)` for `/r/.claude/worktrees/a`, `/r/.claude/worktrees/a/app/web`, `/r/elsewhere` (nil). Run → FAIL.
+- [ ] **Step 2: Implement.** Run `make test-swift FILTER='WorkbenchesViewModelPlacementTests|SessionStartPlacementTests'` → PASS.
+- [ ] **Step 3: Commit** `git commit -m "feat(desktop): resume re-adds a placed session's worktree from its branch"`.
+
+---
+
+### Task 13: Desktop — automatic cleanup when a finished placed session's agent exits
+
+**Depends on:** Tasks 6, 11.
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+PlacedCleanup.swift`
+- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift` (`sessionExited(_:code:)` ~l.604 calls the new hook)
+- Test: `WatchtowerDesktop/Tests/WorkbenchesViewModelPlacedCleanupTests.swift`
+
+**Interfaces:**
+- Consumes: `TerminalCenter.onSessionExit` → `sessionExited` (already wired, `WorkbenchesViewModel.swift:435`); the row's finished state (the same source the session panel uses for Finished — read `SessionStatePresentation`/`SessionAgentStateCenter` for "finished_at set"/`finished`); `SessionCleanupCenter.planCleanup(sessionID:workbenchID:closingSession:)` and `applyCleanup(sessionID:workbenchID:items:) async -> Bool`, its phase for the result; `cli.worktreeForget` (Task 9).
+- Produces: `func cleanUpPlacedWorktree(_ row: TerminalSession) async` — plans with `closingSession: true` (the session's own id leaves the live set; its process has exited), picks from the plan exactly the item with key `worktree:<root>` whose root contains `row.folderPath` and the item `branch:<row.worktreeBranch>`, applies only those that are `remove` in the plan, then: the worktree was removed → `cli.worktreeForget(path: root)` (best effort; a failure is logged, not shown); kept → nothing more (the cleanup's `cleanup_result` and #535's report line say why). Never runs for a row without `worktreeBranch`, for a row that is not finished, or while the row is live again (a resume between exit and the call).
+
+- [ ] **Step 1: Failing tests** (fake cleanup runner returning canned plan/apply JSON; read `SessionCleanupCenter`'s tests for the fake):
+- `testFinishedPlacedSessionExitCleansExactlyItsTwoItems` — the apply argv carries exactly `--item=worktree:<root>` and `--item=branch:wt/x`, even when the plan lists other `remove` items (another worktree the session visited).
+- `testUnfinishedExitDoesNothing` — a crash or a quit without `finish_session` → no cleanup call.
+- `testUnplacedRowExitDoesNothing`.
+- `testKeptItemsAreNotForgotten` — plan says `keep / uncommitted_changes` for the worktree → no apply of it, no `forget`.
+- `testRemovedWorktreeIsForgotten` — apply result `done: true` for the worktree → `worktree forget --path <root>`.
+- `testAResumeBeforeTheCleanupRunsCancelsIt` — the row is live again when the hook runs → nothing.
+Run `make test-swift FILTER=WorkbenchesViewModelPlacedCleanupTests` → FAIL.
+- [ ] **Step 2: Implement.** Run → PASS. Also `make test-swift FILTER='SessionCleanup|WorkbenchesViewModelSessionsTests'` stays green.
+- [ ] **Step 3: Commit** `git commit -m "feat(desktop): clean up a finished placed session's worktree when its agent exits"`.
+
+The Delete Session dialog needs no change: Task 6 puts the placed worktree and branch on #535's plan. Add one test in this task's file, `testDeleteDialogPlanListsThePlacedItems`, only if the dialog's plan is built in Swift from data this feature controls; otherwise note in the report that Task 6's Go tests cover it.
+
+---
+
+### Task 14: Desktop UI, setup field, docs
+
+**Depends on:** Tasks 11, 12, 13.
+
+**Files:**
+- Modify: the new-session menu and **Work on It** split button views (find them: `grep -rn "newSessionOnPage\|Work on It" WatchtowerDesktop/Sources/Views/Workbench`)
+- Modify: `WatchtowerDesktop/Sources/Views/Workbench/WorkbenchHeaderControls.swift` (next to `archiveMenu`, ~l.190: a "Worktree Setup Command…" item opening a small sheet)
+- Create: `WatchtowerDesktop/Sources/Views/Workbench/WorktreeSetupSheet.swift`
+- Modify: the sessions panel (where the header notices render) for `startNotice`; the session row's context menu for **Show Worktree in Finder**
+- Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel.swift` (`setWorktreeSetup(_:projectID:) async`, mirroring `setArchiveAfterDays` at ~l.898, with `worktreeSetupErrors[projectID]`)
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionStartPlacementPresentation.swift` + test
+- Modify: `docs/features/workbench.md` (a **Session placement** bullet), `docs/app-guide.md` (the user-facing paragraph), `CLAUDE.md`'s workbench feature-note line (append "session placement (2026-10-14, board #229: …)")
+
+**Interfaces:**
+- Produces: `SessionStartPlacementPresentation.menuTitle(_ choice: WorktreeChoice) -> String` ("Automatic", "In This Folder", "In Its Own Worktree"), `.disabledHelp(_ reason: String) -> String`, `.setupHint` ("Runs in a new session worktree before the agent starts, after the .worktreeinclude paths are copied. Leave empty for none.").
+
+- [ ] **Step 1: Failing presentation test** (titles, hint). Run → FAIL. Implement → PASS.
+- [ ] **Step 2: Views.** The menus offer **In This Folder** / **In Its Own Worktree** (the plain button stays `.auto`); "In Its Own Worktree" is disabled with `unavailableReason` as help when the last known git status says so (read it from the header's git status the VM already holds — no new git call to build the menu). The setup sheet: one `TextField` (monospaced), the hint, Save/Cancel; Save calls `vm.setWorktreeSetup`. `startNotice` shows as one secondary line with a dismiss button above the sessions list. **Show Worktree in Finder** (`NSWorkspace.shared.activateFileViewerSelecting`) only for rows with `worktreeBranch` whose folder exists. The workbench delete flow (`WorkbenchesViewModel.deleteWorkbench`, which runs `workbench delete --json` through `WorkbenchCLI.swift:~811`) decodes Task 7's `kept_worktrees` (default `[]`) and, when non-empty, shows one notice: "Kept \(n) worktree(s) with work in them: <paths>" — add the key to the decoded result type and a test in the file that tests that decode.
+- [ ] **Step 3: Build and the touched tests.** `make test-swift FILTER='SessionStartPlacement|WorkbenchesViewModelPlacement'`; `make lint-diff`.
+- [ ] **Step 4: Docs.** `docs/features/workbench.md`: a **Session placement (2026-10-14, board #229)** bullet — the rule, the CLI (`workbench worktree create|ensure|forget` and their keys), `.worktreeinclude`, the setup command, D9 (`folder_path` = the worktree for placed rows), the automatic cleanup through #535 with by-record ownership, resume via `ensure`, the trust-prompt finding from Task 5's spike, v1 limits (spec §13). `docs/app-guide.md`: what the user sees and how to override. Note in the #565 section that its "new sessions keep the workbench folder" rule has the placed exception (D9).
+- [ ] **Step 5: Commit** `git commit -m "feat(desktop): worktree start choice, setup command field, placement docs"`.
+
+---
+
+### Task 15: Gate and manual check
 
 **Depends on:** all.
 
-- [ ] **Step 1:** `bash scripts/dev-health.sh`; if `HEALTH: overloaded`, stop and tell the owner.
-- [ ] **Step 2:** `make test`, `make test-swift`, `make lint-all`, `go test -race ./internal/workbenchgit` — all to log files with explicit exit codes.
-- [ ] **Step 3:** File a `kind: check` ask (target #229) with this checklist:
-  1. Start one session on a workbench: it runs in the folder (no badge).
-  2. Start a second while the first works: it shows `⎇ wt/…`, its terminal is in `.claude/worktrees/…`, `git status` in the main folder is clean.
-  3. Add `.worktreeinclude` with a large ignored folder (e.g. `WatchtowerDesktop/.build/`) and a setup command; start a third: the folder appears instantly, the setup command runs once before the agent.
-  4. In the worktree session, the board tools and the ask guard work (ask the agent to call `workbench_info`).
-  5. Finish the worktree session without changes: its worktree and empty branch are gone.
-  6. Finish one with a commit: worktree gone, branch stays; resume it: the worktree comes back with the commit.
-  7. Leave an uncommitted edit and finish: the row shows the kept dot; the worktree stays.
-  8. Switch the header branch while only worktree agents run: no agent-running confirmation.
-  9. Repeat 2 with Codex as the agent.
-- [ ] **Step 4:** Open the PR into main (local-review skill first, per the repo's flow).
+- [ ] **Step 1:** `bash scripts/dev-health.sh` — stop if `HEALTH: overloaded`.
+- [ ] **Step 2:** Full gate, foreground, each to a log with its exit code: `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`. Fix failures through the normal fix loop.
+- [ ] **Step 3:** File the owner's manual check (`ask_owner`, `kind: check`): (1) start an agent session, then a second one in the same workbench → the second shows the worktree place label and works in `.claude/worktrees/…`; (2) add a `.worktreeinclude` with a gitignored file and a setup command → both reach a new worktree, the setup output shows in the terminal; (3) let the second session finish (`finish_session`) and quit its agent → the worktree is removed if pushed/merged, or kept with the reason in the session report; (4) resume a session whose worktree was cleaned up → it is re-added; (5) a Codex session in a worktree; (6) "In This Folder" / "In Its Own Worktree" overrides; (7) whether Claude Code asked to trust the new worktree folder.
+- [ ] **Step 4:** Open the PR into main (`superpowers:finishing-a-development-branch`), with the deviation list and the ledger's rulings.
