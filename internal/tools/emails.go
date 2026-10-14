@@ -17,14 +17,14 @@ import (
 const maxEmailBodyBytes = 32 * 1024
 
 type listEmailsArgs struct {
-	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address"`
+	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
 	Since      string `json:"since,omitempty" jsonschema:"only messages received at or after this RFC 3339 time"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
-	UnreadOnly bool   `json:"unread_only,omitempty" jsonschema:"only unread messages"`
+	UnreadOnly bool   `json:"unread_only,omitempty" jsonschema:"only messages that were unread when synced (may be stale)"`
 }
 
 type getEmailArgs struct {
-	Account string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address"`
+	Account string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
 	ID      string `json:"id" jsonschema:"the message id from list_emails"`
 }
 
@@ -35,7 +35,7 @@ type emailSummary struct {
 	Subject   string `json:"subject"`
 	Snippet   string `json:"snippet"`
 	Date      string `json:"date"`
-	Unread    bool   `json:"unread"`
+	Unread    bool   `json:"unread"` // the state when synced; may be stale
 	Permalink string `json:"permalink"`
 }
 
@@ -56,7 +56,8 @@ func NewListEmails() *Tool {
 	return &Tool{
 		Name: "list_emails",
 		Description: "List one mailbox's locally synced email (Gmail or IMAP), newest first, without bodies. " +
-			"Filter with since and unread_only; read one message's body with get_email.",
+			"Filter with since and unread_only. unread is the state when the message was synced and may be stale. " +
+			"Read one message's body with get_email.",
 		InputSchema: mustSchema[listEmailsArgs]("list_emails"),
 		Access:      AccessRead,
 		Surfaces:    []string{AutomationSurface},
@@ -97,8 +98,9 @@ func NewListEmails() *Tool {
 // NewListEmails.
 func NewGetEmail() *Tool {
 	return &Tool{
-		Name:        "get_email",
-		Description: "Read one locally synced email of a mailbox — recipients and the plain-text body (clipped at 32 KiB).",
+		Name: "get_email",
+		Description: "Read one locally synced email of a mailbox — recipients and the plain-text body (clipped at 32 KiB). " +
+			"unread is the state when the message was synced and may be stale.",
 		InputSchema: mustSchema[getEmailArgs]("get_email"),
 		Access:      AccessRead,
 		Surfaces:    []string{AutomationSurface},
@@ -143,49 +145,100 @@ type emailAccountRef struct {
 	name  string
 }
 
-// resolveEmailAccount matches ref against the label or address of every
-// Google account and email_accounts mailbox, case-insensitively. No match, or
-// a ref naming two mailboxes, is a model-facing *ValidationError.
-func resolveEmailAccount(d *db.DB, ref string) (emailAccountRef, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return emailAccountRef{}, &ValidationError{Msg: "account is required: a mailbox label or email address"}
-	}
-	matches := func(label, address string) bool {
-		return strings.EqualFold(label, ref) || strings.EqualFold(address, ref)
-	}
+// qualified is the store-qualified ref ("gmail:<google_accounts.id>",
+// "imap:<email_accounts.id>") that always names exactly this mailbox.
+func (r emailAccountRef) qualified() string { return fmt.Sprintf("%s:%d", r.store, r.id) }
+
+// emailMailbox is one connected mailbox an account ref may name. gmailOff
+// marks a Google account with Gmail not enabled (Calendar only): it has no
+// synced mail, so it is never resolved.
+type emailMailbox struct {
+	emailAccountRef
+	label, address string
+	gmailOff       bool
+}
+
+func (b emailMailbox) matches(ref string) bool {
+	return strings.EqualFold(b.qualified(), ref) || strings.EqualFold(b.label, ref) || strings.EqualFold(b.address, ref)
+}
+
+func (b emailMailbox) describe() string {
+	return fmt.Sprintf("%s (%s, %s)", b.qualified(), b.label, b.address)
+}
+
+// listEmailMailboxes is every Google account and email_accounts mailbox.
+func listEmailMailboxes(d *db.DB) ([]emailMailbox, error) {
 	nameOf := func(label, address string) string {
 		if label != "" {
 			return label
 		}
 		return address
 	}
-	var found []emailAccountRef
 	google, err := d.ListGoogleAccounts()
 	if err != nil {
-		return emailAccountRef{}, fmt.Errorf("resolving email account: %w", err)
-	}
-	for _, a := range google {
-		if matches(a.Label, a.Email) {
-			found = append(found, emailAccountRef{store: db.EmailStoreGmail, id: a.ID, name: nameOf(a.Label, a.Email)})
-		}
+		return nil, fmt.Errorf("resolving email account: %w", err)
 	}
 	mailboxes, err := d.ListEmailAccounts()
 	if err != nil {
-		return emailAccountRef{}, fmt.Errorf("resolving email account: %w", err)
+		return nil, fmt.Errorf("resolving email account: %w", err)
+	}
+	out := make([]emailMailbox, 0, len(google)+len(mailboxes))
+	for _, a := range google {
+		out = append(out, emailMailbox{
+			emailAccountRef: emailAccountRef{store: db.EmailStoreGmail, id: a.ID, name: nameOf(a.Label, a.Email)},
+			label:           a.Label, address: a.Email, gmailOff: !a.GmailEnabled,
+		})
 	}
 	for _, a := range mailboxes {
-		if matches(a.Label, a.EmailAddress) {
-			found = append(found, emailAccountRef{store: db.EmailStoreIMAP, id: a.ID, name: nameOf(a.Label, a.EmailAddress)})
+		out = append(out, emailMailbox{
+			emailAccountRef: emailAccountRef{store: db.EmailStoreIMAP, id: a.ID, name: nameOf(a.Label, a.EmailAddress)},
+			label:           a.Label, address: a.EmailAddress,
+		})
+	}
+	return out, nil
+}
+
+// resolveEmailAccount matches ref, case-insensitively, against each mailbox's
+// label, address and store-qualified ref (gmail:<id>, imap:<id>). Google
+// accounts without Gmail are skipped. No match, a ref naming only a
+// Gmail-disabled account, or a ref naming two mailboxes (the error lists
+// their qualified refs, which always resolve) is a model-facing
+// *ValidationError.
+func resolveEmailAccount(d *db.DB, ref string) (emailAccountRef, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return emailAccountRef{}, &ValidationError{Msg: "account is required: a mailbox label or email address"}
+	}
+	boxes, err := listEmailMailboxes(d)
+	if err != nil {
+		return emailAccountRef{}, err
+	}
+	var found []emailMailbox
+	gmailOff := false
+	for _, b := range boxes {
+		switch {
+		case !b.matches(ref):
+		case b.gmailOff:
+			gmailOff = true
+		default:
+			found = append(found, b)
 		}
 	}
-	switch len(found) {
-	case 0:
-		return emailAccountRef{}, &ValidationError{Msg: "unknown account " + strconv.Quote(ref) + ": use a connected mailbox's label or email address"}
-	case 1:
-		return found[0], nil
+	switch {
+	case len(found) == 1:
+		return found[0].emailAccountRef, nil
+	case len(found) > 1:
+		refs := make([]string, 0, len(found))
+		for _, b := range found {
+			refs = append(refs, b.describe())
+		}
+		return emailAccountRef{}, &ValidationError{Msg: fmt.Sprintf("ambiguous account %s: it names %d mailboxes; use one of %s",
+			strconv.Quote(ref), len(found), strings.Join(refs, ", "))}
+	case gmailOff:
+		return emailAccountRef{}, &ValidationError{Msg: "gmail is not enabled for this account " + strconv.Quote(ref) + ": it has no synced mail"}
 	}
-	return emailAccountRef{}, &ValidationError{Msg: fmt.Sprintf("ambiguous account %s: it names %d mailboxes; use the email address", strconv.Quote(ref), len(found))}
+	return emailAccountRef{}, &ValidationError{Msg: "unknown account " + strconv.Quote(ref) +
+		": use a connected mailbox's label or email address, or gmail:<id> / imap:<id>"}
 }
 
 func summarizeEmail(m db.LocalEmail) emailSummary {
