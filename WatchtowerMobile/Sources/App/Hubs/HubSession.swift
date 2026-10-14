@@ -1030,6 +1030,15 @@ final class HubSession {
     /// record through: sealed with the phone's keys for this hub.
     var linkTransport: any CloudSyncTransport { secure }
 
+    /// Seals `record` with this hub's keys, queues the sealed copy and
+    /// returns it: an unlink's farewell, which is kept sealed if it does
+    /// not leave the queue before the hub's files go (#143).
+    func saveSealing(_ record: CloudRecord) async throws -> CloudRecord {
+        let sealed = try await secure.seal(record)
+        try await secure.saveSealed([sealed])
+        return sealed
+    }
+
     /// This phone's keybox as the replica holds it (the epoch keys
     /// included); nil when absent. A locked keychain throws.
     func keybox(deviceID: UUID) throws -> Keybox? {

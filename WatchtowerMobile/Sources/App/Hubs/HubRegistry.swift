@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import os
+import WatchtowerSync
 
 /// One linked Mac as the phone's registry holds it (multi-hub spec §5.2).
 struct HubRow: Equatable, Sendable {
@@ -21,6 +22,25 @@ struct HubRow: Equatable, Sendable {
     var linkedOn: Date
 
     var hubID: String { link.hubID }
+}
+
+/// An unlink's `unlinked` record that had not left the removed hub's send
+/// queue when the removal went on (#143): kept, sealed, in the registry,
+/// which outlives the hub's replica and files, and sent again by the link
+/// flow (`LinkingViewModel.retryFarewells`) until it goes out, the hub is
+/// linked again, or it expires. Sealed at the unlink, so the hub's keys
+/// (deleted with the link) are not needed to send it.
+struct PendingFarewell: Equatable, Sendable {
+    var hubID: String
+    /// The removed link's database: a `shared` link leaves its shares only
+    /// once the record is out (it could not reach the zones after).
+    var scope: CloudDatabaseScope
+    /// The iCloud account the link was made on: another account's phone
+    /// cannot reach the zones, so its farewell is dropped.
+    var userRecordName: String
+    /// The sealed wire record, as it waited in the send queue.
+    var record: CloudRecord
+    var since: Date
 }
 
 enum HubRegistryError: Error {
@@ -67,6 +87,21 @@ final class HubRegistry {
                   linked_on REAL NOT NULL
                 );
                 CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                """)
+        }
+        migrator.registerMigration("v2-pending-farewells") { db in
+            try db.execute(sql: """
+                CREATE TABLE pending_farewells (
+                  hub_id TEXT PRIMARY KEY,
+                  owner_name TEXT,
+                  user_record_name TEXT NOT NULL,
+                  record_name TEXT NOT NULL,
+                  zone TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  modified_at REAL NOT NULL,
+                  payload BLOB NOT NULL,
+                  since REAL NOT NULL
+                );
                 """)
         }
         try migrator.migrate(queue)
@@ -210,6 +245,59 @@ final class HubRegistry {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM hubs")
             try db.execute(sql: "DELETE FROM registry_meta")
+        }
+    }
+
+    // MARK: Pending farewells (#143)
+
+    /// Every kept farewell; one that does not read back (an unknown zone)
+    /// is logged and skipped.
+    func pendingFarewells() throws -> [PendingFarewell] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM pending_farewells ORDER BY since").compactMap { row in
+                let zoneName: String = row["zone"]
+                guard let zone = CloudZoneID(rawValue: zoneName) else {
+                    Self.logger.error("pending farewell with an unknown zone skipped")
+                    return nil
+                }
+                let owner: String? = row["owner_name"]
+                return PendingFarewell(
+                    hubID: row["hub_id"],
+                    scope: owner.map { .shared(ownerName: $0) } ?? .private,
+                    userRecordName: row["user_record_name"],
+                    record: CloudRecord(
+                        recordName: row["record_name"], zone: zone, kind: row["kind"],
+                        modifiedAt: Date(timeIntervalSince1970: row["modified_at"]), payload: row["payload"]
+                    ),
+                    since: Date(timeIntervalSince1970: row["since"])
+                )
+            }
+        }
+    }
+
+    /// Keeps `farewell`, replacing one kept for the same hub.
+    func savePendingFarewell(_ farewell: PendingFarewell) throws {
+        let owner: String? = if case let .shared(ownerName) = farewell.scope { ownerName } else { nil }
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT OR REPLACE INTO pending_farewells
+                        (hub_id, owner_name, user_record_name, record_name, zone, kind, modified_at, payload, since)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    farewell.hubID, owner, farewell.userRecordName, farewell.record.recordName,
+                    farewell.record.zone.rawValue, farewell.record.kind,
+                    farewell.record.modifiedAt.timeIntervalSince1970, farewell.record.payload,
+                    farewell.since.timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
+    func removePendingFarewell(_ hubID: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM pending_farewells WHERE hub_id = ?", arguments: [hubID])
         }
     }
 

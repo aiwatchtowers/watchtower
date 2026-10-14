@@ -50,6 +50,9 @@ final class AppRootWiringTests: XCTestCase {
     /// The send step never returns (a network that hangs): only the cap
     /// ends the wait.
     private var farewellSendHangs = false
+    /// Every resend of a kept farewell (#143), and whether one goes out.
+    private var farewellResends: [PendingFarewell] = []
+    private var farewellResendSucceeds = false
     /// The hung sends, resumed at teardown so no task outlives the test.
     private var hungSends: [CheckedContinuation<Void, Never>] = []
     /// Hubs whose session the factory cannot build (a replica that will
@@ -192,6 +195,10 @@ final class AppRootWiringTests: XCTestCase {
             }
             await withCheckedContinuation { self?.hungSends.append($0) }
         }
+        let resend: @MainActor (PendingFarewell) async -> Bool = { [weak self] farewell in
+            self?.farewellResends.append(farewell)
+            return self?.farewellResendSucceeds ?? false
+        }
         let starter: BackgroundWork.Starter = { [weak self] name in
             self?.workBegun.append(name)
             return { self?.workEnded.append(name) }
@@ -214,7 +221,8 @@ final class AppRootWiringTests: XCTestCase {
                 },
                 cap: farewellCap,
                 pause: .milliseconds(20),
-                send: send
+                send: send,
+                resend: resend
             )
         )
     }
@@ -402,7 +410,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(check.running, "sent before the session stops", line: line)
         let sent = try await deviceWrites(in: try transport(hubID))
         XCTAssertEqual(sent.last?.unlinked, true, "the hub's own transport carried it", line: line)
-        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DevicePayload.self, from: check.record.payload).unlinked, true, line: line)
+        XCTAssertEqual(check.record.kind, WireKind.envelope, "the queue is looked at for the sealed record", line: line)
     }
 
     /// Fix round 1, I1: a farewell that never leaves the queue holds the
@@ -420,6 +428,59 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(try registry.row(TestHub.acme))
         XCTAssertTrue(root.showsOnboarding)
         XCTAssertEqual(root.linking.phase, .idle)
+    }
+
+    /// #143: an `unlinked` record still queued at the cap is kept, sealed,
+    /// in the registry while the hub's files go; a resend that fails keeps
+    /// it for the next try, one that goes out clears it.
+    func testAFarewellStillQueuedAtTheCapIsKeptAcrossTheWipeUntilAResendGoesOut() async throws {
+        farewellStuck = true
+        farewellCap = .milliseconds(200)
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false], "the replica is wiped all the same")
+        let kept = try XCTUnwrap(try registry.pendingFarewells().first, "the farewell outlives the replica")
+        let queued = try XCTUnwrap(farewellChecks.last?.record)
+        XCTAssertEqual(kept.hubID, TestHub.acme)
+        XCTAssertEqual(kept.scope, .private)
+        XCTAssertEqual(kept.userRecordName, "_owner-acme")
+        XCTAssertEqual(kept.record.recordName, queued.recordName, "the sealed record the queue held")
+        XCTAssertEqual(kept.record.payload, queued.payload)
+        XCTAssertEqual(kept.record.kind, WireKind.envelope)
+
+        await root.linking.retryFarewells()
+
+        XCTAssertEqual(farewellResends.map(\.hubID), [TestHub.acme])
+        XCTAssertEqual(try registry.pendingFarewells().map(\.hubID), [TestHub.acme], "a failed resend keeps it")
+
+        farewellResendSucceeds = true
+        await root.linking.retryFarewells()
+
+        XCTAssertEqual(farewellResends.count, 2)
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty, "sent: no longer kept")
+    }
+
+    /// #143: a farewell that went out is not kept; a new link to a hub
+    /// whose farewell was kept drops it unsent.
+    func testASentFarewellIsNotKeptAndARelinkDropsAKeptOne() async throws {
+        let root = try makeRoot(links: [linkRecord()])
+        await root.env.waitForBoot()
+        await root.linking.unlink(TestHub.acme)
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty, "it left the queue")
+
+        let sealed = CloudRecord(recordName: "wire", zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: Data([1]))
+        try registry.savePendingFarewell(PendingFarewell(
+            hubID: TestHub.acme, scope: .private, userRecordName: "_owner-acme", record: sealed, since: Date()
+        ))
+        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+        try await root.linked(linkRecord(), device: device)
+
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+        await root.linking.retryFarewells()
+        XCTAssertTrue(farewellResends.isEmpty, "never sent over the new link")
     }
 
     /// Fix round 2: the cap bounds the whole wait, a send that never

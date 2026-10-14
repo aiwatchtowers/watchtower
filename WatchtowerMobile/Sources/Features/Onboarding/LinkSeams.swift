@@ -72,13 +72,22 @@ protocol LinkHost: AnyObject {
     /// Removes `hubID`: deletes its row, then sends `farewell` (the
     /// `unlinked` device record of an unlink; nil sends nothing) through
     /// the hub's own transport (sealed) and waits, bounded, for it to leave
-    /// the send queue; then stops its session (a running capture stopped
+    /// the send queue (still queued at the cap, it is kept for
+    /// `resendFarewell`: `LocalWipe.farewellKept`); then stops its session (a running capture stopped
     /// and saved), hands its recordings to the hold (`keepRecordings`;
     /// false on an iCloud account change, when they are lost and counted)
     /// and deletes its files; the next hub in order becomes active. Returns
     /// what was lost. Also drops a session that never got a row (a failed
     /// link). The hub's keys stay: the link flow removes them.
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe
+    /// The unlink farewells a removal kept because they had not gone out
+    /// (#143), sealed.
+    func pendingFarewells() -> [PendingFarewell]
+    /// Sends a kept farewell again; true once it went out, and then it is
+    /// no longer kept. A scan of the same hub waits for it.
+    func resendFarewell(_ farewell: PendingFarewell) async -> Bool
+    /// Stops keeping `hubID`'s farewell unsent.
+    func dropFarewell(_ hubID: String)
     /// The Mac removed this phone: the row turns `unlinked_by_mac` and the
     /// session freezes (no sync, no writes, data readable with the hub's
     /// keys, which stay until Forget).
@@ -101,4 +110,8 @@ struct LocalWipe: Equatable {
     /// Why some recordings could not be handed over or restored (their
     /// audio is kept on the phone, unsent, or retried at the next boot).
     var problem: String?
+    /// The unlink's farewell had not left the send queue: it is kept and
+    /// sent again later (`LinkHost.resendFarewell`), so a `shared` link
+    /// keeps its shares until then.
+    var farewellKept = false
 }

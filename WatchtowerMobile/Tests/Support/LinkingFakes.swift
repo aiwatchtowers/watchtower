@@ -301,6 +301,12 @@ final class FakeLinkHost: LinkHost {
     var stopsRecording = false
     /// The next removal reports a recording problem (once).
     var recordingProblem: String?
+    /// The next removal's farewell does not go out and is kept (once).
+    var keepsFarewell = false
+    /// The kept farewells (#143), as the registry holds them.
+    var keptFarewells: [PendingFarewell] = []
+    /// Whether a resend goes out.
+    var resendSucceeds = false
 
     /// As the real host: the row goes first, then the farewell through
     /// the hub's own transport (here its scope's), then the rest.
@@ -322,8 +328,29 @@ final class FakeLinkHost: LinkHost {
             stopsRecording = false
             recordingProblem = nil
             notSentCount = 0
+            keepsFarewell = false
         }
-        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem)
+        return LocalWipe(
+            notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem,
+            farewellKept: farewell != nil && keepsFarewell
+        )
+    }
+
+    func pendingFarewells() -> [PendingFarewell] {
+        keptFarewells
+    }
+
+    func resendFarewell(_ farewell: PendingFarewell) async -> Bool {
+        log.append("resend \(farewell.hubID)")
+        if resendSucceeds {
+            keptFarewells.removeAll { $0.hubID == farewell.hubID }
+        }
+        return resendSucceeds
+    }
+
+    func dropFarewell(_ hubID: String) {
+        log.append("drop farewell \(hubID)")
+        keptFarewells.removeAll { $0.hubID == hubID }
     }
 
     func markRemovedByMac(_ hubID: String) async {

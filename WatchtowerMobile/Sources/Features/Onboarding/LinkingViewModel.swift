@@ -721,6 +721,50 @@ final class LinkingViewModel {
         notice = .removed(macName: row.link.macName)
     }
 
+    /// How long a kept farewell is sent again (#143): after it, the Mac is
+    /// left to its own removal and a `shared` link's shares are left.
+    static let farewellLifetime: TimeInterval = 7 * 24 * 3600
+
+    /// At launch: the unlink farewells a removal kept unsent (#143) are
+    /// sent again, each in turn; one sent, or past `farewellLifetime`,
+    /// stops being kept and its `shared` link leaves the shares. One made
+    /// on another iCloud account, or of a hub linked again (or being
+    /// linked) since, is dropped unsent and its shares untouched. Nothing
+    /// runs while a link flow is busy or the account cannot be read.
+    func retryFarewells() async {
+        guard let host, !isBusy else { return }
+        let kept = host.pendingFarewells()
+        guard !kept.isEmpty, await container.accountStatus() == .available else { return }
+        let account: String
+        do {
+            account = try await container.userRecordName()
+        } catch {
+            Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        let linked = Set(host.linkedHubs().map(\.hubID))
+        for farewell in kept {
+            let hubID = farewell.hubID
+            if linked.contains(hubID) || store.pending?.link.hubID == hubID || farewell.userRecordName != account {
+                host.dropFarewell(hubID)
+                continue
+            }
+            if clock.now().timeIntervalSince(farewell.since) >= Self.farewellLifetime {
+                Self.logger.notice("a kept unlinked record expired unsent")
+                host.dropFarewell(hubID)
+            } else if await !host.resendFarewell(farewell) {
+                continue
+            }
+            if case let .shared(ownerName) = farewell.scope {
+                do {
+                    try await container.leaveShares(ownerName: ownerName, hubID: hubID)
+                } catch {
+                    Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
     /// The transport saw an iCloud account change. Another account ends
     /// every link and removes every hub, their keys with them; a sign-out
     /// keeps them until an account is back (spec §9, multi-hub §6.2).
@@ -844,7 +888,8 @@ final class LinkingViewModel {
     /// the hub's own transport, sealed with the hub's keys, which holds the
     /// record's server state, best effort and bounded; then its session,
     /// recordings and files), then a `shared` link that said farewell leaves
-    /// the shares, then the hub's keys are deleted (`removeHubLink`). The
+    /// the shares (unless the farewell was kept unsent: `retryFarewells`
+    /// leaves them once it is out), then the hub's keys are deleted (`removeHubLink`). The
     /// record is built here, before the hub's Settings choices go. A frozen
     /// hub's zones are gone: no farewell, no leave. Removing the hub's
     /// replica takes the outbox and the recordings sealed under this link
@@ -867,7 +912,8 @@ final class LinkingViewModel {
         let wipe = await host.removeHub(hubID, keepRecordings: keepRecordings, farewell: farewell)
         removeKeys(hubID)
         refreshLinks()
-        if linked, case let .shared(ownerName) = scope {
+        // A kept farewell still needs the zones: the shares go once it is out (`retryFarewells`).
+        if linked, !wipe.farewellKept, case let .shared(ownerName) = scope {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: hubID)
             } catch {
