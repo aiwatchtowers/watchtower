@@ -158,3 +158,57 @@ func ensureExcludeLine(commonDir, line string) error {
 	}
 	return werr
 }
+
+// EnsureWorktree puts a placed session's worktree back at path from its
+// branch — a resume after #535's cleanup removed it, or after the owner
+// deleted the directory (spec §7) — and copies the include paths again. An
+// existing directory at path is left alone (Created false, no error); a
+// missing branch is RefusedUnknownBranch. It writes nothing but the new
+// worktree: no remove, reset or checkout, and no force flag.
+func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res WorktreeResult) {
+	res = WorktreeResult{Path: path, Branch: branch, Included: []string{}, IncludeWarnings: []string{}}
+	st, r := readStatus(ctx, o)
+	switch {
+	case !st.GitAvailable:
+		res.Refused = RefusedGitUnavailable
+		return res
+	case r == nil:
+		res.Refused = RefusedNotGit
+		return res
+	case !st.StatusOK:
+		res.Refused, res.Error = RefusedGitFailed, st.StatusError
+		return res
+	}
+	root := filepath.Join(st.TopLevel, filepath.FromSlash(worktreesDir))
+	if filepath.Dir(filepath.Clean(path)) != root || !strings.HasPrefix(branch, worktreeBranchRoot) {
+		res.Refused, res.RefusedDetail = RefusedInvalidName, "not a session worktree: "+path
+		return res
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return res
+	}
+	if _, code, err := r.run(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); code == 1 {
+		res.Refused, res.RefusedDetail = RefusedUnknownBranch, branch
+		return res
+	} else if err != nil {
+		res.Refused, res.Error = RefusedGitFailed, gitError(err)
+		return res
+	}
+	// A directory deleted by hand leaves its admin entry, and `worktree add`
+	// refuses a registered path (--force is never used), so stale entries go
+	// first. `worktree prune` drops every prunable entry, not only ours, which
+	// is acceptable here only because a prunable entry is one whose directory
+	// is already gone: nothing on disk is touched.
+	if _, err := r.git(ctx, "worktree", "prune"); err != nil {
+		res.Error = gitError(err)
+		return res
+	}
+	if _, err := r.git(ctx, "worktree", "add", path, branch); err != nil {
+		res.Error = gitError(err)
+		return res
+	}
+	res.Created = true
+	p := paths{topLevel: st.TopLevel, gitDir: st.GitDir, commonDir: st.CommonDir}
+	res.Included, res.IncludeWarnings = includeInto(ctx, r, p, path)
+	return res
+}
