@@ -308,19 +308,23 @@
     });
     window.addEventListener("blur", function () { flushAll(true); });
 
+    // Leaving the shown file: drop its proposal zone, keep its view state.
+    function leaveCurrent() {
+      if (current && proposals[current]) { removeZone(proposals[current]); }
+      if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+    }
+
     window.wt = {
       show: function (args) {
         if (!args) {
-          if (current && proposals[current]) { removeZone(proposals[current]); }
-          if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+          leaveCurrent();
           editor.setModel(null);
           current = null;
           return;
         }
         if (current === args.id && editor.getModel()) { return; }
         flushAll(true);
-        if (current && proposals[current]) { removeZone(proposals[current]); }
-        if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+        leaveCurrent();
         // Before setModel: setting the model and restoring its view state
         // move the cursor, and that cursor message must carry the new id.
         current = args.id;
