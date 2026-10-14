@@ -300,14 +300,16 @@ jobs:
           key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
           restore-keys: ${{ runner.os }}-spm-
 
+      # --build-tests: the app and the test bundle in one build, so Test below
+      # only runs the bundle.
       - name: Build
-        run: swift build
+        run: swift build --build-tests
 
-      # --parallel: one xctest worker process per core, each running a share
-      # of the test classes — the suite ran serially in ~5 min (2026-10-13).
+      # Three concurrent xctest processes over round-robin slices of the test
+      # classes (see the script): serially the suite took ~5 min (2026-10-13).
       - name: Test
         timeout-minutes: 20
-        run: swift test --parallel
+        run: ../scripts/swift-test-sharded.sh 3
 
       # The process-spawning suites again on a one-thread concurrency pool,
       # so blocking I/O that slips back onto pool threads fails here.
