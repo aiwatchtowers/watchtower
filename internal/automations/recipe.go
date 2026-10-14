@@ -194,6 +194,13 @@ func ParseRecipe(slug string, data []byte, scope Scope) (*Recipe, error) {
 	if err := parseBody(lines, bodyStart, r); err != nil {
 		return nil, err
 	}
+	var pre *PreParseError
+	if err := PreParse(r.Script); errors.As(err, &pre) {
+		return nil, &ParseError{Line: r.ScriptLine + pre.Line - 1, Msg: pre.Error()}
+	}
+	if err := scriptShapeError(r.Script); err != nil {
+		return nil, &ParseError{Line: r.ScriptLine, Msg: err.Error()}
+	}
 	return r, nil
 }
 
