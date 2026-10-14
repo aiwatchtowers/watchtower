@@ -8,6 +8,9 @@ extension WorkbenchesViewModel {
     /// session on screen — shown, never started (a stopped one offers
     /// Resume), so a click never launches an agent. An ask filed outside the
     /// app has no session: its drawer opens at the page's trailing edge.
+    /// So does one whose session was deleted since the asks were last read:
+    /// they are read again first when they changed (board #542), so a stale
+    /// session id never reveals another session or nothing at all.
     /// The drawer opens once the session is on screen (it closes whenever
     /// that session leaves it, `setLayout`). Returns false when the ask is
     /// gone or could not be read. `keepKeyboard` (a switch started from the
@@ -16,6 +19,7 @@ extension WorkbenchesViewModel {
     @discardableResult
     func showAsk(_ askID: Int64, projectID: Int64, keepKeyboard: Bool = false) async -> Bool {
         if selectedWorkbenchID != projectID { drill(into: projectID) }
+        await asks.refreshIfChanged(projectID: projectID)
         guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return false }
         if let sessionID = ask.sessionID {
             // A session waiting in the Undo batch is deleted as far as the
@@ -32,6 +36,17 @@ extension WorkbenchesViewModel {
         }
         asks.openDrawer(ask)
         return true
+    }
+
+    /// A stack row's session caption: the session's title; for a
+    /// session-less ask "Session deleted" when the app saw its session go
+    /// (board #542), else "Outside the app".
+    func askSessionTitle(_ ask: OwnerAsk) -> String {
+        guard let id = ask.sessionID else {
+            let deleted = asks.sessionDeletedAskIDs[ask.projectID]?.contains(ask.id) == true
+            return deleted ? OwnerAskStack.sessionDeletedTitle : OwnerAskStack.outsideTheAppTitle
+        }
+        return session(id, projectID: ask.projectID)?.title ?? "Session"
     }
 
     /// A Quick ask's option tapped or Reply sent, on its banner or stack

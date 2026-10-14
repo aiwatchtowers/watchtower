@@ -146,6 +146,10 @@ final class OwnerAsksViewModel {
     /// Why the last answer to an ask failed, apart from the reads: a good
     /// reload never hides it; the next answer that saves clears it.
     private(set) var answerErrors: [Int64: String] = [:]
+    /// Each workbench's open asks the app saw bound to a session that has
+    /// since been deleted (board #542): in the DB they are session-less like
+    /// one filed outside the app; only this run of the app tells them apart.
+    private(set) var sessionDeletedAskIDs: [Int64: Set<Int64>] = [:]
     /// Each workbench's closed asks per session (nil = outside the app), as
     /// the session rows count them.
     private(set) var closedCounts: [Int64: [Int64?: Int]] = [:]
@@ -280,6 +284,7 @@ final class OwnerAsksViewModel {
                     shown: shown
                 )
             }
+            noteDeletedSessions(projectID: projectID, reread: snapshot.open.asks)
             openAsks[projectID] = snapshot.open.asks
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
@@ -327,6 +332,16 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         return openAsks[projectID]?.first { $0.id == askID } ?? found
+    }
+
+    /// Open asks last read bound to a session and now session-less: their
+    /// session was deleted (ON DELETE SET NULL). Kept while they stay open.
+    private func noteDeletedSessions(projectID: Int64, reread asks: [OwnerAsk]) {
+        let wasBound = Set((openAsks[projectID] ?? []).filter { $0.sessionID != nil }.map(\.id))
+        let open = Set(asks.map(\.id))
+        let unbound = asks.filter { $0.sessionID == nil && wasBound.contains($0.id) }.map(\.id)
+        let kept = (sessionDeletedAskIDs[projectID] ?? []).intersection(open).union(unbound)
+        sessionDeletedAskIDs[projectID] = kept.isEmpty ? nil : kept
     }
 
     /// The document snapshot of ask `askID` of the workbench, any status
@@ -408,13 +423,15 @@ final class OwnerAsksViewModel {
 
     /// Counts plus the latest stamps of a workbench's asks. Go files and
     /// withdraws asks and marks them delivered in place: the open count, the
-    /// max id or a stamp moves with every such write.
+    /// max id or a stamp moves with every such write. A session delete sets
+    /// its asks' `session_id` NULL and moves none of those: the session-less
+    /// count does (board #542; nothing ever binds an ask later).
     nonisolated private static func fingerprint(_ db: Database, projectID: Int64) throws -> String {
         guard let row = try Row.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
-                       MAX(answered_at), MAX(delivered_at)
+                       MAX(answered_at), MAX(delivered_at), SUM(CASE WHEN session_id IS NULL THEN 1 ELSE 0 END)
                 FROM owner_asks WHERE project_id = ?
                 """,
             arguments: [projectID]
@@ -424,7 +441,8 @@ final class OwnerAsksViewModel {
         let open: Int? = row[2]
         let answered: String? = row[3]
         let delivered: String? = row[4]
-        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")"
+        let unbound: Int? = row[5]
+        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)"
     }
 
     // MARK: - Keyboard (board #412)
