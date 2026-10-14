@@ -561,9 +561,10 @@ type workbenchDeleteJSON struct {
 
 // cleanPlacedWorktrees runs the session cleanup (PROJ-18) for every placed
 // session of the workbench before it is deleted, on exactly the session's
-// worktree and wt/ branch, and returns the worktree paths it kept. A removed
-// worktree's local MCP entry is unregistered (best effort). Nothing here
-// stops the delete: a failure is a warning and the path is kept.
+// worktree and wt/ branch, and returns the worktree paths it kept. Every
+// placed session's local MCP entry is unregistered (best effort), a kept
+// worktree's too — its files stay, but the workbench it points at is gone.
+// Nothing here stops the delete: a failure is a warning and the path is kept.
 func cleanPlacedWorktrees(ctx context.Context, stderr io.Writer, database *db.DB, id int64) []string {
 	kept := []string{}
 	placed, err := database.PlacedSessions(id)
@@ -581,7 +582,6 @@ func cleanPlacedWorktrees(ctx context.Context, stderr io.Writer, database *db.DB
 				root = s.FolderPath
 			}
 			kept = append(kept, root)
-			continue
 		}
 		// A throwaway row: the options need only the id and the folder.
 		o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: s.FolderPath})

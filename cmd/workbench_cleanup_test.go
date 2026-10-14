@@ -661,8 +661,11 @@ func TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes(t *testing.T) {
 func TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList(t *testing.T) {
 	f := newCleanupFixture(t)
 	prevRun, prevExe := workbenchCommandRunner, workbenchExecutable
-	var calls int
-	workbenchCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) { calls++; return nil, nil }
+	var calls []string
+	workbenchCommandRunner = func(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+		calls = append(calls, dir+" :: "+name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
 	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
 	prevRemove := workbenchRemoveInstall
 	workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
@@ -679,5 +682,8 @@ func TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &res), out)
 	assert.DirExists(t, root)
 	assert.Equal(t, []string{root}, res.KeptWorktrees)
-	assert.Zero(t, calls, "a kept worktree's MCP entry is not unregistered")
+	// Its files stay, but its local MCP entry points at the deleted
+	// workbench, so it is unregistered.
+	assert.Contains(t, strings.Join(calls, "\n"), root+" :: claude mcp remove --scope local watchtower-workbench",
+		"a kept worktree's MCP entry is unregistered")
 }

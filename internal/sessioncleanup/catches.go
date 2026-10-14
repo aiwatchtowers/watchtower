@@ -302,7 +302,7 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 // catchOwnBranch is B3: observed by the session and born after it, or the
 // placed row's own worktree_branch (owned by record, spec 2026-10-14 §9).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
-	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // born no later than the row
+	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
 		return "", "", nil
 	}
 	if !b.seen.branches[br.Name] {
