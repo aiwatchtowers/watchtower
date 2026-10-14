@@ -9,6 +9,8 @@ struct WorkbenchHeaderControls: View {
     let project: Workbench
     /// The ⋯ menu's Delete…: the page reads the counts and confirms.
     let onDelete: () -> Void
+    /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
+    let onCleanUpOldWorktrees: () -> Void
     /// The view button under the pointer, and whether the sessions chevron
     /// is: Terminal and its chevron light up together, as one segment.
     @State private var hoveredView: WorkspaceView?
@@ -122,8 +124,8 @@ struct WorkbenchHeaderControls: View {
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
 
-    /// Repair install, Re-run Setup, the archive items and Delete…, out of the
-    /// header row.
+    /// Repair install, Re-run Setup, the archive items, Clean Up Old
+    /// Worktrees… and Delete…, out of the header row.
     private var moreMenu: some View {
         let status = vm.installStatus[project.id]
         let installing = vm.isInstalling(projectID: project.id)
@@ -153,6 +155,14 @@ struct WorkbenchHeaderControls: View {
             .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
             archiveMenu
             archiveNowItems
+            Divider()
+            Button {
+                onCleanUpOldWorktrees()
+            } label: {
+                Label("Clean Up Old Worktrees…", systemImage: "sparkles")
+            }
+            .disabled(vm.sessionCleanup == nil)
+            .help("Pick worktrees and branches older sessions left behind to remove; nothing in use or unsaved goes")
             Divider()
             Button(role: .destructive) {
                 onDelete()

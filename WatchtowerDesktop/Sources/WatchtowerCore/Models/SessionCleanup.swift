@@ -90,6 +90,13 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
     package var knownRemovableKeys: [String] {
         items.filter { $0.isPendingRemoval && $0.kind.isKnown }.map(\.key)
     }
+
+    /// What a cleanup sheet ticks when this plan arrives: nothing for a
+    /// sweep — the owner picks by hand (spec §9) — else every pending
+    /// removal of a known kind.
+    package var initialTicks: Set<String> {
+        sweep ? [] : Set(knownRemovableKeys)
+    }
 }
 
 /// One thing a plan would remove or keeps, with why (Go's

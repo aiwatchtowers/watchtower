@@ -130,6 +130,17 @@ final class WorkbenchesViewModel {
     /// the dialog showed: told on the Undo bar while the row waits there,
     /// dropped once it leaves the batch (Undo or the commit).
     var cleanupKeptNotices: [Int64: String] = [:]
+    /// The sweep applies this view model owns (Clean Up Old Worktrees…),
+    /// per workbench: closing the sheet or leaving the page cancels none.
+    @ObservationIgnored var sweepRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The workbenches whose sweep sheet is on screen.
+    @ObservationIgnored var openSweepSheets: Set<Int64> = []
+    /// Per workbench, the one-time "old worktrees use ~N GB" hint while it
+    /// is up (open question 2 of the cleanup spec, owner approved).
+    var cleanupHints: [Int64: String] = [:]
+    /// The workbenches whose hint sweep ran this launch: a page visit plans
+    /// (and sizes) the sweep at most once per launch.
+    @ObservationIgnored var cleanupHintChecked: Set<Int64> = []
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter

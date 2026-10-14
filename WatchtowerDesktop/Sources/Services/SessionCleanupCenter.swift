@@ -95,11 +95,27 @@ final class SessionCleanupCenter {
     /// kept.
     @discardableResult
     func startPlan(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) -> Task<Void, Never> {
-        let scope = SessionCleanupScope.session(sessionID)
+        startOwnedPlan(.session(sessionID)) { center in
+            await center.planCleanup(sessionID: sessionID, workbenchID: workbenchID, closingSession: closingSession)
+        }
+    }
+
+    /// Starts the sweep plan of workbench `workbenchID` (spec §9) in a task
+    /// the center owns, as `startPlan` does for a session.
+    @discardableResult
+    func startSweepPlan(workbenchID: Int64) -> Task<Void, Never> {
+        startOwnedPlan(.workbench(workbenchID)) { center in
+            await center.planSweep(workbenchID: workbenchID)
+        }
+    }
+
+    private func startOwnedPlan(
+        _ scope: SessionCleanupScope, _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
+    ) -> Task<Void, Never> {
         let token = UUID()
         let run = Task<Void, Never> { [weak self] in
             guard let self else { return }
-            await planCleanup(sessionID: sessionID, workbenchID: workbenchID, closingSession: closingSession)
+            await body(self)
             if planRuns[scope]?.token == token { planRuns[scope] = nil }
         }
         planRuns.updateValue((token, run), forKey: scope)?.task.cancel()
@@ -112,11 +128,22 @@ final class SessionCleanupCenter {
     /// as live, or Go would keep its worktree for "a session works in it".
     /// Ignored while the scope applies.
     func planCleanup(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) async {
-        let scope = SessionCleanupScope.session(sessionID)
-        guard cleanupPhase(for: scope) != .applying else { return }
         var live = liveSessionIDs()
         if closingSession { live.remove(sessionID) }
         let args = Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: live)
+        await runPlan(.session(sessionID), args: args)
+    }
+
+    /// Plans the sweep of workbench `workbenchID` (writes nothing): every
+    /// worktree and branch of its repository with an owner hint, every live
+    /// terminal passed (Go keeps what a live session works in). Ignored
+    /// while the sweep applies.
+    func planSweep(workbenchID: Int64) async {
+        await runPlan(.workbench(workbenchID), args: Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs()))
+    }
+
+    private func runPlan(_ scope: SessionCleanupScope, args: [String]) async {
+        guard cleanupPhase(for: scope) != .applying else { return }
         let serial = beginRun(scope, phase: .planning)
         let outcome = await runCleanup(args)
         guard runSerials[scope] == serial else { return }
@@ -140,10 +167,22 @@ final class SessionCleanupCenter {
     /// a failure.
     func applyCleanup(sessionID: Int64, workbenchID: Int64, items: [String]) async -> Bool {
         guard !items.isEmpty else { return true }
-        let scope = SessionCleanupScope.session(sessionID)
         let args = Self.cleanupArguments(
             sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items
         )
+        return await runApply(.session(sessionID), args: args)
+    }
+
+    /// Applies exactly `items` — the sweep keys the owner ticked — to
+    /// workbench `workbenchID`, as `applyCleanup` does for a session. With
+    /// no item nothing runs (Go refuses a sweep apply without `--item`).
+    func applySweep(workbenchID: Int64, items: [String]) async -> Bool {
+        guard !items.isEmpty else { return true }
+        let args = Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs(), applying: items)
+        return await runApply(.workbench(workbenchID), args: args)
+    }
+
+    private func runApply(_ scope: SessionCleanupScope, args: [String]) async -> Bool {
         let serial = beginRun(scope, phase: .applying)
         let outcome = await runCleanup(args)
         // A plan never supersedes an apply (it does not start while one
@@ -217,6 +256,17 @@ final class SessionCleanupCenter {
         sessionID: Int64, workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil
     ) -> [String] {
         var args = ["workbench", "cleanup", "--session=\(sessionID)", "--workbench=\(workbenchID)"]
+        args += live.sorted().map { "--live-session=\($0)" }
+        if let items { args += ["--apply"] + items.map { "--item=\($0)" } }
+        return args + ["--json"]
+    }
+
+    /// `workbench cleanup --workbench W --sweep [--live-session L]…
+    /// [--apply --item K…] --json` (spec §4: a sweep names no session).
+    nonisolated static func sweepArguments(
+        workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil
+    ) -> [String] {
+        var args = ["workbench", "cleanup", "--workbench=\(workbenchID)", "--sweep"]
         args += live.sorted().map { "--live-session=\($0)" }
         if let items { args += ["--apply"] + items.map { "--item=\($0)" } }
         return args + ["--json"]

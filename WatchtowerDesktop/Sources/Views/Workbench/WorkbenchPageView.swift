@@ -10,6 +10,8 @@ struct WorkbenchPageView: View {
     @Environment(AppState.self) private var appState
     @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
+    /// Clean Up Old Worktrees… is on screen (board #535).
+    @State private var sweeping = false
 
     /// The folder the code viewer works in: the worktree of the session on
     /// screen, else the workbench folder.
@@ -33,6 +35,10 @@ struct WorkbenchPageView: View {
                     .padding(8)
                 Divider()
             }
+            if let hint = vm.cleanupHints[project.id] {
+                cleanupHint(hint)
+                Divider()
+            }
             // An ask filed outside the app has no terminal to sit beside:
             // its drawer takes the page's trailing edge.
             OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
@@ -53,7 +59,10 @@ struct WorkbenchPageView: View {
         .sheet(item: handoffRequest) { request in
             HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
         }
+        .sheet(isPresented: $sweeping) { WorkbenchSweepSheet(vm: vm, project: project) }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
+        // The one-time "old worktrees use ~N GB" hint (board #535).
+        .task(id: project.id) { await vm.checkCleanupHint(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.
         .task(id: project.id) { await vm.asks.refreshIfChanged(projectID: project.id) }
@@ -123,10 +132,10 @@ struct WorkbenchPageView: View {
                 .layoutPriority(-1)
                 WorkbenchPlaceCrumb(vm: vm, project: project)
                 WorkbenchBranchCrumb(vm: vm, project: project)
-                installStatusIcons
+                WorkbenchInstallStatusIcons(vm: vm, project: project)
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
-                WorkbenchHeaderControls(vm: vm, project: project, onDelete: confirmDelete)
+                WorkbenchHeaderControls(vm: vm, project: project, onDelete: confirmDelete) { sweeping = true }
             }
             if let installError = vm.installErrors[project.id] {
                 Text(installError)
@@ -157,6 +166,27 @@ struct WorkbenchPageView: View {
         }
     }
 
+    /// The one-time hint: "Old worktrees use ~38 GB." with Clean Up… and
+    /// ✕. Once on screen it never comes back for this workbench.
+    private func cleanupHint(_ hint: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "externaldrive.badge.minus").foregroundStyle(.secondary)
+            Text(hint).font(.caption)
+            Button("Clean Up…") { sweeping = true }
+                .controlSize(.small)
+            Spacer()
+            Button {
+                vm.dismissCleanupHint(projectID: project.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss — Clean Up Old Worktrees… stays in the … menu")
+        }
+        .padding(8)
+        .onAppear { vm.cleanupHintShown(projectID: project.id) }
+    }
+
     /// What the last Re-run setup did, with its suggestions; selectable,
     /// since a line may end with a command to run.
     private var resyncSummary: some View {
@@ -179,81 +209,5 @@ struct WorkbenchPageView: View {
             .help("Dismiss")
         }
         .padding(8)
-    }
-
-    /// The install state as small icons with tooltips: installed, needs
-    /// Repair (in the "…" menu), Claude Code CLI not found.
-    @ViewBuilder
-    private var installStatusIcons: some View {
-        if let status = vm.installStatus[project.id] {
-            if !status.claudeFound && !status.mcp { claudeNotFoundIcon }
-            if let notice = status.codexSetupNotice(failure: vm.codexSetupErrors[project.id]) {
-                codexSetupMenu(notice)
-            }
-            if status.needsRepair {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-                    .help("The folder install is incomplete — Repair install is in the … menu.\n\(status.repairHelp)")
-                    .accessibilityLabel("Install incomplete")
-            } else if let notice = status.legacyNotice {
-                // A nudge only: nothing migrates until the owner runs it (O6).
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-                    .help("\(notice)\n\(status.repairHelp)")
-                    .accessibilityLabel("Older setup")
-            } else if status.claudeFound || status.mcp {
-                Image(systemName: "checkmark.seal")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                    .help("Installed: \(status.repairHelp)")
-                    .accessibilityLabel("Installed")
-            }
-        }
-    }
-
-    /// Codex is installed but the folder's Codex part was never set up
-    /// (board #399): a neutral item, orange only after a failed setup, whose
-    /// menu runs the same Codex install as Repair.
-    private func codexSetupMenu(_ notice: CodexSetupNotice) -> some View {
-        Menu {
-            Text(notice.title)
-            Button("Set up Codex") { Task { await vm.setUpCodex(projectID: project.id) } }
-                .disabled(vm.isInstalling(projectID: project.id))
-        } label: {
-            Label(notice.title, systemImage: notice.isWarning ? "exclamationmark.triangle" : "plus.circle")
-                .font(.caption)
-                .foregroundStyle(notice.isWarning ? Color.orange : Color.secondary)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(notice.help)
-        .accessibilityLabel(notice.title)
-    }
-
-    /// Repair cannot register the MCP server without `claude`: a warning
-    /// icon whose menu names the gap and copies the manual command instead
-    /// of a Repair that always fails.
-    private var claudeNotFoundIcon: some View {
-        let command = WorkbenchInstallStatus.manualMCPCommand(
-            projectID: project.id, folder: project.folderPath, cliPath: Constants.findCLIPath() ?? "watchtower"
-        )
-        return Menu {
-            Text("Claude Code CLI not found")
-            Button("Copy MCP Command") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(command, forType: .string)
-            }
-        } label: {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Claude Code CLI not found. Install Claude Code, then run:\n\(command)")
-        .accessibilityLabel("Claude Code CLI not found")
     }
 }
