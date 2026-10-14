@@ -404,13 +404,23 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 // recipeFileRemovable reports whether delete may remove a's recipe file: a
 // regular file at a's path inside a's own recipe folder. Anything else — no
 // file, a symlink or special file put in its place, a path no longer inside
-// its recipe folder — is left alone and the row is still deleted.
+// its recipe folder, a workbench that is gone — is left alone and the row is
+// still deleted. Only a's own recipe folder is touched (never another
+// workbench's: it may sit under a TCC-protected location).
 func recipeFileRemovable(cfg *config.Config, database *db.DB, a *db.Automation) (bool, error) {
-	scope, _, path, ok, err := recipeFolderOf(cfg, database, a.Path)
-	if err != nil {
+	folder, ok, err := scopeRecipeDir(cfg, database, automationScopeOf(a))
+	if err != nil || !ok {
 		return false, err
 	}
-	if !ok || scope != automationScopeOf(a) || path != a.Path {
+	want, err := automationsCanonicalDir(folder)
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", folder, err)
+	}
+	dir, err := automationsCanonicalDir(filepath.Dir(a.Path))
+	if err != nil {
+		return false, fmt.Errorf("resolving %s: %w", a.Path, err)
+	}
+	if dir != want || filepath.Join(dir, filepath.Base(a.Path)) != a.Path {
 		return false, nil
 	}
 	info, err := os.Lstat(a.Path)
