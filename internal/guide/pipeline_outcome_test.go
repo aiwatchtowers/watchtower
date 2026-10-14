@@ -113,3 +113,30 @@ func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 	assert.GreaterOrEqual(t, int(gen.calls.Load()), 1, "the CLI's forced run still reaches the AI")
 	assert.Equal(t, OutcomeGenerated, pipe.LastOutcome())
 }
+
+// HasData is the negation of RunForWindow's OutcomeNoData over Run's window.
+func TestHasData_MatchesNoDataOutcome(t *testing.T) {
+	database := db.OpenTestDB(t)
+	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	from, to := outcomeWindow()
+
+	has, err := pipe.HasData()
+	require.NoError(t, err)
+	assert.False(t, has, "no active users")
+
+	seedOutcomeUser(t, database, from)
+	has, err = pipe.HasData()
+	require.NoError(t, err)
+	assert.False(t, has, "active users but no situations")
+
+	pipe.ForceRegenerate = true
+	has, err = pipe.HasData()
+	require.NoError(t, err)
+	assert.True(t, has, "a forced run does not need situations")
+	pipe.ForceRegenerate = false
+
+	seedOutcomeSituation(t, database, from, to)
+	has, err = pipe.HasData()
+	require.NoError(t, err)
+	assert.True(t, has, "users and situations")
+}

@@ -166,3 +166,29 @@ func TestDaemon_PeopleGeneratedRunStamps(t *testing.T) {
 	_, err := os.Stat(d.lastPeoplePath())
 	assert.NoError(t, err, "last_people.txt is written")
 }
+
+func peopleRunCount(t *testing.T, database *db.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'people'`).Scan(&n))
+	return n
+}
+
+// A workspace that stays without data must not write an empty "people" row
+// every cycle. Both no-data shapes: no active users, then users without
+// situations.
+func TestDaemon_PeopleNoDataRunLeavesNoPipelineRun(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	gen := attachPeoplePipeline(d, database)
+
+	d.phasePeopleCards(context.Background())
+	seedFirstRunMessages(t, database)
+	d.phasePeopleCards(context.Background())
+
+	assert.Equal(t, 0, peopleRunCount(t, database))
+	assert.Equal(t, 0, gen.calls)
+
+	seedFirstRunSituation(t, database)
+	d.phasePeopleCards(context.Background())
+	assert.Equal(t, 1, peopleRunCount(t, database), "the first cycle with data is tracked")
+}

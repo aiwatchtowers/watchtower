@@ -1202,12 +1202,12 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 }
 
 // phasePeopleCards (group B) generates per-user people cards from people_signals
-// produced by phaseChannelDigests. Throttled to once per 24h; a run with no
+// produced by phaseChannelDigests. Throttled to once per 24h; a cycle with no
 // data yet (no active users or no situations, the fresh-install first cycle)
-// neither stamps the throttle nor spends the budget, so cards appear in the
-// first cycle that has situations. Compound-gated
-// on Digest.Enabled too: people cards mine people_signals that only
-// phaseChannelDigests produces — starved without them, and gating on
+// neither stamps the throttle nor spends the budget nor writes a
+// pipeline_runs row, so cards appear in the first cycle that has situations.
+// Compound-gated on Digest.Enabled too: people cards mine people_signals that
+// only phaseChannelDigests produces — starved without them, and gating on
 // People.Enabled alone would still create an empty pipeline_runs row every
 // throttle window instead of skipping outright.
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
@@ -1226,6 +1226,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	// shape, maxDailyAIAttempts).
 	date := now.Format("2006-01-02")
 	if d.peopleAttemptsExhausted(date) {
+		return
+	}
+	// No data yet: skip before trackedPipelineRun so a workspace that stays
+	// without data writes no empty "people" row every cycle (the
+	// phaseCustomTrackScan precedent). A failed check falls through so Run
+	// reports the error in a tracked row.
+	if has, err := d.peoplePipe.HasData(); err == nil && !has {
 		return
 	}
 

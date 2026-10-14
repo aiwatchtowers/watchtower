@@ -169,12 +169,39 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	p.totalOutputTokens.Store(0)
 	p.totalAPITokens.Store(0)
 
+	from, to := currentWindow()
+	return p.RunForWindow(ctx, from, to)
+}
+
+// currentWindow is Run's window: the DefaultWindowDays days ending at the
+// start of today.
+func currentWindow() (from, to float64) {
 	now := time.Now()
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	to := float64(endOfDay.Unix())
-	from := float64(endOfDay.AddDate(0, 0, -DefaultWindowDays).Unix())
+	return float64(endOfDay.AddDate(0, 0, -DefaultWindowDays).Unix()), float64(endOfDay.Unix())
+}
 
-	return p.RunForWindow(ctx, from, to)
+// HasData reports whether Run would find anything to work on: active users
+// with enough messages and, unless ForceRegenerate, situations from digests —
+// the negation of RunForWindow's OutcomeNoData. The daemon checks it before
+// opening a tracked run, so a workspace without data yet writes no empty
+// pipeline_runs row every cycle.
+func (p *Pipeline) HasData() (bool, error) {
+	from, to := currentWindow()
+	if !p.ForceRegenerate {
+		sits, err := p.db.GetSituationsForWindow(from, to)
+		if err != nil {
+			return false, err
+		}
+		if len(sits) == 0 {
+			return false, nil
+		}
+	}
+	stats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
+	if err != nil {
+		return false, err
+	}
+	return len(stats) > 0, nil
 }
 
 // RunForWindow executes the people card pipeline for a specific time window.
