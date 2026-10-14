@@ -205,7 +205,7 @@ type callbackParams struct {
 }
 
 // callbackHandler builds the /callback handler. A request whose state does not
-// match is answered 400 and ignored — it neither ends the login nor uses up
+// match is answered 400 (auth.WriteStaleCallback's page) and ignored — it neither ends the login nor uses up
 // the delivery, so a stray local request cannot derail a sign-in (providers
 // echo the state on error redirects too, RFC 6749 §4.1.2.1). Only the FIRST
 // matching request delivers a result: a retry or a second race for the port
@@ -217,7 +217,7 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if !auth.StateMatches(q.Get("state"), p.state) {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
+			auth.WriteStaleCallback(w)
 			return
 		}
 		if !p.delivered.CompareAndSwap(false, true) {

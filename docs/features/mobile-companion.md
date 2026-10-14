@@ -96,7 +96,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit is 
 - **Rollback and replay (D4).** CloudKit gives no ordering, so there is no strict per-device sequence gate. Instead:
   - The AAD binds the opaque name, zone, hub, epoch and seq.
   - The exactly-once ledger keys on the wire name.
-  - The authenticated `created_at` gives the 7-day / 24 h age window, and the ledger outlives it by a day. A `created_at` more than 5 minutes ahead of the Mac (`RelayProcessor.maxClockSkew`) is `expired` too, so a far-future date cannot stretch the window (target 168); that echo carries "Your iPhone's clock is ahead of your Mac's. Check the date and time on your iPhone." (`clockAheadMessage`), a plain expiry none.
+  - The authenticated `created_at` gives the 7-day / 24 h age window, and the ledger outlives it by a day. A `created_at` more than 5 minutes ahead of the Mac (`RelayProcessor.maxClockSkew`) is `expired` too, so a far-future date cannot stretch the window (target 168); that echo carries "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both." (`clockAheadMessage`; either clock may be the wrong one), a plain expiry none.
   - A per-record `(epoch, seq)` guard, keyed by wire name and sender (F3, `relay_seen` on the hub and in the phone's replica), ignores an older version of the same record. An identical re-delivery is `.same` and idempotent.
   - `devices.last_seq` is only a high-water mark for diagnostics.
   - Uploads have no age window (a legitimate upload can be days late). Instead their ledger row and `relay_seen` row are kept while the record's epoch is still accepted, so a replayed upload can never open and also find an empty ledger.

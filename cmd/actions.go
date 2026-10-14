@@ -357,7 +357,8 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 func refuseUnderAgent(verb string) error {
 	for _, name := range agentEnvMarkers {
 		if os.Getenv(name) != "" {
-			return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner decides in Watchtower Desktop", verb, name)
+			return fmt.Errorf("refusing to %s under an AI agent (%s is set): the owner decides in Watchtower Desktop "+
+				"(or runs this from a plain Terminal)", verb, name)
 		}
 	}
 	return nil

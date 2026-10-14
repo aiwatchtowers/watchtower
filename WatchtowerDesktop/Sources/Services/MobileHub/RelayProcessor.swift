@@ -419,7 +419,9 @@ final class RelayProcessor: Sendable {
         try sidecar.raiseDeviceLastSeq(sealed.senderID.uuidString, to: sealed.seq)
     }
 
-    static let clockAheadMessage = "Your iPhone's clock is ahead of your Mac's. Check the date and time on your iPhone."
+    /// Either clock may be the wrong one (a Mac behind looks like a phone ahead), so it names both.
+    static let clockAheadMessage =
+        "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both."
 
     /// The `expired` outcome of an action past its window, or dated more than `maxClockSkew` ahead (a future
     /// `created_at` would otherwise stretch the window at will; the phone is told to check its clock). nil: in time.

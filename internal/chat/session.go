@@ -72,11 +72,15 @@ type inbound struct {
 func (s *Session) Run(ctx context.Context, in io.Reader) error {
 	sid, err := s.b.Start(ctx)
 	if err != nil {
-		code, retry := ClassifyClaudeError(err.Error())
-		if code == CodeInternal {
-			code = CodeProviderUnavailable
+		ev, ok := workDirErrorEvent("", err)
+		if !ok {
+			code, retry := ClassifyClaudeError(err.Error())
+			if code == CodeInternal {
+				code = CodeProviderUnavailable
+			}
+			ev = Event{Type: EventError, Code: code, Message: err.Error(), Retryable: retry}
 		}
-		_ = s.w.Emit(Event{Type: EventError, Code: code, Message: err.Error(), Retryable: retry})
+		_ = s.w.Emit(ev)
 		_ = s.b.Close()
 		return err
 	}
@@ -234,6 +238,9 @@ func (s *Session) runTurn(ctx context.Context, c Command, st *turnState) {
 // attachment error must still win (A21).
 func fallbackTerminal(ctx context.Context, turnID string, err error) Event {
 	if ev, ok := attachmentErrorEvent(turnID, err); ok {
+		return ev
+	}
+	if ev, ok := workDirErrorEvent(turnID, err); ok {
 		return ev
 	}
 	switch {

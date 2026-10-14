@@ -3,8 +3,10 @@ package devpack
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -226,8 +228,9 @@ func TestInstallRefusesToWriteThroughASymlinkedSkillFile(t *testing.T) {
 				t.Fatalf("symlink: %v", err)
 			}
 
-			if _, err := installSkill(skillsDir, s); err == nil {
-				t.Fatalf("expected an error installing through a symlinked %s", name)
+			_, err := installSkill(skillsDir, s)
+			if !errors.Is(err, ErrSymlinkInPlace) {
+				t.Fatalf("installing through a symlinked %s: err = %v, want ErrSymlinkInPlace", name, err)
 			}
 			if _, err := os.Lstat(outside); !os.IsNotExist(err) {
 				t.Fatalf("the link's target must not be created, lstat err=%v", err)
@@ -236,5 +239,17 @@ func TestInstallRefusesToWriteThroughASymlinkedSkillFile(t *testing.T) {
 				t.Fatalf("the link must be left as it was: target=%q err=%v", got, err)
 			}
 		})
+	}
+}
+
+// The Desktop's create flow matches these texts in the CLI's stderr to drop
+// its "use Repair" advice (WorkbenchesViewModel.createInstallNote): changing
+// either breaks that match.
+func TestInstallErrorTextsTheDesktopMatches(t *testing.T) {
+	if got := ErrSymlinkInPlace.Error(); got != "is a symlink; not writing through it" {
+		t.Errorf("ErrSymlinkInPlace = %q", got)
+	}
+	if got := ErrSymlinkOutsideFolder.Error(); !strings.Contains(got, "outside the workbench folder") {
+		t.Errorf("ErrSymlinkOutsideFolder = %q", got)
 	}
 }

@@ -27,7 +27,9 @@ var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 // ~/.claude/settings.json would make our hooks global). Install and removal
 // refuse it before any write (PROJ-04, owner decision 2026-10-14, ask #109):
 // the owner replaces the link with a regular file or points it inside the
-// folder.
+// folder. The Desktop matches "outside the workbench folder" in the CLI's
+// message (WorkbenchesViewModel.createInstallNote); keep it in every such
+// message (TestInstallErrorTextsTheDesktopMatches).
 var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench folder")
 
 // hookSpec is one Claude Code hook event the workbench install owns an entry
