@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -288,5 +289,101 @@ func TestCleanupPermission_OwnerBareOrRelativeRuleIsNeverOurs(t *testing.T) {
 	}
 	if got := allowList(t, dir); !reflect.DeepEqual(got, owners) {
 		t.Fatalf("remove took an owner's rule: got %#v", got)
+	}
+}
+
+// PROJ-04: a settings.local.json linking outside the folder is refused by the
+// cleanup-rule install and removal alike, before anything is read or
+// written: the outside target stays byte-identical, the link untouched, and
+// the refusal's hint names the allow rule, not hooks.
+func TestProj04_CleanupPermissionRefusesASymlinkOutsideTheFolder(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	content := `{"model": "sonnet", "permissions": {"allow": ["` + testCleanupRule + `"]}}`
+	writeTestFile(t, outside, content)
+	ops := map[string]func() (bool, error){
+		"install": func() (bool, error) { return InstallCleanupPermission(dir, testCleanupBin) },
+		"remove":  func() (bool, error) { return RemoveCleanupPermission(dir) },
+	}
+	for name, op := range ops {
+		changed, err := op()
+		if !errors.Is(err, ErrSymlinkOutsideFolder) || changed {
+			t.Fatalf("%s through a link leaving the folder: changed=%v err=%v", name, changed, err)
+		}
+		if got := readTestFile(t, outside); got != content {
+			t.Fatalf("%s: the outside target must stay byte-identical, got %s", name, got)
+		}
+		if target, err := os.Readlink(link); err != nil || target != outside {
+			t.Fatalf("%s: the link must be untouched: target=%q err=%v", name, target, err)
+		}
+		hints := OutsideFolderHints(err)
+		if len(hints) != 1 || !strings.Contains(hints[0], "cleanup allow rule") || strings.Contains(hints[0], "hooks") {
+			t.Fatalf("%s: the hint must name the allow rule: %q", name, hints)
+		}
+	}
+}
+
+// A settings.local.json linking to a file inside the folder is followed: the
+// rule lands in, and is removed from, the link's target, and the link
+// survives both.
+func TestCleanupPermission_SymlinkInsideTheFolderIsFollowed(t *testing.T) {
+	dir := t.TempDir()
+	realSettings := filepath.Join(dir, "dotfiles", "real-settings.json")
+	writeTestFile(t, realSettings, `{"model": "sonnet"}`)
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realSettings, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	assertLink := func(step string) {
+		t.Helper()
+		if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("the settings symlink must survive the %s: err=%v", step, err)
+		}
+	}
+
+	if changed, err := InstallCleanupPermission(dir, testCleanupBin); err != nil || !changed {
+		t.Fatalf("install: changed=%v err=%v", changed, err)
+	}
+	assertLink("install")
+	if got := readTestFile(t, realSettings); !strings.Contains(got, `"model": "sonnet"`) || !strings.Contains(got, "workbench cleanup:*") {
+		t.Fatalf("the target must hold the owner's key and our rule:\n%s", got)
+	}
+
+	if changed, err := RemoveCleanupPermission(dir); err != nil || !changed {
+		t.Fatalf("remove: changed=%v err=%v", changed, err)
+	}
+	assertLink("remove")
+	if got := readTestFile(t, realSettings); !strings.Contains(got, `"model": "sonnet"`) || strings.Contains(got, "workbench cleanup") {
+		t.Fatalf("the removal must drop our rule from the target: %s", got)
+	}
+}
+
+// With .claude linked outside the folder and no settings file, there is
+// nothing to remove: the removal succeeds, as the hook removals do, and
+// creates nothing outside. The install is still refused.
+func TestCleanupPermission_DirectoryLinkOutsideWithNoFile(t *testing.T) {
+	dir := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(dir, ".claude")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if changed, err := RemoveCleanupPermission(dir); err != nil || changed {
+		t.Fatalf("remove with no settings file: changed=%v err=%v", changed, err)
+	}
+	if changed, err := InstallCleanupPermission(dir, testCleanupBin); !errors.Is(err, ErrSymlinkOutsideFolder) || changed {
+		t.Fatalf("install through a .claude link leaving the folder: changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "settings.local.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nothing may be created outside the folder, stat err=%v", err)
 	}
 }

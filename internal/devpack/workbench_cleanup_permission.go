@@ -91,11 +91,11 @@ var beforeCleanupRuleWrite = func() {}
 // applied to that fresh copy right before the atomic write. An entry we did
 // not add is never dropped; only a write landing within that last instant
 // can still be lost. write gets the file and its symlink-resolved target
-// (resolveSymlinkInside: a link leaving the folder is refused before any
+// (resolveSymlinkInsideFor: a link leaving the folder is refused before any
 // read or write).
 func editCleanupRules(dir string, edit func([]any) ([]any, bool), write func(file, target string, settings map[string]any, mode os.FileMode) error) (bool, error) {
 	file := settingsLocalPath(dir)
-	target, err := resolveSymlinkInside(file, dir)
+	target, err := resolveSymlinkInsideFor(file, dir, leftoverAllowRule)
 	if err != nil {
 		return false, err
 	}
@@ -185,8 +185,13 @@ func upsertCleanupRule(allow []any, want string) ([]any, bool) {
 // dir's .claude/settings.local.json (PROJ-02/04), whichever binary wrote it;
 // the owner's rules stay. An allow list, a permissions object and finally a
 // file left empty are dropped, as RemoveSessionStartHook does. A missing
-// file is left missing.
+// file is left missing: with nothing to remove, the symlink check is not
+// reached either, as for the hook removals (removeHook), so a .claude
+// linked outside the folder holding no settings file is no error.
 func RemoveCleanupPermission(dir string) (bool, error) {
+	if _, _, existed, err := readSettings(settingsLocalPath(dir)); err != nil || !existed {
+		return false, err
+	}
 	return editCleanupRules(dir, withoutCleanupRules, writeOrDropSettings)
 }
 
