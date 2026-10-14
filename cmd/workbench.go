@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -582,6 +583,7 @@ func cleanPlacedWorktrees(ctx context.Context, stderr io.Writer, database *db.DB
 			kept = append(kept, root)
 			continue
 		}
+		// A throwaway row: the options need only the id and the folder.
 		o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: s.FolderPath})
 		if err == nil {
 			err = devpack.UnregisterWorkbenchMCP(ctx, o)
@@ -612,7 +614,10 @@ func cleanPlacedSession(ctx context.Context, database *db.DB, workbenchID int64,
 		}
 	}
 	if wtKey == "" {
-		return "", true, nil // the worktree is already gone
+		// Not listed: gone, or on disk but not the session's by record
+		// (born after the row) — only a missing folder counts as removed.
+		_, statErr := os.Stat(s.FolderPath)
+		return "", errors.Is(statErr, fs.ErrNotExist), nil
 	}
 	res, err := sessioncleanup.Apply(ctx, deps, req, []string{wtKey, "branch:" + s.Branch})
 	if err != nil {

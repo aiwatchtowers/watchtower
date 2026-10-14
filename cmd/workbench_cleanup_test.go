@@ -610,13 +610,19 @@ func TestCleanupCmd_SweepApplyItemRemovesTheNamedWorktree(t *testing.T) {
 // placed in it — the order the Desktop uses (worktree first, row after).
 func (f *cleanupFixture) placedSession(slug string) string {
 	f.t.Helper()
+	return f.placedSessionAt(slug, time.Now())
+}
+
+// placedSessionAt is placedSession with the row's created_at given.
+func (f *cleanupFixture) placedSessionAt(slug string, rowAt time.Time) string {
+	f.t.Helper()
 	root := filepath.Join(f.repo, ".claude", "worktrees", slug)
 	f.gitIn(f.repo, "worktree", "add", "-q", "-b", "wt/"+slug, root, "main")
 	f.commit(root, slug+".txt")
 	f.gitIn(root, "push", "-q", "origin", "wt/"+slug)
 	_, err := f.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at, worktree_branch, worktree_base)
 		VALUES (?, 'claude', 'placed', ?, ?, ?, ?, 'abc')`, f.wb, root, "p-"+slug,
-		time.Now().UTC().Format(time.RFC3339), "wt/"+slug)
+		rowAt.UTC().Format(time.RFC3339), "wt/"+slug)
 	require.NoError(f.t, err)
 	return root
 }
@@ -647,4 +653,31 @@ func TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes(t *testing.T) {
 	f.gitIn(f.repo, "rev-parse", "--verify", "-q", "refs/heads/wt/d") // a kept worktree keeps its branch
 	_, err = f.database.GetWorkbench(f.wb)
 	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
+}
+
+// A placed row whose worktree the plan does not list (it was born long after
+// the row, so it is not the row's by record) is on disk: it is kept, not
+// reported as removed.
+func TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList(t *testing.T) {
+	f := newCleanupFixture(t)
+	prevRun, prevExe := workbenchCommandRunner, workbenchExecutable
+	var calls int
+	workbenchCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) { calls++; return nil, nil }
+	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	prevRemove := workbenchRemoveInstall
+	workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
+	t.Cleanup(func() {
+		workbenchCommandRunner, workbenchExecutable, workbenchRemoveInstall = prevRun, prevExe, prevRemove
+	})
+	root := f.placedSessionAt("late", time.Now().Add(-time.Hour))
+
+	out, _, err := runWorkbench(t, "delete", strconv.FormatInt(f.wb, 10), "--json")
+	require.NoError(t, err, out)
+	var res struct {
+		KeptWorktrees []string `json:"kept_worktrees"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res), out)
+	assert.DirExists(t, root)
+	assert.Equal(t, []string{root}, res.KeptWorktrees)
+	assert.Zero(t, calls, "a kept worktree's MCP entry is not unregistered")
 }

@@ -172,7 +172,11 @@ row delete removes each session's worktree ledger
 from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
 itself. The worktrees and branches a cleanup removed are not brought back
 by anything; a workbench delete runs no sweep of the repository (only the placed sessions' own cleanup below).
-*2026-10-14 (board #229, asks #122/#124):* deleting a workbench first runs the session cleanup (PROJ-18) for every placed session's worktree and `wt/` branch; a worktree the cleanup keeps stays on disk and is listed in `kept_worktrees`; a removed one's local MCP entry is unregistered.
+*2026-10-14 (board #229, asks #122/#124):* deleting a workbench
+first runs the session cleanup (PROJ-18) for every placed session's
+worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
+and is listed in `kept_worktrees`; a removed one's local MCP entry is
+unregistered.
 
 **Exception (owner approved 2026-10-14, ask #118, target 156):** a file or
 directory the removal would write or remove through that is a symlink
