@@ -225,6 +225,9 @@ func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 		if strings.Contains(body, "Authorization Failed") || strings.Contains(body, "Connected") {
 			t.Errorf("params %v: body = %q, want neither the error nor the success page", params, body)
 		}
+		if !strings.Contains(body, "This sign-in page is out of date") {
+			t.Errorf("params %v: body = %q, want the out-of-date page", params, body)
+		}
 	}
 	select {
 	case res := <-resultCh:

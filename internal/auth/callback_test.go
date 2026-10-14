@@ -31,9 +31,12 @@ func TestCallbackHandler_WrongStateIsIgnored(t *testing.T) {
 		{"code": "stolen", "state": "bad-state"},
 		{"code": "stolen"},
 	} {
-		status, _ := hitTestCallback(t, h, params)
+		status, body := hitTestCallback(t, h, params)
 		if status != http.StatusBadRequest {
 			t.Errorf("params %v: status = %d, want 400", params, status)
+		}
+		if !strings.Contains(body, "This sign-in page is out of date") || !strings.Contains(body, "<!DOCTYPE html>") {
+			t.Errorf("params %v: body = %q, want the out-of-date page", params, body)
 		}
 	}
 	select {
