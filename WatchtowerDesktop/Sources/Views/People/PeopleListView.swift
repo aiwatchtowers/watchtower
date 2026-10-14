@@ -104,7 +104,9 @@ struct PeopleListView: View {
             windowPicker(vm)
             statsAndSearch(vm)
             Divider()
-            if vm.cards.isEmpty {
+            if vm.cards.isEmpty, let error = vm.errorMessage {
+                ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
+            } else if vm.cards.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
                 userListScrollView(vm)

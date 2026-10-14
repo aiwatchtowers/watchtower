@@ -77,6 +77,8 @@ struct BlockerMapView: View {
             if vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = vm.errorMessage {
+                ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
             } else if vm.blockers.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {

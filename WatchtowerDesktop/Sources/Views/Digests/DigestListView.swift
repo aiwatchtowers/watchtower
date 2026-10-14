@@ -305,7 +305,9 @@ struct DigestListView: View {
             // List content
             switch activeTab {
             case .digests:
-                if let kind = Self.emptyKind(
+                if vm.feedEntries.isEmpty, let error = vm.errorMessage {
+                    ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
+                } else if let kind = Self.emptyKind(
                     feedIsEmpty: vm.feedEntries.isEmpty, visibleIsEmpty: filteredFeedEntries.isEmpty
                 ) {
                     Self.emptyFeed(kind, context: appState.emptyStateContext)

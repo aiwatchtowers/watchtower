@@ -103,6 +103,8 @@ struct WorkloadView: View {
             if vm.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = vm.errorMessage {
+                ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
             } else if vm.filteredEntries.isEmpty {
                 Self.emptyState(hasEntries: !vm.entries.isEmpty, context: appState.emptyStateContext)
             } else {
