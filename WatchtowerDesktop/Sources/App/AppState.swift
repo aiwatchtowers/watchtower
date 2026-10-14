@@ -568,73 +568,6 @@ final class AppState {
         }
     }
 
-    /// Hands the MeetingRecorderCenter its voice-registry closures once the
-    /// shared pool opens (the Center is created before the DB). Both degrade
-    /// on failure instead of throwing — voice naming is a progressive
-    /// enhancement like roles themselves: a failed read → nil, identification
-    /// off for that recording (plain "Speaker N" labels, nothing queued or
-    /// learned — spec §2.6); a failed write → nothing queued (the transcript
-    /// is already saved).
-    /// Failures are printed, never silent (the renderRoles diagnostics
-    /// convention). `func`, not `private func`, so @testable tests can wire a
-    /// test DB through it (the initSecretaryProfile precedent).
-    func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
-        meetingRecorderCenter.registryLoader = { eventID in
-            do {
-                return try await dbPool.read { db in try Self.loadVoiceRegistry(db, eventID: eventID) }
-            } catch {
-                print("[AppState] voice registry load failed, identification disabled for this run: "
-                      + error.localizedDescription)
-                return nil
-            }
-        }
-        meetingRecorderCenter.registryWriter = { transcriptID, outcome in
-            do {
-                return try await dbPool.write { db -> Int in
-                    for sample in outcome.autoSamples {
-                        var sample = sample
-                        sample.transcriptID = transcriptID
-                        try VoiceSampleQueries.insertAuto(db, sample)
-                    }
-                    for task in outcome.tasks {
-                        try VoiceLabelQueueQueries.enqueue(
-                            db, transcriptID: transcriptID, clusterLabel: task.label, reason: task.reason,
-                            suggestedPersonID: task.personID, score: task.score)
-                    }
-                    return outcome.tasks.count
-                }
-            } catch {
-                print("[AppState] voice registry write failed for transcript \(transcriptID), nothing queued: "
-                      + error.localizedDescription)
-                return 0
-            }
-        }
-
-        voiceRegistryCenter.attach(dbPool: dbPool)
-        // Launch catch-up: the one full retro pass (spec §4.1), skipped with
-        // "Voice recognition" off (spec §6).
-        let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
-        voiceRegistryCenter.startCatchUp(voiceRecognition: voiceRecognition)
-        observeVoiceRegistryCatchUp()
-    }
-
-    /// Keeps `voiceRegistryCenter` in sync with every meeting-recorder save
-    /// (`MeetingRecorderCenter.savedTick`) via manual Observation tracking —
-    /// there's no view guaranteed to stay mounted for the app's whole
-    /// lifetime to drive a SwiftUI `.onChange` here, so AppState re-arms its
-    /// own tracking closure after each fire.
-    private func observeVoiceRegistryCatchUp() {
-        withObservationTracking {
-            _ = meetingRecorderCenter.savedTick
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                await self.handleMeetingRecorderSaved()
-                self.observeVoiceRegistryCatchUp()
-            }
-        }
-    }
-
     /// What a meeting-recorder save tells `voiceRegistryCenter`: NOT a full
     /// retro pass (spec §4.1 — a new meeting's freshly-minted auto samples
     /// are not one of retro's three triggers), just
@@ -1251,6 +1184,46 @@ final class AppState {
     }
 
     private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+
+    /// Why the last Turn on from a tab's empty state didn't work; nil after a success.
+    private(set) var emptyStateTurnOnError: String?
+    private(set) var isTurningOnFromEmptyState = false
+
+    /// Turn on from a tab's empty state: `features enable` right away (never
+    /// Settings → Features' staged changes) and one daemon restart, as
+    /// `acceptFeatureSuggestion` does. A retry after a failed restart finds
+    /// the feature on and only restarts.
+    func turnOnFeatureFromEmptyState(_ featureID: String) async {
+        guard !isTurningOnFromEmptyState else { return }
+        isTurningOnFromEmptyState = true
+        defer { isTurningOnFromEmptyState = false }
+        let daemon = daemonControl
+        await awaitAccountDaemonRestarts()
+        let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
+        if result.busy {
+            emptyStateTurnOnError = Self.featureChangesBusy
+            return
+        }
+        if let error = featureManager.loadError {
+            emptyStateTurnOnError = error
+            return
+        }
+        if result.enabled.isEmpty {
+            if featureManager.disabledFeatureIDs.contains(featureID) {
+                emptyStateTurnOnError = featureManager.pending[featureID] == false
+                    ? Self.featureStagedInSettings
+                    : Self.featureChangesBusy
+                return
+            }
+            do {
+                try await daemon.restartWaiting()
+            } catch {
+                emptyStateTurnOnError = error.localizedDescription
+                return
+            }
+        }
+        emptyStateTurnOnError = nil
+    }
 
     /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
     private func land(after route: OnboardingRoute) {

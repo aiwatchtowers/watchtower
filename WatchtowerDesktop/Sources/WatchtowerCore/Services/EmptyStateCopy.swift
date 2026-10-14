@@ -12,6 +12,16 @@ package struct EmptyStateCopy: Equatable, Sendable {
     /// Whose readiness line shows; nil = none.
     package let feature: ReadinessFeature?
     package let primaryAction: EmptyStateAction?
+
+    package init(
+        icon: String, title: String, landsHere: String, feature: ReadinessFeature?, primaryAction: EmptyStateAction?
+    ) {
+        self.icon = icon
+        self.title = title
+        self.landsHere = landsHere
+        self.feature = feature
+        self.primaryAction = primaryAction
+    }
 }
 
 package enum EmptyStateAction: Equatable, Sendable {

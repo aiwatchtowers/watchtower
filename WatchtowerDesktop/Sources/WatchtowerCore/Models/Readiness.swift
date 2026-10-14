@@ -63,6 +63,17 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 package enum ReadinessSource: Equatable, Sendable {
     case none, slack, anySource, calendar, jira, jiraOrMail
 
+    /// What a "Connect …" line or button names.
+    package var displayName: String {
+        switch self {
+        case .slack: "Slack"
+        case .calendar: "a calendar"
+        case .jira: "Jira"
+        case .jiraOrMail: "Jira or mail"
+        case .anySource, .none: "a source"
+        }
+    }
+
     package func isConnected(in connected: ConnectedSources) -> Bool {
         switch self {
         case .none: true

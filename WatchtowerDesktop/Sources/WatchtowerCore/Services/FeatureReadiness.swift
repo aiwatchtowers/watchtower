@@ -105,22 +105,12 @@ package enum FeatureReadiness {
     package static func line(_ readiness: Readiness) -> String {
         switch readiness {
         case .off: "Off — Turn on"
-        case .needsSource(let source): "Connect \(sourceName(source)) to get this"
+        case .needsSource(let source): "Connect \(source.displayName) to get this"
         case .ready: "Ready — Open"
         case .preparing(let detail): withDetail("Preparing now", detail)
         case .error(let message): withDetail("Didn't work yet — retries automatically", shortError(message))
         case .waitingForSync(let detail): withDetail("Starts after the first sync", detail)
         case .scheduled(let eta): capitalizedFirst(phrase(eta))
-        }
-    }
-
-    private static func sourceName(_ source: ReadinessSource) -> String {
-        switch source {
-        case .slack: "Slack"
-        case .calendar: "a calendar"
-        case .jira: "Jira"
-        case .jiraOrMail: "Jira or mail"
-        case .anySource, .none: "a source"
         }
     }
 
