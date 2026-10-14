@@ -365,3 +365,23 @@ func TestEmailTools_DegenerateArgs(t *testing.T) {
 	require.Len(t, unread.Messages, 1)
 	assert.Equal(t, "7-2", unread.Messages[0].ID)
 }
+
+// A qualified ref is matched exactly before any label or address: an IMAP
+// mailbox labelled "gmail:<google id>" never captures that ref.
+func TestListEmails_QualifiedRefBeatsLookalikeLabel(t *testing.T) {
+	f := newEmailFixture(t)
+	calOnly, err := f.d.CreateGoogleAccount(db.GoogleAccount{Email: "cal@example.com", Label: "calendar"})
+	require.NoError(t, err)
+	for _, google := range []int64{f.gmail, calOnly} {
+		_, err := f.d.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: fmt.Sprintf("look%d@example.com", google),
+			Security: "ssl", Label: fmt.Sprintf("gmail:%d", google)})
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, "work", f.list(t, fmt.Sprintf(`{"account":"gmail:%d"}`, f.gmail)).Account, "the enabled Google account, not the lookalike")
+
+	_, err = f.reg.CallRead(context.Background(), "list_emails", json.RawMessage(fmt.Sprintf(`{"account":"gmail:%d"}`, calOnly)), Binding{})
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Msg, "gmail is not enabled for this account", "the disabled Google account, not the lookalike")
+}

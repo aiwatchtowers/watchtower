@@ -159,7 +159,7 @@ type emailMailbox struct {
 }
 
 func (b emailMailbox) matches(ref string) bool {
-	return strings.EqualFold(b.qualified(), ref) || strings.EqualFold(b.label, ref) || strings.EqualFold(b.address, ref)
+	return strings.EqualFold(b.label, ref) || strings.EqualFold(b.address, ref)
 }
 
 func (b emailMailbox) describe() string {
@@ -198,8 +198,9 @@ func listEmailMailboxes(d *db.DB) ([]emailMailbox, error) {
 	return out, nil
 }
 
-// resolveEmailAccount matches ref, case-insensitively, against each mailbox's
-// label, address and store-qualified ref (gmail:<id>, imap:<id>). Google
+// resolveEmailAccount resolves ref, case-insensitively: an exact
+// store-qualified ref (gmail:<id>, imap:<id>) first, else each mailbox's
+// label and address. Google
 // accounts without Gmail are skipped. No match, a ref naming only a
 // Gmail-disabled account, or a ref naming two mailboxes (the error lists
 // their qualified refs, which always resolve) is a model-facing
@@ -212,6 +213,16 @@ func resolveEmailAccount(d *db.DB, ref string) (emailAccountRef, error) {
 	boxes, err := listEmailMailboxes(d)
 	if err != nil {
 		return emailAccountRef{}, err
+	}
+	// An exact store-qualified ref wins over any label or address that happens
+	// to spell it, so the ref an ambiguity error offers always resolves.
+	for _, b := range boxes {
+		if strings.EqualFold(b.qualified(), ref) {
+			if b.gmailOff {
+				return emailAccountRef{}, gmailNotEnabled(ref)
+			}
+			return b.emailAccountRef, nil
+		}
 	}
 	var found []emailMailbox
 	gmailOff := false
@@ -235,10 +246,14 @@ func resolveEmailAccount(d *db.DB, ref string) (emailAccountRef, error) {
 		return emailAccountRef{}, &ValidationError{Msg: fmt.Sprintf("ambiguous account %s: it names %d mailboxes; use one of %s",
 			strconv.Quote(ref), len(found), strings.Join(refs, ", "))}
 	case gmailOff:
-		return emailAccountRef{}, &ValidationError{Msg: "gmail is not enabled for this account " + strconv.Quote(ref) + ": it has no synced mail"}
+		return emailAccountRef{}, gmailNotEnabled(ref)
 	}
 	return emailAccountRef{}, &ValidationError{Msg: "unknown account " + strconv.Quote(ref) +
 		": use a connected mailbox's label or email address, or gmail:<id> / imap:<id>"}
+}
+
+func gmailNotEnabled(ref string) error {
+	return &ValidationError{Msg: "gmail is not enabled for this account " + strconv.Quote(ref) + ": it has no synced mail"}
 }
 
 func summarizeEmail(m db.LocalEmail) emailSummary {
