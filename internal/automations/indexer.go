@@ -67,6 +67,14 @@ type Indexer struct {
 
 	mu   sync.Mutex
 	seen map[string]folderState // canonical folder → its state at the last scan
+	big  map[string]bigFileHash // oversized recipe path → its hash at the last read
+}
+
+// bigFileHash remembers the whole-file hash of an oversized recipe, so a
+// rescan does not re-read a huge file whose lstat size and mtime are as before.
+type bigFileHash struct {
+	size, mtime int64
+	hash        string
 }
 
 // folderState is what Changed compares: the folder's entries and the DB
@@ -79,7 +87,7 @@ type folderState struct {
 
 // NewIndexer returns an indexer over d; workspaceDir locates the personal folder.
 func NewIndexer(d *db.DB, workspaceDir string, clock Clock) *Indexer {
-	return &Indexer{db: d, workspaceDir: workspaceDir, clock: clock, seen: map[string]folderState{}}
+	return &Indexer{db: d, workspaceDir: workspaceDir, clock: clock, seen: map[string]folderState{}, big: map[string]bigFileHash{}}
 }
 
 // RescanPersonal rescans the personal folder.
@@ -213,7 +221,7 @@ func (s *folderScan) indexEntry(name string) error {
 		s.skip(path, slugTakenReason(slug, other))
 		return nil
 	}
-	data, contentHash, err := readRecipeFile(path)
+	data, contentHash, err := s.ix.readRecipe(path)
 	if err != nil {
 		// An unreadable file keeps its row (not removed): what was indexed
 		// stays what runs until the file can be read again.
@@ -460,41 +468,64 @@ func listRecipeEntries(dir string) ([]string, []SkipNote, error) {
 	return names, notes, nil
 }
 
+// readRecipe is readRecipeFile with the oversized-file hash cache.
+func (ix *Indexer) readRecipe(path string) ([]byte, string, error) {
+	ix.mu.Lock()
+	known := ix.big[path]
+	ix.mu.Unlock()
+	data, hash, fi, err := readRecipeFile(path, known)
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	if err != nil || fi.Size() <= MaxRecipeBytes {
+		delete(ix.big, path)
+	} else {
+		ix.big[path] = bigFileHash{size: fi.Size(), mtime: fi.ModTime().UnixNano(), hash: hash}
+	}
+	return data, hash, err
+}
+
 // readRecipeFile reads a regular file that is not a symlink: lstat, open
 // without following and without blocking (a FIFO swapped in cannot hang the
 // scan), then fstat must still show a regular file with the same inode. It
 // returns the first MaxRecipeBytes+1 bytes — enough for ParseRecipe to refuse
 // an oversized file without holding it whole — and the ContentHash of the
-// whole file, streamed.
-func readRecipeFile(path string) ([]byte, string, error) {
+// whole file, streamed — or known.hash, without reading past the head, for
+// an oversized file whose size and mtime match known. It also returns the
+// file's fstat info (nil on error).
+func readRecipeFile(path string, known bigFileHash) ([]byte, string, os.FileInfo, error) {
 	before, err := os.Lstat(path)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if !before.Mode().IsRegular() {
-		return nil, "", errors.New(specialEntryReason)
+		return nil, "", nil, errors.New(specialEntryReason)
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	defer func() { _ = f.Close() }()
 	after, err := f.Stat()
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return nil, "", errors.New("the file changed while it was being opened")
+		return nil, "", nil, errors.New("the file changed while it was being opened")
 	}
+	reuse := after.Size() > MaxRecipeBytes && known.hash != "" &&
+		known.size == after.Size() && known.mtime == after.ModTime().UnixNano()
 	h := sha256.New()
 	var head bytes.Buffer
 	if _, err := io.Copy(h, io.TeeReader(io.LimitReader(f, MaxRecipeBytes+1), &head)); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
+	}
+	if reuse {
+		return head.Bytes(), known.hash, after, nil
 	}
 	if _, err := io.Copy(h, f); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return head.Bytes(), hex.EncodeToString(h.Sum(nil)), nil
+	return head.Bytes(), hex.EncodeToString(h.Sum(nil)), after, nil
 }
 
 // folderFingerprint summarises dir for Changed: its mtime plus every entry's

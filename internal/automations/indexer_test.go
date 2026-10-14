@@ -584,7 +584,7 @@ func TestRescan_SymlinksAndSpecialFilesSkipped(t *testing.T) {
 	if len(all) != 1 || all[0].Slug != "real" {
 		t.Errorf("rows = %+v, want only real", all)
 	}
-	if _, _, err := readRecipeFile(filepath.Join(f.dir, "pipe.md")); err == nil {
+	if _, _, _, err := readRecipeFile(filepath.Join(f.dir, "pipe.md"), bigFileHash{}); err == nil {
 		t.Error("readRecipeFile read a FIFO")
 	}
 }
@@ -696,5 +696,35 @@ func TestIndexer_ChangedSeesDBDeleteThatFreesSlug(t *testing.T) {
 	}
 	if rep := f.rescan(t); rep.Indexed != 1 || len(rep.Skipped) != 0 {
 		t.Errorf("rescan after the delete: %+v, want mail indexed", rep)
+	}
+}
+
+// TestRescan_OversizedUnchangedFileIsNotReread: an oversized file whose
+// lstat size and mtime are unchanged keeps its stored content hash without
+// being read past the cap — shown by an edit past the cap that keeps both.
+func TestRescan_OversizedUnchangedFileIsNotReread(t *testing.T) {
+	f := newIndexerFixture(t)
+	head := strings.Repeat("x", MaxRecipeBytes+10)
+	p := f.write(t, "big.md", head+"A")
+	f.rescan(t)
+	first := f.row(t, "big").ContentHash
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, "big.md", head+"B")
+	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if rep := f.rescan(t); rep.Unchanged != 1 || f.row(t, "big").ContentHash != first {
+		t.Errorf("same size+mtime: %+v, hash changed=%v; want the cached hash reused", rep, f.row(t, "big").ContentHash != first)
+	}
+	later := fi.ModTime().Add(time.Minute)
+	if err := os.Chtimes(p, later, later); err != nil {
+		t.Fatal(err)
+	}
+	f.rescan(t)
+	if got := f.row(t, "big").ContentHash; got != ContentHash([]byte(head+"B")) {
+		t.Errorf("after an mtime change content_hash = %s, want the re-read hash", got)
 	}
 }
