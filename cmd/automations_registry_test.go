@@ -112,10 +112,10 @@ func TestToolCapabilities_CoversEveryAutomationTool(t *testing.T) {
 	}
 }
 
-// capabilityParses: a capability is valid when its entry parses either bare
-// (scope refused) or with @* (scope required) — exactly one form does.
+// capabilityParses: a capability is valid when exactly one form of its entry
+// parses — bare (scope refused) or with @* (scope required).
 func capabilityParses(entry string) bool {
 	_, bare := automations.ParsePermission(entry)
 	_, star := automations.ParsePermission(entry + "@*")
-	return bare == nil || star == nil
+	return (bare == nil) != (star == nil)
 }

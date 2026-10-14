@@ -11,8 +11,11 @@ import (
 // 2026-10-14-automations-design §6.1, §20.1 D23). Each is one read
 // statement — no transaction, no write. Every time bound is an RFC 3339 UTC
 // instant ("2006-01-02T15:04:05Z", "" = no bound), compared as text against
-// columns the syncers store in that same UTC form. Every Limit must be
-// positive (the tools clamp it to 1..200).
+// columns every writer (Go and the Desktop) stores in that same UTC form —
+// except meeting_notes, whose Desktop edits write datetime('now')
+// ("YYYY-MM-DD HH:MM:SS"), so its times are normalised in SQL
+// (utcColumnExpr). Every Limit must be positive (the tools clamp it to
+// 1..200).
 
 // readWhere accumulates AND-ed conditions and their arguments.
 type readWhere struct {
@@ -30,6 +33,14 @@ func (w *readWhere) clause() string {
 		return ""
 	}
 	return " WHERE " + strings.Join(w.conds, " AND ")
+}
+
+// utcColumnExpr normalises a UTC datetime column written either as
+// "YYYY-MM-DD HH:MM:SS" (SQLite datetime('now')) or "YYYY-MM-DDTHH:MM:SSZ"
+// to the latter, so text comparison and ordering stay correct; a value
+// strftime cannot parse is kept as stored.
+func utcColumnExpr(col string) string {
+	return `COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', ` + col + `), ` + col + `)`
 }
 
 func positiveLimit(what string, n int) error {
@@ -210,39 +221,50 @@ func (db *DB) ListMeetingRecaps(ctx context.Context, since, until string, limit 
 // GetMeetingRecapByID returns one recap with its texts and event, or
 // (nil, nil) when there is none.
 func (db *DB) GetMeetingRecapByID(ctx context.Context, id int64) (*MeetingRecapRow, error) {
+	return db.getMeetingRecapRow(ctx, "r.id = ?", id)
+}
+
+// GetMeetingRecapByEventID is GetMeetingRecapByID keyed by the recap's
+// calendar event.
+func (db *DB) GetMeetingRecapByEventID(ctx context.Context, eventID string) (*MeetingRecapRow, error) {
+	return db.getMeetingRecapRow(ctx, "r.event_id = ?", eventID)
+}
+
+func (db *DB) getMeetingRecapRow(ctx context.Context, where string, key any) (*MeetingRecapRow, error) {
 	var r MeetingRecapRow
 	err := db.QueryRowContext(ctx, `SELECT r.id, COALESCE(r.event_id, ''), r.transcript_id, r.source_text, r.recap_json,
 		r.created_at, r.updated_at, COALESCE(e.title, ''), COALESCE(e.start_time, '')
-		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE r.id = ?`, id).
+		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE `+where, key).
 		Scan(&r.ID, &r.EventID, &r.TranscriptID, &r.SourceText, &r.RecapJSON, &r.CreatedAt, &r.UpdatedAt,
 			&r.EventTitle, &r.EventStart)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading meeting recap %d: %w", id, err)
+		return nil, fmt.Errorf("loading meeting recap %v: %w", key, err)
 	}
 	return &r, nil
 }
 
 // ListMeetingNotes returns the notes of one event (EventID, in sort_order)
 // and/or the notes updated at or after since (newest first when no event is
-// named).
+// named). created_at/updated_at come back normalised to the UTC "T…Z" form.
 func (db *DB) ListMeetingNotes(ctx context.Context, eventID, since string, limit int) ([]MeetingNote, error) {
 	if err := positiveLimit("listing meeting notes", limit); err != nil {
 		return nil, err
 	}
 	w := readWhere{}
-	order := ` ORDER BY updated_at DESC, id DESC`
+	updated := utcColumnExpr("updated_at")
+	order := ` ORDER BY ` + updated + ` DESC, id DESC`
 	if eventID != "" {
 		w.add("event_id = ?", eventID)
 		order = ` ORDER BY sort_order, id`
 	}
 	if since != "" {
-		w.add("updated_at >= ?", since)
+		w.add(updated+" >= ?", since)
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, event_id, type, text, is_checked, sort_order, task_id, created_at, updated_at
-		FROM meeting_notes`+w.clause()+order+` LIMIT ?`, append(w.args, limit)...)
+	rows, err := db.QueryContext(ctx, `SELECT id, event_id, type, text, is_checked, sort_order, task_id, `+
+		utcColumnExpr("created_at")+`, `+updated+` FROM meeting_notes`+w.clause()+order+` LIMIT ?`, append(w.args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("listing meeting notes: %w", err)
 	}
@@ -283,7 +305,11 @@ func (db *DB) ListDayPlanSummaries(ctx context.Context, userID, since string, li
 	if err != nil {
 		return nil, err
 	}
-	counts, err := db.dayPlanItemCounts(ctx, userID)
+	ids := make([]any, 0, len(plans))
+	for _, p := range plans {
+		ids = append(ids, p.ID)
+	}
+	counts, err := db.dayPlanItemCounts(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -308,16 +334,18 @@ func (db *DB) queryDayPlans(ctx context.Context, q string, args ...any) ([]DayPl
 	return plans, nil
 }
 
-// dayPlanItemCounts maps each of userID's plans to {items, done items}.
-func (db *DB) dayPlanItemCounts(ctx context.Context, userID string) (map[int64][2]int, error) {
-	rows, err := db.QueryContext(ctx, `SELECT i.day_plan_id, COUNT(*), COALESCE(SUM(i.status = 'done'), 0)
-		FROM day_plan_items i JOIN day_plans p ON p.id = i.day_plan_id
-		WHERE p.user_id = ? GROUP BY i.day_plan_id`, userID)
+// dayPlanItemCounts maps each of the plan ids to {items, done items}.
+func (db *DB) dayPlanItemCounts(ctx context.Context, planIDs []any) (map[int64][2]int, error) {
+	out := map[int64][2]int{}
+	if len(planIDs) == 0 {
+		return out, nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT day_plan_id, COUNT(*), COALESCE(SUM(status = 'done'), 0)
+		FROM day_plan_items WHERE day_plan_id IN (`+placeholders(len(planIDs))+`) GROUP BY day_plan_id`, planIDs...)
 	if err != nil {
 		return nil, fmt.Errorf("counting day plan items: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := map[int64][2]int{}
 	for rows.Next() {
 		var id int64
 		var c [2]int
@@ -475,6 +503,43 @@ func (db *DB) ListJiraReleases(ctx context.Context, q JiraReleaseQuery) ([]JiraR
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing jira releases: %w", err)
+	}
+	return out, nil
+}
+
+// CalendarAccountMatch is one connected calendar account a ref names: a
+// Google account (GoogleID, Label, Address) or a calendar_accounts row
+// (CalendarID "caldav:<id>"/"ics:<id>", Label).
+type CalendarAccountMatch struct {
+	GoogleID       int64
+	CalendarID     string
+	Label, Address string
+}
+
+// MatchCalendarAccounts returns every calendar account ref names: a Google
+// account whose label or email equals ref, or a calendar account whose label
+// does, both under SQLite's COLLATE NOCASE (ASCII case folding only). It is
+// the one predicate both list_calendar_events and the calendar:read scope
+// use, so the tool never lists an account the scope did not see.
+func (db *DB) MatchCalendarAccounts(ctx context.Context, ref string) ([]CalendarAccountMatch, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, '', label, email FROM google_accounts
+		WHERE label = ?1 COLLATE NOCASE OR email = ?1 COLLATE NOCASE
+		UNION ALL
+		SELECT 0, provider || ':' || id, label, '' FROM calendar_accounts WHERE label = ?1 COLLATE NOCASE`, ref)
+	if err != nil {
+		return nil, fmt.Errorf("matching calendar account: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CalendarAccountMatch
+	for rows.Next() {
+		var m CalendarAccountMatch
+		if err := rows.Scan(&m.GoogleID, &m.CalendarID, &m.Label, &m.Address); err != nil {
+			return nil, fmt.Errorf("matching calendar account: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("matching calendar account: %w", err)
 	}
 	return out, nil
 }

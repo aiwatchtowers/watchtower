@@ -253,6 +253,12 @@ func TestManifest_D23ToolScopes(t *testing.T) {
 	expectAdmit(t, d, cal, events, `{"account":"owner@example.com"}`)
 	expectDeny(t, d, cal, events, `{"account":"team"}`, "calendar:read@team")
 	expectDeny(t, d, cal, events, `{}`, "calendar:read@*")
+	// The scope matches with SQLite's ASCII-only NOCASE, as the tool does:
+	// "ſales" (long s) names no account, so its scope is absent.
+	mustExec(t, d, `INSERT INTO google_accounts (id, email, label, calendar_enabled) VALUES (2, 'sales@example.com', 'sales', 1)`)
+	sales := mustManifest(t, []string{"calendar:read@sales"})
+	expectAdmit(t, d, sales, events, `{"account":"SALES"}`)
+	expectDeny(t, d, sales, events, `{"account":"ſales"}`, "calendar:read@*")
 
 	jira := mustManifest(t, []string{"jira:read@PAY"})
 	sprints, releases := autoTool("list_jira_sprints"), autoTool("list_jira_releases")

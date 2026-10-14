@@ -225,6 +225,22 @@ func TestListCalendarEvents_AccountFilter(t *testing.T) {
 		assert.Equal(t, want, got.ids(), "account %q", account)
 	}
 	requireValidationError(t, reg, "list_calendar_events", `{`+window+`,"account":"nobody"}`, "unknown account")
+	// The tool matches with the calendar:read scope's predicate (SQLite's
+	// ASCII-only NOCASE), not Unicode case folding: "ſales" is not "sales".
+	_, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "sales@example.com", Label: "sales", CalendarEnabled: true})
+	require.NoError(t, err)
+	requireValidationError(t, reg, "list_calendar_events", `{`+window+`,"account":"ſales"}`, "unknown account")
+	var sales calendarListResult
+	callAutomationRead(t, reg, "list_calendar_events", `{`+window+`,"account":"SALES"}`, &sales)
+	assert.Empty(t, sales.Events)
+
+	// A stored attendees column that is not JSON fails loudly, naming the row.
+	seedEvent(t, d, "broken", gcal, now.Add(2*time.Minute), "confirmed", "")
+	mustExec(t, d, `UPDATE calendar_events SET attendees = 'not json' WHERE id = 'broken'`)
+	_, err = reg.CallRead(context.Background(), "list_calendar_events", json.RawMessage(`{`+window+`}`), Binding{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `calendar_events.attendees of row "broken"`)
+	mustExec(t, d, `DELETE FROM calendar_events WHERE id = 'broken'`)
 
 	var got calendarListResult
 	callAutomationRead(t, reg, "list_calendar_events", `{`+window+`}`, &got)
@@ -304,6 +320,12 @@ func TestMeetingRecapTools_NotesOfOneEvent(t *testing.T) {
 	mustExec(t, d, `INSERT INTO meeting_notes (event_id, type, text, sort_order, created_at, updated_at) VALUES
 		('ev1', 'note', 'second', 2, ?1, ?1), ('ev1', 'question', 'first', 1, ?1, ?1), ('ev2', 'note', 'other', 0, ?1, ?1)`, old)
 	mustExec(t, d, `INSERT INTO meeting_notes (event_id, type, text, sort_order, is_checked, task_id) VALUES ('ev2', 'note', 'fresh', 1, 1, 7)`)
+	// The Desktop edits a note with datetime('now'): "YYYY-MM-DD HH:MM:SS".
+	swiftFormat := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
+	mustExec(t, d, `INSERT INTO meeting_notes (event_id, type, text, created_at, updated_at) VALUES ('ev3', 'note', 'edited in the app', ?1, ?2)`,
+		old, swiftFormat(time.Now().Add(-10*time.Minute)))
+	mustExec(t, d, `INSERT INTO meeting_notes (event_id, type, text, created_at, updated_at) VALUES ('ev3', 'note', 'edited long ago', ?1, ?2)`,
+		old, swiftFormat(time.Now().Add(-3*time.Hour)))
 
 	var got struct {
 		Notes []struct {
@@ -311,6 +333,7 @@ func TestMeetingRecapTools_NotesOfOneEvent(t *testing.T) {
 			Text      string `json:"text"`
 			IsChecked bool   `json:"is_checked"`
 			TaskID    *int64 `json:"task_id"`
+			UpdatedAt string `json:"updated_at"`
 		} `json:"notes"`
 	}
 	callAutomationRead(t, reg, "list_meeting_notes", `{"event_id":"ev1"}`, &got)
@@ -320,11 +343,13 @@ func TestMeetingRecapTools_NotesOfOneEvent(t *testing.T) {
 	assert.Nil(t, got.Notes[0].TaskID)
 
 	callAutomationRead(t, reg, "list_meeting_notes", `{"since":"`+time.Now().Add(-time.Hour).Format(time.RFC3339)+`"}`, &got)
-	require.Len(t, got.Notes, 1)
-	assert.Equal(t, "fresh", got.Notes[0].Text)
+	require.Len(t, got.Notes, 2, "a same-day note in the Desktop's datetime format is included")
+	assert.Equal(t, "fresh", got.Notes[0].Text, "newest first across both formats")
 	assert.True(t, got.Notes[0].IsChecked)
 	require.NotNil(t, got.Notes[0].TaskID)
 	assert.Equal(t, int64(7), *got.Notes[0].TaskID)
+	assert.Equal(t, "edited in the app", got.Notes[1].Text)
+	assert.Regexp(t, `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`, got.Notes[1].UpdatedAt, "times come back in the UTC T…Z form")
 
 	requireValidationError(t, reg, "list_meeting_notes", `{}`, "give event_id, since, or both")
 	assert.Contains(t, callReadString(t, reg, "list_meeting_notes", `{"event_id":"none"}`), `"notes":[]`)

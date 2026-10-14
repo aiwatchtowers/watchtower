@@ -282,10 +282,30 @@ func emailAccountScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]C
 }
 
 // calendarAccountScope: a Google account by label or address, or a
-// calendar_accounts row by label.
+// calendar_accounts row by label — db.MatchCalendarAccounts, the same
+// predicate list_calendar_events resolves its account with. No account or an
+// unknown one is absent.
 func calendarAccountScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]CallScope, error) {
-	return accountArgScope(ctx, d, args, googleAccountByNameSQL,
-		`SELECT label, '' FROM calendar_accounts WHERE label = ?1 COLLATE NOCASE`)
+	a, err := decodeScopeArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	acct := argString(a, "account")
+	if acct == "" {
+		return nil, nil
+	}
+	if d == nil {
+		return nil, errNoDB
+	}
+	matches, err := d.MatchCalendarAccounts(ctx, acct)
+	if err != nil {
+		return nil, err
+	}
+	var out []CallScope
+	for _, m := range matches {
+		out = append(out, unit(strings.ToLower(m.Label), strings.ToLower(m.Address))...)
+	}
+	return out, nil
 }
 
 // slackAccountScope: account_id resolved to {label, team_domain}; with no

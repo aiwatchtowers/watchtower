@@ -85,14 +85,14 @@ func statusArg(raw, def string, allowed ...string) (string, error) {
 }
 
 // storedJSON returns a stored JSON column as raw JSON ("" → empty). A
-// column that is not JSON is an error naming the row — never silently
-// replaced.
-func storedJSON(what, s, empty string) (json.RawMessage, error) {
+// column that is not JSON is an error naming the table, column and row id
+// so the owner can find it — never silently replaced.
+func storedJSON(table, column string, rowID any, s, empty string) (json.RawMessage, error) {
 	if strings.TrimSpace(s) == "" {
 		s = empty
 	}
 	if !json.Valid([]byte(s)) {
-		return nil, fmt.Errorf("%s is not valid JSON", what)
+		return nil, fmt.Errorf("%s.%s of row %v is not valid JSON", table, column, rowID)
 	}
 	return json.RawMessage(s), nil
 }
@@ -221,7 +221,7 @@ func NewListCalendarEvents() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			q, err := calendarRangeQuery(d, a)
+			q, err := calendarRangeQuery(ctx, d, a)
 			if err != nil {
 				return nil, err
 			}
@@ -242,7 +242,7 @@ func NewListCalendarEvents() *Tool {
 	}
 }
 
-func calendarRangeQuery(d *db.DB, a listCalendarEventsArgs) (db.CalendarRangeQuery, error) {
+func calendarRangeQuery(ctx context.Context, d *db.DB, a listCalendarEventsArgs) (db.CalendarRangeQuery, error) {
 	if strings.TrimSpace(a.From) == "" || strings.TrimSpace(a.To) == "" {
 		return db.CalendarRangeQuery{}, &ValidationError{Msg: "from and to are required (RFC 3339)"}
 	}
@@ -260,40 +260,33 @@ func calendarRangeQuery(d *db.DB, a listCalendarEventsArgs) (db.CalendarRangeQue
 	q := db.CalendarRangeQuery{From: from, To: to, Limit: listLimit(a.Limit)}
 	if acct := strings.TrimSpace(a.Account); acct != "" {
 		q.Filtered = true
-		if q.GoogleAccountIDs, q.CalendarIDs, err = resolveCalendarAccount(d, acct); err != nil {
+		if q.GoogleAccountIDs, q.CalendarIDs, err = resolveCalendarAccount(ctx, d, acct); err != nil {
 			return db.CalendarRangeQuery{}, err
 		}
 	}
 	return q, nil
 }
 
-// resolveCalendarAccount matches ref, case-insensitively, against every
-// Google account's label and address and every calendar account's label —
-// the same lookup the calendar:read scope uses, so a ref naming two accounts
-// lists both and the manifest must cover both. No match is a
-// *ValidationError.
-func resolveCalendarAccount(d *db.DB, ref string) ([]int64, []string, error) {
-	google, err := d.ListGoogleAccounts()
+// resolveCalendarAccount resolves ref through db.MatchCalendarAccounts —
+// exactly the predicate the calendar:read scope uses (SQLite COLLATE
+// NOCASE), so a ref naming two accounts lists both and the manifest must
+// cover both, and the tool never matches an account the scope did not see.
+// No match is a *ValidationError.
+func resolveCalendarAccount(ctx context.Context, d *db.DB, ref string) ([]int64, []string, error) {
+	matches, err := d.MatchCalendarAccounts(ctx, ref)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolving calendar account: %w", err)
-	}
-	cals, err := d.ListCalendarAccounts()
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolving calendar account: %w", err)
+		return nil, nil, err
 	}
 	var googleIDs []int64
-	for _, g := range google {
-		if strings.EqualFold(g.Label, ref) || strings.EqualFold(g.Email, ref) {
-			googleIDs = append(googleIDs, g.ID)
-		}
-	}
 	var calendarIDs []string
-	for _, c := range cals {
-		if strings.EqualFold(c.Label, ref) {
-			calendarIDs = append(calendarIDs, db.CalendarAccountCalendarID(c.Provider, c.ID))
+	for _, m := range matches {
+		if m.CalendarID != "" {
+			calendarIDs = append(calendarIDs, m.CalendarID)
+		} else {
+			googleIDs = append(googleIDs, m.GoogleID)
 		}
 	}
-	if len(googleIDs)+len(calendarIDs) == 0 {
+	if len(matches) == 0 {
 		return nil, nil, &ValidationError{Msg: "unknown account " + strconv.Quote(ref) +
 			": use a connected Google account's label or address, or a calendar account's label"}
 	}
@@ -301,7 +294,7 @@ func resolveCalendarAccount(d *db.DB, ref string) ([]int64, []string, error) {
 }
 
 func calendarEventOf(e db.CalendarRangeEvent) (calendarEventResult, error) {
-	attendees, err := storedJSON("attendees of calendar event "+e.ID, e.Attendees, "[]")
+	attendees, err := storedJSON("calendar_events", "attendees", strconv.Quote(e.ID), e.Attendees, "[]")
 	if err != nil {
 		return calendarEventResult{}, err
 	}
@@ -426,23 +419,22 @@ func loadMeetingRecap(ctx context.Context, d *db.DB, a getMeetingRecapArgs) (*db
 	if (a.ID != 0) == (eventID != "") {
 		return nil, &ValidationError{Msg: "give exactly one of id or event_id"}
 	}
-	id := a.ID
 	if eventID != "" {
-		byEvent, err := d.GetMeetingRecap(eventID)
+		r, err := d.GetMeetingRecapByEventID(ctx, eventID)
 		if err != nil {
 			return nil, err
 		}
-		if byEvent == nil {
+		if r == nil {
 			return nil, &ValidationError{Msg: "no meeting recap for event " + strconv.Quote(eventID)}
 		}
-		id = byEvent.ID
+		return r, nil
 	}
-	r, err := d.GetMeetingRecapByID(ctx, id)
+	r, err := d.GetMeetingRecapByID(ctx, a.ID)
 	if err != nil {
 		return nil, err
 	}
 	if r == nil {
-		return nil, &ValidationError{Msg: fmt.Sprintf("no meeting recap %d", id)}
+		return nil, &ValidationError{Msg: fmt.Sprintf("no meeting recap %d", a.ID)}
 	}
 	return r, nil
 }
@@ -686,7 +678,7 @@ func dayPlanWithItems(d *db.DB, plan *db.DayPlan) (any, error) {
 }
 
 func dayPlanItemOf(it db.DayPlanItem) (dayPlanItemResult, error) {
-	tags, err := storedJSON(fmt.Sprintf("tags of day plan item %d", it.ID), it.Tags, "[]")
+	tags, err := storedJSON("day_plan_items", "tags", it.ID, it.Tags, "[]")
 	if err != nil {
 		return dayPlanItemResult{}, err
 	}
