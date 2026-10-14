@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/oauthpage"
 )
 
 const (
@@ -357,9 +358,9 @@ func getOpenBrowserFunc() func(string) {
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	SkipBrowserOpen bool
-	// AppReturn makes the success page redirect the browser to the
-	// watchtower-auth:// scheme so macOS brings the desktop app back to the
-	// foreground after consent — the slack/google.LoginOptions.AppReturn shape.
+	// AppReturn adds the "Back to Watchtower" link to the callback page
+	// (oauthpage); the CLI command brings the app back itself
+	// (oauthpage.ReturnAfterLogin). Off for plain CLI logins.
 	AppReturn bool
 	// WithConfluence requests OAuthScopes (JiraScopes + ConfluenceScopes)
 	// instead of the default JiraScopes-only. Opt-in: an Atlassian OAuth app
@@ -407,19 +408,11 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
-	// With app-return the success page sits briefly (so the confirmation is
-	// readable and the redirect doesn't race page load), then navigates to the
-	// app scheme; without it the tab just self-closes (the slack.Login precedent).
-	returnBlock, closeMS := "", "2000"
-	if opt.AppReturn {
-		returnBlock = jiraAppReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(jiraCallbackSuccessPage)
+	successPage := oauthpage.Success("Jira", opt.AppReturn)
+	errorPage := func(reason string) string { return oauthpage.Error(reason, opt.AppReturn) }
 
 	mux := http.NewServeMux()
-	callback, resultCh := auth.NewCallbackHandler(state, successPage, jiraCallbackErrorPage)
+	callback, resultCh := auth.NewCallbackHandler(state, successPage, errorPage)
 	mux.HandleFunc(callbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -445,7 +438,7 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
-		return nil, fmt.Errorf("login timed out after %s", loginTimeout)
+		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
 	if cb.Err != "" {
@@ -474,25 +467,3 @@ func listenLocal() (net.Listener, error) {
 	}
 	return net.Listen("tcp", "127.0.0.1:0")
 }
-
-const jiraCallbackSuccessPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Jira Connected</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}
-.btn{display:inline-block;margin-top:20px;padding:10px 20px;border-radius:8px;background:#2a2a2a;color:#e5e5e5;text-decoration:none;font-size:14px}</style></head>
-<body><div class="card"><h1>Jira Connected</h1><p>Jira Cloud has been linked to Watchtower. You can close this tab.</p><!--RETURN--></div>
-<script>setTimeout(function(){try{window.close()}catch(e){}},{{CLOSE_MS}});</script></body></html>`
-
-// jiraAppReturnBlock is injected into the success page when
-// LoginOptions.AppReturn is set — mirrors slack's appReturnBlock. The button is
-// the manual fallback if the automatic scheme redirect is blocked.
-const jiraAppReturnBlock = `<a class="btn" href="watchtower-auth://connected">Open Watchtower</a>
-<script>setTimeout(function(){location.href="watchtower-auth://connected";},3000);</script>`
-
-const jiraCallbackErrorPage = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Watchtower — Error</title>
-<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f0f0f;color:#e5e5e5}
-.card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:48px;max-width:440px;text-align:center}
-h1{font-size:20px;margin-bottom:8px}p{color:#888;font-size:14px}</style></head>
-<body><div class="card"><h1>Authorization Failed</h1><p>{{ERROR}}</p></div></body></html>`

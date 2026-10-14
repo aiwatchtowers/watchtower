@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -286,12 +287,12 @@ func init() {
 	jiraCmd.PersistentFlags().Int64Var(&jiraFlagAccount, "account", 0,
 		"Jira account id to operate on (default: the single enabled account)")
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
-	jiraLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	jiraLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraLoginCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraLoginCmd.Flags().Bool("with-confluence-write", false, "also request Confluence write scopes, so the assistant can edit pages (implies --with-confluence; requires the Confluence API with its write scopes enabled on this OAuth app in its Atlassian developer console, or the login fails)")
 	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
-	jiraAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	jiraAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
 	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
@@ -635,7 +636,9 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jiraLoginOptionsFromFlags(cmd))
+	opts := jiraLoginOptionsFromFlags(cmd)
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -719,6 +722,7 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
 	}
 	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}

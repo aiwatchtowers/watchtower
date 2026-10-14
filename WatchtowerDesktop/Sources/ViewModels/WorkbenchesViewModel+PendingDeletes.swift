@@ -64,7 +64,9 @@ extension WorkbenchesViewModel {
 
     /// Runs the batch's DELETEs in one write. A failed write never keeps a
     /// row hidden: the batch has left `pendingDeletes`, so the reload brings
-    /// the rows back, with the error on their list.
+    /// the rows back, with the error on their list. The workbenches' asks
+    /// are read again at once: the deletes unbound their sessions' asks
+    /// (board #542).
     func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
         guard !entries.isEmpty else { return }
         let lists = Self.sessionLists(of: entries)
@@ -76,6 +78,7 @@ extension WorkbenchesViewModel {
             }
         }
         for list in lists { await loadSessions(projectID: list) }
+        for case let projectID? in lists { await asks.load(projectID: projectID) }
     }
 
     /// The quit path (`willTerminate`): the batch is committed now, through

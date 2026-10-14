@@ -62,3 +62,31 @@ final class CalendarQueriesAccountEmailTests: XCTestCase {
         XCTAssertEqual(events.map(\.accountEmail), ["vadym@work.com"])
     }
 }
+
+/// #740: the Calendar tab's "never synced" check counts Google and CalDAV/ICS
+/// calendars apart, so a synced CalDAV calendar cannot hide a Google one.
+final class CalendarQueriesCountsBySourceTests: XCTestCase {
+
+    func testEmptyTableCountsZeroForBoth() throws {
+        let db = try TestDatabase.create()
+        let counts = try db.read { try CalendarQueries.calendarCountsBySource($0) }
+        XCTAssertEqual(counts.google, 0)
+        XCTAssertEqual(counts.calDAV, 0)
+    }
+
+    func testSplitsByAccountID() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            let accountID = try TestDatabase.insertGoogleAccount(db, calendarEnabled: true)
+            try TestDatabase.ensureCalendar(db, id: "work-cal", accountID: accountID)
+            try TestDatabase.ensureCalendar(db, id: "caldav:personal", accountID: nil)
+            try TestDatabase.ensureCalendar(db, id: "ics:holidays", accountID: nil)
+            // A removed Google account's calendar kept for its recordings is
+            // detached to a NULL account_id; it is neither kind.
+            try TestDatabase.ensureCalendar(db, id: "kept-for-recordings", accountID: nil)
+        }
+        let counts = try db.read { try CalendarQueries.calendarCountsBySource($0) }
+        XCTAssertEqual(counts.google, 1)
+        XCTAssertEqual(counts.calDAV, 2)
+    }
+}

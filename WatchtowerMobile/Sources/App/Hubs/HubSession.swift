@@ -299,8 +299,12 @@ final class HubSession {
     /// The first silent push that arrived before the launch fetch began: a
     /// launch into the background for it takes the light reach.
     @ObservationIgnored private var pushBeforeLaunch: PushArrival?
-    /// The launch took the light reach (a push launched the app): the first
-    /// activation fetches in full whatever the last fetch's age.
+    /// A silent push for another database arrived before the launch fetch
+    /// began (`noteForeignPush`): a launch into the background for it
+    /// skips the launch fetch.
+    @ObservationIgnored private var foreignPushBeforeLaunch = false
+    /// The launch took the light reach or none (a push launched the app):
+    /// the first activation fetches in full whatever the last fetch's age.
     @ObservationIgnored private var fullFetchOwed = false
     /// Ends the boot's background work (`BackgroundWork`): run once, when the boot ends or the
     /// session stops.
@@ -544,14 +548,20 @@ final class HubSession {
     /// The launch fetch, begun right after the transport started, so a push
     /// that arrived before it is served by it (`handlePush`). In the
     /// foreground it takes the full reach; a launch into the background for
-    /// a push takes the push's light reach, without the forced zone poll,
-    /// and the first activation then fetches in full.
+    /// a push takes the push's light reach, without the forced zone poll;
+    /// one for a push of another database only fetches nothing (#232's
+    /// battery budget). Either way the first activation then fetches in full.
     private func beginLaunchFetch() {
         guard !stopped else { return }
         var depth = RemoteFetchDepth.full
         if !isActive, let push = pushBeforeLaunch {
             depth = .push(since: push.at, pollOnFallback: false)
             fullFetchOwed = true
+        } else if !isActive, foreignPushBeforeLaunch {
+            // No launch fetch: a push of this hub's own arriving later is
+            // fetched on its own (`handlePush`).
+            fullFetchOwed = true
+            return
         }
         launchFetchTask = startFetch(.launch, depth: depth)
     }
@@ -742,6 +752,15 @@ final class HubSession {
             await transportStartTask?.value
         }
         return await fetch(for: push)
+    }
+
+    /// A silent push for another database (`AppEnvironment.handlePush`):
+    /// one arriving before the launch fetch began keeps a launch into the
+    /// background from fetching this hub (`beginLaunchFetch`). Fetches
+    /// nothing itself.
+    func noteForeignPush() {
+        guard !stopped, launchFetchTask == nil else { return }
+        foreignPushBeforeLaunch = true
     }
 
     /// The fetch serving `push`: one begun after it, else one follow-up
@@ -1030,6 +1049,15 @@ final class HubSession {
     /// record through: sealed with the phone's keys for this hub.
     var linkTransport: any CloudSyncTransport { secure }
 
+    /// Seals `record` with this hub's keys, queues the sealed copy and
+    /// returns it: an unlink's farewell, which is kept sealed if it does
+    /// not leave the queue before the hub's files go (#143).
+    func saveSealing(_ record: CloudRecord) async throws -> CloudRecord {
+        let sealed = try await secure.seal(record)
+        try await secure.saveSealed([sealed])
+        return sealed
+    }
+
     /// This phone's keybox as the replica holds it (the epoch keys
     /// included); nil when absent. A locked keychain throws.
     func keybox(deviceID: UUID) throws -> Keybox? {
@@ -1170,6 +1198,25 @@ final class HubSession {
         stop()
         await bootstrapTask?.value
         await (transport as? CloudKitTransport)?.stop()
+    }
+
+    /// Closes the replica and the transport store, after `shutDown()` and
+    /// the last read of them: the caller deletes their files next. A
+    /// connection left open on the unlinked files, touched while a new
+    /// database opens at the same path (the hub's re-link), breaks that one
+    /// on iOS with `disk I/O error` or `database is locked` (#216). Later
+    /// reads of a closed store throw without touching any file.
+    func closeDatabases() {
+        do {
+            try store.reader.close()
+        } catch {
+            Self.logger.error("replica not closed: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try transportStore?.close()
+        } catch {
+            Self.logger.error("transport store not closed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Stops the safety poll and the CloudKit engine for good and turns

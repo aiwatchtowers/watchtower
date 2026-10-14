@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/gmail"
+	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
 )
@@ -62,7 +63,7 @@ func init() {
 	googleLoginCmd.Flags().Bool("calendar", false, "request Google Calendar access")
 	googleLoginCmd.Flags().Bool("gmail", false, "request Gmail access")
 	googleLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	googleLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	googleLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	googleLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
 
 	googleAddCmd.Flags().Bool("calendar", false, "request Google Calendar access")
@@ -71,7 +72,7 @@ func init() {
 	googleAddCmd.Flags().String("client-id", "", "bring your own Google OAuth client id (non-secret half)")
 	googleAddCmd.Flags().Bool("client-secret-stdin", false, "read the OAuth client secret from stdin (required with --client-id)")
 	googleAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	googleAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	googleAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 
 	googleCmd.AddCommand(googleLoginCmd)
 	googleCmd.AddCommand(googleAddCmd)
@@ -378,6 +379,7 @@ func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *d
 		Scopes:          scopes,
 		AppReturn:       appReturn,
 	})
+	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		if isNewRow {
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
@@ -456,13 +458,56 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	}
 
 	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
+	return recordGoogleConnection(out, cmd.ErrOrStderr(), flagConfig, cfg, database, accountID,
+		googleConnectResult{wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email})
+}
 
-	if err := database.UpdateGoogleAccountConnection(accountID, email, calEnabled, gmEnabled); err != nil {
+// googleConnectResult is what one consent asked for and what it granted.
+type googleConnectResult struct {
+	wantCalendar, wantGmail bool
+	calEnabled, gmEnabled   bool
+	email                   string
+}
+
+// recordGoogleConnection stores a finished consent for accountID — granted
+// services, email, auth state — reports it, and turns on the global sync
+// switch for every service the consent granted (#740). A re-consent counts
+// too: reconnecting a service is asking for it to sync, so a switch the
+// owner turned off in Settings comes back on (owner decision 2026-10-14).
+// The account is connected once the row is written, so a failed switch write
+// is a warning, not a failed connect (the Calendar tab offers Turn On
+// Calendar Sync).
+func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *config.Config, database *db.DB, accountID int64, r googleConnectResult) error {
+	if err := database.UpdateGoogleAccountConnection(accountID, r.email, r.calEnabled, r.gmEnabled); err != nil {
 		return fmt.Errorf("recording connection: %w", err)
 	}
 	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
 
-	printGoogleConnectionResult(out, wantCalendar, wantGmail, calEnabled, gmEnabled, accountID)
+	printGoogleConnectionResult(out, r.wantCalendar, r.wantGmail, r.calEnabled, r.gmEnabled, accountID)
+	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled, r.gmEnabled); err != nil {
+		fmt.Fprintf(errOut, "warning: account connected, but turning its sync on failed: %v\n", err)
+	}
+	return nil
+}
+
+// enableGoogleSyncSwitches turns on the global `calendar.enabled` /
+// `gmail.enabled` daemon-phase switches for the given services.
+// `wireGoogleSyncers` wires a syncer only when both the switch and the
+// account's flag are on, and both switches default to off — so without this a
+// newly connected account never syncs. Called from the one connect path every
+// surface shares (onboarding, Settings, the Calendar tab, the CLI). A switch
+// already on is not rewritten.
+func enableGoogleSyncSwitches(configPath string, cfg *config.Config, calGranted, gmGranted bool) error {
+	if calGranted && !cfg.Calendar.Enabled {
+		if err := setConfigKey(configPath, "calendar.enabled", true); err != nil {
+			return err
+		}
+	}
+	if gmGranted && !cfg.Gmail.Enabled {
+		if err := setConfigKey(configPath, "gmail.enabled", true); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

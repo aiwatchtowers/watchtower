@@ -15,6 +15,7 @@
 		069F7E73436AE73C0D41AC77 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */; };
 		06EE5CC835773038323C08F9 /* LinkingFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAA14E305E070B3FD7ECFBC9 /* LinkingFakes.swift */; };
 		081C526028EE36A9E89987B0 /* ResilientObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8A9F63CFA3087BCC7DC42B /* ResilientObservation.swift */; };
+		0A54345DFDE0F6C63CD51F01 /* AppRootRelinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053CC4A750066E97EA5E2292 /* AppRootRelinkTests.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
 		10A018D8FB99EF76F60E04E2 /* PhoneKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20344BC6FD6EAD7CEF59003C /* PhoneKeychain.swift */; };
 		134678525F19FCE89171B6C6 /* ScreenshotTourTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */; };
@@ -222,6 +223,7 @@
 		02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecorderController.swift; sourceTree = "<group>"; };
 		030693C1BC5C1FF96BA914A7 /* FileProtection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProtection.swift; sourceTree = "<group>"; };
 		04687B6B5C6EC1EFD33A747A /* LinkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkStore.swift; sourceTree = "<group>"; };
+		053CC4A750066E97EA5E2292 /* AppRootRelinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootRelinkTests.swift; sourceTree = "<group>"; };
 		0879174780AFEA40D8A455F2 /* ScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanView.swift; sourceTree = "<group>"; };
 		08D768F21290828AFDF991CD /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
 		0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTestSupport.swift; sourceTree = "<group>"; };
@@ -457,6 +459,7 @@
 		1C5ACBF8CC271AA4653F3151 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				053CC4A750066E97EA5E2292 /* AppRootRelinkTests.swift */,
 				F3734E9D1BDF9ADC4CC57B2F /* AppRootWiringTests.swift */,
 				B8929F28520AC73CF61CD217 /* AskFormTests.swift */,
 				2323398F35DB7A152A2A4FEE /* BackgroundWorkTests.swift */,
@@ -1035,6 +1038,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0A54345DFDE0F6C63CD51F01 /* AppRootRelinkTests.swift in Sources */,
 				EAC8764F94CE640D172AC883 /* AppRootWiringTests.swift in Sources */,
 				6B53905088D5CF5CBCC67FBA /* AskFormTests.swift in Sources */,
 				75B1A08C76EC9686965D9CC4 /* BackgroundWorkTests.swift in Sources */,

@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Onboarding while the phone has no link, else the tabs (with the link
+/// Onboarding while the phone has no link (or the Macs it holds that
+/// could not be opened, with Forget), else the tabs (with the link
 /// flow over them when a scan runs, and the link's notice above them).
 /// Every link URL the system opens the app with lands here.
 struct AppRootView: View {
@@ -15,7 +16,16 @@ struct AppRootView: View {
 
     @ViewBuilder private var content: some View {
         if root.showsOnboarding {
-            OnboardingView()
+            Group {
+                if root.showsUnopenedMacs, root.linking.phase == .idle {
+                    UnopenedMacsView { await root.reopenHubs() }
+                } else {
+                    OnboardingView()
+                }
+            }
+            // The tabs are gone: the removed hub's session they read can
+            // close its replica now (#222).
+            .onAppear { root.env.releaseRetained() }
         } else {
             RootTabView()
                 .safeAreaInset(edge: .top, spacing: 0) {

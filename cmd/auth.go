@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
 )
@@ -65,6 +66,7 @@ func init() {
 	authCmd.AddCommand(authCheckCertCmd)
 
 	authLoginCmd.Flags().Bool("no-open", false, "Don't open the browser automatically (print the URL instead)")
+	authLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 }
 
 func runAuthLogin(cmd *cobra.Command, _ []string) error {
@@ -74,8 +76,10 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
-	result, err := auth.Login(cmd.Context(), oauthCfg, out, auth.LoginOptions{SkipBrowserOpen: noOpen})
+	result, err := auth.Login(cmd.Context(), oauthCfg, out, auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	oauthpage.ReturnAfterLogin(appReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("oauth login: %w", err)
 	}

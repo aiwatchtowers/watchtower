@@ -301,7 +301,10 @@ final class FetchCadenceWiringTests: XCTestCase {
             sleep: { try await deadline.sleep($0) },
             completion: { completions.append($0) }
         )
-        try await poll({ wired.remote.heldCount == 1 && deadline.waitingCount == 1 }, "the race did not start")
+        try await poll(
+            { wired.remote.heldCount == 1 && deadline.waitingCount == 1 },
+            "the race did not start: \(wired.remote.heldCount) held, \(deadline.waitingCount) waiting, fetches \(wired.remote.depths)"
+        )
         deadline.tick()
         try await poll({ completions.count == 1 }, "the deadline never completed the push")
         XCTAssertEqual(completions, [.noData])

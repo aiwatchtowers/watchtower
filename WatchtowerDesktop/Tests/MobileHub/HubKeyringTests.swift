@@ -670,7 +670,7 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(columns["slice_state"]).contains("wire_name"))
         XCTAssertEqual(columns["pending_devices"], [
             "device_id", "name", "model", "scope", "user_record_name", "signing_key", "agreement_key", "link_nonce", "sas",
-            "received_at", "typing_requested", "confirm_nonce"
+            "received_at", "typing_requested", "confirm_nonce", "start_sessions"
         ])
         XCTAssertEqual(columns["revoked_devices"], ["device_id", "agreement_key", "removed_at", "name", "scope"])
         XCTAssertEqual(columns["relay_seen"], ["wire_name", "sender_id", "epoch", "seq", "at"])
@@ -701,8 +701,8 @@ final class HubKeyringTests: XCTestCase {
         XCTAssertNoThrow(try HubSyncState(path: path))
     }
 
-    /// A sidecar from before B18 met E2E: its `pending_devices` gains `typing_requested` (unrequested) and
-    /// `confirm_nonce` in place.
+    /// A sidecar from before B18 met E2E: its `pending_devices` gains `typing_requested` (unrequested),
+    /// `confirm_nonce` and `start_sessions` (allowed) in place.
     func testAPendingDevicesTableWithoutTheTypingRequestGainsIt() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("hubstate-\(UUID().uuidString).db").path
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -717,9 +717,11 @@ final class HubKeyringTests: XCTestCase {
         try old.close()
         let sidecar = try HubSyncState(path: path)
         let columns = try sidecar.queue.read { Set(try $0.columns(in: "pending_devices").map(\.name)) }
-        XCTAssertTrue(columns.isSuperset(of: ["typing_requested", "confirm_nonce"]))
+        XCTAssertTrue(columns.isSuperset(of: ["typing_requested", "confirm_nonce", "start_sessions"]))
         let typing = try sidecar.queue.read { try Bool.fetchAll($0, sql: "SELECT typing_requested FROM pending_devices") }
         XCTAssertEqual(typing, [false])
+        let startSessions = try sidecar.queue.read { try Int.fetchAll($0, sql: "SELECT start_sessions FROM pending_devices") }
+        XCTAssertEqual(startSessions, [1], "an existing request keeps the start-sessions default")
         // Pairing code v2: a request stored before it has no confirm nonce, so no phone can show its code: it is
         // never offered for a Link.
         XCTAssertTrue(try sidecar.pendingDevices().isEmpty)

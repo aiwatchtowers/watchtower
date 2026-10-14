@@ -6,7 +6,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"watchtower/internal/oauthpage"
 )
+
+func errPage(reason string) string { return oauthpage.Error(reason, false) }
 
 func hitTestCallback(t *testing.T, h http.HandlerFunc, params map[string]string) (int, string) {
 	t.Helper()
@@ -23,7 +27,7 @@ func hitTestCallback(t *testing.T, h http.HandlerFunc, params map[string]string)
 // refused and ignored: it neither ends the login nor uses up the delivery, so
 // the real redirect that follows still gets through.
 func TestCallbackHandler_WrongStateIsIgnored(t *testing.T) {
-	h, ch := NewCallbackHandler("good-state", "OK PAGE", "ERR {{ERROR}}")
+	h, ch := NewCallbackHandler("good-state", "OK PAGE", errPage)
 
 	for _, params := range []map[string]string{
 		{"error": "access_denied"},
@@ -57,7 +61,7 @@ func TestCallbackHandler_WrongStateIsIgnored(t *testing.T) {
 // Only the first matching request delivers; later ones get a bare 410 and
 // never block on the channel nobody reads any more.
 func TestCallbackHandler_FirstMatchingRequestWins(t *testing.T) {
-	h, ch := NewCallbackHandler("s", "OK", "ERR {{ERROR}}")
+	h, ch := NewCallbackHandler("s", "OK", errPage)
 
 	status, body := hitTestCallback(t, h, map[string]string{"error": "<denied>", "state": "s"})
 	if status != http.StatusOK || !strings.Contains(body, "&lt;denied&gt;") {

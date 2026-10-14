@@ -42,11 +42,11 @@ jobs:
         run: make test-cover
 
       - name: Test (race, library packages)
-        # Same scope as the main-branch race pass in ci.yml: cmd is CLI glue
-        # whose concurrency lives in internal/*, already covered here.
-        # -timeout is per package; the step budget stays above it.
+        # Same pass as ci.yml's main-branch one (`make test-race`: cmd out,
+        # internal/db's migration tests without -race). Its two go test runs
+        # go side by side, each -timeout 25m per package, under this budget.
         timeout-minutes: 40
-        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+        run: make test-race
 
   # Mirrors ci.yml's swift-test job — keep the two in step (runner, Xcode,
   # Go, cache, steps, timeouts). The release gate drifted once: it stayed on

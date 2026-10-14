@@ -107,6 +107,7 @@ final class HubHeartbeatTests: XCTestCase {
         let issued1 = try await center.issueCode()
         XCTAssertEqual(issued1.ownerUser, "_owner-acme")
         await center.closeLink(reason: .sheetClosed)
+        center.cancelSweepRetry()
 
         owner.set("_owner-new")
         transport.fireAccountReset()
@@ -118,6 +119,7 @@ final class HubHeartbeatTests: XCTestCase {
         let issued2 = try await center.issueCode()
         XCTAssertEqual(issued2.ownerUser, "_owner-new")
         await center.closeLink(reason: .sheetClosed)
+        center.cancelSweepRetry()
     }
 
     /// A lookup still running when the account changes may answer with the
