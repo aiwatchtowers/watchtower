@@ -2,8 +2,6 @@ WatchtowerDesktop/Sources/App/AppState+MobileHub.swift
 WatchtowerDesktop/Sources/App/Navigation.swift
 WatchtowerDesktop/Sources/Database/DatabaseManager.swift
 WatchtowerDesktop/Sources/Services/MobileHub/HubKeyring.swift
-WatchtowerDesktop/Sources/Services/MobileHub/SlicePublisher.swift
-WatchtowerDesktop/Sources/Services/MobileHub/Slices/CalendarEventSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/MeetingTranscriptSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/OwnerAskSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/SessionReportRunner.swift
