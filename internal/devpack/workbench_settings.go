@@ -859,17 +859,33 @@ func resolveSymlink(file string) (string, error) {
 // .codex) that is a symlink leaving root. A link that stays inside root is
 // followed as before.
 func resolveSymlinkInside(file, root string) (string, error) {
+	realRoot, err := dirInside(filepath.Dir(file), root)
+	if err != nil {
+		return "", err
+	}
+	target, err := resolveSymlink(file)
+	if err != nil || target == file {
+		return target, err
+	}
+	if outsideRoot(realRoot, target) {
+		return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%w)",
+			file, target, ErrSymlinkOutsideFolder)
+	}
+	return target, nil
+}
+
+// dirInside refuses dir with ErrSymlinkOutsideFolder when the nearest
+// existing directory at or above it, below root, resolves outside root — a
+// write or removal under dir would land there (a .claude, .claude/skills or
+// skill directory linked elsewhere). It returns root resolved.
+func dirInside(dir, root string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", root, err)
 	}
-	outside := func(target string) bool {
-		rel, err := filepath.Rel(realRoot, target)
-		return err != nil || !filepath.IsLocal(rel)
-	}
-	// The nearest existing directory above file decides where a write lands;
-	// one not yet created is made under it.
-	for dir := filepath.Dir(file); dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+	// The nearest existing directory decides where a write lands; one not
+	// yet created is made under it.
+	for ; dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
@@ -879,21 +895,20 @@ func resolveSymlinkInside(file, root string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolving %s: %w", dir, err)
 		}
-		if outside(realDir) {
+		if outsideRoot(realRoot, realDir) {
 			return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%w)",
 				dir, realDir, ErrSymlinkOutsideFolder)
 		}
 		break
 	}
-	target, err := resolveSymlink(file)
-	if err != nil || target == file {
-		return target, err
-	}
-	if outside(target) {
-		return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%w)",
-			file, target, ErrSymlinkOutsideFolder)
-	}
-	return target, nil
+	return realRoot, nil
+}
+
+// outsideRoot reports whether the resolved path target lies outside the
+// resolved directory realRoot.
+func outsideRoot(realRoot, target string) bool {
+	rel, err := filepath.Rel(realRoot, target)
+	return err != nil || !filepath.IsLocal(rel)
 }
 
 // atomicWriteFile replaces path with data via a temp file in the same

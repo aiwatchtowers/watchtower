@@ -264,11 +264,15 @@ func keptLegacySkill(legacySkillDir string) SkillStatus {
 func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallReport, hadLegacyHooks bool) []error {
 	var errs []error
 	var err error
-	if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
+	if err = skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill()); err != nil {
 		errs = append(errs, err)
-	}
-	if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
-		errs = append(errs, err)
+	} else {
+		if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
+			errs = append(errs, err)
+		}
+		if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, []string{legacySkillExcludeLine})); err != nil {
 		errs = append(errs, err)
@@ -325,16 +329,23 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if _, err := RemoveAskGuardHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
-	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
-		if _, err := removeSkill(o.skillsDir(), s); err != nil {
-			errs = append(errs, err)
+	skillsErr := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), legacySkill())
+	if skillsErr != nil {
+		errs = append(errs, skillsErr)
+	} else {
+		for _, s := range []Skill{workbenchSkill(), legacySkill()} {
+			if _, err := removeSkill(o.skillsDir(), s); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
 		errs = append(errs, err)
 	}
-	removeIfEmpty(o.skillsDir())
-	removeIfEmpty(filepath.Join(o.Folder, ".claude"))
+	if skillsErr == nil {
+		removeIfEmpty(o.skillsDir())
+		removeIfEmpty(filepath.Join(o.Folder, ".claude"))
+	}
 	lines := append(append([]string{}, workbenchExcludeLines...), legacySkillExcludeLine)
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, lines)); err != nil {
 		errs = append(errs, err)
@@ -570,6 +581,18 @@ func isDir(p string) bool {
 }
 
 // removeIfEmpty drops a directory only when nothing is left in it.
+// skillDirsInside refuses the skills directory of the folder when a
+// .claude/.agents, skills or skill directory link leads outside it
+// (ErrSymlinkOutsideFolder, PROJ-04): nothing is written or removed there.
+func skillDirsInside(folder, skillsDir string, skills ...Skill) error {
+	for _, s := range skills {
+		if _, err := dirInside(filepath.Join(skillsDir, s.Name), folder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func removeIfEmpty(dir string) {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
 		_ = os.Remove(dir)

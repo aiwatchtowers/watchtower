@@ -137,7 +137,11 @@ func InstallCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (co
 	if _, err := EnsureGitExclude(o.Folder, codexExcludeLines); err != nil {
 		errs = append(errs, err)
 	}
-	sk, err := installSkill(o.codexSkillsDir(), workbenchSkill())
+	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill())
+	var sk SkillStatus
+	if err == nil {
+		sk, err = installSkill(o.codexSkillsDir(), workbenchSkill())
+	}
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -167,12 +171,17 @@ func RemoveCodex(_ context.Context, o WorkbenchInstallOptions) (SkillStatus, err
 		return SkillStatus{}, codexFolderGone(o)
 	}
 	var errs []error
-	sk, err := removeSkill(o.codexSkillsDir(), workbenchSkill())
-	if err != nil {
+	var sk SkillStatus
+	err := skillDirsInside(o.Folder, o.codexSkillsDir(), workbenchSkill())
+	if err == nil {
+		if sk, err = removeSkill(o.codexSkillsDir(), workbenchSkill()); err != nil {
+			errs = append(errs, err)
+		}
+		removeIfEmpty(o.codexSkillsDir())
+		removeIfEmpty(filepath.Join(o.Folder, ".agents"))
+	} else {
 		errs = append(errs, err)
 	}
-	removeIfEmpty(o.codexSkillsDir())
-	removeIfEmpty(filepath.Join(o.Folder, ".agents"))
 	if _, err := dedupeImportedHooks(o.Folder, o.WorkbenchID); err != nil {
 		errs = append(errs, err)
 	}
