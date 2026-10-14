@@ -352,7 +352,7 @@ final class VoiceRegistryCenter {
         await open(.queue(transcriptID: transcriptID))
     }
 
-    /// The launch catch-up `startCatchUp` runs detached. Its queue
+    /// The launch catch-up `startCatchUp` starts without awaiting. Its queue
     /// housekeeping closes a task whose cluster is gone, so a test that
     /// queues one awaits this first instead of racing it.
     @ObservationIgnored private(set) var launchCatchUp: Task<Void, Never>?

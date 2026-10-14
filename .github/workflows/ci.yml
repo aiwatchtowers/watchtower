@@ -267,10 +267,9 @@ jobs:
     # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
     # ~12; the margin is for a cold SPM cache.
     timeout-minutes: 45
-    # actions: write — the main push deletes the SPM build caches it replaces.
-    permissions:
-      contents: read
-      actions: write
+    # The key a main push saves its build under; prune-spm-cache keeps it.
+    outputs:
+      spm-key: ${{ steps.spm-key.outputs.key }}
     defaults:
       run:
         working-directory: WatchtowerDesktop
@@ -301,11 +300,16 @@ jobs:
       # once-per-Package.resolved cache, which a fresh checkout's new mtimes
       # invalidated wholesale. Restore picks the newest entry for the same
       # dependencies, else any.
+      - id: spm-key
+        env:
+          KEY: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+        run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
       - name: Restore SPM build
         uses: actions/cache/restore@v4
         with:
           path: WatchtowerDesktop/.build
-          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+          key: ${{ steps.spm-key.outputs.key }}
           restore-keys: |
             ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-
             ${{ runner.os }}-spm-v2-
@@ -319,30 +323,15 @@ jobs:
       - name: Build
         run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
 
-      # Only a main push saves (the build above passed), and it drops the
-      # older main entries: one ~2 GB entry against the repo's 10 GB cache.
-      # Pull requests read main's entries but never write their own.
+      # Only a main push saves (the build above passed); prune-spm-cache then
+      # drops the older main entries. Pull requests read main's entries but
+      # never write their own.
       - name: Save SPM build
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: WatchtowerDesktop/.build
-          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
-
-      - name: Drop older SPM build caches
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEEP: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
-        run: |
-          gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main --key "${{ runner.os }}-spm-" --limit 100 --json key --jq '.[].key' |
-            while read -r key; do
-              if [ "$key" != "$KEEP" ]; then
-                # A failed delete costs cache space, not correctness.
-                gh cache delete "$key" --repo "$GITHUB_REPOSITORY" ||
-                  echo "::warning::could not delete cache $key"
-              fi
-            done
+          key: ${{ steps.spm-key.outputs.key }}
 
       # Three concurrent xctest processes over round-robin slices of the test
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
@@ -356,6 +345,39 @@ jobs:
         timeout-minutes: 10
         working-directory: .
         run: make test-swift-strict-pool
+
+  # Drops the main SPM build caches the latest main push replaced: one ~2 GB
+  # entry against the repo's 10 GB cache. Its own job so actions: write (cache
+  # deletion) never reaches a job that runs the checkout's code; no checkout.
+  prune-spm-cache:
+    name: Prune SPM build cache
+    needs: swift-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Drop older SPM build caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ needs.swift-test.outputs.spm-key }}
+        run: |
+          keys="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --key "${KEEP%%-spm-*}-spm-" --limit 100 --json key --jq '.[].key')"
+          # actions/cache/save only warns when its upload fails: without the
+          # new entry, keep the old ones rather than leave main with none.
+          if ! grep -qxF "$KEEP" <<< "$keys"; then
+            echo "::warning::$KEEP was not saved; keeping the older SPM build caches"
+            exit 0
+          fi
+          while read -r key; do
+            if [ "$key" != "$KEEP" ]; then
+              # A failed delete costs cache space, not correctness.
+              gh cache delete "$key" --repo "$GITHUB_REPOSITORY" ||
+                echo "::warning::could not delete cache $key"
+            fi
+          done <<< "$keys"
 
   mobile-app:
     name: Mobile App
