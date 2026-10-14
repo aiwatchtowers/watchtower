@@ -292,6 +292,11 @@ func visibleOn(t *Tool, surface string) bool {
 	return len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface)
 }
 
+// VisibleOn reports whether surface may see t (a surface-less tool is
+// visible everywhere) — the check Propose makes, for a caller that wants it
+// before paying for the call's arguments.
+func (t *Tool) VisibleOn(surface string) bool { return visibleOn(t, surface) }
+
 // All returns every registered tool in registration order.
 func (r *Registry) All() []*Tool {
 	out := make([]*Tool, 0, len(r.order))

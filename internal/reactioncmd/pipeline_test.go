@@ -658,7 +658,8 @@ func TestReactionCmd_LostClaimDispatchesNothingAndRefundsBudget(t *testing.T) {
 // TestReactionCmd_ToolNotOnReactionSurfaceIsRefused: the dictionary can name
 // any registered tool, but Propose admits only a tool the "reaction" surface
 // lists — a main-only write (send_slack_message's shape) mapped to an emoji
-// records no agent_actions row and fails the ledger row.
+// is refused before the compose call: no AI call, no agent_actions row, a
+// skipped ledger row.
 func TestReactionCmd_ToolNotOnReactionSurfaceIsRefused(t *testing.T) {
 	database := seededPipelineDB(t, 1)
 	reg := newTestRegistry(t, database)
@@ -695,8 +696,9 @@ func TestReactionCmd_ToolNotOnReactionSurfaceIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, countAllAgentActions(t, database))
 	assert.Zero(t, executed)
+	assert.Zero(t, gen.calls, "refused before the compose call")
 	var status, errText string
 	require.NoError(t, database.QueryRow(`SELECT status, error FROM reaction_commands`).Scan(&status, &errText))
-	assert.Equal(t, "failed", status)
+	assert.Equal(t, "skipped", status)
 	assert.Contains(t, errText, "not available on the reaction surface")
 }
