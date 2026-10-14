@@ -1508,6 +1508,71 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.askSessionTitle(elsewhere), OwnerAskStack.outsideTheAppTitle)
     }
 
+    /// "Session deleted" survives later reads that move the fingerprint
+    /// for other reasons, and leaves with the ask once it is answered.
+    func testSessionDeletedSurvivesLaterReadsUntilTheAskCloses() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        await vm.reload()
+        await vm.asks.load(projectID: p)
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+        await vm.asks.refreshIfChanged(projectID: p)
+
+        _ = try await fileAnotherAsk(project: p, sessionID: nil)
+        let moved = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertTrue(moved, "a new ask moves the fingerprint")
+        let ask = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == askID })
+        XCTAssertNil(ask.sessionID)
+        XCTAssertEqual(vm.askSessionTitle(ask), OwnerAskStack.sessionDeletedTitle, "kept across a read that unbinds nothing")
+
+        pick(vm, askID)
+        await vm.asks.answer(ask)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.sessionDeletedAskIDs[p], "pruned once the ask is no longer open")
+    }
+
+    /// Two quick stack clicks (board #187): the first click's switch is
+    /// taken before its read, so a later click wins even when the first
+    /// click's read finishes last.
+    func testTheLaterAskClickWinsWhileTheFirstClicksReadIsParked() async throws {
+        let (p, first, firstAsk) = try await seed()
+        let acme = folder.path
+        let (second, secondAsk) = try await pool.write { d -> (TerminalSession, Int64) in
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "Other", folderPath: acme))
+            return (s, try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.asks.load(projectID: p)
+        let read = vm.asks.readFingerprint
+        let (parked, park) = AsyncStream<Void>.makeStream()
+        let (released, release) = AsyncStream<Void>.makeStream()
+        var parkNext = true
+        vm.asks.readFingerprint = { projectID in
+            if parkNext {
+                parkNext = false
+                park.yield()
+                var waiting = released.makeAsyncIterator()
+                _ = await waiting.next()
+            }
+            return try await read(projectID)
+        }
+
+        let firstClick = Task { await vm.showAsk(firstAsk, projectID: p) }
+        var parkedIterator = parked.makeAsyncIterator()
+        _ = await parkedIterator.next()
+        await vm.showAsk(secondAsk, projectID: p)
+        release.yield()
+        await firstClick.value
+
+        let visible = vm.layout(projectID: p).visiblePanes
+        XCTAssertTrue(visible.contains(.session(second.id)))
+        XCTAssertFalse(visible.contains(.session(first.id)), "the superseded click puts nothing on screen")
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], secondAsk)
+    }
+
     // MARK: - A new ask opens by itself (board #364)
 
     /// A second open ask filed from `sessionID`, newer than the seeded one.

@@ -223,6 +223,10 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var pollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var holdSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var notificationCenter: NotificationCenter = .default
+    /// Seam for tests: the read behind `refreshIfChanged`.
+    @ObservationIgnored lazy var readFingerprint: (Int64) async throws -> String = { [dbPool] projectID in
+        try await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
+    }
 
     private let dbPool: DatabasePool
     private let terminalCenter: TerminalCenter?
@@ -378,7 +382,7 @@ final class OwnerAsksViewModel {
     func refreshIfChanged(projectID: Int64) async -> Bool {
         let current: String
         do {
-            current = try await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
+            current = try await readFingerprint(projectID)
         } catch {
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
             return false
