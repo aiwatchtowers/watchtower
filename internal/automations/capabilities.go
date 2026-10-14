@@ -21,9 +21,9 @@ type CallScope struct {
 // scoped tool returning no unit has an absent scope, admitted only by @* or
 // tool:<name>.
 //
-// A scope must bound everything the call can return: a tool whose result can
-// carry another project's or account's data (linked Jira issues, the stored
-// raw issue JSON) reports those as units too, or reports an absent scope.
+// A Jira project grant covers the data the tool returns with that project's
+// issues (linked issues, epic, parent): the scope is the call's own project
+// or key prefixes (owner, ask #287).
 type ToolCapability struct {
 	Capability, Verb, ScopeArg string
 	ScopeOf                    func(ctx context.Context, d *db.DB, args json.RawMessage) ([]CallScope, error)
@@ -44,14 +44,13 @@ func (c ToolCapability) scopes(ctx context.Context, d *db.DB, args json.RawMessa
 }
 
 // ToolCapabilities is the tool → capability table (spec §3.2, §6.1, §20.1
-// D21–D23). Tools missing from it are admitted only by tool:<name>: the
-// broad knowledge tools, list_inbox, the memory tools, get_writing_style, and
-// the cross-source digest reads (list_digests, get_digest,
-// get_today_briefing) and find_experts (D21 applied by the Task 4 review).
+// D21–D23). Tools missing from it — the broad knowledge tools, list_inbox,
+// the memory tools and get_writing_style — are admitted only by
+// tool:<name>.
 var ToolCapabilities = map[string]ToolCapability{
-	// Jira reads. Scopes include every project the result can carry.
-	"list_jira_issues":        {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: listJiraIssuesScope},
-	"get_jira_issue":          {Capability: "jira", Verb: "read", ScopeArg: "key", ScopeOf: getJiraIssueScope},
+	// Jira reads.
+	"list_jira_issues":        {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: upperArgScope("project")},
+	"get_jira_issue":          {Capability: "jira", Verb: "read", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
 	"get_jira_status_history": {Capability: "jira", Verb: "read", ScopeArg: "keys", ScopeOf: statusHistoryScope},
 	"get_jira_time_in_status": {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: timeInStatusScope},
 	"list_jira_projects":      {Capability: "jira", Verb: "read"},
@@ -75,8 +74,12 @@ var ToolCapabilities = map[string]ToolCapability{
 	"get_track_counts":    {Capability: "tracks", Verb: "read"},
 	"list_ideas":          {Capability: "ideas", Verb: "read"},
 	"get_idea":            {Capability: "ideas", Verb: "read"},
+	"list_digests":        {Capability: "digests", Verb: "read"},
+	"get_digest":          {Capability: "digests", Verb: "read"},
+	"get_today_briefing":  {Capability: "digests", Verb: "read"},
 	"list_people":         {Capability: "people", Verb: "read"},
 	"get_person":          {Capability: "people", Verb: "read"},
+	"find_experts":        {Capability: "people", Verb: "read"},
 	"list_transcripts":    {Capability: "transcripts", Verb: "read"},
 	"get_transcript":      {Capability: "transcripts", Verb: "read"},
 	"list_meeting_recaps": {Capability: "meetings", Verb: "read"},
