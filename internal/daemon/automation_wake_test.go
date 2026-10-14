@@ -156,3 +156,46 @@ func TestDaemon_AutomationsUnwiredStartsNothing(t *testing.T) {
 	wakeCh <- struct{}{}
 	require.NoError(t, runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 1 }))
 }
+
+// A running daemon advertises its SIGUSR2 handler beside its PID file, under
+// its own pid, and removes the advertisement when it stops — the CLI signals
+// only a daemon that advertises it (an older one would die of SIGUSR2).
+func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
+	var syncCount atomic.Int32
+	d, _, _, _ := newAutomationTestDaemon(t, true, &syncCount)
+	pidPath := t.TempDir() + "/daemon.pid"
+	d.SetPIDPath(pidPath)
+
+	var advertised bool
+	err := runDaemonUntil(t, d, func() bool {
+		ok, err := HasCapability(pidPath, os.Getpid(), AutomationWakeCapability)
+		require.NoError(t, err)
+		advertised = ok
+		return ok
+	})
+	require.NoError(t, err)
+	assert.True(t, advertised)
+	assert.NoFileExists(t, CapsPath(pidPath), "removed with the PID file")
+}
+
+func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {
+	pidPath := t.TempDir() + "/daemon.pid"
+	ok, err := HasCapability(pidPath, 42, AutomationWakeCapability)
+	require.NoError(t, err)
+	assert.False(t, ok, "no file")
+
+	require.NoError(t, os.WriteFile(CapsPath(pidPath), []byte("41\nautomations-wake\n"), 0o600))
+	ok, err = HasCapability(pidPath, 42, AutomationWakeCapability)
+	require.NoError(t, err)
+	assert.False(t, ok, "a file an earlier daemon left names another pid")
+
+	require.NoError(t, os.WriteFile(CapsPath(pidPath), []byte("42\nsomething-else\n"), 0o600))
+	ok, err = HasCapability(pidPath, 42, AutomationWakeCapability)
+	require.NoError(t, err)
+	assert.False(t, ok, "capability not listed")
+
+	require.NoError(t, os.WriteFile(CapsPath(pidPath), []byte("42\nautomations-wake\n"), 0o600))
+	ok, err = HasCapability(pidPath, 42, AutomationWakeCapability)
+	require.NoError(t, err)
+	assert.True(t, ok)
+}

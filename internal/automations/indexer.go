@@ -490,6 +490,18 @@ func (ix *Indexer) readRecipe(path string) ([]byte, string, error) {
 	return data, hash, err
 }
 
+// ReadRecipeFile reads a recipe file the way the indexer does (see
+// readRecipeFile: a regular file only, never through a symlink): its first
+// MaxRecipeBytes+1 bytes and the ContentHash of the whole file. The CLI's
+// validate and save read their input through it.
+func ReadRecipeFile(path string) ([]byte, string, error) {
+	data, hash, _, err := readRecipeFile(path, bigFileHash{})
+	if err != nil {
+		return nil, "", fmt.Errorf("reading recipe %s: %w", path, err)
+	}
+	return data, hash, nil
+}
+
 // readRecipeFile reads a regular file that is not a symlink: lstat, open
 // without following and without blocking (a FIFO swapped in cannot hang the
 // scan), then fstat must still show a regular file with the same inode. It

@@ -34,3 +34,24 @@ func TestAutomationRunStatsSince_LastStatusAndWindowTokens(t *testing.T) {
 		t.Errorf("an automation without runs is not in the map: %+v", stats[idle])
 	}
 }
+
+func TestDeleteIdleAutomation_RefusesWhileARunIsActive(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	mustClaimAutomationRun(t, d, run)
+
+	err := d.DeleteIdleAutomation(a)
+	wantErrIs(t, "delete with a running run", err, ErrAutomationActive)
+	if _, err := d.GetAutomation(a); err != nil {
+		t.Fatalf("the automation is gone: %v", err)
+	}
+	if _, err := d.CancelAutomationRun(run, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteIdleAutomation(a); err != nil {
+		t.Fatalf("idle delete: %v", err)
+	}
+	wantErrIs(t, "run after delete", func() error { _, err := d.GetAutomationRun(run); return err }(), ErrAutomationRunNotFound)
+	wantErrIs(t, "second delete", d.DeleteIdleAutomation(a), ErrAutomationNotFound)
+}

@@ -24,6 +24,10 @@ var automationsDryRunGenerator = func(cfg *config.Config) digest.Generator {
 	return cliBoundedGenerator(cfg)
 }
 
+// automationsBeforeDryRunClaim runs between a dry run's gate and its claim;
+// tests use it to change the recipe in that window.
+var automationsBeforeDryRunClaim = func() {}
+
 // dryRunUnconfirmedHint ends the refusal of a dry run of an unconfirmed
 // recipe under an AI agent's markers (spec §20.1 D16, ask #271).
 const dryRunUnconfirmedHint = "only the owner can dry-run a recipe that is not confirmed yet; use Dry run on its card in Automations"
@@ -91,13 +95,15 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	out := runJSON{RunID: runID, Coalesced: coalesced}
-	out.DaemonRunning, err = wakeAutomations(cfg)
-	if err != nil {
-		// The run is queued either way; the daemon picks it up on its next poll.
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: run #%d is queued, but the daemon was not woken: %v\n", runID, err)
-	}
+	var wakeErr error
+	out.DaemonRunning, wakeErr = wakeAutomations(cfg)
+	// The run is queued whatever the wake did; a failed wake is a note.
+	note, _ := wakeNote(out.DaemonRunning, wakeErr, daemonNotRunningNote)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
+		if note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), note)
+		}
 		return writeJSON(w, out)
 	}
 	if coalesced {
@@ -105,8 +111,8 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(w, "Queued run #%d.\n", runID)
 	}
-	if !out.DaemonRunning && err == nil {
-		fmt.Fprintln(w, daemonNotRunningNote)
+	if note != "" {
+		fmt.Fprintln(w, note)
 	}
 	return nil
 }
@@ -160,6 +166,7 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	automationsBeforeDryRunClaim()
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	exec := automations.NewExecutor(database, automations.Backends{
@@ -167,8 +174,11 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 		Generator: automationsDryRunGenerator(cfg),
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
-	}, automations.ExecutorOptions{DailyBudgetTokens: cfg.Automations.DailyBudgetTokens})
-	run, err := exec.ExecuteInline(ctx, runID)
+	}, automations.ExecutorOptions{DailyBudgetTokens: &cfg.Automations.DailyBudgetTokens})
+	// Pinned to the hash the gate above checked: a rescan in between that
+	// changed the recipe cancels the run instead of running what nobody
+	// checked (D16).
+	run, err := exec.ExecuteInlinePinned(ctx, runID, a.ApprovalHash)
 	if err != nil {
 		return err
 	}
@@ -236,11 +246,13 @@ func runAutomationsCancel(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "Run #%d had already finished.\n", runID)
 		return nil
 	}
-	// The executor notices a cancelled running run on its next status poll;
-	// a wake makes that now.
-	if _, err := wakeAutomations(cfg); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: run #%d is cancelled, but the daemon was not woken: %v\n", runID, err)
-	}
 	fmt.Fprintf(w, "Run #%d cancelled.\n", runID)
+	// The executor notices a cancelled running run on its next status poll;
+	// a wake makes that now. Not woken is fine: the run is cancelled.
+	if running, err := wakeAutomations(cfg); err != nil {
+		if note, _ := wakeNote(running, err, ""); note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), note)
+		}
+	}
 	return nil
 }

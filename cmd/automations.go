@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -160,20 +161,24 @@ func workbenchScope(database *db.DB, workbenchID int64) (automations.Scope, stri
 	return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, automations.WorkbenchDir(w.FolderPath), nil
 }
 
-// resolveAutomation finds an automation by id, or by slug in the scope of
-// --workbench (personal by default).
+// resolveAutomation finds an automation by slug in the scope of --workbench
+// (personal by default) and, when no slug matches and arg is a number, by
+// id. Slug first: an all-digit slug ("2026") is a valid recipe name, and the
+// owner who typed it meant that recipe.
 func resolveAutomation(database *db.DB, arg string, workbenchID int64) (*db.Automation, error) {
-	if id, err := strconv.ParseInt(arg, 10, 64); err == nil {
-		if id <= 0 {
-			return nil, fmt.Errorf("invalid automation id %q: want a positive number", arg)
-		}
-		return database.GetAutomation(id)
-	}
 	scope, _, err := workbenchScope(database, workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	return database.GetAutomationBySlug(string(scope.Kind), scope.WorkbenchID, arg)
+	a, err := database.GetAutomationBySlug(string(scope.Kind), scope.WorkbenchID, arg)
+	if err == nil || !errors.Is(err, db.ErrAutomationNotFound) {
+		return a, err
+	}
+	id, perr := strconv.ParseInt(arg, 10, 64)
+	if perr != nil || id <= 0 {
+		return nil, err
+	}
+	return database.GetAutomation(id)
 }
 
 // automationConfirmed reports whether the owner confirmed a's current
@@ -206,6 +211,11 @@ func decodeAutomationList(column, raw string) ([]string, error) {
 
 // automationJSON is `show --json` — the pinned key set of plan Task 12
 // (later phases add keys, never rename or drop one).
+//
+// Widening (v1 limit): the index keeps only confirmed_hash, not the
+// permission list that was confirmed, so widening is [] for a confirmed
+// recipe and every current normalised permission otherwise — for an edited
+// recipe that lists all its permissions, not only the ones the edit added.
 type automationJSON struct {
 	ID                int64    `json:"id"`
 	Slug              string   `json:"slug"`
@@ -235,11 +245,8 @@ type automationJSON struct {
 	Widening          []string `json:"widening"`
 }
 
-// newAutomationJSON builds show's payload. widening lists what the owner has
-// not confirmed: nothing for a confirmed recipe, every normalised permission
-// otherwise — the index keeps only the confirmed hash, not the confirmed
-// permission list, so an edited recipe's widening is computed from nothing
-// (Covers(nil, current)).
+// newAutomationJSON builds show's payload; widening is Covers(nil, current)
+// for an unconfirmed recipe (see automationJSON's v1 limit).
 func newAutomationJSON(a *db.Automation) (automationJSON, error) {
 	perms, err := decodeAutomationList("permissions_json", a.PermissionsJSON)
 	if err != nil {

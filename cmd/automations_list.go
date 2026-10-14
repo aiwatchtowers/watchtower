@@ -123,7 +123,7 @@ func runAutomationsRuns(cmd *cobra.Command, args []string) error {
 	}
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
-		return writeJSON(w, runs)
+		return writeJSON(w, newAutomationRunsJSON(runs))
 	}
 	if len(runs) == 0 {
 		fmt.Fprintln(w, "No runs.")
@@ -160,7 +160,7 @@ func runAutomationsSteps(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if autoFlags.JSON {
-		return writeJSON(cmd.OutOrStdout(), steps)
+		return writeJSON(cmd.OutOrStdout(), newAutomationStepsJSON(steps))
 	}
 	printAutomationSteps(cmd, steps)
 	return nil
@@ -199,7 +199,7 @@ func runAutomationsOutputs(cmd *cobra.Command, _ []string) error {
 	}
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
-		return writeJSON(w, outs)
+		return writeJSON(w, newAutomationOutputsJSON(outs))
 	}
 	if len(outs) == 0 {
 		fmt.Fprintln(w, "No outputs.")
@@ -210,4 +210,111 @@ func runAutomationsOutputs(cmd *cobra.Command, _ []string) error {
 			o.CreatedAt.Local().Format(time.DateTime), o.Title)
 	}
 	return nil
+}
+
+// automationRunJSON is one row of `runs --json`. recipe_snapshot and
+// event_json are left out (recipe_hash names the snapshot); the Desktop
+// reads those from the database.
+type automationRunJSON struct {
+	ID              int64      `json:"id"`
+	AutomationID    int64      `json:"automation_id"`
+	Trigger         string     `json:"trigger"`
+	ScheduledFor    *time.Time `json:"scheduled_for"`
+	EventCycle      string     `json:"event_cycle"`
+	RerunOf         int64      `json:"rerun_of"`
+	Status          string     `json:"status"`
+	WaitingReason   string     `json:"waiting_reason"`
+	RecipeHash      string     `json:"recipe_hash"`
+	BudgetTokens    int        `json:"budget_tokens"`
+	BudgetMinutes   int        `json:"budget_minutes"`
+	InputTokens     int64      `json:"input_tokens"`
+	OutputTokens    int64      `json:"output_tokens"`
+	TokensEstimated bool       `json:"tokens_estimated"`
+	ReportedCostUSD *float64   `json:"reported_cost_usd"`
+	ActiveMS        int64      `json:"active_ms"`
+	Error           string     `json:"error"`
+	ErrorKind       string     `json:"error_kind"`
+	Summary         string     `json:"summary"`
+	QueuedAt        time.Time  `json:"queued_at"`
+	StartedAt       *time.Time `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
+}
+
+func newAutomationRunsJSON(runs []db.AutomationRun) []automationRunJSON {
+	out := make([]automationRunJSON, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, automationRunJSON{
+			ID: r.ID, AutomationID: r.AutomationID, Trigger: r.Trigger, ScheduledFor: r.ScheduledFor,
+			EventCycle: r.EventCycle, RerunOf: r.RerunOf, Status: r.Status, WaitingReason: r.WaitingReason,
+			RecipeHash: r.RecipeHash, BudgetTokens: r.BudgetTokens, BudgetMinutes: r.BudgetMinutes,
+			InputTokens: r.InputTokens, OutputTokens: r.OutputTokens, TokensEstimated: r.TokensEstimated,
+			ReportedCostUSD: r.ReportedCostUSD, ActiveMS: r.ActiveMS, Error: r.Error, ErrorKind: r.ErrorKind,
+			Summary: r.Summary, QueuedAt: r.QueuedAt, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
+		})
+	}
+	return out
+}
+
+// automationStepJSON is one row of `steps --json`.
+type automationStepJSON struct {
+	ID              int64      `json:"id"`
+	RunID           int64      `json:"run_id"`
+	Seq             int        `json:"seq"`
+	Kind            string     `json:"kind"`
+	Name            string     `json:"name"`
+	ArgsJSON        string     `json:"args_json"`
+	ResultSummary   string     `json:"result_summary"`
+	Status          string     `json:"status"`
+	Auto            bool       `json:"auto"`
+	Permission      string     `json:"permission"`
+	ActionID        int64      `json:"action_id"`
+	AskID           int64      `json:"ask_id"`
+	SessionID       int64      `json:"session_id"`
+	InputTokens     int64      `json:"input_tokens"`
+	OutputTokens    int64      `json:"output_tokens"`
+	TokensEstimated bool       `json:"tokens_estimated"`
+	ReportedCostUSD *float64   `json:"reported_cost_usd"`
+	DurationMS      int64      `json:"duration_ms"`
+	Error           string     `json:"error"`
+	StartedAt       time.Time  `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at"`
+}
+
+func newAutomationStepsJSON(steps []db.AutomationRunStep) []automationStepJSON {
+	out := make([]automationStepJSON, 0, len(steps))
+	for _, s := range steps {
+		out = append(out, automationStepJSON{
+			ID: s.ID, RunID: s.RunID, Seq: s.Seq, Kind: s.Kind, Name: s.Name, ArgsJSON: s.ArgsJSON,
+			ResultSummary: s.ResultSummary, Status: s.Status, Auto: s.Auto, Permission: s.Permission,
+			ActionID: s.ActionID, AskID: s.AskID, SessionID: s.SessionID, InputTokens: s.InputTokens,
+			OutputTokens: s.OutputTokens, TokensEstimated: s.TokensEstimated, ReportedCostUSD: s.ReportedCostUSD,
+			DurationMS: s.DurationMS, Error: s.Error, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
+		})
+	}
+	return out
+}
+
+// automationOutputJSON is one row of `outputs --json`.
+type automationOutputJSON struct {
+	ID           int64      `json:"id"`
+	AutomationID int64      `json:"automation_id"`
+	RunID        int64      `json:"run_id"`
+	Kind         string     `json:"kind"`
+	Title        string     `json:"title"`
+	Body         string     `json:"body"`
+	Priority     string     `json:"priority"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ReadAt       *time.Time `json:"read_at"`
+	DismissedAt  *time.Time `json:"dismissed_at"`
+}
+
+func newAutomationOutputsJSON(outs []db.AutomationOutput) []automationOutputJSON {
+	out := make([]automationOutputJSON, 0, len(outs))
+	for _, o := range outs {
+		out = append(out, automationOutputJSON{
+			ID: o.ID, AutomationID: o.AutomationID, RunID: o.RunID, Kind: o.Kind, Title: o.Title, Body: o.Body,
+			Priority: o.Priority, CreatedAt: o.CreatedAt, ReadAt: o.ReadAt, DismissedAt: o.DismissedAt,
+		})
+	}
+	return out
 }

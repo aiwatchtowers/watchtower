@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,44 +18,6 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
 )
-
-// recipeHeadWriter keeps the first limit bytes written to it and drops the
-// rest, so a huge file is hashed whole but never held whole.
-type recipeHeadWriter struct {
-	buf   []byte
-	limit int
-}
-
-func (w *recipeHeadWriter) Write(p []byte) (int, error) {
-	if room := w.limit - len(w.buf); room > 0 {
-		w.buf = append(w.buf, p[:min(room, len(p))]...)
-	}
-	return len(p), nil
-}
-
-// readRecipeFile reads a recipe file: its first MaxRecipeBytes+1 bytes
-// (enough for ParseRecipe to refuse an oversized file) and the ContentHash of
-// the whole file. Only a regular file is read.
-func readRecipeFile(path string) ([]byte, string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("reading recipe: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, "", fmt.Errorf("reading recipe %s: not a regular file", path)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("reading recipe: %w", err)
-	}
-	defer f.Close()
-	h := sha256.New()
-	head := &recipeHeadWriter{limit: automations.MaxRecipeBytes + 1}
-	if _, err := io.Copy(io.MultiWriter(h, head), f); err != nil {
-		return nil, "", fmt.Errorf("reading recipe %s: %w", path, err)
-	}
-	return head.buf, hex.EncodeToString(h.Sum(nil)), nil
-}
 
 // recipeSlugOf is the slug a recipe file's name gives (its stem).
 func recipeSlugOf(path string) string {
@@ -112,7 +71,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	data, contentHash, err := readRecipeFile(args[0])
+	data, contentHash, err := automations.ReadRecipeFile(args[0])
 	if err != nil {
 		return err
 	}
@@ -318,7 +277,7 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
-	data, _, err := readRecipeFile(autoFlags.File)
+	data, _, err := automations.ReadRecipeFile(autoFlags.File)
 	if err != nil {
 		return err
 	}
@@ -400,11 +359,12 @@ func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, s
 	return a, nil
 }
 
-// runAutomationsDelete removes an automation's recipe file (only a regular
-// file in its recipe folder) and its index row, which cascades its runs,
-// steps, state and outputs (spec §2.5, §10). An automation with a running or
-// waiting run is refused: cancel the run first. P1 has no pending proposals
-// or grants, so nothing else is withdrawn.
+// runAutomationsDelete removes an automation's index row — which cascades
+// its runs, steps, state and outputs (spec §2.5, §10) — and then its recipe
+// file (only a regular file in its own recipe folder). The row delete is one
+// statement that holds only while no run is running or waiting (cancel the run
+// first), and the file is removed only after it succeeded. P1 has no pending
+// proposals or grants, so nothing else is withdrawn.
 func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	id, err := parseAutomationID("automation id", args[0])
 	if err != nil {
@@ -419,43 +379,33 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := refuseDeleteWithActiveRun(database, id); err != nil {
-		return err
-	}
-	removed, err := removeRecipeFile(cfg, database, a)
+	removable, err := recipeFileRemovable(cfg, database, a)
 	if err != nil {
 		return err
 	}
-	if err := database.DeleteAutomation(id); err != nil {
+	if err := database.DeleteIdleAutomation(id); err != nil {
+		if errors.Is(err, db.ErrAutomationActive) {
+			return fmt.Errorf("%w — cancel it first (`watchtower automations cancel <run-id>`)", err)
+		}
 		return err
 	}
 	w := cmd.OutOrStdout()
-	if removed {
-		fmt.Fprintf(w, "Deleted automation #%d and %s.\n", id, a.Path)
-	} else {
+	if !removable {
 		fmt.Fprintf(w, "Deleted automation #%d; its recipe file was not removed (none, or not a regular file in its recipe folder: %s).\n", id, a.Path)
+		return nil
 	}
+	if err := os.Remove(a.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("deleted automation %d, but not its recipe file (the next rescan indexes it again, unconfirmed): %w", id, err)
+	}
+	fmt.Fprintf(w, "Deleted automation #%d and %s.\n", id, a.Path)
 	return nil
 }
 
-func refuseDeleteWithActiveRun(database *db.DB, id int64) error {
-	active, err := database.ListActiveAutomationRuns()
-	if err != nil {
-		return err
-	}
-	for _, r := range active {
-		if r.AutomationID == id {
-			return fmt.Errorf("automation %d has an active run #%d; cancel it first (`watchtower automations cancel %d`)", id, r.ID, r.ID)
-		}
-	}
-	return nil
-}
-
-// removeRecipeFile removes a's recipe file when it is a regular file in a's
-// own recipe folder. Anything else — no file, a symlink or special file put in
-// its place, a path no longer inside its recipe folder — is left alone
-// (removed = false) and the row is still deleted.
-func removeRecipeFile(cfg *config.Config, database *db.DB, a *db.Automation) (bool, error) {
+// recipeFileRemovable reports whether delete may remove a's recipe file: a
+// regular file at a's path inside a's own recipe folder. Anything else — no
+// file, a symlink or special file put in its place, a path no longer inside
+// its recipe folder — is left alone and the row is still deleted.
+func recipeFileRemovable(cfg *config.Config, database *db.DB, a *db.Automation) (bool, error) {
 	scope, _, path, ok, err := recipeFolderOf(cfg, database, a.Path)
 	if err != nil {
 		return false, err
@@ -468,13 +418,7 @@ func removeRecipeFile(cfg *config.Config, database *db.DB, a *db.Automation) (bo
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("deleting %s: %w", a.Path, err)
+		return false, fmt.Errorf("checking %s: %w", a.Path, err)
 	}
-	if !info.Mode().IsRegular() {
-		return false, nil
-	}
-	if err := os.Remove(a.Path); err != nil {
-		return false, fmt.Errorf("deleting %s: %w", a.Path, err)
-	}
-	return true, nil
+	return info.Mode().IsRegular(), nil
 }

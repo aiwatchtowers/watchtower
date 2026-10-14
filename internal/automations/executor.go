@@ -25,6 +25,11 @@ const runawayDisabledReason = "runaway script — check and re-enable"
 // claimed: it is no longer queued, or its automation is at its concurrency.
 var ErrRunNotClaimed = errors.New("automation run could not be claimed")
 
+// ErrRecipeChanged is what ExecuteInlinePinned returns when the automation's
+// approval hash is no longer the one its caller checked; the run was
+// cancelled, never claimed.
+var ErrRecipeChanged = errors.New("the recipe changed since it was checked")
+
 // ExecutorOptions tunes NewExecutor.
 type ExecutorOptions struct {
 	// MaxConcurrent is how many runs may be running at once across every
@@ -305,6 +310,17 @@ func (e *Executor) claim(runID int64, a *db.Automation, now time.Time, maxRunnin
 // failed/not_runnable); any other trigger of a non-runnable automation is
 // cancelled as not_runnable instead. ErrRunNotClaimed when the claim lost.
 func (e *Executor) ExecuteInline(ctx context.Context, runID int64) (*db.AutomationRun, error) {
+	return e.ExecuteInlinePinned(ctx, runID, "")
+}
+
+// ExecuteInlinePinned is ExecuteInline for a caller that gated the run on the
+// recipe it checked at approvalHash ("" = no pin) — the CLI's dry run, whose
+// D16 gate (ask #271) looked at the recipe's confirmation before queueing.
+// The automation row is read once here and the claim snapshots exactly that
+// row's recipe, so when its approval_hash is no longer approvalHash (a rescan
+// between the caller's check and the claim) the queued run is cancelled,
+// never claimed, and ErrRecipeChanged is returned.
+func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approvalHash string) (*db.AutomationRun, error) {
 	run, err := e.db.GetAutomationRun(runID)
 	if err != nil {
 		return nil, err
@@ -314,6 +330,13 @@ func (e *Executor) ExecuteInline(ctx context.Context, runID int64) (*db.Automati
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
 	}
 	now := e.clock.Now()
+	if approvalHash != "" && a.ApprovalHash != approvalHash {
+		if _, err := e.db.CancelAutomationRun(runID, now); err != nil {
+			return nil, fmt.Errorf("automation run %d: %w", runID, err)
+		}
+		return nil, fmt.Errorf("automation run %d: %w (approval hash %s, checked %s); check it again",
+			runID, ErrRecipeChanged, a.ApprovalHash, approvalHash)
+	}
 	if run.Trigger != db.TriggerDryRun && !a.Runnable() {
 		if err := e.cancelNotRunnable(runID, now); err != nil {
 			return nil, fmt.Errorf("automation run %d: %w", runID, err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
@@ -46,9 +48,11 @@ func newAutoCLI(t *testing.T) *autoCLI {
 
 func runAutomations(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	var out bytes.Buffer
+	// stdout only: --json output must decode on its own, as the Desktop reads
+	// it; notes and warnings go to stderr.
+	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
+	rootCmd.SetErr(&errOut)
 	rootCmd.SetArgs(append([]string{"automations"}, args...))
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
@@ -429,4 +433,152 @@ func TestAutomationsCLI_JSONEmptyArraysNotNull(t *testing.T) {
 	out, err := runAutomations(t, "outputs", "--json")
 	require.NoError(t, err)
 	assert.Equal(t, "[]\n", out)
+}
+
+// D16 TOCTOU: a rescan that changes the recipe between the dry run's gate and
+// its claim cancels the run — under a marker nothing the owner never
+// confirmed runs.
+func TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			c := newAutoCLI(t)
+			a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`llm("x"); return 1`))
+			orig := automationsBeforeDryRunClaim
+			automationsBeforeDryRunClaim = func() {
+				writeRecipe(t, c.personal, "digest", autoCLIRecipeText(`llm("x"); llm("y"); return 2`))
+				ix := automations.NewIndexer(c.d, t.TempDir(), automations.RealClock{})
+				_, err := ix.RescanFolder(t.Context(), automations.Scope{Kind: automations.ScopePersonal}, c.personal)
+				require.NoError(t, err)
+			}
+			t.Cleanup(func() { automationsBeforeDryRunClaim = orig })
+			t.Setenv(marker, "1")
+
+			_, err := runAutomations(t, "dry-run", idArg(a.ID))
+			require.ErrorIs(t, err, automations.ErrRecipeChanged)
+			assert.Zero(t, c.gen.CallCount(), "nothing ran")
+			runs := c.runs(t, a.ID)
+			require.Len(t, runs, 1)
+			assert.Equal(t, db.RunCancelled, runs[0].Status)
+		})
+	}
+}
+
+// An all-digit argument names the recipe with that slug first, then an id.
+func TestAutomationsCLI_ShowResolvesSlugBeforeID(t *testing.T) {
+	c := newAutoCLI(t)
+	first := c.indexRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	numeric := c.indexRecipe(t, idArg(first.ID), autoCLIRecipeText(`return 2`))
+	require.NotEqual(t, first.ID, numeric.ID)
+
+	assert.Equal(t, float64(numeric.ID), runAutomationsJSON(t, "show", idArg(first.ID))["id"], "slug wins")
+	assert.Equal(t, float64(first.ID), runAutomationsJSON(t, "show", "digest")["id"])
+	assert.Equal(t, float64(numeric.ID), runAutomationsJSON(t, "show", idArg(numeric.ID))["id"], "no such slug: the id")
+	_, err := runAutomations(t, "show", "999")
+	require.ErrorIs(t, err, db.ErrAutomationNotFound)
+}
+
+func TestAutomationsCLI_RunsStepsOutputsJSONKeys(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`llm("x"); return 1`))
+	dry := runAutomationsJSON(t, "dry-run", idArg(a.ID))
+	runID := int64(dry["run_id"].(float64))
+	committed, _, err := c.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now()})
+	require.NoError(t, err)
+	ok, err := c.d.ClaimAutomationRun(committed, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, c.d.FinishAutomationRun(committed, db.RunFinish{Status: db.RunSucceeded, Now: time.Now()},
+		&db.RunCommit{Outputs: []db.AutomationOutput{{Kind: "report", Title: "t", Body: "b"}}}))
+
+	rows := runAutomationsJSONList(t, "runs", idArg(a.ID))
+	require.Len(t, rows, 2)
+	wantKeys(t, rows[0], "id", "automation_id", "trigger", "scheduled_for", "event_cycle", "rerun_of", "status",
+		"waiting_reason", "recipe_hash", "budget_tokens", "budget_minutes", "input_tokens", "output_tokens",
+		"tokens_estimated", "reported_cost_usd", "active_ms", "error", "error_kind", "summary", "queued_at",
+		"started_at", "finished_at")
+	steps := runAutomationsJSONList(t, "steps", idArg(runID))
+	require.NotEmpty(t, steps)
+	wantKeys(t, steps[0], "id", "run_id", "seq", "kind", "name", "args_json", "result_summary", "status", "auto",
+		"permission", "action_id", "ask_id", "session_id", "input_tokens", "output_tokens", "tokens_estimated",
+		"reported_cost_usd", "duration_ms", "error", "started_at", "finished_at")
+	outs := runAutomationsJSONList(t, "outputs")
+	require.Len(t, outs, 1)
+	wantKeys(t, outs[0], "id", "automation_id", "run_id", "kind", "title", "body", "priority", "created_at",
+		"read_at", "dismissed_at")
+
+	fresh := c.indexRecipe(t, "fresh", autoCLIRecipeText(`return 1`))
+	for _, args := range [][]string{{"runs", idArg(fresh.ID)}, {"steps", idArg(committed)}} {
+		out, err := runAutomations(t, append(args, "--json")...)
+		require.NoError(t, err)
+		assert.Equal(t, "[]\n", out, "%v: an empty list is [], never null", args)
+	}
+}
+
+func runAutomationsJSONList(t *testing.T, args ...string) []map[string]any {
+	t.Helper()
+	out, err := runAutomations(t, append(args, "--json")...)
+	require.NoError(t, err, out)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
+	return rows
+}
+
+// writeDaemonPID makes this test process look like the running daemon, with
+// or without the automation wake capability.
+func writeDaemonPID(t *testing.T, capable bool) {
+	t.Helper()
+	cfg, err := loadAutomationsConfig()
+	require.NoError(t, err)
+	pidPath := pidFilePath(cfg)
+	// The legacy pid-only form: the identity check would otherwise refuse a
+	// process not named watchtower (this test binary).
+	require.NoError(t, os.MkdirAll(filepath.Dir(pidPath), 0o700))
+	require.NoError(t, os.WriteFile(pidPath, []byte(idArg(int64(os.Getpid()))), 0o600))
+	t.Cleanup(func() { daemon.RemovePID(pidPath) })
+	if capable {
+		body := idArg(int64(os.Getpid())) + "\n" + daemon.AutomationWakeCapability + "\n"
+		require.NoError(t, os.WriteFile(daemon.CapsPath(pidPath), []byte(body), 0o600))
+		t.Cleanup(func() { _ = os.Remove(daemon.CapsPath(pidPath)) })
+	}
+}
+
+// An older daemon has no SIGUSR2 handler and would die of the signal: without
+// the capability advertised, nothing is sent and the owner is told to restart.
+func TestAutomationsCLI_WakeSkipsDaemonWithoutCapability(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	writeDaemonPID(t, false)
+	got := make(chan os.Signal, 1)
+	signal.Notify(got, daemon.AutomationWakeSignal)
+	t.Cleanup(func() { signal.Stop(got) })
+
+	out, err := runAutomations(t, "wake")
+	require.NoError(t, err)
+	assert.Contains(t, out, "the running daemon is older and can't be woken; restart it")
+	out, err = runAutomations(t, "run", idArg(a.ID))
+	require.NoError(t, err)
+	assert.Contains(t, out, "the run starts on its next poll")
+	assert.Len(t, c.runs(t, a.ID), 1, "the run is queued all the same")
+	select {
+	case <-got:
+		t.Fatal("SIGUSR2 sent to a daemon that does not advertise it")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestAutomationsCLI_WakeSignalsCapableDaemon(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	writeDaemonPID(t, true)
+	got := make(chan os.Signal, 1)
+	signal.Notify(got, daemon.AutomationWakeSignal)
+	t.Cleanup(func() { signal.Stop(got) })
+
+	res := runAutomationsJSON(t, "run", idArg(a.ID))
+	assert.Equal(t, true, res["daemon_running"])
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no SIGUSR2 reached the capable daemon")
+	}
 }
