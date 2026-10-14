@@ -282,7 +282,25 @@ func (s *Sandbox) throw(err error) goja.Value {
 	if s.interrupted() {
 		return goja.Undefined() // the backend call was cut short by the interrupt
 	}
+	if s.parentEnded() {
+		// The caller's ctx ended (the daemon stopping, a CLI dry run stopped)
+		// and the backend failed under it before the deadline watcher saw
+		// the cancel: the run is cancelled, never a catchable ToolError.
+		s.Interrupt(InterruptCancel)
+		return goja.Undefined()
+	}
 	panic(s.newJSError(jsErrorParts(err)))
+}
+
+// parentEnded reports whether Env.Ctx's parent is done (a nil channel, a
+// context that never ends, reads as not done).
+func (s *Sandbox) parentEnded() bool {
+	select {
+	case <-s.parentDone:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Sandbox) newJSError(name, msg, needed string) *goja.Object {
