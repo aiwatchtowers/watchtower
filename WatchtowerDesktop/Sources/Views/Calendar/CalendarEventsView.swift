@@ -43,6 +43,10 @@ struct CalendarEventsView: View {
     /// short loop while the tab is open, so it clears once the sync lands.
     @State private var syncHealth: CalendarSyncHealth = .ok
     @State private var syncHealthError: String?
+    /// A failed Turn On / Start Sync restart — kept apart from
+    /// `syncHealthError` because it is cleared by the daemon coming up (by
+    /// any route: the app, the tray), not by a state change.
+    @State private var restartError: String?
     @State private var syncHealthReadFailed = false
     @State private var isRestartingSync = false
     /// Derived tri-state position of the now-line marker relative to the
@@ -89,6 +93,7 @@ struct CalendarEventsView: View {
             let (accounts, counts) = try await db.dbPool.read { conn in
                 (try GoogleAccountQueries.fetchAll(conn), try CalendarQueries.calendarCountsBySource(conn))
             }
+            let daemonRunning = DaemonManager.checkActiveWorkspaceDaemonRunning()
             let health = CalendarSyncHealth.evaluate(
                 accounts: accounts,
                 hasCalDAVSource: appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false,
@@ -97,8 +102,9 @@ struct CalendarEventsView: View {
                 syncSwitchOn: !ConfigService().calendarSyncReadsOff,
                 googleCalendarCount: counts.google,
                 calDAVCalendarCount: counts.calDAV,
-                daemonRunning: DaemonManager.checkActiveWorkspaceDaemonRunning()
+                daemonRunning: daemonRunning
             )
+            if daemonRunning { restartError = nil }
             // An action's error belongs to the state it was raised in.
             if health != syncHealth { syncHealthError = nil }
             syncHealth = health
@@ -130,16 +136,13 @@ struct CalendarEventsView: View {
     private func restartSync() async {
         isRestartingSync = true
         defer { isRestartingSync = false }
-        var failure: String?
         do {
             try await DaemonManager.restart()
+            restartError = nil
         } catch {
-            failure = "Couldn't start the sync: \(error.localizedDescription)"
+            restartError = "Couldn't start the sync: \(error.localizedDescription)"
         }
-        // Refresh first: the state change it may bring clears older errors,
-        // never the one this restart just raised.
         await refreshSyncHealth()
-        syncHealthError = failure
     }
 
     /// Resolves a `MeetingSelection` (row tap, deep link) to its
@@ -658,8 +661,9 @@ struct CalendarEventsView: View {
         case .ok:
             // A failed restart can land on an otherwise healthy state (the
             // calendars synced before) — it must still be seen.
-            if let syncHealthError {
-                healthBanner(icon: "exclamationmark.triangle", text: "The sync isn't running.", error: syncHealthError) {
+            // Cleared as soon as a daemon is seen running.
+            if let restartError {
+                healthBanner(icon: "exclamationmark.triangle", text: "The sync isn't running.", error: restartError) {
                     syncButton("Start Sync") { await restartSync() }
                 }
             }
@@ -667,7 +671,7 @@ struct CalendarEventsView: View {
             healthBanner(
                 icon: "exclamationmark.triangle",
                 text: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it.",
-                error: syncHealthError
+                error: syncHealthError ?? restartError
             ) {
                 syncButton("Turn On Calendar Sync") { await turnOnCalendarSync() }
             }
@@ -683,7 +687,7 @@ struct CalendarEventsView: View {
             healthBanner(
                 icon: "exclamationmark.triangle",
                 text: "Watchtower's sync isn't running, so your calendar hasn't synced yet.",
-                error: syncHealthError
+                error: restartError
             ) {
                 syncButton("Start Sync") { await restartSync() }
             }
