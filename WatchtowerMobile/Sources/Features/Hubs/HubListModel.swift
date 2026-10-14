@@ -60,8 +60,11 @@ enum HubListModel {
     /// A hub the Mac removed is never online. A hub in `unopened` (its
     /// data could not be opened at launch, `AppEnvironment.unopenedHubIDs`)
     /// says so and can be forgotten. The hub ids of rows that cannot be
-    /// read (`unreadable`, `HubRegistry.unreadableHubIDs`) follow, each
-    /// unopened and forgettable (#222).
+    /// read (`unreadable`, `HubRegistry.unreadableHubIDs`, in order) are
+    /// each unopened and forgettable (#222), and take their own places in
+    /// the registry's order: the places the readable rows' `sortOrder`
+    /// leaves free (the registry numbers its rows 0…n−1). So a list index
+    /// is the registry index a move writes (`MacsModel.registryMove`).
     static func items(
         rows: [HubRow],
         unreadable: [String] = [],
@@ -71,7 +74,7 @@ enum HubListModel {
         now: Date
     ) -> [HubListItem] {
         let names = HubDisplayName.names(for: rows)
-        return rows.map { row in
+        let readable = rows.map { row in
             let session = sessions[row.hubID]
             let heartbeat = [session?.heartbeat?.updatedAt, row.lastHeartbeatAt].compactMap(\.self).max()
             let removed = row.state == .unlinkedByMac
@@ -92,12 +95,23 @@ enum HubListModel {
                 canForget: removed || unopened || (offlineDays ?? 0) >= forgetAfterDays,
                 problem: unopened ? unopenedProblem : session?.lastFetchError
             )
-        } + unreadable.map { hubID in
-            HubListItem(
-                id: hubID, name: unreadableName, flavor: nil, online: false, offlineDays: nil, openAsks: 0,
-                isActive: false, removedByMac: false, unopened: true, canForget: true, problem: unreadableProblem
+        }
+        let taken = Set(rows.map(\.sortOrder))
+        let free = (0..<(rows.count + unreadable.count)).filter { !taken.contains($0) }
+        let unknown = unreadable.enumerated().map { index, hubID in
+            (
+                order: index < free.count ? free[index] : Int.max,
+                item: HubListItem(
+                    id: hubID, name: unreadableName, flavor: nil, online: false, offlineDays: nil, openAsks: 0,
+                    isActive: false, removedByMac: false, unopened: true, canForget: true, problem: unreadableProblem
+                )
             )
         }
+        let known = zip(rows, readable).map { (order: $0.sortOrder, item: $1) }
+        // Stable: equal places keep the readable row first.
+        return (known + unknown).enumerated()
+            .sorted { ($0.element.order, $0.offset) < ($1.element.order, $1.offset) }
+            .map(\.element.item)
     }
 
     /// The open asks of every hub but the one on screen that can still

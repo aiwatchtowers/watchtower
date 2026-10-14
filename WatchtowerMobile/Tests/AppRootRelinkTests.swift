@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
@@ -12,7 +13,9 @@ import XCTest
 /// zones outlive the phone's replica). The unlink retires the session, closes
 /// its databases, deletes its files and leaves the shares once its farewell
 /// went out; a new link to that hub builds a fresh session at the same paths
-/// that reads and writes.
+/// that reads and writes. Also the unlink farewell kept for a later resend
+/// (#143): kept before the wait, sent again by a direct save at each
+/// activation, one retry at a time.
 @MainActor
 final class AppRootRelinkTests: XCTestCase {
     /// The Mac's iCloud user; this phone is signed in as another (`container`).
@@ -28,8 +31,14 @@ final class AppRootRelinkTests: XCTestCase {
     private let linkClock = GateLinkClock()
     /// The hub's zones: every session of a hub runs over the same transport.
     private var zones: [String: InMemoryCloudTransport] = [:]
+    /// Background work the root began and ended, by name.
+    private var workBegun: [String] = []
+    private var workEnded: [String] = []
 
-    private func makeRoot() throws -> AppRoot {
+    /// The in-memory zones send at once: the farewell left the queue.
+    private static let sentAtOnce = AppRoot.FarewellDelivery(isPending: { _, _ in false }, pause: .milliseconds(20))
+
+    private func makeRoot(farewellDelivery: AppRoot.FarewellDelivery = sentAtOnce) throws -> AppRoot {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("app-root-relink-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: base) }
         let linkClock = linkClock
@@ -94,9 +103,11 @@ final class AppRootRelinkTests: XCTestCase {
             linking: LinkingViewModel(
                 container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
             ),
-            startWork: nil,
-            // The in-memory zones send at once: the farewell left the queue.
-            farewellDelivery: AppRoot.FarewellDelivery(isPending: { _, _ in false }, pause: .milliseconds(20))
+            startWork: { [weak self] name in
+                self?.workBegun.append(name)
+                return { self?.workEnded.append(name) }
+            },
+            farewellDelivery: farewellDelivery
         )
     }
 
@@ -132,6 +143,15 @@ final class AppRootRelinkTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 10)
         flow.cancel()
         XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
+    }
+
+    /// A kept farewell of the test hub (#143), its sealed record `payload`.
+    private func keptFarewell(_ payload: Data = Data([1])) -> PendingFarewell {
+        PendingFarewell(
+            hubID: hubID, scope: .shared(ownerName: owner), userRecordName: "_colleague-a",
+            record: CloudRecord(recordName: "wire", zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: payload),
+            since: Date()
+        )
     }
 
     private func zone() throws -> InMemoryCloudTransport {
@@ -201,5 +221,97 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(), [true, true, true], "the hub's folders are made again")
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "the replica at the same path")
         try await assertReadsAndWrites(second, heartbeatAt: Date(timeIntervalSince1970: 1_800_000_600))
+    }
+
+    // MARK: - The kept farewell (#143)
+
+    /// Review round 1 (F8): the farewell is kept in the registry before the
+    /// wait (a kill during it keeps it) and dropped once it went out.
+    func testAnUnlinkKeepsItsFarewellDuringTheWaitAndDropsItOnceSent() async throws {
+        var keptWhileWaiting: [Bool] = []
+        let root = try makeRoot(farewellDelivery: AppRoot.FarewellDelivery(
+            isPending: { [weak self] _, _ in
+                keptWhileWaiting.append(self?.registry.map { (try? $0.pendingFarewells().isEmpty) == false } ?? false)
+                return false
+            },
+            pause: .milliseconds(20)
+        ))
+        try await link(root, code(iat: Int64(linkClock.start.timeIntervalSince1970)))
+
+        await root.linking.unlink(hubID)
+
+        XCTAssertEqual(keptWhileWaiting, [true], "kept before the look at the queue")
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty, "sent: no longer kept")
+        XCTAssertEqual(container.leftHubIDs, [hubID])
+    }
+
+    /// Review round 1 (F4/F5): the production resend, one direct save of the
+    /// kept sealed record (`AppRoot.resendDirectly`): a save that fails keeps
+    /// it, one that returns drops it.
+    func testAKeptFarewellGoesOutByADirectSaveAndStaysKeptOnAnError() async throws {
+        let saved = OSAllocatedUnfairLock(initialState: [PendingFarewell]())
+        let fails = OSAllocatedUnfairLock(initialState: true)
+        var delivery = Self.sentAtOnce
+        delivery.resend = { farewell in
+            await AppRoot.resendDirectly(farewell, cap: .seconds(10)) { farewell in
+                saved.withLock { $0.append(farewell) }
+                if fails.withLock({ $0 }) { throw URLError(.notConnectedToInternet) }
+            }
+        }
+        let root = try makeRoot(farewellDelivery: delivery)
+        try registry.savePendingFarewell(keptFarewell())
+
+        let first = await root.resendFarewell(try XCTUnwrap(try registry.pendingFarewells().first))
+
+        XCTAssertFalse(first)
+        XCTAssertEqual(try registry.pendingFarewells().map(\.hubID), [hubID], "a failed save keeps it")
+
+        fails.withLock { $0 = false }
+        let second = await root.resendFarewell(try XCTUnwrap(try registry.pendingFarewells().first))
+
+        XCTAssertTrue(second)
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+        XCTAssertEqual(saved.withLock { $0.map(\.record.payload) }, [Data([1]), Data([1])], "the sealed record as kept")
+        XCTAssertEqual(saved.withLock { $0.last?.scope }, .shared(ownerName: owner))
+    }
+
+    /// Review round 1 (F4): a direct save still running at the cap reads as
+    /// not sent, at once.
+    func testADirectSaveStillRunningAtTheCapIsNotSent() async {
+        let started = ContinuousClock.now
+
+        let sent = await AppRoot.resendDirectly(keptFarewell(), cap: .milliseconds(100)) { _ in
+            try await Task.sleep(for: .seconds(60))
+        }
+
+        XCTAssertFalse(sent)
+        XCTAssertLessThan(started.duration(to: .now), .seconds(5), "the cap ended it")
+    }
+
+    /// Review round 1 (F10/F4): each activation retries the kept farewells
+    /// inside background work, one retry at a time.
+    func testAnActivationRetriesTheKeptFarewellsOnceAtATimeInBackgroundWork() async throws {
+        var resends: [String] = []
+        var delivery = Self.sentAtOnce
+        delivery.resend = { farewell in
+            resends.append(farewell.hubID)
+            return true
+        }
+        let root = try makeRoot(farewellDelivery: delivery)
+        try registry.savePendingFarewell(keptFarewell())
+
+        let first = root.becameActive()
+        let second = root.becameActive()
+        await first.value
+
+        XCTAssertEqual(first, second, "a second activation joins the running retry")
+        XCTAssertEqual(resends, [hubID])
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+        XCTAssertEqual(container.leftHubIDs, [hubID], "out: the shares are left")
+        XCTAssertEqual(workBegun, ["hub-farewells"])
+        XCTAssertEqual(workEnded, ["hub-farewells"])
+
+        await root.becameActive().value
+        XCTAssertEqual(resends, [hubID], "nothing kept: nothing sent")
     }
 }

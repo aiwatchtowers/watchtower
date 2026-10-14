@@ -106,7 +106,10 @@ enum HubBoot {
             }
             // A link a kill left waiting (#221): its transport store queues the
             // device record not sent yet, so the files move into the pending
-            // hub's directories, where the resumed wait picks them up.
+            // hub's directories, where the resumed wait picks them up. F1's
+            // link restarted the transport on the pending hub, whose start bound
+            // the store to it, so the session's start keeps it; a store bound to
+            // no hub (the single-hub build's) is wiped there, as anywhere.
             if let pendingHubID = store.pending?.link.hubID, HubPaths.isValidHubID(pendingHubID) {
                 try moveF1Files(
                     to: pendingHubID, replica: legacyReplica, transport: legacyTransport,

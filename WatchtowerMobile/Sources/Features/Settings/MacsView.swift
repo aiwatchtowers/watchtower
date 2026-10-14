@@ -86,10 +86,11 @@ struct MacsView: View {
         }
     }
 
-    /// `List.onMove`'s offsets become the registry's index of the moved Mac.
+    /// `List.onMove`'s offsets become the registry's index of the moved Mac
+    /// (`MacsModel.registryMove`).
     private func move(_ items: [HubListItem], from source: IndexSet, to destination: Int) {
-        guard let from = source.first, let to = MacsModel.targetIndex(from: from, destination: destination) else { return }
-        linking.moveHub(items[from].id, to: to)
+        guard let move = MacsModel.registryMove(items, from: source, to: destination) else { return }
+        linking.moveHub(move.hubID, to: move.index)
     }
 }
 

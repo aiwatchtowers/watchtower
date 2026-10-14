@@ -209,7 +209,9 @@ final class HubBootTests: XCTestCase {
     /// #221: an F1 phone killed mid-link (a pending link, no saved one)
     /// keeps its transport store, whose queue holds the unsent device record,
     /// and its replica: both move into the pending hub's directories, so the
-    /// resumed wait sends it instead of timing out.
+    /// resumed wait sends it instead of timing out. F1's link restarted its
+    /// transport on the pending hub, whose start bound the store to it: the
+    /// moved store is checked as the next start checks it (`adoptScope`).
     func testAnF1PendingLinksFilesMoveIntoItsHubDirectories() async throws {
         let paths = try makePaths()
         let defaults = try makeDefaults()
@@ -220,12 +222,9 @@ final class HubBootTests: XCTestCase {
         let recordingID = try await seedRecording(replicaPath: legacyReplica(paths).path, recordings: paths.recordingsBase)
         let legacyTransport = legacyLocalTransport(paths)
         try makeTransportStore(at: legacyTransport)
-        try await DatabaseQueue(path: legacyTransport.path).write { db in
-            try db.execute(
-                sql: "INSERT INTO pending (record_name, zone, kind, modified_at, payload) VALUES (?, ?, ?, ?, ?)",
-                arguments: ["device-acme-1", CloudZoneID.relay.rawValue, RelayRecordKind.device.rawValue, 0, Data("{}".utf8)]
-            )
-        }
+        // As F1's start left it: bound to the pending hub, then the hello queued.
+        XCTAssertFalse(try TransportStore(path: legacyTransport.path).adoptScope(.private, hubID: TestHub.pending))
+        try queueDeviceRecord(in: legacyTransport)
         let registry = try HubRegistry.inMemory()
 
         try migrate(store, registry, paths, transport: legacyTransport, defaults: defaults)
@@ -234,10 +233,9 @@ final class HubBootTests: XCTestCase {
         XCTAssertEqual(store.pending?.link.hubID, TestHub.pending, "the wait stays for resumeLink")
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyTransport.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyReplica(paths).path))
-        XCTAssertTrue(
-            try TransportStore(path: paths.transportStorePath(TestHub.pending)).isPending(recordName: "device-acme-1", zone: .relay),
-            "the queued device record is still there"
-        )
+        let moved = try TransportStore(path: paths.transportStorePath(TestHub.pending))
+        XCTAssertFalse(try moved.adoptScope(.private, hubID: TestHub.pending), "the session's start keeps the moved state")
+        XCTAssertTrue(try moved.isPending(recordName: "device-acme-1", zone: .relay), "the queued device record is still there")
         XCTAssertEqual(try TestPhone.replica(path: paths.replicaPath(TestHub.pending)).phoneRecordings().map(\.id), [recordingID])
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: paths.recordingsDirectory(TestHub.pending).appendingPathComponent("rec-1.m4a").path
@@ -246,6 +244,37 @@ final class HubBootTests: XCTestCase {
         let filesBefore = fileTree(paths)
         try migrate(store, registry, paths, transport: legacyTransport, defaults: defaults)
         XCTAssertEqual(fileTree(paths), filesBefore, "the next launch, still waiting, moves nothing")
+    }
+
+    /// #221's limit: a store bound to no hub (the single-hub build's, whose
+    /// state names its fixed-name zones) moves too, and the start wipes it,
+    /// its queue with it; the resumed wait then times out (scan again).
+    func testAnUnboundLegacyStoreMovedForAPendingLinkIsWipedAtTheStart() async throws {
+        let paths = try makePaths()
+        let defaults = try makeDefaults()
+        let store = LinkStore(defaults: defaults)
+        store.pending = PendingLink(
+            link: link(TestHub.pending), deadline: Date().addingTimeInterval(60), baseline: nil, baselineCaptured: true
+        )
+        let legacyTransport = legacyLocalTransport(paths)
+        try makeTransportStore(at: legacyTransport)
+        try queueDeviceRecord(in: legacyTransport)
+
+        try migrate(store, try HubRegistry.inMemory(), paths, transport: legacyTransport, defaults: defaults)
+
+        let moved = try TransportStore(path: paths.transportStorePath(TestHub.pending))
+        XCTAssertTrue(try moved.adoptScope(.private, hubID: TestHub.pending), "another build's state is not trusted")
+        XCTAssertFalse(try moved.isPending(recordName: "device-acme-1", zone: .relay))
+    }
+
+    /// A device record waiting in the transport store at `url`.
+    private func queueDeviceRecord(in url: URL) throws {
+        try DatabaseQueue(path: url.path).write { db in
+            try db.execute(
+                sql: "INSERT INTO pending (record_name, zone, kind, modified_at, payload) VALUES (?, ?, ?, ?, ?)",
+                arguments: ["device-acme-1", CloudZoneID.relay.rawValue, RelayRecordKind.device.rawValue, 0, Data("{}".utf8)]
+            )
+        }
     }
 
     func testATransportStoreStillInTheGroupMovesToo() async throws {

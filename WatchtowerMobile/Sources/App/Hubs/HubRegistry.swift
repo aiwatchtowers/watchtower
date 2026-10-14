@@ -41,6 +41,12 @@ struct PendingFarewell: Equatable, Sendable {
     /// The sealed wire record, as it waited in the send queue.
     var record: CloudRecord
     var since: Date
+
+    /// The same kept record (its hub and sealed payload), however its dates
+    /// round-trip through the registry.
+    func isSame(as other: Self) -> Bool {
+        hubID == other.hubID && record.payload == other.record.payload
+    }
 }
 
 enum HubRegistryError: Error {

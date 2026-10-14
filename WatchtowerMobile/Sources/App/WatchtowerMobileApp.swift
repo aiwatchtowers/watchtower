@@ -269,7 +269,11 @@ struct WatchtowerMobileApp: App {
                 case let .failed(message):
                     BootFailureView(message: message)
                 case .waitingForUnlock:
-                    WaitingForUnlockView { boot = Boot.make() }
+                    WaitingForUnlockView {
+                        boot = Boot.make()
+                        // Built while active: no phase change will tell it.
+                        if scenePhase == .active { becameActive() }
+                    }
                 case .hostingTests:
                     Color.clear
                 }
@@ -280,9 +284,14 @@ struct WatchtowerMobileApp: App {
             // and each delivers its latest value on the return; not while
             // the app only hosts XCTest (the tests drive their own gates).
             // A boot waiting for the unlock follows the phase too, so the
-            // root it builds later finds the gates already open.
+            // root it builds later finds the gates already open. Each
+            // activation sends the kept unlink farewells again
+            // (`AppRoot.becameActive`); a background launch never does.
             .onChange(of: scenePhase, initial: true) {
-                if scenePhase == .active { appDelegate.sceneBecameActive() }
+                if scenePhase == .active {
+                    appDelegate.sceneBecameActive()
+                    becameActive()
+                }
                 if !boot.isTestHost {
                     // The replica's file locks rest too (0xdead10cc). On the
                     // return the database resumes first, so the observations
@@ -291,6 +300,16 @@ struct WatchtowerMobileApp: App {
                     ReplicaObservationGate.shared.setSuspended(scenePhase == .background)
                 }
             }
+        }
+    }
+}
+
+extension WatchtowerMobileApp {
+    /// The app is active over a built root: its activation work runs.
+    @MainActor
+    private func becameActive() {
+        if case let .ready(root) = boot {
+            root.becameActive()
         }
     }
 }

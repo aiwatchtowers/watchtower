@@ -285,6 +285,8 @@ final class FakeLinkHost: LinkHost {
         }
         linkedCalls.append((record, device))
         activeHubID = record.hubID
+        // As the real host: the new link supersedes a kept farewell.
+        keptFarewells.removeAll { $0.hubID == record.hubID }
     }
 
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
@@ -347,10 +349,26 @@ final class FakeLinkHost: LinkHost {
         keptFarewells
     }
 
+    /// When true, the next resend waits for `releaseResend()` (a send
+    /// still out when something else happens).
+    var parksResend = false
+    private var parkedResend: CheckedContinuation<Void, Never>?
+    /// A resend is waiting for `releaseResend()`.
+    var resendParked: Bool { parkedResend != nil }
+
+    func releaseResend() {
+        parksResend = false
+        parkedResend?.resume()
+        parkedResend = nil
+    }
+
     func resendFarewell(_ farewell: PendingFarewell) async -> Bool {
         log.append("resend \(farewell.hubID)")
+        if parksResend {
+            await withCheckedContinuation { parkedResend = $0 }
+        }
         if resendSucceeds {
-            keptFarewells.removeAll { $0.hubID == farewell.hubID }
+            keptFarewells.removeAll { $0.isSame(as: farewell) }
         }
         return resendSucceeds
     }

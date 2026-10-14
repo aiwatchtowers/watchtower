@@ -43,6 +43,8 @@ struct SystemLinkClock: LinkClock {
 protocol LinkHost: AnyObject {
     /// The saved links, in registry order (rows of both states).
     func linkedHubs() -> [HubRow]
+    /// The hub on screen; nil when none is.
+    var activeHubID: String? { get }
     /// The hub ids of the registry rows that cannot be read, in order
     /// (`HubRegistry.unreadableHubIDs`): listed for Forget only (#222).
     func unreadableHubIDs() -> [String]
