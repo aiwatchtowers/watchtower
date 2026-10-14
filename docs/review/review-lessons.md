@@ -1489,4 +1489,12 @@ Entry format:
 - miss: codex returned nothing on a bash/CI diff again, so the bash 3.2 `set -e` semantics came only from the prosecutor's local repro. As with PR #249, a clean codex lane on shell/workflow changes is weak evidence.
 - weak-dimension: 7. Nobody exercised the Swift Testing lane's kill path (`swift test` → swiftpm-testing helper, which may start its own process group), so whether the group kill reaches the hung process is still unproven.
 - rule-gap (candidate, dim 5): *a shell script under `set -e` that supports bash 3.2 validates its numeric env inputs before any `$(( ))` that uses them; a watchdog's own failure must fail closed (non-zero exit).*
+
+## 2026-10-14 — fix/race-db-timeout (PR #262: `make test-race` shared by ci.yml main/dispatch and release.yml; internal/db race run skips `Migration|DownUp|SchemaGolden|DesktopTestSchema` replay tests (2910 of 3170 s under -race), run in the background beside the other packages with both exit codes combined; `TestSystemGit_ReadsAndOwnerWritesArgv` made sequential (ETXTBSY); panel: prosecutor + codex (no findings), 3 specialists DOWN (not installed); judge verified against a26b9bf7 by reading, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested: whether splitting one `go test` into two runs in sequence keeps the step budget. It does not: two 25 m per-package timeouts back to back exceed a 40 m step, and the second run was hidden whenever the first one failed. Running them side by side and combining both exit codes (`|| rc=$?`, `wait $pid || db_rc=$?`, a final `[ rc -eq 0 ] && [ db_rc -eq 0 ]`) fixes both. Make runs each recipe line with plain `sh -c` and no `-e`, so the final test decides the status. **When one test invocation is split into several, check the split against the step timeout and make sure each run's failure still shows.** [6]
+- false-positive: none dismissed. The worry that a name-based `-skip` would drop a concurrency test was checked: all 108 matches replay migrations or schemas, with no goroutines. The remaining risk is handled by a Makefile comment, not a guard.
+- miss: none; codex was clean, which is consistent with the prosecutor's verified-clean areas.
+- weak-dimension: none notable. On a test-infra PR, dimension 6 (the step budget and its arithmetic) was where the findings came from.
+- rule-gap (candidate, dim 6): *a CI step that runs more than one test process states its worst-case time against `timeout-minutes`, and every process's exit status reaches the step's result.*
 - outcome: TBD
