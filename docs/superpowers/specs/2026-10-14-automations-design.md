@@ -142,9 +142,9 @@ There is **no `knowledge` capability** (§20.1 D21, ask #273): the broad knowled
 account scopes — are admitted only by an explicit `tool:<name>` entry each; `knowledge:read`/`knowledge:write` is a
 parse error whose message names the `tool:` entries to use. By the same rule (ask #277 applies D21), the other
 cross-source reads are **`tool:`-only** too: `list_inbox` (items from every source), `memory_recall`,
-`memory_open`, `memory_map` (memory derived from every source), and the two single-purpose tools
-`get_writing_style` and `get_confluence_page` (a live read whose space is known only after the fetch) — §6.1,
-§20.1 D23.
+`memory_open`, `memory_map` (memory derived from every source), and the single-purpose `get_writing_style` —
+§6.1, §20.1 D23. Confluence content stays reachable locally only through the `tool:`-only knowledge tools;
+`get_confluence_page` (a live read) is not on the `automation` surface.
 
 A manifest entry that does not parse, names an unknown capability/verb, or puts `shell:`/`session:`/`ask:` in a
 personal recipe → parse error (not runnable). Duplicates are folded. Normalisation (for `approval_hash` and for
@@ -283,8 +283,8 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
   registry `buildAutomationRegistry` adds them with the workspace vault path and no recall-compare shadow handle;
   `memory_open` skips its access-stat bump on the `automation` surface, so automation reads stay writes-free,
   AUTO-02/AUTO-12) — `tool:` only; `get_writing_style` (`Surfaces` gains `automation`) — `tool:` only;
-  `get_confluence_page` (`Surfaces` gains `automation`) — `tool:` only, and the **one live network read** on the
-  surface (§20.1 D23 flags it); `list_jira_projects` (surface-less, already `jira:read@*`) — unchanged.
+  `list_jira_projects` (surface-less, already `jira:read@*`) — unchanged. `get_confluence_page` is **not** offered
+  (a live network read; D23 is local store only) — Confluence content stays reachable through the knowledge tools.
 
 ### 6.2 Trust order (`resolveTrust`)
 
@@ -791,7 +791,7 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style`/`get_confluence_page` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
@@ -939,10 +939,9 @@ the section it governs.
     `get_day_plan`, `list_reminders`, `list_jira_sprints`, `list_jira_releases` — automation surface only, not
     in `tools.ReadTools()`, local store only, limits 50/200, long texts clipped. Existing tools admitted:
     `memory_recall`/`memory_open`/`memory_map` (added to the automation registry; `memory_open` skips its stat
-    bump there), `get_writing_style` and `get_confluence_page` (each gains the `automation` surface),
-    `list_jira_projects` (already admitted). New capabilities `meetings:read` and `dayplan:read`; reminders
+    bump there), `get_writing_style` (gains the `automation` surface), `list_jira_projects` (already
+    admitted). New capabilities `meetings:read` and `dayplan:read`; reminders
     under `targets:read`; calendar range and Jira sprints/releases under the existing scoped capabilities;
-    `list_inbox`, the memory tools, `get_writing_style` and `get_confluence_page` are `tool:`-only (D21's rule
-    applied to cross-source and single-purpose tools). **Flag:** `get_confluence_page` is a live network read,
-    against this decision's "never a live API"; the owner named it explicitly, so it is admitted `tool:`-only and
-    marked as the one live read (§6.1).
+    `list_inbox`, the memory tools and `get_writing_style` are `tool:`-only (D21's rule applied to cross-source
+    and single-purpose tools). `get_confluence_page` is not admitted — it is a live network read and D23 is local
+    store only; Confluence content stays reachable through the `tool:`-only knowledge tools (§6.1).
