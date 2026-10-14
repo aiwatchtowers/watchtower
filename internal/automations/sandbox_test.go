@@ -158,8 +158,9 @@ func wantInterrupt(t *testing.T, err error, want InterruptReason) {
 
 func TestAuto07_NoRequireFsNetTimers(t *testing.T) {
 	got := mustRun(t, `return [typeof require, typeof console, typeof setTimeout, typeof setInterval,
-		typeof fetch, typeof XMLHttpRequest, typeof process, typeof module, typeof globalThis.Promise].join(",")`, sbOpts{})
-	want := strings.TrimSuffix(strings.Repeat("undefined,", 9), ",")
+		typeof fetch, typeof XMLHttpRequest, typeof process, typeof module, typeof globalThis.Promise,
+		typeof eval, typeof Function, typeof globalThis.eval, typeof queueMicrotask, typeof setImmediate].join(",")`, sbOpts{})
+	want := strings.TrimSuffix(strings.Repeat("undefined,", 14), ",")
 	if got != want {
 		t.Fatalf("typeofs = %v; want %v", got, want)
 	}

@@ -31,7 +31,7 @@ type Journal struct {
 	db     *db.DB // nil = memory journal
 	runID  int64
 	dryRun bool
-	now    func() time.Time
+	clock  Clock // nil = RealClock until UseClock/adoptClock
 	steps  []db.AutomationRunStep
 	totals db.RunUsage
 	err    error
@@ -39,13 +39,39 @@ type Journal struct {
 
 // NewJournal records the steps of run runID in d.
 func NewJournal(d *db.DB, runID int64, dryRun bool) *Journal {
-	return &Journal{db: d, runID: runID, dryRun: dryRun, now: time.Now}
+	return &Journal{db: d, runID: runID, dryRun: dryRun}
 }
 
 // NewMemoryJournal records steps in memory only (a dry run that must write
 // nothing); a step's ID is its seq.
 func NewMemoryJournal() *Journal {
-	return &Journal{dryRun: true, now: time.Now}
+	return &Journal{dryRun: true}
+}
+
+// UseClock sets the clock that stamps steps (the executor passes its own);
+// it returns j.
+func (j *Journal) UseClock(c Clock) *Journal {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.clock = c
+	return j
+}
+
+// adoptClock sets c unless UseClock already chose one.
+func (j *Journal) adoptClock(c Clock) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.clock == nil {
+		j.clock = c
+	}
+}
+
+// nowLocked is the journal's time; the caller holds mu.
+func (j *Journal) nowLocked() time.Time {
+	if j.clock == nil {
+		return time.Now().UTC()
+	}
+	return j.clock.Now().UTC()
 }
 
 // DryRun reports whether the journal belongs to a dry run.
@@ -59,6 +85,8 @@ type Step struct {
 	started    time.Time
 	permission string
 	usage      db.RunUsage
+	hold       bool           // Env.Call: a close by the SDK function waits for the result's encoding
+	pending    *db.StepFinish // the close held while hold is set
 }
 
 // Begin records the start of a call; args is stored as JSON clipped to
@@ -67,7 +95,7 @@ type Step struct {
 func (j *Journal) Begin(kind, name string, args any) *Step {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	now := j.now().UTC()
+	now := j.nowLocked()
 	row := db.AutomationRunStep{
 		RunID: j.runID, Seq: len(j.steps) + 1, Kind: kind, Name: name,
 		ArgsJSON: clipUTF8(marshalForStep(args), StepClipBytes), Status: StepOK, StartedAt: now,
@@ -123,11 +151,38 @@ func (j *Journal) Totals() db.RunUsage {
 // could not write the row — see Journal.Err).
 func (s *Step) ID() int64 { return s.id }
 
-// Finished reports whether the step is closed.
+// Finished reports whether the step is closed (or its close is held).
 func (s *Step) Finished() bool {
 	s.j.mu.Lock()
 	defer s.j.mu.Unlock()
-	return s.j.steps[s.idx].FinishedAt != nil
+	return s.pending != nil || s.j.steps[s.idx].FinishedAt != nil
+}
+
+// holdFinish makes the next close wait for releaseFinish.
+func (s *Step) holdFinish() {
+	s.j.mu.Lock()
+	defer s.j.mu.Unlock()
+	s.hold = true
+}
+
+// releaseFinish ends the hold. It reports whether a close was held; that
+// close is written now — as error with override's message when override is
+// set (the result failed to encode after the SDK function closed the step),
+// keeping its links and tokens.
+func (s *Step) releaseFinish(override error) bool {
+	s.j.mu.Lock()
+	s.hold = false
+	f := s.pending
+	s.pending = nil
+	s.j.mu.Unlock()
+	if f == nil {
+		return false
+	}
+	if override != nil {
+		f.Status, f.Error, f.ResultSummary = StepError, override.Error(), ""
+	}
+	s.Finish(*f)
+	return true
 }
 
 // SetPermission records the manifest entry that admitted the call.
@@ -145,7 +200,7 @@ func (s *Step) Mark(status string, link db.StepFinish) error {
 	}
 	if j.db != nil && s.id != 0 {
 		if err := j.db.MarkAutomationRunStep(s.id, status, link); err != nil {
-			return err
+			return fmt.Errorf("marking automation run %d step %d %s: %w", j.runID, s.id, status, err)
 		}
 	}
 	row.Status = status
@@ -225,11 +280,15 @@ func (s *Step) Finish(f db.StepFinish) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	row := &j.steps[s.idx]
-	if row.FinishedAt != nil {
+	if row.FinishedAt != nil || s.pending != nil {
 		j.keepErr(fmt.Errorf("automation run step %d: %w", s.id, db.ErrStepFinished))
 		return
 	}
 	s.fillFinish(&f)
+	if s.hold {
+		s.pending = &f
+		return
+	}
 	if j.db != nil && s.id != 0 {
 		j.keepErr(j.db.FinishAutomationRunStep(s.id, f))
 	}
@@ -238,7 +297,7 @@ func (s *Step) Finish(f db.StepFinish) {
 
 func (s *Step) fillFinish(f *db.StepFinish) {
 	if f.Now.IsZero() {
-		f.Now = s.j.now().UTC()
+		f.Now = s.j.nowLocked()
 	}
 	if f.DurationMS == 0 {
 		f.DurationMS = f.Now.Sub(s.started).Milliseconds()

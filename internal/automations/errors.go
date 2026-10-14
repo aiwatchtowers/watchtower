@@ -47,9 +47,15 @@ const (
 // daily cap): the sandbox then interrupts the run instead of throwing.
 type RunInterrupted struct {
 	Reason InterruptReason
+	// Abandoned: the script goroutine was still inside a native builtin
+	// AbandonGrace after the interrupt and was left behind (AbandonedRuns).
+	Abandoned bool
 }
 
 func (e *RunInterrupted) Error() string {
+	if e.Abandoned {
+		return fmt.Sprintf("the run was interrupted (%s); its script goroutine did not stop and was abandoned", e.Reason)
+	}
 	return fmt.Sprintf("the run was interrupted (%s)", e.Reason)
 }
 
