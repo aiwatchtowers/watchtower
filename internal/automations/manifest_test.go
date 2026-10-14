@@ -165,9 +165,9 @@ func TestManifest_JiraScopeFromRealArgs(t *testing.T) {
 	expectDeny(t, d, m, get, `{"key":"nodash"}`, "jira:read@*")
 	expectDeny(t, nil, m, tools.NewGetJiraStatusHistory(), `{"keys":["PAY-1","OPS-2"]}`, "jira:read@OPS")
 	tis := tools.NewGetJiraTimeInStatus()
-	expectAdmit(t, nil, m, tis, `{"issue_keys":["PAY-3"],"include_linked":false}`)
-	expectDeny(t, nil, m, tis, `{"board_id":4,"include_linked":false}`, "jira:read@*")
-	expectAdmit(t, nil, m, tis, `{"project":"pay","issue_keys":["OPS-1"],"include_linked":false}`)
+	expectAdmit(t, nil, m, tis, `{"issue_keys":["PAY-3"]}`)
+	expectDeny(t, nil, m, tis, `{"board_id":4}`, "jira:read@*")
+	expectAdmit(t, nil, m, tis, `{"project":"pay","issue_keys":["OPS-1"]}`)
 
 	w := mustManifest(t, []string{"jira:write@PAY"})
 	create, comment := autoTool("create_jira_issue"), autoTool("add_jira_comment")
@@ -237,7 +237,7 @@ var everyCapability = []string{
 	"slack:read@*", "slack:write@*", "gmail:read@*", "gmail:write@*", "jira:read@*", "jira:write@*",
 	"calendar:read@*", "calendar:write@*", "confluence:read@*", "confluence:write@*",
 	"targets:read", "targets:write", "tracks:read", "tracks:write", "ideas:read", "ideas:write",
-	"people:read", "people:write", "transcripts:read", "transcripts:write",
+	"digests:read", "digests:write", "people:read", "people:write", "transcripts:read", "transcripts:write",
 	"meetings:read", "dayplan:read", "llm:strong", "agent:run",
 }
 
@@ -488,12 +488,10 @@ func TestManifest_CoversWidening(t *testing.T) {
 }
 
 // toolOnlyTools are the automation-visible tools deliberately admitted only
-// by tool:<name>: the D21 knowledge tools, the cross-source digest reads and
-// find_experts (D21 applied in the Task 4 review), and the D23 cross-source
-// and single-purpose reads (registered by Task 5b).
+// by tool:<name>: the D21 knowledge tools and the D23 cross-source and
+// single-purpose reads (registered by Task 5b).
 var toolOnlyTools = []string{
 	"search_knowledge", "get_knowledge_document", "get_task_context",
-	"find_experts", "list_digests", "get_digest", "get_today_briefing",
 	"list_inbox", "memory_recall", "memory_open", "memory_map", "get_writing_style",
 }
 

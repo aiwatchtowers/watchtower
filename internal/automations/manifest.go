@@ -56,6 +56,7 @@ var capabilitySpecs = map[string]capabilitySpec{
 	"targets":     {verbs: readWrite},
 	"tracks":      {verbs: readWrite},
 	"ideas":       {verbs: readWrite},
+	"digests":     {verbs: readWrite},
 	"people":      {verbs: readWrite},
 	"transcripts": {verbs: readWrite},
 	"meetings":    {verbs: []string{"read"}},
@@ -68,13 +69,10 @@ var capabilitySpecs = map[string]capabilitySpec{
 
 // removedCapabilities are capability names refused with a pointer to the
 // tool: entries to list instead: their tools read across sources, so only an
-// explicit tool:<name> admits each (spec §3.1, D21; digests by the Task 4
-// review applying D21).
+// explicit tool:<name> admits each (spec §3.1, D21).
 var removedCapabilities = map[string]string{
 	"knowledge": "there is no knowledge capability; list the tools: " +
 		"tool:search_knowledge, tool:get_knowledge_document, tool:get_task_context",
-	"digests": "there is no digests capability; list the tools: " +
-		"tool:list_digests, tool:get_digest, tool:get_today_briefing",
 }
 
 // outputKinds are the kinds a recipe may list under outputs (spec §2.3).
