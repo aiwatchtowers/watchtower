@@ -2,6 +2,7 @@ package sessioncleanup
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -107,6 +108,62 @@ func TestCleanupPlacedRowSweepUnchanged(t *testing.T) {
 	f.store.activity = []SessionActivity{{ID: testSession, WorkbenchID: testWorkbench, LastActive: time.Now()}}
 
 	wantItem(t, f.plan(Request{Sweep: true}), "worktree:"+root, ActionKeep, ReasonSessionRecent)
+}
+
+// A reused slug: a later session got wt/<slug> after this row's own pair
+// was removed. Born after this row, that worktree and branch are not this
+// row's by record, and are not even observed by it, so they are not listed.
+func TestCleanupPlacedNameBornAfterTheRowIsNotOwned(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t) // the row was created an hour before the worktree
+	root := f.placedWork("foo")
+	f.place(root, "wt/foo")
+
+	p := f.plan(Request{})
+	if hasItem(p, "worktree:"+root) || hasItem(p, "branch:wt/foo") {
+		t.Fatalf("a later-born worktree or branch is owned by record: %+v", p.Items)
+	}
+}
+
+// An unknown birth owns nothing by record (fail closed).
+func TestCleanupPlacedUnknownBirthIsNotOwned(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.placedWork("u")
+	gitIn(t, root, "switch", "-q", "--detach")
+	if err := os.Remove(filepath.Join(f.repo, ".git", "logs", "refs", "heads", "wt", "u")); err != nil {
+		t.Fatal(err)
+	}
+	f.birth = func(string) (time.Time, bool) { return time.Time{}, false }
+	f.sessionCreated = time.Now().Add(time.Minute)
+	f.place(root, "wt/u")
+
+	p := f.plan(Request{})
+	if hasItem(p, "worktree:"+root) || hasItem(p, "branch:wt/u") {
+		t.Fatalf("an item of unknown birth is owned by record: %+v", p.Items)
+	}
+}
+
+// A relative folder_path places nothing: it would resolve against the
+// CLI's own working directory.
+func TestCleanupPlacedRelativeCwdIsIgnored(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.placedWork("r")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sessionCreated = time.Now().Add(time.Minute)
+	f.place(rel, "wt/r")
+
+	if p := f.plan(Request{}); hasItem(p, "worktree:"+root) {
+		t.Fatalf("a relative folder_path placed a worktree: %+v", p.Items)
+	}
 }
 
 func TestPlacedWorktreeIsTheLongestContainingRoot(t *testing.T) {

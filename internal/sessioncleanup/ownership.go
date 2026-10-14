@@ -11,12 +11,13 @@ import (
 // named are the branches a target or the agent named: a worktree with one
 // of them checked out is observed too (a subagent whose hooks carried no cwd
 // of its own). A ledger branch alone never adopts a worktree: the session
-// may have had it checked out elsewhere. placedCwd and placedBranch are a
-// placed row's own folder_path (symlink-resolved) and worktree_branch, ""
-// for every other row.
+// may have had it checked out elsewhere. placedCwd is a placed row's own
+// folder_path (symlink-resolved); placedRoot and placedBranch are its
+// worktree and worktree_branch owned by record (born no later than the row,
+// observePlacement); all "" for every other row.
 type observed struct {
-	roots, branches, named  map[string]bool
-	placedCwd, placedBranch string
+	roots, branches, named              map[string]bool
+	placedCwd, placedRoot, placedBranch string
 }
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
@@ -85,4 +86,13 @@ func bornReason(birth time.Time, known bool, sessionCreated time.Time) string {
 		return ReasonExistedBeforeSession
 	}
 	return ""
+}
+
+// bornByRecord: an item born at birth (known) can be the placed row's own,
+// made by placement before the row was inserted — born no later than the
+// row's created_at+1s (second precision). An unknown birth or session start
+// owns nothing by record (fail closed), and neither does a later-born item:
+// a reused wt/<slug> of a later session is not this row's.
+func bornByRecord(birth time.Time, known bool, sessionCreated time.Time) bool {
+	return known && !sessionCreated.IsZero() && !birth.After(sessionCreated.Add(time.Second))
 }
