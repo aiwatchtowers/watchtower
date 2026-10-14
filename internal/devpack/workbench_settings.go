@@ -36,8 +36,9 @@ var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench fo
 
 // What an OutsideFolderError left in place outside the folder.
 const (
-	leftoverHooks = "hooks"
-	leftoverSkill = "skill"
+	leftoverHooks     = "hooks"
+	leftoverSkill     = "skill"
+	leftoverAllowRule = "cleanup allow rule"
 )
 
 // OutsideFolderError is an ErrSymlinkOutsideFolder refusal, naming the link
@@ -46,7 +47,7 @@ const (
 // the owner to remove by hand (Hint).
 type OutsideFolderError struct {
 	Link, Outside string
-	leftover      string // leftoverHooks or leftoverSkill
+	leftover      string // leftoverHooks, leftoverSkill or leftoverAllowRule
 	msg           string
 }
 
@@ -56,8 +57,11 @@ func (e *OutsideFolderError) Unwrap() error { return ErrSymlinkOutsideFolder }
 // Hint tells the owner what a refused removal left outside the folder and
 // what to remove by hand (ask #118).
 func (e *OutsideFolderError) Hint() string {
-	if e.leftover == leftoverSkill {
+	switch e.leftover {
+	case leftoverSkill:
 		return fmt.Sprintf("Watchtower's skill stays in %s — remove it by hand", e.Outside)
+	case leftoverAllowRule:
+		return fmt.Sprintf("Watchtower's cleanup allow rule stays in %s — remove the \"workbench cleanup\" entry from permissions.allow by hand", e.Outside)
 	}
 	return fmt.Sprintf("Watchtower's hooks stay in %s — remove the entries marked watchtower by hand", e.Outside)
 }
@@ -953,7 +957,13 @@ func resolveSymlink(file string) (string, error) {
 // .codex) that is a symlink leaving root. A link that stays inside root is
 // followed as before.
 func resolveSymlinkInside(file, root string) (string, error) {
-	realRoot, err := dirInside(filepath.Dir(file), file, root, leftoverHooks)
+	return resolveSymlinkInsideFor(file, root, leftoverHooks)
+}
+
+// resolveSymlinkInsideFor is resolveSymlinkInside whose refusal names
+// leftover as what a refused removal left outside the folder (Hint).
+func resolveSymlinkInsideFor(file, root, leftover string) (string, error) {
+	realRoot, err := dirInside(filepath.Dir(file), file, root, leftover)
 	if err != nil {
 		return "", err
 	}
@@ -962,7 +972,7 @@ func resolveSymlinkInside(file, root string) (string, error) {
 		return target, err
 	}
 	if outsideRoot(realRoot, target) {
-		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftoverHooks,
+		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftover,
 			msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%v)",
 				file, target, ErrSymlinkOutsideFolder)}
 	}
