@@ -424,6 +424,26 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertTrue(page.window.firstResponder === page.terminal)
     }
 
+    /// An expanded drawer over its session's terminal (kept underneath,
+    /// transparent): the terminal under it is no part of the drawer, so
+    /// the click lends its keyboard and the drawer going hands it back.
+    func testACoveredTerminalGetsTheKeyboardBack() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let container = TerminalContainerView(frame: page.drawer.frame)
+        let covered = TerminalLike(frame: container.bounds)
+        container.addSubview(covered)
+        container.alphaValue = 0
+        page.window.contentView?.addSubview(container, positioned: .below, relativeTo: page.drawer)
+
+        XCTAssertTrue(page.window.makeFirstResponder(covered))
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === page.window, "the click took the keyboard to the drawer")
+        try await removeDrawer(page)
+        XCTAssertTrue(page.window.firstResponder === covered)
+    }
+
     /// A field beside the drawer (a target comment) holding the keyboard:
     /// the click in the drawer takes it, so ⌘↩ answers, not sends that comment.
     func testAClickInTheDrawerTakesTheKeyboardFromAFieldBesideIt() async throws {

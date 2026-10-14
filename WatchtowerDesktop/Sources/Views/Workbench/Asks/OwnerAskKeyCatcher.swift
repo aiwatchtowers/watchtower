@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WebKit
 
 /// ⌘↩ / ⌘⇧↩ for an ask's answer buttons while no field has the keyboard
 /// (owner ask #90): nothing focused, or only the drawer's own read-only
@@ -156,12 +157,14 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// has the keyboard — clicked last — keeps every key. Keyboard the
         /// click moved out of the drawer (an answered session's terminal)
         /// stays there. The lender is what had it before the click: under
-        /// Full Keyboard Access that is the terminal, not the control.
+        /// Full Keyboard Access that is the terminal, not the control —
+        /// also a terminal the drawer covers (expanded, or a pane too
+        /// narrow for both), which lies under it but is no part of it.
         func takeKeyboard(in window: NSWindow, before: NSResponder?) {
             guard let responder = window.firstResponder, responder !== window, !isOwnText(responder) else { return }
             guard responder === before || liesInside(responder) else { return }
             guard window.makeFirstResponder(nil) else { return }
-            guard let before, before !== window, !liesInside(before) else { return }
+            guard let before, before !== window, isWorkspace(before) || !liesInside(before) else { return }
             // A text field lends the keyboard, not the editor it borrowed.
             let editor = before as? NSText
             keyboardLender = editor?.isFieldEditor == true ? editor?.delegate as? NSView : before as? NSView
@@ -210,6 +213,17 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// Text inside the drawer, editable or not.
         private func isOwnText(_ responder: NSResponder) -> Bool {
             responder is NSTextView && liesInside(responder)
+        }
+
+        /// A session's terminal or the Files editor (Monaco): never part of
+        /// the drawer, wherever it lies.
+        private func isWorkspace(_ responder: NSResponder) -> Bool {
+            var view = responder as? NSView
+            while let current = view {
+                if current is TerminalContainerView || current is WKWebView { return true }
+                view = current.superview
+            }
+            return false
         }
 
         /// A view inside the drawer — told by where its visible part's
