@@ -1247,7 +1247,11 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) {
 				d.recordPeopleAttempt(date)
 			}
-		} else if d.peoplePipe.LastOutcome() != guide.OutcomeNoData {
+		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
+			// The pre-check saw data but the run did not (a failed situations
+			// read, or the window moved between the two): no stamp, retry.
+			d.logger.Printf("people: run found no data although the pre-check did; not stamping")
+		} else {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
 			}
