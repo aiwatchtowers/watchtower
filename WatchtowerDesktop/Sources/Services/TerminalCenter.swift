@@ -752,9 +752,10 @@ final class TerminalCenter {
         _ session: TerminalSession,
         fresh: Bool,
         prompt: String? = nil,
-        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        codexResume: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        setup: String? = nil
     ) async -> TerminalLaunch.Mode? {
-        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt) }
+        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt, setup: setup) }
         let id = session.id
         guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
         rows[id] = session
@@ -783,7 +784,7 @@ final class TerminalCenter {
         }
         guard pendingLaunches[id] == token else { return nil }
         pendingLaunches[id] = nil
-        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume)
+        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume, setup: setup)
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -809,7 +810,8 @@ final class TerminalCenter {
         fresh: Bool,
         prompt: String? = nil,
         codex: CodexLaunchArgs? = nil,
-        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        codexResume: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        setup: String? = nil
     ) -> TerminalLaunch.Mode? {
         let id = session.id
         if states[id] == .running { return nil }
@@ -827,7 +829,7 @@ final class TerminalCenter {
             states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
             return nil
         }
-        run(session, mode: mode, codex: codex)
+        run(session, mode: mode, codex: codex, setup: setup)
         return mode
     }
 
@@ -857,7 +859,7 @@ final class TerminalCenter {
         }
     }
 
-    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?) {
+    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
         let id = session.id
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in
@@ -892,7 +894,7 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
     }
 
     func close(sessionID: Int64) async {
