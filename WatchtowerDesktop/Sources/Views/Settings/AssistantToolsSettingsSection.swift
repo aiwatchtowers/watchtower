@@ -40,9 +40,12 @@ struct AssistantToolsSettingsSection: View {
                 Spacer()
             }
             Text(row.description).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                ForEach(row.surfaces, id: \.self) { surface in
-                    executeToggle(for: row, surface: surface)
+            if !row.surfaces.isEmpty {
+                HStack(spacing: 12) {
+                    Text("Run without approval in:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(row.surfaces, id: \.self) { surface in
+                        executeToggle(for: row, surface: surface)
+                    }
                 }
             }
         }
@@ -51,7 +54,7 @@ struct AssistantToolsSettingsSection: View {
 
     /// One switch per surface the tool is on: trust is per (tool, surface).
     private func executeToggle(for row: AssistantToolRow, surface: String) -> some View {
-        Toggle(surface, isOn: executeBinding(for: row, surface: surface))
+        Toggle(AssistantToolSurface.label(for: surface), isOn: executeBinding(for: row, surface: surface))
             .toggleStyle(.checkbox)
             .font(.caption)
             .disabled(row.isLockedToAsk)
@@ -59,8 +62,8 @@ struct AssistantToolsSettingsSection: View {
                   ? "External tools always need your approval."
                   : row.alwaysAsk
                     ? "Bulk changes always need your approval."
-                    : "When on, the assistant's proposals with this tool from the \(surface) surface "
-                        + "run immediately and show as done.")
+                    : "When on, the assistant's proposals with this tool in "
+                        + "\(AssistantToolSurface.label(for: surface)) run immediately and show as done.")
     }
 
     private func executeBinding(for row: AssistantToolRow, surface: String) -> Binding<Bool> {
