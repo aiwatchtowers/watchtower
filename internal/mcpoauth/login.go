@@ -136,6 +136,12 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		return res.grant, res.err
 	case <-loginCtx.Done():
 		if delivered.Load() {
+			// A result that landed together with the deadline still wins.
+			select {
+			case res := <-resultCh:
+				return res.grant, res.err
+			default:
+			}
 			// The callback came and its exchange ran into the deadline: the
 			// owner was just in the browser, so this is not ErrLoginTimedOut
 			// (which would keep the app from coming back).
