@@ -1481,3 +1481,12 @@ Entry format:
 - weak-dimension: 7. The hand-back tests call `handBackKeyboard()` directly, so the `dismantleNSView` path, which is where F1 lives, never runs under test.
 - rule-gap (candidate, Swift dim 7): *a focus/first-responder side effect in `dismantleNSView` is tested by actually removing the representable (and by moving its content between hosts), not by calling the side-effect method directly.* Candidate (dim 7): *an await added at the top of a function that later takes a switch ticket must take or pass the ticket first.*
 - outcome: TBD
+
+## 2026-10-14 — ci/swift-test-hardening (PR #261: per-lane watchdog in `swift-test-sharded.sh` (`set -m` process groups, `kill -0` polling, TERM/KILL past `LANE_TIMEOUT`, log printed), `SERIAL_CLASSES` timing-bound classes run alone after the shards, Test step 25 min + `LANE_TIMEOUT=600`, prune-spm-cache `always()` gate; panel: prosecutor (repro'd on /bin/bash 3.2.57) + codex (no findings, read-only), 3 specialists DOWN; judge verified by reading; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major): `LANE_TIMEOUT` is not validated, while `SHARDS` four lines above it is. A non-integer value (`10m`, `1.5`) makes `local deadline=$((...))` an arithmetic error that bash 3.2's `set -e` does not catch. That aborts only `supervise`, so the script exits 0 with the lanes still running: a watchdog that fails open into a false green. CI's literal `"600"` never trips it, but the fix is three lines. **A bash 3.2 script validates every numeric env knob it does arithmetic with, at the top, the way it validates its positional args, because an arithmetic error inside a function under `set -e` returns from the function instead of exiting the script.** [5/8]
+- false-positive: none dismissed. The orphaned lanes on INT/TERM (F2) predate this PR and were kept as minor, not as a regression.
+- miss: codex returned nothing on a bash/CI diff again, so the bash 3.2 `set -e` semantics came only from the prosecutor's local repro. As with PR #249, a clean codex lane on shell/workflow changes is weak evidence.
+- weak-dimension: 7. Nobody exercised the Swift Testing lane's kill path (`swift test` → swiftpm-testing helper, which may start its own process group), so whether the group kill reaches the hung process is still unproven.
+- rule-gap (candidate, dim 5): *a shell script under `set -e` that supports bash 3.2 validates its numeric env inputs before any `$(( ))` that uses them; a watchdog's own failure must fail closed (non-zero exit).*
+- outcome: TBD
