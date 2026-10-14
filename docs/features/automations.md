@@ -2,7 +2,7 @@
 
 Owner-written recipes the daemon runs on a schedule or on demand: a Markdown file with a strict YAML frontmatter (trigger, permission manifest, outputs, budget) and one synchronous JavaScript block, executed in a goja sandbox whose only world is the automation SDK. Spec: `docs/superpowers/specs/2026-10-14-automations-design.md` (decisions §20 ask #270, §20.1 asks #271–#273/#277, §20.2 asks #280/#287); business spec `…-business.md`; plans `docs/superpowers/plans/2026-10-14-automations-p1.md` … `-p6.md`. Contracts AUTO-01..13: `docs/inventory/automations.md`. Board #753.
 
-P1 ships the core: recipe + manifest parser and hashes, the goja sandbox with the P1 SDK (`llm`, read `tool`, `state`, `output.inbox`/`report`, `log`), the run/step journal, the cron scheduler and the run executor in the daemon, token budgets and the daily cap, the automation read tools, and the `watchtower automations` CLI. There is no Desktop UI yet (P3); the only Swift change is the AGENT-07 marker constant and the regenerated test schema.
+P1 ships the core: recipe + manifest parser and hashes, the goja sandbox with the P1 SDK (`llm`, read `tool`, `state`, `output.inbox`/`report`, `log`), the run/step journal, the cron scheduler and the run executor in the daemon, token budgets and the daily cap, the automation read tools, and the `watchtower automations` CLI. There is no Desktop UI yet (P3); the only Swift change is the AGENT-07 marker constant and the regenerated test schema. The `automations` feature (default on, D12) does appear in Settings → Features — the registry has no hidden/preview flag — so its description there says it is a preview managed with `watchtower automations` until the Automations tab arrives (P3 rewrites it).
 
 ## Recipes and folders
 
