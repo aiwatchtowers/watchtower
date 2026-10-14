@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -30,13 +29,6 @@ var authLoginCmd = &cobra.Command{
 Uses the built-in Watchtower Slack app by default. Override with
 WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET env vars.`,
 	RunE: runAuthLogin,
-}
-
-var authPrepareCmd = &cobra.Command{
-	Use:   "prepare",
-	Short: "Generate OAuth authorization URL for in-app login",
-	Long:  `Outputs a JSON object with authorize_url, redirect_uri, and state for the desktop app to use in a WKWebView-based OAuth flow.`,
-	RunE:  runAuthPrepare,
 }
 
 var authLogoutCmd = &cobra.Command{
@@ -69,11 +61,8 @@ func init() {
 	rootCmd.AddCommand(authCmd)
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
-	authCmd.AddCommand(authPrepareCmd)
 	authCmd.AddCommand(authTrustCertCmd)
 	authCmd.AddCommand(authCheckCertCmd)
-
-	authPrepareCmd.Flags().String("redirect-uri", "", "Custom redirect URI (e.g. watchtower-auth://callback for desktop app)")
 
 	authLoginCmd.Flags().Bool("no-open", false, "Don't open the browser automatically (print the URL instead)")
 }
@@ -102,21 +91,6 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Run 'watchtower sync' to start syncing.\n")
 
 	return nil
-}
-
-func runAuthPrepare(cmd *cobra.Command, _ []string) error {
-	cfg, err := resolveOAuthConfig()
-	if err != nil {
-		return err
-	}
-
-	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
-	result, err := auth.Prepare(cfg, redirectURI)
-	if err != nil {
-		return fmt.Errorf("auth prepare: %w", err)
-	}
-
-	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
 func runAuthTrustCert(_ *cobra.Command, _ []string) error {

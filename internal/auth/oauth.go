@@ -108,43 +108,6 @@ type OAuthResult struct {
 	Scope string
 }
 
-// PrepareResult holds the data needed by the desktop app to start the OAuth flow.
-type PrepareResult struct {
-	AuthorizeURL string `json:"authorize_url"`
-	RedirectURI  string `json:"redirect_uri"`
-	State        string `json:"state"`
-}
-
-// Prepare generates an OAuth authorization URL for the desktop app.
-// If customRedirectURI is non-empty it is used instead of the default localhost HTTPS redirect.
-// The desktop app uses a custom scheme (e.g. watchtower-auth://callback) so that
-// ASWebAuthenticationSession can intercept the redirect automatically.
-func Prepare(cfg OAuthConfig, customRedirectURI string) (*PrepareResult, error) {
-	state, err := RandomState()
-	if err != nil {
-		return nil, fmt.Errorf("generating state: %w", err)
-	}
-
-	redirectURI := customRedirectURI
-	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("https://127.0.0.1:%d%s", defaultRedirectPort, callbackPath)
-	}
-
-	params := url.Values{
-		"client_id":    {cfg.ClientID},
-		"user_scope":   {strings.Join(UserScopes, ",")},
-		"redirect_uri": {redirectURI},
-		"state":        {state},
-	}
-	authorizeURL := slackAuthorizeURL + "?" + params.Encode()
-
-	return &PrepareResult{
-		AuthorizeURL: authorizeURL,
-		RedirectURI:  redirectURI,
-		State:        state,
-	}, nil
-}
-
 // LoginOptions configures the Login flow behaviour.
 type LoginOptions struct {
 	// SkipBrowserOpen disables automatic browser launch; the authorize URL is still printed.
