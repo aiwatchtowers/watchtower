@@ -169,4 +169,80 @@ extension MobileLinkCenterTests {
         XCTAssertTrue(waits.all.contains(MobileLinkCenter.linkCloseRetryDelays[0]))
         XCTAssertEqual(shares.participantNames(in: .data), ["_colleague-b"], "the sweep still waits for the grace")
     }
+
+    /// #262: a public-link close parked past its timeout (it lands on the server, its cancelled caller would read a
+    /// failure) never leaves the next code's link shut: the writer opens it again once the close lands.
+    func testALateLinkCloseNeverLeavesANewCodesLinkShut() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100), answerGrace: MobileLinkCenter.answerGrace)
+        shares.setCancellationAware(true)
+        _ = try await center.issueCode()
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        await center.closeLink(reason: .sheetClosed)
+        await fulfillment(of: [late.arrived], timeout: 5)
+
+        let code = try await center.issueCode()
+        late.release()
+
+        await awaitHubCondition("the new code's link ends open") { shares.isLinkOpen }
+        XCTAssertEqual(shares.calls.last { $0.hasPrefix("setPublicLink") }, "setPublicLink:true")
+        XCTAssertEqual(center.openCode, code)
+    }
+
+    /// #262: an open parked past its timeout never leaves the link open after the code's close: the writer closes
+    /// it again once the open lands.
+    func testALateLinkOpenAfterTheCloseIsClosedAgain() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100))
+        shares.setCancellationAware(true)
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .restart)
+        late.release()
+
+        await awaitHubCondition("the link ends closed") {
+            !shares.isLinkOpen && shares.calls.last { $0.hasPrefix("setPublicLink") } == "setPublicLink:false"
+        }
+        XCTAssertNil(center.openCode)
+    }
+
+    /// #262: a close the writer runs for no waiting caller (the callers timed out) that fails keeps the sweep marked
+    /// pending and is retried on the link-close schedule.
+    func testAFailedReconcilingCloseIsMarkedAndRetried() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100), answerGrace: MobileLinkCenter.answerGrace)
+        shares.setCancellationAware(true)
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .sheetClosed)
+        let callersRetry = try XCTUnwrap(center.linkCloseRetry, "the timed-out close schedules its retry")
+        // The mark alone must not decide: the writer's failed close sets it again.
+        try sidecar.setMetaValue("0", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.failNext("setPublicLink", times: 1)
+        late.release()
+
+        await awaitHubCondition("the failed close marks the sweep again") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "1"
+        }
+        XCTAssertTrue(shares.isLinkOpen, "the reconciling close failed")
+        XCTAssertEqual(center.linkCloseRetry, callersRetry, "the running retry chain keeps the close; it is not restarted")
+    }
+
+    /// #262: however the opens and closes overlap, only one public-link call runs at a time.
+    func testOnlyOnePublicLinkCallRunsAtATime() async throws {
+        center = try makeCenter(shareTimeout: .milliseconds(100), answerGrace: MobileLinkCenter.answerGrace)
+        shares.setCancellationAware(true)
+        _ = try await center.issueCode()
+        let late = SaveGate()
+        shares.gate("setPublicLink", on: late)
+        await center.closeLink(reason: .sheetClosed)
+        await fulfillment(of: [late.arrived], timeout: 5)
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .sheetClosed)
+        _ = try await center.issueCode()
+        late.release()
+
+        await awaitHubCondition("the link ends open") { shares.isLinkOpen }
+        XCTAssertEqual(shares.maxConcurrentLinkCalls, 1)
+    }
 }

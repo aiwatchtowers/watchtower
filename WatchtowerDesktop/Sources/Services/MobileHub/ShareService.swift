@@ -163,11 +163,14 @@ enum ShareServiceError: Error, LocalizedError {
     case noEntitlement
     /// A share call outlived `MobileLinkCenter`'s share timeout.
     case timedOut
+    /// A close asked for the public link while an open waited for it.
+    case superseded
 
     var errorDescription: String? {
         switch self {
         case .noEntitlement: return "This build has no iCloud entitlement"
         case .timedOut: return "iCloud didn't answer in time"
+        case .superseded: return "The share link was closed meanwhile"
         case .noURL(let zone): return "The \(zone.rawValue) share has no URL"
         case .noSaveResult: return "iCloud did not return the saved share"
         }

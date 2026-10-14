@@ -1555,3 +1555,13 @@ Entry format:
 - weak-dimension: none notable. The prosecutor's normalised line-diff method (removed vs added lines per commit) is the right proof that a pure move preserves behaviour.
 - rule-gap (candidate, Swift dim 1): *a split-for-fan-out refactor keeps file-local helpers `private` in the file that uses them, and widens access only where a different file needs the member (with a one-line reason, as with the `internal(set)` actor setters).*
 - outcome: TBD
+
+## 2026-10-14 — fix/mobile-review-followups (#261 Kit `saveDirectly` compare-and-swap: fresh save `.ifServerRecordUnchanged`, one retry over the refusal's server copy, none when cancelled; #262 Mac `MobileLinkCenter.setPublicLink(open:)` wrapper: bounded pre-wait on in-flight link calls, request numbers, `linkReapply` after an out-of-order landing) — verdict: changes-needed
+
+- contested (held major, prosecutor F1): #262 re-applies only when the late call reports success. But `share`'s timer cancels the call (`onCancel: call.cancel()`), and the live `CloudKitShareService` throws on cancellation even when the server already applied the save. So the late landing the fix targets arrives as `landed=false` and is never re-applied. The tests are green only because `FakeShareService` is not cancellation-aware by default. [6/7]
+- contested (held major, F2): the `linkReapply` close is fire-and-forget. If it fails, it only logs: no sweep-pending mark, no `linkCloseRetry`. After a sweep has already written mark 0, the link stays open with nothing left to close it.
+- false-positive: none dismissed. Codex's "a failed later close never counts as landed" held, but I rated it minor because every failing close path (`sweepShares` → `scheduleSweepRetry`, `closePublicLink` → `linkCloseRetry`) already issues a newer close. #261 was traced as sound.
+- miss: codex found the ledger gap (it tracks successes only) and missed that the live service turns every cancelled call into a failure. Only the prosecutor read `ShareService` and the fake's `setCancellationAware` doc.
+- weak-dimension: 7. The ordering tests use a fake that keeps running after cancellation. The pre-wait is never exercised (deleting it keeps the tests green), and no test covers a failed re-apply.
+- rule-gap (candidate, Swift dim 7): *a fix for a write that "lands late after its caller timed out" is tested with the fake in cancellation-aware mode (the live CloudKit behaviour), and a remote write whose outcome is unknown after a cancel or timeout is reconciled to the wanted state. Do not assume it failed.*
+- outcome: TBD

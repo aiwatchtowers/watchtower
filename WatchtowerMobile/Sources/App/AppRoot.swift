@@ -644,11 +644,12 @@ final class AppRoot {
     }
 
     /// A kept farewell sent by one direct save of its sealed record
-    /// (`save`; live: `CloudKitTransport.saveDirectly`, no fetch, the
-    /// server's copy overwritten): the record is already sealed, so the
-    /// deleted hub keys are not needed. True once the save returned; a
-    /// failure, or a save still running at `cap` (cancelled), reads false
-    /// (logged) and the farewell stays kept.
+    /// (`save`; live: `CloudKitTransport.saveDirectly`, no engine, a
+    /// compare-and-swap over the server's copy, so a save cancelled at the
+    /// cap that lands late never replaces a relink's record, #261): the
+    /// record is already sealed, so the deleted hub keys are not needed.
+    /// True once the save returned; a failure, or a save still running at
+    /// `cap` (cancelled), reads false (logged) and the farewell stays kept.
     static func resendDirectly(
         _ farewell: PendingFarewell,
         cap: Duration,
