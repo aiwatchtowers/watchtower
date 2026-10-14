@@ -1,11 +1,6 @@
 import CloudKit
 import Foundation
 import os
-#if os(macOS)
-import Security
-#elseif targetEnvironment(simulator)
-import MachO
-#endif
 
 /// Result of probing the CloudKit account. `.unavailable` carries a
 /// human-readable reason (missing entitlement, network, CK errors).

@@ -80,7 +80,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
     let clock: @Sendable () -> ContinuousClock.Instant
     let now: @Sendable () -> Date
     /// Whether a pass runs at all (the hub's linked-phone gate).
-    let isActive: @Sendable () -> Bool
+    private let isActive: @Sendable () -> Bool
     let state = OSAllocatedUnfairLock(initialState: State())
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another

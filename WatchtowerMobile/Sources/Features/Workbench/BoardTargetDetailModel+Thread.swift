@@ -76,14 +76,14 @@ extension BoardTargetDetailModel {
     }
 
     /// The target's comments, plus replies that name only their parent.
-    static func comments(of target: WorkbenchTarget, in snapshot: WorkbenchReplicaSnapshot) -> [WorkbenchComment] {
+    private static func comments(of target: WorkbenchTarget, in snapshot: WorkbenchReplicaSnapshot) -> [WorkbenchComment] {
         let direct = snapshot.comments.filter { $0.targetID == target.id }
         let ids = Set(direct.map(\.id))
         return direct + snapshot.comments.filter { $0.targetID == nil && $0.parentID.map(ids.contains) == true }
     }
 
     /// Roots oldest first, each with its whole thread oldest first.
-    static func threads(
+    private static func threads(
         _ comments: [WorkbenchComment], canReply: Bool, now: Date
     ) -> [(rootID: Int64, rows: [CommentRow])] {
         let ordered = comments.sorted { $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id < $1.id }

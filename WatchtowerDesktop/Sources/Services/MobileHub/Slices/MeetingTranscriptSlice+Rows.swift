@@ -72,12 +72,12 @@ extension MeetingTranscriptSlice {
     /// The big columns' byte lengths, in `LightKey.lengths`' order.
     /// `octet_length` (SQLite 3.43+) reads a text's size from its record
     /// header without loading the text itself; NULL stays NULL.
-    static let lengthColumns = """
+    private static let lengthColumns = """
         octet_length(segments_json) AS segments_length, octet_length(transcript_text) AS text_length,
         octet_length(summary_json) AS summary_length, octet_length(chapters_json) AS chapters_length
         """
 
-    static func lengths(_ row: Row) -> [Int?] {
+    private static func lengths(_ row: Row) -> [Int?] {
         [row["segments_length"], row["text_length"], row["summary_length"], row["chapters_length"]]
     }
 
@@ -107,7 +107,7 @@ extension MeetingTranscriptSlice {
     /// one's id and `updated_at`. Any candidate's change (not only the
     /// chosen one's: which one is readable is known only once decoded)
     /// rebuilds the row.
-    static func recapFields(_ recaps: [RecapRef]) -> [String?] {
+    private static func recapFields(_ recaps: [RecapRef]) -> [String?] {
         [String(recaps.count)] + recaps.flatMap { [String($0.id), $0.updatedAt] }
     }
 
@@ -150,7 +150,7 @@ extension MeetingTranscriptSlice {
 
     /// SHA-256 over `fields`, each tagged (nil vs present) and
     /// length-prefixed.
-    static func digest(_ fields: [String?]) -> Data {
+    private static func digest(_ fields: [String?]) -> Data {
         var hasher = SHA256()
         for field in fields {
             guard let field else {

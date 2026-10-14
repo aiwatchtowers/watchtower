@@ -53,7 +53,7 @@ extension MeetingTranscriptSlice {
     /// The non-deleted segments; a legacy row (no or unreadable
     /// `segments_json`) is one segment holding `transcript_text`. Valid JSON
     /// of another shape has no text to fall back on and publishes `[]`.
-    static func segments(_ row: TranscriptRow) -> [Segment] {
+    private static func segments(_ row: TranscriptRow) -> [Segment] {
         if let utterances = row.segmentsJSON.flatMap(TranscriptSegments.decode) {
             return utterances.filter { !$0.deleted }.map {
                 Segment(startSec: $0.startSec, endSec: $0.endSec, speaker: $0.speaker, text: $0.text)
@@ -69,7 +69,7 @@ extension MeetingTranscriptSlice {
 
     /// Display names in order of first appearance; "" (not diarized) is no
     /// speaker.
-    static func speakers(_ segments: [Segment]) -> [String] {
+    private static func speakers(_ segments: [Segment]) -> [String] {
         var seen: Set<String> = []
         return segments.map(\.speaker).filter { !$0.isEmpty && seen.insert($0).inserted }
     }
@@ -133,14 +133,14 @@ extension MeetingTranscriptSlice {
     }
 
     /// At most 50 entries of at most 500.
-    static func recapList(_ entries: [String]?) -> (items: [String], more: Int?) {
+    private static func recapList(_ entries: [String]?) -> (items: [String], more: Int?) {
         let list = SliceClip.list(entries ?? [], limit: maxRecapEntries)
         return (list.items.map { SliceClip.text($0, limit: maxRecapEntryLength).text }, list.more)
     }
 
     /// `chapters_json.overall_summary`; nil when absent, empty or
     /// unreadable (logged).
-    static func overview(_ row: TranscriptRow) -> String? {
+    private static func overview(_ row: TranscriptRow) -> String? {
         guard let json = row.chaptersJSON, !json.isEmpty else { return nil }
         guard let chapters = try? JSONDecoder().decode(MeetingChapters.self, from: Data(json.utf8)) else {
             logger.warning("unreadable chapters_json of transcript \(row.id, privacy: .public); no overview")

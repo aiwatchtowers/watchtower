@@ -75,5 +75,5 @@ extension MeetingTranscriptSlice {
         return content
     }
 
-    static let warned = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+    private static let warned = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 }
