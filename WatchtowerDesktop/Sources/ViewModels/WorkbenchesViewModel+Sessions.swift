@@ -661,7 +661,8 @@ extension WorkbenchesViewModel {
     /// `placing` (a workbench agent row): the row goes where
     /// `placementForNewSession` decides, in the workbench's placement turn,
     /// and a row placed in a new worktree runs the workbench's setup
-    /// command before its agent's first start.
+    /// command before its agent's first start — when that launch does not
+    /// run, `startNotice` gives the command to run by hand.
     private func createAndActivate(
         _ new: TerminalSessionQueries.NewSession,
         prompt: String?,
@@ -679,12 +680,18 @@ extension WorkbenchesViewModel {
                 let place = await placementForNewSession(
                     project: placing.project, choice: placing.choice, targetID: new.targetID, targetText: placing.targetText
                 )
-                startNotice[projectID] = place.notice
                 var placed = new
                 placed.folderPath = place.folderPath
                 placed.worktreeBranch = place.worktreeBranch
                 placed.worktreeBase = place.worktreeBase
-                let row = try await insertSession(placed, ticket: ticket)
+                let row: TerminalSession
+                do {
+                    row = try await insertSession(placed, ticket: ticket)
+                } catch {
+                    startNotice[projectID] = nil
+                    throw error
+                }
+                startNotice[projectID] = place.notice
                 startingRows[row.id] = row
                 return row
             }
@@ -695,16 +702,26 @@ extension WorkbenchesViewModel {
         }
         defer { startingRows[row.id] = nil }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket, setup: setup)
+        if let setup, let projectID = row.projectID, launchFailure(row) != nil {
+            // The setup runs only on a placed row's first launch; a resume never runs it.
+            let line = "The worktree setup command did not run — run it in the terminal: "
+                + setup.trimmingCharacters(in: .whitespacesAndNewlines)
+            startNotice[projectID] = [startNotice[projectID], line].compactMap { $0 }.joined(separator: " ")
+        }
         if checkLaunch { try launchCheck(row) }
         return row
     }
 
-    /// Writes the new row; a failure is reported and thrown.
+    /// Writes the new row; a failure is reported and thrown. A row placed in
+    /// a worktree just made names it: the worktree stays on disk.
     private func insertSession(_ new: TerminalSessionQueries.NewSession, ticket: Int?) async throws -> TerminalSession {
         do {
             return try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
-            let message = "Could not create a terminal session: \(error.localizedDescription)"
+            var message = "Could not create a terminal session: \(error.localizedDescription)"
+            if let branch = new.worktreeBranch {
+                message += " — the worktree \(new.folderPath) on \(branch) was kept."
+            }
             reportStartError(message, projectID: new.projectID, ticket: ticket)
             throw TargetStartError.failed(message)
         }
@@ -792,20 +809,26 @@ extension WorkbenchesViewModel {
     /// so the agent's transcript resolves by cwd (spec 2026-10-14 §7). False
     /// — the row `.unavailable`, nothing launches — when the branch is gone
     /// too or the worktree could not be restored; never a start in the main
-    /// folder. A setup command never runs here.
+    /// folder. A setup command never runs here. An existing directory
+    /// launches only while it is still on the row's branch: a later session
+    /// may hold that path now (`isOnOwnBranch`).
     private func restoreWorktree(_ row: TerminalSession) async -> Bool {
         guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
-        if center.states[row.id] == .running || Self.isDirectory(row.folderPath) { return true }
+        if center.states[row.id] == .running { return true }
         guard let top = SessionStartPlacement.worktreeTop(ofCwd: row.folderPath) else { return true } // the launch reports the folder
+        let exists = Self.isDirectory(row.folderPath)
         guard let cli else {
-            center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: no CLI is available.")
+            let what = exists ? "at \(top) could not be checked" : "\(top) could not be restored"
+            center.refuseLaunch(row, reason: "The worktree \(what): no CLI is available.")
             return false
         }
+        if exists { return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top) }
         do {
             let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch)
-            // An existing directory is a no-op (`created` false, nothing refused): launch.
-            if result.created || (result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath)) {
-                return true
+            if result.created { return true }
+            // An existing directory is a no-op (`created` false, nothing refused).
+            if result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath) {
+                return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top)
             }
             if result.refused == "unknown_branch" {
                 center.refuseLaunch(
@@ -819,6 +842,33 @@ extension WorkbenchesViewModel {
         } catch {
             center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(error.localizedDescription)")
         }
+        return false
+    }
+
+    /// Whether the worktree at the row's folder is still on `branch`; when
+    /// not — another session's worktree now, a branch switched by hand, or a
+    /// status that could not be read — the row is `.unavailable` and false:
+    /// never a launch in somebody else's worktree. Called with `cli` and a
+    /// terminal center present (`restoreWorktree`).
+    private func isOnOwnBranch(_ row: TerminalSession, projectID: Int64, branch: String, top: String) async -> Bool {
+        guard let cli, let center = terminalCenter else { return false }
+        let status: WorkbenchGitStatus
+        do {
+            status = try await cli.gitStatus(projectID: projectID, folder: row.folderPath)
+        } catch {
+            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
+            return false
+        }
+        guard status.git, status.statusOK, status.folderScope == .worktree else {
+            let why = [status.statusError, status.note].first { !$0.isEmpty } ?? "it is not a worktree of the workbench."
+            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(why)")
+            return false
+        }
+        if !status.detached, status.branch == branch { return true }
+        let now = status.detached ? "a detached HEAD" : status.branch
+        center.refuseLaunch(
+            row, reason: "The worktree at \(top) is now on \(now), not \(branch) — start a new session."
+        )
         return false
     }
 

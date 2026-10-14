@@ -41,6 +41,14 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
 
         var ensureCalls: [[String]] { calls.filter { $0.starts(with: ["workbench", "worktree", "ensure"]) } }
 
+        /// The `git status --folder` answer for a placed row's existing
+        /// worktree; nil = a worktree on `wt/session-2`.
+        func setFolderStatusReply(_ json: String) { lock.withLock { folderStatusReply = json } }
+        private var folderStatusReply: String?
+        var folderStatusCalls: [[String]] {
+            calls.filter { $0.starts(with: ["workbench", "git", "status"]) && $0.contains("--folder") }
+        }
+
         func run(args: [String]) async throws -> Data {
             let custom: String? = lock.withLock {
                 recorded.append(args)
@@ -61,6 +69,14 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
                     {"workbench_id":\#(workbenchID),"created":true,"path":"\#(worktree)","cwd":"\#(worktree)",
                      "branch":"wt/\#(name)","base":"a1b2c3d4e5f6","base_branch":"main","base_dirty":false,
                      "included":[],"include_warnings":[]}
+                    """#).utf8)
+            }
+            if args.starts(with: ["workbench", "git", "status"]), args.contains("--folder") {
+                let custom = lock.withLock { folderStatusReply }
+                return Data((custom ?? #"""
+                    {"workbench_id":\#(workbenchID),"git_available":true,"git":true,"branch":"wt/session-2",
+                     "head":"a1b2c3d","status_ok":true,"status_error":"","folder_scope":"worktree",
+                     "folder_root":"\#(worktree)","worktree_name":"session-2"}
                     """#).utf8)
             }
             return Data(#"""
@@ -421,5 +437,103 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
 
         XCTAssertEqual(launches.last?.currentDirectory, worktree)
         XCTAssertNotEqual(center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true)
+    }
+
+    func testResumeOfAWorktreeNowOnAnotherBranchIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(#"""
+            {"workbench_id":1,"git_available":true,"git":true,"branch":"wt/session-2-2","status_ok":true,
+             "folder_scope":"worktree"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        let call = try XCTUnwrap(runner.folderStatusCalls.first)
+        XCTAssertEqual(call.firstIndex(of: "--folder").map { call[$0 + 1] }, worktree)
+        XCTAssertEqual(
+            center.states[row.id],
+            .unavailable("The worktree at \(worktree) is now on wt/session-2-2, not wt/session-2 — start a new session.")
+        )
+        XCTAssertTrue(launches.isEmpty, "never a launch in another session's worktree")
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+    }
+
+    func testResumeOfAWorktreeWhoseStatusFailsIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(#"""
+            {"workbench_id":1,"git_available":true,"git":true,"branch":"wt/session-2","status_ok":false,
+             "status_error":"index locked","folder_scope":"worktree"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertEqual(center.states[row.id], .unavailable("The worktree at \(worktree) could not be checked: index locked"))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testResumeOfAWorktreeOnItsOwnBranchLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertEqual(runner.folderStatusCalls.count, 1)
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+    }
+
+    func testAPlacedFirstLaunchThatDoesNotRunGivesTheSetupCommand() async throws {
+        let p = try await workbench(setup: " make deps ")
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let missing = root.appendingPathComponent("acme/.claude/worktrees/missing").path
+        runner.setCreateReply(#"""
+            {"workbench_id":1,"created":true,"path":"\#(missing)","cwd":"\#(missing)","branch":"wt/missing",
+             "base":"abc"}
+            """#)
+        let vm = await makeVM(runner)
+        try await liveRow(p, folder: acme)
+
+        await vm.newSession(projectID: p)
+
+        let row = try await firstStarted(p)
+        XCTAssertEqual(row.worktreeBranch, "wt/missing")
+        XCTAssertEqual(center.states[row.id], .unavailable("The folder \(missing) no longer exists."))
+        XCTAssertFalse(launches.contains { $0.currentDirectory == missing })
+        XCTAssertEqual(
+            vm.startNotice[p], "The worktree setup command did not run — run it in the terminal: make deps"
+        )
+    }
+
+    func testAFailedInsertNamesTheKeptWorktreeAndSetsNoNotice() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setCreateReply(#"""
+            {"workbench_id":1,"created":true,"path":"\#(worktree)","cwd":"\#(worktree)","branch":"wt/session-2",
+             "base":"abc","base_dirty":true}
+            """#)
+        let vm = await makeVM(runner)
+        try await liveRow(p, folder: acme)
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_placed BEFORE INSERT ON terminal_sessions WHEN NEW.worktree_branch IS NOT NULL
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+
+        await vm.newSession(projectID: p)
+
+        let rows = try await started(p)
+        XCTAssertTrue(rows.isEmpty)
+        let error = try XCTUnwrap(vm.sessionActionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not create a terminal session: "), error)
+        XCTAssertTrue(error.hasSuffix(" — the worktree \(worktree) on wt/session-2 was kept."), error)
+        XCTAssertNil(vm.startNotice[p], "the base_dirty line is for a row that exists")
     }
 }

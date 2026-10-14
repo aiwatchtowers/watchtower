@@ -346,6 +346,10 @@ final class WorkbenchesViewModel {
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
+    /// The worktrees the last delete kept because work was in them
+    /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
+    /// until the owner dismisses it or the next delete replaces it.
+    var deleteNotice: String?
     /// The last board drift check per workbench (PROJ-07, `workbench check`).
     /// Kept here, not on the board pane, so a result survives navigation.
     private(set) var drift: [Int64: WorkbenchDriftReport] = [:]
@@ -581,8 +585,8 @@ final class WorkbenchesViewModel {
     /// removes the rows and the folder install, then the list reloads. A CLI
     /// failure keeps the project listed and reports the CLI's error. A folder
     /// cleanup failure (`removal_ok == false`) still deletes the project and
-    /// leaves a non-blocking warning in `errorMessage`. A second call while one
-    /// runs is refused.
+    /// leaves a non-blocking warning in `errorMessage`; kept worktrees go to
+    /// `deleteNotice`. A second call while one runs is refused.
     @discardableResult
     func deleteWorkbench(_ id: Int64) async -> Bool {
         guard deletingWorkbenchID == nil else { return false }
@@ -606,8 +610,8 @@ final class WorkbenchesViewModel {
         onWorkbenchRemoved?(id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
-        let notices = [result.cleanupWarning, result.keptWorktreesNotice].compactMap { $0 }
-        if !notices.isEmpty { errorMessage = notices.joined(separator: " ") }
+        if let warning = result.cleanupWarning { errorMessage = warning }
+        deleteNotice = result.keptWorktreesNotice
         if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         await reload()
         return true
