@@ -78,12 +78,12 @@ const (
 	DefaultBatchLowActivityThreshold  = 30  // <30 → triple channel limit per batch
 
 	// Calendar defaults
-	DefaultCalendarEnabled       = false
+	DefaultCalendarEnabled       = true
 	DefaultCalendarSyncDaysAhead = 7
 	DefaultCalendarHistoryDays   = 14
 
 	// Gmail defaults
-	DefaultGmailEnabled            = false
+	DefaultGmailEnabled            = true
 	DefaultGmailInitialHistoryDays = 7
 	DefaultGmailMaxMessagesPerSync = 100
 	DefaultGmailMaxBodyBytes       = 51200

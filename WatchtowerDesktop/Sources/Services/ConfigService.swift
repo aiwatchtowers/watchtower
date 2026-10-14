@@ -37,7 +37,7 @@ final class ConfigService {
     /// the other one. Go twin: `config.WorkbenchConfig.Agent()` — a missing,
     /// empty, unknown or wrong-case value reads Claude Code.
     var workbenchDefaultAgent: AgentKind = .claude
-    var calendarEnabled: Bool = false
+    var calendarEnabled: Bool = true
     /// Mirrors Go's `DefaultCalendarSyncDaysAhead` (internal/config/defaults.go).
     /// `save()` always writes `calendar.sync_days_ahead`, so a Swift default
     /// that drifts from Go's silently rewrites the daemon's horizon the first
@@ -48,7 +48,7 @@ final class ConfigService {
     /// knob widening the Go syncers' timeMin. Read-only here — `save()`
     /// preserves whatever is on disk via its merge.
     var calendarHistoryDays: Int = 14
-    var gmailEnabled: Bool = false
+    var gmailEnabled: Bool = true
     var jiraFeatures: [String: Bool] = [:]
     /// Display-only — `save()` never writes `day_plan.enabled`. See
     /// `digestEnabled`.
@@ -126,13 +126,13 @@ final class ConfigService {
             workbenchDefaultAgent = Self.agent(fromYAML: yaml)
 
             if let calendar = yaml["calendar"] as? [String: Any] {
-                calendarEnabled = (calendar["enabled"] as? Bool) ?? false
+                calendarEnabled = (calendar["enabled"] as? Bool) ?? true
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
                 calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
             }
 
             if let gmail = yaml["gmail"] as? [String: Any] {
-                gmailEnabled = (gmail["enabled"] as? Bool) ?? false
+                gmailEnabled = (gmail["enabled"] as? Bool) ?? true
             }
 
             if let jira = yaml["jira"] as? [String: Any],

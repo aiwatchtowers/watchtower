@@ -53,9 +53,8 @@ package final class OnboardingGoalsModel {
     /// read — never the live checkboxes, so the dots do not move while the
     /// owner is still picking.
     package static let goalsKey = "onboarding_v2_goals"
-    /// All but Meetings: its calendar connection and transcription model are
-    /// the heaviest setup, opted into deliberately.
-    package static let defaultGoals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+    /// Every goal (owner decision 2026-10-14, #756: Meetings is on by default).
+    package static let defaultGoals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .meetings, .development]
     /// The Slack history the first sync fetches when nothing set it: the
     /// old onboarding's default pick, kept so a fresh install syncs as much
     /// as it used to.
