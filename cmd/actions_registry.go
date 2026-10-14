@@ -171,6 +171,9 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewListEmails(),
 		tools.NewGetEmail(),
 	)
+	// The D23 local-store reads (ask #277): automation surface only, never in
+	// tools.ReadTools() (DEV-01).
+	regTools = append(regTools, tools.AutomationReadTools()...)
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
 	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
 	// which applies them directly under Binding.DirectApply (DEV-06).

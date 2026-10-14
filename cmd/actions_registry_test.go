@@ -24,13 +24,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 
 	reg := buildToolRegistry(cfg, database)
 
-	names := func(surface string) map[string]bool {
-		out := map[string]bool{}
-		for _, tool := range reg.List(surface) {
-			out[tool.Name] = true
-		}
-		return out
-	}
+	names := func(surface string) map[string]bool { return surfaceToolNames(reg, surface) }
 	reactionTools := []string{"create_track", "create_idea", "remind_me", "brief_context"}
 	// Spec 2026-09-26 §8: three reaction tools widen to the main chat; the
 	// target chat still gets none (TGT-BRIEF-01 axis 3); brief_context stays
@@ -106,6 +100,21 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	}
 	assert.False(t, reaction["connect_jira_board"], "connect_jira_board is main-only")
 
+	project := pinProjectSurface(t, reg, main, target, reaction)
+	pinAutomationSurface(t, reg, main, target, reaction, project)
+	assert.Equal(t, []string{"main", "target"}, get.Surfaces, "get_confluence_page's surfaces are unchanged")
+}
+
+func surfaceToolNames(reg *tools.Registry, surface string) map[string]bool {
+	out := map[string]bool{}
+	for _, tool := range reg.List(surface) {
+		out[tool.Name] = true
+	}
+	return out
+}
+
+func pinProjectSurface(t *testing.T, reg *tools.Registry, main, target, reaction map[string]bool) map[string]bool {
+	t.Helper()
 	// The workbench surface (`mcp --workbench N`, DEV-06): exactly the workbench
 	// tools, the Slack pair and the surface-less read tools — no other write
 	// tool, nothing External but the propose-only Slack send — and no
@@ -115,7 +124,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
 		"ask_owner", "get_ask", "list_asks", "withdraw_ask", "finish_session",
 	}
-	project := names("project")
+	project := surfaceToolNames(reg, "project")
 	for _, p := range workbenchTools {
 		assert.True(t, project[p], "%s missing on the project surface", p)
 		assert.False(t, main[p] || target[p] || reaction[p], "%s is project-surface only", p)
@@ -145,11 +154,20 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.False(t, tool.External, "%s is External on the project surface (DEV-06)", tool.Name)
 		assert.False(t, tool.ProposeUnderDirectApply, "%s", tool.Name)
 	}
+	return project
+}
 
+func pinAutomationSurface(t *testing.T, reg *tools.Registry, main, target, reaction, project map[string]bool) {
+	t.Helper()
 	// Automations (spec 2026-10-14 §6.1, D2): the local-store email reads are
 	// on the automation surface only — never in tools.ReadTools() (DEV-01).
-	automation := names(tools.AutomationSurface)
-	for _, e := range []string{"list_emails", "get_email"} {
+	automation := surfaceToolNames(reg, tools.AutomationSurface)
+	// The D23 reads (ask #277) are automation-surface only too.
+	d23 := []string{
+		"list_inbox", "list_calendar_events", "list_meeting_recaps", "get_meeting_recap", "list_meeting_notes",
+		"list_day_plans", "get_day_plan", "list_reminders", "list_jira_sprints", "list_jira_releases",
+	}
+	for _, e := range append([]string{"list_emails", "get_email"}, d23...) {
 		tool, ok := reg.Get(e)
 		require.True(t, ok, "%s missing", e)
 		assert.Equal(t, tools.AccessRead, tool.Access, e)
@@ -160,4 +178,11 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 			assert.NotEqual(t, e, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", e)
 		}
 	}
+	// get_writing_style gains the automation surface (D23); get_confluence_page
+	// — a live network read — stays off it.
+	style, ok := reg.Get("get_writing_style")
+	require.True(t, ok)
+	assert.Equal(t, []string{"main", tools.WorkbenchSurface, tools.AutomationSurface}, style.Surfaces)
+	assert.True(t, automation["get_writing_style"])
+	assert.False(t, automation["get_confluence_page"], "a live network read is never on the automation surface")
 }
