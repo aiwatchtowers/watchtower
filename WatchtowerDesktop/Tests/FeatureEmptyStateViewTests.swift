@@ -82,6 +82,14 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: AppState.featureChangesBusy))
     }
 
+    func testRestartFailureKeepsRetryAfterFeatureTurnsOn() throws {
+        var tapped: EmptyStateAction?
+        let view = makeView(readiness: .scheduled(.nextCycle(minutes: 15)), turnOnError: "boom") { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: "boom"))
+        try view.inspect().find(button: "Try again").tap()
+        XCTAssertEqual(tapped, .turnOn(featureID: "memory"))
+    }
+
     func testExtraContentRendered() throws {
         let view = FeatureEmptyState(
             copy: Self.memoryCopy, readiness: .scheduled(.inAboutADay), syncLine: nil,

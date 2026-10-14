@@ -55,9 +55,9 @@ struct FeatureEmptyState<Extra: View>: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let action = Self.visibleAction(copy: copy, readiness: readiness) {
+            if let action = Self.visibleAction(copy: copy, readiness: readiness, turnOnError: turnOnError) {
                 HStack(spacing: 8) {
-                    Button(Self.label(for: action)) { onAction(action) }
+                    Button(Self.label(for: action, retry: turnOnError != nil)) { onAction(action) }
                         .buttonStyle(.borderedProminent)
                         .disabled(isTurningOn)
                     if isTurningOn, case .turnOn = action {
@@ -97,8 +97,12 @@ struct FeatureEmptyState<Extra: View>: View {
 
     /// The one button: Turn on while off (for a feature with a switch),
     /// Connect while its source is missing, otherwise the tab's own action —
-    /// never a Turn on or Connect the state doesn't call for.
-    static func visibleAction(copy: EmptyStateCopy, readiness: Readiness?) -> EmptyStateAction? {
+    /// never a Turn on or Connect the state doesn't call for. A failed Turn
+    /// on keeps its retry: an enable whose restart failed leaves the feature
+    /// on (no longer `.off`), and only the retry restarts the daemon.
+    static func visibleAction(
+        copy: EmptyStateCopy, readiness: Readiness?, turnOnError: String? = nil
+    ) -> EmptyStateAction? {
         guard let readiness else {
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
@@ -108,13 +112,16 @@ struct FeatureEmptyState<Extra: View>: View {
         case .needsSource(let source):
             return .connect(source)
         default:
+            if turnOnError != nil, let featureID = copy.feature?.featureID {
+                return .turnOn(featureID: featureID)
+            }
             return copy.primaryAction.flatMap { isStateGated($0) ? nil : $0 }
         }
     }
 
-    static func label(for action: EmptyStateAction) -> String {
+    static func label(for action: EmptyStateAction, retry: Bool = false) -> String {
         switch action {
-        case .turnOn: "Turn on"
+        case .turnOn: retry ? "Try again" : "Turn on"
         case .connect(let source): "Connect \(source.displayName)"
         case .openSettings(let tab): "Open Settings → \(tab.capitalized)"
         case .tabAction(let label): label
