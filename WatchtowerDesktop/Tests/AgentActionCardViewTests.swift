@@ -390,4 +390,30 @@ final class AgentActionCardViewTests: XCTestCase {
                                          onApproveEdited: { _ in })
         XCTAssertTrue(try picker.inspect().find(button: "Approve & send").isDisabled(), "no workspace picked yet")
     }
+
+    /// A DM's pinned identity is its own secondary Text, apart from the
+    /// free-text label, on the To line and on each picker row (target 227).
+    func testSlackDMIdentityIsShownApartFromTheLabel() throws {
+        let dm = ##"{"text":"hi","target":{"account_id":1,"workspace":"Acme","user_id":"U123","label":"@Alice","##
+            + ##""handle":"alice","real_name":"Alice Example"}}"##
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: dm)
+        }
+        let card = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                       onApproveEdited: { _ in })
+        XCTAssertNoThrow(try card.inspect().find(text: "To: @Alice in Acme"))
+        XCTAssertNoThrow(try card.inspect().find(text: "Alice Example, @alice · U123"))
+
+        let candidates = ##"{"text":"hi","candidates":["##
+            + ##"{"account_id":1,"workspace":"A","user_id":"U1","label":"@Alice","handle":"alice"},"##
+            + ##"{"account_id":2,"workspace":"B","user_id":"U2","label":"@Alice","handle":"alice.b"}]}"##
+        let ambiguous = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
+        }
+        let picker = AgentActionCardView(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                         onApproveEdited: { _ in })
+        XCTAssertNoThrow(try picker.inspect().find(text: "@Alice in A"))
+        XCTAssertNoThrow(try picker.inspect().find(text: "@alice · U1"))
+        XCTAssertNoThrow(try picker.inspect().find(text: "@alice.b · U2"))
+    }
 }

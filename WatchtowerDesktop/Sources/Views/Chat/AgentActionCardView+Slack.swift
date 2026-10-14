@@ -9,8 +9,8 @@ import WatchtowerCore
 extension AgentActionCardView {
     static func slackSummaryLines(for action: AgentAction) -> [String]? {
         guard let proposal = SlackSendProposal(action: action) else { return nil }
-        // An editable pending card shows the text in its editor instead
-        // (`AgentActionCardView.displayLines`).
+        // The text-only summary (cheat sheet, tests); the card itself shows
+        // the recipient with `SlackRecipientLine`.
         return [proposal.recipientLine, proposal.text]
     }
 
@@ -29,13 +29,14 @@ struct SlackSendEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if proposal.target == nil {
+                // Radio rows rather than a menu: a menu item cannot style the
+                // identity apart from the free-text label.
                 Picker("Send from", selection: $pick) {
-                    Text("Choose a workspace…").tag(Int?.none)
                     ForEach(Array(proposal.candidates.enumerated()), id: \.offset) { index, candidate in
-                        Text(candidate.line).tag(Int?.some(index))
+                        SlackRecipientText(recipient: candidate).tag(Int?.some(index))
                     }
                 }
-                .pickerStyle(.menu)
+                .pickerStyle(.radioGroup)
                 .accessibilityIdentifier("agentAction.slackWorkspace")
             }
             TextEditor(text: $text)
@@ -54,5 +55,44 @@ struct SlackSendEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// A recipient as the card shows it: the free-text label and workspace, and
+/// for a DM the real name, handle and user id on their own line in a
+/// secondary monospaced style — a display name cannot change its font, so
+/// one imitating "(…, @handle · U…)" never reads as the pinned identity.
+struct SlackRecipientText: View {
+    let recipient: SlackSendProposal.Recipient
+    var prefix = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(prefix + recipient.place)
+            if !recipient.identity.isEmpty {
+                Text(recipient.identity)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("agentAction.slackIdentity")
+            }
+        }
+    }
+}
+
+/// The card's "To:" line: the pinned recipient (`SlackRecipientText`), or,
+/// before a workspace is picked, the ask to choose one.
+struct SlackRecipientLine: View {
+    let proposal: SlackSendProposal
+
+    var body: some View {
+        Group {
+            if let target = proposal.target {
+                SlackRecipientText(recipient: target, prefix: "To: ")
+            } else {
+                Text(proposal.recipientLine)
+            }
+        }
+        .font(.callout)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
