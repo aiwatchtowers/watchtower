@@ -1536,3 +1536,12 @@ Entry format:
 - weak-dimension: 7. Grace was tested for `.used` only, so the two reasons with different code semantics went untested.
 - rule-gap (candidate, dim 7): *a deferred background task that acts on shared state (a timer sweep) is cancelled or re-checked under the same epoch/ticket by every entry point that starts a new instance of that state, and is not only guarded at wake time.*
 - outcome: TBD
+
+## 2026-10-14 — refactor/mobile-god-files (boards #72/#172/#53: pure-move split of 10 Mac hub/Kit/phone Swift files into extension files to drop Sentrux fan-out below 30, roster entries removed, `saveDirectly` `_ =` warning fix; round-1 fixes in c94580d8; panel: prosecutor + codex (no findings), 3 specialists DOWN (not installed); judge verified c94580d8 by reading and grep, no runs; judge synthesis) — verdict: approve
+
+- contested: none. The one widening that has to stay is `CloudKitTransport`'s `public internal(set)`, because its setters now live in extension files. Actor isolation already blocks outside mutation, so the wider setter changes nothing observable.
+- false-positive: none dismissed. All seven access/import nits (F1–F7) held. A grep after the fix found every re-`private`d member used only in its own file.
+- miss: codex said "behavior preserved" and stopped there. Only the prosecutor caught that the split had widened access: helpers that were `private` became internal because `private` does not reach another file's extension. **When a type is split into `Type+X.swift` files, list each member whose `private`/`fileprivate` was dropped and check that it is used from another file; a member still used only in its own file gets `private` back.** Imports copied along with moved code also need a per-file re-check (the dead `Security`/`MachO` block). [1/3]
+- weak-dimension: none notable. The prosecutor's normalised line-diff method (removed vs added lines per commit) is the right proof that a pure move preserves behaviour.
+- rule-gap (candidate, Swift dim 1): *a split-for-fan-out refactor keeps file-local helpers `private` in the file that uses them, and widens access only where a different file needs the member (with a one-line reason, as with the `internal(set)` actor setters).*
+- outcome: TBD
