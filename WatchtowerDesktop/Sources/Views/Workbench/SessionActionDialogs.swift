@@ -2,13 +2,15 @@ import SwiftUI
 import WatchtowerCore
 
 extension View {
-    /// The Rename sheet and the Delete confirmation behind `SessionRowActions`.
+    /// The Rename sheet, the Delete confirmation and the Clean Up… sheet
+    /// behind `SessionRowActions`.
     func sessionActionDialogs(
         vm: WorkbenchesViewModel,
         renaming: Binding<TerminalSession?>,
-        deleting: Binding<TerminalSession?>
+        deleting: Binding<TerminalSession?>,
+        cleaning: Binding<TerminalSession?> = .constant(nil)
     ) -> some View {
-        modifier(SessionActionDialogs(vm: vm, renaming: renaming, deleting: deleting))
+        modifier(SessionActionDialogs(vm: vm, renaming: renaming, deleting: deleting, cleaning: cleaning))
     }
 }
 
@@ -16,6 +18,7 @@ private struct SessionActionDialogs: ViewModifier {
     let vm: WorkbenchesViewModel
     @Binding var renaming: TerminalSession?
     @Binding var deleting: TerminalSession?
+    @Binding var cleaning: TerminalSession?
 
     func body(content: Content) -> some View {
         content
@@ -24,18 +27,13 @@ private struct SessionActionDialogs: ViewModifier {
                     Task { await vm.rename(session, to: title) }
                 }
             }
-            .confirmationDialog(
-                "Delete “\(deleting?.title ?? "")”?",
-                isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-                titleVisibility: .visible
-            ) {
-                Button("Delete Session", role: .destructive) {
-                    if let session = deleting { Task { await vm.delete(session) } }
-                    deleting = nil
-                }
-                Button("Cancel", role: .cancel) { deleting = nil }
-            } message: {
-                Text(AgentChoicePresentation.deleteSessionMessage(deleting?.kind ?? .claude))
+            // A sheet rather than a confirmationDialog: its cleanup line and
+            // buttons follow the plan as it arrives (board #535).
+            .sheet(item: $deleting) { session in
+                SessionDeleteConfirmSheet(vm: vm, session: session)
+            }
+            .sheet(item: $cleaning) { session in
+                SessionCleanupSheet(vm: vm, session: session)
             }
     }
 }

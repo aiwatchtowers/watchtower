@@ -14,6 +14,9 @@ package struct OwnerAskStack: Equatable, Sendable {
     }
 
     package static let outsideTheAppTitle = "Outside the app"
+    /// An ask the app saw bound to a session that has since been deleted
+    /// (board #542); in the DB it is session-less like one filed outside.
+    package static let sessionDeletedTitle = "Session deleted"
 
     /// Open asks by `created_at`, then id.
     package let asks: [OwnerAsk]

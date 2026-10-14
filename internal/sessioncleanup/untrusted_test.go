@@ -54,8 +54,11 @@ func TestProj18_PlantedGitConfigRunsNoCommand(t *testing.T) {
 
 // The owner-confirmed writes keep the repository's hooks (as a terminal
 // would) but no fsmonitor; every other run is a read with neither.
+// Not parallel: it writes an executable and runs it, and a parallel test's
+// fork in between holds the write descriptor until its exec, so the run
+// fails with ETXTBSY ("text file busy", golang/go#22315; seen on main CI
+// 2026-10-14). Sequential tests run while the parallel ones are paused.
 func TestSystemGit_ReadsAndOwnerWritesArgv(t *testing.T) {
-	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "git")
 	// Answers the filter-driver listing with "none" (exit 1) and echoes the
 	// rest.

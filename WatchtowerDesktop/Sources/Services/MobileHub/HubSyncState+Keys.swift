@@ -38,7 +38,8 @@ extension HubSyncState {
                 sas TEXT,
                 received_at REAL,
                 typing_requested INTEGER NOT NULL DEFAULT 0,
-                confirm_nonce BLOB
+                confirm_nonce BLOB,
+                start_sessions INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS revoked_devices (
                 device_id TEXT PRIMARY KEY,
@@ -64,7 +65,9 @@ extension HubSyncState {
         // Pairing code v2: how many confirm nonces each code has handed out (`savePendingDevice`'s cap).
         try addMissingColumns("link_codes", [("confirm_nonces_drawn", "INTEGER NOT NULL DEFAULT 0")], db)
         try addMissingColumns(
-            "pending_devices", [("typing_requested", "INTEGER NOT NULL DEFAULT 0"), ("confirm_nonce", "BLOB")], db)
+            "pending_devices",
+            [("typing_requested", "INTEGER NOT NULL DEFAULT 0"), ("confirm_nonce", "BLOB"),
+             ("start_sessions", "INTEGER NOT NULL DEFAULT 1")], db)
         try addMissingColumns("revoked_devices", [("name", "TEXT"), ("scope", "TEXT")], db)
         try addMissingColumns("slice_state", [("wire_name", "TEXT")], db)
         try db.execute(sql: "CREATE INDEX IF NOT EXISTS slice_state_by_wire ON slice_state (wire_name)")
@@ -337,6 +340,8 @@ extension HubSyncState {
         let receivedAt: Date
         /// The hello's "Type into sessions" toggle (spec §10, PROJ-16): kept for the link, never a grant.
         var typingRequested = false
+        /// The hello's "Start sessions" toggle: the link's start-sessions grant, as the phone's later rewrites set it.
+        var startSessions = true
     }
 
     /// What `savePendingDevice` did.
@@ -350,7 +355,7 @@ extension HubSyncState {
     }
 
     /// Stores a pending request, drawing one of the code's confirm nonces. The same device with the same code and
-    /// keys is `unchanged` and draws none (a changed name or typing request on such a re-sent hello is ignored: the
+    /// keys is `unchanged` and draws none (a changed name, typing request or start-sessions choice on such a re-sent hello is ignored: the
     /// request keeps what it stored). Any other hello for the code — a new device, or a known device under new keys
     /// (`dev_kx` is not part of the device id, so a re-roll would otherwise buy a fresh nonce) — draws one, replacing
     /// that device's request; once the code has drawn `maxNoncesPerCode` it is `capped` and only a new code helps.
@@ -376,13 +381,15 @@ extension HubSyncState {
             try db.execute(
                 sql: """
                     INSERT INTO pending_devices (device_id, name, model, scope, user_record_name, signing_key, agreement_key,
-                                                 link_nonce, sas, received_at, typing_requested, confirm_nonce)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                 link_nonce, sas, received_at, typing_requested, confirm_nonce,
+                                                 start_sessions)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     pending.deviceID, pending.name, pending.model, pending.scope.rawValue, pending.userRecordName,
                     pending.signingKey, pending.agreementKey, pending.linkNonce, pending.sas,
-                    pending.receivedAt.timeIntervalSince1970, pending.typingRequested, pending.confirmNonce
+                    pending.receivedAt.timeIntervalSince1970, pending.typingRequested, pending.confirmNonce,
+                    pending.startSessions
                 ])
             return .saved
         }
@@ -447,7 +454,8 @@ extension HubSyncState {
             guard pending.sas == sas else { return .codeChanged }
             let device = LinkedDevice(
                 deviceID: pending.deviceID, name: pending.name, scope: pending.scope,
-                userRecordName: pending.userRecordName, linkedAt: now, typingRequested: pending.typingRequested)
+                userRecordName: pending.userRecordName, linkedAt: now, startSessionsAllowed: pending.startSessions,
+                typingRequested: pending.typingRequested)
             let decision = try Self.linkDevice(device, nonce: pending.linkNonce, now: now, db)
             switch decision {
             case .valid:
@@ -514,7 +522,7 @@ extension HubSyncState {
             scope: DeviceScope(rawValue: row["scope"] ?? DeviceScope.private.rawValue),
             userRecordName: row["user_record_name"] ?? "", signingKey: signingKey, agreementKey: agreementKey,
             linkNonce: nonce, sas: sas, confirmNonce: confirmNonce, receivedAt: Date(timeIntervalSince1970: receivedAt),
-            typingRequested: row["typing_requested"] ?? false)
+            typingRequested: row["typing_requested"] ?? false, startSessions: row["start_sessions"] ?? true)
     }
 
     // MARK: - Relay seq high-water mark (D4)

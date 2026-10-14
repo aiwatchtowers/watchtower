@@ -458,13 +458,56 @@ func connectGoogleAccount(cmd *cobra.Command, cfg *config.Config, database *db.D
 	}
 
 	calEnabled, gmEnabled, email := resolveGoogleConnectionResult(cmd.Context(), googleCfg, token, wantCalendar, wantGmail)
+	return recordGoogleConnection(out, cmd.ErrOrStderr(), flagConfig, cfg, database, accountID,
+		googleConnectResult{wantCalendar: wantCalendar, wantGmail: wantGmail, calEnabled: calEnabled, gmEnabled: gmEnabled, email: email})
+}
 
-	if err := database.UpdateGoogleAccountConnection(accountID, email, calEnabled, gmEnabled); err != nil {
+// googleConnectResult is what one consent asked for and what it granted.
+type googleConnectResult struct {
+	wantCalendar, wantGmail bool
+	calEnabled, gmEnabled   bool
+	email                   string
+}
+
+// recordGoogleConnection stores a finished consent for accountID — granted
+// services, email, auth state — reports it, and turns on the global sync
+// switch for every service the consent granted (#740). A re-consent counts
+// too: reconnecting a service is asking for it to sync, so a switch the
+// owner turned off in Settings comes back on (owner decision 2026-10-14).
+// The account is connected once the row is written, so a failed switch write
+// is a warning, not a failed connect (the Calendar tab offers Turn On
+// Calendar Sync).
+func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *config.Config, database *db.DB, accountID int64, r googleConnectResult) error {
+	if err := database.UpdateGoogleAccountConnection(accountID, r.email, r.calEnabled, r.gmEnabled); err != nil {
 		return fmt.Errorf("recording connection: %w", err)
 	}
 	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
 
-	printGoogleConnectionResult(out, wantCalendar, wantGmail, calEnabled, gmEnabled, accountID)
+	printGoogleConnectionResult(out, r.wantCalendar, r.wantGmail, r.calEnabled, r.gmEnabled, accountID)
+	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled, r.gmEnabled); err != nil {
+		fmt.Fprintf(errOut, "warning: account connected, but turning its sync on failed: %v\n", err)
+	}
+	return nil
+}
+
+// enableGoogleSyncSwitches turns on the global `calendar.enabled` /
+// `gmail.enabled` daemon-phase switches for the given services.
+// `wireGoogleSyncers` wires a syncer only when both the switch and the
+// account's flag are on, and both switches default to off — so without this a
+// newly connected account never syncs. Called from the one connect path every
+// surface shares (onboarding, Settings, the Calendar tab, the CLI). A switch
+// already on is not rewritten.
+func enableGoogleSyncSwitches(configPath string, cfg *config.Config, calGranted, gmGranted bool) error {
+	if calGranted && !cfg.Calendar.Enabled {
+		if err := setConfigKey(configPath, "calendar.enabled", true); err != nil {
+			return err
+		}
+	}
+	if gmGranted && !cfg.Gmail.Enabled {
+		if err := setConfigKey(configPath, "gmail.enabled", true); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

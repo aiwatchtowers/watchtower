@@ -11,6 +11,8 @@ import SwiftUI
 struct PanelResizeHandle: View {
     static let defaultWidth: Double = 260
     static let widthRange: ClosedRange<Double> = 200...480
+    /// The strip's width.
+    static let thickness: CGFloat = 7
 
     @Binding var width: Double
     @Binding var liveWidth: Double?
@@ -26,7 +28,7 @@ struct PanelResizeHandle: View {
 
     var body: some View {
         Color.clear
-            .frame(width: 7)
+            .frame(width: Self.thickness)
             .contentShape(Rectangle())
             .onHover { inside in
                 if inside, !cursorPushed {

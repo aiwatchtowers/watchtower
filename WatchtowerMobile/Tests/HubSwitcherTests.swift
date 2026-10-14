@@ -152,6 +152,7 @@ final class HubSwitcherTests: XCTestCase {
 
         XCTAssertTrue(HubListModel.canAddMac(rows: three))
         XCTAssertFalse(HubListModel.canAddMac(rows: four))
+        XCTAssertFalse(HubListModel.canAddMac(rows: three, unreadable: ["hub-x"]), "an unreadable row takes a place (#222)")
     }
 
     // MARK: - The switch

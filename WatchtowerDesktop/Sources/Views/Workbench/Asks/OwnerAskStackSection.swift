@@ -40,7 +40,7 @@ struct OwnerAskStackSection: View {
                                 OwnerAskStackRow(
                                     vm: vm,
                                     ask: ask,
-                                    sessionTitle: sessionTitle(ask),
+                                    sessionTitle: vm.askSessionTitle(ask),
                                     isSelected: asks.drawerAskIDs[project.id] == ask.id,
                                     cardFocus: OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack))
                                 ) {
@@ -99,11 +99,6 @@ struct OwnerAskStackSection: View {
             focusedAsk = other.id
             return true
         }
-    }
-
-    private func sessionTitle(_ ask: OwnerAsk) -> String {
-        guard let id = ask.sessionID else { return OwnerAskStack.outsideTheAppTitle }
-        return vm.session(id, projectID: project.id)?.title ?? "Session"
     }
 }
 

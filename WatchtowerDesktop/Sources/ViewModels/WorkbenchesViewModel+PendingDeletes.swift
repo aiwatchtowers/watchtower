@@ -20,8 +20,10 @@ extension WorkbenchesViewModel {
     /// writes nothing: the row joins the Undo batch (`pendingDeletes`) and
     /// its DELETE (with its cascades) runs when the window ends or the app
     /// quits (`commitPendingDeletesForQuit`). Claude Code's transcript is
-    /// left alone. The panel cursor moves to the row's neighbour.
+    /// left alone. The panel cursor moves to the row's neighbour. A row a
+    /// Delete and Clean Up runs on is busy: nothing happens (board #535).
     func delete(_ session: TerminalSession) async {
+        guard !cleaningUpSessions.contains(session.id) else { return }
         setSessionError(nil, projectID: session.projectID)
         movePanelCursorOff(session)
         let at = now()
@@ -62,7 +64,9 @@ extension WorkbenchesViewModel {
 
     /// Runs the batch's DELETEs in one write. A failed write never keeps a
     /// row hidden: the batch has left `pendingDeletes`, so the reload brings
-    /// the rows back, with the error on their list.
+    /// the rows back, with the error on their list. The workbenches' asks
+    /// are read again at once: the deletes unbound their sessions' asks
+    /// (board #542).
     func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
         guard !entries.isEmpty else { return }
         let lists = Self.sessionLists(of: entries)
@@ -74,6 +78,7 @@ extension WorkbenchesViewModel {
             }
         }
         for list in lists { await loadSessions(projectID: list) }
+        for case let projectID? in lists { await asks.load(projectID: projectID) }
     }
 
     /// The quit path (`willTerminate`): the batch is committed now, through

@@ -5,8 +5,9 @@ import WatchtowerCore
 /// Drives the combined Google connect: the user picks services via pre-checked
 /// checkboxes (Google's own consent screen cannot pre-select scopes), then ONE
 /// OAuth flow requests exactly the selected scopes — a single consent screen
-/// listing precisely the access being granted. On success the matching sync
-/// flags are enabled in config so the daemon actually syncs. A partial grant
+/// listing precisely the access being granted. The CLI turns on the matching
+/// global sync switches itself (`enableGoogleSyncSwitches`), so the daemon
+/// actually syncs whatever was granted. A partial grant
 /// (one checkbox left unticked on Google's screen) connects only the approved
 /// service. Shared by the Calendar tab's connect screen and the Inbox banner.
 @MainActor
@@ -141,8 +142,8 @@ final class GoogleConnectFlow {
             // A cancelled attempt (cancel() already reset isRunning/
             // loginProcess and, if the process had started, terminated it —
             // result here is just that termination's exit code, e.g.
-            // SIGTERM) must never reach finishConnect: it writes config
-            // (enableSync) and would stomp isRunning back to false a second
+            // SIGTERM) must never reach finishConnect: it restarts the daemon
+            // and would stomp isRunning back to false a second
             // time on top of whatever a subsequent connect() attempt set it to.
             guard !Task.isCancelled else { return }
 
@@ -172,12 +173,10 @@ final class GoogleConnectFlow {
 
     private func finishConnect(exitCode: Int32, stderr: String, wantCalendar: Bool, wantGmail: Bool) async {
         // Await the DB-derived status directly (not the fire-and-forget
-        // refresh()) so the enableSync/error decisions below see exactly what
+        // refresh()) so the error/restart decisions below see exactly what
         // the CLI just wrote — trust the DB, no Swift-side flag inference.
         await calendar.checkStatusAsync()
         await gmail.checkStatusAsync()
-        if wantCalendar && calendar.isConnected { enableSync(key: \.calendarEnabled) }
-        if wantGmail && gmail.isConnected { enableSync(key: \.gmailEnabled) }
 
         if exitCode == 15 || exitCode == 9 {
             // SIGTERM/SIGKILL — user cancelled
@@ -194,26 +193,6 @@ final class GoogleConnectFlow {
             Task { await DaemonManager.restartLogging() }
         }
         isRunning = false
-    }
-
-    /// `ConfigService.calendarEnabled`/`gmailEnabled` are the GLOBAL
-    /// daemon-phase sync switches (`cfg.Calendar.Enabled`/`cfg.Gmail.
-    /// Enabled`), distinct from any one account's `calendar_enabled`/
-    /// `gmail_enabled` column — per the multi-account design, these stay
-    /// global toggles, so flipping one on here (once ANY account connects
-    /// that service) is still correct. The condition driving the call
-    /// (`finishConnect`, above) is now the freshly DB-awaited `isConnected`,
-    /// not a separately Swift-inferred flag — no change needed to the body.
-    private func enableSync(key: ReferenceWritableKeyPath<ConfigService, Bool>) {
-        // Fresh instance: reload the file right before flipping the flag so we
-        // don't clobber edits made while the OAuth flow sat in the browser.
-        let config = ConfigService()
-        config[keyPath: key] = true
-        do {
-            try config.save()
-        } catch {
-            self.error = "Failed to save config: \(error.localizedDescription)"
-        }
     }
 
     /// Runs a pre-configured Process, draining stdout and stderr concurrently (`ProcessPipes`, SB3).

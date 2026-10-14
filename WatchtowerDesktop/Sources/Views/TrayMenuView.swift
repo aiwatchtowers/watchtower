@@ -17,6 +17,8 @@ struct TrayMenuView: View {
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
             voicesPendingCount: appState.voiceRegistryCenter.pendingCount,
+            modelDownloads: appState.transcriptionModelProvisioner.downloads,
+            retryModelDownloadAction: { key in appState.transcriptionModelProvisioner.retry(key) },
             updateVersion: appState.updateService.isUpdateAvailable
                 ? appState.updateService.availableVersion : nil,
             updateAction: {
@@ -82,6 +84,9 @@ struct TrayMenuContent: View {
     let daemonError: String?
     let cliStoreError: String?
     let voicesPendingCount: Int
+    /// Transcription-model downloads, running or failed (#744).
+    var modelDownloads: [TranscriptionModelProvisioner.Download] = []
+    var retryModelDownloadAction: (TranscriptionModelProvisioner.ModelKey) -> Void = { _ in }
     /// Version of a found, not yet installed update; nil hides the item
     /// (always nil for builds without an update channel).
     let updateVersion: String?
@@ -105,6 +110,16 @@ struct TrayMenuContent: View {
         return "Syncing: \(syncProgress.summary)"
     }
 
+    /// The tray's line for a model download: its progress, or why it failed.
+    static func modelDownloadText(_ download: TranscriptionModelProvisioner.Download, now: Date = Date()) -> String {
+        switch download.state {
+        case .downloading:
+            return download.progressLine(now: now) + " (one-time)"
+        case let .failed(message):
+            return "\(download.label) download failed: \(message)"
+        }
+    }
+
     var body: some View {
         Group {
             Text(Self.statusText(isRunning: isRunning, syncProgress: syncProgress))
@@ -113,6 +128,12 @@ struct TrayMenuContent: View {
             }
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
+            }
+            ForEach(modelDownloads) { download in
+                Text(Self.modelDownloadText(download))
+                if case .failed = download.state {
+                    Button("Retry \(download.label) Download") { retryModelDownloadAction(download.key) }
+                }
             }
             if let updateVersion {
                 Divider()

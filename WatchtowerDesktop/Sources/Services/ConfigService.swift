@@ -69,6 +69,13 @@ final class ConfigService {
     private let configPath: String
     /// Raw YAML dictionary — preserved for round-trip editing
     private var rawYAML: [String: Any] = [:]
+    /// `calendar.enabled`/`gmail.enabled` as last read from or written to
+    /// disk. `save()` writes a switch only when this instance changed it: the
+    /// CLI turns a switch on when Google connects (`google add`), and a
+    /// Settings window loaded before that must not switch it back off with an
+    /// unrelated Save (#740) — nor materialize `false` on a fresh install.
+    private var diskCalendarEnabled = false
+    private var diskGmailEnabled = false
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -80,14 +87,36 @@ final class ConfigService {
         reload()
     }
 
-    func reload() {
-        guard let data = FileManager.default.contents(atPath: configPath),
-              let str = String(data: data, encoding: .utf8) else {
-            return
+    /// The config file's text, or nil when there is nothing to load. A
+    /// missing file keeps the defaults; one that is present but unreadable is
+    /// a third state, recorded in `parseError` (#740).
+    private func readConfigText() -> String? {
+        guard let data = FileManager.default.contents(atPath: configPath) else {
+            if FileManager.default.fileExists(atPath: configPath) {
+                parseError = "config.yaml can't be read"
+            }
+            return nil
         }
+        guard let str = String(data: data, encoding: .utf8) else {
+            parseError = "config.yaml is not UTF-8 text"
+            return nil
+        }
+        return str
+    }
+
+    func reload() {
+        guard let str = readConfigText() else { return }
 
         do {
-            guard let yaml = try Yams.load(yaml: str) as? [String: Any] else { return }
+            let loaded = try Yams.load(yaml: str)
+            guard let yaml = loaded as? [String: Any] else {
+                // An empty document (blank, comments only, `null`) is an
+                // empty config, as the Go CLI reads it — not an error.
+                if let loaded, !(loaded is NSNull) {
+                    parseError = "config.yaml is not a YAML mapping"
+                }
+                return
+            }
             rawYAML = yaml
 
             activeWorkspace = yaml["active_workspace"] as? String
@@ -127,12 +156,14 @@ final class ConfigService {
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
+                diskCalendarEnabled = calendarEnabled
                 calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
                 calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
             }
 
             if let gmail = yaml["gmail"] as? [String: Any] {
                 gmailEnabled = (gmail["enabled"] as? Bool) ?? false
+                diskGmailEnabled = gmailEnabled
             }
 
             if let jira = yaml["jira"] as? [String: Any],
@@ -165,6 +196,21 @@ final class ConfigService {
         } catch {
             parseError = error.localizedDescription
         }
+    }
+
+    /// `calendar.enabled` is known to be off. False when config.yaml is
+    /// present but unreadable — then the switch is unknown, never "off".
+    var calendarSyncReadsOff: Bool {
+        parseError == nil && !calendarEnabled
+    }
+
+    /// Turns `calendar.enabled` on and saves. Refuses over an unreadable
+    /// config.yaml: `save()` would fall back to the last good snapshot and
+    /// drop every section it does not own.
+    func turnOnCalendarSync() throws {
+        if let parseError { throw ConfigUnreadableError(reason: parseError) }
+        calendarEnabled = true
+        try save()
     }
 
     /// Writes the ai: block (provider, legacy model, per-tier models, ollama
@@ -253,14 +299,16 @@ final class ConfigService {
 
         // Calendar section
         var calendarDict = (yaml["calendar"] as? [String: Any]) ?? [:]
-        calendarDict["enabled"] = calendarEnabled
+        if calendarEnabled != diskCalendarEnabled { calendarDict["enabled"] = calendarEnabled }
         calendarDict["sync_days_ahead"] = calendarSyncDaysAhead
         yaml["calendar"] = calendarDict
 
         // Gmail section
-        var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
-        gmailDict["enabled"] = gmailEnabled
-        yaml["gmail"] = gmailDict
+        if gmailEnabled != diskGmailEnabled {
+            var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
+            gmailDict["enabled"] = gmailEnabled
+            yaml["gmail"] = gmailDict
+        }
 
         // Ideas section — `enabled` is deliberately not written, see the
         // `ideasEnabled` property.
@@ -301,6 +349,31 @@ final class ConfigService {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         rawYAML = yaml
+        // Adopt what is on disk now, so a switch the CLI turned on behind this
+        // instance also shows as on.
+        adoptGoogleSyncSwitches(from: yaml)
+    }
+
+    /// A Google sync switch differs from what is on disk: the owner flipped
+    /// it here and it awaits `save()`.
+    var googleSyncSwitchesChanged: Bool {
+        calendarEnabled != diskCalendarEnabled || gmailEnabled != diskGmailEnabled
+    }
+
+    /// Re-reads `calendar.enabled`/`gmail.enabled` from disk, leaving every
+    /// other field (and any unsaved edit in it) alone, unlike `reload()`: a
+    /// Google connect turns them on from the CLI (#740) while Settings shows
+    /// them. An unreadable file changes nothing.
+    func adoptGoogleSyncSwitchesFromDisk() {
+        guard let yaml = currentYAMLOnDisk() else { return }
+        adoptGoogleSyncSwitches(from: yaml)
+    }
+
+    private func adoptGoogleSyncSwitches(from yaml: [String: Any]) {
+        diskCalendarEnabled = ((yaml["calendar"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        diskGmailEnabled = ((yaml["gmail"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        calendarEnabled = diskCalendarEnabled
+        gmailEnabled = diskGmailEnabled
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without
@@ -324,4 +397,10 @@ final class ConfigService {
         let url = URL(fileURLWithPath: configPath)
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
+}
+
+/// config.yaml is present but cannot be read or parsed.
+struct ConfigUnreadableError: LocalizedError {
+    let reason: String
+    var errorDescription: String? { "config.yaml can't be read (\(reason)) — fix the file, then try again." }
 }

@@ -724,10 +724,11 @@ final class MobileHubService {
         }
     }
 
-    /// One relay cycle: pull, daily hygiene, then passes until the backlog
+    /// One relay cycle: the expired link answers pruned, pull, daily hygiene, then passes until the backlog
     /// is empty — a long Mac sleep drains in one cycle (Review focus 5).
     private func runRelayCycle() async {
         rotateEpochIfDue()
+        linkCenter?.pruneExpiredAnswers()
         do {
             try await transport.pull()
             try await processor.runHygieneIfDue()
@@ -761,10 +762,11 @@ final class MobileHubService {
     }
 
     /// 3 s while a QR code is open (the scanning phone's `device` record
-    /// waits for its grant) or a phone action was seen in the last 300 s,
-    /// otherwise 30 s.
+    /// waits for its grant) or its close still answers late hellos
+    /// (`MobileLinkCenter.relayIsUrgent`), or a phone action was seen in the
+    /// last 300 s, otherwise 30 s.
     func relayInterval() -> Duration {
-        if linkCenter?.openCode != nil { return relayActiveInterval }
+        if linkCenter?.relayIsUrgent == true { return relayActiveInterval }
         if let last = processor.lastActivityAt, now().timeIntervalSince(last) < Self.activityWindow {
             return relayActiveInterval
         }
