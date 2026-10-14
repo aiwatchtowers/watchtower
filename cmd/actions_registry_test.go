@@ -145,4 +145,19 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.False(t, tool.External, "%s is External on the project surface (DEV-06)", tool.Name)
 		assert.False(t, tool.ProposeUnderDirectApply, "%s", tool.Name)
 	}
+
+	// Automations (spec 2026-10-14 §6.1, D2): the local-store email reads are
+	// on the automation surface only — never in tools.ReadTools() (DEV-01).
+	automation := names(tools.AutomationSurface)
+	for _, e := range []string{"list_emails", "get_email"} {
+		tool, ok := reg.Get(e)
+		require.True(t, ok, "%s missing", e)
+		assert.Equal(t, tools.AccessRead, tool.Access, e)
+		assert.Equal(t, []string{tools.AutomationSurface}, tool.Surfaces, e)
+		assert.True(t, automation[e], "%s missing on the automation surface", e)
+		assert.False(t, main[e] || target[e] || reaction[e] || project[e], "%s is automation-surface only", e)
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, e, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", e)
+		}
+	}
 }
