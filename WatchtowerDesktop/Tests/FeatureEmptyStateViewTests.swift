@@ -188,7 +188,7 @@ final class FeatureEmptyStateViewTests: XCTestCase {
 
         await appState.turnOnFeatureFromEmptyState("ideas")
 
-        XCTAssertEqual(appState.emptyStateTurnOnError(for: "ideas"), AppState.featureChangesBusy)
+        XCTAssertEqual(appState.emptyStateTurnOnError(for: "ideas"), AppState.anotherFeatureTurningOn)
         XCTAssertFalse(runner.calls.contains(["features", "enable", "ideas"]))
         daemon.releaseRestart()
         await first.value
@@ -205,6 +205,20 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNotNil(appState.emptyStateTurnOnError(for: "memory"))
         XCTAssertNil(appState.emptyStateTurnOnError(for: "ideas"), "another tab's Turn on shows no error")
         XCTAssertNil(appState.turningOnFeatureID)
+    }
+
+    func testOffErrorGoesStaleWhenTurnedOnElsewhere() async {
+        let runner = LiveFeaturesRunner(disabled: ["memory"])
+        let (appState, _) = makeAppState(runner)
+        appState.featureManager.isApplying = true
+        await appState.turnOnFeatureFromEmptyState("memory")
+        XCTAssertEqual(appState.emptyStateTurnOnError(for: "memory"), AppState.featureChangesBusy)
+        appState.featureManager.isApplying = false
+
+        // Settings → Features turns memory on: no stale "Try again".
+        await appState.featureManager.enableNow("memory") {}
+
+        XCTAssertNil(appState.emptyStateTurnOnError(for: "memory"))
     }
 
     func testTurnOnSuccessClearsError() async {

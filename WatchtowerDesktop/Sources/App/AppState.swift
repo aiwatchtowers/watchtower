@@ -1079,6 +1079,7 @@ final class AppState {
     static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
     static let featureStagedInSettings =
         "This feature has an unsaved change in Settings → Features — apply or discard it first"
+    static let anotherFeatureTurningOn = "Another feature is turning on — try again in a moment"
 
     /// Offered while an apply runs: merged once it is over.
     @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
@@ -1187,13 +1188,25 @@ final class AppState {
 
     /// Why the last Turn on from a tab's empty state didn't work, per feature
     /// id, so one tab's error never shows under another's Turn on; cleared
-    /// by that feature's next success.
-    private(set) var emptyStateTurnOnErrors: [String: String] = [:]
+    /// by that feature's next success. `featureWasOn`: the enable went
+    /// through and only the restart failed.
+    private var emptyStateTurnOnErrors: [String: (message: String, featureWasOn: Bool)] = [:]
     /// The feature an empty-state Turn on is running for (one at a time).
     private(set) var turningOnFeatureID: String?
     var isTurningOnFromEmptyState: Bool { turningOnFeatureID != nil }
 
-    func emptyStateTurnOnError(for featureID: String) -> String? { emptyStateTurnOnErrors[featureID] }
+    /// An error recorded while the feature was off goes stale once it is
+    /// turned on another way (Settings → Features); a failed restart stays
+    /// until a retry succeeds.
+    func emptyStateTurnOnError(for featureID: String) -> String? {
+        guard let error = emptyStateTurnOnErrors[featureID] else { return nil }
+        let nowOn = featureManager.features.contains { $0.id == featureID && $0.state != "disabled" }
+        return error.featureWasOn || !nowOn ? error.message : nil
+    }
+
+    private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
+        emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
+    }
 
     /// Turn on from a tab's empty state: `features enable` right away (never
     /// Settings → Features' staged changes) and one daemon restart, as
@@ -1202,7 +1215,7 @@ final class AppState {
     func turnOnFeatureFromEmptyState(_ featureID: String) async {
         guard turningOnFeatureID == nil else {
             // Another tab's Turn on is running: say so under this one.
-            emptyStateTurnOnErrors[featureID] = Self.featureChangesBusy
+            recordTurnOnError(featureID, Self.anotherFeatureTurningOn)
             return
         }
         turningOnFeatureID = featureID
@@ -1211,24 +1224,28 @@ final class AppState {
         await awaitAccountDaemonRestarts()
         let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
         if result.busy {
-            emptyStateTurnOnErrors[featureID] = Self.featureChangesBusy
+            recordTurnOnError(featureID, Self.featureChangesBusy)
             return
         }
         if let error = featureManager.loadError {
-            emptyStateTurnOnErrors[featureID] = error
+            // enableNow reloaded the list: still disabled means the enable failed.
+            recordTurnOnError(
+                featureID, error, featureWasOn: !featureManager.disabledFeatureIDs.contains(featureID)
+            )
             return
         }
         if result.enabled.isEmpty {
             if featureManager.disabledFeatureIDs.contains(featureID) {
-                emptyStateTurnOnErrors[featureID] = featureManager.pending[featureID] == false
-                    ? Self.featureStagedInSettings
-                    : Self.featureChangesBusy
+                recordTurnOnError(
+                    featureID,
+                    featureManager.pending[featureID] == false ? Self.featureStagedInSettings : Self.featureChangesBusy
+                )
                 return
             }
             do {
                 try await daemon.restartWaiting()
             } catch {
-                emptyStateTurnOnErrors[featureID] = error.localizedDescription
+                recordTurnOnError(featureID, error.localizedDescription, featureWasOn: true)
                 return
             }
         }
