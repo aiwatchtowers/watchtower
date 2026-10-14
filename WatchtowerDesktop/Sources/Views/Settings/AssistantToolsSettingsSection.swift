@@ -40,10 +40,12 @@ struct AssistantToolsSettingsSection: View {
                 Spacer()
             }
             Text(row.description).font(.caption).foregroundStyle(.secondary)
-            if !row.surfaces.isEmpty {
+            if row.appliesOnlyInWorkbench {
+                Text("Applies directly in its workbench.").font(.caption).foregroundStyle(.secondary)
+            } else if !row.trustSurfaces.isEmpty {
                 HStack(spacing: 12) {
                     Text("Run without approval in:").font(.caption).foregroundStyle(.secondary)
-                    ForEach(row.surfaces, id: \.self) { surface in
+                    ForEach(row.trustSurfaces, id: \.self) { surface in
                         executeToggle(for: row, surface: surface)
                     }
                 }
@@ -52,7 +54,7 @@ struct AssistantToolsSettingsSection: View {
         .padding(.vertical, 2)
     }
 
-    /// One switch per surface the tool is on: trust is per (tool, surface).
+    /// One switch per trust surface the tool is on: trust is per (tool, surface).
     private func executeToggle(for row: AssistantToolRow, surface: String) -> some View {
         Toggle(AssistantToolSurface.label(for: surface), isOn: executeBinding(for: row, surface: surface))
             .toggleStyle(.checkbox)

@@ -669,18 +669,20 @@ func TestAgent01_ExecuteTrustIsPerSurface(t *testing.T) {
 	assert.ErrorIs(t, reg.SetTrust("echo", "", TrustExecute), ErrSurfaceNotOffered)
 }
 
-// AGENT-01 on the real seeds: migration 00065's create_idea/remind_me execute
-// rows are reaction-surface rows (00112), so a (possibly prompt-injected)
-// main-chat call of either is recorded pending, never applied inline.
-func TestAgent01_SeededReactionTrustDoesNotCoverTheMainChat(t *testing.T) {
+// AGENT-01 on the real tools: an execute granted on the reaction surface
+// alone never covers the main chat — a (possibly prompt-injected) main-chat
+// call of create_idea is recorded pending, never applied inline.
+func TestAgent01_ExecuteTrustOnOneSurfaceDoesNotCoverAnother(t *testing.T) {
 	database := openDB(t)
 	reg := New(database)
 	require.NoError(t, reg.Register(NewCreateIdea()))
 	require.NoError(t, reg.Register(NewRemindMe()))
 	for _, name := range []string{"create_idea", "remind_me"} {
+		require.NoError(t, reg.SetTrust(name, "main", TrustAsk))
+		require.NoError(t, reg.SetTrust(name, "reaction", TrustExecute))
 		trust, err := reg.Trust(name, "reaction")
 		require.NoError(t, err)
-		assert.Equal(t, TrustExecute, trust, "%s: the reaction path keeps its seed", name)
+		assert.Equal(t, TrustExecute, trust, "%s: the reaction path executes", name)
 		trust, err = reg.Trust(name, "main")
 		require.NoError(t, err)
 		assert.Equal(t, TrustAsk, trust, "%s: the main chat asks", name)
@@ -693,6 +695,25 @@ func TestAgent01_SeededReactionTrustDoesNotCoverTheMainChat(t *testing.T) {
 	ideas, err := database.ListIdeas(db.IdeaFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, ideas, "nothing executed on propose")
+}
+
+// The workbench surface is no trust place (target 167): its write tools apply
+// under DirectApply and never read trust (DEV-06), so SetTrust refuses it and
+// TrustSurfaces leaves it out.
+func TestSetTrust_RefusesTheWorkbenchSurface(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	tool := newEchoTool(t, false, &executed)
+	tool.Surfaces = []string{"main", WorkbenchSurface}
+	require.NoError(t, reg.Register(tool))
+
+	err := reg.SetTrust("echo", WorkbenchSurface, TrustExecute)
+	require.ErrorIs(t, err, ErrSurfaceNotOffered)
+	assert.Contains(t, err.Error(), "workbench tools always apply in their own workbench")
+	assert.Equal(t, []string{"main"}, TrustSurfaces(tool))
+	tool.Surfaces = []string{WorkbenchSurface}
+	assert.Empty(t, TrustSurfaces(tool))
 }
 
 func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {

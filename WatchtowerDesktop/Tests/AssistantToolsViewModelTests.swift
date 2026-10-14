@@ -62,6 +62,22 @@ final class AssistantToolsViewModelTests: XCTestCase {
         XCTAssertTrue(vm.rows[1].executes(on: "main"))
     }
 
+    /// The workbench surface gets no trust switch (its tools always apply
+    /// there, DEV-06); a tool only on it shows the note instead (target 167).
+    func testWorkbenchSurfaceIsNoTrustPlace() async {
+        let runner = FakeCLIRunner(stdout: Data("""
+        [{"name":"send_slack_message","description":"d","access":"write","external":true,"surfaces":["main","project"],"trust":"ask"},
+         {"name":"update_target","description":"d1","access":"write","external":false,"surfaces":["project"],"trust":"ask"}]
+        """.utf8))
+        let vm = AssistantToolsViewModel(cliRunner: runner)
+        await vm.load()
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.rows[0].trustSurfaces, ["main"])
+        XCTAssertFalse(vm.rows[0].appliesOnlyInWorkbench)
+        XCTAssertEqual(vm.rows[1].trustSurfaces, [])
+        XCTAssertTrue(vm.rows[1].appliesOnlyInWorkbench)
+    }
+
     func testSetTrustSurfacesCLIError() async {
         struct Boom: Error {}
         let vm = AssistantToolsViewModel(cliRunner: FakeCLIRunner(error: Boom()))

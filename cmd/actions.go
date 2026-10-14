@@ -411,11 +411,14 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return tools.ErrUnknownTool
 	}
-	surfaces := t.Surfaces
+	surfaces := tools.TrustSurfaces(t)
 	if actionsFlagSurface != "" {
 		surfaces = []string{actionsFlagSurface}
 	}
 	if len(surfaces) == 0 {
+		if len(t.Surfaces) > 0 {
+			return fmt.Errorf("%s: workbench tools always apply in their own workbench", t.Name)
+		}
 		return fmt.Errorf("%s names no surface; pass --surface", t.Name)
 	}
 	for _, s := range surfaces {
@@ -436,7 +439,8 @@ type toolJSON struct {
 	Surfaces    []string `json:"surfaces"`
 	// Trust is the level on --surface when given; otherwise the one level
 	// every surface shares, or "mixed" when they differ. TrustBySurface is
-	// the per-surface truth (target 167).
+	// the per-surface truth (target 167); the workbench surface is not in
+	// it — its tools always apply there (DEV-06).
 	Trust          string            `json:"trust"`
 	TrustBySurface map[string]string `json:"trust_by_surface"`
 }
@@ -459,8 +463,9 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 		if surfaces == nil {
 			surfaces = []string{}
 		}
-		bySurface := make(map[string]string, len(surfaces))
-		for _, s := range surfaces {
+		trustSurfaces := tools.TrustSurfaces(t)
+		bySurface := make(map[string]string, len(trustSurfaces))
+		for _, s := range trustSurfaces {
 			trust, err := reg.Trust(t.Name, s)
 			if err != nil {
 				return err
@@ -469,7 +474,7 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 		}
 		out = append(out, toolJSON{Name: t.Name, Description: t.Description, Access: string(t.Access),
 			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces,
-			Trust: summarizeTrust(surfaces, bySurface, actionsFlagSurface), TrustBySurface: bySurface})
+			Trust: summarizeTrust(trustSurfaces, bySurface, actionsFlagSurface), TrustBySurface: bySurface})
 	}
 	if actionsFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), out)
@@ -477,7 +482,11 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	for _, t := range out {
 		perSurface := make([]string, 0, len(t.Surfaces))
 		for _, s := range t.Surfaces {
-			perSurface = append(perSurface, s+":"+t.TrustBySurface[s])
+			if trust, ok := t.TrustBySurface[s]; ok {
+				perSurface = append(perSurface, s+":"+trust)
+			} else {
+				perSurface = append(perSurface, s+":direct")
+			}
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-6s external=%-5v trust=%s %s\n",
 			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))

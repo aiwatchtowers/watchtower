@@ -317,7 +317,8 @@ func (r *Registry) Trust(name, surface string) (Trust, error) {
 }
 
 // SetTrust changes the trust level on one surface the tool names; execute is
-// refused for External and AlwaysAsk tools.
+// refused for External and AlwaysAsk tools, and the workbench surface is no
+// trust place at all (TrustSurfaces).
 func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	t, ok := r.Get(name)
 	if !ok {
@@ -332,10 +333,26 @@ func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	if t.AlwaysAsk && trust == TrustExecute {
 		return ErrAlwaysAsk
 	}
+	if surface == WorkbenchSurface {
+		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
+	}
 	if strings.TrimSpace(surface) == "" || !visibleOn(t, surface) {
 		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
 	}
 	return r.db.SetToolTrust(t.Name, surface, string(trust))
+}
+
+// TrustSurfaces is the surfaces of t a trust level is kept for: every one
+// but the workbench, whose write tools apply under DirectApply and never
+// read trust (DEV-06, target 167).
+func TrustSurfaces(t *Tool) []string {
+	out := make([]string, 0, len(t.Surfaces))
+	for _, s := range t.Surfaces {
+		if s != WorkbenchSurface {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // reasonOf extracts the mandatory "reason" argument every write tool carries.

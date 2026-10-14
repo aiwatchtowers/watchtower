@@ -275,6 +275,42 @@ func TestActions_TrustPerSurface(t *testing.T) {
 	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered, "create_target is not on the target surface")
 }
 
+// The workbench surface is no trust place (target 167, DEV-06): the listing
+// leaves it out of trust_by_surface, and the CLI refuses to set it.
+func TestActions_WorkbenchSurfaceIsNoTrustPlace(t *testing.T) {
+	writeActionsConfig(t)
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name           string            `json:"name"`
+		Surfaces       []string          `json:"surfaces"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	var onWorkbench, onlyWorkbench string
+	for _, l := range listed {
+		for _, s := range l.Surfaces {
+			if s != tools.WorkbenchSurface {
+				continue
+			}
+			onWorkbench = l.Name
+			if len(l.Surfaces) == 1 {
+				onlyWorkbench = l.Name
+			}
+			assert.NotContains(t, l.TrustBySurface, tools.WorkbenchSurface, l.Name)
+		}
+	}
+	require.NotEmpty(t, onWorkbench, "some listed tool is on the workbench surface: %s", out)
+
+	_, err = runActions(t, "trust", onWorkbench, "ask", "--surface", tools.WorkbenchSurface)
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
+	if onlyWorkbench != "" {
+		_, err = runActions(t, "trust", onlyWorkbench, "ask")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "always apply in their own workbench")
+	}
+}
+
 // The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
 func TestActions_ToolsJSONMarksAlwaysAsk(t *testing.T) {
 	writeActionsConfig(t)

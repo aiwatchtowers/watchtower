@@ -16,6 +16,13 @@ struct AssistantToolRow: Identifiable, Equatable, Decodable, Sendable {
     /// one surface never covers another. Empty from a CLI older than the field.
     let trustBySurface: [String: String]
 
+    /// The surfaces a trust switch is offered on: every surface but the
+    /// workbench, whose write tools always apply directly (DEV-06).
+    var trustSurfaces: [String] { surfaces.filter { $0 != AssistantToolSurface.workbench } }
+
+    /// On the workbench surface only: no switch, a note instead.
+    var appliesOnlyInWorkbench: Bool { !surfaces.isEmpty && trustSurfaces.isEmpty }
+
     /// Locked to "ask": SetTrust refuses execute for both kinds.
     var isLockedToAsk: Bool { external || alwaysAsk }
 
