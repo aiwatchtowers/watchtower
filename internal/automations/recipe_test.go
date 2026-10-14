@@ -365,3 +365,29 @@ func TestParseError_Format(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestApprovalHash_GoldenCanonicalBytes(t *testing.T) {
+	r := &Recipe{
+		Scope:       Scope{Kind: ScopeWorkbench, WorkbenchID: 3},
+		Permissions: []string{"llm:light", "gmail:read@work", "llm:light"},
+		Outputs:     []string{"report", "inbox", "inbox"},
+		Script:      "if (a < b && c > d) { log(\"Привет — ok\"); }\n",
+	}
+	const wantCanonical = `{"permissions":["gmail:read@work","llm:light"],"outputs":["inbox","report"],` +
+		`"scope":"workbench:3","script":"if (a < b && c > d) { log(\"Привет — ok\"); }\n"}`
+	if got := string(approvalCanonical(r)); got != wantCanonical {
+		t.Fatalf("canonical bytes:\n got: %s\nwant: %s", got, wantCanonical)
+	}
+	const wantHex = "0613533506afa87f9d2365a0cd7636764f552f46c4db2a40c7214e01f446815c"
+	if got := ApprovalHash(r); got != wantHex {
+		t.Fatalf("ApprovalHash = %s, want %s", got, wantHex)
+	}
+}
+
+func TestApprovalHash_DuplicateEntriesKeepTheHash(t *testing.T) {
+	base := &Recipe{Scope: Scope{Kind: ScopePersonal}, Script: "x", Permissions: []string{"llm:light"}, Outputs: []string{"inbox"}}
+	dup := &Recipe{Scope: Scope{Kind: ScopePersonal}, Script: "x", Permissions: []string{"llm:light", "llm:light"}, Outputs: []string{"inbox", "inbox"}}
+	if ApprovalHash(base) != ApprovalHash(dup) {
+		t.Error("a duplicated permission or output changed the hash")
+	}
+}

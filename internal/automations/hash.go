@@ -25,6 +25,11 @@ func ContentHash(data []byte) string {
 // auto grants bind to it, so name, description, trigger, missed, budget,
 // concurrency and pause_timeout_hours are deliberately left out.
 func ApprovalHash(r *Recipe) string {
+	return ContentHash(approvalCanonical(r))
+}
+
+// approvalCanonical is the exact byte string ApprovalHash hashes.
+func approvalCanonical(r *Recipe) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(`{"permissions":`)
 	writeCanonical(&buf, sortedCopy(r.Permissions))
@@ -35,16 +40,18 @@ func ApprovalHash(r *Recipe) string {
 	buf.WriteString(`,"script":`)
 	writeCanonical(&buf, r.Script)
 	buf.WriteByte('}')
-	return ContentHash(buf.Bytes())
+	return buf.Bytes()
 }
 
-// sortedCopy returns a sorted copy that is never nil, so a recipe without a
-// list hashes the same as one with an empty list ("[]", never "null").
+// sortedCopy returns a sorted, deduplicated copy that is never nil: a recipe
+// without a list hashes the same as one with an empty list ("[]", never
+// "null"), and listing an entry twice grants nothing more, so it keeps the
+// hash.
 func sortedCopy(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
 }
 
 // writeCanonical appends v as JSON without HTML escaping and without the
