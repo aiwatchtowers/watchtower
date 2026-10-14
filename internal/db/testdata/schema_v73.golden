@@ -135,6 +135,9 @@ CREATE INDEX idx_feedback_rating ON feedback(entity_type, rating)
 index	idx_files_message
 CREATE INDEX idx_files_message ON files(message_channel_id, message_ts)
 
+index	idx_gmail_messages_account_date
+CREATE INDEX idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date)
+
 index	idx_gmail_messages_synced
 CREATE INDEX idx_gmail_messages_synced ON gmail_messages(synced_at)
 
@@ -152,6 +155,9 @@ CREATE INDEX idx_ideas_kind ON ideas(kind, status)
 
 index	idx_ideas_status
 CREATE INDEX idx_ideas_status ON ideas(status, updated_at DESC)
+
+index	idx_imap_messages_account_date
+CREATE INDEX idx_imap_messages_account_date ON imap_messages(account_id, internal_date)
 
 index	idx_imap_messages_synced
 CREATE INDEX idx_imap_messages_synced ON imap_messages(synced_at)
