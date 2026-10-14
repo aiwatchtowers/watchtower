@@ -116,6 +116,7 @@ final class TerminalSessionQueriesTests: XCTestCase {
         XCTAssertEqual(row["agent_cwd"] as String?, "/tmp/acme/wt", "\(label): the working directory stays")
         XCTAssertEqual(row["agent_cwd_at"] as String?, "2026-10-14T10:00:03.000Z", label)
         XCTAssertEqual(row["agent_state"] as String?, "waiting", "\(label): the state is the next run mark's")
+        XCTAssertEqual(row["agent_state_at"] as String?, "2026-10-14T10:00:02.000Z", label)
     }
 
     func testStartFreshClearsThePreviousConversationsColumns() throws {
@@ -136,6 +137,21 @@ final class TerminalSessionQueriesTests: XCTestCase {
             try TerminalSessionQueries.resetAgentSession(db, id: cx.id)
             XCTAssertNil(try TerminalSessionQueries.fetch(db, id: cx.id)?.claudeSessionID)
             try assertConversationCleared(db, id: cx.id, "codex")
+        }
+    }
+
+    func testResetAgentSessionLeavesAClaudeRowsConversationUntouched() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let cl = try TerminalSessionQueries.create(db, claude(project))
+            try seedConversation(db, id: cl.id)
+            let before = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?",
+                                                    arguments: [cl.id]))
+            try TerminalSessionQueries.resetAgentSession(db, id: cl.id)
+            let after = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?",
+                                                   arguments: [cl.id]))
+            XCTAssertEqual(after, before, "the codex reset never touches a claude row")
         }
     }
 
