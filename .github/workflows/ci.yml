@@ -267,6 +267,10 @@ jobs:
     # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
     # ~12; the margin is for a cold SPM cache.
     timeout-minutes: 45
+    # actions: write — the main push deletes the SPM build caches it replaces.
+    permissions:
+      contents: read
+      actions: write
     defaults:
       run:
         working-directory: WatchtowerDesktop
@@ -291,19 +295,54 @@ jobs:
         with:
           go-version: "1.26.9"
 
-      # GRDB alone is minutes of compile on a cold runner; reuse build
-      # products across runs until dependencies change.
-      - name: Cache SPM build
-        uses: actions/cache@v4
+      # The build products of the latest main commit (saved below), so a run
+      # recompiles only what differs from main instead of all of our own
+      # modules: measured 2026-10-14, Build took 7.5-8.5 min with the old
+      # once-per-Package.resolved cache, which a fresh checkout's new mtimes
+      # invalidated wholesale. Restore picks the newest entry for the same
+      # dependencies, else any.
+      - name: Restore SPM build
+        uses: actions/cache/restore@v4
         with:
           path: WatchtowerDesktop/.build
-          key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
-          restore-keys: ${{ runner.os }}-spm-
+          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-
+            ${{ runner.os }}-spm-v2-
 
       # --build-tests: the app and the test bundle in one build, so Test below
-      # only runs the bundle.
+      # only runs the bundle. -enable-incremental-file-hashing: the swift
+      # driver compares a source's content, not just its mtime, before
+      # recompiling it — a checkout touches every file, so without it the
+      # restored products are thrown away. A changed file, or a dependent of a
+      # changed API in another module, still recompiles (checked 2026-10-14).
       - name: Build
-        run: swift build --build-tests
+        run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
+
+      # Only a main push saves (the build above passed), and it drops the
+      # older main entries: one ~2 GB entry against the repo's 10 GB cache.
+      # Pull requests read main's entries but never write their own.
+      - name: Save SPM build
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'ci/swift-build-cache'
+        uses: actions/cache/save@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+
+      - name: Drop older SPM build caches
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main --key "${{ runner.os }}-spm-" --limit 100 --json key --jq '.[].key' |
+            while read -r key; do
+              if [ "$key" != "$KEEP" ]; then
+                # A failed delete costs cache space, not correctness.
+                gh cache delete "$key" --repo "$GITHUB_REPOSITORY" ||
+                  echo "::warning::could not delete cache $key"
+              fi
+            done
 
       # Three concurrent xctest processes over round-robin slices of the test
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
