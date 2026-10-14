@@ -37,7 +37,7 @@ struct HubSessionFactory {
                 linkedDevice: device,
                 keys: PhoneKeys(store: keys, hubID: hubID),
                 recordingsDirectory: paths.recordingsDirectory(hubID),
-                hold: RecordingHold(directory: paths.holdDirectory),
+                hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
                 databaseScope: scope,
                 startsActive: active,
                 uploadRetriesAllowed: active,

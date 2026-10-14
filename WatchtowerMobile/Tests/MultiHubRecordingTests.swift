@@ -67,7 +67,7 @@ final class MultiHubRecordingTests: XCTestCase {
             keys: try TestHub.keys(hubID),
             defaults: try makeDefaults(),
             recordingsDirectory: paths.recordingsDirectory(hubID),
-            hold: RecordingHold(directory: paths.holdDirectory),
+            hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
             uploadRetriesAllowed: true,
             makeRecorder: { uploader in
                 PhoneRecorderController(
@@ -367,6 +367,49 @@ final class MultiHubRecordingTests: XCTestCase {
         XCTAssertTrue(env.heldRecordings.isEmpty, "the list reads the hold again")
     }
 
+    /// The data-loss guard: a hub the registry links but whose session
+    /// could not be opened is still linked. Its held recording offers no
+    /// Share or Delete, and a Delete of it removes nothing.
+    func testARecordingHeldForAnUnopenedHubCannotBeDeleted() async throws {
+        let base = try makeBase()
+        let forB = try await holdRecording(for: TestHub.hubB, base: base)
+        let forGone = try await holdRecording(for: TestHub.gone, base: base)
+        let hubA = try makeHub(TestHub.hubA, base: base)
+        let registry = try HubRegistry.inMemory()
+        for hubID in [TestHub.hubA, TestHub.hubB] {
+            try registry.upsert(LinkRecord(
+                hubID: hubID, macName: "Acme Mac", scope: .private, ownerName: "_owner-acme", userRecordName: "_owner-acme",
+                nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil, deviceID: device.deviceID, linkedAt: nil
+            ), now: Date())
+        }
+        struct Unopened: Error {}
+        let env = try AppEnvironment.live(
+            registry: registry, paths: paths(base),
+            factory: HubSessionFactory { _, hubID, _, _ in
+                guard hubID == TestHub.hubA else { throw Unopened() }
+                return hubA.session
+            },
+            identity: DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion),
+            defaults: try makeDefaults()
+        ) { _ in }
+        await env.waitForBoot()
+        XCTAssertEqual(env.unopenedHubIDs, [TestHub.hubB])
+        XCTAssertEqual(Set(env.heldRecordings.map(\.id)), [forB.id, forGone.id], "hub B has no session to adopt it")
+
+        let list = RecordingsListModel(
+            recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
+            seen: RecordingsSeen(baseline: .distantPast, opened: []), now: Date(), calendar: .current,
+            held: env.heldRecordings, linkedHubIDs: env.linkedHubIDs
+        )
+        XCTAssertEqual(list.inProgress.compactMap(\.heldForUnlinkedMac).map(\.id), [forGone.id])
+
+        try await env.deleteHeld(forB)
+
+        let hold = RecordingHold(directory: paths(base).holdDirectory)
+        XCTAssertEqual(Set(try hold.load().map(\.id)), [forB.id, forGone.id], "an unopened hub's recording stays held")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hold.directory.appendingPathComponent(forB.fileName).path))
+    }
+
     /// Audio a wipe could not read shows as one Recordings row while files
     /// are there; deleting them clears it.
     func testUnreadableAudioIsListedUntilDeleted() async throws {
@@ -378,7 +421,7 @@ final class MultiHubRecordingTests: XCTestCase {
             RecordingsListModel(
                 recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
                 seen: RecordingsSeen(baseline: .distantPast, opened: []), now: Date(), calendar: .current,
-                unreadableCount: env.unreadableAudio.count
+                linkedHubIDs: env.linkedHubIDs, unreadableCount: env.unreadableAudio.count
             )
         }
         XCTAssertNil(list().unreadableText)

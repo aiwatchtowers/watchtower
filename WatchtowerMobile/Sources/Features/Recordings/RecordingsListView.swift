@@ -42,7 +42,7 @@ struct RecordingsListView: View {
                 }
             }
         } message: { _ in
-            Text("Its audio is removed from this iPhone. It was never sent to a Mac.")
+            Text("Its audio is removed from this iPhone. It was not received by a Mac.")
         }
         .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -201,7 +201,7 @@ private struct UnreadableRecordingsView: View {
                         row(file)
                     }
                 } footer: {
-                    Text("Their details couldn't be read when a Mac was unlinked, so they are not sent to any Mac.")
+                    Text("Their details couldn't be read while this iPhone was setting a Mac's data aside, so they are not sent to any Mac.")
                 }
             }
             .listStyle(.plain)

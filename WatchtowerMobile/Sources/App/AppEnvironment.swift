@@ -354,12 +354,11 @@ final class AppEnvironment {
     /// Recordings lists it for Share and Delete.
     var unreadableAudio: [UnreadableAudio] { activeSession.unreadableAudio }
 
-    /// Where a held recording's audio is in the hold, for Share; nil when
-    /// it is not there.
+    /// Where a held recording's audio was when the hold was last read
+    /// (the hold, or its hub's folder after a crash mid-move), for Share;
+    /// nil when it was gone.
     func heldAudioURL(_ recording: HeldRecording) -> URL? {
-        guard let hold = activeSession.hold else { return nil }
-        let url = hold.directory.appendingPathComponent(recording.fileName)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        activeSession.heldAudioURLs[recording.id]
     }
 
     /// Deletes a held recording whose Mac is no longer linked, its audio
@@ -371,22 +370,21 @@ final class AppEnvironment {
         try await HoldGate.shared.run { try hold.discard(id: recording.id) }
     }
 
-    /// Deletes files from `.held/unreadable` by name; the first failure
-    /// stops the rest.
+    /// Deletes audio from `.held/unreadable` by name (and the sealed
+    /// copies once none is left); the first failure stops the rest.
     func deleteUnreadable(_ names: [String]) async throws {
         guard let hold = activeSession.hold else { return }
         defer { reloadHold() }
-        try await HoldGate.shared.run {
-            for name in names {
-                try hold.deleteUnreadable(named: name)
-            }
-        }
+        try await HoldGate.shared.run { try hold.deleteUnreadable(named: names) }
     }
 
-    /// Every session reads the shared hold again.
+    /// Every session reads the shared hold again, the active one too (a
+    /// removed hub's session can stay on screen without being in
+    /// `sessions`).
     private func reloadHold() {
-        activeSession.reloadHeldRecordings()
-        for session in sessions.values {
+        let active = activeSession
+        active.reloadHeldRecordings()
+        for session in sessions.values where session !== active {
             session.reloadHeldRecordings()
         }
     }

@@ -166,6 +166,8 @@ struct RecordingsListModel {
         newCount > 0 ? "Recordings · \(newCount) new" : "Recordings"
     }
 
+    /// `linkedHubIDs` (`AppEnvironment.linkedHubIDs`) has no default: a
+    /// held recording of a hub missing from it offers Delete.
     init(
         recordings: PhoneRecordingsSnapshot,
         replica: CalendarReplicaSnapshot,
@@ -173,7 +175,7 @@ struct RecordingsListModel {
         now: Date,
         calendar: Calendar,
         held: [HeldRecording] = [],
-        linkedHubIDs: Set<String> = [],
+        linkedHubIDs: Set<String>,
         unreadableCount: Int = 0
     ) {
         let format = RecordingsFormat(calendar: calendar, now: now)
