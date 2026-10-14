@@ -13,8 +13,9 @@ import (
 
 // errDaemonCannotWake is wakeAutomations' answer for a running daemon that
 // does not advertise daemon.AutomationWakeCapability: one built before
-// automations, or one started while automations were off (it runs no
-// scheduler or executor and advertises nothing).
+// automations, or one started while automations were off. Either would
+// silently ignore SIGUSR2 and the run would just wait for its next poll, so
+// the CLI does not signal it and tells the owner to restart it instead.
 var errDaemonCannotWake = errors.New("the running daemon is older, or was started with automations off, and can't be woken; " +
 	"restart it (`watchtower sync stop`, then `watchtower sync --daemon --detach`) — the run starts on its next poll")
 

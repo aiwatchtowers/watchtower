@@ -22,10 +22,13 @@ import (
 // sync — TriggerSignal (SIGUSR1) keeps meaning that.
 const AutomationWakeSignal = syscall.SIGUSR2
 
-// AutomationWakeCapability is the line a daemon that handles
-// AutomationWakeSignal writes into its capabilities file. A daemon built
-// before automations has no SIGUSR2 handler, and SIGUSR2's default action
-// would terminate it, so the CLI signals only a daemon that advertises this.
+// AutomationWakeCapability is the line a daemon whose scheduler and executor
+// serve AutomationWakeSignal writes into its capabilities file: it tells the
+// CLI whether this daemon actually runs the automations wake. A daemon built
+// before automations, or one running with automations off, silently ignores
+// SIGUSR2 (the Go runtime catches it and does nothing), so a run would just
+// wait for the next poll; the CLI signals only a daemon that advertises this
+// and otherwise says so.
 const AutomationWakeCapability = "automations-wake"
 
 // CapsPath is the capabilities file beside a daemon's PID file: its first
@@ -111,8 +114,9 @@ func (d *Daemon) SetAutomations(scheduler, executor AutomationRunner) {
 // At ctx.Done the signal is ignored (signal.Ignore), not handed back to its
 // default disposition (signal.Stop): the daemon's capabilities file still
 // advertises the wake until Run's deferred cleanup removes it, and a CLI
-// that read it in that window must find the signal harmless to a daemon that
-// is shutting down. It stays ignored until process exit, or until a later
+// that read it in that window gets an explicit no-op from a daemon that is
+// shutting down (a Go process ignores an unwatched SIGUSR2 anyway; this keeps
+// that from depending on the runtime's default). It stays ignored until process exit, or until a later
 // WatchAutomationWake re-enables it.
 func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 	ch := make(chan struct{}, 1)
@@ -139,8 +143,9 @@ func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 }
 
 // watchAutomationWake installs the AutomationWakeSignal watcher unless a test
-// injected its own channel. It is installed even with automations off (a wake
-// is then dropped): SIGUSR2's default action would terminate the daemon.
+// injected its own channel. It is installed even with automations off; a
+// wake is then dropped (and the daemon does not advertise it, see
+// advertiseCaps).
 func (d *Daemon) watchAutomationWake(ctx context.Context) {
 	if d.automationWakeCh == nil {
 		d.automationWakeCh = WatchAutomationWake(ctx)

@@ -59,8 +59,8 @@ func TestWatchAutomationWake_CoalescesAndCloses(t *testing.T) {
 
 // After ctx is done the watcher leaves the signal ignored instead of
 // handing it back to its default disposition: a CLI that read the
-// capabilities file just before the daemon removed it must not reach a
-// shutting-down daemon with an unhandled SIGUSR2. signal.Ignored pins the
+// capabilities file just before the daemon removed it gets an explicit no-op
+// from a shutting-down daemon. signal.Ignored pins the
 // disposition (signal.Stop would leave it false); the self-signal below must
 // not end the test process either.
 func TestWatchAutomationWake_ShutdownKeepsSignalIgnored(t *testing.T) {
@@ -181,9 +181,10 @@ func TestDaemon_AutomationsUnwiredStartsNothing(t *testing.T) {
 	require.NoError(t, runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 1 }))
 }
 
-// A running daemon advertises its SIGUSR2 handler beside its PID file, under
+// A running daemon advertises its automations wake beside its PID file, under
 // its own pid, and removes the advertisement when it stops — the CLI signals
-// only a daemon that advertises it (an older one would die of SIGUSR2).
+// only a daemon that advertises it (an older one ignores SIGUSR2, so the run
+// would just wait for its next poll).
 func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	var syncCount atomic.Int32
 	d, _, _, _ := newAutomationTestDaemon(t, true, &syncCount)
