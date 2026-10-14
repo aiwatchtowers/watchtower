@@ -428,6 +428,9 @@ extension WorkbenchesViewModel {
     /// `ticket` is the switch's `beginSwitch` when the caller took it before
     /// an await of its own; otherwise it is taken here.
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
+        // A Delete and Clean Up closed its terminal and is removing its
+        // worktree: no resume (board #535).
+        guard !cleaningUpSessions.contains(session.id) else { return }
         let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
         // A failure is reported already (`reopen`).
         _ = try? await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)

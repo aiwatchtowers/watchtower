@@ -32,6 +32,9 @@ struct SessionsPanelSessionRow: View {
             showsDelete: hoveredRow == row.id || hasCursor,
             hasCursor: hasCursor
         )
+        // Busy while Delete and Clean Up runs on it (board #535): no
+        // resume, no menu.
+        .disabled(isCleaningUp)
         .panelTab(isSelected: vm.panelSelection == .session(row.id))
         .onHover { inside in
             if inside {
@@ -42,12 +45,14 @@ struct SessionsPanelSessionRow: View {
         }
     }
 
-    /// The report line, or "Cleaning up…" while Delete and Clean Up runs
-    /// on this row (board #535).
+    /// The report line, or "Cleaning up…" while Delete and Clean Up or a
+    /// Clean Up… apply runs on this row (board #535).
     private var reportLine: String? {
-        if vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
+        if isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
         return vm.reportLine(sessionID: row.id, projectID: projectID)
     }
+
+    private var isCleaningUp: Bool { vm.cleaningUpSessions.contains(row.id) }
 
     private var hasCursor: Bool {
         panelHasKeyboard && vm.panelCursor == row.id
@@ -60,7 +65,7 @@ struct SessionsPanelSessionRow: View {
     /// panel (`deleteButtonTakesKeyboard`), so VoiceOver's action never
     /// pulls it out of the terminal or the editor.
     var quickDeleteAction: (() -> Void)? {
-        guard SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
+        guard !isCleaningUp, SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
         let (vm, actions, session) = (vm, actions, row.session)
         return {
             Task {

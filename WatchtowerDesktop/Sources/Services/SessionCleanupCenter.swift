@@ -64,6 +64,10 @@ final class SessionCleanupCenter {
     @ObservationIgnored private let runner: (any SessionCleanupRunning)?
     /// Per scope, the newest run started: an older run's answer is dropped.
     @ObservationIgnored private var runSerials: [SessionCleanupScope: Int] = [:]
+    /// Per scope, the plan last started by `startPlan`: owned here, never by
+    /// a view, so a sheet torn down when the owner leaves the page neither
+    /// stops the CLI nor fails the plan.
+    @ObservationIgnored private var planRuns: [SessionCleanupScope: Task<Void, Never>] = [:]
 
     init(runner: (any SessionCleanupRunning)?) {
         self.runner = runner
@@ -82,6 +86,20 @@ final class SessionCleanupCenter {
         phases[scope] ?? .idle
     }
 
+    /// Starts planning session `sessionID`'s cleanup in a task the center
+    /// owns (see `planCleanup`) and returns it. A caller awaiting its value
+    /// may be cancelled — a sheet's `.task` when the page is left — without
+    /// cancelling the plan: it runs on and its phase stays readable.
+    @discardableResult
+    func startPlan(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) -> Task<Void, Never> {
+        let run = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await planCleanup(sessionID: sessionID, workbenchID: workbenchID, closingSession: closingSession)
+        }
+        planRuns[.session(sessionID)] = run
+        return run
+    }
+
     /// Plans session `sessionID`'s cleanup (writes nothing). `closingSession`:
     /// the plan is for the Delete dialog, which closes the session's
     /// terminal before it applies — the session's own id is then not passed
@@ -96,6 +114,11 @@ final class SessionCleanupCenter {
         let serial = beginRun(scope, phase: .planning)
         let outcome = await runCleanup(args)
         guard runSerials[scope] == serial else { return }
+        // A cancelled caller is not a failed plan: nothing to show.
+        guard !Task.isCancelled else {
+            phases[scope] = nil
+            return
+        }
         switch outcome {
         case let .success(plan): phases[scope] = .ready(plan)
         case let .failure(message): phases[scope] = .failed(message)
@@ -139,19 +162,14 @@ final class SessionCleanupCenter {
         }
     }
 
-    /// Forgets the scope's phase (a dialog dismissed without a run). An
-    /// apply in flight is kept.
+    /// Forgets the scope's phase (a dialog closed, a delete finished) and
+    /// stops a plan `startPlan` still runs for it. An apply in flight is
+    /// kept.
     func forgetCleanup(_ scope: SessionCleanupScope) {
         guard cleanupPhase(for: scope) != .applying else { return }
         runSerials[scope, default: 0] += 1
         phases[scope] = nil
-    }
-
-    /// The planned `remove` keys of the scope's ready plan; empty in any
-    /// other phase.
-    func plannedRemovals(for scope: SessionCleanupScope) -> [String] {
-        if case let .ready(plan) = cleanupPhase(for: scope) { return plan.removableKeys }
-        return []
+        planRuns.removeValue(forKey: scope)?.cancel()
     }
 
     // MARK: Running

@@ -111,6 +111,16 @@ final class WorkbenchesViewModel {
     /// The sessions' stored cleanup results (`cleanup_result`), for the
     /// report's Cleanup line; a session without one has no entry.
     var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
+    /// The sessions a Delete and Clean Up runs on (board #535): from the
+    /// click until the row is deleted or kept, the row is busy — it neither
+    /// opens nor deletes, and shows "Cleaning up…".
+    var cleaningUpSessions: Set<Int64> = []
+    /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
+    /// Up… apply), per session: a view going away never cancels one.
+    @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The sessions whose Clean Up… sheet is on screen: an apply ending
+    /// while it is not shows its failure on the page instead.
+    @ObservationIgnored var openCleanupSheets: Set<Int64> = []
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter

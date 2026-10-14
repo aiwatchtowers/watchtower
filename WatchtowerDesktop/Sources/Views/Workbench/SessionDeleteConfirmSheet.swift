@@ -8,8 +8,8 @@ enum SessionDeleteCleanupOffer {
     static let undoNote = "Undo brings the session back, not the removed worktrees and branches."
 
     /// The dialog's cleanup line; nil when there is nothing to say (no
-    /// cleanup for this session, or nothing removable — the dialog is then
-    /// as before cleanup).
+    /// cleanup for this session, or nothing it shows as removable — the
+    /// dialog is then as before cleanup).
     static func message(_ phase: SessionCleanupPhase) -> String? {
         switch phase {
         case .idle, .done: nil
@@ -20,10 +20,11 @@ enum SessionDeleteCleanupOffer {
         }
     }
 
-    /// Whether the dialog offers Delete and Clean Up: a ready plan with
-    /// something to remove.
+    /// Whether the dialog offers Delete and Clean Up: a ready plan that
+    /// shows something to remove (an item of a kind this build does not
+    /// know is never shown, so never offered).
     static func offersCleanup(_ phase: SessionCleanupPhase) -> Bool {
-        if case let .ready(plan) = phase { return !plan.removableKeys.isEmpty }
+        if case let .ready(plan) = phase { return SessionDeleteCleanupChoice(plan: plan).offersCleanup }
         return false
     }
 }
@@ -31,8 +32,9 @@ enum SessionDeleteCleanupOffer {
 /// The Delete confirmation. On open it plans the session's cleanup; with
 /// something to remove it offers **Delete and Clean Up** (the default, ask
 /// #193), **Delete Only** and Cancel, else Delete Session and Cancel as
-/// before. Delete and Clean Up passes on exactly the keys shown. The quick
-/// ✕ / ⌘⌫ delete never comes here and never cleans up.
+/// before. Delete and Clean Up passes on exactly what the dialog shows. The
+/// quick ✕ / ⌘⌫ delete never comes here and never cleans up. The plan runs
+/// in the center, so the dialog going away never cancels it.
 struct SessionDeleteConfirmSheet: View {
     let vm: WorkbenchesViewModel
     let session: TerminalSession
@@ -53,7 +55,7 @@ struct SessionDeleteConfirmSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { finish(cleanupDropped: true) }
                     .keyboardShortcut(.cancelAction)
-                deleteButtons(offersCleanup: SessionDeleteCleanupOffer.offersCleanup(phase), checking: phase == .planning)
+                deleteButtons(choice: vm.deleteCleanupChoice(session), checking: phase == .planning)
             }
         }
         .padding(20)
@@ -62,13 +64,12 @@ struct SessionDeleteConfirmSheet: View {
     }
 
     @ViewBuilder
-    private func deleteButtons(offersCleanup: Bool, checking: Bool) -> some View {
-        if offersCleanup {
+    private func deleteButtons(choice: SessionDeleteCleanupChoice?, checking: Bool) -> some View {
+        if let choice, choice.offersCleanup {
             Button("Delete Only", role: .destructive) { deleteOnly() }
             Button("Delete and Clean Up", role: .destructive) {
-                let (vm, session, keys) = (vm, session, vm.plannedDeleteRemovals(session))
+                vm.startDeleteAndCleanUp(session, choice: choice)
                 finish(cleanupDropped: false)
-                Task { await vm.deleteAndCleanUp(session, items: keys) }
             }
             .keyboardShortcut(.defaultAction)
         } else {

@@ -4,20 +4,25 @@ import WatchtowerCore
 
 /// A `SessionCleanupRunning` double: records every call's argv and child
 /// environment, answers from `replies` in order (the last one repeats), and
-/// can hold a call until `release()`.
+/// can hold a call until `release()`. A call whose task was cancelled
+/// throws `CancellationError` once released, as `ProcessCLIRunner`
+/// terminates the CLI then.
 final class FakeSessionCleanupRunner: SessionCleanupRunning, @unchecked Sendable {
-    struct Call {
+    struct Call: Sendable {
         let args: [String]
         let environment: [String: String]
     }
 
     /// When true, each call waits for `release()`.
     var holdsCalls = false
+    /// Runs on each call before it answers (a test writing what Go would).
+    var onCall: (@Sendable (Call) -> Void)?
 
     private let lock = NSLock()
     private var recorded: [Call] = []
     private var replies: [Result<Data, Error>]
     private var held: [CheckedContinuation<Void, Never>] = []
+    private var cancelled = 0
 
     init(replies: [Result<Data, Error>]) {
         self.replies = replies
@@ -35,6 +40,13 @@ final class FakeSessionCleanupRunner: SessionCleanupRunning, @unchecked Sendable
         return held.count
     }
 
+    /// The calls that ended cancelled (the CLI would have been terminated).
+    var cancelledCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
     func release() {
         lock.lock()
         let waiting = held
@@ -44,13 +56,21 @@ final class FakeSessionCleanupRunner: SessionCleanupRunning, @unchecked Sendable
     }
 
     func runCleanupCommand(args: [String], environment: [String: String]) async throws -> Data {
-        let reply = record(Call(args: args, environment: environment))
+        let call = Call(args: args, environment: environment)
+        let reply = record(call)
+        onCall?(call)
         if holdsCalls {
             await withCheckedContinuation { continuation in
                 lock.lock()
                 held.append(continuation)
                 lock.unlock()
             }
+        }
+        if Task.isCancelled {
+            lock.lock()
+            cancelled += 1
+            lock.unlock()
+            throw CancellationError()
         }
         return try reply.get()
     }
@@ -89,6 +109,52 @@ enum CleanupFixture {
      ],
      "removed_bytes":2000000000,"removed_bytes_known":true,
      "summary":"1 worktree, 1 branch removed (~2.0 GB)","result_saved":true,"result_error":""}
+    """.utf8)
+
+    /// The Delete dialog's plan while the session's terminal runs: its
+    /// worktree is kept for a running process, the branch checked out in it
+    /// with it; another branch is kept for unpushed commits.
+    static let planBusy = Data("""
+    {"session_id":9,"workbench_id":2,"mode":"plan","items":[
+      {"key":"worktree:/tmp/example/.claude/worktrees/x","kind":"worktree","name":"x","branch":"feat/x",
+       "action":"keep","reason":"process_running","detail":"process in use: claude pid 42"},
+      {"key":"branch:feat/x","kind":"branch","name":"feat/x","action":"keep","reason":"checked_out"},
+      {"key":"branch:feat/old","kind":"branch","name":"feat/old","action":"keep","reason":"unpushed_commits"}
+    ]}
+    """.utf8)
+
+    /// The plan once the terminal closed: the worktree and its branch are
+    /// free, and so is a branch the dialog never showed as removable.
+    static let replanFree = Data("""
+    {"session_id":9,"workbench_id":2,"mode":"plan","items":[
+      {"key":"worktree:/tmp/example/.claude/worktrees/x","kind":"worktree","name":"x","branch":"feat/x",
+       "bytes_known":true,"action":"remove"},
+      {"key":"branch:feat/x","kind":"branch","name":"feat/x","action":"remove"},
+      {"key":"branch:feat/old","kind":"branch","name":"feat/old","action":"remove"}
+    ]}
+    """.utf8)
+
+    /// A removable item of a kind this build does not know, beside a branch.
+    static let planWithUnknownKind = Data("""
+    {"session_id":9,"workbench_id":2,"mode":"plan","items":[
+      {"key":"gizmo:1","kind":"gizmo","name":"g","action":"remove"},
+      {"key":"branch:feat/x","kind":"branch","name":"feat/x","action":"remove"}
+    ]}
+    """.utf8)
+
+    static let planUnknownOnly = Data("""
+    {"session_id":9,"workbench_id":2,"mode":"plan","items":[
+      {"key":"gizmo:1","kind":"gizmo","name":"g","action":"remove"}
+    ]}
+    """.utf8)
+
+    /// The apply removed the worktree but kept the branch: a commit landed
+    /// while the dialog was open.
+    static let appliedKeptBranch = Data("""
+    {"session_id":9,"workbench_id":2,"mode":"apply","items":[
+      {"key":"worktree:/tmp/example/.claude/worktrees/x","kind":"worktree","name":"x","action":"remove","done":true},
+      {"key":"branch:feat/x","kind":"branch","name":"feat/x","action":"keep","reason":"unpushed_commits"}
+    ],"summary":"1 worktree removed","result_saved":true}
     """.utf8)
 
     static let appliedWithError = Data("""
@@ -151,25 +217,59 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertEqual(String(bytes: data, encoding: .utf8), "WT_PROBE=1\n")
     }
 
-    func testCleanupSurvivesNavigation() async throws {
+    /// A plan started through `startPlan` belongs to the center: its
+    /// caller — a sheet's task, cancelled when the page is left — going
+    /// away neither stops the CLI nor fails the plan.
+    func testPlanOutlivesItsCancelledCaller() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
         runner.holdsCalls = true
         let center = SessionCleanupCenter(runner: runner)
 
-        // The sheet starts the plan, then the owner leaves the page: the
-        // view and its task are gone, the center keeps the run.
-        let started = Task { await center.planCleanup(sessionID: 9, workbenchID: 2) }
+        let caller = Task { await center.startPlan(sessionID: 9, workbenchID: 2).value }
         while runner.heldCount == 0 { await Task.yield() }
+        caller.cancel()
         XCTAssertEqual(center.cleanupPhase(for: .session(9)), .planning)
 
         runner.release()
-        await started.value
+        await caller.value
+        XCTAssertEqual(runner.cancelledCount, 0, "the CLI ran on")
 
-        // Back on the page: the plan is there.
-        guard case .ready = center.cleanupPhase(for: .session(9)) else {
+        guard case let .ready(plan) = center.cleanupPhase(for: .session(9)) else {
             return XCTFail("expected the plan kept, got \(center.cleanupPhase(for: .session(9)))")
         }
-        XCTAssertEqual(center.plannedRemovals(for: .session(9)), CleanupFixture.plannedKeys)
+        XCTAssertEqual(plan.removableKeys, CleanupFixture.plannedKeys)
+    }
+
+    /// A plan run directly in a task that is then cancelled leaves no
+    /// phase behind — never `.failed(CancellationError)`.
+    func testCancelledPlanIsNotAFailure() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        runner.holdsCalls = true
+        let center = SessionCleanupCenter(runner: runner)
+
+        let run = Task { await center.planCleanup(sessionID: 9, workbenchID: 2) }
+        while runner.heldCount == 0 { await Task.yield() }
+        run.cancel()
+        runner.release()
+        await run.value
+
+        XCTAssertEqual(center.cleanupPhase(for: .session(9)), .idle)
+    }
+
+    /// Forgetting a scope stops the plan `startPlan` runs for it.
+    func testForgetStopsAStartedPlan() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        runner.holdsCalls = true
+        let center = SessionCleanupCenter(runner: runner)
+
+        let run = center.startPlan(sessionID: 9, workbenchID: 2)
+        while runner.heldCount == 0 { await Task.yield() }
+        center.forgetCleanup(.session(9))
+        runner.release()
+        await run.value
+
+        XCTAssertEqual(center.cleanupPhase(for: .session(9)), .idle)
+        XCTAssertEqual(runner.cancelledCount, 1, "the CLI is stopped, not left to run")
     }
 
     func testApplyWithoutItemsRunsNothing() async {
@@ -221,7 +321,6 @@ final class SessionCleanupCenterTests: XCTestCase {
             return XCTFail("expected failed")
         }
         XCTAssertTrue(message.contains("no git"), message)
-        XCTAssertTrue(center.plannedRemovals(for: .session(9)).isEmpty)
     }
 
     func testWithoutABinaryEveryRunFails() async {
@@ -264,6 +363,12 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertNil(SessionDeleteCleanupOffer.message(.ready(empty)), "nothing removable: the dialog is as before")
         XCTAssertFalse(SessionDeleteCleanupOffer.offersCleanup(.ready(empty)))
         XCTAssertNil(SessionDeleteCleanupOffer.message(.idle))
+        let unknownOnly = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.planUnknownOnly)
+        XCTAssertFalse(SessionDeleteCleanupOffer.offersCleanup(.ready(unknownOnly)),
+                       "an item of an unknown kind is never shown, so never offered")
+        XCTAssertNil(SessionDeleteCleanupOffer.message(.ready(unknownOnly)))
+        let busy = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.planBusy)
+        XCTAssertTrue(SessionDeleteCleanupOffer.offersCleanup(.ready(busy)), "removed once the terminal closes")
         XCTAssertEqual(SessionDeleteCleanupOffer.message(.failed("boom")), "Could not check what this session left: boom")
     }
 }

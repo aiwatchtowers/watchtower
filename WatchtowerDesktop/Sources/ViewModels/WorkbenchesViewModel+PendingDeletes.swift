@@ -20,8 +20,10 @@ extension WorkbenchesViewModel {
     /// writes nothing: the row joins the Undo batch (`pendingDeletes`) and
     /// its DELETE (with its cascades) runs when the window ends or the app
     /// quits (`commitPendingDeletesForQuit`). Claude Code's transcript is
-    /// left alone. The panel cursor moves to the row's neighbour.
+    /// left alone. The panel cursor moves to the row's neighbour. A row a
+    /// Delete and Clean Up runs on is busy: nothing happens (board #535).
     func delete(_ session: TerminalSession) async {
+        guard !cleaningUpSessions.contains(session.id) else { return }
         setSessionError(nil, projectID: session.projectID)
         movePanelCursorOff(session)
         let at = now()

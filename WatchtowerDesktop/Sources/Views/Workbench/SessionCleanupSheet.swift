@@ -5,8 +5,9 @@ import WatchtowerCore
 /// 2026-10-12-session-cleanup §12): the plan with the `remove` items ticked
 /// and the kept ones greyed with their reason in words, the total of what
 /// is ticked; **Clean Up** applies exactly the ticked keys and shows the
-/// result. The plan and the result live in `SessionCleanupCenter`, so an
-/// apply goes on when the sheet closes; the ticks are this sheet's.
+/// result. The plan and the result live in `SessionCleanupCenter` and the
+/// apply runs on the view model, so an apply goes on when the sheet closes
+/// (its failure then shows on the page); the ticks are this sheet's.
 struct SessionCleanupSheet: View {
     let vm: WorkbenchesViewModel
     let session: TerminalSession
@@ -26,6 +27,8 @@ struct SessionCleanupSheet: View {
         .padding(20)
         .frame(width: 540)
         .task(id: session.id) { await vm.planCleanupForSheet(session) }
+        .onAppear { vm.cleanupSheetAppeared(session) }
+        .onDisappear { vm.cleanupSheetDisappeared(session) }
         .onChange(of: phase, initial: true) { _, now in
             if case let .ready(plan) = now { ticked = Set(plan.removableKeys) }
         }
@@ -34,26 +37,31 @@ struct SessionCleanupSheet: View {
     @ViewBuilder
     private func footer(_ phase: SessionCleanupPhase) -> some View {
         HStack {
-            if case let .ready(plan) = phase {
-                let chosen = plan.items.filter { ticked.contains($0.key) && $0.isPendingRemoval }
+            if case .ready = phase {
+                let chosen = vm.sheetCleanupChoice(session, ticked: ticked)
                 Text(SessionCleanupPresentation.totalText(chosen) ?? "Nothing selected")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { close() }
                     .keyboardShortcut(.cancelAction)
                 Button("Clean Up", role: .destructive) {
-                    let (vm, session, keys) = (vm, session, chosen.map(\.key))
-                    Task { await vm.applySheetCleanup(session, items: keys) }
+                    let (vm, session, ticked) = (vm, session, ticked)
+                    Task { await vm.applySheetCleanup(session, ticked: ticked) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(chosen.isEmpty)
             } else {
                 Spacer()
-                Button(phase == .applying ? "Close" : "Done") { dismiss() }
+                Button(phase == .applying ? "Close" : "Done") { close() }
                     .keyboardShortcut(.defaultAction)
             }
         }
+    }
+
+    private func close() {
+        vm.closeCleanupSheet(session)
+        dismiss()
     }
 }
 

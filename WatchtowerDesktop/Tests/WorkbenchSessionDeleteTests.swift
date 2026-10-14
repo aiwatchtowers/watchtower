@@ -87,28 +87,36 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         runner.calls.map(\.args).filter { $0.contains("--apply") }
     }
 
+    /// Holds until `runner` holds a call.
+    private func waitForHeldCall(_ runner: FakeSessionCleanupRunner) async {
+        while runner.heldCount == 0 { await Task.yield() }
+    }
+
     // MARK: - PROJ-18 guards
 
     func testProj18_DeleteAppliesOnlyThePlannedItems() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
-        let (vm, _) = makeVM(runner)
-        let (_, row) = try await liveSession(vm)
+        let (vm, cleanup) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
 
         await vm.planCleanupBeforeDelete(row)
-        let keys = vm.plannedDeleteRemovals(row)
-        XCTAssertEqual(keys, CleanupFixture.plannedKeys, "the kept worktree is not offered")
-        let ok = await vm.deleteAndCleanUp(row, items: keys)
+        let choice = try XCTUnwrap(vm.deleteCleanupChoice(row))
+        XCTAssertEqual(choice.shownKeys, CleanupFixture.plannedKeys, "the kept worktree is not offered")
+        let ok = await vm.deleteAndCleanUp(row, choice: choice)
 
         XCTAssertTrue(ok)
         let apply = try XCTUnwrap(applyCalls(runner).first)
         XCTAssertEqual(applyCalls(runner).count, 1)
-        XCTAssertEqual(apply.filter { $0.hasPrefix("--item") }, keys.map { "--item=\($0)" },
+        XCTAssertEqual(apply.filter { $0.hasPrefix("--item") }, choice.shownKeys.map { "--item=\($0)" },
                        "--apply names exactly the planned keys")
         XCTAssertTrue(apply.contains("--session=\(row.id)"))
         XCTAssertFalse(apply.contains("--live-session=\(row.id)"), "the terminal closed before the apply")
         XCTAssertFalse(terminals.liveIDs.contains(row.id))
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id), "then the normal deferred delete, with Undo")
         XCTAssertFalse(vm.sessions.contains { $0.id == row.id })
+        XCTAssertNil(vm.sessionErrors[p], "nothing shown was kept: no notice")
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(row.id)), .idle, "a finished delete leaves no phase")
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id))
     }
 
     func testProj18_FailedCleanupKeepsTheSessionRow() async throws {
@@ -120,7 +128,7 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         let (p, row) = try await liveSession(vm)
 
         await vm.planCleanupBeforeDelete(row)
-        let ok = await vm.deleteAndCleanUp(row, items: vm.plannedDeleteRemovals(row))
+        let ok = await vm.deleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
 
         XCTAssertFalse(ok)
         let kept = try await stored(row.id)
@@ -130,6 +138,7 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         let error = try XCTUnwrap(vm.sessionErrors[p])
         XCTAssertTrue(error.contains("Cleanup failed") && error.contains("git missing"), error)
         XCTAssertNotNil(cleanup.failureText(for: .session(row.id)))
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id), "the row is no longer busy")
     }
 
     func testFailedItemKeepsTheSessionRow() async throws {
@@ -140,7 +149,7 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         let (p, row) = try await liveSession(vm)
 
         await vm.planCleanupBeforeDelete(row)
-        let ok = await vm.deleteAndCleanUp(row, items: vm.plannedDeleteRemovals(row))
+        let ok = await vm.deleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
 
         XCTAssertFalse(ok)
         let kept = try await stored(row.id)
@@ -164,8 +173,10 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
     }
 
+    /// The ✕ / ⌘⌫ path deletes without applying, even with a ready plan
+    /// whose keys it could pass.
     func testQuickDeleteNeverCleansUp() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
         let (vm, _) = makeVM(runner)
         let acme = folder.appendingPathComponent("acme").path
         let p = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: acme) }
@@ -178,11 +189,14 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         await vm.reload()
         vm.selectedWorkbenchID = p
         await vm.loadSessions(projectID: p)
+        await vm.planCleanupBeforeDelete(row)
+        XCTAssertNotNil(vm.deleteCleanupChoice(row), "a plan is ready")
 
         let intent = await vm.deleteQuicklyOrConfirm(row)
 
         XCTAssertEqual(intent, .quick)
-        XCTAssertTrue(runner.calls.isEmpty, "the ✕ / ⌘⌫ path is Delete Only")
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id), "deleted at once")
+        XCTAssertTrue(applyCalls(runner).isEmpty, "the ✕ / ⌘⌫ path is Delete Only")
     }
 
     func testDeleteAndCleanUpWithNothingPlannedIsAPlainDelete() async throws {
@@ -191,11 +205,259 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         let (_, row) = try await liveSession(vm)
 
         await vm.planCleanupBeforeDelete(row)
-        let ok = await vm.deleteAndCleanUp(row, items: vm.plannedDeleteRemovals(row))
+        let ok = await vm.deleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
 
         XCTAssertTrue(ok)
         XCTAssertTrue(applyCalls(runner).isEmpty)
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+    }
+
+    // MARK: - Shown items only (F3, F5)
+
+    func testUnknownKindsAreNeverApplied() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.planWithUnknownKind), .success(CleanupFixture.applied)
+        ])
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+
+        await vm.planCleanupBeforeDelete(row)
+        let choice = try XCTUnwrap(vm.deleteCleanupChoice(row))
+        XCTAssertEqual(choice.shownKeys, ["branch:feat/x"], "the dialog shows only kinds it knows")
+        await vm.deleteAndCleanUp(row, choice: choice)
+
+        XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, ["--item=branch:feat/x"])
+    }
+
+    func testOnlyUnknownKindsMeanDeleteOnly() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.planUnknownOnly)])
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+
+        await vm.planCleanupBeforeDelete(row)
+        let choice = try XCTUnwrap(vm.deleteCleanupChoice(row))
+        XCTAssertFalse(choice.offersCleanup, "no cleanup offer: the default is a plain delete")
+        let ok = await vm.deleteAndCleanUp(row, choice: choice)
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(applyCalls(runner).isEmpty)
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+    }
+
+    /// The dialog planned while the session's terminal ran, so its own
+    /// worktree was kept for a running process: shown as removed once the
+    /// terminal closes, it is re-planned after the close and applied — and
+    /// a key the dialog did not show is not, though now removable.
+    func testWorktreeKeptByTheClosingTerminalIsRemoved() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.planBusy), .success(CleanupFixture.replanFree), .success(CleanupFixture.applied)
+        ])
+        let (vm, _) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
+
+        await vm.planCleanupBeforeDelete(row)
+        let choice = try XCTUnwrap(vm.deleteCleanupChoice(row))
+        let shown = ["worktree:/tmp/example/.claude/worktrees/x", "branch:feat/x"]
+        XCTAssertEqual(choice.shownKeys, shown)
+        let ok = await vm.deleteAndCleanUp(row, choice: choice)
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.calls.count, 3)
+        let replan = runner.calls[1].args
+        XCTAssertFalse(replan.contains("--apply"), "a fresh plan after the close")
+        XCTAssertFalse(replan.contains("--live-session=\(row.id)"))
+        XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, shown.map { "--item=\($0)" },
+                       "feat/old was never shown as removable: never applied")
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+        XCTAssertNil(vm.sessionErrors[p])
+    }
+
+    /// Something else still runs in the worktree after the close: nothing
+    /// is applied, the row is deleted and the page says what was kept.
+    func testWorktreeStillBusyAfterTheCloseIsKept() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.planBusy)])
+        let (vm, _) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
+
+        await vm.planCleanupBeforeDelete(row)
+        let ok = await vm.deleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(applyCalls(runner).isEmpty)
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+        XCTAssertEqual(vm.sessionErrors[p],
+                       "“\(row.title)” deleted; 2 items were kept: x — a process is running in it; feat/x — checked out")
+    }
+
+    // MARK: - After the apply (F4, F7)
+
+    func testDeleteAndCleanUpTellsWhatGoKept() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.plan), .success(CleanupFixture.appliedKeptBranch)
+        ])
+        let (vm, _) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
+
+        await vm.planCleanupBeforeDelete(row)
+        let ok = await vm.deleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
+
+        XCTAssertTrue(ok, "a kept item is not a failure")
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+        XCTAssertEqual(vm.sessionErrors[p], "“\(row.title)” deleted; 1 item was kept: feat/x — unpushed commits")
+    }
+
+    func testBusyRowRefusesDeleteAndResume() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        await vm.planCleanupBeforeDelete(row)
+        let choice = vm.deleteCleanupChoice(row)
+
+        runner.holdsCalls = true
+        let run = vm.startDeleteAndCleanUp(row, choice: choice)
+        await waitForHeldCall(runner)
+        XCTAssertTrue(vm.cleaningUpSessions.contains(row.id))
+
+        let intent = await vm.deleteQuicklyOrConfirm(row)
+        XCTAssertEqual(intent, .busy, "✕ / ⌘⌫ do nothing")
+        await vm.delete(row)
+        XCTAssertFalse(vm.pendingDeletes.ids.contains(row.id), "no delete while the apply runs")
+        await vm.open(row)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "no resume while the apply runs")
+        let second = await vm.startDeleteAndCleanUp(row, choice: choice).value
+        XCTAssertFalse(second)
+
+        runner.release()
+        let ok = await run.value
+        XCTAssertTrue(ok)
+        XCTAssertEqual(applyCalls(runner).count, 1)
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id))
+    }
+
+    // MARK: - Leaving the page (F1)
+
+    /// The Delete dialog's task starts the plan, then the owner leaves the
+    /// page: the task is cancelled, the plan runs on and is ready on return.
+    func testPlanSurvivesLeavingThePage() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+
+        let sheetTask = Task { await vm.planCleanupBeforeDelete(row) }
+        await waitForHeldCall(runner)
+        sheetTask.cancel()
+        XCTAssertEqual(vm.deleteCleanupPhase(row), .planning)
+
+        runner.release()
+        await sheetTask.value
+
+        XCTAssertEqual(runner.cancelledCount, 0, "the CLI was not stopped")
+        XCTAssertEqual(vm.deleteCleanupChoice(row)?.shownKeys, CleanupFixture.plannedKeys,
+                       "the plan is ready, not failed")
+    }
+
+    /// Delete and Clean Up started from the dialog goes on when the caller
+    /// is cancelled: the apply finishes and the row is deleted.
+    func testDeleteAndCleanUpSurvivesLeavingThePage() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, cleanup) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        await vm.planCleanupBeforeDelete(row)
+        let choice = vm.deleteCleanupChoice(row)
+
+        runner.holdsCalls = true
+        let caller = Task { await vm.deleteAndCleanUp(row, choice: choice) }
+        await waitForHeldCall(runner)
+        caller.cancel()
+        runner.release()
+        let ok = await caller.value
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.cancelledCount, 0, "the apply was not stopped")
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(row.id)), .idle)
+    }
+
+    // MARK: - Clean Up… sheet (F6, F8, F11)
+
+    func testSheetAppliesOnlyTheTickedItemsThenReloadsTheReport() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, cleanup) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        let (store, id) = (try XCTUnwrap(pool), row.id)
+        runner.onCall = { call in
+            // Go stores the apply's result as it runs.
+            guard call.args.contains("--apply") else { return }
+            try? store.write { db in
+                try db.execute(
+                    sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
+                    arguments: [String(bytes: CleanupFixture.applied, encoding: .utf8), "2026-10-12T10:00:00Z", id]
+                )
+            }
+        }
+
+        vm.cleanupSheetAppeared(row)
+        await vm.planCleanupForSheet(row)
+        // The owner unticked the branch; a kept item and a stray key cannot
+        // be applied whatever the ticks say.
+        let ticked: Set = ["worktree:/tmp/example/.claude/worktrees/x", "worktree:/tmp/example/.claude/worktrees/y", "bogus"]
+        XCTAssertEqual(vm.sheetCleanupChoice(row, ticked: ticked).map(\.key), ["worktree:/tmp/example/.claude/worktrees/x"])
+        let ok = await vm.applySheetCleanup(row, ticked: ticked)
+
+        XCTAssertTrue(ok)
+        XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") },
+                       ["--item=worktree:/tmp/example/.claude/worktrees/x"])
+        XCTAssertEqual(vm.cleanupReportLine(sessionID: row.id), "1 worktree, 1 branch removed (~2.0 GB)",
+                       "the report's Cleanup line reloaded")
+        guard case .done = cleanup.cleanupPhase(for: .session(row.id)) else {
+            return XCTFail("the open sheet shows the result")
+        }
+        vm.closeCleanupSheet(row)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(row.id)), .idle, "closing the sheet forgets it")
+    }
+
+    func testSheetFailureAfterItClosedShowsOnThePage() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.plan), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "git missing"))
+        ])
+        let (vm, cleanup) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
+        vm.cleanupSheetAppeared(row)
+        await vm.planCleanupForSheet(row)
+
+        runner.holdsCalls = true
+        let apply = Task { await vm.applySheetCleanup(row, ticked: Set(CleanupFixture.plannedKeys)) }
+        await waitForHeldCall(runner)
+        vm.closeCleanupSheet(row)
+        vm.cleanupSheetDisappeared(row)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(row.id)), .applying, "the apply goes on")
+        runner.release()
+        let ok = await apply.value
+
+        XCTAssertFalse(ok)
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.contains("Cleanup of “\(row.title)” failed") && error.contains("git missing"), error)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(row.id)), .idle, "forgotten once surfaced")
+    }
+
+    func testSheetFailureWhileOpenStaysInTheSheet() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.plan), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "git missing"))
+        ])
+        let (vm, cleanup) = makeVM(runner)
+        let (p, row) = try await liveSession(vm)
+        vm.cleanupSheetAppeared(row)
+        await vm.planCleanupForSheet(row)
+
+        let ok = await vm.applySheetCleanup(row, ticked: Set(CleanupFixture.plannedKeys))
+
+        XCTAssertFalse(ok)
+        XCTAssertNil(vm.sessionErrors[p], "the sheet shows it")
+        guard case .failed = cleanup.cleanupPhase(for: .session(row.id)) else {
+            return XCTFail("expected the failure kept for the sheet")
+        }
     }
 
     // MARK: - Report line
@@ -231,4 +493,5 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertEqual(vm.cleanupRecords[row.id]?.at, "2026-10-12T10:00:00Z")
         XCTAssertEqual(vm.cleanupReportLine(sessionID: other), "Cleanup ran — result unreadable")
     }
+
 }
