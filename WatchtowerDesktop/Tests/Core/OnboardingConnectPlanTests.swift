@@ -2,13 +2,14 @@ import XCTest
 @testable import WatchtowerCore
 
 final class OnboardingConnectPlanTests: XCTestCase {
+    /// One Google card for either goal; it carries no scopes, because a
+    /// Google connect always asks for mail and calendar both (#740).
     func testCardsFollowTheGoals() {
-        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.workCommunication]),
-                       [.slack, .google(mail: true, calendar: false)])
-        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.meetings]), [.google(mail: false, calendar: true)])
+        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.workCommunication]), [.slack, .google])
+        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.meetings]), [.google])
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.tasksAndJira]), [.jira])
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.workCommunication, .meetings, .tasksAndJira, .development]),
-                       [.slack, .google(mail: true, calendar: true), .jira])
+                       [.slack, .google, .jira])
     }
 
     /// Development alone needs no source; the route skips the step anyway.

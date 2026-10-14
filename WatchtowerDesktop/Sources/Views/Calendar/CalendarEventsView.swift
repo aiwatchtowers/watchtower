@@ -39,6 +39,20 @@ struct CalendarEventsView: View {
     @State private var didAutoScrollToToday = false
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
+    /// Why a connected calendar may show no events (#740) — re-read on a
+    /// short loop while the tab is open, so it clears once the sync lands.
+    @State private var syncHealth: CalendarSyncHealth = .ok
+    @State private var syncHealthError: String?
+    /// A failed Turn On / Start Sync restart — kept apart from
+    /// `syncHealthError` because it is cleared by the daemon coming up (by
+    /// any route: the app, the tray), not by a state change.
+    @State private var restartError: String?
+    /// The old daemon outlived the stop (`stopTimedOut`): one IS running, but
+    /// it started before the change the restart was for, so its running does
+    /// not clear the error — only a successful restart does.
+    @State private var restartErrorOutlivesDaemon = false
+    @State private var syncHealthReadFailed = false
+    @State private var isRestartingSync = false
     /// Derived tri-state position of the now-line marker relative to the
     /// viewport (nil while no marker is rendered — no Today section). Storing
     /// the derived state instead of the raw frame means scroll ticks don't
@@ -66,6 +80,80 @@ struct CalendarEventsView: View {
                 notConnectedView
             }
         }
+        .task {
+            while !Task.isCancelled {
+                await refreshSyncHealth()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    private func refreshSyncHealth() async {
+        // The shared connect state gates the meetings list itself: refresh it
+        // too, so a Reconnect that succeeded leaves the not-connected screen.
+        await google.calendar.checkStatusAsync()
+        guard let db = appState.databaseManager else { return }
+        do {
+            let (accounts, counts) = try await db.dbPool.read { conn in
+                (try GoogleAccountQueries.fetchAll(conn), try CalendarQueries.calendarCountsBySource(conn))
+            }
+            let daemonRunning = DaemonManager.checkActiveWorkspaceDaemonRunning()
+            let health = CalendarSyncHealth.evaluate(
+                accounts: accounts,
+                hasCalDAVSource: appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false,
+                // An unreadable config.yaml says nothing about the switch —
+                // never diagnose (and offer to "fix") a switch we cannot read.
+                syncSwitchOn: !ConfigService().calendarSyncReadsOff,
+                googleCalendarCount: counts.google,
+                calDAVCalendarCount: counts.calDAV,
+                daemonRunning: daemonRunning
+            )
+            if daemonRunning, !restartErrorOutlivesDaemon { restartError = nil }
+            // An action's error belongs to the state it was raised in.
+            if health != syncHealth { syncHealthError = nil }
+            syncHealth = health
+            syncHealthReadFailed = false
+        } catch {
+            // Keep the last known state; log once per failure streak, not
+            // every 15 s.
+            if !syncHealthReadFailed {
+                NSLog("CalendarEventsView: calendar sync health read failed: %@", error.localizedDescription)
+            }
+            syncHealthReadFailed = true
+        }
+    }
+
+    /// The fix for an install connected before the CLI turned the switch on
+    /// itself: write `calendar.enabled`, then restart the daemon so it wires
+    /// the calendar syncer and syncs it right at startup.
+    private func turnOnCalendarSync() async {
+        do {
+            try ConfigService().turnOnCalendarSync()
+        } catch {
+            syncHealthError = "Couldn't turn calendar sync on: \(error.localizedDescription)"
+            return
+        }
+        await restartSync()
+    }
+
+    /// Starts the daemon (or restarts it) and surfaces a failure in the banner.
+    private func restartSync() async {
+        isRestartingSync = true
+        defer { isRestartingSync = false }
+        do {
+            try await DaemonManager.restart()
+            restartError = nil
+            restartErrorOutlivesDaemon = false
+        } catch {
+            NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
+            restartError = "Couldn't restart the sync: \(error.localizedDescription)"
+            if case DaemonRestartError.stopTimedOut = error {
+                restartErrorOutlivesDaemon = true
+            } else {
+                restartErrorOutlivesDaemon = false
+            }
+        }
+        await refreshSyncHealth()
     }
 
     /// Resolves a `MeetingSelection` (row tap, deep link) to its
@@ -195,6 +283,7 @@ struct CalendarEventsView: View {
                 .padding(.horizontal)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
+            syncHealthBanner
             scrollableSections
         }
     }
@@ -575,6 +664,107 @@ struct CalendarEventsView: View {
                    prominent: event.isUpcoming || event.isHappeningNow)
     }
 
+    // MARK: - Sync health
+
+    @ViewBuilder
+    private var syncHealthBanner: some View {
+        switch syncHealth {
+        case .ok, .awaitingFirstSync:
+            // A failed restart can land on an otherwise healthy or waiting
+            // state (calendars synced before, or an old daemon still up) —
+            // it must still be seen, with the retry.
+            if let restartError {
+                healthBanner(icon: "exclamationmark.triangle", text: "The sync didn't restart.", error: restartError) {
+                    syncButton("Restart Sync") { await restartSync() }
+                }
+            } else if syncHealth == .awaitingFirstSync {
+                healthBanner(icon: nil, text: "Syncing your calendar — events appear within a minute.", error: nil) {
+                    EmptyView()
+                }
+            }
+        case .syncOff:
+            healthBanner(
+                icon: "exclamationmark.triangle",
+                text: "Calendar sync is off — your Google Calendar is connected, but Watchtower isn't syncing it.",
+                error: syncHealthError ?? restartError
+            ) {
+                syncButton("Turn On Calendar Sync") { await turnOnCalendarSync() }
+            }
+        case .accountError(let account):
+            healthBanner(
+                icon: "exclamationmark.triangle",
+                text: accountErrorText(account),
+                error: appState.googleAccountsViewModel?.error
+            ) {
+                reconnectButton(account)
+            }
+        case .daemonStopped:
+            healthBanner(
+                icon: "exclamationmark.triangle",
+                text: "Watchtower's sync isn't running, so your calendar hasn't synced yet.",
+                error: restartError
+            ) {
+                syncButton("Start Sync") { await restartSync() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func syncButton(_ title: String, action: @escaping () async -> Void) -> some View {
+        if isRestartingSync {
+            ProgressView().controlSize(.small)
+        } else {
+            Button(title) { Task { await action() } }
+        }
+    }
+
+    private func healthBanner<Action: View>(
+        icon: String?,
+        text: String,
+        error: String?,
+        @ViewBuilder action: () -> Action
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let icon {
+                    Image(systemName: icon).foregroundStyle(.orange)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(text)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                action()
+            }
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
+    private func accountErrorText(_ account: GoogleAccount) -> String {
+        let reason = account.error.isEmpty ? "" : ": \(account.error)"
+        return "Google Calendar for \(account.displayName) can't sync\(reason). Reconnect if it keeps failing."
+    }
+
+    @ViewBuilder
+    private func reconnectButton(_ account: GoogleAccount) -> some View {
+        if appState.googleAccountsViewModel?.isConnecting == true {
+            ProgressView().controlSize(.small)
+        } else {
+            Button("Reconnect") {
+                appState.googleAccountsViewModel?.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
+            }
+        }
+    }
+
     // MARK: - Empty
 
     private var emptyState: some View {
@@ -595,13 +785,34 @@ struct CalendarEventsView: View {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("No calendar connected")
-                .font(.headline)
-            Text("Connect a calendar to see your meetings, prep, and briefings here.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+            if case .accountError(let account) = syncHealth {
+                Text("Google Calendar can't sync")
+                    .font(.headline)
+                Text(accountErrorText(account))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                reconnectButton(account)
+                    .controlSize(.large)
+                if let err = appState.googleAccountsViewModel?.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Text("Or connect another calendar:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+            } else {
+                Text("No calendar connected")
+                    .font(.headline)
+                Text("Connect a calendar to see your meetings, prep, and briefings here.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
 
             if google.isRunning {
                 ProgressView("Connecting Google...")
