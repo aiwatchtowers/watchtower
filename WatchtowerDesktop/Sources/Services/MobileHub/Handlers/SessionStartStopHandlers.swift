@@ -177,10 +177,11 @@ final class SessionStartStopHandlers {
     /// `.inProgress` refuses before anything is written; `.failed` covers a
     /// read or write error and a launch the terminal refused (or no
     /// terminal), never reported as started.
-    private static func outcome(_ error: WorkbenchesViewModel.TargetStartError) -> ActionOutcome {
+    static func outcome(_ error: WorkbenchesViewModel.TargetStartError) -> ActionOutcome {
         switch error {
         case .notOnBoard: .failed(.notOnBoard, message: "That target is not on a workbench board")
         case .inProgress: .failed(.conflict, message: "A session for this target is being started on the Mac")
+        case .cleaningUp: .failed(.conflict, message: "This session is being cleaned up on the Mac")
         case let .failed(message): .failed(.writeFailed, message: message)
         // A launch that found no agent binary (Codex's `launch-args`) started no process.
         case let .agentNotFound(agent):

@@ -1,82 +1,257 @@
 import Foundation
+import WatchtowerCore
 
-/// App-wide registry for prefetching WhisperKit model files ahead of a
-/// recording, so `MeetingRecorderCenter`'s engine load (at record-start, and
-/// again at transcribe-time as a fallback) usually hits an already-warm
-/// on-disk cache instead of paying for the download right when the user is
-/// waiting on a transcript.
+/// App-wide registry of transcription-model downloads, so a download is
+/// visible (model, size, percent, time left) and retryable from anywhere —
+/// the recording indicator, the tray, the dictation capsule — independent of
+/// whether a recording is in progress.
+///
+/// Two ways in (#744): `ensureDownloaded` starts a download in the
+/// background (Settings' model pickers, the Meetings goal's download ahead
+/// of use); `prepare` is what an engine load awaits on first use — it joins
+/// a download already running for the same model rather than starting a
+/// second one, and throws the download's failure in plain words.
 ///
 /// Decoupled from `MeetingRecorderCenter.Phase` on purpose: a recording never
-/// depends on WhisperKit, so a download can be in flight (or failed) while a
-/// recording is independently in progress — one state machine can't
-/// represent both without an artificial precedence between them.
+/// depends on the model, so a download can be in flight (or failed) while a
+/// recording is independently in progress.
 @MainActor
 @Observable
 final class TranscriptionModelProvisioner {
-    enum State: Equatable {
-        case idle
+    /// A (provider, model) pair. `id` is "provider|model" — the same string
+    /// `MeetingRecorderCenter.defaultEngineKey` produces.
+    struct ModelKey: Hashable, Sendable {
+        let providerID: String
+        let model: String
+
+        var id: String { "\(providerID)|\(model)" }
+
+        init(providerID: String, model: String) {
+            self.providerID = providerID
+            self.model = model
+        }
+
+        /// nil for a string that is not "provider|model".
+        init?(id: String) {
+            let parts = id.split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            self.init(providerID: parts[0], model: parts[1])
+        }
+    }
+
+    /// Which surface a download serves. A new background request supersedes
+    /// a running download of the same purpose only (a Settings switch drops
+    /// the model it replaced); the meeting and dictation models download side
+    /// by side.
+    enum Purpose: Sendable {
+        case meetings
+        case dictation
+    }
+
+    enum DownloadState: Equatable {
         case downloading(progress: Double)
         case failed(String)
     }
 
-    private(set) var state: State = .idle
-    /// The provider the current/last `ensureDownloaded` call targets. A stale
-    /// call's progress/outcome is checked against this (alongside
-    /// `currentModelName`) and dropped once a different (provider, model)
-    /// pair has been requested.
-    private(set) var currentProviderID: String?
-    /// The model the current/last `ensureDownloaded` call targets. A stale
-    /// call's progress/outcome is checked against this and dropped once a
-    /// different model has been requested.
-    private(set) var currentModelName: String?
-    /// The (provider, model) pair whose files are already confirmed on disk
-    /// from a prior successful prefetch — re-requesting it is a no-op, so
-    /// reopening the Calendar tab doesn't re-hit the network every time.
-    private var lastSucceededProviderID: String?
-    private var lastSucceededModel: String?
+    /// One download on screen: running or failed (a finished one leaves the
+    /// list).
+    struct Download: Identifiable, Equatable {
+        let key: ModelKey
+        let purpose: Purpose
+        let label: String
+        let sizeBytes: Int64?
+        var state: DownloadState
+        let startedAt: Date
+        /// The first progress reported, so a resumed download's time left
+        /// counts from where it resumed.
+        var startFraction: Double?
 
-    private(set) var currentTask: Task<Void, Never>?
+        var id: String { key.id }
+
+        func secondsLeft(now: Date) -> TimeInterval? {
+            guard case let .downloading(progress) = state, let startFraction else { return nil }
+            return ModelDownloadText.secondsLeft(startFraction: startFraction, startedAt: startedAt,
+                                                 fraction: progress, now: now)
+        }
+
+        func progressLine(now: Date) -> String {
+            guard case let .downloading(progress) = state else { return "Model download failed" }
+            return ModelDownloadText.progressLine(model: label, sizeBytes: sizeBytes, fraction: progress,
+                                                  secondsLeft: secondsLeft(now: now))
+        }
+    }
+
+    /// The model failed to download; `message` is the owner-facing line.
+    struct DownloadFailed: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Running and failed downloads, oldest request first.
+    private(set) var downloads: [Download] = []
+
+    /// UserDefaults key of the "provider|model" ids confirmed on disk by a
+    /// finished download — a launch asks this instead of the network.
+    static let downloadedModelsKey = "transcription.downloadedModels"
+
+    private var downloaded: Set<String>
+    /// Per running download: its generation (a superseded or restarted
+    /// download's late progress and outcome are dropped against it), the
+    /// work, and the first-use callers waiting on it.
+    private var inFlight: [ModelKey: Running] = [:]
+
+    private struct Running {
+        let generation: UUID
+        let work: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    }
 
     private let downloadFn: (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void
-    /// Extra best-effort warmups run after a successful model download (e.g.
+    private let describe: (ModelKey) -> (label: String, sizeBytes: Int64?)
+    private let downloadsModel: (ModelKey) -> Bool
+    private let filesMissing: (ModelKey) -> Bool
+    /// Extra best-effort warmups run after a meeting model downloaded (e.g.
     /// diarizer models). No progress, failures swallowed by the closure itself.
     private let prefetchExtras: @Sendable () async -> Void
+    private let defaults: UserDefaults
+    private let now: () -> Date
 
     init(
         downloadFn: @escaping (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void = { providerID, model, progress in
             let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
             try await provider.prefetch(model: model, progress: progress)
         },
-        prefetchExtras: @escaping @Sendable () async -> Void = {}
+        describe: @escaping (ModelKey) -> (label: String, sizeBytes: Int64?) = TranscriptionModelProvisioner.describe,
+        downloadsModel: @escaping (ModelKey) -> Bool = {
+            TranscriptionProviderRegistry.resolve(providerID: $0.providerID).downloadsModel
+        },
+        filesMissing: @escaping (ModelKey) -> Bool = {
+            TranscriptionProviderRegistry.resolve(providerID: $0.providerID).modelFilesMissing(model: $0.model)
+        },
+        prefetchExtras: @escaping @Sendable () async -> Void = {},
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = Date.init
     ) {
         self.downloadFn = downloadFn
+        self.describe = describe
+        self.downloadsModel = downloadsModel
+        self.filesMissing = filesMissing
         self.prefetchExtras = prefetchExtras
+        self.defaults = defaults
+        self.now = now
+        downloaded = Set(defaults.stringArray(forKey: Self.downloadedModelsKey) ?? [])
     }
 
-    /// Starts (or joins) the download of `model`'s files for `providerID`.
-    /// No-op if that exact (provider, model) pair is already downloading or
-    /// already succeeded. Supersedes any in-flight download of a different
-    /// pair — best-effort only: the superseded download may keep running in
-    /// the background, but its progress/outcome is dropped once superseded.
-    func ensureDownloaded(providerID: String, model: String) {
-        if case .downloading = state, currentProviderID == providerID, currentModelName == model {
-            return
-        }
-        if case .idle = state, lastSucceededProviderID == providerID, lastSucceededModel == model {
-            return
-        }
+    /// The registry's label and size for a model; dictation's Whisper
+    /// variants are not in the meeting picker, so they fall back to
+    /// "Whisper <model>".
+    static func describe(_ key: ModelKey) -> (label: String, sizeBytes: Int64?) {
+        let provider = TranscriptionProviderRegistry.resolve(providerID: key.providerID)
+        let label = provider.models.first { $0.id == key.model }?.label ?? "Whisper \(key.model)"
+        return (label, provider.downloadSizeBytes(model: key.model))
+    }
 
-        currentTask?.cancel()
-        currentProviderID = providerID
-        currentModelName = model
-        state = .downloading(progress: 0)
+    /// Whether a load can go ahead without a download: the engine ships no
+    /// model of ours, or the model is on disk.
+    func isDownloaded(_ key: ModelKey) -> Bool {
+        !downloadsModel(key) || isConfirmedOnDisk(key)
+    }
 
-        currentTask = Task { [weak self, downloadFn] in
-            guard let self else { return }
+    /// A finished download recorded the model, and its files are still
+    /// there (or the provider cannot tell). What a background download asks:
+    /// unlike `isDownloaded`, it is false for an engine with no model of
+    /// ours until its assets were installed once. The files are looked at only for
+    /// a recorded model — never, for an owner who never transcribed, in a
+    /// folder macOS guards — and a cache deleted by hand downloads again,
+    /// with its progress, instead of silently inside an engine load.
+    func isConfirmedOnDisk(_ key: ModelKey) -> Bool {
+        downloaded.contains(key.id) && !filesMissing(key)
+    }
+
+    func download(for key: ModelKey) -> Download? {
+        downloads.first { $0.key == key }
+    }
+
+    /// Starts the download of `key` in the background. No-op when it is
+    /// already running or already on disk. A failed attempt starts over (the
+    /// libraries resume partly downloaded files). Supersedes a running
+    /// download of another model with the same purpose unless a first use is
+    /// waiting on it.
+    func ensureDownloaded(_ key: ModelKey, purpose: Purpose = .meetings) {
+        guard inFlight[key] == nil, !isConfirmedOnDisk(key) else { return }
+        for other in downloads where other.key != key && other.purpose == purpose {
+            guard inFlight[other.key]?.waiters.isEmpty ?? true else { continue }
+            inFlight.removeValue(forKey: other.key)?.work.cancel()
+            downloads.removeAll { $0.key == other.key }
+        }
+        let info = describe(key)
+        let download = Download(key: key, purpose: purpose, label: info.label, sizeBytes: info.sizeBytes,
+                                state: .downloading(progress: 0), startedAt: now())
+        if let index = downloads.firstIndex(where: { $0.key == key }) {
+            downloads[index] = download
+        } else {
+            downloads.append(download)
+        }
+        let generation = UUID()
+        inFlight[key] = Running(generation: generation, work: startTask(key, generation: generation, purpose: purpose))
+    }
+
+    /// Convenience for the Settings pickers.
+    func ensureDownloaded(providerID: String, model: String, purpose: Purpose = .meetings) {
+        ensureDownloaded(ModelKey(providerID: providerID, model: model), purpose: purpose)
+    }
+
+    /// Awaited before a first-use engine load: returns at once when the
+    /// model is on disk, otherwise starts (or joins) its download and returns
+    /// when it lands. Throws `DownloadFailed` when it fails, and
+    /// `CancellationError` when the caller is cancelled — the download itself
+    /// keeps going.
+    func prepare(_ key: ModelKey, purpose: Purpose) async throws {
+        if isDownloaded(key) { return }
+        ensureDownloaded(key, purpose: purpose)
+        guard inFlight[key] != nil else { return }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled, inFlight[key] != nil else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                inFlight[key]?.waiters[waiterID] = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.inFlight[key]?.waiters.removeValue(forKey: waiterID)?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// Re-attempts a failed download.
+    func retry(_ key: ModelKey) {
+        guard let download = download(for: key), case .failed = download.state else { return }
+        ensureDownloaded(key, purpose: download.purpose)
+    }
+
+    /// Clears a failed download without retrying — the next trigger (a
+    /// recording, Settings) tries again.
+    func dismiss(_ key: ModelKey) {
+        guard let download = download(for: key), case .failed = download.state else { return }
+        downloads.removeAll { $0.key == key }
+    }
+
+    /// Test hook: the running download's task, awaited to let it settle.
+    func downloadTask(for key: ModelKey) -> Task<Void, Never>? {
+        inFlight[key]?.work
+    }
+
+    // MARK: - Private
+
+    private func startTask(_ key: ModelKey, generation: UUID, purpose: Purpose) -> Task<Void, Never> {
+        Task { [weak self, downloadFn] in
             let (stream, continuation) = AsyncStream<Double>.makeStream()
             let work = Task.detached {
                 do {
-                    try await downloadFn(providerID, model) { progress in continuation.yield(progress) }
+                    try await downloadFn(key.providerID, key.model) { progress in continuation.yield(progress) }
                     continuation.finish()
                     return Result<Void, Error>.success(())
                 } catch {
@@ -84,37 +259,53 @@ final class TranscriptionModelProvisioner {
                     return .failure(error)
                 }
             }
-            for await progress in stream {
-                guard self.currentProviderID == providerID, self.currentModelName == model else { continue }
-                self.state = .downloading(progress: progress)
-            }
-            guard self.currentProviderID == providerID, self.currentModelName == model else { return }
-            switch await work.value {
-            case .success:
-                self.lastSucceededProviderID = providerID
-                self.lastSucceededModel = model
-                self.state = .idle
-                // Fire-and-forget: extras (diarizer models) must never wedge or
-                // fail THIS state machine — a hung/failed warmup just means the
-                // post-pass pays for the download at Stop instead.
-                Task.detached { [prefetchExtras = self.prefetchExtras] in await prefetchExtras() }
-            case .failure(let error):
-                self.state = .failed(error.localizedDescription)
+            await withTaskCancellationHandler {
+                for await progress in stream {
+                    self?.applyProgress(progress, to: key, generation: generation)
+                }
+                let result = await work.value
+                self?.finish(key, generation: generation, purpose: purpose, result: result)
+            } onCancel: {
+                work.cancel()
             }
         }
     }
 
-    /// Re-attempts the download for the (provider, model) pair that just
-    /// failed. No-op unless `state` is `.failed`.
-    func retry() {
-        guard case .failed = state, let providerID = currentProviderID, let model = currentModelName else { return }
-        ensureDownloaded(providerID: providerID, model: model)
+    private func isCurrent(_ key: ModelKey, _ generation: UUID) -> Bool {
+        inFlight[key]?.generation == generation
     }
 
-    /// Clears a `.failed` state without retrying — the next natural trigger
-    /// (reopening Calendar, re-selecting the model in Settings) tries again.
-    func dismiss() {
-        guard case .failed = state else { return }
-        state = .idle
+    private func applyProgress(_ progress: Double, to key: ModelKey, generation: UUID) {
+        guard isCurrent(key, generation), let index = downloads.firstIndex(where: { $0.key == key }) else { return }
+        downloads[index].state = .downloading(progress: progress)
+        if downloads[index].startFraction == nil {
+            downloads[index].startFraction = progress
+        }
+    }
+
+    private func finish(_ key: ModelKey, generation: UUID, purpose: Purpose, result: Result<Void, Error>) {
+        guard isCurrent(key, generation), let done = inFlight.removeValue(forKey: key) else { return }
+        switch result {
+        case .success:
+            downloads.removeAll { $0.key == key }
+            downloaded.insert(key.id)
+            defaults.set(downloaded.sorted(), forKey: Self.downloadedModelsKey)
+            done.waiters.values.forEach { $0.resume() }
+            // Fire-and-forget: extras (diarizer models) must never wedge or
+            // fail THIS state machine — a hung/failed warmup just means the
+            // post-pass pays for the download at Stop instead.
+            if purpose == .meetings {
+                Task.detached { [prefetchExtras] in await prefetchExtras() }
+            }
+        case .failure(let error):
+            // The pill shows a plain sentence; the full error goes to the log.
+            print("[ModelDownload] \(key.id) failed: \(String(reflecting: error))")
+            let sizeBytes = downloads.first { $0.key == key }?.sizeBytes
+            let failure = DownloadFailed(message: ModelDownloadText.failureMessage(for: error, sizeBytes: sizeBytes))
+            if let index = downloads.firstIndex(where: { $0.key == key }) {
+                downloads[index].state = .failed(failure.message)
+            }
+            done.waiters.values.forEach { $0.resume(throwing: failure) }
+        }
     }
 }

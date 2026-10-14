@@ -11,16 +11,11 @@ enum AppEnvironmentError: LocalizedError {
     /// extensions could never read the replica, so the app refuses to boot
     /// instead of silently keeping it somewhere else.
     case appGroupUnavailable
-    /// The registry holds Macs and not one of their sessions could be
-    /// built (`AppEnvironment.live`): the first failure's description.
-    case noHubOpened(String)
 
     var errorDescription: String? {
         switch self {
         case .appGroupUnavailable:
             "The shared app group container is not available. Reinstall Watchtower."
-        case let .noHubOpened(reason):
-            reason
         }
     }
 }
@@ -51,8 +46,9 @@ final class AppEnvironment {
     private(set) var order: [String] = []
     /// The hub on screen; nil before one is activated.
     private(set) var activeHubID: String?
-    /// Registry hubs whose session could not be built at launch (`live`):
-    /// listed with their problem, offered Forget, never put on screen.
+    /// Registry hubs with no session: one whose session could not be built
+    /// (`live`, `AppRoot.reopenHubs`) or whose row cannot be read. Listed
+    /// with their problem, offered Forget, never put on screen.
     private(set) var unopenedHubIDs: Set<String> = []
 
     /// The last active session after `remove` took it off screen with no
@@ -107,9 +103,12 @@ final class AppEnvironment {
     func session(_ hubID: String) -> HubSession? { sessions[hubID] }
 
     /// The switcher's and Settings → Macs' rows for the registry's `rows`
-    /// (`HubListModel.items`), over these sessions.
-    func hubListItems(_ rows: [HubRow], now: Date) -> [HubListItem] {
-        HubListModel.items(rows: rows, sessions: sessions, unopened: unopenedHubIDs, activeHubID: activeHubID, now: now)
+    /// and the hub ids of its `unreadable` ones (`HubListModel.items`), over
+    /// these sessions.
+    func hubListItems(_ rows: [HubRow], unreadable: [String] = [], now: Date) -> [HubListItem] {
+        HubListModel.items(
+            rows: rows, unreadable: unreadable, sessions: sessions, unopened: unopenedHubIDs, activeHubID: activeHubID, now: now
+        )
     }
 
     /// Adds (or replaces) `session` at the end of the order, with the
@@ -141,6 +140,17 @@ final class AppEnvironment {
         unopenedHubIDs.remove(hubID)
         order.removeAll { $0 == hubID }
     }
+
+    /// Lets go of the session `remove` kept (`retained`) once nothing reads
+    /// it any more: the root calls it when Welcome (or the unopened Macs)
+    /// replaced the tabs, so the removed hub's replica closes then rather
+    /// than at the next activation (#222).
+    func releaseRetained() {
+        retained = nil
+    }
+
+    /// Whether `remove` keeps a session for the forwarders (tests).
+    var holdsRetainedSession: Bool { retained != nil }
 
     /// Follows the registry's new order (Settings → Macs): the sessions
     /// listed, in that order; a hub missing from `hubIDs` keeps its place
@@ -228,11 +238,17 @@ final class AppEnvironment {
     /// there (every session when the scope is unknown, the demo always),
     /// each fetching it at once (`HubSession.handlePush`). The outcome is
     /// `.newData` when any brought something, `.failed` when every one
-    /// failed, else `.noData`.
+    /// failed, else `.noData`. The other sessions only note it: a push
+    /// launching the app into the background leaves them unfetched until
+    /// the first activation (`HubSession.noteForeignPush`).
     func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushScope?) async -> FetchOutcome {
-        let reached = sessions.values.filter { session in
-            guard let scope, let own = session.databaseScope else { return true }
-            return PushScope(own) == scope
+        var reached: [HubSession] = []
+        for session in sessions.values {
+            if let scope, let own = session.databaseScope, PushScope(own) != scope {
+                session.noteForeignPush()
+            } else {
+                reached.append(session)
+            }
         }
         guard !reached.isEmpty else { return .noData }
         let outcomes = await withTaskGroup(of: FetchOutcome.self) { group in
@@ -403,11 +419,12 @@ final class AppEnvironment {
     /// session cannot be built (its replica or transport store will not
     /// open) is logged and gets no session: the other hubs boot, and the
     /// switcher and Settings → Macs list it with its problem and offer
-    /// Forget (multi-hub spec §6.3). The registry's active hub goes on
-    /// screen when it has a session, else the first row that has one; no
-    /// rows build no session. Rows of which none could be built throw
-    /// (`noHubOpened`): the boot fails rather than onboarding, since the
-    /// links still exist.
+    /// Forget (multi-hub spec §6.3); a row that cannot be read is unopened
+    /// too. The registry's active hub goes on screen when it has a session,
+    /// else the first row that has one. With none on screen and Macs still
+    /// in the registry, the root shows them with Forget and Try Again
+    /// (`AppRoot.showsUnopenedMacs`, #222), never Welcome: the links still
+    /// exist.
     static func live(
         registry: HubRegistry,
         paths _: HubPaths,
@@ -418,19 +435,14 @@ final class AppEnvironment {
     ) throws -> AppEnvironment {
         let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry, setBadge: setBadge)
         let rows = try registry.rows()
-        var firstFailure: (any Error)?
         for row in rows {
             do {
                 env.add(try makeSession(for: row, factory: factory, identity: identity))
             } catch {
-                logger.error("hub session not built, the hub left unopened: \(error.localizedDescription, privacy: .public)")
-                env.unopenedHubIDs.insert(row.hubID)
-                firstFailure = firstFailure ?? error
+                env.markUnopened(row.hubID, error: error)
             }
         }
-        if let firstFailure, env.sessions.isEmpty {
-            throw AppEnvironmentError.noHubOpened(firstFailure.localizedDescription)
-        }
+        env.unopenedHubIDs.formUnion(try registry.unreadableHubIDs())
         env.nameHubs(rows)
         let saved = try registry.activeHubID
         let opened = rows.filter { env.sessions[$0.hubID] != nil }
@@ -440,8 +452,16 @@ final class AppEnvironment {
         return env
     }
 
-    /// One registry row's session (see `live`).
-    private static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
+    /// A registry hub whose session could not be built: logged, listed
+    /// unopened.
+    func markUnopened(_ hubID: String, error: any Error) {
+        Self.logger.error("hub session not built, the hub left unopened: \(error.localizedDescription, privacy: .public)")
+        unopenedHubIDs.insert(hubID)
+    }
+
+    /// One registry row's session (see `live`; `AppRoot.reopenHubs` builds
+    /// an unopened one again the same way).
+    static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
         let device = identity.linkedDevice(for: row.link)
         guard row.state == .unlinkedByMac else {
             let session = try factory.make(row, row.hubID, row.link.databaseScope, device)

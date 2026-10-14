@@ -57,6 +57,24 @@ final class DictationCenter {
     /// fired whenever the resident engine is dropped, so a meeting live pass
     /// parked on `hasResidentEngine` can load its engine and catch up.
     var engineReleased: (() -> Void)?
+    /// Wired by AppState (#744): a whisper lane's engine load first awaits
+    /// its model's download, so a first dictation shows the progress
+    /// (`modelDownload`) instead of a bare "Loading model…". nil (tests)
+    /// loads straight away.
+    var modelProvisioner: TranscriptionModelProvisioner?
+
+    /// The download the current run's engine load is waiting on, if any.
+    var modelDownload: TranscriptionModelProvisioner.Download? {
+        guard isEngineLoading, let key = runModelKey else { return nil }
+        return modelProvisioner?.download(for: key)
+    }
+
+    /// The provisioner's key for the run's whisper model; nil on the apple
+    /// lane, which loads no model of ours.
+    private var runModelKey: TranscriptionModelProvisioner.ModelKey? {
+        guard case let .whisper(model) = runChoice else { return nil }
+        return TranscriptionModelProvisioner.ModelKey(providerID: WhisperKitProvider.id, model: model)
+    }
 
     private let recorderFactory: () -> MicRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
@@ -510,7 +528,9 @@ final class DictationCenter {
                 recorder.stop()
                 await buffers.feedTask?.value
                 guard !Task.isCancelled else { return nil }
-                finish(failed: "engine failed to load: \(error.localizedDescription)")
+                // A model download failure already reads as one sentence.
+                finish(failed: (error as? TranscriptionModelProvisioner.DownloadFailed)?.message
+                    ?? "engine failed to load: \(error.localizedDescription)")
                 return nil
             }
         } else {
@@ -781,6 +801,9 @@ final class DictationCenter {
         // handshake callback doesn't fire for a slot we're about to refill.
         warmTranscriber = nil
         warmEngineKey = nil
+        if let runModelKey {
+            try await modelProvisioner?.prepare(runModelKey, purpose: .dictation)
+        }
         let transcriber = try await engineFactory(config)
         // A dictation cancelled while this load was in flight has already
         // made its engine-slot decision (dropped it via

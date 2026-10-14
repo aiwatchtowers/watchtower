@@ -173,6 +173,34 @@ package enum TerminalSessionQueries {
         try db.columns(in: "terminal_sessions").contains { $0.name == "agent_cwd_at" }
     }
 
+    /// Session `id`'s stored cleanup outcome (board #535, migration 00111):
+    /// `cleanup_result` decoded tolerantly (an undecodable one is a record
+    /// with a nil result) and `cleanup_at`. Nil when the row is gone, has no
+    /// result yet, or the database predates 00111. Read-only: Go writes the
+    /// columns. Kept out of `TerminalSession` and its `SELECT *` readers, as
+    /// Go keeps them out of `GetTerminalSession`; the column probe and its
+    /// `DatabasePool.read` rule are `fetchAgentCwds`'.
+    package static func fetchCleanupRecord(_ db: Database, sessionID: Int64) throws -> SessionCleanupRecord? {
+        guard try db.columns(in: "terminal_sessions").contains(where: { $0.name == "cleanup_result" }) else {
+            return nil
+        }
+        let row = try Row.fetchOne(
+            db,
+            sql: "SELECT cleanup_result, cleanup_at FROM terminal_sessions WHERE id = ? AND cleanup_result IS NOT NULL",
+            arguments: [sessionID]
+        )
+        guard let row else { return nil }
+        let json: String = row["cleanup_result"]
+        var result: SessionCleanupPlan?
+        do {
+            result = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        } catch {
+            NSLog("TerminalSessionQueries: session %lld cleanup_result does not decode: %@",
+                  sessionID, String(describing: error))
+        }
+        return SessionCleanupRecord(result: result, at: row["cleanup_at"] ?? "")
+    }
+
     /// Best-effort, unchecked: a session deleted meanwhile is not active,
     /// which is what it asks for.
     package static func touch(_ db: Database, id: Int64) throws {
@@ -189,10 +217,28 @@ package enum TerminalSessionQueries {
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
     }
 
-    /// "Start fresh": a new Claude session id under the same named row.
+    /// The per-conversation columns a conversation change clears, as Go's
+    /// `SetTerminalClaudeSessionID` and `SetTerminalAgentSessionID` clear
+    /// them: the turn order, the background agent count, the agent turns and
+    /// the chat question. The working directory (`agent_cwd`) stays.
+    private static let conversationResetColumns = """
+        agent_turn_end = NULL, agent_tool_run = 0,
+        agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+        agent_turns = NULL
+        """
+
+    /// "Start fresh": a new Claude session id under the same named row. The
+    /// old conversation's columns go with it, the same write as Go's
+    /// `SetTerminalClaudeSessionID` (the old transcript path included), so the
+    /// row never shows the previous conversation's counts until the next run
+    /// mark overwrites them (board #552).
     package static func replaceClaudeSessionID(_ db: Database, id: Int64, uuid: String) throws {
         try db.execute(
-            sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+            sql: """
+                UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
+                \(conversationResetColumns)
+                WHERE id = ?
+                """,
             arguments: [uuid, id]
         )
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
@@ -200,13 +246,16 @@ package enum TerminalSessionQueries {
 
     /// "Start fresh" on a codex row: NULLs the stored session id and
     /// transcript path, so the next launch starts a new Codex session whose
-    /// first SessionStart reports the new id. Any other kind is left
+    /// first SessionStart reports the new id, and clears the old
+    /// conversation's columns as `replaceClaudeSessionID` does (Go clears the
+    /// same ones when that first SessionStart stores the id). Any other kind is left
     /// untouched (a claude row keeps its id: see `replaceClaudeSessionID`).
     /// Throws `notFound` when the row is gone.
     package static func resetAgentSession(_ db: Database, id: Int64) throws {
         try db.execute(
             sql: """
-                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL
+                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL,
+                \(conversationResetColumns)
                 WHERE id = ? AND kind = 'codex'
                 """,
             arguments: [id]

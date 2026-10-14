@@ -21,7 +21,7 @@ struct HubListSheet: View {
         NavigationStack {
             // Online turns offline by the clock alone.
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                list(env.hubListItems(linking.links, now: context.date))
+                list(env.hubListItems(linking.links, unreadable: linking.unreadableHubIDs, now: context.date))
             }
             .navigationTitle("Macs")
             .navigationBarTitleDisplayMode(.inline)
@@ -35,7 +35,7 @@ struct HubListSheet: View {
     }
 
     private func list(_ items: [HubListItem]) -> some View {
-        let canAdd = HubListModel.canAddMac(rows: linking.links)
+        let canAdd = HubListModel.canAddMac(rows: linking.links, unreadable: linking.unreadableHubIDs)
         return List {
             Section {
                 ForEach(items) { item in

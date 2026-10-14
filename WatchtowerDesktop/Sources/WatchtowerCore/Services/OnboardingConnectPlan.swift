@@ -1,23 +1,23 @@
 /// A source card on onboarding's Connect step.
 package enum OnboardingConnectSource: Equatable, Sendable {
     case slack
-    /// One Google card for both: the sheet asks for the scopes the goals
-    /// need.
-    case google(mail: Bool, calendar: Bool)
+    /// One Google card. Connecting a Google account means mail and calendar
+    /// both, whatever the goals (owner decision 2026-10-14, #740): the sheet
+    /// opens with both scopes checked.
+    case google
     case jira
 }
 
 /// Which source cards the Connect step shows: only what the goals need.
 package enum OnboardingConnectPlan {
-    /// Slack and Google mail for Work communication, Google calendar for
-    /// Meetings, Jira for Tasks & Jira, in that order. Development needs
+    /// Slack and Google for Work communication, Google for Meetings, Jira
+    /// for Tasks & Jira, in that order. Development needs
     /// none (the route skips the step).
     package static func sources(for goals: Set<OnboardingGoal>) -> [OnboardingConnectSource] {
         var sources: [OnboardingConnectSource] = []
-        let mail = goals.contains(.workCommunication)
-        let calendar = goals.contains(.meetings)
-        if mail { sources.append(.slack) }
-        if mail || calendar { sources.append(.google(mail: mail, calendar: calendar)) }
+        let communication = goals.contains(.workCommunication)
+        if communication { sources.append(.slack) }
+        if communication || goals.contains(.meetings) { sources.append(.google) }
         if goals.contains(.tasksAndJira) { sources.append(.jira) }
         return sources
     }

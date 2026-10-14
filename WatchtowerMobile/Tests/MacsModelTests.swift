@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import WatchtowerMobile
 
@@ -82,5 +83,35 @@ final class MacsModelTests: XCTestCase {
         XCTAssertEqual(MacsModel.targetIndex(from: 0, destination: 3), 2, "down: the offset counts the row itself")
         XCTAssertNil(MacsModel.targetIndex(from: 1, destination: 1), "dropped where it was")
         XCTAssertNil(MacsModel.targetIndex(from: 1, destination: 2), "just below itself")
+    }
+
+    /// Review round 1 (F9): an unreadable registry row is listed at its own
+    /// place, so a drag writes the order it shows: registry [X (unreadable),
+    /// A, B], A dragged below B.
+    func testADragOverAnUnreadableRowSavesTheShownOrder() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite").path
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        let registry = try HubRegistry(path: path)
+        for hubID in ["hub-x", "hub-a", "hub-b"] {
+            try registry.upsert(LinkRecord(
+                hubID: hubID, macName: hubID, scope: .private, ownerName: "_owner-acme", userRecordName: "_owner-acme",
+                nonce: "n", dataShareURL: nil, relayShareURL: nil, deviceID: nil, linkedAt: nil
+            ), now: Date(timeIntervalSince1970: 1_000))
+        }
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = 'hub-x'", arguments: [Data("{not json".utf8)])
+        }
+        func items() throws -> [HubListItem] {
+            HubListModel.items(
+                rows: try registry.rows(), unreadable: try registry.unreadableHubIDs(), sessions: [:], activeHubID: nil, now: Date()
+            )
+        }
+        XCTAssertEqual(try items().map(\.id), ["hub-x", "hub-a", "hub-b"], "the registry's order")
+
+        let move = try XCTUnwrap(MacsModel.registryMove(try items(), from: [1], to: 3))
+        try registry.move(move.hubID, to: move.index)
+
+        XCTAssertEqual(try registry.hubIDs(), ["hub-x", "hub-b", "hub-a"])
+        XCTAssertEqual(try items().map(\.id), try registry.hubIDs(), "the saved order is the shown one")
     }
 }

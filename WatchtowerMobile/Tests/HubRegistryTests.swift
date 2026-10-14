@@ -55,6 +55,35 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(try reopened.row("hub-b")?.lastHeartbeatAt, now)
     }
 
+    /// #143: a kept farewell survives a reopen with its scope and sealed
+    /// record, one per hub, and is gone once removed.
+    func testPendingFarewellsSurviveReopenAndAreRemovedPerHub() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite").path
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+        let since = Date(timeIntervalSince1970: 1_000)
+        let record = CloudRecord(recordName: "wire-a", zone: .relay, kind: "wt", modifiedAt: since, payload: Data([1, 2, 3]))
+        do {
+            let registry = try HubRegistry(path: path)
+            try registry.savePendingFarewell(PendingFarewell(
+                hubID: "hub-a", scope: .shared(ownerName: "_owner-acme"), userRecordName: "_colleague-a", record: record, since: since
+            ))
+            try registry.savePendingFarewell(PendingFarewell(
+                hubID: "hub-b", scope: .private, userRecordName: "_owner-acme", record: record, since: since.addingTimeInterval(1)
+            ))
+        }
+        let reopened = try HubRegistry(path: path)
+        let kept = try reopened.pendingFarewells()
+        XCTAssertEqual(kept.map(\.hubID), ["hub-a", "hub-b"])
+        XCTAssertEqual(kept.first?.scope, .shared(ownerName: "_owner-acme"))
+        XCTAssertEqual(kept.first?.userRecordName, "_colleague-a")
+        XCTAssertEqual(kept.first?.record, record)
+        XCTAssertEqual(kept.first?.since, since)
+        XCTAssertEqual(kept.last?.scope, .private)
+
+        try reopened.removePendingFarewell("hub-a")
+        XCTAssertEqual(try reopened.pendingFarewells().map(\.hubID), ["hub-b"])
+    }
+
     /// A row that does not decode (a newer build's link, a damaged value)
     /// is skipped by `rows()`, never fails the read for the others; its hub
     /// id stays in `hubIDs()` and it still counts toward the limit.
@@ -73,8 +102,12 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertEqual(try registry.rows().map(\.hubID), ["hub-a", "hub-c"])
         XCTAssertNil(try? registry.row("hub-b"))
         XCTAssertEqual(try registry.hubIDs(), ["hub-a", "hub-b", "hub-c"])
+        XCTAssertEqual(try registry.unreadableHubIDs(), ["hub-b"], "listed for Forget (#222)")
         try registry.upsert(link("hub-d"), now: now)
         XCTAssertTrue(try registry.isFull(adding: "hub-e"), "the unreadable row still takes a place")
+        try registry.remove("hub-b")
+        XCTAssertTrue(try registry.unreadableHubIDs().isEmpty, "Forget frees its place")
+        XCTAssertFalse(try registry.isFull(adding: "hub-e"))
     }
 
     func testRemovingTheActiveHubClearsActive() throws {

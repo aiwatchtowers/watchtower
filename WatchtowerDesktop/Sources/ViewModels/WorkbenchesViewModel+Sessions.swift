@@ -62,6 +62,10 @@ extension WorkbenchesViewModel {
         /// The launch found no binary for the session's agent (`launch-args`
         /// exit 3): nothing started.
         case agentNotFound(AgentKind)
+        /// Delete and Clean Up closed the session's terminal and is removing
+        /// its worktree (board #535): it does not resume. Callers drop it
+        /// silently, as `inProgress`; the phone is told why.
+        case cleaningUp
     }
 
     /// The selected project's sessions, most recently active first (the
@@ -439,6 +443,11 @@ extension WorkbenchesViewModel {
     private func reopen(
         _ session: TerminalSession, placement: Placement, ticket: Int?, checkLaunch: Bool
     ) async throws -> TerminalSession {
+        // Every resume of an existing row comes here (a click, ⌘N, Work on
+        // It, the phone's open_existing): a row whose terminal Delete and
+        // Clean Up closed — its worktree being removed — is refused
+        // (board #535). A Clean Up… apply does not stop a resume.
+        guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
         if let ticket { clearSwitchError(projectID: session.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
@@ -465,6 +474,7 @@ extension WorkbenchesViewModel {
     /// all (Codex mints one; `resetAgentSession`). A shell has no agent
     /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
+        guard !cleaningUpSessions.contains(session.id) else { return }
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)

@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v7
+x-watchtower-pack: v8
 ---
 
 # Watchtower Workbench
@@ -104,7 +104,8 @@ When you are the controller executing a plan whose tasks are on the board:
 
 When the work this session was started for is done or handed to the owner — its tasks closed, the PR opened or merged, the remaining owner work filed as asks — call `finish_session`. The owner sees the session as finished, with your summary, in the Watchtower app.
 
-- **The summary** is 2–3 lines: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), and anything risky.
+- **Clean up first.** Leave any worktree you are in (`ExitWorktree`, or `cd` back to the workbench folder) and `git fetch`. Run the brief's `Cleanup:` command as given: it only plans and lists what this session would remove. If you created a worktree or branch the plan does not list, run the plan again with `--worktree`/`--branch` for it first. Then run the same command with `--apply` only when that plan marks something removable; it removes only what the plan marks. Kept items are not a failure: mention them only if the owner must act. Exit 2 (refused or a usage error) or exit 1 (could not plan): do not retry with other flags, say so in your summary. No `Cleanup:` line in the brief: skip this step and say in your summary that cleanup was not available — never invent a command. Never remove a worktree or branch by hand. Put the command's `summary` line into your `finish_session` summary.
+- **The summary** is 2–3 lines, at most 4: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), anything risky, and the cleanup line, which counts within the limit.
 - **After the call**, write "session finished" in your final text: a check at the end of every turn sends a turn that reports the work complete without it back to you.
 - Do not call it after every task, nor while work in this session's scope is still in progress.
 

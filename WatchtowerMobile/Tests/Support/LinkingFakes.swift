@@ -213,6 +213,13 @@ final class FakeLinkHost: LinkHost {
         rows
     }
 
+    /// Registry rows that do not read (#222).
+    var unreadable: [String] = []
+
+    func unreadableHubIDs() -> [String] {
+        unreadable
+    }
+
     func moveHub(_ hubID: String, to index: Int) {}
 
     /// When true, `prepare` waits until its task is cancelled (the app
@@ -278,6 +285,8 @@ final class FakeLinkHost: LinkHost {
         }
         linkedCalls.append((record, device))
         activeHubID = record.hubID
+        // As the real host: the new link supersedes a kept farewell.
+        keptFarewells.removeAll { $0.hubID == record.hubID }
     }
 
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
@@ -301,6 +310,12 @@ final class FakeLinkHost: LinkHost {
     var stopsRecording = false
     /// The next removal reports a recording problem (once).
     var recordingProblem: String?
+    /// The next removal's farewell does not go out and is kept (once).
+    var keepsFarewell = false
+    /// The kept farewells (#143), as the registry holds them.
+    var keptFarewells: [PendingFarewell] = []
+    /// Whether a resend goes out.
+    var resendSucceeds = false
 
     /// As the real host: the row goes first, then the farewell through
     /// the hub's own transport (here its scope's), then the rest.
@@ -322,8 +337,45 @@ final class FakeLinkHost: LinkHost {
             stopsRecording = false
             recordingProblem = nil
             notSentCount = 0
+            keepsFarewell = false
         }
-        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem)
+        return LocalWipe(
+            notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem,
+            farewellKept: farewell != nil && keepsFarewell
+        )
+    }
+
+    func pendingFarewells() -> [PendingFarewell] {
+        keptFarewells
+    }
+
+    /// When true, the next resend waits for `releaseResend()` (a send
+    /// still out when something else happens).
+    var parksResend = false
+    private var parkedResend: CheckedContinuation<Void, Never>?
+    /// A resend is waiting for `releaseResend()`.
+    var resendParked: Bool { parkedResend != nil }
+
+    func releaseResend() {
+        parksResend = false
+        parkedResend?.resume()
+        parkedResend = nil
+    }
+
+    func resendFarewell(_ farewell: PendingFarewell) async -> Bool {
+        log.append("resend \(farewell.hubID)")
+        if parksResend {
+            await withCheckedContinuation { parkedResend = $0 }
+        }
+        if resendSucceeds {
+            keptFarewells.removeAll { $0.isSame(as: farewell) }
+        }
+        return resendSucceeds
+    }
+
+    func dropFarewell(_ hubID: String) {
+        log.append("drop farewell \(hubID)")
+        keptFarewells.removeAll { $0.hubID == hubID }
     }
 
     func markRemovedByMac(_ hubID: String) async {
@@ -375,5 +427,33 @@ final class FakeLinkHost: LinkHost {
         case .private: "private"
         case let .shared(ownerName): "shared(\(ownerName))"
         }
+    }
+}
+
+/// A link clock whose sleeps wait for `release()` and whose `now` stands
+/// still: the grant wait polls once, then the test answers for the Mac.
+final class GateLinkClock: LinkClock, @unchecked Sendable {
+    let start = Date()
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var waiting: Int { lock.withLock { waiters.count } }
+
+    func now() -> Date { start }
+
+    func sleep(for duration: Duration) async throws {
+        await withCheckedContinuation { continuation in
+            lock.withLock { waiters.append(continuation) }
+        }
+        try Task.checkCancellation()
+    }
+
+    func release() {
+        let all = lock.withLock {
+            let parked = waiters
+            waiters = []
+            return parked
+        }
+        all.forEach { $0.resume() }
     }
 }

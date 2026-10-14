@@ -71,9 +71,13 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         return layout
     }
 
-    private func controls(_ vm: WorkbenchesViewModel, _ project: Workbench, onDelete: @escaping () -> Void = {})
-        -> WorkbenchHeaderControls {
-        WorkbenchHeaderControls(vm: vm, project: project, onDelete: onDelete)
+    private func controls(
+        _ vm: WorkbenchesViewModel,
+        _ project: Workbench,
+        onCleanUp: @escaping () -> Void = {},
+        onDelete: @escaping () -> Void = {}
+    ) -> WorkbenchHeaderControls {
+        WorkbenchHeaderControls(vm: vm, project: project, onDelete: onDelete, onCleanUpOldWorktrees: onCleanUp)
     }
 
     private static func title(_ toggle: InspectableView<ViewType.Toggle>) throws -> String {
@@ -228,6 +232,20 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         await waitUntil { runner.invocations.contains(["workbench", "resync", String(p), "--json"]) }
         try sut.inspect().find(button: "Delete…").tap()
         XCTAssertEqual(deletes, 1)
+    }
+
+    /// "Clean Up Old Worktrees…" opens the sweep (board #535); off without a
+    /// cleanup center.
+    func testCleanUpOldWorktreesOpensTheSweep() async throws {
+        let s = try await seed()
+        let vm = makeVM(FakeCLIRunner())
+        XCTAssertTrue(try controls(vm, s.project).inspect().find(button: "Clean Up Old Worktrees…").isDisabled())
+
+        vm.sessionCleanup = SessionCleanupCenter(runner: nil)
+        var opened = 0
+        let open = { opened += 1 }
+        try controls(vm, s.project, onCleanUp: open).inspect().find(button: "Clean Up Old Worktrees…").tap()
+        XCTAssertEqual(opened, 1)
     }
 
     /// "Archive Closed Targets Now" sets the stamp and a second press moves
