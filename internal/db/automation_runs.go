@@ -543,6 +543,34 @@ func (db *DB) ResumeAutomationRun(runID int64) error {
 	return requireRunTransition(db, res, runID, ErrRunNotActive)
 }
 
+// ResumeAutomationRunIfSlot moves a waiting run back to running only while
+// fewer than maxRunning runs (across every automation) are running, in one
+// conditional UPDATE: false (no error) when no slot is free;
+// ErrRunNotActive when the run is not waiting.
+func (db *DB) ResumeAutomationRunIfSlot(runID int64, maxRunning int) (bool, error) {
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'running', waiting_reason = ''
+		WHERE id = ? AND status = 'waiting'
+		  AND (SELECT COUNT(*) FROM automation_runs r WHERE r.status = 'running') < ?`, runID, maxRunning)
+	if err != nil {
+		return false, fmt.Errorf("resuming automation run %d: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("resuming automation run %d: %w", runID, err)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	r, err := db.GetAutomationRun(runID)
+	if err != nil {
+		return false, err
+	}
+	if r.Status != RunWaiting {
+		return false, fmt.Errorf("automation run %d: %w", runID, ErrRunNotActive)
+	}
+	return false, nil
+}
+
 // RunUsage is what a run spent since the last debit; AddAutomationRunUsage adds it.
 type RunUsage struct {
 	InputTokens, OutputTokens int64
@@ -720,6 +748,20 @@ func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
 // where it would hold a concurrency slot until the next daemon start. A dry
 // run still inside its deadline is untouched.
 func (db *DB) MarkStaleDryRuns(now time.Time) (int, error) {
+	// A read-only check first: this runs on every poll, and almost always
+	// finds nothing, so no write transaction is opened for nothing.
+	if err := requireRunTime(now, "ending stale automation dry runs"); err != nil {
+		return 0, err
+	}
+	var found bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM automation_runs WHERE `+staleDryRunSQL+`)`,
+		formatAutomationTime(now)).Scan(&found)
+	if err != nil {
+		return 0, fmt.Errorf("ending stale automation dry runs: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
 	return db.endRunsInterrupted(now, staleDryRunSQL, "the dry run's process stopped before it finished the run",
 		"ending stale automation dry runs")
 }

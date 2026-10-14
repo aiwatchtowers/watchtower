@@ -24,7 +24,10 @@ func failedEnd(kind string, err error) *runEnd {
 // runClaimed executes a run this executor claimed and finishes it. Every
 // claimed run reaches a terminal status here, unless the database refuses
 // the finish (logged; the next daemon start ends it as interrupted).
-func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation) {
+// inline is ExecuteInline's run (the CLI's dry run): a ctx that ends there
+// is the CLI stopping, not the daemon.
+func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation, inline bool) {
+	defer e.Wake() // a finished run frees a slot: claim the next queued run, resume a waiting one
 	run, err := e.db.GetAutomationRun(runID)
 	if err != nil {
 		e.logger.Printf("automations: run %d: reading the claimed run: %v", runID, err)
@@ -37,7 +40,7 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 		return
 	}
 	v, runErr := e.runSandbox(env, sb)
-	f, commit, abandoned := e.outcome(ctx, env, v, runErr)
+	f, commit, abandoned := e.outcome(ctx, env, v, runErr, inline)
 	e.finish(runID, a, f, commit, abandoned)
 }
 
@@ -83,10 +86,15 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 }
 
 // newMeter starts the run's meter on its snapshotted budgets with the live
-// daily total of the local calendar day (the scheduler's per-call zone). A
-// day already spent ends the run budget_exceeded/daily_cap at once.
+// daily total of the local calendar day the run started on (its claim's
+// started_at — the day its tokens count toward — in the scheduler's per-run
+// zone). A day already spent ends the run budget_exceeded/daily_cap at once.
 func (e *Executor) newMeter(run *db.AutomationRun, r *Recipe) (*Meter, *runEnd) {
-	from, to := localDay(e.clock.Now(), e.zone())
+	started := e.clock.Now()
+	if run.StartedAt != nil {
+		started = *run.StartedAt
+	}
+	from, to := localDay(started, e.zone())
 	spent := func() (int64, error) { return e.db.AutomationTokensBetween(from, to) }
 	used, err := spent()
 	if err != nil {
@@ -201,7 +209,7 @@ func (e *Executor) runEnded(runID int64) (bool, error) {
 // buffer (never for a dry run) unless the journal failed to write; a cancel
 // that came from the daemon stopping (ctx done) is interrupted, not
 // cancelled.
-func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error) (db.RunFinish, *db.RunCommit, bool) {
+func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, inline bool) (db.RunFinish, *db.RunCommit, bool) {
 	f := db.RunFinish{ActiveMS: env.Meter.ActiveMS()}
 	jerr := env.Journal.Err()
 	if runErr == nil && jerr != nil {
@@ -221,10 +229,18 @@ func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error) (
 	}
 	end := classifyRunError(runErr)
 	if end.status == db.RunCancelled && ctx.Err() != nil {
-		end.status, end.kind, end.msg = db.RunFailed, db.ErrKindInterrupted, "the daemon stopped while the run was in flight"
+		end.status, end.kind, end.msg = db.RunFailed, db.ErrKindInterrupted, stoppedMessage(inline)
 	}
 	f.Status, f.ErrorKind, f.Error = end.status, end.kind, end.msg
 	return f, nil, end.abandoned
+}
+
+// stoppedMessage is the error of a run whose executor's ctx ended under it.
+func stoppedMessage(inline bool) string {
+	if inline {
+		return "the dry run was stopped before it finished"
+	}
+	return "the daemon stopped while the run was in flight"
 }
 
 // classifyRunError maps a sandbox error to the run's end (spec §7.8).
@@ -262,8 +278,8 @@ func interruptEnd(r InterruptReason) *runEnd {
 }
 
 // runSummary is the last output.report title, else the returned value as
-// text (a string as is, anything else as JSON, nothing for no value),
-// clipped to SummaryClipBytes.
+// text (marshalForStep: a string as is, anything else as JSON, nothing for no
+// value), clipped to SummaryClipBytes.
 func runSummary(b *CommitBuffer, returned any) string {
 	outs := b.Outputs()
 	for i := len(outs) - 1; i >= 0; i-- {
@@ -271,14 +287,7 @@ func runSummary(b *CommitBuffer, returned any) string {
 			return clipUTF8(outs[i].Title, SummaryClipBytes)
 		}
 	}
-	switch x := returned.(type) {
-	case nil:
-		return ""
-	case string:
-		return clipUTF8(x, SummaryClipBytes)
-	default:
-		return clipUTF8(marshalForStep(x), SummaryClipBytes)
-	}
+	return clipUTF8(marshalForStep(returned), SummaryClipBytes)
 }
 
 // finish writes the run's terminal status (and commit). A run already ended
@@ -291,7 +300,16 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	if abandoned {
 		f.Error += "; the automation was disabled: " + runawayDisabledReason
 	}
-	if err := e.db.FinishAutomationRun(runID, f, commit); err != nil && !errors.Is(err, db.ErrRunNotActive) {
+	err := e.db.FinishAutomationRun(runID, f, commit)
+	switch {
+	case errors.Is(err, db.ErrRunNotActive):
+		// Ended by someone else; still record the active time measured here.
+		if f.ActiveMS > 0 {
+			if err := e.db.AddAutomationRunUsage(runID, db.RunUsage{ActiveMS: f.ActiveMS}); err != nil {
+				e.logger.Printf("automations: run %d: recording its active time: %v", runID, err)
+			}
+		}
+	case err != nil:
 		e.logger.Printf("automations: run %d: finishing as %s: %v", runID, f.Status, err)
 	}
 	if !abandoned {

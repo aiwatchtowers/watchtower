@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // runWait is what a wait needs to know about the run it pauses; the executor
@@ -28,12 +30,14 @@ type executorWaiter struct{ e *Executor }
 // asks and sessions). Wait must be called with the run's Env.Ctx.
 func (e *Executor) Waiter() Waiter { return executorWaiter{e: e} }
 
-// Wait sets the run waiting with reason and pauses its active time, then
-// polls ready every PollInterval and on Wake. ready true resumes the run
-// (nil); a run ended meanwhile (a CLI cancel) is a cancel interrupt; a wait
-// longer than the recipe's pause_timeout_hours is an expired interrupt (the
-// executor ends the run expired); an error from ready resumes the run and is
-// returned.
+// Wait pauses the run's active time and sets it waiting with reason, then
+// polls ready every PollInterval and on Wake. A run ended meanwhile (a CLI
+// cancel) is a cancel interrupt; a wait longer than the recipe's
+// pause_timeout_hours (counted from the pause) is an expired interrupt (the
+// executor ends the run expired). Once ready reports true — or fails — the
+// run goes back to running as soon as a running slot is free (waiting runs
+// hold none, so a resume must not push running past MaxConcurrent); the
+// ready check's error is then returned.
 func (w executorWaiter) Wait(ctx context.Context, reason string, ready func(context.Context) (bool, error)) error {
 	rw, ok := ctx.Value(runWaitKey{}).(*runWait)
 	if !ok {
@@ -42,48 +46,92 @@ func (w executorWaiter) Wait(ctx context.Context, reason string, ready func(cont
 	if ready == nil {
 		return errors.New("automation wait: no ready check")
 	}
+	since := w.e.clock.Now()
+	rw.meter.PauseActive()
+	defer rw.meter.ResumeActive()
 	if err := w.e.db.SetAutomationRunWaiting(rw.runID, reason); err != nil {
 		return fmt.Errorf("automation wait: %w", err)
 	}
-	rw.meter.PauseActive()
-	defer rw.meter.ResumeActive()
-	return w.e.pollWait(ctx, rw, w.e.clock.Now(), ready)
-}
-
-func (e *Executor) pollWait(ctx context.Context, rw *runWait, since time.Time, ready func(context.Context) (bool, error)) error {
-	for {
-		nudge := e.nudged()
-		ended, err := e.runEnded(rw.runID)
-		if err != nil {
-			return fmt.Errorf("automation wait: %w", err)
-		}
-		if ended {
-			return &RunInterrupted{Reason: InterruptCancel}
-		}
-		done, err := ready(ctx)
-		if err != nil || done {
-			return e.resumeAfterWait(rw.runID, err)
-		}
-		if e.clock.Now().Sub(since) >= rw.pauseTimeout {
-			return &RunInterrupted{Reason: InterruptExpired}
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-nudge:
-		case <-e.clock.After(PollInterval):
-		}
+	readyErr, err := w.e.pollReady(ctx, rw, since, ready)
+	if err != nil {
+		return err
 	}
-}
-
-// resumeAfterWait moves the run back to running; readyErr, when set, is the
-// ready check's failure the wait returns.
-func (e *Executor) resumeAfterWait(runID int64, readyErr error) error {
-	if err := e.db.ResumeAutomationRun(runID); err != nil {
-		return errors.Join(readyErr, fmt.Errorf("automation wait: resuming: %w", err))
+	if err := w.e.resumeWhenSlotFree(ctx, rw.runID); err != nil {
+		return errors.Join(readyErr, err)
 	}
 	if readyErr != nil {
 		return fmt.Errorf("automation wait: %w", readyErr)
+	}
+	return nil
+}
+
+// pollReady polls until ready reports true (readyErr nil) or fails
+// (readyErr set); err ends the wait without resuming (a cancel, an expiry,
+// ctx done, an unreadable run).
+func (e *Executor) pollReady(ctx context.Context, rw *runWait, since time.Time,
+	ready func(context.Context) (bool, error)) (readyErr, err error) {
+	for {
+		nudge := e.nudged()
+		if err := e.stillActive(rw.runID); err != nil {
+			return nil, err
+		}
+		done, rerr := ready(ctx)
+		if rerr != nil || done {
+			return rerr, nil
+		}
+		if e.clock.Now().Sub(since) >= rw.pauseTimeout {
+			return nil, &RunInterrupted{Reason: InterruptExpired}
+		}
+		if err := e.idle(ctx, nudge); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// resumeWhenSlotFree moves the run back to running once fewer than
+// MaxConcurrent runs are running, re-checking every PollInterval and on Wake
+// (a finishing run wakes it).
+func (e *Executor) resumeWhenSlotFree(ctx context.Context, runID int64) error {
+	for {
+		nudge := e.nudged()
+		resumed, err := e.db.ResumeAutomationRunIfSlot(runID, e.maxConcurrent)
+		if errors.Is(err, db.ErrRunNotActive) {
+			return &RunInterrupted{Reason: InterruptCancel} // ended (cancelled) while waiting for a slot
+		}
+		if err != nil {
+			return fmt.Errorf("automation wait: resuming: %w", err)
+		}
+		if resumed {
+			return nil
+		}
+		if err := e.idle(ctx, nudge); err != nil {
+			return err
+		}
+	}
+}
+
+// stillActive is nil while the run is running or waiting, a cancel
+// interrupt once it ended.
+func (e *Executor) stillActive(runID int64) error {
+	ended, err := e.runEnded(runID)
+	if err != nil {
+		return fmt.Errorf("automation wait: %w", err)
+	}
+	if ended {
+		return &RunInterrupted{Reason: InterruptCancel}
+	}
+	return nil
+}
+
+// idle waits for a Wake, PollInterval or ctx's end. An ended ctx (the
+// daemon or the CLI stopping, or the sandbox interrupting) is a cancel
+// interrupt, so the script stops rather than seeing a catchable error.
+func (e *Executor) idle(ctx context.Context, nudge <-chan struct{}) error {
+	select {
+	case <-ctx.Done():
+		return &RunInterrupted{Reason: InterruptCancel}
+	case <-nudge:
+	case <-e.clock.After(PollInterval):
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -584,14 +585,20 @@ func TestExecutor_AbandonedRunDisablesAutomation(t *testing.T) {
 func TestExecutor_NoClaimsWhileTwoRunsAbandoned(t *testing.T) {
 	f := newExFixture(t, exOpts{})
 	id := f.enqueue(t, f.seed(t, "digest", `return 1`, false), db.TriggerManual)
+	unconfirmed := f.enqueue(t, f.seed(t, "draft", `return 1`, true), db.TriggerManual)
 	abandoned := 2
 	automations.SetExecutorAbandoned(f.e, func() int { return abandoned })
 	f.step(t, 0)
+	f.step(t, 0)
 	f.wantRun(t, id, db.RunQueued, "")
-	mustContain(t, "log", f.logs.String(), "abandoned")
+	f.wantRun(t, unconfirmed, db.RunCancelled, db.ErrKindNotRunnable) // still cancelled while gated
+	if n := strings.Count(f.logs.String(), "no run is claimed"); n != 1 {
+		t.Fatalf("gate logged %d times over two polls; want once:\n%s", n, f.logs.String())
+	}
 	abandoned = 1
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
+	mustContain(t, "log", f.logs.String(), "claiming again")
 }
 
 func TestExecutor_ExecuteInlineRefusesLostClaim(t *testing.T) {
@@ -601,5 +608,152 @@ func TestExecutor_ExecuteInlineRefusesLostClaim(t *testing.T) {
 	f.claimAt(t, a, id, exStart)
 	if _, err := f.e.ExecuteInline(context.Background(), id); !errors.Is(err, automations.ErrRunNotClaimed) {
 		t.Fatalf("ExecuteInline of a claimed run = %v; want ErrRunNotClaimed", err)
+	}
+}
+
+// TestWaiter_ResumeWaitsForAFreeSlot: waiting runs hold no slot, so a wait
+// that becomes ready while MaxConcurrent runs are running stays waiting until
+// one of them finishes.
+func TestWaiter_ResumeWaitsForAFreeSlot(t *testing.T) {
+	var ready atomic.Bool
+	gen := newBlockingGen()
+	f := newExFixture(t, exOpts{gen: gen, maxConcurrent: 2, modules: func(*exFixture) []automations.Module {
+		return []automations.Module{waitModule(&ready)}
+	}})
+	var waiters, busy []int64
+	for _, slug := range []string{"wait-one", "wait-two"} {
+		waiters = append(waiters, f.enqueue(t, f.seed(t, slug, `return waitFor()`, false), db.TriggerManual))
+	}
+	f.stepNoWait(t, 2)
+	for _, id := range waiters {
+		f.waitStatus(t, id, db.RunWaiting)
+	}
+	for _, slug := range []string{"busy-one", "busy-two"} {
+		busy = append(busy, f.enqueue(t, f.seed(t, slug, `llm("x"); return 1`, false), db.TriggerManual))
+	}
+	f.stepNoWait(t, 2) // the waiting runs hold no slot
+	gen.waitEntered(t)
+	gen.waitEntered(t)
+	ready.Store(true)
+	f.e.Wake()
+	time.Sleep(200 * time.Millisecond) // give the waits a chance to (wrongly) resume
+	for _, id := range waiters {
+		f.wantRun(t, id, db.RunWaiting, "")
+	}
+	close(gen.release) // the busy runs finish and wake the waits
+	f.e.Wait()
+	for _, id := range append(waiters, busy...) {
+		f.wantRun(t, id, db.RunSucceeded, "")
+	}
+}
+
+// TestAuto08_DailyCapWindowIsTheRunStartDay: the cap's day is the day the
+// run was claimed (started_at), even when the meter is built after midnight.
+func TestAuto08_DailyCapWindowIsTheRunStartDay(t *testing.T) {
+	gen := usageGen(3, 2)
+	f := newExFixture(t, exOpts{gen: gen})
+	beforeMidnight := time.Date(2026, 10, 14, 23, 59, 30, 0, time.UTC)
+	f.priorTokens(t, f.seed(t, "other", `return 1`, false), exStart, 1999995)
+	id := f.enqueue(t, f.seed(t, "digest", `llm("a"); llm("b"); return 1`, false), db.TriggerManual)
+	f.clock.Set(beforeMidnight)
+	var once sync.Once
+	automations.SetExecutorZone(f.e, func() *time.Location {
+		once.Do(func() { f.clock.Set(beforeMidnight.Add(time.Minute)) }) // midnight passes between claim and meter
+		return time.UTC
+	})
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunBudgetExceeded, db.ErrKindDailyCap)
+	if n := gen.CallCount(); n != 1 {
+		t.Fatalf("generator calls = %d; want 1 (the 14th's total counts)", n)
+	}
+}
+
+func TestExecutor_CancelledRunRecordsActiveTime(t *testing.T) {
+	gen := newBlockingGen()
+	f := newExFixture(t, exOpts{gen: gen})
+	id := f.enqueue(t, f.seed(t, "digest", `llm("x"); return 1`, false), db.TriggerManual)
+	f.stepNoWait(t, 1)
+	gen.waitEntered(t)
+	f.clock.Advance(30 * time.Second)
+	if ok, err := f.d.CancelAutomationRun(id, f.clock.Now()); err != nil || !ok {
+		t.Fatalf("cancel = (%v, %v)", ok, err)
+	}
+	f.e.Wake()
+	f.e.Wait()
+	if r := f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled); r.ActiveMS != 30000 {
+		t.Fatalf("active_ms = %d; want 30000", r.ActiveMS)
+	}
+}
+
+// runExecutor starts e.Run and returns a stop that cancels it and waits for
+// it to return.
+func runExecutor(t *testing.T, f *exFixture) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.e.Run(ctx) }()
+	return func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("Run did not return after its ctx ended")
+		}
+	}
+}
+
+func TestExecutor_DaemonStopMidRunEndsInterrupted(t *testing.T) {
+	gen := newBlockingGen()
+	f := newExFixture(t, exOpts{gen: gen})
+	id := f.enqueue(t, f.seed(t, "digest", `llm("x"); return 1`, false), db.TriggerManual)
+	stop := runExecutor(t, f)
+	gen.waitEntered(t)
+	stop()
+	r := f.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+	mustContain(t, "error", r.Error, "the daemon stopped")
+}
+
+func TestWaiter_CancelOfWaitingRunEndsCancelled(t *testing.T) {
+	var ready atomic.Bool
+	f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+	id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
+	f.stepNoWait(t, 1)
+	f.waitStatus(t, id, db.RunWaiting)
+	if ok, err := f.d.CancelAutomationRun(id, f.clock.Now()); err != nil || !ok {
+		t.Fatalf("cancel = (%v, %v)", ok, err)
+	}
+	f.e.Wake()
+	f.e.Wait()
+	f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled)
+}
+
+func TestWaiter_DaemonStopDuringWaitEndsInterrupted(t *testing.T) {
+	var ready atomic.Bool
+	f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+	id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
+	stop := runExecutor(t, f)
+	f.waitStatus(t, id, db.RunWaiting)
+	stop()
+	f.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+}
+
+func TestExecutor_ExecuteInlineStopSaysDryRunStopped(t *testing.T) {
+	gen := newBlockingGen()
+	f := newExFixture(t, exOpts{gen: gen})
+	id := f.enqueue(t, f.seed(t, "digest", `llm("x"); return 1`, true), db.TriggerDryRun)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-gen.entered
+		cancel()
+	}()
+	r, err := f.e.ExecuteInline(ctx, id)
+	if err != nil {
+		t.Fatalf("ExecuteInline: %v", err)
+	}
+	if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindInterrupted || !strings.Contains(r.Error, "the dry run was stopped") {
+		t.Fatalf("run = %s/%s (%s); want failed/interrupted saying the dry run was stopped", r.Status, r.ErrorKind, r.Error)
 	}
 }

@@ -902,3 +902,26 @@ func TestFinish_AddsActiveMS(t *testing.T) {
 		t.Fatalf("active_ms = %d; want 2600", got)
 	}
 }
+
+func TestResumeIfSlot_WaitsForAFreeRunningSlot(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 4)
+	waiting, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	running, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerButton})
+	mustClaimAutomationRun(t, d, waiting)
+	mustClaimAutomationRun(t, d, running)
+	if err := d.SetAutomationRunWaiting(waiting, WaitApproval); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ResumeAutomationRunIfSlot(waiting, 1); err != nil || ok {
+		t.Fatalf("resume with the only slot taken = (%v, %v); want (false, nil)", ok, err)
+	}
+	wantAutomationRun(t, d, waiting, RunWaiting, "")
+	if ok, err := d.ResumeAutomationRunIfSlot(waiting, 2); err != nil || !ok {
+		t.Fatalf("resume with a free slot = (%v, %v); want (true, nil)", ok, err)
+	}
+	wantAutomationRun(t, d, waiting, RunRunning, "")
+	if _, err := d.ResumeAutomationRunIfSlot(waiting, 2); !errors.Is(err, ErrRunNotActive) {
+		t.Fatalf("resume of a running run = %v; want ErrRunNotActive", err)
+	}
+}

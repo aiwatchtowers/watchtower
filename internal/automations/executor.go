@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/db"
@@ -58,6 +59,7 @@ type Executor struct {
 	// replace it.
 	abandoned func() int
 
+	gated   atomic.Bool // claims refused for abandoned goroutines (logged once per change)
 	wakeCh  chan struct{}
 	nudgeMu sync.Mutex
 	nudge   chan struct{} // closed and replaced by every Wake
@@ -163,7 +165,8 @@ func (e *Executor) markInterrupted(ctx context.Context) bool {
 // Step is one poll (the test seam): it ends dry runs whose CLI died, cancels
 // queued runs of non-runnable automations, and claims queued runs oldest
 // first while running runs are fewer than MaxConcurrent, starting one
-// goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2. Every
+// goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2 (but
+// still cancels non-runnable queued runs). Every
 // failure is returned, joined; one run's failure does not stop the others.
 func (e *Executor) Step(ctx context.Context) (started int, err error) {
 	now := e.clock.Now()
@@ -173,18 +176,16 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 	} else if n > 0 {
 		e.logger.Printf("automations: %d dry run(s) past their deadline ended (their CLI process stopped)", n)
 	}
-	if n := e.abandoned(); n >= maxAbandonedRuns {
-		e.logger.Printf("automations: %d abandoned script goroutines still running; no run is claimed until fewer than %d remain",
-			n, maxAbandonedRuns)
-		return 0, errors.Join(errs...)
-	}
+	gated := e.claimsGated()
 	queued, err := e.db.NextQueuedAutomationRuns(0)
 	if err != nil {
 		return 0, errors.Join(append(errs, err)...)
 	}
-	free, err := e.freeSlots()
-	if err != nil {
-		return 0, errors.Join(append(errs, err)...)
+	free := 0
+	if !gated {
+		if free, err = e.freeSlots(); err != nil {
+			return 0, errors.Join(append(errs, err)...)
+		}
 	}
 	p := poll{e: e, ctx: ctx, now: now, free: free, autos: map[int64]*db.Automation{}}
 	for _, r := range queued {
@@ -196,6 +197,24 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		}
 	}
 	return p.started, errors.Join(errs...)
+}
+
+// claimsGated reports whether AbandonedRuns() ≥ maxAbandonedRuns (no claim;
+// queued runs of non-runnable automations are still cancelled). The change
+// into and out of that state is logged once each.
+func (e *Executor) claimsGated() bool {
+	n := e.abandoned()
+	gated := n >= maxAbandonedRuns
+	if e.gated.Swap(gated) == gated {
+		return gated
+	}
+	if gated {
+		e.logger.Printf("automations: %d abandoned script goroutines still running; no run is claimed until fewer than %d remain",
+			n, maxAbandonedRuns)
+	} else {
+		e.logger.Printf("automations: abandoned script goroutines down to %d; claiming again", n)
+	}
+	return gated
 }
 
 // freeSlots is MaxConcurrent minus the runs in status running (waiting runs
@@ -250,7 +269,7 @@ func (p *poll) consider(r db.AutomationRun) error {
 	p.e.wg.Add(1)
 	go func() {
 		defer p.e.wg.Done()
-		p.e.runClaimed(p.ctx, r.ID, a)
+		p.e.runClaimed(p.ctx, r.ID, a, false)
 	}()
 	return nil
 }
@@ -300,6 +319,6 @@ func (e *Executor) ExecuteInline(ctx context.Context, runID int64) (*db.Automati
 	if !claimed {
 		return nil, fmt.Errorf("automation run %d: %w", runID, ErrRunNotClaimed)
 	}
-	e.runClaimed(ctx, runID, a)
+	e.runClaimed(ctx, runID, a, true)
 	return e.db.GetAutomationRun(runID)
 }
