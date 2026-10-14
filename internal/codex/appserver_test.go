@@ -270,18 +270,32 @@ func TestAppServer_ListEmptyIsNoHooks(t *testing.T) {
 
 func TestAppServer_TimeoutKillsAndReturnsUnavailable(t *testing.T) {
 	old := appServerBudget
-	appServerBudget = 500 * time.Millisecond
 	t.Cleanup(func() { appServerBudget = old })
-	f := newFakeServer(t, "hang", nil)
-	start := time.Now()
-	_, err := StartAppServer(context.Background(), os.Args[0], nil, f.env)
-	if !errors.Is(err, ErrCodexTrustUnavailable) {
-		t.Fatalf("err = %v, want ErrCodexTrustUnavailable", err)
+	// The budget starts with StartAppServer, before the stub (this test binary
+	// re-run) has spawned its child and written the pids; a slow start (-race)
+	// can spend the whole budget first. The group kill is then still
+	// unobservable — no pids to check — so such a run proves nothing and is
+	// retried with a longer budget. Every conclusive run asserts everything.
+	for _, budget := range []time.Duration{500 * time.Millisecond, 2 * time.Second, 5 * time.Second} {
+		appServerBudget = budget
+		f := newFakeServer(t, "hang", nil)
+		start := time.Now()
+		_, err := StartAppServer(context.Background(), os.Args[0], nil, f.env)
+		if !errors.Is(err, ErrCodexTrustUnavailable) {
+			t.Fatalf("err = %v, want ErrCodexTrustUnavailable", err)
+		}
+		if d := time.Since(start); d > budget+4500*time.Millisecond {
+			t.Fatalf("took %s, want about the budget (%s)", d, budget)
+		}
+		if _, err := os.Stat(f.pids); errors.Is(err, os.ErrNotExist) {
+			// SIGKILLed before the write: a dead stub never writes later.
+			t.Logf("budget %s spent before the stub wrote its pids; retrying longer", budget)
+			continue
+		}
+		waitPIDsGone(t, f)
+		return
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %s, want about the budget", d)
-	}
-	waitPIDsGone(t, f)
+	t.Fatal("the stub never wrote its pids within any budget")
 }
 
 // waitGone fails unless pid exits (and is reaped by whoever owns it) soon.
