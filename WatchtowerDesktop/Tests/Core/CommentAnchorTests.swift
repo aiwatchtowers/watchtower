@@ -122,19 +122,23 @@ final class CommentAnchorTests: XCTestCase {
 
     // MARK: locate — performance (the collapsed-text path must stay near-linear)
 
-    /// A hand-rolled O(n·m) Character-array scan (the pre-fix implementation)
-    /// took over a second here; the stdlib-search-based version should
-    /// complete near-instantly. The bound is generous to avoid flakiness —
-    /// this is a regression guard against reintroducing quadratic behavior,
-    /// not a tight performance budget.
+    /// A regression guard against reintroducing the pre-fix collapsed-text
+    /// search (a hand-rolled Character-array scan), not a tight performance
+    /// budget.
     ///
-    /// The bound applies to the fastest of three runs on a monotonic clock.
-    /// Noise on a shared CI runner (parallel shards, preemption) only ever adds
-    /// time, so the minimum is the closest reading of the real cost and a
-    /// single descheduled run no longer fails the test. The guard still holds:
-    /// the slow implementation pays its >1 s on every run, so its minimum stays
-    /// above the bound too. (A relative 1 MB vs 2 MB check would not catch it:
-    /// with the quote length fixed, O(n·m) also scales linearly in n.)
+    /// The bound is relative to the machine: `locate` must cost under
+    /// `maxBaselineMultiple` times one linear pass over the same document that
+    /// collapses its whitespace into a new String — work `locate` itself does
+    /// once. CI runners are noisy and also consistently slower than a laptop,
+    /// so a fixed wall-clock bound flaked (0.50–0.78 s against 0.5 s); a slow
+    /// runner slows both sides of the ratio alike. Each side is the fastest of
+    /// three runs on a monotonic clock, since noise only ever adds time.
+    /// Measured locally (debug build): the current `locate` runs at 1.93–1.96×
+    /// the baseline idle and 2.3–2.4× with every core saturated; the pre-fix
+    /// scan at 4.7–4.9×. The bound of 3.5 sits between them with room on
+    /// both sides. (A 1 MB vs 2 MB scaling check would not catch the old scan:
+    /// with the quote length fixed, O(n·m) also grows linearly in n.) The
+    /// absolute 5 s ceiling is only a backstop far above any CI reading.
     func testReflowMatchOnLargeDocumentCompletesQuickly() throws {
         let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
         let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.
@@ -148,18 +152,45 @@ final class CommentAnchorTests: XCTestCase {
         let insertAt = padding.index(padding.startIndex, offsetBy: padding.count / 2)
         let big = String(padding[..<insertAt]) + reflowedSentence + String(padding[insertAt...])
 
+        var found: Range<String.Index>?
+        let locateTime = Self.fastestOfThree { found = made.locate(in: big) }
+        var collapsedLength = 0
+        let baselineTime = Self.fastestOfThree {
+            var out = ""
+            var lastWasSpace = false
+            for character in big {
+                if character.isWhitespace {
+                    if !lastWasSpace { out.append(" ") }
+                    lastWasSpace = true
+                } else {
+                    out.append(character)
+                    lastWasSpace = false
+                }
+            }
+            collapsedLength = out.count
+        }
+        XCTAssertGreaterThan(collapsedLength, 0)
+
+        let maxBaselineMultiple = 3.5
+        let ratio = locateTime / max(baselineTime, 1e-6)
+        XCTAssertLessThan(
+            ratio, maxBaselineMultiple,
+            "reflow locate took \(locateTime)s, \(ratio)× a linear pass over the same ~1 MB document (\(baselineTime)s)"
+        )
+        XCTAssertLessThan(locateTime, 5, "reflow locate on a ~1 MB document took \(locateTime)s")
+        XCTAssertEqual(found.map { String(big[$0]) }, reflowedQuote)
+    }
+
+    /// Seconds taken by the fastest of three runs of `body`.
+    private static func fastestOfThree(_ body: () -> Void) -> Double {
         let clock = ContinuousClock()
         var fastest = Duration.seconds(Int64.max)
-        var found: Range<String.Index>?
         for _ in 0..<3 {
             let start = clock.now
-            found = made.locate(in: big)
+            body()
             fastest = min(fastest, clock.now - start)
         }
-        let elapsed = Double(fastest.components.seconds) + Double(fastest.components.attoseconds) / 1e18
-
-        XCTAssertLessThan(elapsed, 0.5, "reflow locate on a ~1 MB document should stay near-linear, fastest of 3 runs took \(elapsed)s")
-        XCTAssertEqual(found.map { String(big[$0]) }, reflowedQuote)
+        return Double(fastest.components.seconds) + Double(fastest.components.attoseconds) / 1e18
     }
 
     /// Boundary check on the collapsed-text path itself: a match whose first
