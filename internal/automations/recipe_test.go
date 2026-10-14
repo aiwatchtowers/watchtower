@@ -391,3 +391,24 @@ func TestApprovalHash_DuplicateEntriesKeepTheHash(t *testing.T) {
 		t.Error("a duplicated permission or output changed the hash")
 	}
 }
+
+func TestRecipe_TildeAndCaseInsensitiveScriptFences(t *testing.T) {
+	for _, open := range []string{"~~~js", "~~~javascript", "```JS", "```JavaScript", "~~~~Js"} {
+		closer := "```"
+		if strings.HasPrefix(open, "~") {
+			closer = strings.Repeat("~", strings.Count(open, "~"))
+		}
+		data := []byte("---\n" + baseFrontmatter + "---\n" + open + "\nlog(1);\n" + closer + "\n")
+		r := mustParse(t, data, Scope{Kind: ScopePersonal})
+		if r.Script != "log(1);\n" || r.ScriptLine != 7 {
+			t.Errorf("%s: script=%q line=%d", open, r.Script, r.ScriptLine)
+		}
+	}
+	// A tilde fence is not closed by backticks.
+	wantParseError(t, []byte("---\n"+baseFrontmatter+"---\n~~~js\nlog(1);\n```\n"), "not closed")
+
+	mixed := []byte("---\n" + baseFrontmatter + "---\n```js\nlog(1);\n```\n~~~JS\nlog(2);\n~~~\n")
+	if line, _ := wantParseError(t, mixed, "second"); line != 9 {
+		t.Errorf("mixed second block line = %d, want 9", line)
+	}
+}

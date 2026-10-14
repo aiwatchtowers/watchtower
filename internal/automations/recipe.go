@@ -531,8 +531,10 @@ func (f fence) closes(line string) bool {
 	return len(rest) >= f.count && strings.Trim(rest, string(f.char)) == ""
 }
 
+// isScriptFence reports whether f opens the script: a backtick or tilde fence
+// whose info string is js or javascript, case-insensitively (CommonMark).
 func isScriptFence(f fence) bool {
-	return f.char == '`' && (f.info == "js" || f.info == "javascript")
+	return strings.EqualFold(f.info, "js") || strings.EqualFold(f.info, "javascript")
 }
 
 // parseBody finds exactly one js fenced block in lines[start:]; everything
