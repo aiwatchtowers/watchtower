@@ -1,7 +1,8 @@
 # Automations — design
 
 **Status:** Approved, 2026-10-14. Owner-approved shape: asks #259–#267; business spec approved in ask #269; the
-open questions decided in ask #270 (§20); the questions the phase plans raised decided in asks #271–#273 (§20.1).
+open questions decided in ask #270 (§20); the questions the phase plans raised decided in asks #271–#273, the extra local-store read tools in ask #277
+(§20.1).
 The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01 and AGENT-04 amendments (§14.4, §14.5)
 are approved with §20 (ask #270); the PROJ-03 and QC-02 amendments (§14.6, §14.7) are approved in ask #272.
 **Business spec:** `2026-10-14-automations-business.md`. **Plans:** one per phase,
@@ -127,6 +128,7 @@ permission := capability ":" verb [ "@" scope ]          e.g. jira:read@PAY, gma
 |---|---|---|---|
 | `slack`, `gmail`, `jira`, `calendar`, `confluence` | `read`, `write` | required: account label/email (Slack, Gmail, Calendar), project key (Jira), space key (Confluence); `*` = all | the source's read (resp. write) tools whose call scope it covers (§3.2) |
 | `targets`, `tracks`, `ideas`, `digests`, `people`, `transcripts` | `read`, `write` | none (`@` refused) | those local read (write) tools |
+| `meetings`, `dayplan` | `read` only (`write` refused) | none (`@` refused) | meeting recaps and notes; the day plan (§6.1, §20.1 D23) |
 | `tool` | — | — | one registry tool by exact name, read or write, whatever its family |
 | `mcp` | — | `server/tool-glob`, `*` only in the tool part | Quick Connection server by name, tools matching the glob that QC-02 allows (read-only; automations are QC-02's second consumer of the same allowed list, §14.7, §20.1 D20) |
 | `shell` | — | exact command, double-quoted, JSON string escapes | workbench automations only (AUTO-13) |
@@ -138,7 +140,11 @@ permission := capability ":" verb [ "@" scope ]          e.g. jira:read@PAY, gma
 There is **no `knowledge` capability** (§20.1 D21, ask #273): the broad knowledge tools — `search_knowledge`,
 `get_knowledge_document`, `get_task_context`, whose results can carry content of any synced source whatever the
 account scopes — are admitted only by an explicit `tool:<name>` entry each; `knowledge:read`/`knowledge:write` is a
-parse error whose message names the `tool:` entries to use.
+parse error whose message names the `tool:` entries to use. By the same rule (ask #277 applies D21), the other
+cross-source reads are **`tool:`-only** too: `list_inbox` (items from every source), `memory_recall`,
+`memory_open`, `memory_map` (memory derived from every source), and the two single-purpose tools
+`get_writing_style` and `get_confluence_page` (a live read whose space is known only after the fetch) — §6.1,
+§20.1 D23.
 
 A manifest entry that does not parse, names an unknown capability/verb, or puts `shell:`/`session:`/`ask:` in a
 personal recipe → parse error (not runnable). Duplicates are folded. Normalisation (for `approval_hash` and for
@@ -154,7 +160,10 @@ Every SDK call is checked before its backend is touched (AUTO-01):
   capability+verb with a scope that covers `args[scopeArg]`. A call whose scope argument is absent is covered
   only by `@*`. `list_messages` and `list_upcoming_events` take no account argument and read every connected
   workspace/calendar, so their scope is always absent: in v1 only `slack:read@*` (resp. `calendar:read@*`) or
-  `tool:<name>` admits them, never `slack:read@<label>` — no narrower scope in v1 (§20.1 D22, ask #273). Scope
+  `tool:<name>` admits them, never `slack:read@<label>` — no narrower scope in v1 (§20.1 D22, ask #273).
+  `list_calendar_events` (ask #277) takes an optional `account`, so it has a real scope: with `account` it needs
+  `calendar:read@<that account>`, without it `calendar:read@*`. `list_jira_sprints` is scoped by its `project`
+  (or the project of its `board_id`), `list_jira_releases` by its `project`; absent → `jira:read@*`. Scope
   matching is case-insensitive equality or `*` glob (`path.Match` semantics). A tool missing
   from `toolCapabilities` is admitted only by `tool:<name>`. The tool must also be visible on the `automation`
   surface (`Tool.VisibleOn("automation")`), whatever the manifest says. `TestToolCapabilities_CoversEveryAutomationTool`
@@ -252,6 +261,30 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
   per-provider gating (§20 D2). They carry the same Google Limited Use posture as the inbox, memory and briefing,
   which already feed synced mail to the model; the product-wide decision governs all of them
   (`docs/security-audit-2026-07-31.md`).
+- **More local-store reads (ask #277, §20.1 D23), all in P1 beside the email tools.** New tools, each `Surfaces:
+  ["automation"]`, not in `tools.ReadTools()` (DEV-01), local store only, list `limit` default 50 / max 200, long
+  texts clipped with a `truncated` flag:
+  `list_inbox` (`inbox_items`, archived rows excluded; `status` pending|snoozed|resolved|dismissed|all, default
+  pending; `priority`, `trigger_type`, `since`) — `tool:` only;
+  `list_calendar_events` (`calendar_events` with `start_time` in `[from, to)`, past included; optional
+  `account`; description clipped 4 KiB) — `calendar:read@<account>|*`;
+  `list_meeting_recaps` / `get_meeting_recap` (`meeting_recaps` joined to the event title and start; `get` returns
+  the recap JSON and `source_text` clipped 32 KiB each) and `list_meeting_notes` (`meeting_notes` of one event or
+  since a time; a note is one short row, so the list returns its whole text and there is no `get`) — `meetings:read`;
+  `list_day_plans` / `get_day_plan` (the owner's `day_plans` via `db.ResolveOwner`, OWNER-01; `get` adds its
+  `day_plan_items`) — `dayplan:read`;
+  `list_reminders` (`reminders`; `status` pending|done|dismissed|all, default pending; `due_before`) —
+  `targets:read`, mirroring `remind_me` → `targets:write`;
+  `list_jira_sprints` (`jira_sprints` joined to `jira_boards`; `project`, `board_id`, `state`) and
+  `list_jira_releases` (`jira_releases`; `project`, `released`, `include_archived`; description clipped 4 KiB) —
+  `jira:read@<PROJECT>|*`.
+  Existing tools admitted on the `automation` surface: `memory_recall`, `memory_open`, `memory_map` (surface-less,
+  so already visible; they live in `tools.DependentReadTools`, not in `buildToolRegistry`, so the automation
+  registry `buildAutomationRegistry` adds them with the workspace vault path and no recall-compare shadow handle;
+  `memory_open` skips its access-stat bump on the `automation` surface, so automation reads stay writes-free,
+  AUTO-02/AUTO-12) — `tool:` only; `get_writing_style` (`Surfaces` gains `automation`) — `tool:` only;
+  `get_confluence_page` (`Surfaces` gains `automation`) — `tool:` only, and the **one live network read** on the
+  surface (§20.1 D23 flags it); `list_jira_projects` (surface-less, already `jira:read@*`) — unchanged.
 
 ### 6.2 Trust order (`resolveTrust`)
 
@@ -758,7 +791,7 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style`/`get_confluence_page` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
@@ -792,7 +825,11 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
   `TestAuto10_RestartDoesNotRepeatCatchUp`, `TestScheduler_OnTimeWithinGrace`, `TestScheduler_NewAndReenabledDoNotCatchUp`,
   `TestScheduler_DSTTransition`, `TestAuto09_RunCommandOnlyQueues`, `TestRun_CoalescesSecondTrigger`.
 - Dry run: `TestAuto12_DryRunWritesNoActionsOutputsOrState`.
-- Manifest (ask #273): `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_KnowledgeToolsOnlyByToolEntry`.
+- Manifest (ask #273): `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_KnowledgeToolsOnlyByToolEntry`;
+  (ask #277) `TestManifest_D23ToolScopes`, `TestManifest_MeetingsAndDayplanReadOnly`.
+- Local reads (ask #277): `TestListInbox_*`, `TestListCalendarEvents_*`, `TestMeetingRecapTools_*`,
+  `TestDayPlanTools_*`, `TestListReminders_*`, `TestJiraSprintReleaseTools_*`, `TestD23Tools_AutomationSurfaceOnly`,
+  `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestBuildAutomationRegistry_AddsMemoryTools`.
 - CLI: `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes`,
   `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers` (ask #271).
 - Daemon: `TestDaemon_AutomationWakeSignalDoesNotStartSync`.
@@ -871,9 +908,9 @@ section it governs; nothing remains open.
 14. **D14 AlwaysAsk tools are never auto** (§14.2).
 15. **D15 Workbench binding** is by location only; a `workbench:` frontmatter key is a parse error (§2.3).
 
-### 20.1 Decisions (asks #271–#273)
+### 20.1 Decisions (asks #271–#273, #277)
 
-The phase plans raised seven more questions; the owner answered them on 2026-10-14. Each is pinned below and in
+The phase plans raised seven more questions (D16–D22) and the owner added one more scope decision (D23, ask #277), all on 2026-10-14. Each is pinned below and in
 the section it governs.
 
 16. **D16 Dry run of an unconfirmed recipe — owner only (ask #271).** The owner may dry-run a recipe that is not
@@ -897,3 +934,15 @@ the section it governs.
     `knowledge:read` is a parse error (§3.1).
 22. **D22 `list_messages` in v1 only by `slack:read@*` (ask #273)** (or `tool:list_messages`); no per-account
     scope in v1. The same holds for `list_upcoming_events` and `calendar:read@*` (§3.2).
+23. **D23 More local-store reads for automations, all in P1 (ask #277).** New: `list_inbox`,
+    `list_calendar_events`, `list_meeting_recaps`, `get_meeting_recap`, `list_meeting_notes`, `list_day_plans`,
+    `get_day_plan`, `list_reminders`, `list_jira_sprints`, `list_jira_releases` — automation surface only, not
+    in `tools.ReadTools()`, local store only, limits 50/200, long texts clipped. Existing tools admitted:
+    `memory_recall`/`memory_open`/`memory_map` (added to the automation registry; `memory_open` skips its stat
+    bump there), `get_writing_style` and `get_confluence_page` (each gains the `automation` surface),
+    `list_jira_projects` (already admitted). New capabilities `meetings:read` and `dayplan:read`; reminders
+    under `targets:read`; calendar range and Jira sprints/releases under the existing scoped capabilities;
+    `list_inbox`, the memory tools, `get_writing_style` and `get_confluence_page` are `tool:`-only (D21's rule
+    applied to cross-source and single-purpose tools). **Flag:** `get_confluence_page` is a live network read,
+    against this decision's "never a live API"; the owner named it explicitly, so it is admitted `tool:`-only and
+    marked as the one live read (§6.1).
