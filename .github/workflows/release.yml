@@ -46,7 +46,7 @@ jobs:
         # whose concurrency lives in internal/*, already covered here.
         # -timeout is per package; the step budget stays above it.
         timeout-minutes: 40
-        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+        run: make test-race
 
   # Mirrors ci.yml's swift-test job — keep the two in step (runner, Xcode,
   # Go, cache, steps, timeouts). The release gate drifted once: it stayed on

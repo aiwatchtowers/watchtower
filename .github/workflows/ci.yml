@@ -154,12 +154,12 @@ jobs:
         # feature-branch CI fast. -timeout is per package: a package whose
         # tests open in-memory DBs must install db.InitTestTemplate (pinned by
         # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh
-        # goose migration costs seconds per test under -race. cmd stays out:
-        # it is CLI glue over file-backed SQLite fixtures whose concurrency
-        # all lives in internal/*, which is race-covered here.
+        # goose migration costs seconds per test under -race. Scope — cmd
+        # out, internal/db's migration tests without -race — is in
+        # `make test-race`, shared with the release workflow.
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
         timeout-minutes: 40
-        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+        run: make test-race
 
   # Whether this change touches the code index or its grammar modules — the
   # only reason to pay for the full grammar set (codeindex-full below). A
