@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -22,7 +21,7 @@ var errNoDB = errors.New("scope lookup needs the database")
 // could check PAY while the tool reads OPS. decodeScopeArgs refuses any key
 // that equals one of these names ignoring case without being byte-equal.
 var scopeArgNames = []string{
-	"project", "project_key", "key", "keys", "issue_keys", "board_id", "include_linked", "account", "account_id",
+	"project", "project_key", "key", "keys", "issue_keys", "board_id", "account", "account_id",
 }
 
 // decodeArgs decodes a call's args as an object; empty or null is {}.
@@ -84,13 +83,6 @@ func argInt(a map[string]json.RawMessage, key string) int64 {
 	return 0
 }
 
-// argFalse reports whether args[key] is explicitly the boolean false.
-func argFalse(a map[string]json.RawMessage, key string) bool {
-	var b bool
-	raw, ok := a[key]
-	return ok && json.Unmarshal(raw, &b) == nil && !b
-}
-
 // unit is one scope unit of the non-empty values; no unit when all are empty.
 func unit(values ...string) []CallScope {
 	var vs []string
@@ -125,7 +117,7 @@ func issueProject(key string) string {
 	return strings.ToUpper(prefix)
 }
 
-// issueKeyScope scopes a write by its issue key's project.
+// issueKeyScope scopes a call by its issue key's project.
 func issueKeyScope(key string) func(context.Context, *db.DB, json.RawMessage) ([]CallScope, error) {
 	return func(_ context.Context, _ *db.DB, args json.RawMessage) ([]CallScope, error) {
 		a, err := decodeScopeArgs(args)
@@ -157,8 +149,7 @@ func addProjectUnit(units []CallScope, project string) []CallScope {
 	return append(units, CallScope{Values: []string{project}})
 }
 
-// statusHistoryScope: get_jira_status_history returns exactly the issues of
-// its keys (never their links), so one unit per key's project.
+// statusHistoryScope: one unit per key's project.
 func statusHistoryScope(_ context.Context, _ *db.DB, args json.RawMessage) ([]CallScope, error) {
 	a, err := decodeScopeArgs(args)
 	if err != nil {
@@ -167,152 +158,18 @@ func statusHistoryScope(_ context.Context, _ *db.DB, args json.RawMessage) ([]Ca
 	return projectsOfKeys(argStrings(a, "keys")), nil
 }
 
-// timeInStatusScope: get_jira_time_in_status adds the issues the selected
-// ones link to, on any project, unless include_linked is explicitly false —
-// so its scope is absent unless include_linked:false. Then the filters AND
-// together: project when given, else the issue_keys prefixes, else absent.
+// timeInStatusScope: project when given, else the issue_keys prefixes, else
+// absent (board_id alone is absent). Linked issues the tool adds are covered
+// by the project grant (owner, ask #287).
 func timeInStatusScope(_ context.Context, _ *db.DB, args json.RawMessage) ([]CallScope, error) {
 	a, err := decodeScopeArgs(args)
 	if err != nil {
 		return nil, err
 	}
-	if !argFalse(a, "include_linked") {
-		return nil, nil
-	}
 	if p := argString(a, "project"); p != "" {
 		return unit(strings.ToUpper(p)), nil
 	}
 	return projectsOfKeys(argStrings(a, "issue_keys")), nil
-}
-
-// jiraIssueRefs is the part of jira.Issue (as the sync marshals it into
-// jira_issues.raw_json) that names other issues: links both ways, epic and
-// parent.
-type jiraIssueRefs struct {
-	Fields struct {
-		IssueLinks []struct {
-			InwardIssue  *struct{ Key string } `json:"inwardIssue"`
-			OutwardIssue *struct{ Key string } `json:"outwardIssue"`
-		} `json:"issuelinks"`
-		Epic   *struct{ Key string } `json:"epic"`
-		Parent *struct{ Key string } `json:"parent"`
-	} `json:"fields"`
-}
-
-func (r jiraIssueRefs) keys() []string {
-	var out []string
-	for _, l := range r.Fields.IssueLinks {
-		if l.InwardIssue != nil {
-			out = append(out, l.InwardIssue.Key)
-		}
-		if l.OutwardIssue != nil {
-			out = append(out, l.OutwardIssue.Key)
-		}
-	}
-	if r.Fields.Epic != nil {
-		out = append(out, r.Fields.Epic.Key)
-	}
-	if r.Fields.Parent != nil {
-		out = append(out, r.Fields.Parent.Key)
-	}
-	return out
-}
-
-// issueKeyPattern finds issue keys in custom_fields_json, whose shape is
-// whatever the board's mapped custom fields hold.
-var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9_]+-[0-9]+\b`)
-
-// referencedIssueKeys lists the issue keys one row references: its raw
-// JSON's links, epic and parent, the epic_key column, and every issue key in
-// custom_fields_json. ok is false when the raw JSON is empty or unreadable:
-// such an issue could carry any project's data, so the caller fails closed.
-func referencedIssueKeys(raw, custom, epic string) (keys []string, ok bool) {
-	var refs jiraIssueRefs
-	if json.Unmarshal([]byte(raw), &refs) != nil {
-		return nil, false
-	}
-	keys = append(refs.keys(), epic)
-	return append(keys, issueKeyPattern.FindAllString(custom, -1)...), true
-}
-
-// withReferencedProjects adds a unit per project the selected issues
-// reference (list_jira_issues and get_jira_issue return raw_json and the
-// custom fields, so a linked issue's key, summary and status ride along), in
-// key order so a denial names the same project every time. filter is the
-// row filter on ?1 and must use an index (exact match on the upper-cased
-// value). A row with unreadable raw JSON, or a referenced key without a
-// project prefix, makes the scope absent (fail closed).
-func withReferencedProjects(ctx context.Context, d *db.DB, units []CallScope, filter string, arg any) ([]CallScope, error) {
-	if d == nil {
-		return nil, errNoDB
-	}
-	rows, err := d.QueryContext(ctx, `SELECT raw_json, custom_fields_json, epic_key FROM jira_issues WHERE `+filter, arg)
-	if err != nil {
-		return nil, fmt.Errorf("scope lookup: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var keys []string
-	for rows.Next() {
-		var raw, custom, epic sql.NullString
-		if err := rows.Scan(&raw, &custom, &epic); err != nil {
-			return nil, fmt.Errorf("scope lookup: %w", err)
-		}
-		k, ok := referencedIssueKeys(raw.String, custom.String, epic.String)
-		if !ok {
-			return nil, nil // absent: only @* admits
-		}
-		keys = append(keys, k...)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("scope lookup: %w", err)
-	}
-	return addReferencedProjects(units, keys), nil
-}
-
-// addReferencedProjects adds the projects of keys (blank keys skipped) in
-// key order; a non-blank key without a project prefix makes the scope absent.
-func addReferencedProjects(units []CallScope, keys []string) []CallScope {
-	slices.Sort(keys)
-	for _, k := range keys {
-		if strings.TrimSpace(k) == "" {
-			continue
-		}
-		p := issueProject(k)
-		if p == "" {
-			return nil
-		}
-		units = addProjectUnit(units, p)
-	}
-	return units
-}
-
-// listJiraIssuesScope: the project plus every project its issues reference;
-// no project → absent.
-func listJiraIssuesScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]CallScope, error) {
-	a, err := decodeScopeArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	p := strings.ToUpper(argString(a, "project"))
-	if p == "" {
-		return nil, nil
-	}
-	return withReferencedProjects(ctx, d, unit(p), "project_key = ?1", p)
-}
-
-// getJiraIssueScope: the key's project plus every project the issue
-// references; a key without a project prefix → absent.
-func getJiraIssueScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]CallScope, error) {
-	a, err := decodeScopeArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	key := argString(a, "key")
-	p := issueProject(key)
-	if p == "" {
-		return nil, nil
-	}
-	return withReferencedProjects(ctx, d, unit(p), "key = ?1", strings.ToUpper(key))
 }
 
 // sprintScope: upper(project) when given, else the project of board_id's
@@ -425,10 +282,30 @@ func emailAccountScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]C
 }
 
 // calendarAccountScope: a Google account by label or address, or a
-// calendar_accounts row by label.
+// calendar_accounts row by label — db.MatchCalendarAccounts, the same
+// predicate list_calendar_events resolves its account with. No account or an
+// unknown one is absent.
 func calendarAccountScope(ctx context.Context, d *db.DB, args json.RawMessage) ([]CallScope, error) {
-	return accountArgScope(ctx, d, args, googleAccountByNameSQL,
-		`SELECT label, '' FROM calendar_accounts WHERE label = ?1 COLLATE NOCASE`)
+	a, err := decodeScopeArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	acct := argString(a, "account")
+	if acct == "" {
+		return nil, nil
+	}
+	if d == nil {
+		return nil, errNoDB
+	}
+	matches, err := d.MatchCalendarAccounts(ctx, acct)
+	if err != nil {
+		return nil, err
+	}
+	var out []CallScope
+	for _, m := range matches {
+		out = append(out, unit(strings.ToLower(m.Label), strings.ToLower(m.Address))...)
+	}
+	return out, nil
 }
 
 // slackAccountScope: account_id resolved to {label, team_domain}; with no

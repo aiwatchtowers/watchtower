@@ -2,8 +2,8 @@ package automations
 
 import "time"
 
-// Clock is the time source of the meter, journal, indexer and scheduler;
-// tests use automationstest.FakeClock.
+// Clock is the time source of the indexer, scheduler and executor; tests pass
+// a fake one (spec §7.2).
 type Clock interface {
 	Now() time.Time
 	After(d time.Duration) <-chan time.Time
