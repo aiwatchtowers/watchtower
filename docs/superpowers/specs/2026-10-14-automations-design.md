@@ -1,8 +1,9 @@
 # Automations — design
 
 **Status:** Approved, 2026-10-14. Owner-approved shape: asks #259–#267; business spec approved in ask #269; the
-open questions decided in ask #270 (§20). The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01
-and AGENT-04 amendments (§14.4, §14.5) are approved with §20 (ask #270).
+open questions decided in ask #270 (§20); the questions the phase plans raised decided in asks #271–#273 (§20.1).
+The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01 and AGENT-04 amendments (§14.4, §14.5)
+are approved with §20 (ask #270); the PROJ-03 and QC-02 amendments (§14.6, §14.7) are approved in ask #272.
 **Business spec:** `2026-10-14-automations-business.md`. **Plans:** one per phase,
 `docs/superpowers/plans/2026-10-14-automations-p1.md` … `-p6.md`.
 **Branch:** `feature/automations`; each phase is its own plan and PR into it; `main` only by one PR with the
@@ -125,14 +126,19 @@ permission := capability ":" verb [ "@" scope ]          e.g. jira:read@PAY, gma
 | Capability | Verbs | Scope | Grants |
 |---|---|---|---|
 | `slack`, `gmail`, `jira`, `calendar`, `confluence` | `read`, `write` | required: account label/email (Slack, Gmail, Calendar), project key (Jira), space key (Confluence); `*` = all | the source's read (resp. write) tools whose call scope it covers (§3.2) |
-| `targets`, `tracks`, `ideas`, `digests`, `people`, `knowledge`, `transcripts` | `read`, `write` | none (`@` refused) | those local read (write) tools |
+| `targets`, `tracks`, `ideas`, `digests`, `people`, `transcripts` | `read`, `write` | none (`@` refused) | those local read (write) tools |
 | `tool` | — | — | one registry tool by exact name, read or write, whatever its family |
-| `mcp` | — | `server/tool-glob`, `*` only in the tool part | Quick Connection server by name, tools matching the glob that QC-02 allows (read-only) |
+| `mcp` | — | `server/tool-glob`, `*` only in the tool part | Quick Connection server by name, tools matching the glob that QC-02 allows (read-only; automations are QC-02's second consumer of the same allowed list, §14.7, §20.1 D20) |
 | `shell` | — | exact command, double-quoted, JSON string escapes | workbench automations only (AUTO-13) |
 | `llm` | `light`, `strong` | none | `llm()`; `strong` implies `light` |
 | `agent` | `run` | none | `agent()` (P6) |
 | `ask` | `owner` | none | `ask()` (P5, workbench only, §13.3) |
 | `session` | `start` | optional agent kind `claude`\|`codex`; none = both | `session()` (P5, workbench only) |
+
+There is **no `knowledge` capability** (§20.1 D21, ask #273): the broad knowledge tools — `search_knowledge`,
+`get_knowledge_document`, `get_task_context`, whose results can carry content of any synced source whatever the
+account scopes — are admitted only by an explicit `tool:<name>` entry each; `knowledge:read`/`knowledge:write` is a
+parse error whose message names the `tool:` entries to use.
 
 A manifest entry that does not parse, names an unknown capability/verb, or puts `shell:`/`session:`/`ask:` in a
 personal recipe → parse error (not runnable). Duplicates are folded. Normalisation (for `approval_hash` and for
@@ -146,13 +152,17 @@ Every SDK call is checked before its backend is touched (AUTO-01):
   `{capability, verb, scopeArg}` (e.g. `list_jira_issues → jira, read, "project"`; `send_slack_message → slack,
   write, "account"`). A `tool(name, args)` call is admitted when the manifest has `tool:<name>`, or the tool's
   capability+verb with a scope that covers `args[scopeArg]`. A call whose scope argument is absent is covered
-  only by `@*`. Scope matching is case-insensitive equality or `*` glob (`path.Match` semantics). A tool missing
+  only by `@*`. `list_messages` and `list_upcoming_events` take no account argument and read every connected
+  workspace/calendar, so their scope is always absent: in v1 only `slack:read@*` (resp. `calendar:read@*`) or
+  `tool:<name>` admits them, never `slack:read@<label>` — no narrower scope in v1 (§20.1 D22, ask #273). Scope
+  matching is case-insensitive equality or `*` glob (`path.Match` semantics). A tool missing
   from `toolCapabilities` is admitted only by `tool:<name>`. The tool must also be visible on the `automation`
   surface (`Tool.VisibleOn("automation")`), whatever the manifest says. `TestToolCapabilities_CoversEveryAutomationTool`
   pins that every tool visible on `automation` has an entry or is deliberately `tool:`-only.
 - **llm/agent/ask/session/output** — the capability rows above; `output.<k>` needs `k` in `outputs`.
 - **mcp** — server name exact, tool name `path.Match` against the glob, then QC-02's `externalmcp.ResolveTools`
-  verdict must allow it (a write tool is refused even if the glob matches).
+  verdict must allow it (a write tool is refused even if the glob matches) — the same allowed read-only list the
+  chat consumes (QC-02 amended, §14.7).
 - **shell** — byte-exact string equality with one `shell:` entry after JSON-unquoting. No prefix, glob or
   argument matching.
 
@@ -186,7 +196,9 @@ and `agent()` processes get the environment of §13.2, never the secret files' c
   exhaustion, daily cap or cancel the executor calls `vm.Interrupt(reason)` and cancels the context, so a pending
   SDK call (network, CLI process) stops too. The run ends `timed_out`, `budget_exceeded` or `cancelled`.
 - **Memory.** goja has no heap limit, so size is capped at every edge: an SDK result serialised to more than
-  256 KiB fails the call with `ResultTooLarge` (never silently truncated); list-type tool calls get `limit`
+  256 KiB fails the call with `ResultTooLarge` (never silently truncated) — the one exception is `shell()`, whose
+  output is truncated with the truncation marked in its result and never fails for size (§13.2, §20.1 D19);
+  list-type tool calls get `limit`
   default 50, max 200 (the SDK injects/clamps it); `llm()` input after serialisation ≤ 200 KiB; `state` ≤ 64 KiB
   serialised (`state.set` beyond → `StateTooLarge`); `output.*` body ≤ 64 KiB; `log` 4 KiB per call, 200 calls
   per run. Constants live in `internal/automations/limits.go`.
@@ -495,7 +507,7 @@ through the CLI. The approval-hash function exists only in Go; the Desktop gets 
 | `automations validate <file> [--json]` | parse + manifest + script pre-parse, no DB write |
 | `automations rescan [--workbench N] [--json]` | index personal folder (+ one workbench); Desktop runs it for protected folders |
 | `automations run <id> [--rerun-of R] [--json]` | queue + SIGUSR2; Run now and buttons |
-| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted |
+| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted; an **unconfirmed** recipe is refused under AGENT-07 markers (owner only, §20.1 D16) |
 | `automations cancel <run-id>` | |
 | `automations runs <id> [--limit N] [--json]`, `automations steps <run-id> [--json]` | history |
 | `automations enable\|disable <id>` | |
@@ -518,7 +530,12 @@ AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell
   bounded by `min(budget.tokens, 50000 tokens)` and `min(budget.minutes, 5)` with writes as `{status:"dry_run"}`.
   Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted; its
   tokens are not counted in the daily cap — a stated v1 limit). Result: `{ok, errors[], manifest, widening[],
-  dry_run: {steps[], outputs[], tokens}}`.
+  dry_run: {steps[], outputs[], tokens}}`. The dry-run journal goes back to the chat model as is: a draft that
+  reads `list_emails`/`get_email` shows that model the clipped mail of those steps (owner-approved, §20.1 D18).
+  `draft_automation` dry-runs a **draft** — text the chat is authoring — never an unconfirmed recipe: when the
+  draft's `approval_hash` equals the `approval_hash` of an indexed, not removed automation that is not confirmed
+  (`confirmed_hash ≠ approval_hash`), it validates but does not dry-run (`dry_run.status = "refused"`, no model
+  call, "This recipe is not confirmed yet; only you can dry-run it, from its card in Automations") — §20.1 D16.
 - `save_automation` — **write** tool, `AlwaysAsk: true` (never execute trust, never auto), surfaces `main` and
   `automation_editor`. Args `{recipe_text, slug, workbench_id?, reason}`. `Normalize` re-validates and pins
   `approval_hash` and the widening list into the stored args; the card shows trigger, permissions (widening
@@ -595,7 +612,10 @@ since the previous briefing's `created_at` (titles + bodies, bounded to 4 KiB to
 
 Runs `/bin/sh -c <cmd>` with `cwd` = the workbench folder, its own process group (killed with the group on
 interrupt and in tests' cleanup), timeout = remaining active budget, stdout/stderr each capped at 256 KiB (tail
-kept, `truncated: true`). Environment: `PATH`, `HOME`, `LANG`, `USER` from the daemon plus
+kept, `truncated: true`). Output over the limit is **truncated, never a failure** (§20.1 D19, ask #272): when the
+two tails together would still serialise over §4's 256 KiB result limit, both are cut further (keeping tails,
+each stream at most half of the limit, a shorter stream's unused share going to the other) until the result fits;
+the result says so (`truncated: true`) and the step row records the exit code and which stream was cut. `shell()` never throws `ResultTooLarge`. Environment: `PATH`, `HOME`, `LANG`, `USER` from the daemon plus
 `WATCHTOWER_AUTOMATION_RUN_ID=<run>`; nothing else (no tokens, no `WATCHTOWER_TERMINAL_SESSION_ID`). Only exact
 manifest commands (AUTO-13). In a privacy-protected folder (`privacyProtected`, see §13.4) `shell()` is refused with `NotAvailable`
 ("this workbench is in a protected folder; use session() or move the folder") — §20 D9; the folder is never
@@ -627,7 +647,7 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 | AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change makes it inactive until re-granted; every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
 | AUTO-04 | State commits only on success | `state.set` and `output.*` (local) are buffered and committed in one transaction with `status='succeeded'`; any other terminal status leaves `automation_state` and `automation_outputs` byte-identical. | P1 |
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
-| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. Dry runs are exempt (they write nothing, AUTO-12), but a dry run of an unconfirmed recipe is refused under AI-agent markers. | P1 |
+| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
 | AUTO-07 | The script sees the world only through the SDK | No `require`, filesystem, network, timers or promises in the sandbox; no SDK result carries a secret. | P1 |
 | AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, the daily token cap holds, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
 | AUTO-09 | Triggers only queue | Scheduler, event bus, CLI `run` and Desktop buttons only insert `queued` rows; only the daemon's executor runs them (dry run excepted, which writes nothing outside its journal). | P1, P4 |
@@ -675,8 +695,9 @@ unchanged.
   `TestAgent01_AutomationWriteRecordsProposalOnly`.
 - AGENT-06: `draft_automation` is a read tool on the chat connection that writes nothing; added to the chat-mode
   guard's call list with a fake generator.
-- AGENT-07: marker list gains `WATCHTOWER_AUTOMATION_RUN_ID`; `automations confirm`, `automations auto … on` and
-  `automations save --confirm-hash` join the refused commands. Desktop `Constants.agentEnvMarkers` gains the
+- AGENT-07: marker list gains `WATCHTOWER_AUTOMATION_RUN_ID`; `automations confirm`, `automations auto … on`,
+  `automations save --confirm-hash` and `automations dry-run` of an unconfirmed recipe (§20.1 D16, ask #271) join
+  the refused commands. Desktop `Constants.agentEnvMarkers` gains the
   variable.
 
 ### 14.4 STRIP-01 amendment — approved (ask #270, §20 D10)
@@ -690,6 +711,23 @@ store).
 
 Amended: the automation's "change it in words" chat joins main and target as a tool-mode surface
 (`.actions(surface: "automation_editor")`) carrying only `draft_automation`, `save_automation` and read tools.
+
+### 14.6 PROJ-03 amendment — approved (ask #272, §20.1 D17; in code with P5)
+
+PROJ-03's Observable gains: "Watchtower writes one more kind of file in the workbench folder: automation recipes,
+only at `<folder>/.watchtower/automations/<slug>.md`, only on the owner's Save (the Desktop form or Monaco editor
+through `automations save --confirm-hash`) or on the owner's Approve of a `save_automation` card (its `Execute`
+in the owner's `actions apply` process), and `automations delete` removes only such a file. The write is atomic
+(`fsutil.WriteFileAtomic`); no other path of the folder is written, no workbench MCP tool writes a recipe, and the
+daemon never writes the folder." Existing PROJ-03 guards stay unchanged; new guards:
+`TestSaveAutomation_WorkbenchWritesIntoItsFolder`, `TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused`.
+
+### 14.7 QC-02 amendment — approved (ask #272, §20.1 D20; in code with P6)
+
+QC-02's Observable gains: "Automations' `mcp()` (§5) is a second, Go-side consumer of the same allowed read-only
+tool list: it calls only tools in `externalmcp.ResolveTools`' allowed list of an enabled, listed connection,
+through `externalmcp.CallTool`, never through the registry; it never lists a connection itself and never calls a
+tool QC-02 does not allow." Guard `TestMCP_OnlyQC02AllowedTools`.
 
 ## 15. Templates (P6)
 
@@ -724,8 +762,8 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
-| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13. |
-| **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates. |
+| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
+| **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates; the QC-02 amendment (§14.7, approved in ask #272). |
 
 P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases, P2 the registry). Swift work
 (P3, P5) is one lane at a time.
@@ -754,7 +792,9 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
   `TestAuto10_RestartDoesNotRepeatCatchUp`, `TestScheduler_OnTimeWithinGrace`, `TestScheduler_NewAndReenabledDoNotCatchUp`,
   `TestScheduler_DSTTransition`, `TestAuto09_RunCommandOnlyQueues`, `TestRun_CoalescesSecondTrigger`.
 - Dry run: `TestAuto12_DryRunWritesNoActionsOutputsOrState`.
-- CLI: `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes`.
+- Manifest (ask #273): `TestManifest_UnscopedSourceReadsNeedStar`, `TestManifest_KnowledgeToolsOnlyByToolEntry`.
+- CLI: `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes`,
+  `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers` (ask #271).
 - Daemon: `TestDaemon_AutomationWakeSignalDoesNotStartSync`.
 - Tier scan stays green with the two new source tags.
 
@@ -764,7 +804,8 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
 (table over AlwaysAsk / grant / External / tool_trust), `TestBriefing_IncludesAutomationOutputsSinceLast`,
 updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces`.
 
-**P3:** Go — `TestDraftAutomation_WritesNothing` (AGENT-06 list), `TestSaveAutomation_AlwaysAskAndPinsHash`,
+**P3:** Go — `TestDraftAutomation_WritesNothing` (AGENT-06 list), `TestDraftAutomation_RefusesDryRunOfUnconfirmedRecipe`
+(ask #271), `TestDraftAutomation_EmailStepsReachTheChatClipped` (ask #272), `TestSaveAutomation_AlwaysAskAndPinsHash`,
 `TestSaveAutomation_RefusesWhenFileChangedSincePropose`. Swift (`make test-swift FILTER=…`) —
 `AutomationsViewModelTests` (list, badges, Run now → CLI args, Dry run rendering, state survives navigation),
 `AutomationQueriesTests`, `AutomationFormTests` (widening sheet shown only on widening; grant boxes unchecked by
@@ -777,6 +818,8 @@ strip, Done/Dismiss write only `automation_outputs`).
 
 **P5:** `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`,
 `TestShell_KillsProcessGroupOnInterrupt` (reaps in `t.Cleanup`), `TestShell_EnvHasRunMarkerAndNoSecrets`,
+`TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails` (ask #272),
+`TestSaveAutomation_WorkbenchWritesIntoItsFolder` (PROJ-03, ask #272),
 `TestSession_WaitsForAppThenSessionThenFinish`, `TestAsk_WaitsAndDelivers`, `TestAuto12_DryRunStartsNoSessionOrShell`,
 `TestRescan_WorkbenchRecipeNeedsConfirmation`, migration test for 00115. Swift — `WorkbenchHeaderAutomationButtonsTests`
 (runnable/unconfirmed/active states, confirm dialog), `AutomationSessionCenterTests` (launch on request, writes
@@ -827,3 +870,30 @@ section it governs; nothing remains open.
     tool is a follow-up (§15).
 14. **D14 AlwaysAsk tools are never auto** (§14.2).
 15. **D15 Workbench binding** is by location only; a `workbench:` frontmatter key is a parse error (§2.3).
+
+### 20.1 Decisions (asks #271–#273)
+
+The phase plans raised seven more questions; the owner answered them on 2026-10-14. Each is pinned below and in
+the section it governs.
+
+16. **D16 Dry run of an unconfirmed recipe — owner only (ask #271).** The owner may dry-run a recipe that is not
+    confirmed yet (the Desktop card's **Dry run**, `automations dry-run` without agent markers); an agent may not.
+    Every agent-initiated path refuses it: the CLI under AGENT-07 markers (`WATCHTOWER_AUTOMATION_RUN_ID`
+    included, so an automation's `shell()`/`session()`/`agent()` child cannot either), and the chat tool
+    `draft_automation`, which dry-runs only a draft and refuses when the draft's `approval_hash` is that of an
+    indexed unconfirmed recipe (§11, AUTO-06). No MCP tool runs or dry-runs an automation. Dry-running a confirmed
+    recipe stays open to everyone.
+17. **D17 PROJ-03 extended (ask #272).** Watchtower writes recipes into the workbench folder's
+    `.watchtower/automations/`, only on the owner's Save or Approve (§14.6; in code with P5).
+18. **D18 Draft dry runs may show clipped mail to the main chat (ask #272).** `draft_automation`'s dry-run journal,
+    including `list_emails`/`get_email` steps (bodies clipped 32 KiB, step results 4 KiB), is returned to the
+    main-chat (or editor-chat) model (§11).
+19. **D19 `shell()` output over 256 KiB is truncated, never a failure (ask #272).** Tails kept, `truncated: true`,
+    the step names the exit code and the cut stream; never `ResultTooLarge` (§4, §13.2).
+20. **D20 QC-02 amended (ask #272).** `mcp()` is a second consumer of the same allowed read-only tool list
+    (§14.7; in code with P6).
+21. **D21 Broad knowledge tools only by `tool:<name>` (ask #273).** `search_knowledge`, `get_knowledge_document`
+    and `get_task_context` are admitted only by an explicit `tool:` entry; there is no `knowledge` capability, so
+    `knowledge:read` is a parse error (§3.1).
+22. **D22 `list_messages` in v1 only by `slack:read@*` (ask #273)** (or `tool:list_messages`); no per-account
+    scope in v1. The same holds for `list_upcoming_events` and `calendar:read@*` (§3.2).
