@@ -36,6 +36,12 @@ struct EmailConnectionDetail: View {
                                 Text(account.isOutlook ? "Outlook" : "IMAP \u{00B7} \(account.host)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if account.isStoppedForCleartext {
+                                    Text(CleartextRefusal.mailStopped)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Circle()

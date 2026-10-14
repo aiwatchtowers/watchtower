@@ -8,6 +8,9 @@ import PackageDescription
 //   executable target depends on this product only.
 // - WatchtowerKit: the phone-only decode mirrors and UI-facing helpers,
 //   layered on WatchtowerSync.
+// - WatchtowerE2ETesting: a test hub and a test phone sharing one pairing
+//   (F25). Linked ONLY by test targets (the Kit's, the Desktop's and the
+//   phone's); no app or extension target links it.
 let package = Package(
     name: "WatchtowerKit",
     platforms: [
@@ -17,6 +20,7 @@ let package = Package(
     products: [
         .library(name: "WatchtowerSync", targets: ["WatchtowerSync"]),
         .library(name: "WatchtowerKit", targets: ["WatchtowerKit"]),
+        .library(name: "WatchtowerE2ETesting", targets: ["WatchtowerE2ETesting"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
@@ -35,10 +39,15 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
+        .target(
+            name: "WatchtowerE2ETesting",
+            dependencies: ["WatchtowerSync"]
+        ),
         .testTarget(
             name: "WatchtowerSyncTests",
             dependencies: [
                 "WatchtowerSync",
+                "WatchtowerE2ETesting",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -47,6 +56,7 @@ let package = Package(
             dependencies: [
                 "WatchtowerKit",
                 "WatchtowerSync",
+                "WatchtowerE2ETesting",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),

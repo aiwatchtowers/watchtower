@@ -43,7 +43,7 @@ package enum GitHubRemote {
         guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = ["-C", folder.path, "remote", "get-url", "origin"]
+        process.arguments = MemoryVaultGit.readArgs(["-C", folder.path, "remote", "get-url", "origin"])
         let result = await ProcessPipes.run(process).trimmed
         return result.exitCode == 0 && !result.stdout.isEmpty ? result.stdout : nil
     }

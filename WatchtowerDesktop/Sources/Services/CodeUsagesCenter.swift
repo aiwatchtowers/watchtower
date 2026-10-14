@@ -38,7 +38,9 @@ enum CodeInspectorTab: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class CodeUsagesCenter {
-    private(set) var results: [Int64: UsagesModel] = [:]
+    /// Per code root (#565): a list found in one worktree never opens its
+    /// rows in another; going back to that root shows it again.
+    private(set) var results: [CodeRoot: UsagesModel] = [:]
     private(set) var shownInspectors: Set<Int64> = []
     private(set) var inspectorTabs: [Int64: CodeInspectorTab] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
@@ -48,6 +50,8 @@ final class CodeUsagesCenter {
     @ObservationIgnored private let beep: @MainActor () -> Void
     @ObservationIgnored private var pages: [Int64: WeakUsagesPage] = [:]
     @ObservationIgnored private var runs: [Int64: CodeSearchCancelling] = [:]
+    /// Per workbench: the root the running search fills.
+    @ObservationIgnored private var runRoots: [Int64: CodeRoot] = [:]
     /// Per workbench: the live search; an older one's callbacks are dropped.
     @ObservationIgnored private var generations: [Int64: Int] = [:]
     @ObservationIgnored private var nextGeneration = 0
@@ -104,7 +108,7 @@ final class CodeUsagesCenter {
         guard let run = runs.removeValue(forKey: workbenchID) else { return }
         generations[workbenchID] = nil
         run.cancel()
-        results[workbenchID]?.stop()
+        if let shown = runRoots.removeValue(forKey: workbenchID) { results[shown]?.stop() }
     }
 
     /// App quit (ruling R34): every Usages search is killed with its
@@ -115,64 +119,79 @@ final class CodeUsagesCenter {
         for (workbenchID, run) in running {
             generations[workbenchID] = nil
             run.cancel()
-            results[workbenchID]?.stop()
+            if let shown = runRoots.removeValue(forKey: workbenchID) { results[shown]?.stop() }
         }
     }
 
     // MARK: Usages
 
-    func usages(for workbenchID: Int64) -> UsagesModel? {
-        results[workbenchID]
+    func usages(for root: CodeRoot) -> UsagesModel? {
+        results[root]
     }
 
     /// ⇧⌘U: the page posts `usages` for the word at its cursor; a beep when
     /// there is no editor or no word.
-    func showUsagesAtCursor(project: Workbench) async {
-        guard let page = pages[project.id]?.page, await page.requestUsagesAtCursor() else {
+    func showUsagesAtCursor(root: CodeRoot) async {
+        guard let page = pages[root.workbenchID]?.page, await page.requestUsagesAtCursor() else {
             beep()
             return
         }
     }
 
-    /// The usages of `word` in the workbench, in the inspector's Usages tab.
-    func showUsages(of word: String, project: Workbench) {
+    /// The usages of `word` in the root's folder, in the inspector's Usages tab.
+    func showUsages(of word: String, root: CodeRoot) {
         guard !word.isEmpty else {
             beep()
             return
         }
-        let workbenchID = project.id
+        let workbenchID = root.workbenchID
         runs.removeValue(forKey: workbenchID)?.cancel()
+        if let previous = runRoots.removeValue(forKey: workbenchID) { results[previous]?.stop() }
         nextGeneration += 1
         let generation = nextGeneration
         generations[workbenchID] = generation
-        results[workbenchID] = UsagesModel(word: word)
+        results[root] = UsagesModel(word: word)
+        runRoots[workbenchID] = root
         setInspectorShown(true, workbenchID: workbenchID)
         selectInspectorTab(.usages, workbenchID: workbenchID)
         let options = CodeSearchOptions(query: word, word: true, caseSensitive: true, context: 0)
-        runs[workbenchID] = startSearch(project.folderURL, options, { [weak self] match in
+        runs[workbenchID] = startSearch(root.folder, options, { [weak self] match in
             guard let self, generations[workbenchID] == generation else { return }
-            results[workbenchID]?.append(match)
+            results[root]?.append(match)
         }, { [weak self] outcome in
             guard let self, generations[workbenchID] == generation else { return }
             generations[workbenchID] = nil
             runs[workbenchID] = nil
+            runRoots[workbenchID] = nil
             switch outcome {
-            case let .finished(done): results[workbenchID]?.finish(truncated: done.truncated)
-            case let .failed(message): results[workbenchID]?.fail(message)
+            case let .finished(done): results[root]?.finish(truncated: done.truncated)
+            case let .failed(message): results[root]?.fail(message)
             }
         })
     }
 
-    func setCollapsed(_ isCollapsed: Bool, path: String, workbenchID: Int64) {
-        results[workbenchID]?.setCollapsed(isCollapsed, path: path)
+    /// A removed worktree's Usages list goes, and a search still running
+    /// in it stops (board #565, spec §7).
+    func codeRootRemoved(_ root: CodeRoot) {
+        let workbenchID = root.workbenchID
+        if runRoots[workbenchID] == root {
+            runRoots[workbenchID] = nil
+            generations[workbenchID] = nil
+            runs.removeValue(forKey: workbenchID)?.cancel()
+        }
+        results[root] = nil
+    }
+
+    func setCollapsed(_ isCollapsed: Bool, path: String, root: CodeRoot) {
+        results[root]?.setCollapsed(isCollapsed, path: path)
     }
 
     /// A row's click: the file in the Files pane (a preview tab, like Open
     /// Quickly's ↩), the cursor on the name; where the cursor was goes on
     /// Back (⌃⌘←), as for a definition jump (ruling R33).
-    func openUsage(_ row: UsageRow, project: Workbench) async {
-        navigation?.recordJumpFromCurrentLocation(project: project)
-        await workbenches?.openFile(at: row.target, project: project, beside: false)
+    func openUsage(_ row: UsageRow, root: CodeRoot) async {
+        navigation?.recordJumpFromCurrentLocation(root: root)
+        await workbenches?.openFile(at: row.target, root: root, beside: false)
     }
 
     // MARK: Inspector

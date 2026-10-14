@@ -253,14 +253,14 @@ final class JumpBarController: FileSymbolsPresenting {
     }
 
     private let files: CodeFilesCenter
-    private let project: Workbench
+    private let root: CodeRoot
     /// Shows a built menu (`popUp(below:)`; a recorder in tests).
     private let present: @MainActor (JumpBarMenu, NSView) -> Void
     private var anchors: [Int: WeakAnchor] = [:]
 
-    init(files: CodeFilesCenter, project: Workbench, present: @escaping @MainActor (JumpBarMenu, NSView) -> Void = { $0.popUp(below: $1) }) {
+    init(files: CodeFilesCenter, root: CodeRoot, present: @escaping @MainActor (JumpBarMenu, NSView) -> Void = { $0.popUp(below: $1) }) {
         self.files = files
-        self.project = project
+        self.root = root
         self.present = present
     }
 
@@ -268,12 +268,12 @@ final class JumpBarController: FileSymbolsPresenting {
     /// nil with no tab open. Read in the view body: it observes the cursor,
     /// the tabs and the index.
     func snapshot() -> Snapshot? {
-        guard let active = files.tabs(for: project).active else { return nil }
-        let index = files.codeIndex?.index(for: project.id)
-        let cursor = files.cursors[project.id]
+        guard let active = files.tabs(for: root).active else { return nil }
+        let index = files.codeIndex?.index(for: root)
+        let cursor = files.cursors[root]
         let symbols = index?.symbols(in: active) ?? []
         let model = JumpBarModel(
-            path: active, rootName: project.folderURL.lastPathComponent,
+            path: active, rootName: root.folder.lastPathComponent,
             cursorLine: cursor?.path == active ? cursor?.line : nil,
             symbols: symbols, language: index?.definitionLanguage(of: active), state: index?.state ?? .idle,
             rulesError: index?.rulesError
@@ -317,6 +317,6 @@ final class JumpBarController: FileSymbolsPresenting {
         case let .file(path): (path, nil, nil)
         case let .symbol(symbol): (symbol.path, symbol.line, symbol.col)
         }
-        files.navigation?.openFromJumpBar(path: path, line: line, col: col, project: project)
+        files.navigation?.openFromJumpBar(path: path, line: line, col: col, root: root)
     }
 }

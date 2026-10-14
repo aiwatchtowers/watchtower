@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/mcpoauth"
+	"watchtower/internal/netsec"
 	"watchtower/internal/oauthpage"
 )
 
@@ -215,14 +216,8 @@ func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name stri
 	}
 }
 
-func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
-	name := connectionsAddFlagName
-	kind := connectionsAddFlagKind
-	command := connectionsAddFlagCommand
-	args := connectionsAddFlagArgs
-	url := connectionsAddFlagURL
-	secretStdin := connectionsAddFlagSecretStdin
-
+// validateConnectionAddFlags checks `connections add`'s name and kind flags.
+func validateConnectionAddFlags(name, kind, command, url string) error {
 	if name == "" {
 		return fmt.Errorf("--name is required")
 	}
@@ -245,21 +240,49 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	default:
 		return fmt.Errorf(`--kind must be "stdio" or "http" (got %q)`, kind)
 	}
+	return nil
+}
 
+// readConnectionAddSecret parses --secret-stdin's JSON (nil without the
+// flag) and refuses headers bound for a plain-http URL that is not loopback
+// (netsec).
+func readConnectionAddSecret(cmd *cobra.Command, secretStdin bool, kind, url string) (*externalmcp.Secret, error) {
+	if !secretStdin {
+		return nil, nil
+	}
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return nil, fmt.Errorf("reading secret from stdin: %w", err)
+	}
+	var sec externalmcp.Secret
+	if err := json.Unmarshal(data, &sec); err != nil {
+		return nil, fmt.Errorf("parsing secret JSON from stdin: %w", err)
+	}
+	if kind == "http" && len(sec.Headers) > 0 {
+		if err := netsec.RequireSecureURL(url, "a connection with headers"); err != nil {
+			return nil, fmt.Errorf("--url: %w", err)
+		}
+	}
+	return &sec, nil
+}
+
+func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
+	name := connectionsAddFlagName
+	kind := connectionsAddFlagKind
+	command := connectionsAddFlagCommand
+	args := connectionsAddFlagArgs
+	url := connectionsAddFlagURL
+	secretStdin := connectionsAddFlagSecretStdin
+
+	if err := validateConnectionAddFlags(name, kind, command, url); err != nil {
+		return err
+	}
 	// Parse the secret before touching the database, so a malformed
 	// --secret-stdin payload never leaves behind a disabled row with no
 	// secret to show for it.
-	var secret *externalmcp.Secret
-	if secretStdin {
-		data, err := io.ReadAll(cmd.InOrStdin())
-		if err != nil {
-			return fmt.Errorf("reading secret from stdin: %w", err)
-		}
-		var sec externalmcp.Secret
-		if err := json.Unmarshal(data, &sec); err != nil {
-			return fmt.Errorf("parsing secret JSON from stdin: %w", err)
-		}
-		secret = &sec
+	secret, err := readConnectionAddSecret(cmd, secretStdin, kind, url)
+	if err != nil {
+		return err
 	}
 
 	cfg, database, err := openConnectionsCmdDB(cmd)

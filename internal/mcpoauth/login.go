@@ -2,7 +2,6 @@ package mcpoauth
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
@@ -207,14 +206,22 @@ type callbackParams struct {
 	delivered    *atomic.Bool
 }
 
-// callbackHandler builds the /callback handler. Only the FIRST request to
-// arrive delivers a result: a retry, a stray local probe, or a second race for
-// the port gets a bare 410 with no page and never touches the channel again.
-// Every outcome - provider error, state mismatch, missing code, failed
-// exchange - serves the error page, so what the browser shows can never
-// disagree with what Login returns.
+// callbackHandler builds the /callback handler. A request whose state does not
+// match is answered 400 (auth.WriteStaleCallback's page) and ignored — it neither ends the login nor uses up
+// the delivery, so a stray local request cannot derail a sign-in (providers
+// echo the state on error redirects too, RFC 6749 §4.1.2.1). Only the FIRST
+// matching request delivers a result: a retry or a second race for the port
+// gets a bare 410 with no page and never touches the channel again. Every
+// delivered outcome - provider error, missing code, failed exchange - serves
+// the error page, so what the browser shows can never disagree with what
+// Login returns.
 func callbackHandler(p callbackParams) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if !auth.StateMatches(q.Get("state"), p.state) {
+			auth.WriteStaleCallback(w)
+			return
+		}
 		if !p.delivered.CompareAndSwap(false, true) {
 			w.WriteHeader(http.StatusGone)
 			return
@@ -235,13 +242,8 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, oauthpage.Error(userMsg, p.appReturn))
 		}
 
-		q := r.URL.Query()
 		if errMsg := q.Get("error"); errMsg != "" {
 			fail(errMsg, fmt.Sprintf("authorization denied: %s", errMsg))
-			return
-		}
-		if got := q.Get("state"); subtle.ConstantTimeCompare([]byte(got), []byte(p.state)) != 1 {
-			fail("state mismatch: possible CSRF attack", "state mismatch: possible CSRF attack")
 			return
 		}
 		code := q.Get("code")

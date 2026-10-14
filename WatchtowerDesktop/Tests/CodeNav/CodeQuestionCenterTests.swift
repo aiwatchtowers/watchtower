@@ -67,6 +67,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     private var suite: String!
     private var folder: URL!
     private var project: Workbench!
+    private var root: CodeRoot { project.mainCodeRoot }
     private var page: FakeQuestionPage!
     private var ai: ScriptedAIService!
     /// `CodeQuestionCenter.workbenches` is weak, as on `AppState`, which
@@ -126,7 +127,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let ai: ScriptedAIService = ai
         center.embeddedChats = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: dbPool, ai: ai, gate: gate) }
         center.registerPage(page, for: project.id)
-        let buffer = vm.codeFiles.buffer(for: project, relPath: "Sources/App.swift")
+        let buffer = vm.codeFiles.buffer(for: root, relPath: "Sources/App.swift")
         buffer.loadIfNeeded()
         return (center, vm, buffer)
     }
@@ -197,8 +198,8 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// ⌘I with nothing selected: the question is about the cursor line.
     func testCommandIWithNoSelectionAsksAboutTheCursorLine() async throws {
         let (center, vm, buffer) = makeCenter()
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: "Sources/App.swift", line: 2, col: 5), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "Sources/App.swift", line: 2, col: 5), root: root)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         let session = try XCTUnwrap(center.sessions[project.id])
         XCTAssertFalse(session.anchor.isSelection)
         XCTAssertEqual(session.anchor.origin, CodeQuestionOrigin(path: "Sources/App.swift", line: 2, selection: nil))
@@ -212,7 +213,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testASelectionIsWhatTheQuestionIsAbout() async throws {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         let session = try XCTUnwrap(center.sessions[project.id])
         XCTAssertTrue(session.anchor.isSelection)
         XCTAssertEqual(session.anchor.range, loadRange)
@@ -238,22 +239,39 @@ final class CodeQuestionCenterTests: XCTestCase {
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
         _ = await eventually { center.buttonRects[project.id] != nil }
         page.presents = false
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         XCTAssertNil(center.sessions[project.id])
         XCTAssertEqual(beeps, 1)
         let back = await eventually { center.buttonRects[project.id] != nil }
         XCTAssertTrue(back, "the ✦ comes back")
         page.presents = true
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         XCTAssertNotNil(center.sessions[project.id], "a later ask is not a no-op")
         XCTAssertEqual(page.presented.count, 2)
     }
 
+    /// #565: a question about a removed worktree's code closes; one about
+    /// another root stays.
+    func testARemovedWorktreeClosesItsQuestion() async throws {
+        let (center, vm, buffer) = makeCenter()
+        vm.codeFiles.questions = center
+        let worktree = CodeRoot(workbenchID: project.id, worktree: folder.appendingPathComponent(".claude/worktrees/mobile-a"))
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
+        vm.codeFiles.rootRemoved(worktree)
+        XCTAssertNotNil(center.sessions[project.id], "a question about the main folder stays")
+
+        center.closeQuestion(workbenchID: project.id)
+        await center.askAI(bufferID: buffer.id, project: project, root: worktree)
+        XCTAssertNotNil(center.sessions[project.id])
+        vm.codeFiles.rootRemoved(worktree)
+        XCTAssertNil(center.sessions[project.id])
+    }
+
     func testAnOpenPopoverIgnoresASecondAskAI() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         XCTAssertEqual(page.presented.count, 1)
         XCTAssertFalse(try XCTUnwrap(center.sessions[project.id]).anchor.isSelection, "the first question stays")
     }
@@ -263,7 +281,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testFirstQuestionCreatesTheConversationAndAFollowUpContinuesIt() async throws {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.setModelChoice(.init(provider: .codex, model: "gpt-5.4"), workbenchID: project.id)
         center.quickAction(.explain, workbenchID: project.id)
         let engine = center.engine(workbenchID: project.id)
@@ -289,7 +307,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     private func suggested(_ replacement: String) async throws -> CodeQuestionCenter {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.suggestChange, workbenchID: project.id)
         await reply("Pass the default:\n\n```wt-edit\n\(replacement)\n```", after: 1,
                     engine: center.engine(workbenchID: project.id))
@@ -312,7 +330,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter()
         let range = CodeTextRange(startLine: 2, startCol: 1, endLine: 2, endCol: long.count + 1)
         center.selectionChanged(selection(buffer, long, range), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.suggestChange, workbenchID: project.id)
         await reply("```wt-edit\nlet value = 1\n```", after: 1, engine: center.engine(workbenchID: project.id))
         XCTAssertTrue(page.proposals.isEmpty)
@@ -323,7 +341,7 @@ final class CodeQuestionCenterTests: XCTestCase {
 
     func testAnAnswerWithoutAWtEditBlockOffersNoApply() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         await reply("It loads the config.", after: 1, engine: center.engine(workbenchID: project.id))
         XCTAssertTrue(page.proposals.isEmpty)
@@ -359,7 +377,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// The draft typed into the first-question field is sent as it is.
     func testTheFirstQuestionFieldSendsTheCurrentDraft() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.setDraft("Why", workbenchID: project.id)
         center.setDraft("Why config?", workbenchID: project.id)
         center.ask(center.sessions[project.id]?.draft ?? "", workbenchID: project.id)
@@ -380,7 +398,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// until the owner resolves it; the page is never asked.
     func testApplyRefusedWhileTheBufferIsInConflict() async throws {
         let center = try await suggested("load(config, default: .standard)")
-        let buffer = try XCTUnwrap(center.workbenches?.codeFiles.existingBuffer(project, "Sources/App.swift"))
+        let buffer = try XCTUnwrap(center.workbenches?.codeFiles.existingBuffer(root, "Sources/App.swift"))
         try "changed by the agent\n".write(to: folder.appendingPathComponent("Sources/App.swift"), atomically: false, encoding: .utf8)
         buffer.edited(source + "// mine\n", base: 0, now: true)
         XCTAssertTrue(buffer.conflict)
@@ -419,14 +437,14 @@ final class CodeQuestionCenterTests: XCTestCase {
 
     func testLinkOpensTheFileAndClosesThePopover() async throws {
         let (center, vm, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         let link = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Other.swift", line: 1, col: nil)))
         await center.openLink(link, workbenchID: project.id)
-        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "Sources/Other.swift")
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).active, "Sources/Other.swift")
         XCTAssertNil(center.sessions[project.id])
         XCTAssertEqual(beeps, 0)
 
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         let gone = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Gone.swift", line: 1, col: nil)))
         await center.openLink(gone, workbenchID: project.id)
         XCTAssertEqual(beeps, 1, "a file that is not there beeps")
@@ -445,12 +463,12 @@ final class CodeQuestionCenterTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("Sources/Alias.swift").path,
                                                    withDestinationPath: "Other.swift")
         let leak = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Leak.swift", line: 1, col: nil)))
-        let opened = await center.openLink(leak, project: project)
+        let opened = await center.openLink(leak, project: project, root: root)
         XCTAssertFalse(opened)
         XCTAssertEqual(beeps, 1)
-        XCTAssertNil(vm.codeFiles.tabs(for: project).active)
+        XCTAssertNil(vm.codeFiles.tabs(for: root).active)
         let alias = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Alias.swift", line: 1, col: nil)))
-        let openedAlias = await center.openLink(alias, project: project)
+        let openedAlias = await center.openLink(alias, project: project, root: root)
         XCTAssertTrue(openedAlias, "a symlink inside the folder is a file of it")
     }
 
@@ -468,7 +486,7 @@ final class CodeQuestionCenterTests: XCTestCase {
 
     func testThePaneGoingAwayClearsTheQuestion() async {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.unregisterPage(page, for: project.id)
         XCTAssertNil(center.sessions[project.id])
         XCTAssertNil(center.buttonRects[project.id])
@@ -479,7 +497,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// leaving mid-answer keeps it streaming and the reply is stored.
     func testAnAnswerKeepsStreamingAfterThePaneGoesAway() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
         let started = await eventually { ai.calls.count == 1 }
@@ -522,7 +540,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         }
         let loadName = CodeTextRange(startLine: 2, startCol: 13, endLine: 2, endCol: 17)
         center.selectionChanged(selection(buffer, "load", loadName), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.whereUsed, workbenchID: project.id)
         XCTAssertEqual(center.sessions[project.id]?.isSearchingUsages, true, "the question waits for the search")
         let started = await eventually { ai.calls.count == 1 }
@@ -545,7 +563,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter(startSearch: stubStarter(stub, ["STUB_SEARCH_DONE": "1"]))
         center.selectionChanged(selection(buffer, "load", CodeTextRange(startLine: 2, startCol: 13, endLine: 2, endCol: 17)),
                                 workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let engine = center.engine(workbenchID: project.id)
         _ = await eventually { ai.calls.count == 1 }
@@ -569,7 +587,7 @@ final class CodeQuestionCenterTests: XCTestCase {
             searches += 1
             return NoSearch()
         }
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.whereUsed, workbenchID: project.id)
         let started = await eventually { ai.calls.count == 1 }
         XCTAssertTrue(started)
@@ -586,7 +604,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter(startSearch: stubStarter(stub))
         center.selectionChanged(selection(buffer, "load", CodeTextRange(startLine: 2, startCol: 13, endLine: 2, endCol: 17)),
                                 workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.whereUsed, workbenchID: project.id)
         let running = await eventually { !stub.startedPIDs.isEmpty }
         XCTAssertTrue(running)
@@ -630,7 +648,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter(startSearch: search.starter)
         center.selectionChanged(selection(buffer, "load", CodeTextRange(startLine: 2, startCol: 13, endLine: 2, endCol: 17)),
                                 workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
         _ = await eventually { ai.calls.count == 1 }
@@ -694,13 +712,13 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testTwoSurfacesOnOneConversationApplyATurnOnce() async throws {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.suggestChange, workbenchID: project.id)
         let popoverEngine = try XCTUnwrap(center.engine(workbenchID: project.id))
         let conversationID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
         center.reloadQuestionList(workbenchID: project.id)
         let item = try XCTUnwrap(center.questionLists[project.id]?.first)
-        center.openQuestion(item, project: project)
+        center.openQuestion(item, project: project, root: root)
         let ref = try XCTUnwrap(center.questionRef(conversationID))
         for _ in 0 ..< 3 {  // body passes of both surfaces
             XCTAssertTrue(center.engine(for: ref) === popoverEngine, "one engine")
@@ -725,7 +743,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter()
         let usages = CodeUsagesCenter(defaults: defaults)
         center.usages = usages
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
         let conversationID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
@@ -753,10 +771,10 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// cursor (no selection), stored as `<wb>:<path>:<line>`.
     func testOpenQuicklyQuestionNamesTheOpenFileAtTheCursor() async throws {
         let (center, vm, buffer) = makeCenter()
-        await vm.openFile(at: OpenQuicklyTarget(path: "Sources/App.swift", line: 2, col: 1), project: project, beside: false)
+        await vm.openFile(at: OpenQuicklyTarget(path: "Sources/App.swift", line: 2, col: 1), root: root, beside: false)
         _ = await eventually { buffer.state == .loaded }
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: "Sources/App.swift", line: 2, col: 5), workbenchID: project.id)
-        guard case let .started(conversationID) = center.askFromOpenQuickly("  Why load here? ", project: project) else {
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "Sources/App.swift", line: 2, col: 5), root: root)
+        guard case let .started(conversationID) = center.askFromOpenQuickly("  Why load here? ", project: project, root: root) else {
             return XCTFail("not started")
         }
         let started = await eventually { ai.calls.count == 1 }
@@ -787,7 +805,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// With no file open the context names the folder only: `<wb>::0`.
     func testOpenQuicklyQuestionWithNoFileOpen() async throws {
         let (center, _, _) = makeCenter()
-        guard case let .started(conversationID) = center.askFromOpenQuickly("What is this repo?", project: project) else {
+        guard case let .started(conversationID) = center.askFromOpenQuickly("What is this repo?", project: project, root: root) else {
             return XCTFail("not started")
         }
         _ = await eventually { ai.calls.count == 1 }
@@ -799,7 +817,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(contextID, "\(project.id)::0")
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
-        XCTAssertEqual(center.askFromOpenQuickly("   ", project: project), .failed("Type a question first."))
+        XCTAssertEqual(center.askFromOpenQuickly("   ", project: project, root: root), .failed("Type a question first."))
     }
 
     // MARK: Questions tab (spec §9.4)
@@ -811,20 +829,20 @@ final class CodeQuestionCenterTests: XCTestCase {
         try await pool.write { db in
             _ = try ChatConversationQueries.create(db, title: "x", contextType: "code_question", contextID: "90:a.swift:1")
         }
-        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project, root: root) else { return XCTFail("first") }
         let firstEngine = try XCTUnwrap(center.engine(for: try XCTUnwrap(center.questionRef(first))))
         await reply("one", after: 1, engine: firstEngine)
         try await pool.write { db in
             try db.execute(sql: "UPDATE chat_conversations SET created_at = created_at - 60 WHERE id = ?", arguments: [first])
         }
-        guard case let .started(second) = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        guard case let .started(second) = center.askFromOpenQuickly("Second?", project: project, root: root) else { return XCTFail("second") }
         await reply("two", after: 2, engine: center.engine(for: try XCTUnwrap(center.questionRef(second))))
         center.reloadQuestionList(workbenchID: project.id)
         let items = try XCTUnwrap(center.questionLists[project.id])
         XCTAssertEqual(items.map(\.conversationID), [second, first], "newest first, this workbench only")
         XCTAssertEqual(items.map(\.firstQuestion), ["Second?", "First?"])
 
-        center.openQuestion(items[1], project: project)
+        center.openQuestion(items[1], project: project, root: root)
         XCTAssertEqual(center.inspectorQuestions[project.id], first)
         let key = firstEngine.spec.key
         center.deleteQuestion(try XCTUnwrap(center.questionRef(first)))
@@ -845,7 +863,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
         let empty = await eventually { center.questionLists[project.id]?.isEmpty == true }
         XCTAssertTrue(empty)
-        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project, root: root) else { return XCTFail("first") }
         let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["First?"] }
         XCTAssertTrue(listed)
         await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
@@ -855,7 +873,7 @@ final class CodeQuestionCenterTests: XCTestCase {
 
         watching.cancel()
         await watching.value
-        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        guard case .started = center.askFromOpenQuickly("Second?", project: project, root: root) else { return XCTFail("second") }
         XCTAssertEqual(center.questionLists[project.id]?.isEmpty, true, "a list no tab shows is not followed")
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
@@ -867,12 +885,12 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, _) = makeCenter()
         let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
         defer { watching.cancel() }
-        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project, root: root) else { return XCTFail("first") }
         await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
         try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
         center.setModelChoice(.init(provider: .codex, model: ""), conversationID: first)
         let error = try XCTUnwrap(center.questionListErrors[project.id])
-        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        guard case .started = center.askFromOpenQuickly("Second?", project: project, root: root) else { return XCTFail("second") }
         let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["Second?"] }
         XCTAssertTrue(listed)
         XCTAssertEqual(center.questionListErrors[project.id], error, "a list update does not hide it")
@@ -889,7 +907,7 @@ final class CodeQuestionCenterTests: XCTestCase {
             try ChatConversationQueries.create(db, title: "x", contextType: "code_question", contextID: contextID).id
         }
         center.reloadQuestionList(workbenchID: project.id)
-        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project)
+        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project, root: root)
         let ref = try XCTUnwrap(center.questionRef(conversationID))
         let rebuilt = await eventually { center.hasContext(conversationID: conversationID) }
         XCTAssertTrue(rebuilt)
@@ -908,18 +926,18 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// workbench's question stays.
     func testARemovedWorkbenchForgetsItsQuestions() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let popoverID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
         let popoverKey = try XCTUnwrap(center.engine(workbenchID: project.id)).spec.key
         await reply("ok", after: 1, engine: center.engine(workbenchID: project.id))
         let other = Workbench(row: Row(["id": 10, "name": "other", "folder_path": folder.path]))
-        guard case let .started(otherID) = center.askFromOpenQuickly("Theirs?", project: other) else {
+        guard case let .started(otherID) = center.askFromOpenQuickly("Theirs?", project: other, root: other.mainCodeRoot) else {
             return XCTFail("other")
         }
         await reply("theirs", after: 2, engine: center.engine(for: try XCTUnwrap(center.questionRef(otherID))))
         center.reloadQuestionList(workbenchID: project.id)
-        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project)
+        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project, root: root)
 
         center.workbenchRemoved(project.id)
 
@@ -941,7 +959,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let handoff = CodeHandoffCenter {}
         handoff.dbPool = pool
         center.handoff = handoff
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.handToClaude(workbenchID: project.id)
         XCTAssertEqual(beeps, 1, "no question yet")
         XCTAssertNotNil(center.sessions[project.id])
@@ -969,7 +987,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// it beeps.
     func testTheTabsHandOffClosesNothing() async throws {
         let (center, _, _) = makeCenter()
-        guard case let .started(id) = center.askFromOpenQuickly("Why?", project: project) else { return XCTFail("start") }
+        guard case let .started(id) = center.askFromOpenQuickly("Why?", project: project, root: root) else { return XCTFail("start") }
         let question = try XCTUnwrap(center.questionRef(id))
         await reply("Because.", after: 1, engine: center.engine(for: question))
         center.handToClaude(question)
@@ -987,7 +1005,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// Deleting the question the popover shows closes the popover.
     func testDeletingThePopoversQuestionClosesIt() async throws {
         let (center, _, buffer) = makeCenter()
-        await center.askAI(bufferID: buffer.id, project: project)
+        await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.quickAction(.explain, workbenchID: project.id)
         let conversationID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
         await reply("ok", after: 1, engine: center.engine(workbenchID: project.id))

@@ -37,7 +37,7 @@ final class RecordingsWiringTests: XCTestCase {
     ) async throws -> (store: ReplicaStore, recording: PhoneRecording, uploader: RecordingUploader) {
         let store = try makePoolStore()
         let directory = try makeRecordingsDirectory()
-        let uploader = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: directory)
+        let uploader = RecordingUploader(transport: try TestPhone.transport(), store: store, directory: directory)
         let file = directory.appendingPathComponent("rec_\(UUID().uuidString).m4a")
         try Data([1, 2, 3]).write(to: file)
         let registered = try await uploader.register(
@@ -193,7 +193,7 @@ final class RecordingsWiringTests: XCTestCase {
         let directory = try makeRecordingsDirectory()
         let clock = MutableClock()
         let uploader = RecordingUploader(
-            transport: ThrowingTransport(), store: store, directory: directory, deviceID: "device-a"
+            transport: try TestPhone.transport(over: ThrowingTransport()), store: store, directory: directory, deviceID: "device-a"
         ) { clock.now }
         let file = directory.appendingPathComponent("rec_\(UUID().uuidString).m4a")
         try Data([1, 2, 3]).write(to: file)
@@ -236,7 +236,7 @@ final class RecordingsWiringTests: XCTestCase {
     func testAnAutoFinishedRecordingSaysSo() async throws {
         let store = try makePoolStore()
         let directory = try makeRecordingsDirectory()
-        let uploader = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: directory)
+        let uploader = RecordingUploader(transport: try TestPhone.transport(), store: store, directory: directory)
         let file = directory.appendingPathComponent("rec_\(UUID().uuidString).m4a")
         try Data([1, 2, 3]).write(to: file)
         let begun = try await uploader.beginCapture(
@@ -291,8 +291,9 @@ final class RecordingsWiringTests: XCTestCase {
     func testTheRecordingsModelPublishesOnlyRealChanges() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let hydrator = ReplicaHydrator(transport: transport, store: store)
-        try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await hub.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         _ = try await hydrator.hydrateOnce()
         let model = PhoneRecordingsModel()
         model.start(store: store)
@@ -305,12 +306,12 @@ final class RecordingsWiringTests: XCTestCase {
         let sentinel = WorkbenchReplicaModel()
         sentinel.start(store: store)
 
-        try await transport.save(try DemoSeed.workbenchRecords(now: now))
+        try await hub.save(try DemoSeed.workbenchRecords(now: now))
         _ = try await hydrator.hydrateOnce()
         try await poll { sentinel.snapshot.workbenches.count == 3 }
 
         let later = now.addingTimeInterval(60)
-        try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later)])
+        try await hub.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later)])
         _ = try await hydrator.hydrateOnce()
         try await poll({ published.values.count >= 2 }, "the new heartbeat was not published")
         XCTAssertNotEqual(
@@ -432,14 +433,15 @@ final class RecordingsWiringTests: XCTestCase {
     func testTheSegmentsAssetAndThePhoneMarksReachTheRecap() async throws {
         let (store, recording, _) = try await ledger(marks: [125])
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let dir = try makeRecordingsDirectory()
         let asset = dir.appendingPathComponent("segments.json")
         let body = segments([(0, 60), (60, 130), (130, 200)])
-        try RelayCoder.makeEncoder().encode(body).write(to: asset)
+        let descriptor = try TestPhone.sealAsset(try RelayCoder.makeEncoder().encode(body), to: asset)
         let mirror = transcript(id: 9, phoneRecordingID: recording.id)
-        try await transport.save([CloudRecord(
+        try await hub.save([CloudRecord(
             recordName: mirror.recordName, zone: .data, kind: SliceKind.meetingTranscript.rawValue, modifiedAt: now,
-            payload: try RelayCoder.makeEncoder().encode(mirror), assetFileURL: asset
+            payload: try RelayCoder.makeEncoder().encode(mirror), assetFileURL: asset, asset: descriptor
         )])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
@@ -456,14 +458,15 @@ final class RecordingsWiringTests: XCTestCase {
     func testTheOpenRecapReloadsOnARepublishAndANewMark() async throws {
         let (store, recording, uploader) = try await ledger(marks: [10])
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let dir = try makeRecordingsDirectory()
         let mirror = transcript(id: 9, phoneRecordingID: recording.id)
         let publish: ([TranscriptSegment]) async throws -> Void = { body in
             let asset = dir.appendingPathComponent("segments-\(UUID().uuidString).json")
-            try RelayCoder.makeEncoder().encode(body).write(to: asset)
-            try await transport.save([CloudRecord(
+            let descriptor = try TestPhone.sealAsset(try RelayCoder.makeEncoder().encode(body), to: asset)
+            try await hub.save([CloudRecord(
                 recordName: mirror.recordName, zone: .data, kind: SliceKind.meetingTranscript.rawValue, modifiedAt: Date(),
-                payload: try RelayCoder.makeEncoder().encode(mirror), assetFileURL: asset
+                payload: try RelayCoder.makeEncoder().encode(mirror), assetFileURL: asset, asset: descriptor
             )])
             _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         }
@@ -483,9 +486,9 @@ final class RecordingsWiringTests: XCTestCase {
     /// Each `observe` starts an empty decode cache: an earlier transcript's
     /// body is not kept for the view's lifetime.
     func testObservingAgainStartsAnEmptyDecodeCache() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
+        try await DemoSeed.load(into: TestPhone.hub(over: transport, .demo), now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let replica = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
         let demo = try XCTUnwrap(replica.transcripts.first)
@@ -503,9 +506,10 @@ final class RecordingsWiringTests: XCTestCase {
     }
 
     func testTheDemoTranscriptCarriesItsSegments() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let replica = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
         let demo = try XCTUnwrap(replica.transcripts.first)

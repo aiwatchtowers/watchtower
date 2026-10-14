@@ -17,8 +17,8 @@ final class BoardWriteWiringTests: XCTestCase {
     }
 
     private func makeFixture() throws -> Fixture {
-        let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         return Fixture(store: store, outbox: outbox, writer: BoardWriter.sending(through: outbox, store: store))
     }
 
@@ -61,12 +61,12 @@ final class BoardWriteWiringTests: XCTestCase {
     // MARK: - Groups
 
     func testAGroupsStatusPickerIsDisabledWithItsCaption() throws {
-        let group = try detail(400, try snapshot(try ReplicaStore.inMemory()))
+        let group = try detail(400, try snapshot(try TestPhone.replica()))
         XCTAssertFalse(group.status.isEnabled)
         XCTAssertEqual(group.status.caption, "A group's status follows its sub-tasks")
         XCTAssertTrue(group.priority.isEnabled, "the hub allows a group's priority")
 
-        let leaf = try detail(415, try snapshot(try ReplicaStore.inMemory()))
+        let leaf = try detail(415, try snapshot(try TestPhone.replica()))
         XCTAssertTrue(leaf.status.isEnabled)
         XCTAssertNil(leaf.status.caption)
         XCTAssertEqual(leaf.status.options, WorkbenchTargetStatus.editable)
@@ -74,7 +74,7 @@ final class BoardWriteWiringTests: XCTestCase {
     }
 
     func testAnArchivedTargetIsReadOnly() throws {
-        let archived = try detail(417, try snapshot(try ReplicaStore.inMemory()))
+        let archived = try detail(417, try snapshot(try TestPhone.replica()))
         XCTAssertTrue(archived.isReadOnly)
         XCTAssertFalse(archived.status.isEnabled)
         XCTAssertFalse(archived.priority.isEnabled)
@@ -234,7 +234,7 @@ final class BoardWriteWiringTests: XCTestCase {
     }
 
     func testEveryRootOffersReplyEvenAResolvedOne() throws {
-        let thread = try detail(421, try snapshot(try ReplicaStore.inMemory())).thread
+        let thread = try detail(421, try snapshot(try TestPhone.replica())).thread
         guard case let .comment(root)? = thread.first else { return XCTFail("no root comment on #421") }
         XCTAssertTrue(root.isResolved)
         XCTAssertTrue(root.canReply)
@@ -351,9 +351,9 @@ final class BoardWriteWiringTests: XCTestCase {
     }
 
     private func makeGatedFixture() throws -> (Fixture, GatedTransport) {
-        let store = try ReplicaStore.inMemory()
+        let store = try TestPhone.replica()
         let transport = GatedTransport()
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+        let outbox = ActionOutbox(transport: try TestPhone.transport(over: transport), store: store, deviceID: DemoSeed.device.deviceID)
         addTeardownBlock { transport.release() }
         return (Fixture(store: store, outbox: outbox, writer: BoardWriter.sending(through: outbox, store: store)), transport)
     }

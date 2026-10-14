@@ -80,6 +80,13 @@ func TestError_EmptyReason(t *testing.T) {
 	assert.Contains(t, page, "<p></p>")
 }
 
+func TestStale_NoCloseNoAppReturn(t *testing.T) {
+	page := Stale()
+	assert.Contains(t, page, "This sign-in page is out of date")
+	assert.NotContains(t, page, "window.close")
+	assert.NotContains(t, page, appReturnURL)
+}
+
 func TestReturnAfterLogin_OpensAppURL(t *testing.T) {
 	// Success and a failed sign-in alike: the owner sees the outcome in the app.
 	for _, loginErr := range []error{nil, errors.New("slack authorization denied: access_denied")} {

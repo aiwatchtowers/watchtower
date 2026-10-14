@@ -42,7 +42,7 @@ struct OpenQuicklyPreviewPane: View {
                 }
             case let .file(path):
                 HStack(spacing: 6) {
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: session.project.folderURL.appendingPathComponent(path).path))
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: session.root.folder.appendingPathComponent(path).path))
                         .resizable()
                         .frame(width: 18, height: 18)
                         .accessibilityHidden(true)

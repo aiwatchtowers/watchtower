@@ -37,7 +37,7 @@ func NewClient(model, baseURL string) *Client {
 	return &Client{
 		model:   model,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{},
+		http:    NewHTTPClient(),
 	}
 }
 

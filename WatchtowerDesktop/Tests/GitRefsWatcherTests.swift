@@ -80,6 +80,26 @@ final class GitRefsWatcherTests: XCTestCase {
         ))
     }
 
+    /// Board #565: only a batch that may move another worktree's branch
+    /// re-reads the sessions' worktree places.
+    func testOnlyRefsAndOtherWorktreesMayMoveWorktrees() {
+        let none = Flags(kFSEventStreamEventFlagNone)
+        func moves(_ paths: [String], gitDir: String = "/r/.git", flag: Flags? = nil, id: FSEventStreamEventId = 101) -> Bool {
+            GitRefsWatcher.mayMoveWorktrees(paths: paths, flags: paths.map { _ in flag ?? none },
+                                            ids: paths.map { _ in id }, startEventID: 100,
+                                            gitDir: gitDir, commonDir: "/r/.git")
+        }
+        XCTAssertFalse(moves(["/r/.git/HEAD", "/r/.git/index"]), "the folder's own HEAD and index")
+        XCTAssertFalse(moves(["/r/.git/worktrees/w/HEAD", "/r/.git/worktrees/w/index"], gitDir: "/r/.git/worktrees/w"),
+                       "a linked folder's own HEAD and index")
+        XCTAssertTrue(moves(["/r/.git/index", "/r/.git/refs/heads/feature"]))
+        XCTAssertTrue(moves(["/r/.git/packed-refs"]))
+        XCTAssertTrue(moves(["/r/.git/worktrees/mobile-a/HEAD"]))
+        XCTAssertTrue(moves(["/r/.git/HEAD"], gitDir: "/r/.git/worktrees/w"), "the main folder's HEAD seen from a worktree")
+        XCTAssertFalse(moves(["/r/.git/refs/heads/feature"], id: 100), "not newer than the stream's start")
+        XCTAssertTrue(moves(["/r/.git"], flag: Flags(kFSEventStreamEventFlagRootChanged), id: 0))
+    }
+
     func testWatchedPathsAreDeduped() {
         XCTAssertEqual(GitRefsWatcher.watchedPaths(gitDir: "/r/.git", commonDir: "/r/.git"), ["/r/.git"])
         XCTAssertEqual(GitRefsWatcher.watchedPaths(gitDir: "/r/.git/worktrees/w", commonDir: "/r/.git"), ["/r/.git"],
@@ -89,7 +109,7 @@ final class GitRefsWatcherTests: XCTestCase {
     }
 
     private func watch(latency: TimeInterval = 0.1, onChange: @escaping @MainActor () -> Void) -> GitRefsWatcher {
-        let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, latency: latency, onChange: onChange)
+        let watcher = GitRefsWatcher(gitDir: gitDir.path, commonDir: gitDir.path, latency: latency) { _ in onChange() }
         watchers.append(watcher)
         return watcher
     }

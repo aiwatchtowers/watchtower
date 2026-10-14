@@ -408,7 +408,7 @@ func removeSlackAccount(cfg *config.Config, database *db.DB, id int64) error {
 // resolveSlackAccountOneForLogin resolves the legacy "account #1" — the single
 // implicit account every pre-multi-account install already has — creating it
 // if this is the very first Slack login ever. Shared by `slack login` (without
-// --account) and the `auth login`/`auth complete` aliases.
+// --account) and the `auth login` alias.
 func resolveSlackAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, database *db.DB, logger *log.Logger) (accountID int64, isNewRow bool, err error) {
 	id, err := ensureLegacySlackAccount(cmd.Context(), cfg, database, logger)
 	if err != nil {

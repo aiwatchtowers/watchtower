@@ -874,3 +874,37 @@ func stubToolsList(t *testing.T, tools []db.ExternalTool, err error) *[]external
 	t.Cleanup(func() { listServerTools = orig })
 	return &calls
 }
+
+// A connection's headers are a secret: add refuses to send them over plain
+// http to a remote host, before any row or secret file exists. Loopback http
+// (a local server) and https stay allowed, as does http with no secret.
+func TestConnections_AddRefusesHeadersOverRemoteHTTP(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	secret := `{"headers":{"X-Api-Key":"k"}}`
+
+	out, err := runConnections(t, secret, "add", "--name", "Remote", "--kind", "http",
+		"--url", "http://mcp.example.com/mcp", "--secret-stdin")
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "must use https")
+	assert.Contains(t, err.Error(), "loopback")
+
+	for _, add := range [][]string{
+		{"--name", "Local", "--url", "http://127.0.0.1:8080/mcp", "--secret-stdin"},
+		{"--name", "Secure", "--url", "https://mcp.example.com/mcp", "--secret-stdin"},
+		{"--name", "Open", "--url", "http://mcp.example.com/open"},
+	} {
+		out, err := runConnections(t, secret, append([]string{"add", "--kind", "http"}, add...)...)
+		require.NoError(t, err, out)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	var names []string
+	for _, c := range conns {
+		names = append(names, c.Name)
+	}
+	assert.ElementsMatch(t, []string{"Local", "Secure", "Open"}, names, "the refused add left no row behind")
+}

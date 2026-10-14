@@ -4,6 +4,7 @@ import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
@@ -57,13 +58,18 @@ final class AskAlertSliceTests: XCTestCase {
         let clock = self.clock
         // Labelled: a trailing closure would bind to `clock`, the first closure parameter.
         return SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [slice()],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: [slice()],
             now: { clock.withLock { $0 } } // swiftlint:disable:this trailing_closure
         )
     }
 
-    private func savedAlerts(_ transport: StubHubTransport) -> [String] {
-        transport.saved.map(\.record.recordName).filter { $0.hasPrefix("ask_alert-") }
+    /// The plain names of the alerts saved, opened by the paired phone.
+    private func savedAlerts(_ transport: StubHubTransport) throws -> [String] {
+        try transport.openedSaves().map(\.record.recordName).filter { $0.hasPrefix("ask_alert-") }
+    }
+
+    private func wireName(_ plain: String) throws -> String {
+        try testSecureTransport(InMemoryCloudTransport()).wireName(plain: plain, zone: .data)
     }
 
     private func workbench(name: String = "acme") throws -> Int64 {
@@ -103,7 +109,7 @@ final class AskAlertSliceTests: XCTestCase {
         advance(30)
         try await publisher.publishOnce()
 
-        XCTAssertEqual(savedAlerts(transport), ["ask_alert-\(id)"])
+        XCTAssertEqual(try savedAlerts(transport), ["ask_alert-\(id)"])
         XCTAssertEqual(try alertIDs(), [id], "the record stays while the ask is open")
     }
 
@@ -111,13 +117,13 @@ final class AskAlertSliceTests: XCTestCase {
         let id = try ask(in: try workbench(), createdAt: now)
         let first = StubHubTransport()
         try await publisher(first).publishOnce()
-        XCTAssertEqual(savedAlerts(first), ["ask_alert-\(id)"])
+        XCTAssertEqual(try savedAlerts(first), ["ask_alert-\(id)"])
 
         // A rebuilt hub over the same sidecar republishes its whole window.
         let rebuilt = StubHubTransport()
         try await publisher(rebuilt).publishOnce()
 
-        XCTAssertEqual(savedAlerts(rebuilt), [])
+        XCTAssertEqual(try savedAlerts(rebuilt), [])
     }
 
     func testAnEpochResetRaisesNoAlertForAlertedAsks() async throws {
@@ -128,15 +134,15 @@ final class AskAlertSliceTests: XCTestCase {
         try await publisher.publishOnce()
 
         try sidecar.wipeSyncState(now: Date())
-        let before = savedAlerts(transport).count
+        let before = try savedAlerts(transport).count
         try await publisher.publishOnce()
-        XCTAssertEqual(savedAlerts(transport).count, before, "the new zone gets no alert for an old ask")
+        XCTAssertEqual(try savedAlerts(transport).count, before, "the new zone gets no alert for an old ask")
 
         // The positive control: an ask filed after the reset still alerts.
         advance(10)
         let fresh = try ask(in: project, createdAt: now)
         try await publisher.publishOnce()
-        XCTAssertEqual(savedAlerts(transport).dropFirst(before), ["ask_alert-\(fresh)"])
+        XCTAssertEqual(try savedAlerts(transport).dropFirst(before), ["ask_alert-\(fresh)"])
     }
 
     func testMarkAlertedReturnsTheGenerationOfItsOwnTransaction() throws {
@@ -159,7 +165,7 @@ final class AskAlertSliceTests: XCTestCase {
         let transport = StubHubTransport()
         try await publisher(transport).publishOnce()
 
-        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
+        XCTAssertEqual(try savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
     }
 
     func testAResetDuringTheAlertsSaveStillAlertsInTheNewGeneration() async throws {
@@ -168,7 +174,8 @@ final class AskAlertSliceTests: XCTestCase {
         let transport = StubHubTransport()
         let gate = SaveGate()
         defer { gate.release() }
-        transport.gateNextSave(on: gate) { $0.recordName == name }
+        let wire = try wireName(name)
+        transport.gateNextSave(on: gate) { $0.recordName == wire }
         let publisher = publisher(transport)
 
         let first = Task { try await publisher.publishOnce() }
@@ -183,7 +190,7 @@ final class AskAlertSliceTests: XCTestCase {
         try await publisher.publishOnce()
 
         XCTAssertEqual(
-            transport.saved.dropFirst(before).map(\.record.recordName).filter { $0.hasPrefix("ask_alert-") }, [name],
+            try transport.openedSaves().dropFirst(before).map(\.record.recordName).filter { $0.hasPrefix("ask_alert-") }, [name],
             "the next cycle publishes the alert into the new zone"
         )
     }
@@ -200,7 +207,7 @@ final class AskAlertSliceTests: XCTestCase {
         try sidecar.wipeSyncState(now: now)
         try await publisher.publishOnce()
 
-        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))], "alerted once, ever")
+        XCTAssertEqual(try savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))], "alerted once, ever")
     }
 
     func testAResetKeepsAnOlderGenerationsAlertWithoutAHash() async throws {
@@ -216,7 +223,68 @@ final class AskAlertSliceTests: XCTestCase {
         try await publisher.publishOnce()
 
         XCTAssertEqual(try sidecar.alertedAsks()[id]?.generation, 0, "the historic row survives the second reset")
-        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
+        XCTAssertEqual(try savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
+    }
+
+    // MARK: - Sealing and the signal (D14, F12)
+
+    /// The alert opens with `K_alert` and not with `K_data` (the notification extension holds only `K_alert`); a
+    /// payload-free `sig-<wire name>` record rides next to it for the subscription; both leave together.
+    func testAnAlertIsSealedUnderTheAlertKeyAndHasASignal() async throws {
+        let id = try ask(in: try workbench(), createdAt: now, title: "Ship the acme release?")
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        try await publisher.publishOnce()
+
+        let wire = try wireName(SliceKind.askAlert.recordName(id: String(id)))
+        let zone = try await transport.changes(in: .data, since: nil).changed
+        let alert = try XCTUnwrap(zone.first { $0.recordName == wire })
+        XCTAssertEqual(alert.kind, WireKind.envelope)
+        XCTAssertNil(alert.payload.range(of: Data("acme".utf8)), "no title in the clear")
+        let context = EnvelopeContext(zone: .data, wireName: wire)
+        let verifier = TestE2E.hubSigningKey.publicKey
+        let opened = try EnvelopeSealer.openSymmetric(
+            alert.payload, accepting: [.alert], context: context, verifier: verifier
+        ) { _ in TestE2E.alertKey(epoch: 1) }
+        XCTAssertEqual(opened.frame.kind, SliceKind.askAlert.rawValue)
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(
+            alert.payload, accepting: [.alert], context: context, verifier: verifier
+        ) { _ in TestE2E.dataKey(epoch: 1) }, "K_data does not open an alert")
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(
+            alert.payload, accepting: [.data], context: context, verifier: verifier
+        ) { _ in TestE2E.dataKey(epoch: 1) }, "an alert is not a data envelope")
+
+        let signalName = AskAlertSignal.signalName(forAlertWireName: wire)
+        XCTAssertEqual(signalName, "sig-" + wire)
+        let signal = try XCTUnwrap(zone.first { $0.recordName == signalName }, "the signal record exists")
+        XCTAssertEqual(signal.kind, WireKind.signal)
+        XCTAssertTrue(signal.payload.isEmpty, "a signal carries nothing")
+        XCTAssertEqual(zone.count, 2)
+
+        try await dbPool.write {
+            try $0.execute(sql: "UPDATE owner_asks SET status = 'answered', answer = '{}' WHERE id = ?", arguments: [id])
+        }
+        try await publisher.publishOnce()
+
+        let after = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(after.changed.isEmpty, "the alert and its signal are gone")
+        XCTAssertEqual(Set(after.deletedRecordNames), [wire, signalName])
+    }
+
+    func testARepublishedAlertSendsNoSecondSignal() async throws {
+        let project = try workbench(name: "acme")
+        let id = try ask(in: project, createdAt: now)
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        try await publisher.publishOnce()
+
+        try await dbPool.write { try $0.execute(sql: "UPDATE projects SET name = 'beta' WHERE id = ?", arguments: [project]) }
+        let outcome = try await publisher.publishOnce()
+
+        XCTAssertEqual(outcome.pushed, 1, "the renamed workbench changes the alert's payload")
+        let signals = transport.saved.map(\.record).filter { $0.kind == WireKind.signal }
+        XCTAssertEqual(signals.count, 1, "the signal is written when the alert first reaches the zone")
+        XCTAssertEqual(try savedAlerts(transport), ["ask_alert-\(id)", "ask_alert-\(id)"])
     }
 
     // MARK: - Deletion
@@ -249,7 +317,7 @@ final class AskAlertSliceTests: XCTestCase {
 
         XCTAssertEqual(outcome.deleted, 1)
         XCTAssertEqual(try alertIDs(), [], "still open, but alerted once already")
-        XCTAssertEqual(savedAlerts(transport), ["ask_alert-\(id)"])
+        XCTAssertEqual(try savedAlerts(transport), ["ask_alert-\(id)"])
     }
 
     func testAClosedAsksAlertedRowIsPrunedAfter7Days() throws {

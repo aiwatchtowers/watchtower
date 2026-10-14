@@ -102,11 +102,12 @@ final class OrangeToneTests: XCTestCase {
     @MainActor
     func testTheCalendarScreensNeverDrawOrange() async throws {
         let now = Date()
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
-        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
-        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: now)
+        let uploader = RecordingUploader(transport: try TestPhone.transport(over: transport, .demo), store: store, deviceID: DemoSeed.device.deviceID)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let calendar = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
         let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }

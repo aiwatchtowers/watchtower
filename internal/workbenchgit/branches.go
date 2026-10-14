@@ -44,6 +44,10 @@ type BranchList struct {
 	Branches      []Branch `json:"branches"` // newest commit first
 	BranchesOK    bool     `json:"branches_ok"`
 	BranchesError string   `json:"branches_error"`
+	// Refused is RefusedFolderNotAWorktree or RefusedGitFailed when the
+	// folder asked for could not be used; nothing was listed.
+	Refused       string `json:"refused"`
+	RefusedDetail string `json:"refused_detail"`
 }
 
 // ListBranches lists the local branches, newest commit first. It never

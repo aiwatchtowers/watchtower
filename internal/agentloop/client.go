@@ -67,7 +67,7 @@ func NewClient(model, baseURL string, reg *tools.Registry, b tools.Binding) *Cli
 	return &Client{
 		model:   model,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		httpc:   &http.Client{},
+		httpc:   ollama.NewHTTPClient(),
 		reg:     reg,
 		binding: b,
 		maxIter: defaultMaxIterations,

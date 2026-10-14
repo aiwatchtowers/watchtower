@@ -19,11 +19,41 @@ package struct SlackSendProposal: Equatable, Sendable {
         package let label: String
         package let threadTS: String
         package let isDM: Bool
+        /// A DM only (Go `slackRecipient`): the raw user id, the handle and
+        /// the real name pinned beside `label`. The label prefers the display
+        /// name, which anyone may set to look like someone else; the handle
+        /// and the id are unique within the workspace.
+        package var userID = ""
+        package var handle = ""
+        package var realName = ""
 
-        /// "#general in Acme", "a thread in #general in Acme", "@Alice in Acme".
+        /// The text-only form: "#general in Acme", "a thread in #general in
+        /// Acme", "@Alice (Alice Example, @alice · U123) in Acme". The card
+        /// shows `place` and `identity` apart instead (`SlackRecipientText`),
+        /// so a display name imitating the suffix cannot blend into it.
         package var line: String {
-            let place = threadTS.isEmpty || isDM ? label : "a thread in \(label)"
-            return workspace.isEmpty ? place : "\(place) in \(workspace)"
+            let parts = [shownRealName, identity].filter { !$0.isEmpty }
+            let who = isDM && !parts.isEmpty ? "\(label) (\(parts.joined(separator: ", ")))" : isDM ? label : threadLabel
+            return workspace.isEmpty ? who : "\(who) in \(workspace)"
+        }
+
+        /// "@Alice (Alice Example) in Acme", "a thread in #general in Acme":
+        /// everything the person can set — label, real name — and the
+        /// workspace, without the unforgeable identity.
+        package var place: String {
+            let who = isDM ? (shownRealName.isEmpty ? label : "\(label) (\(shownRealName))") : threadLabel
+            return workspace.isEmpty ? who : "\(who) in \(workspace)"
+        }
+
+        private var threadLabel: String { threadTS.isEmpty ? label : "a thread in \(label)" }
+
+        /// The real name unless the label already is it.
+        private var shownRealName: String { realName.isEmpty || label == "@" + realName ? "" : realName }
+
+        /// "@alice · U123" for a DM: only what is unique within the workspace
+        /// and set by Slack, not the person; "" when none was pinned.
+        package var identity: String {
+            [handle.isEmpty ? "" : "@" + handle, userID].filter { !$0.isEmpty }.joined(separator: " · ")
         }
     }
 
@@ -51,12 +81,16 @@ package struct SlackSendProposal: Equatable, Sendable {
     }
 
     private static func recipient(_ raw: [String: Any]) -> Recipient {
-        Recipient(
+        let userID = AgentAction.stringValue(raw["user_id"]) ?? ""
+        return Recipient(
             accountID: (raw["account_id"] as? NSNumber)?.int64Value ?? 0,
             workspace: AgentAction.stringValue(raw["workspace"]) ?? "",
             label: AgentAction.stringValue(raw["label"]) ?? "?",
             threadTS: AgentAction.stringValue(raw["thread_ts"]) ?? "",
-            isDM: !(AgentAction.stringValue(raw["user_id"]) ?? "").isEmpty
+            isDM: !userID.isEmpty,
+            userID: userID,
+            handle: AgentAction.stringValue(raw["handle"]) ?? "",
+            realName: AgentAction.stringValue(raw["real_name"]) ?? ""
         )
     }
 

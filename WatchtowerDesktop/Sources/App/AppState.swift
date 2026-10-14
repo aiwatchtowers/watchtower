@@ -183,7 +183,7 @@ final class AppState {
     /// history (⌃⌘← / ⌃⌘→), per workbench.
     @ObservationIgnored private(set) lazy var codeNavigationCenter = CodeNavigationCenter(codeIndex: codeIndexCenter)
     /// Usages (⇧⌘U) and the Files pane's inspector, per workbench.
-    let codeUsagesCenter = CodeUsagesCenter()
+    let codeUsagesCenter: CodeUsagesCenter
     /// Code questions at the editor's selection (✦, ⌘I): the popover's
     /// question per workbench; its conversation lives in `embeddedChatCenter`.
     let codeQuestionCenter = CodeQuestionCenter()
@@ -392,6 +392,10 @@ final class AppState {
     /// an isolated suite.
     @ObservationIgnored private let onboardingDefaults: UserDefaults
 
+    /// `workbenchDefaults` backs the workbench page's own state (layouts,
+    /// panel, inspector) — tests pass an isolated suite.
+    @ObservationIgnored let workbenchDefaults: UserDefaults
+
     /// Opens (and migrates) the workspace database.
     @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
 
@@ -401,11 +405,13 @@ final class AppState {
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
 
-    /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
-    /// the database open, `peopleRosterRun` the people load, `featureManager`
-    /// the Feature Manager — tests pass an isolated suite and fakes.
+    /// `onboardingDefaults` backs the onboarding step and goals,
+    /// `workbenchDefaults` the workbench page's state, `openDatabase` the
+    /// database open, `peopleRosterRun` the people load, `featureManager` the
+    /// Feature Manager — tests pass isolated suites and fakes.
     init(
         onboardingDefaults: UserDefaults = .standard,
+        workbenchDefaults: UserDefaults = .standard,
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
         featureManager: FeatureManagerService? = nil,
@@ -415,6 +421,8 @@ final class AppState {
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
         self.onboardingDefaults = onboardingDefaults
+        self.workbenchDefaults = workbenchDefaults
+        codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
         self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
@@ -691,6 +699,8 @@ final class AppState {
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
+                    // Sessions waiting in the Undo batch are deleted now (PROJ-17).
+                    self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
                 }
             }
@@ -1764,8 +1774,8 @@ final class AppState {
         )
         let lineDelivery = SessionLineDelivery(terminalCenter: terminalCenter)
         let vm = WorkbenchesViewModel(
-            dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
-            agentStates: agentStates, lineDelivery: lineDelivery
+            dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, defaults: workbenchDefaults,
+            terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery
         )
         vm.codeFiles.codeIndex = codeIndexCenter
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
@@ -1792,9 +1802,9 @@ final class AppState {
         codeHandoffCenter.terminalCenter = terminalCenter
         codeHandoffCenter.dbPool = dbPool
         codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project in
+        openQuicklyCenter.onHandToClaude = { [weak self] query, project, root in
             guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
+            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(root))
         }
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)

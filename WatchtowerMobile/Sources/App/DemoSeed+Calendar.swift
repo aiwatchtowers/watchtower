@@ -25,13 +25,15 @@ extension DemoSeed {
             let record = CloudRecordFactory.record(for: SliceRecord(kind: kind, id: id, modifiedAt: now, payload: payload))
             guard kind == .meetingTranscript else { return record }
             // The transcript body rides as the record's segments.json asset,
-            // as the hub publishes it. A fixed file name: one file however
-            // often the demo relaunches.
-            let asset = FileManager.default.temporaryDirectory.appendingPathComponent("demo-segments-\(id).json")
-            try RelayCoder.makeEncoder().encode(demoSegments).write(to: asset, options: .atomic)
+            // sealed as the hub publishes it (its descriptor rides in the
+            // record's frame). A fixed file name: one file however often the
+            // demo relaunches.
+            let asset = FileManager.default.temporaryDirectory.appendingPathComponent("demo-segments-\(id).sealed")
+            let (sealed, descriptor) = try ChunkedAssetCipher.encrypt(try RelayCoder.makeEncoder().encode(demoSegments))
+            try sealed.write(to: asset, options: .atomic)
             return CloudRecord(
                 recordName: record.recordName, zone: record.zone, kind: record.kind,
-                modifiedAt: record.modifiedAt, payload: record.payload, assetFileURL: asset
+                modifiedAt: record.modifiedAt, payload: record.payload, assetFileURL: asset, asset: descriptor
             )
         }
     }

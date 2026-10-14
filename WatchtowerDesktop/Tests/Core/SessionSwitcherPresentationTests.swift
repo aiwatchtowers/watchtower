@@ -47,6 +47,15 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         XCTAssertEqual(result.map(\.shortcut), [1, 2, 3, 4, 5, 6, 7, 8, 9, nil])
     }
 
+    func testShortcutsFollowAnExplicitOrder() {
+        let sessions = [1, 2, 3].map { session(Int64($0)) }
+        let result = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, shortcutOrder: [3, 1]
+        )
+        XCTAssertEqual(result.map(\.id), [1, 2, 3], "the listed order is kept")
+        XCTAssertEqual(result.map(\.shortcut), [2, nil, 1])
+    }
+
     func testLiveSessionHasNoAgeCaption() {
         let result = rows([session(1, secondsAgo: 3 * 3600)], live: [1])
         XCTAssertEqual(result[0].state, .live(.running))
@@ -123,6 +132,22 @@ final class SessionSwitcherPresentationTests: XCTestCase {
     func testBadgeIsTheTargetID() {
         let result = rows([session(1, target: 233), session(2)])
         XCTAssertEqual(result.map(\.badge), ["#233", nil])
+    }
+
+    /// Board #565: a row carries the place line the caller gave it; a row
+    /// it placed nowhere (a standalone terminal, a shell) has none.
+    func testRowCarriesThePlace() {
+        let label = SessionPlacePresentation.placeLabel(.main, mainStatus: WorkbenchGitStatus(branch: "main"))
+        let sessions = [session(1), session(2), session(3, workbench: nil)]
+        let result = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, places: [1: label]
+        )
+        XCTAssertEqual(result.map(\.place?.text), ["main folder · main", nil, nil])
+        let ordered = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, shortcutOrder: [2, 1], places: [2: label]
+        )
+        XCTAssertEqual(ordered.map(\.place), [nil, label, nil])
+        XCTAssertEqual(rows(sessions).map(\.place), [nil, nil, nil], "no places given, none shown")
     }
 
     func testMatchingByTargetIDWithOrWithoutHash() {

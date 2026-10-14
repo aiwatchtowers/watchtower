@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/netsec"
 )
 
 // Syncer fetches new messages for one connected mailbox (email_accounts row)
@@ -175,7 +176,9 @@ func (s *Syncer) recordAuthResult(err error) {
 		}
 		return
 	}
-	if dbErr := s.db.SetEmailAccountAuthState(s.account.ID, "error", err.Error()); dbErr != nil {
+	// A cleartext refusal carries netsec.StatusPrefix: the Desktop shows
+	// it as "Stopped syncing" with what to do.
+	if dbErr := s.db.SetEmailAccountAuthState(s.account.ID, "error", netsec.StatusMessage(err)); dbErr != nil {
 		s.logger.Printf("imap account %d: record auth state: %v", s.account.ID, dbErr)
 	}
 }

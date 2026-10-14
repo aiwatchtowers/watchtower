@@ -106,20 +106,29 @@ package enum TerminalSessionQueries {
     /// The stored state of every workbench agent session (`claude` or
     /// `codex`), live or not, plus `liveIDs` (a live standalone agent terminal): the hook state,
     /// finished, the error, the background agent count and its report, the
-    /// recorded Chat question and its stamp, the open-ask count and the
-    /// oldest open ask, with the workbench name a notice names. Read-only:
-    /// Go writes these columns.
+    /// recorded Chat question and its stamp, the open-ask count, its
+    /// questions and reviews (#534) and the oldest open ask, with the
+    /// workbench name a notice names, and the stamp of the stored working
+    /// directory (NULL without migration 00110; the column probe is
+    /// `fetchAgentCwds`', with its `DatabasePool.read` rule). Read-only: Go
+    /// writes these columns.
     package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
+        let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
                 SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
                        s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
+                       \(cwdAt) AS agent_cwd_at,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open') AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open')
-                           AS oldest_open_ask_id
+                           AS oldest_open_ask_id,
+                       (SELECT COUNT(*) FROM owner_asks a
+                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'question') AS open_question_asks,
+                       (SELECT COUNT(*) FROM owner_asks a
+                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'review') AS open_review_asks
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
                 WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
@@ -127,6 +136,41 @@ package enum TerminalSessionQueries {
                 """,
             arguments: StatementArguments(liveIDs)
         )
+    }
+
+    /// The recorded main-agent working directory of workbench `projectID`'s
+    /// rows that have one (board #565), by session id, with each row's run
+    /// start read as Go's `db.TerminalAgentCwd` reads it (`agent_turns`'
+    /// `since`, NULL unless the column is JSON). Read-only: Go's hooks write
+    /// them. Kept out of `TerminalSession` and its `SELECT *` readers, as Go
+    /// keeps them out of `GetTerminalSession`: a database without migration
+    /// 00110 yields no cwds rather than failing anything else. The column
+    /// probe costs one `PRAGMA table_xinfo` per connection, not per reload:
+    /// GRDB caches it per connection. Call it only inside `DatabasePool.read`:
+    /// a pool reader drops that cache when the schema version moved, so a
+    /// database the daemon migrates while the app runs gets its cwds on the
+    /// next read. The writer connection (`write`) or a `DatabaseQueue` does
+    /// not notice another process's migration and would keep answering
+    /// `[:]` until the app restarts.
+    package static func fetchAgentCwds(_ db: Database, projectID: Int64) throws -> [Int64: SessionAgentCwd] {
+        guard try hasAgentCwd(db) else { return [:] }
+        let rows = try SessionAgentCwd.fetchAll(
+            db,
+            sql: """
+                SELECT id, agent_cwd, agent_cwd_at,
+                       CASE WHEN json_valid(agent_turns) THEN json_extract(agent_turns, '$.since') END AS run_start
+                FROM terminal_sessions
+                WHERE project_id = ? AND agent_cwd IS NOT NULL
+                """,
+            arguments: [projectID]
+        )
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.sessionID, $0) })
+    }
+
+    /// Whether the database has migration 00110's cwd columns (GRDB caches
+    /// the probe per connection).
+    private static func hasAgentCwd(_ db: Database) throws -> Bool {
+        try db.columns(in: "terminal_sessions").contains { $0.name == "agent_cwd_at" }
     }
 
     /// Best-effort, unchecked: a session deleted meanwhile is not active,

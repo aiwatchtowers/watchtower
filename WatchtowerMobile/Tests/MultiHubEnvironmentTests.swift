@@ -17,7 +17,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
     /// Every safety-poll wait each session asked for, by hub.
     private var sleeps: [String: [Duration]] = [:]
     private let device = LinkedDevice(
-        deviceID: "device-acme-1",
+        deviceID: TestPhone.deviceID(),
         name: "Acme iPhone",
         model: "iPhone",
         appVersion: "1.0",
@@ -50,7 +50,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
         transport: InMemoryCloudTransport = InMemoryCloudTransport(),
         scope: CloudDatabaseScope? = nil,
         clock: MutableClock = MutableClock(),
-        remote: RemoteFetchRecorder? = nil
+        remote: RemoteFetchRecorder? = nil,
+        keys: PhoneKeys?? = nil
     ) throws -> HubSession {
         let paths = paths(base)
         try paths.prepare(hubID)
@@ -69,6 +70,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
             transportKind: .cloudKit,
             hubID: hubID,
             linkedDevice: device,
+            // The test hub's keys whatever the hub id: tests seal through the test hub.
+            keys: try keys ?? TestHub.keys(hubID),
             defaults: try makeDefaults(),
             recordingsDirectory: paths.recordingsDirectory(hubID),
             hold: RecordingHold(directory: paths.holdDirectory),
@@ -119,28 +122,28 @@ final class MultiHubEnvironmentTests: XCTestCase {
 
     func testTheActiveSessionPollsEveryMinuteAndTheOthersEveryFiveMinutes() async throws {
         let base = try makeBase()
-        let hubA = try makeSession("hub-a", base: base)
-        let hubB = try makeSession("hub-b", base: base)
+        let hubA = try makeSession(TestHub.hubA, base: base)
+        let hubB = try makeSession(TestHub.hubB, base: base)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
-        try await poll({ self.sleeps["hub-a"]?.last != nil && self.sleeps["hub-b"]?.last != nil }, "a poll never waited")
-        XCTAssertEqual(sleeps["hub-a"], [.seconds(60)])
-        XCTAssertEqual(sleeps["hub-b"], [.seconds(300)])
+        try await poll({ self.sleeps[TestHub.hubA]?.last != nil && self.sleeps[TestHub.hubB]?.last != nil }, "a poll never waited")
+        XCTAssertEqual(sleeps[TestHub.hubA], [.seconds(60)])
+        XCTAssertEqual(sleeps[TestHub.hubB], [.seconds(300)])
         XCTAssertEqual(hubA.role, .active)
         XCTAssertEqual(hubB.role, .inactive)
 
-        env.activate("hub-b")
+        env.activate(TestHub.hubB)
 
-        try await poll({ self.sleeps["hub-b"]?.count == 2 && self.sleeps["hub-a"]?.count == 2 }, "the roles set no new wait")
-        XCTAssertEqual(sleeps["hub-b"]?.last, .seconds(60))
-        XCTAssertEqual(sleeps["hub-a"]?.last, .seconds(300))
-        XCTAssertEqual(env.activeHubID, "hub-b")
+        try await poll({ self.sleeps[TestHub.hubB]?.count == 2 && self.sleeps[TestHub.hubA]?.count == 2 }, "the roles set no new wait")
+        XCTAssertEqual(sleeps[TestHub.hubB]?.last, .seconds(60))
+        XCTAssertEqual(sleeps[TestHub.hubA]?.last, .seconds(300))
+        XCTAssertEqual(env.activeHubID, TestHub.hubB)
     }
 
     func testAnInactiveSessionWithUnsentActionsPollsEveryMinute() async throws {
         let base = try makeBase()
-        let hubA = try makeSession("hub-a", base: base)
-        let hubB = try makeSession("hub-b", base: base)
+        let hubA = try makeSession(TestHub.hubA, base: base)
+        let hubB = try makeSession(TestHub.hubB, base: base)
         let env = try makeEnvironment([hubB, hubA])
         try await bootAll(env)
         let pending = await hubB.hasPendingWork
@@ -150,10 +153,10 @@ final class MultiHubEnvironmentTests: XCTestCase {
         try await hubB.boardWriter.setStatus(.done, on: target)
         let queued = await hubB.hasPendingWork
         XCTAssertTrue(queued, "the status change waits for the Mac")
-        env.activate("hub-a")
+        env.activate(TestHub.hubA)
 
-        try await poll({ self.sleeps["hub-b"]?.count == 2 }, "hub-b's poll did not restart")
-        XCTAssertEqual(sleeps["hub-b"]?.last, .seconds(60), "unsent work keeps the minute")
+        try await poll({ self.sleeps[TestHub.hubB]?.count == 2 }, "hub-b's poll did not restart")
+        XCTAssertEqual(sleeps[TestHub.hubB]?.last, .seconds(60), "unsent work keeps the minute")
         XCTAssertEqual(hubB.role, .inactive)
     }
 
@@ -162,8 +165,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
     func testBackgroundPausesEverySessionAndTheReturnFetchesOnlyWhatIsDue() async throws {
         let base = try makeBase()
         let clock = MutableClock()
-        let hubA = try makeSession("hub-a", base: base, clock: clock)
-        let hubB = try makeSession("hub-b", base: base, clock: clock)
+        let hubA = try makeSession(TestHub.hubA, base: base, clock: clock)
+        let hubB = try makeSession(TestHub.hubB, base: base, clock: clock)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
 
@@ -197,9 +200,9 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let remoteA = RemoteFetchRecorder()
         let remoteB = RemoteFetchRecorder()
         let transportB = InMemoryCloudTransport()
-        let hubA = try makeSession("hub-a", base: base, scope: .private, remote: remoteA)
+        let hubA = try makeSession(TestHub.hubA, base: base, scope: .private, remote: remoteA)
         let hubB = try makeSession(
-            "hub-b", base: base, transport: transportB, scope: .shared(ownerName: "_owner-acme"), remote: remoteB
+            TestHub.hubB, base: base, transport: transportB, scope: .shared(ownerName: "_owner-acme"), remote: remoteB
         )
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
@@ -209,7 +212,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         XCTAssertEqual(remoteA.pushCount, 0, "a shared-database push leaves the private hub alone")
         XCTAssertEqual(remoteB.pushCount, 1)
 
-        try await transportB.save([try workbench("Home")])
+        try await TestHub.hub(over: transportB, TestHub.hubB).save([try workbench("Home")])
         let any = await env.handlePush(inForeground: true, scope: nil)
         XCTAssertEqual(any, .newData, "one hub brought something")
         XCTAssertEqual(remoteA.pushCount, 1, "an unknown scope reaches every hub")
@@ -233,11 +236,11 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let transportA = InMemoryCloudTransport()
         let remoteA = RemoteFetchRecorder()
         let remoteB = RemoteFetchRecorder()
-        let hubA = try makeSession("hub-a", base: base, transport: transportA, remote: remoteA)
-        let hubB = try makeSession("hub-b", base: base, remote: remoteB)
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transportA, remote: remoteA)
+        let hubB = try makeSession(TestHub.hubB, base: base, remote: remoteB)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
-        try await transportA.save([try workbench("Acme")])
+        try await TestHub.hub(over: transportA, TestHub.hubA).save([try workbench("Acme")])
         let tasks = FakeBackgroundTasks()
         var completions: [FetchOutcome] = []
 
@@ -262,10 +265,10 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let base = try makeBase()
         let transportA = InMemoryCloudTransport()
         let transportB = InMemoryCloudTransport()
-        try await transportA.save([try workbench("Acme")])
-        try await transportB.save([try workbench("Home")])
-        let hubA = try makeSession("hub-a", base: base, transport: transportA)
-        let hubB = try makeSession("hub-b", base: base, transport: transportB)
+        try await TestHub.hub(over: transportA, TestHub.hubA).save([try workbench("Acme")])
+        try await TestHub.hub(over: transportB, TestHub.hubB).save([try workbench("Home")])
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transportA)
+        let hubB = try makeSession(TestHub.hubB, base: base, transport: transportB)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
 
@@ -274,7 +277,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         try await poll({ env.workbenchReplica.snapshot.workbenches.map(\.name) == ["Acme"] }, "hub-a's board is not shown")
         XCTAssertTrue(env.store === hubA.store)
 
-        env.activate("hub-b")
+        env.activate(TestHub.hubB)
 
         try await poll({ env.workbenchReplica.snapshot.workbenches.map(\.name) == ["Home"] }, "hub-b's board is not shown")
         XCTAssertTrue(env.askDrafts === hubB.askDrafts)
@@ -287,8 +290,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let base = try makeBase()
         let clock = MutableClock()
         let remoteB = RemoteFetchRecorder()
-        let hubA = try makeSession("hub-a", base: base, clock: clock)
-        let hubB = try makeSession("hub-b", base: base, clock: clock, remote: remoteB)
+        let hubA = try makeSession(TestHub.hubA, base: base, clock: clock)
+        let hubB = try makeSession(TestHub.hubB, base: base, clock: clock, remote: remoteB)
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
         clock.advance(60)
@@ -317,23 +320,23 @@ final class MultiHubEnvironmentTests: XCTestCase {
     func testAFetchReadsTheHeartbeat() async throws {
         let base = try makeBase()
         let transport = InMemoryCloudTransport()
-        let hubA = try makeSession("hub-a", base: base, transport: transport)
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transport)
         let env = try makeEnvironment([hubA])
         try await bootAll(env)
         XCTAssertNil(hubA.heartbeat, "no heartbeat published yet")
 
         let now = Date()
         let heartbeat = HeartbeatPayload(
-            updatedAt: now, appVersion: "1.0", hubID: "hub-a", macName: "Acme Mac", flavor: .default,
+            updatedAt: now, appVersion: "1.0", hubID: TestHub.hubA, macName: "Acme Mac", flavor: .default,
             lastPublishAt: now, lastRelayAt: now, relayBacklog: 0, accounts: [],
             enabledAt: now, ownerUser: "_owner-acme", sharing: .none
         )
-        try await transport.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: now)])
+        try await TestHub.hub(over: transport, TestHub.hubA).save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: now)])
         var seenInOnFetched: String?
         hubA.onFetched = { [weak hubA] in seenInOnFetched = hubA?.heartbeat?.macName }
         _ = await env.refreshAll(.pull)
 
-        XCTAssertEqual(hubA.heartbeat?.hubID, "hub-a")
+        XCTAssertEqual(hubA.heartbeat?.hubID, TestHub.hubA)
         XCTAssertEqual(seenInOnFetched, "Acme Mac", "read before onFetched")
     }
 
@@ -342,9 +345,9 @@ final class MultiHubEnvironmentTests: XCTestCase {
     func testAFrozenSessionKeepsItsReplicaAndFetchesNothing() async throws {
         let base = try makeBase()
         let transport = InMemoryCloudTransport()
-        try await transport.save([try workbench("Acme")])
+        try await TestHub.hub(over: transport, TestHub.hubA).save([try workbench("Acme")])
         let remote = RemoteFetchRecorder()
-        let hubA = try makeSession("hub-a", base: base, transport: transport, remote: remote)
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transport, remote: remote)
         let env = try makeEnvironment([hubA])
         try await bootAll(env)
         let fetches = remote.depths.count
@@ -376,13 +379,13 @@ final class MultiHubEnvironmentTests: XCTestCase {
     /// (the root activates the next one first; with none, onboarding).
     func testRemovingTheActiveSessionLeavesNoDanglingActiveHub() throws {
         let base = try makeBase()
-        let hubA = try makeSession("hub-a", base: base)
-        let hubB = try makeSession("hub-b", base: base)
+        let hubA = try makeSession(TestHub.hubA, base: base)
+        let hubB = try makeSession(TestHub.hubB, base: base)
         let env = try makeEnvironment([hubA, hubB])
 
-        env.remove("hub-b")
-        XCTAssertEqual(env.activeHubID, "hub-a", "an inactive removal leaves the active hub")
-        env.remove("hub-a")
+        env.remove(TestHub.hubB)
+        XCTAssertEqual(env.activeHubID, TestHub.hubA, "an inactive removal leaves the active hub")
+        env.remove(TestHub.hubA)
 
         XCTAssertNil(env.activeHubID)
         XCTAssertNil(env.active)
@@ -394,18 +397,18 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let base = try makeBase()
         let transportA = InMemoryCloudTransport()
         let transportB = InMemoryCloudTransport()
-        try await transportA.save([try openAsk(11)])
-        try await transportB.save([try openAsk(21), try openAsk(22)])
+        try await TestHub.hub(over: transportA, TestHub.hubA).save([try openAsk(11)])
+        try await TestHub.hub(over: transportB, TestHub.hubB).save([try openAsk(21), try openAsk(22)])
         var badges: [Int] = []
-        let hubA = try makeSession("hub-a", base: base, transport: transportA)
-        let hubB = try makeSession("hub-b", base: base, transport: transportB)
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transportA)
+        let hubB = try makeSession(TestHub.hubB, base: base, transport: transportB)
         let env = try makeEnvironment([hubA, hubB]) { badges.append($0) }
         try await bootAll(env)
 
         try await poll({ badges.last == 3 }, "the badge is not the sum: \(badges)")
         XCTAssertEqual(env.openAskTotal, 3)
 
-        try await transportB.delete(recordNames: [SliceKind.ownerAsk.recordName(id: "22")], in: .data)
+        try await TestHub.hub(over: transportB, TestHub.hubB).delete(recordNames: [SliceKind.ownerAsk.recordName(id: "22")], in: .data)
         _ = await env.refreshAll(.pull)
 
         try await poll({ badges.last == 2 }, "the answered ask still counts: \(badges)")
@@ -419,11 +422,11 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let base = try makeBase()
         let transportA = InMemoryCloudTransport()
         let transportB = InMemoryCloudTransport()
-        try await transportA.save([try openAsk(11)])
-        try await transportB.save([try openAsk(21), try openAsk(22)])
+        try await TestHub.hub(over: transportA, TestHub.hubA).save([try openAsk(11)])
+        try await TestHub.hub(over: transportB, TestHub.hubB).save([try openAsk(21), try openAsk(22)])
         var badges: [Int] = []
-        let hubA = try makeSession("hub-a", base: base, transport: transportA)
-        let hubB = try makeSession("hub-b", base: base, transport: transportB)
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transportA)
+        let hubB = try makeSession(TestHub.hubB, base: base, transport: transportB)
         let env = try makeEnvironment([hubA, hubB]) { badges.append($0) }
         try await bootAll(env)
         try await poll({ badges.last == 3 }, "the badge is not the sum: \(badges)")
@@ -442,11 +445,45 @@ final class MultiHubEnvironmentTests: XCTestCase {
                 flavor: nil, sortOrder: order, state: state, grantMissingSince: nil, lastHeartbeatAt: nil, linkedOn: Date()
             )
         }
-        let linked = row("hub-a", 0, .linked)
-        let removed = row("hub-b", 1, .unlinkedByMac)
-        let items = HubListModel.items(rows: [linked, removed], sessions: env.sessions, activeHubID: "hub-a", now: Date())
+        let linked = row(TestHub.hubA, 0, .linked)
+        let removed = row(TestHub.hubB, 1, .unlinkedByMac)
+        let items = HubListModel.items(rows: [linked, removed], sessions: env.sessions, activeHubID: TestHub.hubA, now: Date())
         XCTAssertEqual(items.map(\.openAsks), [1, 2], "each row still shows its own")
         XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 0, "the chip leaves the removed Mac out")
+    }
+
+    // MARK: - Keys per hub (mobile E2E, port review I-2)
+
+    /// Each session seals for, and opens with, its own hub's keys only: another hub's keys are refused at build;
+    /// hub A's record in hub B's zone is refused by B's replica; each session's action opens with its own hub only.
+    func testEachSessionSealsAndOpensWithItsOwnHubsKeysOnly() async throws {
+        let base = try makeBase()
+        XCTAssertThrowsError(try makeSession(TestHub.hubB, base: base, keys: try TestHub.keys(TestHub.hubA))) { error in
+            XCTAssertEqual(error as? HubSessionError, .keysOfAnotherHub)
+        }
+        let transportA = InMemoryCloudTransport()
+        let transportB = InMemoryCloudTransport()
+        try await TestHub.hub(over: transportA, TestHub.hubA).save([try workbench("Acme")])
+        // Hub A's envelope, written into hub B's zone.
+        try await TestHub.hub(over: transportB, TestHub.hubA).save([try workbench("Forged")])
+        let hubA = try makeSession(TestHub.hubA, base: base, transport: transportA)
+        let hubB = try makeSession(TestHub.hubB, base: base, transport: transportB)
+        let env = try makeEnvironment([hubA, hubB])
+        try await bootAll(env)
+        _ = await env.refreshAll(.pull)
+
+        XCTAssertEqual(hubA.workbenchReplica.snapshot.workbenches.map(\.name), ["Acme"])
+        XCTAssertTrue(hubB.workbenchReplica.snapshot.workbenches.isEmpty, "B's replica refuses A's envelope")
+        XCTAssertGreaterThanOrEqual(hubB.store.rejectedCount(), 1)
+
+        try await hubA.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+        try await hubB.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-2")
+        let openedByA = try await TestHub.hub(over: transportA, TestHub.hubA).changes(in: .relay, since: nil).changed
+        let openedByB = try await TestHub.hub(over: transportB, TestHub.hubB).changes(in: .relay, since: nil).changed
+        XCTAssertEqual(openedByA.filter { $0.kind == RelayRecordKind.action.rawValue }.count, 1, "A's Mac opens A's action")
+        XCTAssertEqual(openedByB.filter { $0.kind == RelayRecordKind.action.rawValue }.count, 1, "B's Mac opens B's action")
+        let crossed = try await TestHub.hub(over: transportA, TestHub.hubB).changes(in: .relay, since: nil).changed
+        XCTAssertFalse(crossed.contains { $0.kind == RelayRecordKind.action.rawValue }, "B's keys open none of A's")
     }
 
     // MARK: - Recordings
@@ -456,24 +493,24 @@ final class MultiHubEnvironmentTests: XCTestCase {
     func testEachSessionSweepsOnlyItsOwnRecordingsFolder() async throws {
         let base = try makeBase()
         let paths = paths(base)
-        try paths.prepare("hub-a")
-        try paths.prepare("hub-b")
-        let otherFile = paths.recordingsDirectory("hub-b").appendingPathComponent("orphan.m4a")
+        try paths.prepare(TestHub.hubA)
+        try paths.prepare(TestHub.hubB)
+        let otherFile = paths.recordingsDirectory(TestHub.hubB).appendingPathComponent("orphan.m4a")
         try Data(repeating: 0x5A, count: 256).write(to: otherFile)
         let otherUploader = RecordingUploader(
-            transport: InMemoryCloudTransport(),
-            store: try ReplicaStore(path: paths.replicaPath("hub-b")),
-            directory: paths.recordingsDirectory("hub-b")
+            transport: try TestPhone.transport(),
+            store: try TestPhone.replica(path: paths.replicaPath(TestHub.hubB)),
+            directory: paths.recordingsDirectory(TestHub.hubB)
         )
         let now = Date()
         let registered = try await otherUploader.register(
             fileURL: otherFile, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-60), titleHint: "Acme sync"
         )
         XCTAssertNotNil(registered)
-        let stray = paths.recordingsDirectory("hub-a").appendingPathComponent("stray.m4a")
+        let stray = paths.recordingsDirectory(TestHub.hubA).appendingPathComponent("stray.m4a")
         try Data(repeating: 0x5A, count: 256).write(to: stray)
 
-        let hubA = try makeSession("hub-a", base: base)
+        let hubA = try makeSession(TestHub.hubA, base: base)
         _ = await hubA.adoption?.value
         await hubA.waitForBoot()
 

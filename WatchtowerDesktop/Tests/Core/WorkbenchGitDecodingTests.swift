@@ -608,4 +608,67 @@ final class WorkbenchGitDecodingTests: XCTestCase {
         XCTAssertNoThrow(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":null}"#))
         XCTAssertNoThrow(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":{}}"#))
     }
+
+    // MARK: - `--folder` (board #565)
+
+    /// The folder keys as Go's `workbenchgit.ResolvedFolder` marshals them,
+    /// embedded in the status envelope.
+    private static let worktreeFolderStatus = #"""
+    {
+      "workbench_id": 7,
+      "git_available": true,
+      "git": true,
+      "note": "",
+      "branch": "feature/x",
+      "detached": false,
+      "unborn": false,
+      "head": "1a2b3c4",
+      "upstream": "",
+      "ahead": 0,
+      "behind": 0,
+      "changes": 0,
+      "dirty": false,
+      "operation": "",
+      "top_level": "/tmp/acme/.claude/worktrees/mobile-a",
+      "git_dir": "/tmp/acme/.git/worktrees/mobile-a",
+      "common_dir": "/tmp/acme/.git",
+      "status_ok": true,
+      "status_error": "",
+      "folder_requested": "/tmp/acme/.claude/worktrees/mobile-a/src",
+      "folder_scope": "worktree",
+      "folder_root": "/tmp/acme/.claude/worktrees/mobile-a",
+      "worktree_name": "mobile-a"
+    }
+    """#
+
+    func testDecodesAWorktreeFolderStatus() throws {
+        let status = try decode(WorkbenchGitStatus.self, Self.worktreeFolderStatus)
+        XCTAssertEqual(status.folderRequested, "/tmp/acme/.claude/worktrees/mobile-a/src")
+        XCTAssertEqual(status.folderScope, .worktree)
+        XCTAssertEqual(status.folderRoot, "/tmp/acme/.claude/worktrees/mobile-a")
+        XCTAssertEqual(status.worktreeName, "mobile-a")
+        XCTAssertEqual(status.branch, "feature/x")
+    }
+
+    /// A CLI before `--folder` sends no folder keys: it read the main folder.
+    func testOlderEnvelopeDecodesAsMain() throws {
+        let older = try decode(WorkbenchGitStatus.self, #"{"git":true,"branch":"dev"}"#)
+        XCTAssertEqual(older.folderScope, .main)
+        XCTAssertEqual(older.folderRequested, "")
+        XCTAssertEqual(older.folderRoot, "")
+        XCTAssertEqual(older.worktreeName, "")
+    }
+
+    /// `""` is Go's "no verdict"; a scope this app does not know is no
+    /// verdict either — never silently the main folder.
+    func testAnEmptyOrUnknownScopeIsUnresolved() throws {
+        let empty = try decode(WorkbenchGitStatus.self, #"{"git":true,"folder_scope":""}"#)
+        XCTAssertEqual(empty.folderScope, .unresolved)
+        let unknown = try decode(WorkbenchGitStatus.self, #"{"git":true,"folder_scope":"submodule"}"#)
+        XCTAssertEqual(unknown.folderScope, .unresolved)
+        for scope in ["main", "worktree", "outside", "missing"] {
+            let status = try decode(WorkbenchGitStatus.self, #"{"git":true,"folder_scope":"\#(scope)"}"#)
+            XCTAssertEqual(status.folderScope.rawValue, scope)
+        }
+    }
 }

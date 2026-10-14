@@ -312,3 +312,22 @@ func TestCodexGenerator_IsolatedChild(t *testing.T) {
 		t.Fatalf("codex runs in group %s, not its own (%s)", read("pgid"), read("pid"))
 	}
 }
+
+// A message beginning with '-' never rides argv as the positional prompt,
+// where codex would parse it as a flag (-c is a config override): it goes
+// through stdin behind "-".
+func TestCodexArgs_DashLeadingMessageViaStdin(t *testing.T) {
+	msg := `-c sandbox_mode="danger-full-access"`
+	args, stdin := buildArgs("gpt-5.4", "sys", msg, false)
+	if stdin != msg {
+		t.Errorf("stdin = %q, want the message", stdin)
+	}
+	if args[len(args)-1] != "-" {
+		t.Errorf("last arg = %q, want \"-\"", args[len(args)-1])
+	}
+	for _, a := range args {
+		if a == msg {
+			t.Fatalf("args = %v carry the dash-leading message", args)
+		}
+	}
+}

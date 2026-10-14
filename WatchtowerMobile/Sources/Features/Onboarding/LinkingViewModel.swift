@@ -3,12 +3,14 @@ import Observation
 import os
 import WatchtowerSync
 
-/// The link flow (mobile POC spec §2.3 steps 1–5) and each link's life
-/// after it (§9; multi-hub spec §5.7, §6: unlink, forget, removed by the
-/// Mac, stale, iCloud account switch), one hub at a time: a scan adds a hub
-/// (up to `HubRegistry.limit`), never replaces one. Owned by `AppRoot` for
-/// the app's lifetime, so a wait survives any navigation; a kill mid-wait
-/// is resumed from `LinkStore.pending`.
+/// The link flow (mobile POC spec §2.3 steps 1–5, mobile E2E spec §2.3) and
+/// each link's life after it (§9; multi-hub spec §5.7, §6: unlink, forget,
+/// removed by the Mac, stale, iCloud account switch), one hub at a time: a
+/// scan adds a hub (up to `HubRegistry.limit`), never replaces one. Owned by
+/// `AppRoot` for the app's lifetime, so a wait survives any navigation; a
+/// kill mid-wait is resumed from `LinkStore.pending`. Each hub's keys live
+/// in the Keychain under its hub id (`PhoneKeyStore`): stored at the scan,
+/// completed by the keybox, removed when that hub's link ends.
 @MainActor
 @Observable
 final class LinkingViewModel {
@@ -18,7 +20,8 @@ final class LinkingViewModel {
         case scanning
         /// Steps 1–4: checking the code and iCloud, accepting, writing.
         case checking
-        /// Step 5: the device record is written; waiting for the grant.
+        /// Step 5: the hello is written; waiting for the keybox. The code to
+        /// compare is `linkCode`, and `macSeesPhone` says the Mac read it.
         case waiting(macName: String)
         /// An unlink or a Forget is running.
         case unlinking
@@ -29,12 +32,11 @@ final class LinkingViewModel {
 
     /// Step 1's grace for the phone's clock: the code is refused locally
     /// only when `exp < now − 120 s`; the Mac's own check decides the rest.
+    /// The wait for the keybox lasts until the same `exp + 120 s`: the owner
+    /// needs time to compare the code and click Link.
     static let expiryGrace: TimeInterval = 120
-    /// Step 5 (spec §3).
-    static let grantWait: TimeInterval = 60
-    /// How often the wait fetches the grant: each poll is a CloudKit fetch,
-    /// so 4 s keeps a full wait at 15 of them.
-    static let grantPollInterval: TimeInterval = 4
+    /// How often the wait fetches the keybox (mobile E2E Task 16).
+    static let grantPollInterval: TimeInterval = 2
     /// No heartbeat for this long reads as the Mac gone (spec §9).
     static let staleAfter: TimeInterval = 86_400
 
@@ -58,6 +60,15 @@ final class LinkingViewModel {
         phaseStartedUptime.map { max(0, clock.uptime() - $0) }
     }
     private(set) var notice: LinkNotice?
+    /// The four-digit code of the running link (mobile E2E spec §2.3): the
+    /// Mac shows the same one for this phone. SAS v2: it hashes the nonce the
+    /// Mac drew after it accepted the hello, so it shows only once the waiting
+    /// keybox brought that nonce. nil outside a wait, before the nonce, or
+    /// when a resumed wait cannot read the keys (locked).
+    private(set) var linkCode: String?
+    /// The Mac read this phone's hello and waits for the owner's Link
+    /// (the keybox says `awaiting_confirmation`).
+    private(set) var macSeesPhone = false
     /// The saved links, in registry order, as the host last reported them
     /// (refreshed after every change); empty while unlinked (Welcome). A
     /// pending link is not a link.
@@ -69,7 +80,10 @@ final class LinkingViewModel {
     }
     @ObservationIgnored private let container: any LinkContainer
     @ObservationIgnored private let store: LinkStore
-    @ObservationIgnored private let identity: DeviceIdentity
+    /// The device id is filled in when the link flow creates the device keys.
+    @ObservationIgnored private var identity: DeviceIdentity
+    /// The phone's E2E keys: the device identity and each hub's link.
+    @ObservationIgnored private let keys: any PhoneKeyStore
     @ObservationIgnored private let clock: any LinkClock
     /// Hubs whose link is ending (an unlink, a removal, the account
     /// switch): a removal or an account signal arriving meanwhile is the
@@ -77,10 +91,17 @@ final class LinkingViewModel {
     @ObservationIgnored private var ending: Set<String> = []
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LinkingViewModel")
 
-    init(container: any LinkContainer, store: LinkStore, identity: DeviceIdentity, clock: any LinkClock = SystemLinkClock()) {
+    init(
+        container: any LinkContainer,
+        store: LinkStore,
+        identity: DeviceIdentity,
+        keys: any PhoneKeyStore,
+        clock: any LinkClock = SystemLinkClock()
+    ) {
         self.container = container
         self.store = store
         self.identity = identity
+        self.keys = keys
         self.clock = clock
     }
 
@@ -89,7 +110,7 @@ final class LinkingViewModel {
 
     /// This phone as `hubID`'s saved link describes it.
     func linkedDevice(for hubID: String) -> LinkedDevice? {
-        links.first { $0.hubID == hubID }.map { identity.linkedDevice(for: $0.link) }
+        links.first { $0.hubID == hubID }.flatMap { identity.linkedDevice(for: $0.link) }
     }
 
     /// Reads the saved links again from the host.
@@ -117,7 +138,7 @@ final class LinkingViewModel {
         // A report about the last link is read by now; stale stays until
         // the active hub's heartbeat clears it.
         switch notice {
-        case .removed, .notSent, .recordingKept, .recordingsProblem: notice = nil
+        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan: notice = nil
         case .stale, nil: break
         }
         phase = .scanning
@@ -168,6 +189,14 @@ final class LinkingViewModel {
             phase = .failed(.refused)
             return
         }
+        let hubKeys: ScannedHubKeys
+        do {
+            hubKeys = try ScannedHubKeys(payload)
+        } catch {
+            Self.logger.warning("link code with unusable keys: \(String(describing: error), privacy: .public)")
+            phase = .failed(.refused)
+            return
+        }
         // Step 1: only a code clearly past its expiry on this clock.
         if Double(payload.exp) < clock.now().timeIntervalSince1970 - Self.expiryGrace {
             phase = .failed(.expired)
@@ -176,7 +205,12 @@ final class LinkingViewModel {
         phase = .checking
         refreshLinks()
         if let row = links.first(where: { $0.hubID == payload.hubID }), row.state == .linked, await isGranted(row.link) {
-            // Already linked to this Mac: nothing to write.
+            // Already linked to this Mac: nothing to write, except epoch keys a lost keybox signal left out of
+            // the Keychain (final review Phone I-1: the owner's natural recovery is a re-scan).
+            if let deviceID = identity.deviceID,
+               let keybox = await host?.storedKeybox(hubID: row.hubID, deviceID: deviceID) {
+                await mergeKeys(of: keybox, into: row.link)
+            }
             phase = .linked(macName: row.link.macName)
             return
         }
@@ -197,7 +231,15 @@ final class LinkingViewModel {
             phase = .failed(.iCloud(error.localizedDescription))
             return
         }
-        await connect(payload, userRecordName: userRecordName)
+        // A saved link to this Mac whose keybox does not say "linked" (a
+        // missed removal, an absent keybox) or that the Mac removed (frozen):
+        // a re-pair. That link ends first, its keys with it, reporting what
+        // its removal lost, so a refused or unanswered re-pair leaves no row
+        // whose keys open nothing. Other hubs are untouched.
+        if let row = row(payload.hubID), !ending.contains(row.hubID) {
+            notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
+        }
+        await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
     }
 
     /// "Linked to <Mac name>" → the notification prompt → Now.
@@ -209,7 +251,7 @@ final class LinkingViewModel {
     }
 
     /// Steps 3–5 for a valid code.
-    private func connect(_ payload: LinkPayload, userRecordName: String) async {
+    private func connect(_ payload: LinkPayload, hubKeys: ScannedHubKeys, userRecordName: String) async {
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
@@ -224,7 +266,7 @@ final class LinkingViewModel {
                 return
             }
             do {
-                try await container.acceptShares([data, relay])
+                try await container.acceptShares([data, relay], ownerName: payload.ownerUser, hubID: payload.hubID)
             } catch {
                 Self.logger.error("share accept failed: \(error.localizedDescription, privacy: .public)")
                 phase = .failed(.cannotShare)
@@ -232,6 +274,18 @@ final class LinkingViewModel {
             }
             scope = .shared(ownerName: payload.ownerUser)
         }
+        // The device keys (created here, in the foreground, on the first scan:
+        // F14; one identity for every hub) and the hub's keys from the code.
+        let deviceKeys: DeviceIdentityKeys
+        do {
+            deviceKeys = try keys.identity()
+            try keys.saveHubLink(hubKeys.unconfirmedLink)
+        } catch {
+            Self.logger.error("device keys unavailable: \(String(describing: error), privacy: .public)")
+            phase = .failed(.local(Self.keysUnavailableReason))
+            return
+        }
+        identity.deviceID = deviceKeys.deviceID.uuidString
         let shared = scope != .private
         let record = LinkRecord(
             hubID: payload.hubID,
@@ -244,17 +298,21 @@ final class LinkingViewModel {
             relayShareURL: shared ? payload.relayShare : nil,
             deviceID: identity.deviceID
         )
-        guard let host else { return }
+        guard let host, let device = identity.linkedDevice(for: record) else { return }
         // From the accept on, a kill is resumed (the scope's database, the
         // rest of the wait), never shown as linked. No baseline yet: a
         // relaunch before it is captured has written nothing to the Mac.
-        let deadline = clock.now().addingTimeInterval(Self.grantWait)
-        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil, baselineCaptured: false)
-        // Step 4: the device record with the code's nonce, in the scope's
-        // database.
+        let deadline = waitDeadline(expiresAt: payload.exp)
+        let issuedAt = Date(timeIntervalSince1970: TimeInterval(payload.iat))
+        store.pending = PendingLink(
+            link: record, deadline: deadline, baseline: nil, baselineCaptured: false, issuedAt: issuedAt
+        )
+        // Step 4: the hello with the code's nonce, sealed to the hub's key, in
+        // the scope's database, on a fresh replica (a re-pair must not keep the
+        // old link's rollback marks: a reset hub's seqs start again).
         let transport: any CloudSyncTransport
         do {
-            transport = try await host.prepare(scope: scope, hubID: record.hubID)
+            transport = try await host.prepare(scope: scope, hubID: record.hubID, fresh: true)
         } catch is CancellationError {
             // Torn down mid-prepare: the pending link stays for the relaunch.
             return
@@ -262,42 +320,89 @@ final class LinkingViewModel {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return
         }
-        let baseline = await host.fetchGrant(hubID: record.hubID, deviceID: identity.deviceID)
-        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline, baselineCaptured: true)
+        let baseline = await host.fetchKeybox(hubID: record.hubID, deviceID: device.deviceID)?.grant
+        let pending = PendingLink(
+            link: record, deadline: deadline, baseline: baseline, baselineCaptured: true, issuedAt: issuedAt
+        )
         store.pending = pending
         do {
             // The transport queues the record locally; CloudKit sends it
             // later, so a throw here is this iPhone's store.
-            let device = identity.linkedDevice(for: record)
-            try await transport.save([try deviceRecord(hubID: record.hubID, for: device, linkNonce: payload.nonce)])
+            try await transport.save([try helloRecord(hubID: record.hubID, for: device, keys: deviceKeys, linkNonce: payload.nonce)])
         } catch {
             await fail(.local(error.localizedDescription), hubID: record.hubID)
             return
         }
-        await waitForGrant(pending)
+        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
     }
 
     /// A link that did not complete: nothing to resume, and a hub that has
-    /// no row yet (a first link) leaves no session or directory behind.
+    /// no row yet (a first link, or a re-pair whose old link ended) leaves no
+    /// session, directory or keys behind.
     private func fail(_ failure: LinkFailure, hubID: String) async {
         store.pending = nil
+        linkCode = nil
+        macSeesPhone = false
         if row(hubID) == nil, let host {
             let dropped = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
             if let problem = dropped.problem {
                 Self.logger.error("recordings of a failed link: \(problem, privacy: .public)")
             }
+            removeKeys(hubID)
         }
         phase = .failed(failure)
     }
 
-    // MARK: - Grant wait (step 5)
+    /// What the code is computed from, apart from the Mac's nonce.
+    private struct PairingCode {
+        let hubKeys: ScannedHubKeys
+        let deviceKeys: DeviceIdentityKeys
+
+        /// The tag a waiting keybox for this scan's link code carries.
+        var linkCodeTag: String { KeyDerivation.linkCodeTag(linkNonce: hubKeys.linkNonce) }
+
+        /// nil while the keybox carries no well-formed nonce.
+        func code(confirmNonce text: String?) -> String? {
+            ScannedHubKeys.confirmNonce(from: text).map { hubKeys.code(for: deviceKeys, confirmNonce: $0) }
+        }
+    }
+
+    static let keysUnavailableReason = "This iPhone's Watchtower keys can't be read. Unlock it and scan again."
+
+    /// The wait's end: the code's expiry plus the clock grace, on the phone's
+    /// clock; never past a full code lifetime from now (an `exp` from a Mac
+    /// clock far ahead does not keep the phone waiting for ever).
+    private func waitDeadline(expiresAt exp: Int64) -> Date {
+        let now = clock.now()
+        let latest = now.addingTimeInterval(TimeInterval(LinkPayload.lifetime) + Self.expiryGrace)
+        return min(Date(timeIntervalSince1970: TimeInterval(exp) + Self.expiryGrace), latest)
+    }
+
+    /// The hello (mobile E2E spec §2.3): this phone's device record for
+    /// `hubID` plus its public keys, `hello-<device_id>` in RelayZone. The
+    /// host's transport seals it to the hub's agreement key and signs it with
+    /// the device key.
+    private func helloRecord(
+        hubID: String, for device: LinkedDevice, keys deviceKeys: DeviceIdentityKeys, linkNonce: String
+    ) throws -> CloudRecord {
+        guard let host else { throw CancellationError() }
+        let payload = host.devicePayload(hubID: hubID, for: device, linkNonce: linkNonce, unlinked: false, now: clock.now())
+        let hello = DeviceHello(
+            device: payload,
+            signingKey: WireBytes.base64URL(deviceKeys.signing.publicKey.rawRepresentation),
+            agreementKey: WireBytes.base64URL(deviceKeys.agreement.publicKey.rawRepresentation)
+        )
+        return try CloudRecordFactory.record(for: hello, modifiedAt: payload.updatedAt)
+    }
+
+    // MARK: - Keybox wait (step 5)
 
     /// At launch: a link written before a kill and not answered yet waits
-    /// for what is left of its 60 s, then offers to scan again. A link
+    /// for what is left of its wait, then offers to scan again. A link
     /// killed before its baseline was captured wrote nothing to the Mac
-    /// (the device record follows the baseline), and without the baseline
-    /// an earlier answer in the replica (a refusal of another code) would
-    /// read as this scan's: it offers to scan again at once.
+    /// (the hello follows the baseline), and without the baseline an earlier
+    /// answer in the replica (a refusal of another code) would read as this
+    /// scan's: it offers to scan again at once.
     func resumePendingLink() async {
         guard let pending = store.pending, !isBusy else { return }
         // A hub id that is not a plain name never names a directory: the
@@ -312,34 +417,85 @@ final class LinkingViewModel {
             await fail(.noAnswer, hubID: pending.link.hubID)
             return
         }
+        // The keys the scan stored: the code again, and the hub keys the
+        // keybox's epoch keys join. Without them the link cannot be completed.
+        let stored: HubLinkKeys?
+        do {
+            stored = try keys.hubLink(pending.link.hubID)
+        } catch KeyStoreError.locked {
+            Self.logger.notice("keys locked at launch: the pending link waits for the next launch")
+            return
+        } catch {
+            Self.logger.error("pending link keys unreadable: \(String(describing: error), privacy: .public)")
+            stored = nil
+        }
+        guard let stored, let hubKeys = try? ScannedHubKeys(stored: stored) else {
+            // `try?`: a stored link that does not parse is the same dead end as none at all.
+            await fail(.noAnswer, hubID: pending.link.hubID)
+            return
+        }
+        // F14: read, never created; the scan created it, so none means the wait cannot be this phone's.
+        let deviceKeys: DeviceIdentityKeys?
+        do {
+            deviceKeys = try keys.existingIdentity()
+        } catch KeyStoreError.locked {
+            Self.logger.notice("keys locked at launch: the pending link waits for the next launch")
+            return
+        } catch {
+            Self.logger.error("device keys unreadable: \(String(describing: error), privacy: .public)")
+            deviceKeys = nil
+        }
+        guard let deviceKeys else {
+            await fail(.noAnswer, hubID: pending.link.hubID)
+            return
+        }
         phase = .checking
         do {
-            _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID)
+            _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID, fresh: false)
         } catch {
             await fail(.local(error.localizedDescription), hubID: pending.link.hubID)
             return
         }
-        await waitForGrant(pending)
+        await waitForGrant(pending, code: PairingCode(hubKeys: hubKeys, deviceKeys: deviceKeys))
     }
 
-    /// Fetches the grant until the deadline. A grant for this hub that
-    /// differs from the baseline is the Mac's answer: `link_refused` (any
-    /// code, even one this build does not know) refuses, `linked` links. A
-    /// cancelled wait (the app killed) leaves the pending link to resume.
-    private func waitForGrant(_ pending: PendingLink) async {
+    /// Fetches the keybox every 2 s until the deadline. A keybox for this
+    /// hub whose grant differs from the baseline is the Mac's answer:
+    /// `link_refused` (any code, `not_confirmed` included, even one this
+    /// build does not know) refuses; `awaiting_confirmation` shows that the
+    /// Mac sees this iPhone and, with its `confirm_nonce`, gives the code
+    /// (SAS v2; a waiting keybox without a well-formed nonce, or naming
+    /// another link code by its `link_code_tag`, shows none);
+    /// `linked` with keys stores them and links. A cancelled wait (the app
+    /// killed) leaves the pending link to resume.
+    private func waitForGrant(_ pending: PendingLink, code: PairingCode) async {
+        let hubID = pending.link.hubID
+        macSeesPhone = false
+        linkCode = nil
         phase = .waiting(macName: pending.link.macName)
         while true {
-            if let grant = await host?.fetchGrant(hubID: pending.link.hubID, deviceID: identity.deviceID),
-               grant != pending.baseline, grant.hubID == pending.link.hubID {
-                if grant.linkRefused != nil {
-                    await fail(.refused, hubID: pending.link.hubID)
+            if let deviceID = identity.deviceID,
+               let keybox = await host?.fetchKeybox(hubID: hubID, deviceID: deviceID),
+               keybox.grant.hubID == hubID {
+                let grant = keybox.grant
+                // A refusal or a link answers this scan only when it differs from the baseline. A waiting keybox
+                // counts by the link code it names instead: an unchanged re-send of this QR keeps the Mac's request
+                // (equal to the baseline) and still gives the code; one left from an earlier code never does.
+                let fresh = grant != pending.baseline
+                if fresh, grant.linkRefused != nil {
+                    await fail(.refused, hubID: hubID)
                     return
                 }
-                if grant.linked {
-                    var linked = pending.link
-                    linked.linkedAt = grant.linkedAt
-                    await complete(linked)
-                    return
+                if fresh, grant.linked, grant.revoked != true, Self.isDecided(grant.linkedAt, after: pending.issuedAt) {
+                    if let boxKeys = keybox.keys {
+                        await complete(pending, keys: boxKeys, linkedAt: grant.linkedAt)
+                        return
+                    }
+                    Self.logger.warning("a linked keybox without keys: still waiting")
+                } else if grant.awaitingConfirmation == true, grant.linkRefused == nil {
+                    let ours = grant.linkCodeTag == code.linkCodeTag
+                    macSeesPhone = ours
+                    linkCode = ours ? code.code(confirmNonce: grant.confirmNonce) : nil
                 }
             }
             let remaining = pending.deadline.timeIntervalSince(clock.now())
@@ -350,24 +506,49 @@ final class LinkingViewModel {
                 return
             }
         }
-        await fail(.noAnswer, hubID: pending.link.hubID)
+        await fail(.noAnswer, hubID: hubID)
     }
 
-    /// The Mac granted the link: the host saves the row and puts the hub on
-    /// screen. A fifth hub that raced past the scan's check is refused.
-    private func complete(_ record: LinkRecord) async {
-        guard let host else { return }
+    /// A link decided at `decidedAt` (the Mac's clock) answers a code issued
+    /// at `issuedAt` (the same clock) only when it came at or after it: the
+    /// Mac links at the owner's click, after the code was shown (review M-3).
+    /// A pending link an older build saved has no `issuedAt`: unbound.
+    static func isDecided(_ decidedAt: Date?, after issuedAt: Date?) -> Bool {
+        guard let issuedAt else { return true }
+        guard let decidedAt else { return false }
+        return decidedAt >= issuedAt
+    }
+
+    /// The keybox's keys join the scan's, then the host saves the row and
+    /// puts the hub on screen. `linkedAt`: the linked grant's `linked_at`
+    /// (the Mac's clock), kept in the link for the removal check (#64). A
+    /// fifth hub that raced past the scan's check is refused (its keys go).
+    private func complete(_ pending: PendingLink, keys boxKeys: KeyboxKeys, linkedAt: Date?) async {
+        let hubID = pending.link.hubID
         do {
-            try await host.linked(record, device: identity.linkedDevice(for: record))
+            guard let unconfirmed = try keys.hubLink(hubID) else { throw SecureTransportError.keysUnavailable }
+            try keys.saveHubLink(try unconfirmed.adding(boxKeys))
+        } catch {
+            Self.logger.error("keybox keys not stored: \(String(describing: error), privacy: .public)")
+            await fail(.local(Self.keysUnavailableReason), hubID: hubID)
+            return
+        }
+        var record = pending.link
+        record.linkedAt = linkedAt
+        guard let host, let device = identity.linkedDevice(for: record) else { return }
+        do {
+            try await host.linked(record, device: device)
         } catch HubRegistryError.full {
-            await fail(.tooManyMacs, hubID: record.hubID)
+            await fail(.tooManyMacs, hubID: hubID)
             return
         } catch {
             Self.logger.error("link not saved: \(error.localizedDescription, privacy: .public)")
-            await fail(.local(error.localizedDescription), hubID: record.hubID)
+            await fail(.local(error.localizedDescription), hubID: hubID)
             return
         }
         store.pending = nil
+        linkCode = nil
+        macSeesPhone = false
         refreshLinks()
         // A notice about another link's state no longer applies; a report of
         // what an unlink lost ("Not sent", a recording kept) stays.
@@ -378,10 +559,119 @@ final class LinkingViewModel {
         phase = .linked(macName: record.macName)
     }
 
-    /// The replica of `link`'s hub holds a linked grant of that hub.
+    /// The replica of `link`'s hub holds a linked, unrevoked keybox of that
+    /// hub.
     private func isGranted(_ link: LinkRecord) async -> Bool {
-        guard let grant = await host?.fetchGrant(hubID: link.hubID, deviceID: identity.deviceID) else { return false }
-        return grant.hubID == link.hubID && grant.linked && grant.linkRefused == nil
+        guard let deviceID = identity.deviceID,
+              let grant = await host?.fetchKeybox(hubID: link.hubID, deviceID: deviceID)?.grant else { return false }
+        return grant.hubID == link.hubID && grant.linked && grant.linkRefused == nil && grant.revoked != true
+    }
+
+    /// Removes the keys stored for `hubID` (best effort, logged).
+    private func removeKeys(_ hubID: String) {
+        do {
+            try keys.removeHubLink(hubID)
+        } catch {
+            Self.logger.error("hub keys not removed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    // MARK: - The keybox after the link
+
+    /// A keybox `hubID`'s replica indexed after the link (a rotation, or
+    /// Remove on the Mac; read after unlock, through `indexPending`'s
+    /// callback). A revoked one is that Mac removing this phone (D9): the
+    /// hub freezes, in either scope. Newer epoch keys join the stored ones.
+    /// Another hub's scan running meanwhile does not hold this one up.
+    func keyboxChanged(hubID: String) async {
+        guard let row = row(hubID), row.state == .linked, !ending.contains(hubID),
+              let deviceID = identity.deviceID,
+              let keybox = await host?.storedKeybox(hubID: hubID, deviceID: deviceID),
+              keybox.grant.hubID == hubID, self.row(hubID)?.link == row.link
+        else { return }
+        if keybox.grant.revoked == true {
+            Self.logger.notice("a Mac revoked this phone's keybox: removed")
+            await removedByMac(hubID)
+            return
+        }
+        await mergeKeys(of: keybox, into: row.link)
+    }
+
+    /// Final review Phone I-1: the keybox → Keychain merge is a reconcile, not only an edge. After every fetch of
+    /// `hubID` (`keybox`: the one the fetch's grant check read), at unlock and on a re-scan of a linked Mac, the
+    /// stored keybox's epoch keys the Keychain lacks are merged. A revoked keybox is left to `keyboxChanged` and
+    /// the grant check. Idempotent: nothing missing, nothing written.
+    func reconcileKeyboxKeys(hubID: String, keybox: Keybox? = nil) async {
+        guard let row = row(hubID), row.state == .linked, !ending.contains(hubID) else { return }
+        let stored: Keybox?
+        if let keybox {
+            stored = keybox
+        } else if let deviceID = identity.deviceID {
+            stored = await host?.storedKeybox(hubID: hubID, deviceID: deviceID)
+        } else {
+            stored = nil
+        }
+        guard let stored, self.row(hubID)?.link == row.link else { return }
+        await mergeKeys(of: stored, into: row.link)
+    }
+
+    /// Adds `keybox`'s epoch keys to `link`'s stored hub keys when that changes which epochs the Keychain holds
+    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock.
+    private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async {
+        guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
+              let boxKeys = keybox.keys else { return }
+        do {
+            guard let current = try keys.hubLink(link.hubID) else { return }
+            let merged = try current.adding(boxKeys)
+            guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return }
+            try keys.saveHubLink(merged)
+        } catch KeyStoreError.locked {
+            Self.logger.notice("keybox keys wait for the unlock")
+            return
+        } catch {
+            Self.logger.error("keybox keys not stored: \(String(describing: error), privacy: .public)")
+            return
+        }
+        Self.logger.notice("epoch keys merged from the keybox")
+        host?.keysMerged(hubID: link.hubID)
+    }
+
+    /// At launch: a link saved before encryption (no hub keys in the
+    /// Keychain, an F1 link moved into the registry included) cannot sync any
+    /// more. Its hub is removed (recordings held) and the owner asked to scan
+    /// again. A pending link without keys is dropped too. Locked keys decide
+    /// nothing; other hubs are untouched.
+    func dropUnencryptedLinks() async {
+        if let pending = store.pending, hubKeys(pending.link.hubID) == .absent {
+            store.pending = nil
+        }
+        refreshLinks()
+        var dropped = false
+        var total = LocalWipe()
+        for row in links where hubKeys(row.hubID) == .absent && !ending.contains(row.hubID) {
+            Self.logger.notice("a link made before encryption is dropped: scan again")
+            let wipe = await endLink(row, farewell: false, keepRecordings: true)
+            dropped = true
+            total.notSent += wipe.notSent
+            total.stoppedRecording = total.stoppedRecording || wipe.stoppedRecording
+            total.problem = total.problem ?? wipe.problem
+        }
+        if dropped {
+            notice = LinkNotice.after(total, otherwise: .encryptionReScan)
+        }
+    }
+
+    private enum StoredHubKeys { case present, absent, unknown }
+
+    /// Whether `hubID`'s keys are stored, from the public signing key copy
+    /// (readable while locked); `unknown` when the Keychain cannot say.
+    private func hubKeys(_ hubID: String) -> StoredHubKeys {
+        do {
+            return try keys.hubSigningKey(hubID) != nil ? .present : .absent
+        } catch {
+            Self.logger.warning("hub keys unreadable at launch: \(String(describing: error), privacy: .public)")
+            return .unknown
+        }
     }
 
     // MARK: - Unlink and the link's events (spec §9, multi-hub §6)
@@ -394,36 +684,34 @@ final class LinkingViewModel {
     }
 
     /// Settings → Macs → Unlink: the hub's files and row go, then its Mac
-    /// hears `unlinked`, then a shared link leaves the shares.
+    /// hears `unlinked` (sealed with the hub's keys), then a shared link
+    /// leaves the shares; the hub's keys go last.
     func unlink(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
         phase = .unlinking
-        notice = LinkNotice.after(await unlinkHub(row), macName: row.link.macName)
+        notice = LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName)
         phase = .idle
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell
-    /// and no share leave (its zones are gone); a long-offline linked one is
-    /// unlinked.
+    /// and no share leave (its zones are gone), its keys with it; a
+    /// long-offline linked one is unlinked.
     func forget(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
-        guard row.state == .unlinkedByMac, let host else {
+        guard row.state == .unlinkedByMac else {
             await unlink(hubID)
             return
         }
         phase = .unlinking
-        ending.insert(hubID)
-        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
-        ending.remove(hubID)
-        refreshLinks()
-        notice = LinkNotice.after(wipe, macName: row.link.macName)
+        notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
         phase = .idle
     }
 
     /// `TransportEvent.unlinked` for `hubID`: its zones are gone (the phone
     /// was removed, maybe while offline); or that Mac deleted this phone's
-    /// grant (`evaluate(hubID:grant:heartbeat:)`). The hub freezes, its data
-    /// readable until Forget; nothing is wiped and other hubs are untouched.
+    /// grant (`evaluate(hubID:grant:heartbeat:)`), or revoked its keybox
+    /// (D9, `keyboxChanged`). The hub freezes, its data readable (its keys
+    /// stay) until Forget; nothing is wiped and other hubs are untouched.
     func removedByMac(_ hubID: String) async {
         guard let row = row(hubID), row.state == .linked, !ending.contains(hubID), let host else { return }
         ending.insert(hubID)
@@ -434,8 +722,8 @@ final class LinkingViewModel {
     }
 
     /// The transport saw an iCloud account change. Another account ends
-    /// every link and removes every hub; a sign-out keeps them until an
-    /// account is back (spec §9, multi-hub §6.2).
+    /// every link and removes every hub, their keys with them; a sign-out
+    /// keeps them until an account is back (spec §9, multi-hub §6.2).
     func accountChanged() async {
         refreshLinks()
         guard !links.isEmpty else { return }
@@ -459,6 +747,7 @@ final class LinkingViewModel {
         var total = LocalWipe()
         for row in rows {
             let wipe = await host.removeHub(row.hubID, keepRecordings: false, farewell: nil)
+            removeKeys(row.hubID)
             total.notSent += wipe.notSent
             total.stoppedRecording = total.stoppedRecording || wipe.stoppedRecording
             total.problem = total.problem ?? wipe.problem
@@ -474,8 +763,9 @@ final class LinkingViewModel {
     static let removalConfirmAfter: TimeInterval = 30
 
     /// After each fetch of `hubID`: this phone's own `device_grant` in that
-    /// hub's replica. The Mac's Remove deletes it (`DeviceGrantSlice`
-    /// publishes no record for a removed phone), and for a same-Apple-ID
+    /// hub's replica (since E2E, the grant its keybox carries). The Mac's
+    /// Remove deletes it (`DeviceGrantSlice` publishes no record for a
+    /// removed phone), and for a same-Apple-ID
     /// phone that is the only sign: its zones are the Mac's own and never
     /// vanish, so no `unlinked` event comes (#64). A wrongful removal stops
     /// a hub, so it needs all of:
@@ -544,33 +834,38 @@ final class LinkingViewModel {
         switch notice {
         case .stale, nil:
             notice = stale
-        case .removed, .notSent, .recordingKept, .recordingsProblem:
+        case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan:
             break
         }
     }
 
-    /// Ends `row`'s link: the host removes the hub (its row first, then the
-    /// `unlinked` record through the hub's own transport, which holds the
+    /// Ends `row`'s link: the host removes the hub (its row first, then, for
+    /// an unlink of a linked hub (`farewell`), the `unlinked` record through
+    /// the hub's own transport, sealed with the hub's keys, which holds the
     /// record's server state, best effort and bounded; then its session,
-    /// recordings and files), then a `shared` link leaves the shares. The
+    /// recordings and files), then a `shared` link that said farewell leaves
+    /// the shares, then the hub's keys are deleted (`removeHubLink`). The
     /// record is built here, before the hub's Settings choices go. A frozen
-    /// hub's zones are gone: no farewell, no leave.
-    private func unlinkHub(_ row: HubRow) async -> LocalWipe {
+    /// hub's zones are gone: no farewell, no leave. Removing the hub's
+    /// replica takes the outbox and the recordings sealed under this link
+    /// with it; held audio is sealed again under the next link.
+    private func endLink(_ row: HubRow, farewell sendsFarewell: Bool, keepRecordings: Bool) async -> LocalWipe {
         guard let host else { return LocalWipe() }
         let hubID = row.hubID
         ending.insert(hubID)
         defer { ending.remove(hubID) }
-        let linked = row.state == .linked
+        let linked = row.state == .linked && sendsFarewell
         let scope = row.link.databaseScope
         var farewell: CloudRecord?
-        if linked {
+        if linked, let device = identity.linkedDevice(for: row.link) {
             do {
-                farewell = try deviceRecord(hubID: hubID, for: identity.linkedDevice(for: row.link), linkNonce: nil, unlinked: true)
+                farewell = try deviceRecord(hubID: hubID, for: device, linkNonce: nil, unlinked: true)
             } catch {
                 Self.logger.warning("unlinked record not built: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: farewell)
+        let wipe = await host.removeHub(hubID, keepRecordings: keepRecordings, farewell: farewell)
+        removeKeys(hubID)
         refreshLinks()
         if linked, case let .shared(ownerName) = scope {
             do {

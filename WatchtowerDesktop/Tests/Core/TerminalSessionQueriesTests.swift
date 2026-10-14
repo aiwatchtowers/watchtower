@@ -311,6 +311,27 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// #534: the open asks are split by kind — questions and reviews
+    /// counted, checks the rest — and an answered ask counts in none.
+    func testAgentStatesCountQuestionAndReviewAsks() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let session = try TerminalSessionQueries.create(db, claude(project, "Session A"))
+            for kind in ["check", "review", "question"] {
+                try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session.id, kind: kind,
+                                                docPath: kind == "review" ? "docs/review.md" : "")
+            }
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session.id, kind: "question",
+                                            status: "answered", answer: "yes")
+
+            let row = try XCTUnwrap(TerminalSessionQueries.fetchAgentStates(db, liveIDs: []).first)
+            XCTAssertEqual(row.openAsks, 3)
+            XCTAssertEqual(row.openQuestionAsks, 1)
+            XCTAssertEqual(row.openReviewAsks, 1)
+        }
+    }
+
     func testFetchAgentStatesReadsTheBackgroundColumns() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
@@ -351,6 +372,110 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertEqual(rows[0].chatQuestionAt, "2026-10-10T12:34:56.789Z", "the stamp is kept as stored")
             XCTAssertNil(rows[1].chatQuestion, "no question reads as nil")
             XCTAssertNil(rows[1].chatQuestionAt)
+        }
+    }
+
+    // MARK: - Agent cwd (board #565)
+
+    func testFetchAgentCwdsReadsTheWorkbenchRowsThatHaveOne() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let other = try TestDatabase.insertWorkbench(db, name: "Other", folder: "/tmp/other")
+            let moved = try TerminalSessionQueries.create(db, claude(project, "Moved"))
+            let unknown = try TerminalSessionQueries.create(db, claude(project, "Unknown"))
+            let elsewhere = try TerminalSessionQueries.create(db, claude(other, "Elsewhere"))
+            for id in [moved.id, elsewhere.id] {
+                try db.execute(sql: """
+                    UPDATE terminal_sessions SET agent_cwd = '/tmp/acme/.claude/worktrees/mobile-a',
+                        agent_cwd_at = '2026-10-12T10:00:00.000Z' WHERE id = ?
+                    """, arguments: [id])
+            }
+            let cwds = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            XCTAssertEqual(cwds, [moved.id: SessionAgentCwd(sessionID: moved.id,
+                                                            path: "/tmp/acme/.claude/worktrees/mobile-a",
+                                                            at: "2026-10-12T10:00:00.000Z")])
+            XCTAssertNil(cwds[unknown.id])
+        }
+    }
+
+    /// The run start is `agent_turns`' `since`, read as Go's
+    /// `db.TerminalAgentCwd` reads it: NULL without a run mark and when the
+    /// column is not JSON (json_extract would fail on it).
+    func testFetchAgentCwdsReadsTheRunStartAsGoDoes() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let marked = try TerminalSessionQueries.create(db, claude(project, "Marked"))
+            let garbled = try TerminalSessionQueries.create(db, claude(project, "Garbled"))
+            let unmarked = try TerminalSessionQueries.create(db, claude(project, "Unmarked"))
+            let turns: [(Int64, String?)] = [
+                (marked.id, #"{"since":"2026-10-12T09:00:00.000Z"}"#), (garbled.id, "not json"), (unmarked.id, nil)
+            ]
+            for (id, json) in turns {
+                try db.execute(sql: """
+                    UPDATE terminal_sessions SET agent_cwd = '/tmp/acme', agent_cwd_at = '2026-10-12T10:00:00.000Z',
+                        agent_turns = ? WHERE id = ?
+                    """, arguments: [json, id])
+            }
+            let cwds = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            XCTAssertEqual(cwds[marked.id]?.runStart, "2026-10-12T09:00:00.000Z")
+            XCTAssertNil(cwds[garbled.id]?.runStart, "agent_turns that is not JSON reads as no run start")
+            XCTAssertNotNil(cwds[garbled.id], "and still loads the row")
+            XCTAssertNil(cwds[unmarked.id]?.runStart)
+        }
+    }
+
+    /// A reload does not probe the columns again: the probe is cached per
+    /// connection (GRDB's schema cache) until the schema changes.
+    func testFetchAgentCwdsProbesTheColumnsOncePerConnection() throws {
+        final class Box: @unchecked Sendable { var probes = 0 }
+        let box = Box()
+        let queue = try TestDatabase.create()
+        let project = try queue.write { db in try TestDatabase.insertWorkbench(db) }
+        _ = try queue.read { db in try TerminalSessionQueries.fetchAgentCwds(db, projectID: project) }
+        try queue.read { db in
+            db.trace { event in
+                if event.description.contains("table_info") || event.description.contains("table_xinfo") {
+                    box.probes += 1
+                }
+            }
+            _ = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            db.trace(nil)
+        }
+        XCTAssertEqual(box.probes, 0)
+    }
+
+    /// A database without migration 00110: no cwds, and every other session
+    /// read still works (the cwd stays out of `TerminalSession`).
+    func testADatabaseWithoutTheCwdColumnsStillLoadsSessions() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd")
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id), [row.id])
+            XCTAssertEqual(try TerminalSessionQueries.fetchAgentCwds(db, projectID: project), [:])
+        }
+    }
+
+    /// A database without migration 00110: the session states still load,
+    /// each with no cwd stamp (`agent_cwd_at` reads as NULL).
+    func testFetchAgentStatesWorksWithoutTheCwdColumns() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd")
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let row = try TerminalSessionQueries.create(db, claude(project, "Waiting"))
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET agent_state = 'waiting' WHERE id = ?", arguments: [row.id]
+            )
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.map(\.id), [row.id])
+            XCTAssertEqual(rows.first?.agentState, "waiting")
+            XCTAssertNil(rows.first?.agentCwdAt)
         }
     }
 }

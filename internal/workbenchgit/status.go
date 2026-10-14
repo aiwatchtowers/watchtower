@@ -48,6 +48,10 @@ type Status struct {
 	CommonDir   string `json:"common_dir"`
 	StatusOK    bool   `json:"status_ok"`
 	StatusError string `json:"status_error"`
+	// ResolvedFolder is the folder asked for (`--folder`) and where git
+	// ran; the caller fills it in. For an outside or missing folder the
+	// fields above are the workbench folder's status.
+	ResolvedFolder
 }
 
 // ReadStatus reads the folder's branch and changes. It never fails: a
@@ -76,7 +80,10 @@ func readStatus(ctx context.Context, o Options) (Status, *repo) {
 		st.StatusError = clip("checking for an operation in progress: " + err.Error())
 		return st, r
 	}
-	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal")
+	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal",
+		// A submodule is its own repository with its own config: status
+		// would run its filter drivers, which ReadArgsIn never listed.
+		"--ignore-submodules=all")
 	if err == nil {
 		st.StatusFields, err = parseStatus(out)
 	}

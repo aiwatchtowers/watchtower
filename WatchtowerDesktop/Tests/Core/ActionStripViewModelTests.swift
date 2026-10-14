@@ -86,9 +86,9 @@ final class ActionStripViewModelTests: XCTestCase {
         try await otherPool.write { db in
             try db.execute(sql: "UPDATE agent_actions SET status = 'applied' WHERE id = ?", arguments: [id])
         }
-        await vm.approve(id)
+        await vm.approve(id, shownArgs: "{}")
 
-        XCTAssertEqual(runner.invocations, [["actions", "approve", String(id), "--json"]])
+        XCTAssertEqual(runner.invocations, [["actions", "approve", String(id), "--args-sha256", AgentActionFeed.argsSHA256("{}"), "--json"]])
         XCTAssertNil(vm.lastError)
         XCTAssertTrue(vm.actionRows.isEmpty, "an applied (terminal) row must drop out of fetchStrip's non-terminal filter")
     }
@@ -107,12 +107,12 @@ final class ActionStripViewModelTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         vm.refresh()
 
-        await vm.approve(id)
+        await vm.approve(id, shownArgs: "{}")
         XCTAssertEqual(vm.actionFeed.rowErrors[id]?.message, "boom", "a failed CLI call must surface on the row's card")
         XCTAssertNil(vm.lastError, "a row's failure is not the strip's banner")
 
         runner.shouldThrow = nil
-        await vm.approve(id)
+        await vm.approve(id, shownArgs: "{}")
         XCTAssertNil(vm.actionFeed.rowErrors[id], "a later successful call must clear the earlier failure, not leave it sticky")
         XCTAssertNil(vm.lastError)
     }

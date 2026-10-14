@@ -14,17 +14,17 @@ import WatchtowerCore
 /// so those updates re-render the bar and nothing else of the pane.
 struct JumpBar: View {
     let files: CodeFilesCenter
-    let project: Workbench
+    let root: CodeRoot
     let buffer: CodeFileBuffer
     let status: GitFileStatus?
     @State private var controller: JumpBarController
 
-    init(files: CodeFilesCenter, project: Workbench, buffer: CodeFileBuffer, status: GitFileStatus?) {
+    init(files: CodeFilesCenter, root: CodeRoot, buffer: CodeFileBuffer, status: GitFileStatus?) {
         self.files = files
-        self.project = project
+        self.root = root
         self.buffer = buffer
         self.status = status
-        _controller = State(initialValue: JumpBarController(files: files, project: project))
+        _controller = State(initialValue: JumpBarController(files: files, root: root))
     }
 
     var body: some View {
@@ -49,27 +49,27 @@ struct JumpBar: View {
         .controlSize(.small)
         .padding(.horizontal, 6)
         .frame(height: 24)
-        .onAppear { files.navigation?.registerJumpBar(controller, for: project.id) }
-        .onDisappear { files.navigation?.unregisterJumpBar(controller, for: project.id) }
+        .onAppear { files.navigation?.registerJumpBar(controller, for: root.workbenchID) }
+        .onDisappear { files.navigation?.unregisterJumpBar(controller, for: root.workbenchID) }
     }
 
     @ViewBuilder
     private var historyButtons: some View {
         let navigation = files.navigation
         Button {
-            navigation?.goBack(project: project)
+            navigation?.goBack(root: root)
         } label: {
             Image(systemName: "chevron.left")
         }
-        .disabled(navigation?.canGoBack(workbenchID: project.id) != true)
+        .disabled(navigation?.canGoBack(root: root) != true)
         .help("Back (⌃⌘←)")
         .accessibilityLabel("Back")
         Button {
-            navigation?.goForward(project: project)
+            navigation?.goForward(root: root)
         } label: {
             Image(systemName: "chevron.right")
         }
-        .disabled(navigation?.canGoForward(workbenchID: project.id) != true)
+        .disabled(navigation?.canGoForward(root: root) != true)
         .help("Forward (⌃⌘→)")
         .accessibilityLabel("Forward")
     }
@@ -131,7 +131,7 @@ struct JumpBar: View {
     /// file's note.
     @ViewBuilder
     private func trailingNote(_ model: JumpBarModel?) -> some View {
-        if let notice = files.navigation?.notice(for: project.id) {
+        if let notice = files.navigation?.notice(for: root.workbenchID) {
             Label(notice, systemImage: "questionmark.circle")
                 .lineLimit(1)
                 .transition(.opacity)

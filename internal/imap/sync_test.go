@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/netsec"
 )
 
 // TestTruncateUTF8DoesNotSplitRune mirrors gmail.Syncer's identical helper
@@ -306,5 +308,36 @@ func TestSyncCapsToMaxMessagesPerSyncAndAdvancesOnlyToLastProcessed(t *testing.T
 	}
 	if len(msgsAll) != total {
 		t.Fatalf("want all %d messages stored after the second sync, got %d", total, len(msgsAll))
+	}
+}
+
+// A security-none account on a remote host stops syncing visibly: its row
+// carries the cleartext refusal under netsec.StatusPrefix, which the
+// Desktop shows as "Stopped syncing" — never a silent failure.
+func TestSyncRecordsACleartextRefusal(t *testing.T) {
+	database := db.OpenTestDB(t)
+	id, err := database.CreateEmailAccount(db.EmailAccount{
+		Provider: "imap", EmailAddress: "me@example.com",
+		Host: "imap.example.com", Port: 143, Security: "none", Folder: "INBOX",
+	})
+	if err != nil {
+		t.Fatalf("create email account: %v", err)
+	}
+	acct, err := database.GetEmailAccount(id)
+	if err != nil {
+		t.Fatalf("get email account: %v", err)
+	}
+	cfg := &config.Config{}
+	accountCfg := AccountConfig{Host: acct.Host, Port: acct.Port, Security: SecurityNone, Folder: acct.Folder}
+	syncer := NewSyncer(acct, accountCfg, PasswordAuth{Username: testUsername, Password: testPassword}, database, cfg, nil)
+	if _, err := syncer.Sync(context.Background()); !errors.Is(err, netsec.ErrCleartext) {
+		t.Fatalf("Sync err = %v, want netsec.ErrCleartext", err)
+	}
+	updated, err := database.GetEmailAccount(id)
+	if err != nil {
+		t.Fatalf("get email account: %v", err)
+	}
+	if updated.Status != "error" || !strings.HasPrefix(updated.Error, netsec.StatusPrefix) {
+		t.Errorf("want status=error with the %q prefix, got status=%q error=%q", netsec.StatusPrefix, updated.Status, updated.Error)
 	}
 }

@@ -70,6 +70,20 @@ func Error(reason string, appReturn bool) string {
 	})
 }
 
+// Stale renders the page a callback whose state does not match the login's
+// gets (auth.WriteStaleCallback): almost always a tab left over from an
+// earlier sign-in attempt. It names which tab to use instead.
+func Stale() string {
+	return render(page{
+		Title:     "Sign-in out of date",
+		IconClass: "icon-err",
+		Icon:      "!",
+		Heading:   "Sign-in out of date",
+		Message: "This sign-in page is out of date — use the latest tab Watchtower opened, " +
+			"or close this one and start again from Watchtower.",
+	})
+}
+
 type page struct {
 	Title, IconClass, Icon, Heading, Message, Hint string
 	AppReturn, TryToClose                          bool

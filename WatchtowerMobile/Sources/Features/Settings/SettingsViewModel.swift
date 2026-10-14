@@ -118,7 +118,16 @@ struct ObservationDiagnostic: Identifiable, Equatable {
 @MainActor
 @Observable
 final class SettingsViewModel {
+    static let newerFormatNotice = "Update Watchtower on this iPhone: your Mac uses a newer format."
+    static let waitingForKeysNotice = "Unlock this iPhone to see the latest from your Mac."
+
     private(set) var snapshot = SettingsSnapshot()
+    /// `newerFormatNotice` once the replica kept a record of a newer envelope
+    /// format unread (`ReplicaStore.newerFormatCount`); nil otherwise.
+    private(set) var formatNotice: String?
+    /// The last read was refused for the keys (locked, or an epoch's keys
+    /// not here yet): the snapshot shown is the last one read.
+    private(set) var waitingForKeys = false
     /// Settings → Battery; nil until the first `refreshBattery()`.
     private(set) var battery: BatteryReport?
     /// The decoded records between reads (and the tests' decode counter).
@@ -128,6 +137,7 @@ final class SettingsViewModel {
     /// The replica observed now: another one (the link flow swapped the
     /// environment) restarts the observation even for the same device.
     @ObservationIgnored private var observedStore: ObjectIdentifier?
+    @ObservationIgnored private var store: ReplicaStore?
     @ObservationIgnored private let health: ObservationHealth
     @ObservationIgnored private let batteryDiagnostics: BatteryDiagnostics
 
@@ -160,6 +170,15 @@ final class SettingsViewModel {
         return failure.recovered ? text + " (recovered)" : text
     }
 
+    /// Re-reads the newer-format count: it grows while rows are indexed,
+    /// which writes nothing when a row stays unread, so Settings checks
+    /// again after every fetch (`AppEnvironment.lastSyncAt`).
+    func refreshFormatNotice() {
+        guard let store else { return }
+        let notice = store.newerFormatCount() > 0 ? Self.newerFormatNotice : nil
+        if notice != formatNotice { formatNotice = notice }
+    }
+
     /// Starts (or, for another replica or device id, restarts) the
     /// observation. A restart starts an empty decode cache: a value decoded
     /// from another replica (the old Mac's heartbeat) is never served.
@@ -168,6 +187,8 @@ final class SettingsViewModel {
         if cancellable != nil, observedDeviceID == deviceID, observedStore == storeID { return }
         observedDeviceID = deviceID
         observedStore = storeID
+        self.store = store
+        refreshFormatNotice()
         cancellable?.cancel()
         decodeCache = ReplicaDecodeCache()
         let cache = decodeCache
@@ -181,7 +202,13 @@ final class SettingsViewModel {
                 }
                 .removeDuplicates()
             },
-            onChange: { [weak self] value in self?.snapshot = value }
+            onWaitingForKeys: { [weak self] in self?.waitingForKeys = true },
+            onChange: { [weak self] value in
+                guard let self else { return }
+                snapshot = value
+                if waitingForKeys { waitingForKeys = false }
+                refreshFormatNotice()
+            }
         )
     }
 }

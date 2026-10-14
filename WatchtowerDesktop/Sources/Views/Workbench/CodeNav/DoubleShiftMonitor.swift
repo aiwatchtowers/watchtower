@@ -62,18 +62,21 @@ final class DoubleShiftMonitor {
 struct OpenQuicklyHostView: NSViewRepresentable {
     let center: OpenQuicklyCenter
     let project: Workbench
+    let root: CodeRoot
 
     func makeNSView(context: Context) -> OpenQuicklyHostNSView {
         let view = OpenQuicklyHostNSView()
         view.center = center
         view.project = project
+        view.root = root
         return view
     }
 
     func updateNSView(_ view: OpenQuicklyHostNSView, context: Context) {
-        guard view.project?.id != project.id || view.project?.folderURL != project.folderURL else { return }
+        guard view.project?.id != project.id || view.root != root else { return }
         if let old = view.project { center.pageDisappeared(workbenchID: old.id) }
         view.project = project
+        view.root = root
         view.announce()
     }
 
@@ -85,6 +88,7 @@ struct OpenQuicklyHostView: NSViewRepresentable {
 final class OpenQuicklyHostNSView: NSView {
     weak var center: OpenQuicklyCenter?
     var project: Workbench?
+    var root: CodeRoot?
     private lazy var doubleShift = DoubleShiftMonitor { [weak self] in
         self?.center?.present(scope: .all)
     }
@@ -99,8 +103,8 @@ final class OpenQuicklyHostNSView: NSView {
     }
 
     func announce() {
-        guard let window, let project else { return }
-        center?.pageAppeared(project, window: window)
+        guard let window, let project, let root else { return }
+        center?.pageAppeared(project, root: root, window: window)
         doubleShift.watch(window)
     }
 

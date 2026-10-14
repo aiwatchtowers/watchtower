@@ -228,13 +228,6 @@ func idTokenEmail(idToken string) (string, error) {
 	return "", fmt.Errorf("id_token has neither email nor preferred_username claim")
 }
 
-// outlookCallbackResult is sent from the HTTP callback handler to the Login goroutine.
-type outlookCallbackResult struct {
-	code  string
-	state string
-	err   string
-}
-
 // outlookOpenBrowserFunc can be replaced in tests.
 var (
 	outlookOpenBrowserMu   sync.Mutex
@@ -287,26 +280,12 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 
 	authorizeURL := buildMicrosoftAuthURL(cfg, redirectURI, state, pkce.challenge)
 
-	resultCh := make(chan outlookCallbackResult, 1)
-
 	successPage := oauthpage.Success("Outlook", opt.AppReturn)
+	errorPage := func(reason string) string { return oauthpage.Error(reason, opt.AppReturn) }
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(outlookCallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			resultCh <- outlookCallbackResult{err: errMsg}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error renders the reason through html/template
-			return
-		}
-		resultCh <- outlookCallbackResult{
-			code:  q.Get("code"),
-			state: q.Get("state"),
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, successPage)
-	})
+	callback, resultCh := auth.NewCallbackHandler(state, successPage, errorPage)
+	mux.HandleFunc(outlookCallbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener) //nolint:errcheck
@@ -327,24 +306,21 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 	ctx, cancel := context.WithTimeout(ctx, outlookLoginTimeout)
 	defer cancel()
 
-	var cb outlookCallbackResult
+	var cb auth.CallbackResult
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
 		return nil, "", fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, outlookLoginTimeout)
 	}
 
-	if cb.err != "" {
-		return nil, "", fmt.Errorf("microsoft authorization denied: %s", cb.err)
+	if cb.Err != "" {
+		return nil, "", fmt.Errorf("microsoft authorization denied: %s", cb.Err)
 	}
-	if cb.state != state {
-		return nil, "", fmt.Errorf("state mismatch: possible CSRF attack")
-	}
-	if cb.code == "" {
+	if cb.Code == "" {
 		return nil, "", fmt.Errorf("no authorization code received")
 	}
 
-	tok, err := exchangeMicrosoftCode(ctx, cfg, cb.code, redirectURI, pkce.verifier)
+	tok, err := exchangeMicrosoftCode(ctx, cfg, cb.Code, redirectURI, pkce.verifier)
 	if err != nil {
 		return nil, "", fmt.Errorf("exchanging code for token: %w", err)
 	}

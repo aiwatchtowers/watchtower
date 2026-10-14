@@ -6,6 +6,7 @@ final class ChatErrorPresentationTests: XCTestCase {
     func testRetryability() {
         XCTAssertFalse(ChatErrorPresentation.isRetryable("auth"))
         XCTAssertFalse(ChatErrorPresentation.isRetryable("attachment_unsupported"))
+        XCTAssertFalse(ChatErrorPresentation.isRetryable("workdir_unsafe"), "Retry would meet the same folder")
         for code in ["rate_limit", "provider_unavailable", "internal", "session_lost", nil, "unknown"] {
             XCTAssertTrue(ChatErrorPresentation.isRetryable(code), "\(code ?? "nil")")
         }
@@ -16,6 +17,7 @@ final class ChatErrorPresentationTests: XCTestCase {
         XCTAssertTrue(ChatErrorPresentation.message(for: "auth", provider: "claude").contains("claude login"))
         XCTAssertTrue(ChatErrorPresentation.message(for: "rate_limit").contains("rate"))
         XCTAssertFalse(ChatErrorPresentation.message(for: nil).isEmpty)
+        XCTAssertTrue(ChatErrorPresentation.message(for: "workdir_unsafe").contains("chat folder isn't private"))
     }
 
     /// The sign-in hint follows the row's provider: never "claude login" for

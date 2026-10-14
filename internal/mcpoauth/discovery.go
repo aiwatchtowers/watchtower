@@ -3,12 +3,13 @@ package mcpoauth
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
+
+	"watchtower/internal/netsec"
 )
 
 // httpClient is used for discovery's GET requests, which may legitimately
@@ -72,6 +73,7 @@ type protectedResourceMetadata struct {
 //  3. GET <issuer>/.well-known/oauth-authorization-server; ONLY a 404 falls back to
 //     GET <issuer>/.well-known/openid-configuration — any other non-2xx status (e.g. a 500) is a hard
 //     error naming the URL and status, even if openid-configuration would have succeeded.
+//  4. the document's own issuer must be the issuer it was fetched for (sameIssuer).
 //
 // Requires https (plain http only for loopback hosts) and S256 in code_challenge_methods_supported.
 func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
@@ -101,6 +103,9 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, fmt.Errorf("mcpoauth: no authorization-server metadata found for %s (tried %s)", serverURL, strings.Join(tried, ", "))
 	}
 
+	if !sameIssuer(meta.Issuer, issuer) {
+		return nil, fmt.Errorf("mcpoauth: authorization-server metadata from %s names issuer %q, want %q (RFC 8414 §3.3)", metaURL, meta.Issuer, issuer)
+	}
 	if meta.AuthorizationEndpoint == "" || meta.TokenEndpoint == "" {
 		return nil, fmt.Errorf("mcpoauth: authorization-server metadata from %s is missing authorization_endpoint or token_endpoint", metaURL)
 	}
@@ -111,6 +116,17 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, err
 	}
 	return meta, nil
+}
+
+// sameIssuer reports whether the issuer a metadata document names is the one
+// it was fetched for — RFC 8414 §3.3 (and OpenID Discovery §4.3): without
+// this a document served at one authorization server's well-known URL could
+// speak for another (AS mix-up). The comparison is exact except for a single
+// trailing slash, which deployments add or drop between their protected-
+// resource document and their metadata without changing the authority. A
+// document with no issuer at all fails: there is nothing to bind it to.
+func sameIssuer(got, want string) bool {
+	return got != "" && strings.TrimSuffix(got, "/") == strings.TrimSuffix(want, "/")
 }
 
 // discoverIssuer resolves the authorization-server issuer for an MCP server:
@@ -218,9 +234,11 @@ func requireSecureEndpoints(meta *Metadata, metaURL string) error {
 	return nil
 }
 
-// requireSecure rejects plain http URLs except against a loopback host
+// requireSecure rejects any scheme but https and http, and leaves the http
+// decision to netsec's one rule: plain http only to a loopback host
 // (127.0.0.1, ::1, localhost) — the shape a local httptest server or a
-// local callback redirect takes. Every other host must use https.
+// local callback redirect takes. A refused http URL wraps
+// netsec.ErrCleartext.
 func requireSecure(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -230,21 +248,12 @@ func requireSecure(rawURL string) error {
 	case "https":
 		return nil
 	case "http":
-		if isLoopbackHost(u.Hostname()) {
-			return nil
+		if err := netsec.RequireSecureURL(rawURL, "an OAuth exchange"); err != nil {
+			return fmt.Errorf("mcpoauth: %s must use https: %w", rawURL, err)
 		}
+		return nil
 	}
 	return fmt.Errorf("mcpoauth: %s must use https (plain http is only allowed for loopback hosts)", rawURL)
-}
-
-// isLoopbackHost reports whether h (a URL hostname, no port) names the
-// local machine: "localhost" or a loopback IP literal (127.0.0.1, ::1).
-func isLoopbackHost(h string) bool {
-	if h == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(h)
-	return ip != nil && ip.IsLoopback()
 }
 
 // originOf returns the scheme+host of rawURL (no path), e.g.

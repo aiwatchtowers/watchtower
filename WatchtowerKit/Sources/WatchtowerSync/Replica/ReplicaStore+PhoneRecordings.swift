@@ -59,6 +59,20 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     /// (`PhoneRecorderController.pauseLimit`), not the owner's Stop.
     public let autoFinished: Bool
 
+    /// Mobile E2E: the sealed audio (`<id>.enc`, `<id>-<n>.enc` after the
+    /// n-th re-seal; by name inside the recordings folder like
+    /// `storedPath`); nil until the recording is first sealed, kept while a
+    /// re-seal is due. The plain file at `storedPath` stays beside it until the Mac
+    /// confirms receipt (ask #89 A).
+    public internal(set) var sealedPath: String?
+    /// The sealed upload record (envelope bytes) and the wire name it travels
+    /// under, made once at sealing and re-sent unchanged by every retry.
+    var envelope: Data?
+    var wireName: String?
+
+    /// Whether the upload record is sealed and ready to send.
+    var isSealed: Bool { envelope != nil && wireName != nil && sealedPath != nil }
+
     /// Upload attempts after which a recording no longer retries by itself:
     /// it reads "Upload stuck" and waits for the owner's Retry.
     public static let uploadAttemptCap = 6
@@ -79,10 +93,19 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
 
     /// The audio file, resolved against the CURRENT recordings folder.
     public func fileURL(in directory: URL?) -> URL {
-        if let directory, !storedPath.hasPrefix("/") {
-            return directory.appendingPathComponent(storedPath)
+        Self.resolve(storedPath, in: directory)
+    }
+
+    /// The sealed audio, resolved like `fileURL(in:)`; nil before sealing.
+    public func sealedFileURL(in directory: URL?) -> URL? {
+        sealedPath.map { Self.resolve($0, in: directory) }
+    }
+
+    private static func resolve(_ path: String, in directory: URL?) -> URL {
+        if let directory, !path.hasPrefix("/") {
+            return directory.appendingPathComponent(path)
         }
-        return URL(fileURLWithPath: storedPath)
+        return URL(fileURLWithPath: path)
     }
 }
 
@@ -116,7 +139,10 @@ extension ReplicaStore {
                 failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:)),
                 uploadAttempts: row["upload_attempts"],
                 lastAttemptAt: (row["last_attempt_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
-                autoFinished: row["auto_finished"]
+                autoFinished: row["auto_finished"],
+                sealedPath: row["sealed_path"],
+                envelope: row["envelope"],
+                wireName: row["wire_name"]
             )
         }
     }
@@ -247,6 +273,57 @@ extension ReplicaStore {
                 sql: "UPDATE phone_recordings SET state = ?, error_message = ?, failure_kind = ? WHERE recording_id = ?",
                 arguments: [state.rawValue, errorMessage, failure?.rawValue, id]
             )
+        }
+    }
+
+    /// Marks a saved recording `uploading`, unless the Mac's `received` echo
+    /// marked it delivered while the save was in flight: delivered is final.
+    /// Returns whether the row changed.
+    @discardableResult
+    func setPhoneRecordingUploading(id: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET state = ?, error_message = NULL, failure_kind = NULL
+                    WHERE recording_id = ? AND state != ?
+                    """,
+                arguments: [PhoneRecording.State.uploading.rawValue, id, PhoneRecording.State.delivered.rawValue]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// Records a recording's seal in one update: the envelope, its wire name
+    /// and the sealed file. Only an unsealed row takes it (a second seal of
+    /// the same recording would send a different envelope); returns whether
+    /// this call sealed the row.
+    func setPhoneRecordingSealed(id: String, envelope: Data, wireName: String, sealedPath: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET envelope = ?, wire_name = ?, sealed_path = ?
+                    WHERE recording_id = ? AND envelope IS NULL
+                    """,
+                arguments: [envelope, wireName, sealedPath, id]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// Forgets a row's seal so the next pass seals it again (an envelope of an epoch the phone has moved
+    /// past, final review Kit I1). Only while the row still holds `envelope` (compare-and-clear); returns
+    /// whether this call cleared it. `sealed_path` stays: an older queued save may still point at that file, so
+    /// it is kept (and known to the sweep) until the re-seal, written to a new name, has stored its envelope.
+    func clearPhoneRecordingSeal(id: String, envelope: Data) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings SET envelope = NULL, wire_name = NULL
+                    WHERE recording_id = ? AND envelope = ?
+                    """,
+                arguments: [id, envelope]
+            )
+            return db.changesCount > 0
         }
     }
 

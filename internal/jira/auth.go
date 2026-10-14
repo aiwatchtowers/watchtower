@@ -343,13 +343,6 @@ func FetchAccessibleResources(ctx context.Context, accessToken string) ([]CloudR
 	return resources, nil
 }
 
-// callbackResult is sent from the HTTP callback handler to the Login goroutine.
-type callbackResult struct {
-	code  string
-	state string
-	err   string
-}
-
 // openBrowserFunc can be replaced in tests.
 var (
 	openBrowserMu   sync.Mutex
@@ -415,26 +408,12 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
-	resultCh := make(chan callbackResult, 1)
-
 	successPage := oauthpage.Success("Jira", opt.AppReturn)
+	errorPage := func(reason string) string { return oauthpage.Error(reason, opt.AppReturn) }
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			resultCh <- callbackResult{err: errMsg}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, oauthpage.Error(errMsg, opt.AppReturn)) //nolint:gosec // G705: oauthpage.Error renders the reason through html/template
-			return
-		}
-		resultCh <- callbackResult{
-			code:  q.Get("code"),
-			state: q.Get("state"),
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, successPage)
-	})
+	callback, resultCh := auth.NewCallbackHandler(state, successPage, errorPage)
+	mux.HandleFunc(callbackPath, callback)
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener) //nolint:errcheck
@@ -455,24 +434,21 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 
-	var cb callbackResult
+	var cb auth.CallbackResult
 	select {
 	case cb = <-resultCh:
 	case <-ctx.Done():
 		return nil, fmt.Errorf("%w after %s", oauthpage.ErrLoginTimedOut, loginTimeout)
 	}
 
-	if cb.err != "" {
-		return nil, fmt.Errorf("jira authorization denied: %s", cb.err)
+	if cb.Err != "" {
+		return nil, fmt.Errorf("jira authorization denied: %s", cb.Err)
 	}
-	if cb.state != state {
-		return nil, fmt.Errorf("state mismatch: possible CSRF attack")
-	}
-	if cb.code == "" {
+	if cb.Code == "" {
 		return nil, fmt.Errorf("no authorization code received")
 	}
 
-	token, err := exchangeCode(ctx, cfg, cb.code, redirectURI)
+	token, err := exchangeCode(ctx, cfg, cb.Code, redirectURI)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}

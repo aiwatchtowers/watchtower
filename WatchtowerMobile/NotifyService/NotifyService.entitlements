@@ -7,5 +7,21 @@
 	<array>
 		<string>group.com.aiwatchtowers.watchtower.mobile</string>
 	</array>
+	<!-- Fetches the ask alert a WatchtowerSignal push names (mobile E2E Task 18); must match
+	     WatchtowerCloud.containerID. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.aiwatchtowers.watchtower</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<!-- The alerts Keychain group ONLY (spec §2.6, F21): K_alert and the hub's public signing key.
+	     The app's private group, with every other key, is out of reach. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
+	</array>
 </dict>
 </plist>

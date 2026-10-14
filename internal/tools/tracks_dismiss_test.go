@@ -191,9 +191,9 @@ func TestDismissTracks_NeverExecutesWithoutApproval(t *testing.T) {
 	id := seedTrack(t, d, "t", "auto", time.Hour)
 	reg := dismissRegistry(t, d)
 
-	assert.ErrorIs(t, reg.SetTrust("dismiss_tracks", TrustExecute), ErrAlwaysAsk)
+	assert.ErrorIs(t, reg.SetTrust("dismiss_tracks", "main", TrustExecute), ErrAlwaysAsk)
 	// A trust row written behind the registry's back is not honoured either.
-	require.NoError(t, d.SetToolTrust("dismiss_tracks", "execute"))
+	require.NoError(t, d.SetToolTrust("dismiss_tracks", "main", "execute"))
 	rc, err := reg.Propose(context.Background(), "dismiss_tracks",
 		json.RawMessage(`{"ids":[`+strconv.Itoa(id)+`],"reason":"r"}`), Binding{Surface: "main"})
 	require.NoError(t, err)

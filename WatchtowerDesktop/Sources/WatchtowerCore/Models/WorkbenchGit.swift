@@ -1,5 +1,14 @@
 import Foundation
 
+/// Where `workbench git status --folder F` placed F (board #565, Go's
+/// `workbenchgit.FolderScope`). `outside` and `missing` carry the main
+/// folder's status; `unresolved` (`""`: the worktrees could not be listed,
+/// or git is unavailable) is no verdict — keep the last known place.
+package enum WorkbenchFolderScope: String, Equatable, Sendable {
+    case main, worktree, outside, missing
+    case unresolved = ""
+}
+
 /// `watchtower workbench git status --workbench N --json` (board target #233).
 /// Go owns git (`internal/workbenchgit`); the Desktop never runs it and only
 /// decodes and shows this. `git` is the one key every CLI sends; the rest
@@ -33,6 +42,16 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
     /// `git status` itself failed; the fields above it are partly unknown.
     package var statusOK: Bool
     package var statusError: String
+    /// `--folder` as given; empty without it.
+    package var folderRequested: String
+    /// An envelope without the key predates `--folder`: the main folder.
+    /// A value this app does not know reads as `unresolved`.
+    package var folderScope: WorkbenchFolderScope
+    /// The folder git ran in: the worktree's root for `worktree`, the
+    /// workbench folder otherwise.
+    package var folderRoot: String
+    /// The linked worktree's folder name; empty unless `worktree`.
+    package var worktreeName: String
 
     package init(
         workbenchID: Int64 = 0,
@@ -53,7 +72,11 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         gitDir: String = "",
         commonDir: String = "",
         statusOK: Bool = true,
-        statusError: String = ""
+        statusError: String = "",
+        folderRequested: String = "",
+        folderScope: WorkbenchFolderScope = .main,
+        folderRoot: String = "",
+        worktreeName: String = ""
     ) {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
@@ -74,6 +97,10 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         self.commonDir = commonDir
         self.statusOK = statusOK
         self.statusError = statusError
+        self.folderRequested = folderRequested
+        self.folderScope = folderScope
+        self.folderRoot = folderRoot
+        self.worktreeName = worktreeName
     }
 
     package init(from decoder: Decoder) throws {
@@ -98,6 +125,11 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         commonDir = try c.decodeIfPresent(String.self, forKey: .commonDir) ?? ""
         statusOK = try c.decodeIfPresent(Bool.self, forKey: .statusOK) ?? true
         statusError = try c.decodeIfPresent(String.self, forKey: .statusError) ?? ""
+        folderRequested = try c.decodeIfPresent(String.self, forKey: .folderRequested) ?? ""
+        folderScope = try c.decodeIfPresent(String.self, forKey: .folderScope)
+            .map { WorkbenchFolderScope(rawValue: $0) ?? .unresolved } ?? .main
+        folderRoot = try c.decodeIfPresent(String.self, forKey: .folderRoot) ?? ""
+        worktreeName = try c.decodeIfPresent(String.self, forKey: .worktreeName) ?? ""
     }
 
     package enum CodingKeys: String, CodingKey {
@@ -109,6 +141,10 @@ package struct WorkbenchGitStatus: Decodable, Equatable, Sendable {
         case commonDir = "common_dir"
         case statusOK = "status_ok"
         case statusError = "status_error"
+        case folderRequested = "folder_requested"
+        case folderScope = "folder_scope"
+        case folderRoot = "folder_root"
+        case worktreeName = "worktree_name"
     }
 }
 
@@ -205,6 +241,10 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     package var branches: [WorkbenchGitBranch]
     package var branchesOK: Bool
     package var branchesError: String
+    /// `folder_not_a_worktree`, `folder_unreadable` or `git_failed` when the
+    /// `--folder` asked for could not be used (board #565); nothing listed.
+    package var refused: String
+    package var refusedDetail: String
 
     package init(
         workbenchID: Int64 = 0,
@@ -214,7 +254,9 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         current: String = "",
         branches: [WorkbenchGitBranch] = [],
         branchesOK: Bool = true,
-        branchesError: String = ""
+        branchesError: String = "",
+        refused: String = "",
+        refusedDetail: String = ""
     ) {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
@@ -224,6 +266,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         self.branches = branches
         self.branchesOK = branchesOK
         self.branchesError = branchesError
+        self.refused = refused
+        self.refusedDetail = refusedDetail
     }
 
     package init(from decoder: Decoder) throws {
@@ -236,14 +280,17 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         branches = try c.decodeIfPresent([WorkbenchGitBranch].self, forKey: .branches) ?? []
         branchesOK = try c.decodeIfPresent(Bool.self, forKey: .branchesOK) ?? true
         branchesError = try c.decodeIfPresent(String.self, forKey: .branchesError) ?? ""
+        refused = try c.decodeIfPresent(String.self, forKey: .refused) ?? ""
+        refusedDetail = try c.decodeIfPresent(String.self, forKey: .refusedDetail) ?? ""
     }
 
     package enum CodingKeys: String, CodingKey {
-        case git, note, current, branches
+        case git, note, current, branches, refused
         case workbenchID = "workbench_id"
         case gitAvailable = "git_available"
         case branchesOK = "branches_ok"
         case branchesError = "branches_error"
+        case refusedDetail = "refused_detail"
     }
 }
 
