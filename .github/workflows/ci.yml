@@ -340,14 +340,6 @@ jobs:
         with:
           xcode-version: "26.4.1"
 
-      # A cold simulator takes minutes to finish booting (measured 2026-10-13:
-      # mobile-test's uninstall sat 2:13 waiting on it, then ~4 min more before
-      # the first test ran, for a 36 s suite). simctl boot returns as soon as
-      # the boot starts, so starting it here overlaps the boot with the build;
-      # mobile-test's own boot is then a no-op.
-      - name: Boot simulator
-        run: xcrun simctl boot "$SIM" 2>/dev/null || true
-
       # Unsigned: Base.xcconfig and the recipe set CODE_SIGNING_ALLOWED=NO.
       - name: Build
         run: make mobile-build SIM="$SIM"
