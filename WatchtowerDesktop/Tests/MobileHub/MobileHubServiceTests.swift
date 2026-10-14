@@ -93,10 +93,11 @@ final class MobileHubServiceTests: XCTestCase {
     func testAnOpenLinkCodeRunsTheRelayAtTheActiveCadence() async throws {
         let hub = makeService(transport: StubHubTransport(), relayInterval: .seconds(30), relayActiveInterval: .seconds(3))
         XCTAssertEqual(hub.relayInterval(), .seconds(30))
+        let clock = LinkTestClock(Date())
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
             keyring: try sidecar.testKeyring(),
-            nudge: { _ in }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+            nudge: { _ in }, now: { clock.now }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
         )
         hub.linkCenter = center
         XCTAssertEqual(hub.relayInterval(), .seconds(30), "no code on screen")
@@ -105,7 +106,10 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(hub.relayInterval(), .seconds(3))
 
         await center.closeLink(reason: .sheetClosed)
+        XCTAssertEqual(hub.relayInterval(), .seconds(3), "a late hello is still answered during the grace")
+        clock.advance(TimeInterval(MobileLinkCenter.answerGrace.components.seconds))
         XCTAssertEqual(hub.relayInterval(), .seconds(30))
+        center.cancelSweepRetry()
     }
 
     func testAStopWhileTheTransportHandlersInstallLeavesTheTransportStopped() async throws {

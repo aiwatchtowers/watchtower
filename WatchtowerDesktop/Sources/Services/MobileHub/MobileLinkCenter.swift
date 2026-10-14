@@ -42,7 +42,9 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   link then), opens the public link and stores the code (`exp = iat + 600`).
 /// - `closeLink(reason:)` runs on use, at expiry and when the sheet closes:
 ///   it closes the public link, then removes every participant whose iCloud
-///   user is not a linked `shared` phone (one bound to a used nonce). The
+///   user is not a linked `shared` phone (one bound to a used nonce): after
+///   `answerGrace` on use, expiry and sheet close, so a phone late with its
+///   hello still reads its refusal, at once otherwise. The
 ///   sweep runs only while `hub_meta` marks it pending (the link was opened,
 ///   or a Remove failed to drop its participant); a failed sweep keeps the
 ///   mark and is retried by the next close (`.restart` at the next hub build).
@@ -94,6 +96,16 @@ final class MobileLinkCenter {
         case issueFailed = "issue_failed"
         /// The Mac's iCloud account changed: the QR names the old user.
         case accountChanged = "account_changed"
+
+        /// A close after which a phone that joined the shares may still send its hello (the code was used, expired
+        /// or put away): its participant stays for `answerGrace`, so it can read the refusal (`used_code`,
+        /// `expired_code`, `not_confirmed`) in DataZone. The other closes sweep at once.
+        var answersLateHellos: Bool {
+            switch self {
+            case .used, .expired, .sheetClosed: true
+            case .restart, .issueFailed, .accountChanged: false
+            }
+        }
     }
 
     /// `link_codes` keeps this many, newest first (spec §2.3).
@@ -113,6 +125,10 @@ final class MobileLinkCenter {
     nonisolated static let maxRefusalsPerCode = 10
     /// At most this many phones hold a refusal at once (`link_refusals` rows), whatever the code.
     nonisolated static let maxLinkRefusals = 50
+    /// How long an answering close (`CloseReason.answersLateHellos`) keeps the unbound participants: a phone that
+    /// accepted the public link but had not written its hello yet still gets its refusal. A swept phone can no longer
+    /// read DataZone, where the refusal is. The public link closes at once, so no one new joins meanwhile.
+    nonisolated static let answerGrace: Duration = .seconds(120)
 
     /// The hub's confirm nonce for one accepted hello: fresh random bytes.
     nonisolated static func randomConfirmNonce() -> Data {
@@ -189,6 +205,9 @@ final class MobileLinkCenter {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let shareTimeout: Duration
+    @ObservationIgnored private let answerGrace: Duration
+    /// When the last answering close's grace ends; the relay stays at its active cadence until then.
+    @ObservationIgnored private var answerWindowEnd: Date?
     /// Draws the confirm nonce of an accepted hello (SAS v2).
     @ObservationIgnored private let confirmNonce: @Sendable () -> Data
     /// The close that follows a link, run outside the relay pass.
@@ -217,6 +236,7 @@ final class MobileLinkCenter {
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         shareTimeout: Duration = MobileHubService.defaultCloudTimeout,
+        answerGrace: Duration = MobileLinkCenter.answerGrace,
         confirmNonce: @escaping @Sendable () -> Data = MobileLinkCenter.randomConfirmNonce
     ) {
         self.sidecar = sidecar
@@ -228,6 +248,7 @@ final class MobileLinkCenter {
         self.now = now
         self.sleep = sleep
         self.shareTimeout = shareTimeout
+        self.answerGrace = answerGrace
         self.confirmNonce = confirmNonce
         reloadDevices()
         reloadPendingLinks()
@@ -364,7 +385,10 @@ final class MobileLinkCenter {
     /// Refuses every link request still waiting (before the sweep, so a
     /// waiting phone's participant is never swept before the owner decided),
     /// then closes the public link and removes every participant not bound to
-    /// a used nonce (spec §2.3). No share call when no link was opened.
+    /// a used nonce (spec §2.3). An answering close
+    /// (`CloseReason.answersLateHellos`) closes the public link now and
+    /// removes the participants after `answerGrace`, so a phone still on its
+    /// way reads its refusal first. No share call when no link was opened.
     /// A close whose share calls fail is retried in the background after
     /// these waits (`sweepRetry`), then left to the next close.
     func closeLink(reason: CloseReason) async {
@@ -373,7 +397,20 @@ final class MobileLinkCenter {
         openCode = nil
         lastCloseReason = reason
         refusePendingLinks(closing: reason)
-        if await !sweepShares(reason: reason) { scheduleSweepRetry() }
+        guard reason.answersLateHellos else {
+            if await !sweepShares(reason: reason) { scheduleSweepRetry() }
+            return
+        }
+        guard await closePublicLink(reason: reason) else { return }
+        answerWindowEnd = now().addingTimeInterval(TimeInterval(answerGrace.components.seconds))
+        cancelSweepRetry()
+        scheduleSweepRetry(after: [answerGrace] + Self.sweepRetryDelays)
+    }
+
+    /// The relay polls at its active cadence: a QR is on screen, or an answering close's grace runs (a late hello
+    /// is read and refused within it).
+    var relayIsUrgent: Bool {
+        openCode != nil || answerWindowEnd.map { now() < $0 } == true
     }
 
     /// Waits before each retry of a failed close's share calls (target 153): bounded, so an iCloud outage costs a
@@ -383,6 +420,25 @@ final class MobileLinkCenter {
     @ObservationIgnored private(set) var sweepRetry: Task<Void, Never>?
     /// Bumped per retry task: only the task that owns `sweepRetry` clears it.
     @ObservationIgnored private var sweepRetryGeneration = 0
+
+    /// Closes the public link while the sweep is pending and leaves the participants to the sweep. false: no sweep
+    /// is pending (no link was opened). A failure is logged; the sweep closes the link again.
+    private func closePublicLink(reason: CloseReason) async -> Bool {
+        do {
+            guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return false }
+        } catch {
+            logger.error("share sweep mark unreadable (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+            return true
+        }
+        do {
+            let shares = self.shares
+            try await share { try await shares.setPublicLink(open: false) }
+        } catch {
+            let why = error.localizedDescription
+            logger.error("share link not closed (\(reason.rawValue, privacy: .public)), closed by the sweep: \(why, privacy: .public)")
+        }
+        return true
+    }
 
     /// Closes the public link and removes the unbound participants while the sweep is pending. false: a share
     /// call failed (logged), the sweep stays pending.
@@ -406,14 +462,14 @@ final class MobileLinkCenter {
         }
     }
 
-    /// Retries the sweep after each of `sweepRetryDelays` until one succeeds, the sweep is no longer pending, or a
-    /// QR is on screen (its own close sweeps). One retry runs at a time.
-    private func scheduleSweepRetry() {
+    /// Runs the sweep after each of `delays` until one succeeds, the sweep is no longer pending, or a QR is on
+    /// screen (its own close sweeps). One retry runs at a time.
+    private func scheduleSweepRetry(after delays: [Duration] = MobileLinkCenter.sweepRetryDelays) {
         guard sweepRetry == nil else { return }
         sweepRetryGeneration &+= 1
         let generation = sweepRetryGeneration
         sweepRetry = Task { [weak self, sleep] in
-            for delay in Self.sweepRetryDelays {
+            for delay in delays {
                 await sleep(delay)
                 guard !Task.isCancelled, let self else { return }
                 if self.openCode != nil { break }

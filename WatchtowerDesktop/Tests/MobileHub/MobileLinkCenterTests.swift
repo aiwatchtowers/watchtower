@@ -147,7 +147,7 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 @MainActor
 final class MobileLinkCenterTests: XCTestCase {
     var sidecar: HubSyncState!
-    private var shares: FakeShareService!
+    var shares: FakeShareService!
     var clock: LinkTestClock!
     private var keyring: HubKeyring!
     var nudges: [Set<SliceKind>] = []
@@ -175,11 +175,13 @@ final class MobileLinkCenterTests: XCTestCase {
         clock = nil
     }
 
-    /// The expiry timer parks (until cancelled) unless a test passes its own. A fresh keyring over the current
-    /// sidecar; the hellos of the test are sealed to it.
-    private func makeCenter(
+    /// The expiry timer and the sweep retries park (until cancelled) unless a test passes its own sleep; the
+    /// answering close's grace is zero and does not park, so its sweep runs at once (`settleSweep`). A fresh keyring
+    /// over the current sidecar; the hellos of the test are sealed to it.
+    func makeCenter(
         sleep: (@Sendable (Duration) async -> Void)? = nil,
         shareTimeout: Duration = .seconds(30),
+        answerGrace: Duration = .zero,
         ownerUser: (@Sendable () async -> String?)? = nil
     ) throws -> MobileLinkCenter {
         let clock = try XCTUnwrap(self.clock)
@@ -189,8 +191,12 @@ final class MobileLinkCenterTests: XCTestCase {
             keyring: keyring,
             nudge: { [weak self] in self?.nudges.append($0) },
             now: { clock.now },
-            sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) },
-            shareTimeout: shareTimeout
+            sleep: sleep ?? { duration in
+                guard duration > .zero else { return }
+                try? await Task.sleep(for: .seconds(3600))
+            },
+            shareTimeout: shareTimeout,
+            answerGrace: answerGrace
         )
         made.onSharingChanged = { [weak self] in self?.sharing.append($0) }
         return made
@@ -199,11 +205,11 @@ final class MobileLinkCenterTests: XCTestCase {
     /// The two test phones with relay keys (`TestE2E`): their ids are the hashes of their signing keys, and the
     /// relay tests' hub holds their relay keys. C and D are fresh phones.
     let identityA = TestE2E.deviceIdentity
-    private let identityB = TestE2E.strangerIdentity
+    let identityB = TestE2E.strangerIdentity
     private let identityC = TestHello.newPhone()
     private let identityD = TestHello.newPhone()
     let phoneA = TestE2E.deviceID.uuidString
-    private let phoneB = TestE2E.strangerDeviceID.uuidString
+    let phoneB = TestE2E.strangerDeviceID.uuidString
     private let strangerID = TestE2E.strangerDeviceID.uuidString
     private var phoneC: String { identityC.deviceID.uuidString }
     private var phoneD: String { identityD.deviceID.uuidString }
@@ -270,6 +276,11 @@ final class MobileLinkCenterTests: XCTestCase {
             signer: signer, senderID: deviceID.flatMap(UUID.init(uuidString:)), creator: creator, wire: wire)
     }
 
+    /// Waits for the deferred sweep of an answering close (zero grace here) to end; only where it succeeds.
+    func settleSweep() async {
+        await center.sweepRetry?.value
+    }
+
     /// One hello, still waiting for the owner.
     func handle(_ record: CloudRecord) async throws {
         try await center.handleHello(record)
@@ -318,7 +329,7 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// `phone`'s keybox as the phone reads it: sealed by the hub, opened with the phone's own key, signature checked.
-    private func openedKeybox(_ phone: DeviceIdentityKeys) async throws -> Keybox {
+    func openedKeybox(_ phone: DeviceIdentityKeys) async throws -> Keybox {
         let keybox = try await TestHello.keybox(for: phone, in: grantRecords(), keyring: keyring)
         return try XCTUnwrap(keybox, "no keybox for \(phone.deviceID)")
     }
@@ -482,6 +493,7 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(shares.participantNames(in: .relay), ["_colleague-a"], "not swept yet")
         gate.release()
         await close.value
+        await settleSweep()
         XCTAssertTrue(center.pendingLinks.isEmpty)
         XCTAssertTrue(shares.participantNames(in: .relay).isEmpty, "swept after the refusal")
         let keybox = try await openedKeybox(identityA)
@@ -1235,6 +1247,7 @@ final class MobileLinkCenterTests: XCTestCase {
         shares.join("_stranger")
 
         try await link(try hello(identityA, nonce: code.nonce, scope: .shared, user: "_colleague-a", creator: "_colleague-a"))
+        await settleSweep()
 
         XCTAssertFalse(shares.isLinkOpen)
         for zone in [CloudZoneID.data, .relay] {
@@ -1254,6 +1267,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         clock.advance(1)
         await center.closeLinkIfExpired()
+        await settleSweep()
         XCTAssertFalse(shares.isLinkOpen)
         XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
@@ -1264,7 +1278,8 @@ final class MobileLinkCenterTests: XCTestCase {
         let clock = try XCTUnwrap(self.clock)
         let slept = DurationBox()
         center = try makeCenter { duration in
-            slept.set(duration)
+            // The close's zero grace is not the code's lifetime.
+            if duration > .zero { slept.set(duration) }
             clock.advance(TimeInterval(duration.components.seconds))
         }
 
@@ -1281,6 +1296,7 @@ final class MobileLinkCenterTests: XCTestCase {
         shares.join("_stranger")
 
         await center.closeLink(reason: .sheetClosed)
+        await settleSweep()
 
         XCTAssertFalse(shares.isLinkOpen)
         XCTAssertTrue(shares.participantNames(in: .data).isEmpty)
