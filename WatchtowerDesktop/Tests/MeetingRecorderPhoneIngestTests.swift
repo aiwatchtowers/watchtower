@@ -386,25 +386,49 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
-    /// The phone's AAC `.m4a` passes; a bare `ftyp` header (an ISO file without an audio track), a non-ISO file
-    /// and a missing file do not.
+    /// The phone's AAC `.m4a` passes; a bare `ftyp` header (an ISO file without an audio track) and a non-ISO
+    /// file are readable but no audio; a missing file is an I/O error, not "no audio" (target 168).
     func testTheMediaCheckRequiresAnAudioTrack() async throws {
         let real = try writePhoneAACFixture(durationSec: 1)
         defer { try? FileManager.default.removeItem(at: real) }
-        let isAudio = await MeetingRecorderCenter.isAudioRecording(real)
+        let isAudio = try await MeetingRecorderCenter.isAudioRecording(real)
         XCTAssertTrue(isAudio)
         let header = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).m4a")
         try (Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypM4A ".utf8) + Data(count: 12)).write(to: header)
         defer { try? FileManager.default.removeItem(at: header) }
-        XCTAssertTrue(MeetingRecorderCenter.isISOMediaFile(header))
-        let headerIsAudio = await MeetingRecorderCenter.isAudioRecording(header)
+        XCTAssertTrue(try MeetingRecorderCenter.isISOMediaFile(header))
+        let headerIsAudio = try await MeetingRecorderCenter.isAudioRecording(header)
         XCTAssertFalse(headerIsAudio, "an ftyp box alone is no audio")
         let short = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: short) }
-        let shortIsAudio = await MeetingRecorderCenter.isAudioRecording(short)
+        let shortIsAudio = try await MeetingRecorderCenter.isAudioRecording(short)
         XCTAssertFalse(shortIsAudio)
-        let missingIsAudio = await MeetingRecorderCenter.isAudioRecording(recordingsDir.appendingPathComponent("missing.m4a"))
-        XCTAssertFalse(missingIsAudio)
+        do {
+            _ = try await MeetingRecorderCenter.isAudioRecording(recordingsDir.appendingPathComponent("missing.m4a"))
+            XCTFail("a missing file must throw")
+        } catch MeetingRecorderCenter.PhoneIngestError.unreadable(let detail) {
+            XCTAssertFalse(detail.isEmpty)
+        }
+    }
+
+    /// An unreadable source fails the ingest as unreadable — its description
+    /// carried — not as "not an audio recording" (target 168).
+    func testAnUnreadableSourceIsReportedAsAReadError() async throws {
+        let center = try makeCenter(runner: nil)
+        let source = try writePhoneAACFixture(durationSec: 0.2)
+        defer { try? FileManager.default.removeItem(at: source) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: source.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path) }
+
+        do {
+            try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Unreadable",
+                                                  config: singleWindowConfig())
+            XCTFail("the ingest must throw")
+        } catch let error as MeetingRecorderCenter.PhoneIngestError {
+            guard case .unreadable = error else { return XCTFail("got \(error)") }
+            XCTAssertTrue(error.localizedDescription.hasPrefix("The file could not be read:"), error.localizedDescription)
+        }
+        XCTAssertTrue(center.jobs.isEmpty)
     }
 
     /// A short real phone `.m4a` (the ingest checks for an audio track).
