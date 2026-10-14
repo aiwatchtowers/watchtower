@@ -542,8 +542,8 @@ func writeDaemonPID(t *testing.T, capable bool) {
 	}
 }
 
-// An older daemon has no SIGUSR2 handler and would die of the signal: without
-// the capability advertised, nothing is sent and the owner is told to restart.
+// A daemon that does not advertise the wake (older, or started with
+// automations off) is never signalled; the owner is told to restart it.
 func TestAutomationsCLI_WakeSkipsDaemonWithoutCapability(t *testing.T) {
 	c := newAutoCLI(t)
 	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
@@ -554,7 +554,7 @@ func TestAutomationsCLI_WakeSkipsDaemonWithoutCapability(t *testing.T) {
 
 	out, err := runAutomations(t, "wake")
 	require.NoError(t, err)
-	assert.Contains(t, out, "the running daemon is older and can't be woken; restart it")
+	assert.Contains(t, out, "the running daemon is older, or was started with automations off, and can't be woken; restart it")
 	out, err = runAutomations(t, "run", idArg(a.ID))
 	require.NoError(t, err)
 	assert.Contains(t, out, "the run starts on its next poll")
@@ -580,6 +580,53 @@ func TestAutomationsCLI_WakeSignalsCapableDaemon(t *testing.T) {
 	case <-got:
 	case <-time.After(5 * time.Second):
 		t.Fatal("no SIGUSR2 reached the capable daemon")
+	}
+}
+
+// turnAutomationsOff writes automations.enabled=false into the test config.
+func turnAutomationsOff(t *testing.T) {
+	t.Helper()
+	f, err := os.OpenFile(flagConfig, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = f.WriteString("automations:\n  enabled: false\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+}
+
+// With automations off no executor would claim a run, and turning them on
+// cancels what was queued: run refuses and queues nothing, wake says why it
+// woke nothing, cancel still cancels — and none of them signals the daemon.
+func TestAutomationsCLI_FeatureOffRefusesRunAndSkipsWake(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	queued, _, err := c.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now()})
+	require.NoError(t, err)
+	turnAutomationsOff(t)
+	writeDaemonPID(t, true)
+	got := make(chan os.Signal, 1)
+	signal.Notify(got, daemon.AutomationWakeSignal)
+	t.Cleanup(func() { signal.Stop(got) })
+
+	_, err = runAutomations(t, "run", idArg(a.ID))
+	require.ErrorContains(t, err, "automations are turned off in Settings → Features")
+	assert.Len(t, c.runs(t, a.ID), 1, "run queues nothing while automations are off")
+
+	out, err := runAutomations(t, "wake")
+	require.NoError(t, err)
+	assert.Contains(t, out, "automations are turned off in Settings → Features")
+	assert.Contains(t, out, "cancelled when you turn them on")
+
+	out, err = runAutomations(t, "cancel", idArg(queued))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "cancelled")
+	run, err := c.d.GetAutomationRun(queued)
+	require.NoError(t, err)
+	assert.Equal(t, db.RunCancelled, run.Status)
+
+	select {
+	case <-got:
+		t.Fatal("SIGUSR2 sent while automations are off")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

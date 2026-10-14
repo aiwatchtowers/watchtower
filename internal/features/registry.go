@@ -283,10 +283,13 @@ var registry = []Feature{
 		Cost:      CostMedium,
 		Enabled:   func(cfg *config.Config) bool { return cfg.Targets.NextStep.Enabled },
 	},
+	// Automations is a preview until the Automations tab ships (P3): no
+	// Desktop UI yet, recipes are managed with `watchtower automations`. P3
+	// rewrites the description.
 	{
 		ID:          "automations",
 		Title:       "Automations",
-		Description: "Small recipes you write — a schedule or a button plus a short script — that read your workspace, ask the AI and leave results in your inbox or as reports. A recipe runs only after you confirm it, within its own token budget and a daily cap. Medium AI use, only for the recipes you turn on.",
+		Description: "Preview: small recipes you write — a schedule or a button plus a short script — that read your workspace, ask the AI and leave results in your inbox or as reports. Until the Automations tab arrives, recipes are managed with `watchtower automations` in the terminal. A recipe runs only after you confirm it, within its own token budget and a daily cap. Medium AI use, only for the recipes you turn on.",
 		Tagline:     "Your routine checks, done for you",
 		Benefits: []string{
 			"Recurring checks and summaries run on your schedule",
