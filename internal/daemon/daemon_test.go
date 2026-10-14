@@ -1083,7 +1083,8 @@ func TestDaemon_DayPlanNilPipeline(t *testing.T) {
 // briefing/day_plan are not asserted here because they have additional
 // runtime gates (Hour, lastBriefing, current user, prior plan absence) that
 // have their own focused tests; this test concentrates on the four phases
-// that should always run on a fresh DB with messages present.
+// that should always run on a fresh DB with messages present (people also
+// needs active users and a situation in its window, or it skips untracked).
 func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
@@ -1107,6 +1108,10 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 		ChannelID: "C1", TS: "1700000000.000001", TSUnix: 1700000000.000001,
 		UserID: "U002", Text: "hello world",
 	}))
+	// Active users and a digest situation inside people's window: a people
+	// cycle with no data skips before trackedPipelineRun.
+	seedFirstRunMessages(t, database)
+	seedFirstRunSituation(t, database)
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-ws",
