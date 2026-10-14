@@ -40,6 +40,12 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     package var lastActiveAt: String
     /// The transcript path the agent's SessionStart hook reported; nil = none.
     package var transcriptPath: String?
+    /// The `wt/<slug>` branch of the worktree Watchtower created for this
+    /// session (00113); nil = the session runs in the workbench folder or a
+    /// checkout Watchtower did not create.
+    package var worktreeBranch: String?
+    /// The commit that branch was cut from; nil with `worktreeBranch`.
+    package var worktreeBase: String?
     // `closed_at` is a legacy column, no longer read or written: the Close
     // action was removed, so every row is just running or not running.
 
@@ -53,5 +59,7 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         case createdAt = "created_at"
         case lastActiveAt = "last_active_at"
         case transcriptPath = "agent_transcript_path"
+        case worktreeBranch = "worktree_branch"
+        case worktreeBase = "worktree_base"
     }
 }

@@ -1340,7 +1340,7 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
     CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
-    CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL));
+    CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1576,7 +1576,7 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );

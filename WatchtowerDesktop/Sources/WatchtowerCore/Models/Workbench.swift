@@ -57,6 +57,9 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
     /// undone. Written only by `WorkbenchQueries.archiveClosedTargetsNow` and
     /// cleared by `WorkbenchQueries.clearArchivedThrough`.
     package let archivedThrough: String?
+    /// The command run in a new session worktree before the agent's first
+    /// launch (00113); "" = none. Written by `WorkbenchQueries.setWorktreeSetup`.
+    package let worktreeSetup: String
 
     package init(row: Row) {
         id = row["id"]
@@ -67,6 +70,7 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
         updatedAt = row["updated_at"] ?? ""
         archiveAfterDays = row["archive_after_days"] ?? Self.defaultArchiveAfterDays
         archivedThrough = row["archived_through"]
+        worktreeSetup = row["worktree_setup"] ?? ""
     }
 
     package var folderURL: URL { URL(fileURLWithPath: folderPath, isDirectory: true) }

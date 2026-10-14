@@ -44,6 +44,7 @@ type TerminalSession struct {
 	FolderPath      string
 	ClaudeSessionID sql.NullString // the agent's own session id (Claude Code or Codex); NULL on a codex row until its first SessionStart
 	TranscriptPath  sql.NullString // agent_transcript_path; read on codex rows only (Claude readers keep their own lookup)
+	WorktreeBranch  sql.NullString // worktree_branch: the wt/<slug> branch of the worktree Watchtower created for this row; NULL = none
 	AgentState      sql.NullString
 	AgentStateAt    time.Time     // zero when never reported
 	AgentFailure    *AgentFailure // nil when the stored state is no StopFailure
@@ -70,12 +71,12 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var agentError string
 	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
-		agent_turn_end, agent_tool_run, agent_background, agent_background_at,
+		agent_turn_end, agent_tool_run, agent_background, agent_background_at, worktree_branch,
 		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
 			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
-			&s.Background, &backgroundAt, &s.ChatQuestionAt)
+			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -105,6 +106,33 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 		}
 	}
 	return &s, nil
+}
+
+// PlacedSession is a session row Watchtower started in a worktree it
+// created (board #229): folder_path is the agent's cwd inside it.
+type PlacedSession struct {
+	ID         int64
+	FolderPath string
+	Branch     string
+}
+
+// PlacedSessions lists the workbench's placed session rows, by id.
+func (db *DB) PlacedSessions(workbenchID int64) ([]PlacedSession, error) {
+	rows, err := db.Query(`SELECT id, folder_path, worktree_branch FROM terminal_sessions
+		WHERE project_id = ? AND worktree_branch IS NOT NULL ORDER BY id`, workbenchID)
+	if err != nil {
+		return nil, fmt.Errorf("listing placed sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []PlacedSession
+	for rows.Next() {
+		var s PlacedSession
+		if err := rows.Scan(&s.ID, &s.FolderPath, &s.Branch); err != nil {
+			return nil, fmt.Errorf("listing placed sessions: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // AgentCwd is what a claude row records of its main agent's working
