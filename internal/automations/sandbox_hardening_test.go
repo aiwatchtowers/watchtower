@@ -508,3 +508,67 @@ func TestEnv_MeteredModelCallOrder(t *testing.T) {
 		t.Fatalf("a call over the cap = %v (generator called %v); want a refusal before the generator", err, called)
 	}
 }
+
+func TestSandbox_AllocationCapsRound3(t *testing.T) {
+	refused := []string{
+		`var big = "x".repeat(9 * 1024 * 1024); [big, big].join("")`,
+		`var big = "x".repeat(9 * 1024 * 1024); [big, ""].join("y".repeat(9 * 1024 * 1024))`,
+		`var big = "x".repeat(9 * 1024 * 1024); big.concat(big)`,
+		`var big = "x".repeat(9 * 1024 * 1024); "".concat(big, "a", big)`,
+		`"x".repeat(1024).replaceAll("x", "y".repeat(32 * 1024))`,
+		`var a = new Array(9 * 1024 * 1024); a.concat(a)`,
+		`new ArrayBuffer(32 * 1024 * 1024)`,
+		`new Uint8Array(32 * 1024 * 1024)`,
+		`new Float64Array(17 * 1024 * 1024)`,
+		`var a = []; a.length = 1000001; a.sort()`,
+		`new Int32Array(1000001).sort()`,
+	}
+	for _, expr := range refused {
+		got := mustRun(t, "try { "+expr+"; return 'ran' } catch (e) { return e.name }", sbOpts{})
+		if got != "RangeError" {
+			t.Errorf("%s → %v; want RangeError", expr, got)
+		}
+	}
+	got := mustRun(t, `var calls = 0, obj = { toString: function () { calls++; return "o" } };
+		var u8 = new Uint8Array([3, 1, 2]);
+		return [
+			[1, null, undefined, "a", [2, 3]].join("-"), [obj, obj].join(), calls, "a".concat(1, obj), calls,
+			"aXbX".replaceAll("X", "-"), [1].concat([2, [3]], 4).length, new ArrayBuffer(8).byteLength,
+			u8.sort().join(""), u8 instanceof Uint8Array, new Uint8Array(4).length, typeof Uint8Array.from,
+			[3, 1, 2].sort().join(""), [3, 1, 2].sort(function (a, b) { return b - a }).join("")
+		].join("|")`, sbOpts{})
+	if got != "1---a-2,3|o,o|2|a1o|3|a-b-|4|8|123|true|4|function|123|321" {
+		t.Fatalf("got %q", got)
+	}
+	threw := mustRun(t, `try { Uint8Array(2); return "ran" } catch (e) { return e.name }`, sbOpts{})
+	if threw != "TypeError" {
+		t.Fatalf("Uint8Array without new = %v; want TypeError", threw)
+	}
+}
+
+func TestSandbox_SortWithComparatorStaysInterruptible(t *testing.T) {
+	clock := newSBClock()
+	sb, _ := newTestSandbox(t, `var a = []; for (var i = 0; i < 1500000; i++) { a.push(i % 7) }
+		a.sort(function (x, y) { while (true) {} })`, sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
+	clock.Advance(59 * time.Second)
+	_, err := runWithin(t, sb, 10*time.Second)
+	var ri *RunInterrupted
+	if !errors.As(err, &ri) || ri.Reason != InterruptTimeout || ri.Abandoned {
+		t.Fatalf("Run = %v; want a timeout that did not need abandoning", err)
+	}
+}
+
+func TestSandbox_ArrayReplacerKeyOrder(t *testing.T) {
+	got := mustRun(t, `var n = 0;
+		var o = { b: 1, a: 2, c: { b: 3, a: 4, z: 5 }, get skipped() { n++; return 1 } };
+		return [
+			JSON.stringify(o, ["c", "a", "b", "a"]),
+			JSON.stringify(o, [new String("b"), 1, {}, true]),
+			JSON.stringify([{ b: 1, a: 2 }], ["a"]),
+			JSON.stringify({ 1: "one", __proto__x: 0 }, [1]),
+			n
+		].join("|")`, sbOpts{})
+	if got != `{"c":{"a":4,"b":3},"a":2,"b":1}|{"b":1}|[{"a":2}]|{"1":"one"}|0` {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -15,13 +15,20 @@ import (
 // to throw a RangeError instead when a call takes this long.
 const RegexpMatchTimeout = 2 * time.Second
 
-// MaxBuiltinAlloc caps, in characters or elements, what one call of a known
-// allocating builtin may produce: String.prototype.repeat/padStart/padEnd,
-// String.raw, Array.prototype.join/fill, Array(n) and Array.from of an
-// array-like. Beyond these the heap is not bounded: goja has no heap limit,
-// and a script can still allocate a lot step by step (each step is
-// interruptible, so the deadline bounds it in time, not in memory).
+// MaxBuiltinAlloc caps a few cheap amplifiers, in characters, elements or
+// bytes per call: String.prototype.repeat/padStart/padEnd/concat/replaceAll,
+// String.raw, Array.prototype.join/fill/concat, Array(n), Array.from of an
+// array-like, ArrayBuffer and typed-array lengths. The heap is not bounded
+// (v1 limit): goja has no heap limit, and a script can still allocate a lot
+// step by step (each step is interruptible, so the deadline bounds it in
+// time, not in memory).
 const MaxBuiltinAlloc = 16 * 1024 * 1024
+
+// MaxDefaultSortLength is the longest array Array.prototype.sort (and the
+// typed-array sort) sorts without a comparator: that sort runs natively, out
+// of the interrupt's reach; with a comparator every comparison is
+// interruptible JS.
+const MaxDefaultSortLength = 1000000
 
 // MaxJSONDepth caps the nesting JSON.stringify accepts: goja's native
 // stringify is quadratic in depth (a 200k-deep object takes about a minute,
@@ -40,13 +47,14 @@ func init() {
 // Function.prototype.call, Math.floor or any other global changes nothing.
 //   - Code from strings: eval, Function and Promise are deleted; every
 //     function prototype's constructor throws EvalError.
-//   - Allocation caps (MaxBuiltinAlloc) on the builtins listed there.
+//   - Allocation caps (MaxBuiltinAlloc) on the builtins listed there, and
+//     no default sort of more than MaxDefaultSortLength elements.
 //   - JSON.stringify refuses nesting deeper than maxDepth.
 //   - RegExp methods throw a RangeError when a call ran for timeoutMs (a
 //     regexp2 match that timed out).
 //
 // It returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs) {
+const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort) {
 	"use strict";
 	var FunctionProto = Function.prototype;
 	var uncurry = FunctionProto.bind.bind(FunctionProto.call);
@@ -55,8 +63,9 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs) {
 	var NumberCtor = Number, StringCtor = String, isArray = Array.isArray;
 	var RangeErrorCtor = RangeError, EvalErrorCtor = EvalError, WeakMapCtor = WeakMap;
 	var wmGet = uncurry(WeakMap.prototype.get), wmSet = uncurry(WeakMap.prototype.set);
-	var arrayIncludes = uncurry(Array.prototype.includes), arrayMap = uncurry(Array.prototype.map);
-	var SymbolIterator = Symbol.iterator;
+	var arrayIncludes = uncurry(Array.prototype.includes), arrayPush = uncurry(Array.prototype.push);
+	var objectToString = uncurry(Object.prototype.toString);
+	var SymbolIterator = Symbol.iterator, SymbolSpreadable = Symbol.isConcatSpreadable, TypeErrorCtor = TypeError;
 
 	function refuse() { throw new EvalErrorCtor("code generation from strings is not available to automation scripts"); }
 	function neutralise(proto) {
@@ -99,10 +108,6 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs) {
 		var raw = cooked.raw;
 		if (raw !== null && raw !== undefined) { cap("String.raw", toLen(raw.length)); }
 	});
-	guarded(AP, "join", function (arr, a) {
-		var sep = a[0] === undefined ? 1 : StringCtor(a[0]).length;
-		cap("join", toLen(arr.length) * (sep > 0 ? sep : 1));
-	});
 	guarded(AP, "fill", function (arr, a) {
 		var len = toLen(arr.length);
 		cap("fill", relIndex(a[2], len, len) - relIndex(a[1], len, 0));
@@ -111,40 +116,138 @@ const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs) {
 		var src = a[0];
 		if (src !== null && src !== undefined && typeof src[SymbolIterator] !== "function") { cap("Array.from", toLen(src.length)); }
 	});
-	function checkArrayArgs(args) {
+	guarded(AP, "concat", function (arr, a) {
+		var total = spreadLength(arr);
+		for (var i = 0; i < a.length; i++) { total += spreadLength(a[i]); cap("concat", total); }
+		cap("concat", total);
+	});
+	function spreadLength(v) {
+		if (v === null || typeof v !== "object") { return 1; }
+		var spread = v[SymbolSpreadable];
+		return (spread === undefined ? isArray(v) : !!spread) ? toLen(v.length) : 1;
+	}
+	guarded(AP, "sort", function (arr, a) {
+		if (a[0] === undefined && toLen(arr.length) > maxSort) {
+			throw new RangeErrorCtor("sort: arrays longer than " + maxSort + " need a comparator function");
+		}
+	});
+
+	// join converts each element once, checking the running result length.
+	var origJoin = AP.join;
+	defineProperty(AP, "join", { writable: true, configurable: true, enumerable: false,
+		value: function join(separator) {
+			var len = toLen(this.length);
+			cap("join", len);
+			var sep = separator === undefined ? "," : StringCtor(separator);
+			var parts = [], total = 0;
+			for (var i = 0; i < len; i++) {
+				var e = this[i];
+				var str = e === undefined || e === null ? "" : StringCtor(e);
+				total += str.length + (i > 0 ? sep.length : 0);
+				cap("join", total);
+				arrayPush(parts, str);
+			}
+			return apply(origJoin, parts, [sep]);
+		} });
+
+	// concat converts each argument once; replaceAll's result is checked.
+	var origConcat = SP.concat, origReplaceAll = SP.replaceAll;
+	defineProperty(SP, "concat", { writable: true, configurable: true, enumerable: false,
+		value: function concat() {
+			var head = StringCtor(this), strs = [], total = head.length;
+			for (var i = 0; i < arguments.length; i++) {
+				var str = StringCtor(arguments[i]);
+				total += str.length;
+				cap("concat", total);
+				arrayPush(strs, str);
+			}
+			return apply(origConcat, head, strs);
+		} });
+	defineProperty(SP, "replaceAll", { writable: true, configurable: true, enumerable: false,
+		value: function replaceAll() {
+			var out = apply(origReplaceAll, this, arguments);
+			cap("replaceAll", out.length);
+			return out;
+		} });
+
+	// Array, ArrayBuffer and the typed arrays: functions (not Proxies, which
+	// goja's instanceof refuses) that check the length and construct the
+	// real constructor; they share its prototype and statics, so instanceof,
+	// subclassing and species keep working.
+	var ownKeys = Reflect.ownKeys, getOwn = Object.getOwnPropertyDescriptor, setPrototypeOf = Object.setPrototypeOf;
+	function capConstructor(name, needsNew, check) {
+		var Orig = g[name];
+		if (typeof Orig !== "function") { return; }
+		var Capped = function () {
+			if (needsNew && new.target === undefined) { throw new TypeErrorCtor("Constructor " + name + " requires 'new'"); }
+			check(arguments);
+			return construct(Orig, arguments, new.target === undefined ? Orig : new.target);
+		};
+		var keys = ownKeys(Orig);
+		for (var i = 0; i < keys.length; i++) {
+			if (keys[i] !== "length" && keys[i] !== "name") { defineProperty(Capped, keys[i], getOwn(Orig, keys[i])); }
+		}
+		defineProperty(Capped, "name", { value: name, configurable: true });
+		setPrototypeOf(Capped, getPrototypeOf(Orig)); // inherited statics (%TypedArray%.from/of)
+		defineProperty(g, name, { value: Capped, writable: true, enumerable: false, configurable: true });
+		defineProperty(Orig.prototype, "constructor", { value: Capped, writable: true, enumerable: false, configurable: true });
+	}
+	function lengthArg(what, perElement) {
+		return function (args) {
+			if (args.length >= 1 && typeof args[0] === "number") { cap(what, args[0] * perElement); }
+		};
+	}
+	capConstructor("Array", false, function (args) {
 		if (args.length === 1 && typeof args[0] === "number") { cap("Array", args[0]); }
-	}
-	// Array itself: a function (not a Proxy, which goja's instanceof refuses)
-	// that checks Array(n) and constructs the real Array; it shares
-	// Array.prototype and the statics, so instanceof, subclassing and species
-	// keep working.
-	var OrigArray = Array;
-	function CappedArray() {
-		checkArrayArgs(arguments);
-		return construct(OrigArray, arguments, new.target === undefined ? OrigArray : new.target);
-	}
-	var ownKeys = Reflect.ownKeys(OrigArray), getOwn = Object.getOwnPropertyDescriptor;
-	for (var i = 0; i < ownKeys.length; i++) {
-		if (ownKeys[i] !== "length" && ownKeys[i] !== "name") { defineProperty(CappedArray, ownKeys[i], getOwn(OrigArray, ownKeys[i])); }
-	}
-	defineProperty(CappedArray, "name", { value: "Array", configurable: true });
-	defineProperty(g, "Array", { value: CappedArray, writable: true, enumerable: false, configurable: true });
-	defineProperty(AP, "constructor", { value: CappedArray, writable: true, enumerable: false, configurable: true });
+	});
+	capConstructor("ArrayBuffer", true, lengthArg("ArrayBuffer", 1));
+	var typed = ["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array",
+		"Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"];
+	var TypedProto = getPrototypeOf(Int8Array.prototype);
+	guarded(TypedProto, "sort", function (arr, a) {
+		if (a[0] === undefined && arr.length > maxSort) {
+			throw new RangeErrorCtor("sort: arrays longer than " + maxSort + " need a comparator function");
+		}
+	});
+	for (var t = 0; t < typed.length; t++) { capConstructor(typed[t], true, lengthArg(typed[t], 1)); }
 
 	var stringify = JSON.stringify;
+	// propertyList is JSON.stringify's array replacer as the spec builds it:
+	// strings, numbers and String/Number objects, in order, without repeats.
+	function propertyList(replacer) {
+		var list = [];
+		for (var i = 0; i < toLen(replacer.length); i++) {
+			var item = replacer[i], key;
+			if (typeof item === "string") { key = item; }
+			else if (typeof item === "number") { key = StringCtor(item); }
+			else if (item !== null && typeof item === "object") {
+				var tag = objectToString(item);
+				if (tag === "[object String]" || tag === "[object Number]") { key = StringCtor(item); }
+			}
+			if (key !== undefined && !arrayIncludes(list, key)) { arrayPush(list, key); }
+		}
+		return list;
+	}
+	// pick copies the listed keys of a plain object, in list order.
+	function pick(val, list) {
+		var o = {};
+		for (var i = 0; i < list.length; i++) {
+			defineProperty(o, list[i], { value: val[list[i]], writable: true, enumerable: true, configurable: true });
+		}
+		return o;
+	}
 	defineProperty(JSON, "stringify", { writable: true, configurable: true, enumerable: false,
 		value: function stringify_(value, replacer, space) {
 			var depths = new WeakMapCtor();
 			var userFn = typeof replacer === "function" ? replacer : null;
-			var allow = null;
-			if (userFn === null && isArray(replacer)) { allow = arrayMap(replacer, function (k) { return StringCtor(k); }); }
+			var list = userFn === null && isArray(replacer) ? propertyList(replacer) : null;
 			function guard(key, val) {
 				var d = wmGet(depths, this);
 				if (d === undefined) { d = 0; }
-				if (allow !== null && d > 0 && !isArray(this) && !arrayIncludes(allow, key)) { return undefined; }
 				if (userFn !== null) { val = apply(userFn, this, [key, val]); }
 				if (val !== null && typeof val === "object") {
 					if (d + 1 > maxDepth) { throw new RangeErrorCtor("JSON.stringify: nesting deeper than " + maxDepth); }
+					if (list !== null && !isArray(val)) { val = pick(val, list); }
 					wmSet(depths, val, d + 1);
 				}
 				return val;
@@ -205,7 +308,7 @@ func (s *Sandbox) lockdown() error {
 		return err
 	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
-		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()))
+		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
 	}
