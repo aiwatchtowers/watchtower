@@ -38,9 +38,9 @@ func TestMailAccountLabel(t *testing.T) {
 	assert.Equal(t, "example.com", MailAccountLabel("colleague-a@example.com", ""))
 	assert.Equal(t, "example.com", MailAccountLabel("Colleague-A@EXAMPLE.COM.", ""), "domain lowercased, trailing dot dropped")
 	assert.Equal(t, "someone@gmail.com", MailAccountLabel("someone@GMail.com", ""), "a public domain names the whole address") // leak-check:allow
-	assert.Equal(t, "someone@outlook.com", MailAccountLabel("someone@outlook.com", "")) // leak-check:allow
-	assert.Equal(t, "пример.рф", MailAccountLabel("user@xn--e1afmkfd.xn--p1ai", ""), "an IDN domain shows in Unicode") // leak-check:allow
-	assert.Equal(t, "пример.рф", MailAccountLabel("user@ПРИМЕР.РФ", ""), "a Unicode domain is lowercased") // leak-check:allow
+	assert.Equal(t, "someone@outlook.com", MailAccountLabel("someone@outlook.com", ""))                                        // leak-check:allow
+	assert.Equal(t, "пример.рф", MailAccountLabel("user@xn--e1afmkfd.xn--p1ai", ""), "an IDN domain shows in Unicode")         // leak-check:allow
+	assert.Equal(t, "пример.рф", MailAccountLabel("user@ПРИМЕР.РФ", ""), "a Unicode domain is lowercased")                     // leak-check:allow
 	assert.Equal(t, "example.com", MailAccountLabel("a@b@example.com", ""), "the last @ splits the domain")
 	assert.Equal(t, "imap.example.com", MailAccountLabel("login-name", "IMAP.example.com"), "no address falls back to the host")
 	assert.Equal(t, "imap.example.com", MailAccountLabel("user@", "imap.example.com"))
