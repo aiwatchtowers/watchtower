@@ -3,6 +3,8 @@ package gitbin
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -29,9 +31,67 @@ var (
 )
 
 // ReadArgs is a background read's argv: no fsmonitor command, no hook, no
-// signature check. Callers producing a diff also pass --no-ext-diff and
-// --no-textconv themselves.
+// signature check. It does not stop the folder's filter drivers — a read of
+// file content (status, ls-files, diff) uses ReadArgsIn. Callers producing a
+// diff also pass --no-ext-diff and --no-textconv themselves.
 func ReadArgs(args ...string) []string { return append(slices.Clone(readConfig), args...) }
+
+// filterDriverKeys matches the config keys that name a filter driver's
+// command; a .gitattributes `filter=<x>` makes status, ls-files or a diff
+// run filter.<x>.clean (or .process) on the folder's files.
+const filterDriverKeys = `^filter\..*\.(clean|smudge|process)$`
+
+// ReadArgsIn is ReadArgs for a read in dir that may touch file content: it
+// also blanks every filter driver command the folder's config names (and
+// lifts its `required`, so the read still answers), each key read fresh
+// for this call. The owner's global and system config are left alone —
+// their drivers (git-lfs) are the owner's own; anything else (the
+// repository's config, its includes, an inherited -c) is the folder's.
+// Listing config runs no filter. An error fails the read rather than run
+// it unprotected.
+func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string, error) {
+	overrides, err := filterOverrides(ctx, bin, dir)
+	if err != nil {
+		return nil, err
+	}
+	argv := append(slices.Clone(readConfig), overrides...)
+	return append(argv, args...), nil
+}
+
+// filterOverrides lists the filter driver keys outside the global and
+// system scopes as `-c <key>=` and `-c filter.<x>.required=false` pairs.
+func filterOverrides(ctx context.Context, bin, dir string) ([]string, error) {
+	stdout, stderr, err := Exec(ctx, dir, nil, bin,
+		ReadArgs("config", "--show-scope", "-z", "--name-only", "--get-regexp", filterDriverKeys)...)
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(err, &exitErr) && exitErr.ExitCode() == 1:
+		return nil, nil // no filter driver configured
+	case err != nil:
+		return nil, fmt.Errorf("listing the folder's filter drivers: %w: %s", err, stderr)
+	}
+	// -z: scope NUL key NUL, per entry.
+	fields := strings.Split(strings.TrimSuffix(string(stdout), "\x00"), "\x00")
+	var out []string
+	lifted := map[string]bool{}
+	for i := 0; i+1 < len(fields); i += 2 {
+		scope, key := fields[i], fields[i+1]
+		if scope == "global" || scope == "system" {
+			continue
+		}
+		// -c splits at the first '=': a key holding one could not be blanked.
+		if strings.ContainsAny(key, "=\n") || !strings.HasPrefix(key, "filter.") {
+			return nil, fmt.Errorf("the folder's git config names a filter driver key git -c cannot override: %q", key)
+		}
+		out = append(out, "-c", key+"=")
+		name := key[:strings.LastIndex(key, ".")]
+		if !lifted[name] {
+			lifted[name] = true
+			out = append(out, "-c", name+".required=false")
+		}
+	}
+	return out, nil
+}
 
 // OwnerArgs is the argv of a command the owner asked for (a branch switch):
 // the repository's hooks run, as they would from a terminal; the fsmonitor

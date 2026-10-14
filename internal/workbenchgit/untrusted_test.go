@@ -65,3 +65,29 @@ func TestExecRunner_HooksOnlyForTheOwnersWrites(t *testing.T) {
 		assert.Equal(t, tc.want+tc.args, strings.TrimSpace(string(out)), tc.args)
 	}
 }
+
+// A filter driver named in the folder's own config (with the repository's
+// .gitattributes pointing every file at it) never runs from a background
+// read: status hashes the edited file without it, and the read answers.
+func TestUntrustedConfig_NoFilterDriverRuns(t *testing.T) {
+	dir := newRepo(t)
+	marker := filepath.Join(t.TempDir(), "filter-ran")
+	script := filepath.Join(t.TempDir(), "planted")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\ncat\n"), 0o755))
+	gitIn(t, dir, "config", "filter.planted.clean", script)
+	gitIn(t, dir, "config", "filter.planted.process", script)
+	gitIn(t, dir, "config", "filter.planted.required", "true")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "info", "attributes"), []byte("* filter=planted\n"), 0o644))
+	// Same size as the committed "hello\n": only hashing the content (the
+	// clean filter's moment) tells it changed.
+	writeFile(t, dir, "README.md", "HELLO\n")
+
+	st := ReadStatus(context.Background(), Options{Folder: dir})
+	require.True(t, st.Git, "%+v", st)
+	assert.True(t, st.Dirty)
+	_, err := ListFiles(context.Background(), Options{Folder: dir})
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "the folder's filter driver ran")
+}

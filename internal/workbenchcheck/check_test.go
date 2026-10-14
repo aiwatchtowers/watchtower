@@ -569,7 +569,8 @@ func TestExecRunner_RunsTheLocatedGit(t *testing.T) {
 
 // A planted .git/config never runs a command during a check: the squash
 // rule's diffs run no textconv driver, and a status-like read through
-// ExecRunner no fsmonitor command; the findings are what they were.
+// ExecRunner no fsmonitor command and no filter driver (on an edited file);
+// the findings are what they were.
 func TestCheck_UntrustedConfigRunsNoCommand(t *testing.T) {
 	dir := newRepo(t)
 	marker := filepath.Join(t.TempDir(), "ran")
@@ -579,7 +580,12 @@ func TestCheck_UntrustedConfigRunsNoCommand(t *testing.T) {
 	}
 	gitRun(t, dir, "config", "diff.planted.textconv", script)
 	gitRun(t, dir, "config", "core.fsmonitor", script)
-	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "attributes"), []byte("* diff=planted\n"), 0o644); err != nil {
+	gitRun(t, dir, "config", "filter.planted.clean", script)
+	gitRun(t, dir, "config", "filter.planted.required", "true")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("HELLO\n"), 0o644); err != nil { // same size: content is hashed
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "attributes"), []byte("* diff=planted filter=planted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

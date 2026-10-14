@@ -115,6 +115,58 @@ final class GitStatusSnapshotReadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "git ran the repository's fsmonitor command")
     }
 
+    /// A filter driver the folder's config names (every file routed to it by
+    /// .gitattributes, `required` set) never runs from the status read, and
+    /// the read still answers.
+    func testReadRunsNoFilterDriverFromTheRepository() async throws {
+        guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else {
+            throw XCTSkip("no git")
+        }
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("gitfilter-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try "hello\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let marker = repo.appendingPathComponent("ran")
+        let filter = repo.appendingPathComponent("filter.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: filter, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: filter.path)
+        for args in [
+            ["init", "-q"], ["add", "a.txt"],
+            ["-c", "user.email=a@example.com", "-c", "user.name=a", "commit", "-qm", "i"],
+            ["config", "filter.planted.clean", filter.path], ["config", "filter.planted.required", "true"]
+        ] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: git)
+            process.arguments = ["-C", repo.path] + args
+            var environment = ProcessInfo.processInfo.environment
+            environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+            environment["GIT_CONFIG_NOSYSTEM"] = "1"
+            process.environment = environment
+            let result = await ProcessPipes.run(process)
+            XCTAssertEqual(result.exitCode, 0, result.stderr)
+        }
+        try "* filter=planted\n".write(to: repo.appendingPathComponent(".git/info/attributes"), atomically: true, encoding: .utf8)
+        // Same size as the commit: only hashing the content tells it changed.
+        try "HELLO\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+
+        guard case let .snapshot(snapshot) = await GitStatusSnapshot.read(folder: repo) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertEqual(snapshot.files["a.txt"], .modified)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "git ran the repository's filter driver")
+    }
+
+    func testFilterOverridesSkipTheOwnersScopesAndRefuseAnUnoverridableKey() {
+        let listed = "local\u{0}filter.planted.clean\u{0}local\u{0}filter.planted.process\u{0}"
+            + "global\u{0}filter.lfs.clean\u{0}command\u{0}filter.env.smudge\u{0}"
+        XCTAssertEqual(MemoryVaultGit.filterOverrides(listed), [
+            "-c", "filter.planted.clean=", "-c", "filter.planted.required=false", "-c", "filter.planted.process=",
+            "-c", "filter.env.smudge=", "-c", "filter.env.required=false"
+        ])
+        XCTAssertEqual(MemoryVaultGit.filterOverrides(""), [])
+        XCTAssertNil(MemoryVaultGit.filterOverrides("local\u{0}filter.a=b.clean\u{0}"))
+    }
+
     func testReadArgsMirrorGitbin() {
         XCTAssertEqual(
             MemoryVaultGit.readArgs(["status"]),

@@ -34,7 +34,8 @@ var locateGit = gitbin.Locate
 // gitbin locates — never a PATH lookup, never the /usr/bin/git shim, whose
 // install dialog would pop in the owner's face; with none found it runs
 // nothing and returns gitbin.ErrUnavailable. git runs with the folder's
-// fsmonitor command, hooks and signature checks off (gitbin.ReadArgs): the
+// fsmonitor command, hooks, signature checks and filter drivers off
+// (gitbin.ReadArgsIn): the
 // check runs in the background on a folder Watchtower does not vouch for.
 func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	bin := name
@@ -47,7 +48,10 @@ func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args
 	}
 	argv := args
 	if name == "git" {
-		argv = gitbin.ReadArgs(args...)
+		var err error
+		if argv, err = gitbin.ReadArgsIn(ctx, bin, dir, args...); err != nil {
+			return nil, -1, err
+		}
 	}
 	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	var exitErr *exec.ExitError
