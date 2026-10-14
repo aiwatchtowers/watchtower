@@ -239,6 +239,13 @@ func writeShippedDigest(dir, digest string) error {
 	return writeFileNoFollow(filepath.Join(dir, shippedDigestFile), []byte(digest+"\n"))
 }
 
+// ErrSymlinkInPlace means a file the installer writes (a SKILL.md, its
+// sidecar) is a symlink, which it never writes through. Its text is matched
+// by the Desktop (WorkbenchesViewModel.createInstallNote, which then drops
+// its "use Repair" advice — Repair would refuse the same way); keep the two
+// in step (TestInstallErrorTextsTheDesktopMatches).
+var ErrSymlinkInPlace = errors.New("is a symlink; not writing through it")
+
 // writeFileNoFollow writes p (mode 0o644 when created) but refuses a symlink
 // in its place: a skill folder can come from a cloned repository, and a
 // SKILL.md or sidecar linked elsewhere — dangling links included, which read
@@ -247,7 +254,7 @@ func writeShippedDigest(dir, digest string) error {
 func writeFileNoFollow(p string, data []byte) error {
 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
 	if errors.Is(err, syscall.ELOOP) {
-		return fmt.Errorf("%s is a symlink; not writing through it (remove the link and run the install again)", p)
+		return fmt.Errorf("%s %w (remove the link and run the install again)", p, ErrSymlinkInPlace)
 	}
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", p, err)

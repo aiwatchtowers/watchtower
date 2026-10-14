@@ -520,7 +520,9 @@ final class WorkbenchesViewModel {
 
     /// The create flow's note for a failed folder install. A symlink the CLI
     /// refuses to write through fails Repair the same way, so that note is the
-    /// CLI's own message, which says how to fix the link.
+    /// CLI's own message, which says how to fix the link. The two texts are
+    /// Go's `devpack.ErrSymlinkOutsideFolder` and `devpack.ErrSymlinkInPlace`,
+    /// pinned by `TestInstallErrorTextsTheDesktopMatches`.
     nonisolated static func createInstallNote(_ detail: String) -> String {
         let linkRefusals = ["outside the workbench folder", "is a symlink; not writing through it"]
         if linkRefusals.contains(where: detail.contains) {
