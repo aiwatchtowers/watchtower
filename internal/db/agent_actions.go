@@ -188,7 +188,7 @@ func (db *DB) ApproveAgentActionWithArgs(id int64, oldArgs, newArgs string) (boo
 }
 
 // GetToolTrust returns the trust for tool on one chat surface; "ask" when
-// no row exists. Trust is per (tool, surface) since migration 00110: an
+// no row exists. Trust is per (tool, surface) since migration 00112: an
 // `execute` granted for the reaction path never covers the main chat.
 func (db *DB) GetToolTrust(tool, surface string) (string, error) {
 	var trust string

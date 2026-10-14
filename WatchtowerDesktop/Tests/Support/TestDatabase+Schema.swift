@@ -1576,9 +1576,16 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
+);
+CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    root       TEXT NOT NULL,
+    branch     TEXT NOT NULL DEFAULT '',
+    first_at   TEXT NOT NULL,
+    PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
     tool       TEXT NOT NULL,

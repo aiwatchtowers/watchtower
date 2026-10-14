@@ -79,6 +79,31 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertNil(vm.deletingWorkbenchID)
     }
 
+    /// A workbench deleted while its sessions wait in the Undo batch (PROJ-17):
+    /// the delete's cascade removed them, so the batch forgets them and its
+    /// window stops — nothing left to commit or restore.
+    func testWorkbenchDeleteDropsItsPendingSessions() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let session = try await pool.write {
+            try TerminalSessionQueries.create($0, .init(projectID: id, kind: .shell, title: "Session A", folderPath: "/tmp"))
+        }
+        let vm = makeVM(DeletingCLIRunner(pool: pool))
+        vm.deleteSleep = { _ in try? await Task.sleep(for: .seconds(60)) } // cancelled below, never waited out
+        await vm.reload()
+        await vm.loadSessions(projectID: id)
+        await vm.delete(session)
+        XCTAssertEqual(vm.pendingDeleteToast, "Session deleted")
+
+        let ok = await vm.deleteWorkbench(id)
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
+        XCTAssertNil(vm.pendingDeleteToast)
+        XCTAssertNil(vm.deleteCommitTask, "the window stops with nothing left in it")
+        let row = try await pool.read { try TerminalSessionQueries.fetch($0, id: session.id) }
+        XCTAssertNil(row, "gone with the workbench (PROJ-02)")
+    }
+
     /// The rows are gone but the folder cleanup failed: the project still
     /// leaves the list, and a non-blocking warning names the removal error.
     func testFolderCleanupFailureDeletesTheProjectAndWarns() async throws {

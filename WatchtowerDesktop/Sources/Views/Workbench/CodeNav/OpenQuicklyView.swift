@@ -104,7 +104,7 @@ struct OpenQuicklyView: View {
                             ForEach(section.rows) { row in
                                 OpenQuicklyRowView(
                                     row: row, isSelected: row.id == selectedID, query: model.query,
-                                    folder: session.project.folderURL, gitStatuses: session.gitStatuses
+                                    folder: session.root.folder, gitStatuses: session.gitStatuses
                                 )
                                 .id(row.id)
                                 .onTapGesture {

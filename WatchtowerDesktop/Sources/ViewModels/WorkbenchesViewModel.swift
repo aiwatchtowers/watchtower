@@ -46,6 +46,7 @@ final class WorkbenchesViewModel {
             } else {
                 drilledWorkbenchID = nil
             }
+            refreshStickySection()
         }
     }
     private(set) var isCreating = false
@@ -102,6 +103,20 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Where each session's agent works (board #565): the rows' place line
+    /// and the header's worktree crumb.
+    let sessionPlaces: SessionPlaceCenter
+    /// The code root last worked out per workbench and session, with what
+    /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
+    /// read it without touching the disk again.
+    @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// The ask link clicked last per workbench, while it runs
+    /// (`clickAskLink`): a newer click cancels it, and so does its view
+    /// (`owner`) going away.
+    @ObservationIgnored var askLinkTasks: [Int64: AskLinkInFlight] = [:]
+    /// How long an ask link waits for a session brought onto the page to
+    /// prove its place. Internal for tests.
+    @ObservationIgnored var askPlaceTimeout: Duration = .seconds(3)
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -155,6 +170,21 @@ final class WorkbenchesViewModel {
     /// The panel's dragged session orders touched this run (key nil = the
     /// standalone terminals); the rest are read from `defaults`.
     var sessionOrders: [Int64?: [Int64]] = [:]
+    /// The sessions panel's "▸ N finished" folds touched this run (board
+    /// #480); the rest are read from `defaults`.
+    var finishedGroupFolds: [Int64: Bool] = [:]
+    /// The on-screen session's kept panel section (spec
+    /// 2026-10-12-sessions-panel-design §3.3): a session finishing in front
+    /// of the owner keeps its main-list slot until another one comes on
+    /// screen (`refreshStickySection`).
+    var stickySection: SessionPanelSections.Sticky?
+    /// The sessions panel's keyboard highlight (spec
+    /// 2026-10-12-sessions-panel-design §4.4): the row ↑ ↓ move over and ⌘⌫
+    /// deletes, apart from the session on screen; moving it opens nothing.
+    var panelCursor: Int64?
+    /// Bumped to hand the keyboard to the sessions panel
+    /// (`requestPanelKeyboard`): its key view takes first responder.
+    var panelKeyboardSerial = 0
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
     /// Consecutive "no owner message yet" title answers per session; at
@@ -185,6 +215,47 @@ final class WorkbenchesViewModel {
     }
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The deleted sessions whose DELETE waits for the Undo window (board
+    /// #480, PROJ-17): hidden from every read here, restored by Undo,
+    /// committed when the window ends or the app quits. Here, on the
+    /// AppState-owned view model, so the toast and its Undo survive
+    /// navigating away. A change of the hidden ids is reported to
+    /// `onPendingDeletesChanged` (the phone's session slice).
+    var pendingDeletes = PendingSessionDeletes() {
+        didSet {
+            if oldValue.ids != pendingDeletes.ids { onPendingDeletesChanged?(pendingDeletes.ids) }
+        }
+    }
+    /// The hidden ids changed (MobileHub: the `terminal_session` slice
+    /// leaves them out until Undo or the commit).
+    @ObservationIgnored var onPendingDeletesChanged: ((Set<Int64>) -> Void)?
+    /// Waits out the Undo window, then commits the batch; re-armed by every
+    /// delete, cancelled by Undo and the quit commit.
+    @ObservationIgnored var deleteCommitTask: Task<Void, Never>?
+    /// The deleted sessions whose process is still closing (up to
+    /// `TerminalCenter.killGrace`): the batch never commits while one of
+    /// its rows is here.
+    @ObservationIgnored var closingDeletes: Set<Int64> = []
+    /// The window ran out while a row of the batch was still closing: the
+    /// last close to finish commits the batch.
+    @ObservationIgnored var deleteCommitDue = false
+    /// Every deferred DELETE write in flight (the timer's and the quit's):
+    /// the quit waits on it, bounded by `quitDeleteWait`.
+    @ObservationIgnored let deleteWrites = DispatchGroup()
+    /// How long the quit commit of the Undo batch may hold the quit. A seam
+    /// for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = 2
+    /// The Undo window's wait. A seam for tests.
+    @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Runs deferred DELETEs in one write — the only DELETE path of the
+    /// deferred delete, the timer's and the quit's. Off the main actor, so
+    /// the quit can wait for it while it holds the main thread. A seam for
+    /// tests (a failing or a slow write).
+    @ObservationIgnored lazy var commitSessionDeletes: @Sendable ([Int64]) async throws -> Void = { [dbPool] ids in
+        try await dbPool.write { db in
+            for id in ids { try TerminalSessionQueries.delete(db, id: id) }
+        }
+    }
 
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
@@ -217,51 +288,61 @@ final class WorkbenchesViewModel {
     static let driftMinInterval: TimeInterval = 30
 
     // Git state (#233). Written only by WorkbenchesViewModel+Git.swift,
-    // keyed by workbench id; kept here so a switch in flight, its pending
-    // confirmation and the last status survive navigating away.
+    // keyed by the root the branch menu works on (board #565: the main
+    // folder, `[workbenchID]`, or a session's worktree, `[codeRoot]`); kept
+    // here so a switch in flight, its pending confirmation and the last
+    // status survive navigating away.
 
-    /// The last `workbench git status` per workbench.
-    var gitStatus: [Int64: WorkbenchGitStatus] = [:]
+    /// The last `workbench git status` per root.
+    var gitStatus: [GitRootKey: WorkbenchGitStatus] = [:]
     /// The popover's branch list: the last one read in full.
-    var gitBranches: [Int64: WorkbenchGitBranches] = [:]
+    var gitBranches: [GitRootKey: WorkbenchGitBranches] = [:]
     /// Where the latest read of that list stands; a failure beside a list
     /// in `gitBranches` means that list is stale. nil before the first read.
-    var branchListStates: [Int64: BranchListState] = [:]
+    var branchListStates: [GitRootKey: BranchListState] = [:]
     /// Board targets carrying a branch, by branch name — the `#id` badges.
-    var branchTargets: [Int64: [String: [WorkbenchBranchTarget]]] = [:]
+    var branchTargets: [GitRootKey: [String: [WorkbenchBranchTarget]]] = [:]
     /// Why the last branch action (list, switch, create) failed or was
     /// refused; the popover shows it. The next action clears it.
-    var gitErrors: [Int64: String] = [:]
+    var gitErrors: [GitRootKey: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
-    var gitStatusErrors: [Int64: String] = [:]
+    var gitStatusErrors: [GitRootKey: String] = [:]
+    /// A worktree root Go did not place in that worktree (board #565:
+    /// `outside`/`missing`/unresolved — the envelope was the main folder's):
+    /// why its branch menu is off. A neutral note, not a failed read; the
+    /// next read that places the folder in its worktree clears it.
+    var gitScopeNotes: [GitRootKey: String] = [:]
     /// What the last branch action left to note (git's warning).
-    var gitNotices: [Int64: String] = [:]
+    var gitNotices: [GitRootKey: String] = [:]
     /// The stash entry the latest stashing switch left, with its sha (Go
     /// keeps no record of it). In memory only: it survives popover reopens
     /// and status reads until the owner dismisses it, a newer stash replaces
     /// it or the app quits — after that `git stash list` finds the entry by
     /// its `watchtower: switching from …` message.
-    var gitStashNotes: [Int64: WorkbenchBranchPresentation.StashNote] = [:]
+    var gitStashNotes: [GitRootKey: WorkbenchBranchPresentation.StashNote] = [:]
     /// The branch a switch or create is running for.
-    var switchingBranch: [Int64: String] = [:]
+    var switchingBranch: [GitRootKey: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).
-    var pendingBranchConfirmation: [Int64: BranchSwitchConfirmation] = [:]
+    var pendingBranchConfirmation: [GitRootKey: BranchSwitchConfirmation] = [:]
     /// The header's label when Go asked: a status showing anything else
     /// means the branch moved since, and the question is dropped.
-    @ObservationIgnored var pendingBranchBase: [Int64: String] = [:]
+    @ObservationIgnored var pendingBranchBase: [GitRootKey: String] = [:]
     /// Status reads running, and those asked for again meanwhile: at most
-    /// one read in flight per workbench plus one rerun.
-    @ObservationIgnored var gitRefreshing: Set<Int64> = []
-    @ObservationIgnored var gitRefreshQueued: Set<Int64> = []
+    /// one read in flight per root plus one rerun.
+    @ObservationIgnored var gitRefreshing: Set<GitRootKey> = []
+    @ObservationIgnored var gitRefreshQueued: Set<GitRootKey> = []
     /// Workbench pages on screen that watch their refs.
     @ObservationIgnored var gitWatching: Set<Int64> = []
-    @ObservationIgnored var gitWatchers: [Int64: any GitRefsWatching] = [:]
-    @ObservationIgnored var gitWatchedDirs: [Int64: [String]] = [:]
+    /// The worktree root a watching page's branch menu works on, watched
+    /// beside its main folder; none while the page shows the main folder.
+    @ObservationIgnored var gitWatchedWorktree: [Int64: CodeRoot] = [:]
+    @ObservationIgnored var gitWatchers: [GitRootKey: any GitRefsWatching] = [:]
+    @ObservationIgnored var gitWatchedDirs: [GitRootKey: [String]] = [:]
     @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
-    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor () -> Void)
+    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)
         -> any GitRefsWatching = { GitRefsWatcher(gitDir: $0, commonDir: $1, onChange: $2) }
     @ObservationIgnored var gitPollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var gitNotificationCenter: NotificationCenter = .default
@@ -290,6 +371,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
+        sessionPlaces = Self.makeSessionPlaces(dbPool: dbPool, cli: cli, terminalCenter: terminalCenter)
         let lineDelivery = lineDelivery ?? SessionLineDelivery(terminalCenter: terminalCenter)
         self.lineDelivery = lineDelivery
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
@@ -299,8 +381,11 @@ final class WorkbenchesViewModel {
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
-        terminalCenter?.onPathLink = { [weak self] workbenchID, location in
-            Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
+        terminalCenter?.onPathLink = { [weak self] workbenchID, sessionID, location in
+            Task { await self?.openTerminalLink(location, workbenchID: workbenchID, sessionID: sessionID) }
+        }
+        terminalCenter?.pathLinkRoot = { [weak self] workbenchID, sessionID in
+            self?.terminalLinkFolder(workbenchID: workbenchID, sessionID: sessionID)
         }
         // A hover card that cannot be read shows nothing (logged); a click
         // still reports the failure (`openTerminalAskLink`).
@@ -331,6 +416,21 @@ final class WorkbenchesViewModel {
         // Keys typed into a permission dialog leave no draft in the prompt.
         terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
             agentStates?.statuses[id]?.state.kind == .needsApproval
+        }
+        // The states' hooks are single slots: `follow` set them for the held
+        // lines; these keep that call and add the panel's and the places'.
+        agentStates?.onChange = { [weak self, weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
+            lineDelivery?.statesRead()
+            // The session on screen keeps its panel section (#480).
+            self?.refreshStickySection()
+            // A session started, stopped or began a run: whether its stored
+            // cwd is trusted may have moved (board #565).
+            sessionPlaces?.cwdsMayHaveChanged()
+        }
+        agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
+            lineDelivery?.statesRead()
+            // A hook may have stored a new cwd: re-read only on a new stamp.
+            sessionPlaces?.stateRowsRead(agentStates?.rows ?? [])
         }
     }
 
@@ -380,7 +480,11 @@ final class WorkbenchesViewModel {
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
+            discardPendingDeletes(workbenchID: id)
             terminalSessions[id] = nil
+            sessionPlaces.forgetWorkbench(id)
+            codeFiles.forgetRemovedBuffers(workbenchID: id)
+            askLinkTasks.removeValue(forKey: id)?.task.cancel()
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }
@@ -429,6 +533,8 @@ final class WorkbenchesViewModel {
         // The rows are gone: an answer still streaming stops now, not at the
         // reload (a failed delete above leaves the questions as they were).
         onWorkbenchRemoved?(id)
+        // Its hidden sessions went with the cascade: nothing to commit or restore.
+        discardPendingDeletes(workbenchID: id)
         if let warning = result.cleanupWarning {
             errorMessage = warning
         }

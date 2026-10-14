@@ -451,3 +451,36 @@ func TestProj10_CheckRefFormatFailureIsNotAnInvalidName(t *testing.T) {
 	assert.Contains(t, res.Error, "simulated check-ref-format failure")
 	assertNoWrites(t, rec)
 }
+
+// PROJ-10 (2026-10-12): with a session's folder resolved to its worktree,
+// every guard is checked in that worktree — its own changes, the branch
+// checked out in the main folder — and a stash carries its changes only.
+func TestProj10_GuardsRunInTheSessionsWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	wtB := addWorktree(t, repo, "wt-b", "main")
+	folder, err := ResolveFolder(ctx, Options{Folder: repo}, wtB)
+	require.NoError(t, err)
+	require.Equal(t, ScopeWorktree, folder.Scope)
+	inB := Options{Folder: folder.Root}
+
+	dirty(t, wtB)
+	require.False(t, ReadStatus(ctx, Options{Folder: repo}).Dirty, "the main folder is clean")
+	rec := &recorder{}
+	res := Switch(ctx, options(folder.Root, rec), SwitchRequest{Branch: "feature"})
+	assert.Equal(t, []string{NeedUncommitted}, res.NeedsConfirmation, "B's own changes need --stash")
+	assertNoWrites(t, rec)
+
+	res = Switch(ctx, inB, SwitchRequest{Branch: "main", Stash: true, AgentRunning: true, ConfirmAgent: true})
+	assert.Equal(t, RefusedCheckedOutElsewhere, res.Refused, "main is checked out in the main folder")
+	assert.True(t, sameDir(t, repo, res.RefusedDetail), res.RefusedDetail)
+
+	writeFile(t, repo, "main-only.txt", "main's own work\n")
+	res = Switch(ctx, inB, SwitchRequest{Branch: "feature", Stash: true})
+	require.True(t, res.Switched, "%+v", res)
+	assert.Equal(t, "feature", res.Status.Branch)
+	stashed := gitIn(t, repo, "stash", "show", "--include-untracked", "--name-only", res.Stashed)
+	assert.ElementsMatch(t, []string{"README.md", "notes.txt"}, strings.Fields(stashed), "B's changes only")
+	assert.Equal(t, "main's own work\n", readFile(t, repo, "main-only.txt"), "the main folder's work stays")
+	assert.Equal(t, "main", gitIn(t, repo, "branch", "--show-current"))
+}

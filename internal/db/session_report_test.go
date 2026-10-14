@@ -413,7 +413,7 @@ func TestClearTerminalAgentState_ClearsTheError(t *testing.T) {
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
 	for i, start := range []func() (bool, error){
 		func() (bool, error) { return d.ClearTerminalAgentState(sid, pid, agentStateUUID) },
-		func() (bool, error) { return d.MarkTerminalAgentRun(sid, pid, agentStateUUID, t0.Add(time.Hour)) },
+		func() (bool, error) { return d.MarkTerminalAgentRun(sid, pid, agentStateUUID, t0.Add(time.Hour), "") },
 	} {
 		at := t0.Add(time.Duration(i) * time.Minute)
 		_, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", at, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})

@@ -41,7 +41,7 @@ package enum ReactionDictionaryQueries {
     /// (`"ask"`/`"execute"`), or nil when the row doesn't exist yet — Go's
     /// default is "ask" until `watchtower actions trust` writes a row
     /// (`internal/tools.SetTrust`). Trust is per (tool, surface) since
-    /// migration 00110; this dictionary only ever runs on `reaction`.
+    /// migration 00112; this dictionary only ever runs on `reaction`.
     package static func trustFor(_ db: Database, tool: String) throws -> String? {
         try String.fetchOne(
             db,

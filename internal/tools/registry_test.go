@@ -670,7 +670,7 @@ func TestAgent01_ExecuteTrustIsPerSurface(t *testing.T) {
 }
 
 // AGENT-01 on the real seeds: migration 00065's create_idea/remind_me execute
-// rows are reaction-surface rows (00110), so a (possibly prompt-injected)
+// rows are reaction-surface rows (00112), so a (possibly prompt-injected)
 // main-chat call of either is recorded pending, never applied inline.
 func TestAgent01_SeededReactionTrustDoesNotCoverTheMainChat(t *testing.T) {
 	database := openDB(t)

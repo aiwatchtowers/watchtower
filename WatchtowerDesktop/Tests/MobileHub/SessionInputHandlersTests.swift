@@ -483,6 +483,18 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertEqual(pastes, ["Start with the tests"])
     }
 
+    /// Ready to check (#534) is Finished or Waiting for you with only check
+    /// or review asks open: the turn ended, so the line goes.
+    func testReadyToCheckIsIdle() async throws {
+        let session = try await liveSession()
+        setState(session, .readyToCheck)
+
+        let outcome = try await makeHandlers().handle(input(session, "Looks good, go on"))
+
+        XCTAssertEqual(outcome.status, .applied)
+        XCTAssertEqual(pastes, ["Looks good, go on"])
+    }
+
     /// Without hooks this run the state is not known for the current run:
     /// Finished from an earlier run does not count as idle.
     func testAFinishedStateFromAnEarlierRunIsNotIdle() async throws {

@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"watchtower/internal/gitdir"
 )
 
 // ErrMalformedSettings means .claude/settings.local.json exists but is not
@@ -1037,53 +1039,19 @@ func locateGitExclude(dir string) (excludeLoc, bool, error) {
 	if err != nil {
 		return excludeLoc{}, false, fmt.Errorf("resolving %s: %w", dir, err)
 	}
-	for cur := abs; ; cur = filepath.Dir(cur) {
-		gitDir, found, err := gitDirAt(cur)
-		if err != nil {
-			return excludeLoc{}, false, err
-		}
-		if found {
-			common, err := commonGitDir(gitDir)
-			if err != nil {
-				return excludeLoc{}, false, err
-			}
-			rel, err := filepath.Rel(cur, abs)
-			if err != nil {
-				return excludeLoc{}, false, fmt.Errorf("relating %s to %s: %w", abs, cur, err)
-			}
-			return excludeLoc{file: filepath.Join(common, "info", "exclude"), rel: rel}, true, nil
-		}
-		if filepath.Dir(cur) == cur {
-			return excludeLoc{}, false, nil
-		}
+	root, gitDir, found, err := gitdir.FindWorkTree(abs)
+	if err != nil || !found {
+		return excludeLoc{}, false, err
 	}
-}
-
-func gitDirAt(dir string) (string, bool, error) {
-	p := filepath.Join(dir, ".git")
-	info, err := os.Stat(p)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
-	}
+	common, err := commonGitDir(gitDir)
 	if err != nil {
-		return "", false, fmt.Errorf("inspecting %s: %w", p, err)
+		return excludeLoc{}, false, err
 	}
-	if info.IsDir() {
-		return p, true, nil
-	}
-	b, err := os.ReadFile(p)
+	rel, err := filepath.Rel(root, abs)
 	if err != nil {
-		return "", false, fmt.Errorf("reading %s: %w", p, err)
+		return excludeLoc{}, false, fmt.Errorf("relating %s to %s: %w", abs, root, err)
 	}
-	target, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
-	if !ok {
-		return "", false, fmt.Errorf("%s is neither a git directory nor a gitdir file", p)
-	}
-	target = strings.TrimSpace(target)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(dir, target)
-	}
-	return target, true, nil
+	return excludeLoc{file: filepath.Join(common, "info", "exclude"), rel: rel}, true, nil
 }
 
 // commonGitDir follows a linked worktree's commondir file; a main work

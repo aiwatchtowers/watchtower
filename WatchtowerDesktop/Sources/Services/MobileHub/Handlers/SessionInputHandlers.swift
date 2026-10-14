@@ -306,13 +306,14 @@ final class SessionInputHandlers: HubCompanion {
     }
 
     /// The agent is idle for the current run: its turn ended — Stopped,
-    /// Finished, Waiting for you or Error by a hook state of this run — or
-    /// the run is marked and no turn began (spec §6.6).
+    /// Finished, Waiting for you (or Ready to check, its #534 form when the
+    /// open asks are all checks or reviews) or Error by a hook state of this
+    /// run — or the run is marked and no turn began (spec §6.6).
     static func isIdle(_ status: SessionAgentStatus) -> Bool {
         guard status.state.live else { return false }
         guard status.at != nil else { return status.runMarked }
         switch status.state.kind {
-        case .stopped, .finished, .waitingOnAsk, .failed: return true
+        case .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed: return true
         case .notStarted, .running, .working, .background, .needsApproval: return false
         }
     }

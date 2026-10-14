@@ -62,10 +62,25 @@ final class SessionLivenessBox: Sendable {
     }
 }
 
+/// The sessions waiting in the Desktop's Undo batch (board #480, PROJ-17),
+/// copied from `WorkbenchesViewModel.pendingDeletes` on every change, so
+/// the slice can leave them out inside the publisher's off-main DB read.
+final class HiddenSessionIDsBox: Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: Set<Int64>())
+
+    var current: Set<Int64> { state.withLock { $0 } }
+
+    func store(_ ids: Set<Int64>) {
+        state.withLock { $0 = ids }
+    }
+}
+
 /// The `terminal_session` slice (mobile POC spec §4.5), record name
 /// `terminal_session-<terminal_sessions.id>`: the agent sessions (`claude`
 /// and `codex`) of the published workbenches — every live one plus the newest 50 by
-/// `last_active_at` per workbench. Shell sessions are not published.
+/// `last_active_at` per workbench. Shell sessions are not published, nor
+/// a session waiting in the Desktop's Undo batch (`hiddenIDs`, PROJ-17):
+/// the phone drops its record, and Undo publishes it again.
 ///
 /// The state fields are the Mac's resolved presentation, computed the way
 /// the Mac computes it: the stored rows of `fetchAgentStates` through
@@ -87,15 +102,19 @@ struct TerminalSessionSlice: SliceSource {
     let reportSummary: @Sendable (Int64, Int64) -> SessionReportSummary?
     /// The time a resolve judges the background agent count at (#411).
     let now: @Sendable () -> Date
+    /// The sessions deleted on the Mac whose DELETE waits for Undo.
+    let hiddenIDs: @Sendable () -> Set<Int64>
 
     init(
         liveness: @escaping @Sendable () -> SessionLiveness,
         reportSummary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary?,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        hiddenIDs: @escaping @Sendable () -> Set<Int64> = { [] }
     ) {
         self.liveness = liveness
         self.reportSummary = reportSummary
         self.now = now
+        self.hiddenIDs = hiddenIDs
     }
 
     struct Payload: Encodable, Equatable {
@@ -178,7 +197,7 @@ struct TerminalSessionSlice: SliceSource {
             var entry = counts[item.workbenchID] ?? .init()
             switch item.state.kind {
             case .working, .running, .background: entry.working += 1
-            case .waitingOnAsk: entry.waiting += 1
+            case .waitingOnAsk, .readyToCheck: entry.waiting += 1
             case .needsApproval: entry.needsApproval += 1
             case .finished: entry.finished += 1
             case .failed: entry.failed += 1
@@ -196,8 +215,9 @@ struct TerminalSessionSlice: SliceSource {
         let workbenches = Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
         guard !workbenches.isEmpty else { return [] }
         let live = liveness()
+        let hidden = hiddenIDs()
         let sessions = try TerminalSessionQueries.fetchAllWorkbenchSessions(db).filter { session in
-            session.kind.isAgent && session.projectID.map(workbenches.contains) == true
+            session.kind.isAgent && session.projectID.map(workbenches.contains) == true && !hidden.contains(session.id)
         }
         let windowed = Self.window(sessions, liveIDs: live.liveIDs)
         guard !windowed.isEmpty else { return [] }
@@ -295,21 +315,25 @@ struct TerminalSessionSlice: SliceSource {
     }
 
     /// When the current state was reported: the trusted hook stamp, else a
-    /// finished session's `finished_at`; nil when unknown.
+    /// finished session's `finished_at` (also one that reads Ready to check
+    /// because its open asks are only checks or reviews, #534); nil when
+    /// unknown.
     static func stateAt(_ item: Published) -> Date? {
         if let at = item.status?.at { return SliceDate.parse(at) }
-        if item.state.kind == .finished, let finished = item.row?.finishedAt { return SliceDate.parse(finished) }
+        let finishedKinds: Set<SessionSwitcherPresentation.State.Kind> = [.finished, .readyToCheck]
+        if finishedKinds.contains(item.state.kind), let finished = item.row?.finishedAt { return SliceDate.parse(finished) }
         return nil
     }
 
     /// The Kit's `TerminalSessionState.Kind` raw values. Agents working
     /// (#411) has no wire kind of its own: it goes out as `working`, its
-    /// caption and glyph saying the rest.
+    /// caption and glyph saying the rest. Ready to check (#534) has its own.
     static func wire(_ kind: SessionSwitcherPresentation.State.Kind) -> String {
         switch kind {
         case .working, .background: "working"
         case .running: "running"
         case .waitingOnAsk: "waiting_on_ask"
+        case .readyToCheck: "ready_to_check"
         case .needsApproval: "needs_approval"
         case .finished: "finished"
         case .stopped: "stopped"
@@ -325,6 +349,7 @@ struct TerminalSessionSlice: SliceSource {
         case .orange: "orange"
         case .blue: "blue"
         case .red: "red"
+        case .purple: "purple"
         case .secondary: "secondary"
         }
     }

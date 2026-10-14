@@ -10,20 +10,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestMigration00110_ToolTrustPerSurface replays goose up to 00109 (where the
+// TestMigration00112_ToolTrustPerSurface replays goose up to 00111 (where the
 // 00065 seeds already sit in the per-tool table), adds owner-set rows, applies
-// 00110 and asserts the mapping: a seed still at its seeded value lands on the
+// 00112 and asserts the mapping: a seed still at its seeded value lands on the
 // reaction surface only, so the main chat now asks for create_idea/remind_me;
 // an owner's row (or a seed the owner changed) covers every surface the tool
 // is on; a row no trust read can honour is dropped. Down folds back to one
 // row per tool, ask winning.
-func TestMigration00110_ToolTrustPerSurface(t *testing.T) {
+func TestMigration00112_ToolTrustPerSurface(t *testing.T) {
 	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, goose.UpTo(raw, "migrations", 109))
+	require.NoError(t, goose.UpTo(raw, "migrations", 111))
 
 	_, err = raw.Exec(`INSERT OR REPLACE INTO tool_trust (tool, trust) VALUES
 		('create_target', 'execute'),
