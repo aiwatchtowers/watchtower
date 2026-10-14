@@ -202,6 +202,39 @@ func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	assert.NoFileExists(t, CapsPath(pidPath), "removed with the PID file")
 }
 
+// With automations off, or the scheduler/executor never wired, the daemon
+// starts neither and advertises no wake: the CLI then says it could not wake
+// it instead of signalling a daemon that would drop the wake.
+func TestDaemon_InactiveAutomationsAdvertiseNoWake(t *testing.T) {
+	for name, mk := range map[string]func(t *testing.T, syncCount *atomic.Int32) *Daemon{
+		"disabled": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
+			d, _, _, _ := newAutomationTestDaemon(t, false, syncCount)
+			return d
+		},
+		"unwired": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
+			d, _, _, _ := newAutomationTestDaemon(t, true, syncCount)
+			d.SetAutomations(nil, nil)
+			return d
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var syncCount atomic.Int32
+			d := mk(t, &syncCount)
+			pidPath := t.TempDir() + "/daemon.pid"
+			d.SetPIDPath(pidPath)
+			err := runDaemonUntil(t, d, func() bool {
+				if syncCount.Load() < 1 {
+					return false
+				}
+				assert.FileExists(t, pidPath, "the daemon is running")
+				assert.NoFileExists(t, CapsPath(pidPath), "no wake advertised")
+				return true
+			})
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {
 	pidPath := t.TempDir() + "/daemon.pid"
 	ok, err := HasCapability(pidPath, 42, AutomationWakeCapability)

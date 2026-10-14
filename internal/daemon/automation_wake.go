@@ -49,9 +49,13 @@ func removeCaps(pidPath string) {
 }
 
 // advertiseCaps writes the capabilities file beside the PID file and returns
-// its removal. A failed write is logged, not fatal: the daemon runs, the CLI
-// just never wakes it.
+// its removal — only while automationsActive; otherwise it writes nothing
+// and the CLI never signals this daemon. A failed write is logged, not
+// fatal: the daemon runs, the CLI just never wakes it.
 func (d *Daemon) advertiseCaps() (remove func()) {
+	if !d.automationsActive() {
+		return func() {}
+	}
 	if err := writeCaps(d.pidPath); err != nil {
 		d.logger.Printf("automations: %v (the CLI will not wake this daemon)", err)
 		return func() {}
@@ -143,6 +147,14 @@ func (d *Daemon) watchAutomationWake(ctx context.Context) {
 	}
 }
 
+// automationsActive reports whether Run starts the scheduler and executor:
+// both wired and automations.enabled on. Only then does the daemon advertise
+// AutomationWakeCapability — a wake to a daemon with neither would be
+// dropped, and the CLI should say so instead of claiming it woke something.
+func (d *Daemon) automationsActive() bool {
+	return d.automationScheduler != nil && d.automationExecutor != nil && d.config.Automations.Enabled
+}
+
 // startAutomations starts the scheduler, the executor and the wake forwarder
 // as goroutines of their own — never inside the sync loop, so a wake is
 // served while a sync runs and never triggers one. With automations.enabled
@@ -150,11 +162,10 @@ func (d *Daemon) watchAutomationWake(ctx context.Context) {
 // them and waits until all three have returned (the executor finishes or
 // interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
-	if d.automationScheduler == nil || d.automationExecutor == nil {
-		return func() {}
-	}
-	if !d.config.Automations.Enabled {
-		d.logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
+	if !d.automationsActive() {
+		if d.automationScheduler != nil && !d.config.Automations.Enabled {
+			d.logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
+		}
 		return func() {}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
