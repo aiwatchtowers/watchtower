@@ -93,28 +93,78 @@ extension WorkbenchesViewModel {
 
     // MARK: One-time hint
 
-    /// The page of workbench `projectID` came on screen: unless its hint
-    /// was shown before, plans the sweep once this launch and, when the
-    /// removable worktrees hold over 1 GB, puts up the hint. Nothing runs
-    /// while the sweep sheet is open or the sweep is busy. The plan belongs
-    /// to the center and the hint to this view model, so leaving the page
-    /// meanwhile loses neither.
-    func checkCleanupHint(projectID: Int64) async {
+    /// The UserDefaults key holding when workbench `workbenchID`'s hint plan
+    /// last found 1 GB or less (seconds since 1970).
+    nonisolated static func cleanupHintCheckedAtKey(_ workbenchID: Int64) -> String {
+        "projects.cleanupHintCheckedAt.\(workbenchID)"
+    }
+
+    /// A workbench whose hint plan found 1 GB or less is not planned for
+    /// again for this long.
+    nonisolated static let cleanupHintRecheckInterval: TimeInterval = 7 * 24 * 60 * 60
+
+    /// Runs in the page's `.task(id: project.id)`, so it is cancelled when
+    /// the page goes away or shows another workbench. Once the page has
+    /// stayed on screen `cleanupHintDelay` (30 s), plans the sweep — unless
+    /// the hint was shown before, the sweep sheet opened, the workbench was
+    /// checked within 7 days or this launch, or another workbench's hint
+    /// plan runs (one at a time, app-wide). Leaving the page stops a running
+    /// plan. Over 1 GB of removable worktrees puts up the hint and writes
+    /// the shown key at once: the result can only land while the page is on
+    /// screen. At or below the line, the check time is stored.
+    func watchCleanupHint(projectID: Int64) async {
+        guard cleanupHintDue(projectID) else { return }
+        do { try await cleanupHintSleep(cleanupHintDelay) } catch { return }
+        guard !Task.isCancelled, cleanupHintDue(projectID), cleanupHintRunning == nil,
+              let center = sessionCleanup else { return }
+        cleanupHintRunning = projectID
+        defer { cleanupHintRunning = nil }
+        let run = center.startSweepPlan(workbenchID: projectID)
+        await withTaskCancellationHandler {
+            await run.value
+        } onCancel: {
+            run.cancel()
+        }
+        finishCleanupHint(projectID: projectID, center: center)
+    }
+
+    private func cleanupHintDue(_ projectID: Int64) -> Bool {
         guard let center = sessionCleanup, !defaults.bool(forKey: Self.cleanupHintShownKey(projectID)),
               !cleanupHintChecked.contains(projectID), !openSweepSheets.contains(projectID),
               sweepRuns[projectID] == nil, center.cleanupPhase(for: .workbench(projectID)) == .idle
-        else { return }
-        cleanupHintChecked.insert(projectID)
-        await center.startSweepPlan(workbenchID: projectID).value
-        // The sheet opened meanwhile: the plan on screen is the sheet's.
-        guard !openSweepSheets.contains(projectID) else { return }
-        if case let .ready(plan) = center.cleanupPhase(for: .workbench(projectID)) {
-            cleanupHints[projectID] = SessionCleanupPresentation.sweepHint(plan)
+        else { return false }
+        guard let checkedAt = defaults.object(forKey: Self.cleanupHintCheckedAtKey(projectID)) as? Double else {
+            return true
         }
-        center.forgetCleanup(.workbench(projectID))
+        return cleanupHintNow().timeIntervalSince1970 - checkedAt >= Self.cleanupHintRecheckInterval
     }
 
-    /// The hint came on screen: it is never planned for again.
+    private func finishCleanupHint(projectID: Int64, center: SessionCleanupCenter) {
+        // The page went away: the plan was stopped; a later visit tries again.
+        guard !Task.isCancelled else { return }
+        // The sheet opened meanwhile: the plan on screen is the sheet's.
+        guard !openSweepSheets.contains(projectID) else { return }
+        cleanupHintChecked.insert(projectID)
+        let scope = SessionCleanupScope.workbench(projectID)
+        switch center.cleanupPhase(for: scope) {
+        case let .ready(plan):
+            if let hint = SessionCleanupPresentation.sweepHint(plan) {
+                cleanupHints[projectID] = hint
+                cleanupHintShown(projectID: projectID)
+            } else {
+                defaults.set(cleanupHintNow().timeIntervalSince1970, forKey: Self.cleanupHintCheckedAtKey(projectID))
+            }
+        case let .failed(message):
+            NSLog("WorkbenchesViewModel: the cleanup hint's sweep plan of workbench %lld failed: %@",
+                  projectID, message)
+        default:
+            break
+        }
+        center.forgetCleanup(scope)
+    }
+
+    /// The hint is up, or the owner opened the sweep: it is never planned
+    /// for again.
     func cleanupHintShown(projectID: Int64) {
         defaults.set(true, forKey: Self.cleanupHintShownKey(projectID))
     }

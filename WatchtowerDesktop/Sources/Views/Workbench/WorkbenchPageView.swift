@@ -62,7 +62,7 @@ struct WorkbenchPageView: View {
         .sheet(isPresented: $sweeping) { WorkbenchSweepSheet(vm: vm, project: project) }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         // The one-time "old worktrees use ~N GB" hint (board #535).
-        .task(id: project.id) { await vm.checkCleanupHint(projectID: project.id) }
+        .task(id: project.id) { await vm.watchCleanupHint(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.
         .task(id: project.id) { await vm.asks.refreshIfChanged(projectID: project.id) }
@@ -167,7 +167,8 @@ struct WorkbenchPageView: View {
     }
 
     /// The one-time hint: "Old worktrees use ~38 GB." with Clean Up… and
-    /// ✕. Once on screen it never comes back for this workbench.
+    /// ✕. Its key is written when the hint is put up (the hint plan runs
+    /// only while this page is on screen), so it never comes back.
     private func cleanupHint(_ hint: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "externaldrive.badge.minus").foregroundStyle(.secondary)
@@ -184,7 +185,6 @@ struct WorkbenchPageView: View {
             .help("Dismiss — Clean Up Old Worktrees… stays in the … menu")
         }
         .padding(8)
-        .onAppear { vm.cleanupHintShown(projectID: project.id) }
     }
 
     /// What the last Re-run setup did, with its suggestions; selectable,

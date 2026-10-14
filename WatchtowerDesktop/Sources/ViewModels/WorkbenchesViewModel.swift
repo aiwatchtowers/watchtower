@@ -138,9 +138,17 @@ final class WorkbenchesViewModel {
     /// Per workbench, the one-time "old worktrees use ~N GB" hint while it
     /// is up (open question 2 of the cleanup spec, owner approved).
     var cleanupHints: [Int64: String] = [:]
-    /// The workbenches whose hint sweep ran this launch: a page visit plans
-    /// (and sizes) the sweep at most once per launch.
+    /// The workbenches whose hint plan finished this launch, whatever it
+    /// found (a failed one is not retried on every visit).
     @ObservationIgnored var cleanupHintChecked: Set<Int64> = []
+    /// The workbench whose hint plan runs: one at a time, app-wide.
+    @ObservationIgnored var cleanupHintRunning: Int64?
+    /// How long a page stays on screen before its hint plan starts.
+    @ObservationIgnored var cleanupHintDelay: Duration = .seconds(30)
+    /// The hint's wait; throws once its page goes away. A seam for tests.
+    @ObservationIgnored var cleanupHintSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// The hint's clock (the 7-day re-check). A seam for tests.
+    @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter

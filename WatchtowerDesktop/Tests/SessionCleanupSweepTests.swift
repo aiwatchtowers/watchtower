@@ -69,6 +69,8 @@ final class SessionCleanupSweepTests: XCTestCase {
         let cleanup = SessionCleanupCenter(runner: runner)
         cleanup.liveSessionIDs = { live }
         vm.sessionCleanup = cleanup
+        // The page has been on screen long enough unless a test holds it.
+        vm.cleanupHintSleep = { _ in }
         return (vm, cleanup)
     }
 
@@ -219,24 +221,23 @@ final class SessionCleanupSweepTests: XCTestCase {
         let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner, live: [3])
 
-        await vm.checkCleanupHint(projectID: workbenchID)
+        await vm.watchCleanupHint(projectID: workbenchID)
         XCTAssertEqual(vm.cleanupHints[workbenchID], "Old worktrees use ~2.0 GB.",
                        "only the removable worktree counts, not the kept 5 GB")
+        XCTAssertTrue(defaults.bool(forKey: "projects.cleanupHintShown.\(workbenchID)"),
+                      "the key is written as the hint goes up on the page")
         XCTAssertEqual(runner.calls.first?.args,
                        ["workbench", "cleanup", "--workbench=2", "--sweep", "--live-session=3", "--json"])
         XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "the hint's plan is not kept")
 
-        await vm.checkCleanupHint(projectID: workbenchID)
-        XCTAssertEqual(runner.calls.count, 1, "one sweep per launch")
-
-        vm.cleanupHintShown(projectID: workbenchID)
-        XCTAssertTrue(defaults.bool(forKey: "projects.cleanupHintShown.\(workbenchID)"))
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 1, "never planned again")
         vm.dismissCleanupHint(projectID: workbenchID)
         XCTAssertNil(vm.cleanupHints[workbenchID])
 
         // The next launch: shown before, so never planned for again.
         let (next, _) = makeVM(runner)
-        await next.checkCleanupHint(projectID: workbenchID)
+        await next.watchCleanupHint(projectID: workbenchID)
         XCTAssertNil(next.cleanupHints[workbenchID])
         XCTAssertEqual(runner.calls.count, 1, "no sweep once the hint was shown")
     }
@@ -245,21 +246,125 @@ final class SessionCleanupSweepTests: XCTestCase {
         let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
         let (vm, _) = makeVM(runner)
 
-        await vm.checkCleanupHint(projectID: workbenchID)
+        await vm.watchCleanupHint(projectID: workbenchID)
 
         XCTAssertNil(vm.cleanupHints[workbenchID])
         XCTAssertFalse(defaults.bool(forKey: WorkbenchesViewModel.cleanupHintShownKey(workbenchID)),
-                       "never shown, so a later launch may still find more")
+                       "never shown, so a later check may still find more")
         XCTAssertNil(SessionCleanupPresentation.sweepHint(SessionCleanupPlan(items: [
             SessionCleanupItem(key: "worktree:x", kind: .worktree, bytes: 1_000_000_000, bytesKnown: true, action: .remove)
         ])), "exactly 1 GB is not over it")
+    }
+
+    /// At or below the line the check time is stored: no hint plan for 7
+    /// days, across launches; then one again.
+    func testBelowTheLineRechecksAfterSevenDays() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let (vm, _) = makeVM(runner)
+        vm.cleanupHintNow = { start }
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(defaults.double(forKey: "projects.cleanupHintCheckedAt.\(workbenchID)"),
+                       start.timeIntervalSince1970)
+
+        let (sixDaysOn, _) = makeVM(runner)
+        sixDaysOn.cleanupHintNow = { start.addingTimeInterval(6 * 86400) }
+        await sixDaysOn.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 1, "checked 6 days ago: no plan")
+
+        let (sevenDaysOn, _) = makeVM(runner)
+        sevenDaysOn.cleanupHintNow = { start.addingTimeInterval(7 * 86400) }
+        await sevenDaysOn.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 2, "7 days on: planned again")
+    }
+
+    /// The plan starts only once the page stayed on screen 30 s; leaving it
+    /// before cancels the start.
+    func testHintWaitsForThePageToStayOnScreen() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let (vm, _) = makeVM(runner)
+        let gate = HintGate()
+        vm.cleanupHintSleep = { try await gate.wait($0) }
+
+        let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
+        while gate.waited.isEmpty { await Task.yield() }
+        XCTAssertEqual(gate.waited, [.seconds(30)])
+        XCTAssertEqual(runner.calls.count, 0, "nothing runs during the wait")
+        page.cancel()
+        gate.open()
+        await page.value
+
+        XCTAssertEqual(runner.calls.count, 0, "the page left: no plan")
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+    }
+
+    /// Leaving the page stops a running hint plan; nothing is stored, so a
+    /// later visit plans again.
+    func testLeavingThePageStopsARunningHintPlan() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+
+        let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        page.cancel()
+        runner.release()
+        await page.value
+
+        XCTAssertEqual(runner.cancelledCount, 1, "the CLI was stopped")
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertNil(defaults.object(forKey: WorkbenchesViewModel.cleanupHintCheckedAtKey(workbenchID)))
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
+
+        runner.holdsCalls = false
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 2, "the next visit tries again")
+        XCTAssertNotNil(vm.cleanupHints[workbenchID])
+    }
+
+    /// One hint plan at a time, app-wide.
+    func testOneHintPlanAtATime() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, _) = makeVM(runner)
+
+        let first = Task { await vm.watchCleanupHint(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        await vm.watchCleanupHint(projectID: 3)
+        XCTAssertEqual(runner.calls.count, 1, "workbench 3 waits for another visit")
+
+        runner.release()
+        await first.value
+        runner.holdsCalls = false
+        await vm.watchCleanupHint(projectID: 3)
+        XCTAssertEqual(runner.calls.last?.args.contains("--workbench=3"), true, "free again once it ended")
+    }
+
+    /// The sweep sheet opened while the hint plan runs: the sheet's plan
+    /// stays, and no hint goes up behind it.
+    func testSheetOpenedMidHintKeepsTheSheetsPlan() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+
+        let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        let sheet = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        while runner.heldCount < 2 { await Task.yield() }
+        runner.release()
+        await page.value
+        await sheet.value
+
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4, "the sheet's plan is kept")
+        XCTAssertNil(vm.cleanupHints[workbenchID])
     }
 
     /// Opening the sweep answers the hint: it goes and never comes back.
     func testOpeningTheSweepAnswersTheHint() async {
         let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner)
-        await vm.checkCleanupHint(projectID: workbenchID)
+        await vm.watchCleanupHint(projectID: workbenchID)
         XCTAssertNotNil(vm.cleanupHints[workbenchID])
 
         vm.sweepSheetAppeared(projectID: workbenchID)
@@ -269,15 +374,39 @@ final class SessionCleanupSweepTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: WorkbenchesViewModel.cleanupHintShownKey(workbenchID)))
     }
 
-    /// The sheet open, no hint sweep runs over it.
-    func testNoHintSweepWhileTheSheetIsOpen() async {
+    /// Opening the sweep before the hint plan ever ran answers it too.
+    func testNoHintSweepOnceTheSheetWasOpened() async {
         let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner)
         vm.sweepSheetAppeared(projectID: workbenchID)
 
-        await vm.checkCleanupHint(projectID: workbenchID)
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 0, "not while the sheet is open")
 
-        XCTAssertEqual(runner.calls.count, 0)
+        await vm.planSweepForSheet(projectID: workbenchID)
+        vm.closeSweepSheet(projectID: workbenchID)
+        await vm.watchCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 1, "only the sheet's plan ran")
         XCTAssertNil(vm.cleanupHints[workbenchID])
+    }
+}
+
+/// The hint's 30 s wait, held until `open()`; throws when its task was
+/// cancelled, as `Task.sleep` does.
+@MainActor
+private final class HintGate {
+    private(set) var waited: [Duration] = []
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait(_ duration: Duration) async throws {
+        waited.append(duration)
+        await withCheckedContinuation { waiting.append($0) }
+        try Task.checkCancellation()
+    }
+
+    func open() {
+        let resumed = waiting
+        waiting = []
+        resumed.forEach { $0.resume() }
     }
 }
