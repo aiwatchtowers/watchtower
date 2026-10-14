@@ -146,6 +146,10 @@ final class OwnerAsksViewModel {
     /// Why the last answer to an ask failed, apart from the reads: a good
     /// reload never hides it; the next answer that saves clears it.
     private(set) var answerErrors: [Int64: String] = [:]
+    /// Each workbench's open asks the app saw bound to a session that has
+    /// since been deleted (board #542): in the DB they are session-less like
+    /// one filed outside the app; only this run of the app tells them apart.
+    private(set) var sessionDeletedAskIDs: [Int64: Set<Int64>] = [:]
     /// Each workbench's closed asks per session (nil = outside the app), as
     /// the session rows count them.
     private(set) var closedCounts: [Int64: [Int64?: Int]] = [:]
@@ -184,6 +188,10 @@ final class OwnerAsksViewModel {
     /// active; a click elsewhere or the drawer going ends it. Read at key
     /// time only.
     @ObservationIgnored private(set) var drawerKeysActive: Set<Int64> = []
+    /// Per workbench, what a click in its drawer took the keyboard from
+    /// (board #536): shared by every host the drawer moves through, so the
+    /// real close hands it back. Never observed.
+    @ObservationIgnored private var keyboardLoans: [Int64: OwnerAskKeyboardLoan] = [:]
     /// The drawer's width, kept across launches under `drawerWidthKey`.
     private(set) var drawerWidth: Double
 
@@ -219,6 +227,10 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var pollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var holdSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var notificationCenter: NotificationCenter = .default
+    /// Seam for tests: the read behind `refreshIfChanged`.
+    @ObservationIgnored lazy var readFingerprint: (Int64) async throws -> String = { [dbPool] projectID in
+        try await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
+    }
 
     private let dbPool: DatabasePool
     private let terminalCenter: TerminalCenter?
@@ -280,6 +292,7 @@ final class OwnerAsksViewModel {
                     shown: shown
                 )
             }
+            noteDeletedSessions(projectID: projectID, reread: snapshot.open.asks)
             openAsks[projectID] = snapshot.open.asks
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
@@ -329,6 +342,16 @@ final class OwnerAsksViewModel {
         return openAsks[projectID]?.first { $0.id == askID } ?? found
     }
 
+    /// Open asks last read bound to a session and now session-less: their
+    /// session was deleted (ON DELETE SET NULL). Kept while they stay open.
+    private func noteDeletedSessions(projectID: Int64, reread asks: [OwnerAsk]) {
+        let wasBound = Set((openAsks[projectID] ?? []).filter { $0.sessionID != nil }.map(\.id))
+        let open = Set(asks.map(\.id))
+        let unbound = asks.filter { $0.sessionID == nil && wasBound.contains($0.id) }.map(\.id)
+        let kept = (sessionDeletedAskIDs[projectID] ?? []).intersection(open).union(unbound)
+        sessionDeletedAskIDs[projectID] = kept.isEmpty ? nil : kept
+    }
+
     /// The document snapshot of ask `askID` of the workbench, any status
     /// (a review re-round's previous round, for its diff); nil when the ask
     /// is gone.
@@ -363,7 +386,7 @@ final class OwnerAsksViewModel {
     func refreshIfChanged(projectID: Int64) async -> Bool {
         let current: String
         do {
-            current = try await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
+            current = try await readFingerprint(projectID)
         } catch {
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
             return false
@@ -408,13 +431,15 @@ final class OwnerAsksViewModel {
 
     /// Counts plus the latest stamps of a workbench's asks. Go files and
     /// withdraws asks and marks them delivered in place: the open count, the
-    /// max id or a stamp moves with every such write.
+    /// max id or a stamp moves with every such write. A session delete sets
+    /// its asks' `session_id` NULL and moves none of those: the session-less
+    /// count does (board #542; nothing ever binds an ask later).
     nonisolated private static func fingerprint(_ db: Database, projectID: Int64) throws -> String {
         guard let row = try Row.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
-                       MAX(answered_at), MAX(delivered_at)
+                       MAX(answered_at), MAX(delivered_at), SUM(CASE WHEN session_id IS NULL THEN 1 ELSE 0 END)
                 FROM owner_asks WHERE project_id = ?
                 """,
             arguments: [projectID]
@@ -424,7 +449,8 @@ final class OwnerAsksViewModel {
         let open: Int? = row[2]
         let answered: String? = row[3]
         let delivered: String? = row[4]
-        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")"
+        let unbound: Int? = row[5]
+        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)"
     }
 
     // MARK: - Keyboard (board #412)
@@ -449,6 +475,14 @@ final class OwnerAsksViewModel {
         guard let request = stackKeyboardRequest, request.projectID == projectID else { return false }
         stackKeyboardRequest = nil
         return now.timeIntervalSince(request.at) < Self.stackKeyboardWindow
+    }
+
+    /// `projectID`'s keyboard loan, made on first use.
+    func keyboardLoan(projectID: Int64) -> OwnerAskKeyboardLoan {
+        if let loan = keyboardLoans[projectID] { return loan }
+        let loan = OwnerAskKeyboardLoan()
+        keyboardLoans[projectID] = loan
+        return loan
     }
 
     func setDrawerKeysActive(_ active: Bool, projectID: Int64) {

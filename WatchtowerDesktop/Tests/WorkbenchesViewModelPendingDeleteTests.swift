@@ -482,6 +482,34 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         XCTAssertFalse(center.liveIDs.contains(session.id), "never resumed")
     }
 
+    /// Board #542: once the window commits, the asks are read again at once
+    /// — the ask is session-less, says so, and a click opens its drawer at
+    /// the page's trailing edge instead of nothing.
+    func testAskOfACommittedDeleteOpensAtThePageEdge() async throws {
+        let p = try await workbench()
+        let (session, askID) = try await linkedSession(p)
+        let other = try await insertSession(p, title: "Other")
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.asks.load(projectID: p)
+        await vm.delete(session)
+        await endWindow(vm)
+
+        let ask = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == askID })
+        XCTAssertNil(ask.sessionID, "the commit reloads the asks")
+        XCTAssertEqual(vm.askSessionTitle(ask), OwnerAskStack.sessionDeletedTitle)
+
+        let shown = await vm.showAsk(askID, projectID: p)
+
+        XCTAssertTrue(shown)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        XCTAssertNil(vm.asks.drawerAsk(projectID: p)?.sessionID, "the page-edge drawer")
+        XCTAssertFalse(vm.layout(projectID: p).visiblePanes.contains(.session(other.id)), "no other session put on screen")
+        XCTAssertNil(vm.sessionErrors[p])
+    }
+
     // MARK: - Quit (F3, F4)
 
     func testQuitWaitsForTheWindowsCommitInFlight() async throws {
