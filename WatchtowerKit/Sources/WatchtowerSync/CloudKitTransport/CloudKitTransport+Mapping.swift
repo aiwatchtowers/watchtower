@@ -20,7 +20,7 @@ extension CloudKitTransport {
         let ck = directSaveRecord(record, scope: scope, hubID: hubID)
         let database = scope.database(in: CKContainer(identifier: containerID))
         let (saves, _) = try await database.modifyRecords(saving: [ck], deleting: [], savePolicy: .allKeys, atomically: false)
-        try saves[ck.recordID]?.get()
+        _ = try saves[ck.recordID]?.get()
     }
 
     /// The record a direct save sends: a fresh one (no system fields) in
