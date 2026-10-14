@@ -352,6 +352,10 @@ struct WorkbenchTitleRow: View {
             .disabled(paletteOpen)
             .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
             .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
+            // The panel hidden: the list is one click away here (board #743).
+            if !vm.panelVisible {
+                WorkbenchBackButton(action: switcherActions.showAll)
+            }
             if let project = vm.headerSwitcherWorkbench {
                 WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
                 Image(systemName: "chevron.right")
@@ -397,8 +401,13 @@ struct WorkbenchTitleRow: View {
 
     /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;
     /// they need a workbench page. ⇧⌘O is Open Quickly's (ruling R26).
+    /// ⌘[ goes back to the workbench list (board #743); like ⌘K, Monaco
+    /// keeps it (Outdent) while the cursor is in the Files editor.
     private var shortcuts: some View {
         Group {
+            Button("") { switcherActions.showAll() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!vm.canShowAllWorkbenches)
             Group {
                 Button("") { Task { await vm.newSessionOnPage() } }
                     .keyboardShortcut("t", modifiers: .command)

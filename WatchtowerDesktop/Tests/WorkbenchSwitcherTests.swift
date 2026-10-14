@@ -215,6 +215,35 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertEqual(vm.selectedWorkbenchID, a)
     }
 
+    /// The way back (board #743) is offered exactly while the list is off
+    /// screen: at level 2, or with the panel hidden at either level.
+    func testTheWayBackIsOfferedWhileTheListIsOffScreen() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        vm.panelVisible = true
+        XCTAssertFalse(vm.canShowAllWorkbenches, "level 1 on screen: nowhere to go back to")
+
+        vm.drill(into: a)
+        XCTAssertTrue(vm.canShowAllWorkbenches)
+
+        vm.showAllWorkbenches()
+        XCTAssertFalse(vm.canShowAllWorkbenches)
+        XCTAssertNil(vm.drilledWorkbenchID)
+        XCTAssertEqual(vm.selectedWorkbenchID, a, "the page stays")
+
+        vm.panelVisible = false
+        XCTAssertTrue(vm.canShowAllWorkbenches, "a hidden panel hides the list too")
+        vm.showAllWorkbenches()
+        XCTAssertTrue(vm.panelVisible)
+        XCTAssertFalse(vm.canShowAllWorkbenches)
+
+        // Twice in a row is harmless: still level 1, panel shown.
+        vm.showAllWorkbenches()
+        XCTAssertNil(vm.drilledWorkbenchID)
+        XCTAssertTrue(vm.panelVisible)
+    }
+
     func testLiveCountsComeFromTheTerminalCenter() async throws {
         let a = try await workbench("alpha")
         let b = try await workbench("beta")
@@ -250,23 +279,24 @@ final class WorkbenchSwitcherTests: XCTestCase {
 
     // MARK: - Views
 
-    private func panel(_ vm: WorkbenchesViewModel, _ project: Workbench) -> WorkbenchSessionsPanel {
-        WorkbenchSessionsPanel(
-            vm: vm, project: project,
-            actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
-            switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
-        )
-    }
-
-    func testTheHeaderHasTheSwitcherAndNewSessionButNoBack() async throws {
+    /// Board #743 brought Back back (#250 had left only the switcher's
+    /// "All Workbenches"): `‹` left of the name calls the same action.
+    func testTheHeaderHasBackTheSwitcherAndNewSession() async throws {
         let a = try await workbench("alpha")
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: a)
         let project = try XCTUnwrap(vm.drilledWorkbench)
-        let view = panel(vm, project)
+        var shown = 0
+        let view = WorkbenchSessionsPanel(
+            vm: vm, project: project,
+            actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
+            switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: { shown += 1 })
+        )
 
-        XCTAssertThrowsError(try view.inspect().find(viewWithAccessibilityLabel: "Back to Workbenches"))
+        let back = try view.inspect().find(viewWithAccessibilityLabel: "Back to Workbenches")
+        try back.find(ViewType.Button.self).tap()
+        XCTAssertEqual(shown, 1)
         XCTAssertEqual(try view.inspect().find(WorkbenchSwitcherButton.self).actualView().name, "alpha")
         XCTAssertNoThrow(try view.inspect().find(viewWithAccessibilityLabel: "New session"))
     }
