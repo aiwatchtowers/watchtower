@@ -30,6 +30,12 @@ if ! [[ $SHARDS =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 LANE_TIMEOUT="${LANE_TIMEOUT:-600}"
+# Checked like SHARDS: a value such as "10m" would break the watchdog's
+# arithmetic, which set -e does not catch inside a function in bash 3.2.
+if ! [[ $LANE_TIMEOUT =~ ^[1-9][0-9]*$ ]]; then
+    echo "swift-test-sharded: LANE_TIMEOUT must be a positive number of seconds, got '$LANE_TIMEOUT'" >&2
+    exit 2
+fi
 
 # Classes that assert how fast the CPU does something: they run after the
 # shards, alone, since three concurrent shards share the runner's cores
@@ -81,12 +87,24 @@ set -m
 names=()
 pids=()
 status=0
+# A cancelled run (Ctrl-C, a CI cancel or step timeout) takes its lanes with
+# it: in their own process groups they would not get the signal.
+kill_lanes() {
+    local pid
+    for pid in ${pids[@]+"${pids[@]}"}; do
+        kill -TERM -- "-$pid" 2>/dev/null || true
+    done
+}
+trap 'kill_lanes; exit 130' INT
+trap 'kill_lanes; exit 143' TERM
 
 # Starts "$@" as the next lane, its output in $WORK/log<lane>.
 start_lane() {
     local name="$1"
     shift
-    "$@" > "$WORK/log${#pids[@]}" 2>&1 &
+    # stdin from /dev/null: with job control a background lane would otherwise
+    # share the terminal's and stop on SIGTTIN when it reads it.
+    "$@" < /dev/null > "$WORK/log${#pids[@]}" 2>&1 &
     names+=("$name")
     pids+=($!)
 }
