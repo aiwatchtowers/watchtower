@@ -351,10 +351,29 @@ final class ConfigService {
         rawYAML = yaml
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
-        calendarEnabled = ((yaml["calendar"] as? [String: Any])?["enabled"] as? Bool) ?? false
-        gmailEnabled = ((yaml["gmail"] as? [String: Any])?["enabled"] as? Bool) ?? false
-        diskCalendarEnabled = calendarEnabled
-        diskGmailEnabled = gmailEnabled
+        adoptGoogleSyncSwitches(from: yaml)
+    }
+
+    /// A Google sync switch differs from what is on disk: the owner flipped
+    /// it here and it awaits `save()`.
+    var googleSyncSwitchesChanged: Bool {
+        calendarEnabled != diskCalendarEnabled || gmailEnabled != diskGmailEnabled
+    }
+
+    /// Re-reads `calendar.enabled`/`gmail.enabled` from disk, leaving every
+    /// other field (and any unsaved edit in it) alone, unlike `reload()`: a
+    /// Google connect turns them on from the CLI (#740) while Settings shows
+    /// them. An unreadable file changes nothing.
+    func adoptGoogleSyncSwitchesFromDisk() {
+        guard let yaml = currentYAMLOnDisk() else { return }
+        adoptGoogleSyncSwitches(from: yaml)
+    }
+
+    private func adoptGoogleSyncSwitches(from yaml: [String: Any]) {
+        diskCalendarEnabled = ((yaml["calendar"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        diskGmailEnabled = ((yaml["gmail"] as? [String: Any])?["enabled"] as? Bool) ?? false
+        calendarEnabled = diskCalendarEnabled
+        gmailEnabled = diskGmailEnabled
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without

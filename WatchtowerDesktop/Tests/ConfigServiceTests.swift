@@ -365,6 +365,39 @@ struct ConfigServiceTests {
         #expect(reloaded.briefingHour == 10)
     }
 
+    /// #740: a connect or Re-login from Settings turns the switches on from the
+    /// CLI; the pane adopts them without a save and without dropping an
+    /// unsaved edit elsewhere.
+    @Test("Adopting the sync switches from disk keeps other unsaved edits")
+    func adoptGoogleSyncSwitchesFromDisk() throws {
+        let path = makeTempConfig("calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+        let svc = ConfigService(configPath: path)
+        svc.briefingHour = 10
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.adoptGoogleSyncSwitchesFromDisk()
+
+        #expect(svc.calendarEnabled == true)
+        #expect(svc.gmailEnabled == true)
+        #expect(svc.googleSyncSwitchesChanged == false, "an adopted switch needs no save")
+        #expect(svc.briefingHour == 10, "an unsaved edit survives")
+        svc.calendarEnabled = false
+        #expect(svc.googleSyncSwitchesChanged == true, "an owner flip after adopting does")
+    }
+
+    @Test("Adopting from an unreadable config changes nothing")
+    func adoptGoogleSyncSwitchesFromUnreadableConfig() throws {
+        let path = makeTempConfig("calendar:\n  enabled: true\n")
+        let svc = ConfigService(configPath: path)
+        try "calendar: [unclosed\n".write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.adoptGoogleSyncSwitchesFromDisk()
+
+        #expect(svc.calendarEnabled == true)
+        #expect(svc.googleSyncSwitchesChanged == false)
+    }
+
     /// A fresh install's first Save (Goals' Continue writes the history depth)
     /// must not materialize `calendar.enabled: false` / `gmail.enabled: false`.
     @Test("Save of an untouched switch writes no enabled key")

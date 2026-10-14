@@ -20,11 +20,12 @@ struct AddGoogleAccountView: View {
     }
 
     @State private var label = ""
-    /// Connecting a Google account means mail and calendar both: the sheet
-    /// opens with both checked on every surface (onboarding, Settings), and
-    /// the owner may uncheck either (owner decision 2026-10-14, #740).
-    @State private var wantCalendar = true
-    @State private var wantGmail = true
+    /// The sheet opens with both services checked on every surface,
+    /// onboarding included; either can be unchecked (#740).
+    static let initialScopes = (calendar: true, gmail: true)
+
+    @State private var wantCalendar = Self.initialScopes.calendar
+    @State private var wantGmail = Self.initialScopes.gmail
     @State private var showAdvanced = false
     @State private var clientID = ""
     @State private var clientSecret = ""
