@@ -4,7 +4,6 @@ WatchtowerDesktop/Sources/Database/DatabaseManager.swift
 WatchtowerDesktop/Sources/Services/MobileHub/HubKeyring.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/MeetingTranscriptSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/OwnerAskSlice.swift
-WatchtowerDesktop/Sources/Services/MobileHub/Slices/SessionReportRunner.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
@@ -26,7 +25,6 @@ WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
 WatchtowerDesktop/Sources/WatchtowerCore/Services/WorkbenchBoardKanban.swift
 WatchtowerKit/Sources/WatchtowerE2ETesting/TestE2E.swift
-WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitTransport.swift
 WatchtowerKit/Sources/WatchtowerSync/Relay/RecordingUploader.swift
 WatchtowerKit/Sources/WatchtowerSync/Replica/ReplicaStore.swift
 WatchtowerKit/Sources/WatchtowerSync/Secure/SecureTransport.swift
@@ -38,4 +36,3 @@ WatchtowerMobile/Sources/Features/Settings/SettingsView.swift
 WatchtowerMobile/Sources/Features/Workbench/BoardTargetDetailModel.swift
 WatchtowerMobile/Sources/Features/Workbench/SessionDetailModel.swift
 WatchtowerMobile/Sources/Features/Workbench/SessionDetailView.swift
-WatchtowerMobile/Sources/Features/Workbench/SessionStartModels.swift
