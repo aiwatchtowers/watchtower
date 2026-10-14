@@ -369,6 +369,51 @@ func (db *DB) SetAutomationSchedule(id int64, lastScheduledFor, nextRunAt *time.
 	return requireAutomationRow(res, id)
 }
 
+// PrimeAutomationSchedule sets last_scheduled_for = now on automation id
+// only while the row is not a runnable schedule automation, and reports
+// whether it did. The indexer calls it just before an upsert that makes the
+// row runnable, so the scheduler never catches up on the window the row was
+// not runnable; the condition keeps a second indexer working from a stale
+// snapshot from rewinding a schedule point the scheduler already advanced.
+// ErrAutomationNotFound when there is no row.
+func (db *DB) PrimeAutomationSchedule(id int64, now time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE automations SET last_scheduled_for = ?
+		WHERE id = ? AND NOT (trigger_kind = 'schedule' AND `+runnableAutomationSQL+`)`,
+		formatAutomationTime(now), id)
+	if err != nil {
+		return false, fmt.Errorf("priming automation %d schedule: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("priming automation %d schedule: %w", id, err)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	if _, err := db.GetAutomation(id); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// AutomationScopeGeneration is a cheap fingerprint of a scope's rows
+// (projectID 0 for personal): row count, highest id and latest updated_at.
+// It changes when a row is inserted, deleted, re-indexed, confirmed or
+// toggled, so the indexer's Changed check notices a delete that frees a slug.
+func (db *DB) AutomationScopeGeneration(scope string, projectID int64) (string, error) {
+	var (
+		count, maxID int64
+		maxUpdated   string
+	)
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(MAX(updated_at), '')
+		FROM automations WHERE scope = ? AND COALESCE(project_id, 0) = ?`, scope, projectID).
+		Scan(&count, &maxID, &maxUpdated)
+	if err != nil {
+		return "", fmt.Errorf("reading automation generation of %s/%d: %w", scope, projectID, err)
+	}
+	return fmt.Sprintf("%d/%d/%s", count, maxID, maxUpdated), nil
+}
+
 // DeleteAutomation deletes automation id with its runs, steps, state and
 // outputs (FK cascade); ErrAutomationNotFound when there is none.
 func (db *DB) DeleteAutomation(id int64) error {
