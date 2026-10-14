@@ -176,8 +176,10 @@ final class TerminalCenter {
     /// text. Gone with the next launch attempt or the session.
     @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
-    /// check). One subscriber.
-    @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
+    /// check and placed-session cleanup): session id, exit code, and whether
+    /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
+    /// which drop the process before signalling it). One subscriber.
+    @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -876,10 +878,12 @@ final class TerminalCenter {
     private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
         let id = session.id
         let process = processes[id] ?? makeProcess()
-        process.onExit = { [weak self] code in
-            self?.states[id] = .exited(code)
-            self?.answerHints[id] = nil
-            self?.onSessionExit?(id, code)
+        process.onExit = { [weak self, weak process] code in
+            guard let self else { return }
+            let closedByApp = process.map { self.processes[id] !== $0 } ?? true
+            states[id] = .exited(code)
+            answerHints[id] = nil
+            onSessionExit?(id, code, closedByApp)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.

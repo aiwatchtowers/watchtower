@@ -40,29 +40,38 @@ extension WorkbenchesViewModel {
     /// as the Delete dialog does (`closingSession`), applies only the plan's
     /// pending removals among the row's own worktree and branch, and
     /// forgets that worktree's MCP entry once it was removed. Nothing for a
-    /// row without `worktreeBranch` or a workbench, one not finished, or one
-    /// live again — checked once more right before the apply.
+    /// row without `worktreeBranch` or a workbench, one not finished, one
+    /// live again, or one another cleanup, sheet, Delete dialog or delete
+    /// owns — checked again right before the apply, with no suspension
+    /// between that check and the apply's start.
     func cleanUpPlacedWorktree(_ row: TerminalSession) async {
-        guard let branch = row.worktreeBranch, let workbenchID = row.projectID, let center = sessionCleanup,
-              await mayCleanUpPlaced(row, center: center, phase: .idle) else { return }
+        guard let branch = row.worktreeBranch, let workbenchID = row.projectID, let center = sessionCleanup else { return }
         let scope = SessionCleanupScope.session(row.id)
-        await center.planCleanup(sessionID: row.id, workbenchID: workbenchID, closingSession: true)
+        guard await isStillFinished(row.id), mayCleanUpPlaced(row, center: center, phase: .idle) else { return }
+        // Nil: the plan was ignored or another run (a Delete dialog's) took
+        // the scope over — its phase is not this run's to touch.
+        guard let serial = await center.planCleanup(sessionID: row.id, workbenchID: workbenchID, closingSession: true)
+        else { return }
         let planned = center.cleanupPhase(for: scope)
         guard case let .ready(plan) = planned else {
             if case let .failed(message) = planned {
                 NSLog("WorkbenchesViewModel: planning session %lld's worktree cleanup failed: %@", row.id, message)
-                center.forgetCleanup(scope)
+                if center.latestRun(for: scope) == serial { center.forgetCleanup(scope) }
             }
-            // Anything else: another plan for the row superseded this one.
             return
         }
         let items = Self.placedCleanupItems(in: plan, folderPath: row.folderPath, branch: branch)
-        guard !items.isEmpty, await mayCleanUpPlaced(row, center: center, phase: planned) else {
-            forgetCleanup(scope, ifStill: planned, center: center)
+        let finished = !items.isEmpty ? await isStillFinished(row.id) : false
+        // No await from here to the apply's start: every guard holds then.
+        guard center.latestRun(for: scope) == serial else { return }
+        guard finished, mayCleanUpPlaced(row, center: center, phase: planned) else {
+            center.forgetCleanup(scope)
             return
         }
         cleaningUpSessions.insert(row.id)
         let ok = await center.applyCleanup(sessionID: row.id, workbenchID: workbenchID, items: items.map(\.key))
+        // Nobody else marks a row busy while it is (Delete and Clean Up and
+        // the sheet's apply refuse a busy row), so this flag is this run's.
         cleaningUpSessions.remove(row.id)
         let applied = center.cleanupPhase(for: scope)
         if !ok {
@@ -73,54 +82,47 @@ extension WorkbenchesViewModel {
            result.items.contains(where: { $0.key == tree.key && $0.done }) {
             await forgetPlacedWorktree(String(tree.key.dropFirst(Self.worktreeKeyPrefix.count)), workbenchID: workbenchID)
         }
-        forgetCleanup(scope, ifStill: applied, center: center)
+        if center.cleanupPhase(for: scope) == applied { center.forgetCleanup(scope) }
         await loadCleanupRecord(sessionID: row.id)
     }
 
     private static let worktreeKeyPrefix = "worktree:"
 
     /// The plan's pending removals among the session's own two items: the
-    /// worktree whose root is the longest one containing `folderPath`
-    /// (chosen before its action is looked at, so a kept own worktree never
-    /// lets an enclosing one through) and `branch:<branch>`.
+    /// worktree whose root is exactly the worktree top of `folderPath`
+    /// (`SessionStartPlacement.worktreeTop`; none outside one — never an
+    /// enclosing worktree) and `branch:<branch>`.
     private static func placedCleanupItems(
         in plan: SessionCleanupPlan, folderPath: String, branch: String
     ) -> [SessionCleanupItem] {
-        let own = plan.items
-            .filter { $0.kind == .worktree && $0.key.hasPrefix(worktreeKeyPrefix) }
-            .filter { item in
-                let root = String(item.key.dropFirst(worktreeKeyPrefix.count))
-                guard !root.isEmpty else { return false }
-                return folderPath == root || folderPath.hasPrefix(root.hasSuffix("/") ? root : root + "/")
-            }
-            .max { $0.key.count < $1.key.count }
+        guard let top = SessionStartPlacement.worktreeTop(ofCwd: folderPath) else { return [] }
+        let own = plan.items.first { $0.kind == .worktree && $0.key == worktreeKeyPrefix + top }
         let ownBranch = plan.items.first { $0.kind == .branch && $0.key == "branch:\(branch)" }
         return [own, ownBranch].compactMap { $0 }.filter(\.isPendingRemoval)
     }
 
-    /// Whether the automatic cleanup may go on for `row`: its terminal is
-    /// not live, no other cleanup, sheet or delete owns it, the scope is
-    /// still in `phase` (what this run left), and — read fresh — the row is
-    /// finished. A failed read is logged and stops it.
-    private func mayCleanUpPlaced(_ row: TerminalSession, center: SessionCleanupCenter, phase: SessionCleanupPhase) async -> Bool {
-        let id = row.id
-        guard terminalCenter?.liveIDs.contains(id) != true, !cleaningUpSessions.contains(id),
-              cleanupRuns[id] == nil, !openCleanupSheets.contains(id), !closingDeletes.contains(id),
-              !pendingDeletes.ids.contains(id), center.cleanupPhase(for: .session(id)) == phase else { return false }
+    /// Whether row `id` is finished, read fresh. A failed read is logged and
+    /// counts as not finished.
+    private func isStillFinished(_ id: Int64) async -> Bool {
         do {
-            let finished = try await dbPool.read { try TerminalSessionQueries.isFinished($0, id: id) }
-            // The read awaited: a resume meanwhile wins.
-            return finished && terminalCenter?.liveIDs.contains(id) != true
+            return try await dbPool.read { try TerminalSessionQueries.isFinished($0, id: id) }
         } catch {
             NSLog("WorkbenchesViewModel: reading whether session %lld finished failed: %@", id, error.localizedDescription)
             return false
         }
     }
 
-    /// Forgets `scope` only while it still holds what this run left there:
-    /// a Delete dialog or sheet that took the scope over keeps its phase.
-    private func forgetCleanup(_ scope: SessionCleanupScope, ifStill phase: SessionCleanupPhase, center: SessionCleanupCenter) {
-        if center.cleanupPhase(for: scope) == phase { center.forgetCleanup(scope) }
+    /// Whether nothing else holds `row` now: its terminal is not live, its
+    /// workbench is not being deleted, no other cleanup, sheet or delete
+    /// owns it, and its scope is in `phase` (what this run left there).
+    /// Synchronous, so a caller can act on the answer before anything
+    /// else runs.
+    private func mayCleanUpPlaced(_ row: TerminalSession, center: SessionCleanupCenter, phase: SessionCleanupPhase) -> Bool {
+        let id = row.id
+        return terminalCenter?.liveIDs.contains(id) != true && deletingWorkbenchID != row.projectID
+            && !cleaningUpSessions.contains(id) && cleanupRuns[id] == nil && !openCleanupSheets.contains(id)
+            && !closingDeletes.contains(id) && !pendingDeletes.ids.contains(id)
+            && center.cleanupPhase(for: .session(id)) == phase
     }
 
     /// Drops the removed worktree at `root` from the workbench's local MCP

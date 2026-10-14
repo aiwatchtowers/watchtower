@@ -447,7 +447,9 @@ final class WorkbenchesViewModel {
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
-        terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
+        terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
+            self?.sessionExited(id, code: code, closedByApp: closedByApp)
+        }
         terminalCenter?.onPathLink = { [weak self] workbenchID, sessionID, location in
             Task { await self?.openTerminalLink(location, workbenchID: workbenchID, sessionID: sessionID) }
         }

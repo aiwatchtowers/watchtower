@@ -602,12 +602,13 @@ extension WorkbenchesViewModel {
     /// The center's exit hook: a relaunch of a stored id (a resume, or a
     /// `--session-id` when no transcript was found) that exits non-zero within
     /// `resumeFailureWindow` of launch is a failed resume. 127 is not: Claude
-    /// Code was not found, and Start fresh would fail the same way. Every
-    /// exit also starts the automatic cleanup of a finished placed session
+    /// Code was not found, and Start fresh would fail the same way. An exit
+    /// Watchtower did not cause (`closedByApp` false) also starts the
+    /// automatic cleanup of a finished placed session
     /// (`startPlacedCleanup`), which decides itself whether the row
     /// qualifies.
-    func sessionExited(_ id: Int64, code: Int32?) {
-        startPlacedCleanup(sessionID: id)
+    func sessionExited(_ id: Int64, code: Int32?, closedByApp: Bool = false) {
+        if !closedByApp { startPlacedCleanup(sessionID: id) }
         guard let started = resumeStarts.removeValue(forKey: id) else { return }
         if let code, code != 0, code != 127, now().timeIntervalSince(started) < Self.resumeFailureWindow {
             resumeFailed.insert(id)
