@@ -351,8 +351,8 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         await vm.open(row)
 
         let call = try XCTUnwrap(runner.ensureCalls.first)
-        XCTAssertEqual(call[call.firstIndex(of: "--path").map { $0 + 1 }!], worktree)
-        XCTAssertEqual(call[call.firstIndex(of: "--branch").map { $0 + 1 }!], "wt/session-2")
+        XCTAssertEqual(call.firstIndex(of: "--path").map { call[$0 + 1] }, worktree)
+        XCTAssertEqual(call.firstIndex(of: "--branch").map { call[$0 + 1] }, "wt/session-2")
         let launch = try XCTUnwrap(launches.last)
         XCTAssertEqual(launch.currentDirectory, worktree)
         XCTAssertFalse(launch.environment.contains { $0.hasPrefix(TerminalLaunch.setupCommandEnv) }, "a resume never runs the setup command")
