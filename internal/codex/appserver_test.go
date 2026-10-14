@@ -337,14 +337,21 @@ func TestAppServer_CallerCancelKillsTheGroup(t *testing.T) {
 		// the write leaves no pids to check. The "hang" stub never answers
 		// initialize, so the cancel still lands while StartAppServer waits.
 		cancelled := make(chan time.Time, 1)
+		stop, done := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() { close(stop); <-done }) // the poller never outlives the subtest
 		go func() {
+			defer close(done)
 			defer func() { cancelled <- time.Now(); cancel() }()
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				if b, err := os.ReadFile(f.pids); err == nil && len(strings.Fields(string(b))) == 2 {
 					return
 				}
-				time.Sleep(10 * time.Millisecond)
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
 			}
 		}()
 		_, err := StartAppServer(ctx, os.Args[0], nil, f.env)
