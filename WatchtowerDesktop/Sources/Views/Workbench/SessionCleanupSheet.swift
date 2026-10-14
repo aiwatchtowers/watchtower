@@ -18,7 +18,10 @@ struct SessionCleanupSheet: View {
         let phase = vm.sessionCleanup?.cleanupPhase(for: .session(session.id)) ?? .idle
         VStack(alignment: .leading, spacing: 12) {
             Text("Clean up “\(session.title)”").font(.headline)
-            SessionCleanupPhaseView(phase: phase, ticked: $ticked) {
+            SessionCleanupPhaseView(
+                phase: phase, ticked: $ticked,
+                emptyText: "Nothing to clean up: this session left no worktree or branch to remove."
+            ) {
                 Task { await vm.planCleanupForSheet(session) }
             }
             .frame(maxWidth: .infinity, minHeight: 160, alignment: .topLeading)
@@ -30,7 +33,7 @@ struct SessionCleanupSheet: View {
         .onAppear { vm.cleanupSheetAppeared(session) }
         .onDisappear { vm.cleanupSheetDisappeared(session) }
         .onChange(of: phase, initial: true) { _, now in
-            if case let .ready(plan) = now { ticked = Set(plan.knownRemovableKeys) }
+            if case let .ready(plan) = now { ticked = plan.initialTicks(sweep: false) }
         }
     }
 
@@ -65,10 +68,14 @@ struct SessionCleanupSheet: View {
     }
 }
 
-/// The sheet's body for one phase.
-private struct SessionCleanupPhaseView: View {
+/// A cleanup sheet's body for one phase (the session sheet's and the
+/// sweep's): the plan's items with ticks for pending removals of a known
+/// kind, the result, or the failure with Try Again.
+struct SessionCleanupPhaseView: View {
     let phase: SessionCleanupPhase
     @Binding var ticked: Set<String>
+    /// What a ready plan without items says.
+    let emptyText: String
     let retry: () -> Void
 
     var body: some View {
@@ -78,7 +85,7 @@ private struct SessionCleanupPhaseView: View {
         case .applying:
             ProgressView("Cleaning up…").controlSize(.small)
         case let .ready(plan):
-            itemList(plan.items, emptyText: "Nothing to clean up: this session left no worktree or branch to remove.")
+            itemList(plan.items, emptyText: emptyText)
         case let .done(result):
             VStack(alignment: .leading, spacing: 8) {
                 if !result.summary.isEmpty { Text(result.summary) }
@@ -124,7 +131,8 @@ private struct SessionCleanupPhaseView: View {
 }
 
 /// One plan or result item: a tick for a pending removal, else its outcome
-/// — removed, kept with the reason in words, or the error.
+/// — removed, kept with the reason in words, or the error; a sweep item
+/// also says whose it probably is, on the right.
 private struct SessionCleanupItemRow: View {
     let item: SessionCleanupItem
     let ticked: Binding<Bool>?
@@ -136,6 +144,14 @@ private struct SessionCleanupItemRow: View {
                     .toggleStyle(.checkbox)
             } else {
                 label.foregroundStyle(item.action == .keep ? .secondary : .primary)
+            }
+            if let owner = item.owner {
+                Spacer(minLength: 8)
+                Text(SessionCleanupPresentation.ownerText(owner))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .help(item.detail)
