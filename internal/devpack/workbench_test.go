@@ -149,8 +149,9 @@ func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 
 // Spec 2026-10-12-session-cleanup §11 (pack v8): before finish_session the
 // agent runs the brief's Cleanup: command, applies it, never removes a
-// worktree or branch by hand, and the summary limit makes room for the
-// cleanup line — the same 4 lines the finish_session tool line allows.
+// worktree or branch by hand, skips the step when the brief has no Cleanup:
+// line, and keeps the finish_session schema's limit (2–3 lines, at most 4)
+// with the cleanup line counted within it.
 func TestWorkbenchSkill_FinishingSectionNamesTheCleanupStep(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
@@ -163,8 +164,12 @@ func TestWorkbenchSkill_FinishingSectionNamesTheCleanupStep(t *testing.T) {
 		section = section[:next+1]
 	}
 	for _, want := range []string{
-		"**Clean up first.**", "the brief's `Cleanup:` command", "`--apply`", "`--worktree`/`--branch`",
-		"Never remove a worktree or branch by hand.", "the command's `summary` line", "2–4 lines",
+		"**Clean up first.**", "the brief's `Cleanup:` command", "`--apply` only when that plan marks something removable",
+		"run the plan again with `--worktree`/`--branch` for it first", "Kept items are not a failure",
+		"Exit 2 (refused or a usage error) or exit 1 (could not plan): do not retry with other flags",
+		"No `Cleanup:` line in the brief: skip this step and say in your summary that cleanup was not available",
+		"never invent a command", "Never remove a worktree or branch by hand.", "the command's `summary` line",
+		"2–3 lines, at most 4", "the cleanup line, which counts within the limit",
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the Finishing a session section never says %q", want)
@@ -174,8 +179,8 @@ func TestWorkbenchSkill_FinishingSectionNamesTheCleanupStep(t *testing.T) {
 	if cleanup < 0 || finish < cleanup {
 		t.Error("the cleanup step must come before the summary")
 	}
-	if strings.Contains(section, "2–3 lines") {
-		t.Error("the finish summary limit still says 2–3 lines")
+	if strings.Contains(section, "2–4 lines") {
+		t.Error("the finish summary limit must match the finish_session schema: 2–3 lines, at most 4")
 	}
 	tools := content[strings.Index(content, "## Tools"):strings.Index(content, "## Setup")]
 	if !strings.Contains(tools, "`finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines") {
