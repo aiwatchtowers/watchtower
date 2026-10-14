@@ -236,9 +236,9 @@ func TestEnqueue_AdvancesScheduleAtomically(t *testing.T) {
 	due1, due2 := runTestNow.Add(-time.Hour), runTestNow
 	next := runTestNow.Add(24 * time.Hour)
 	mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule, ScheduledFor: &due1,
-		AdvanceScheduleTo: &due1, NextRunAt: &due2})
+		AdvanceScheduleTo: &due1, NextRunAt: &due2, ExpectLastScheduledFor: mustGetAutomation(t, d, a).LastScheduledFor})
 	_, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule, ScheduledFor: &due2,
-		AdvanceScheduleTo: &due2, NextRunAt: &next})
+		AdvanceScheduleTo: &due2, NextRunAt: &next, ExpectLastScheduledFor: &due1})
 	if !coalesced {
 		t.Fatal("second schedule enqueue not coalesced")
 	}
@@ -251,6 +251,33 @@ func TestEnqueue_AdvancesScheduleAtomically(t *testing.T) {
 	if err == nil {
 		t.Error("enqueue for a missing automation succeeded")
 	}
+}
+
+func TestEnqueue_ScheduleCompareAndSet(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "daily", 1)
+	read := runTestNow.Add(-2 * time.Hour)
+	moved := runTestNow.Add(-time.Minute) // a confirm stamped it after the read
+	if err := d.SetAutomationSchedule(a, &moved, nil); err != nil {
+		t.Fatal(err)
+	}
+	due := runTestNow
+	_, _, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule, ScheduledFor: &due,
+		AdvanceScheduleTo: &due, ExpectLastScheduledFor: &read, Now: runTestNow})
+	if !errors.Is(err, ErrScheduleChanged) {
+		t.Fatalf("enqueue with a stale schedule point = %v, want ErrScheduleChanged", err)
+	}
+	wantRowCount(t, d, "automation_runs", 0)
+	if got := mustGetAutomation(t, d, a); !sameAutomationTime(got.LastScheduledFor, moved) {
+		t.Errorf("last_scheduled_for = %v, want %v untouched", got.LastScheduledFor, moved)
+	}
+	// An expected NULL does not match a set value either.
+	_, _, err = d.EnqueueAutomationRun(EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule, ScheduledFor: &due,
+		AdvanceScheduleTo: &due, Now: runTestNow})
+	if !errors.Is(err, ErrScheduleChanged) {
+		t.Fatalf("enqueue expecting NULL = %v, want ErrScheduleChanged", err)
+	}
+	wantRowCount(t, d, "automation_runs", 0)
 }
 
 func TestAuto05_OneActiveRunPerAutomation(t *testing.T) {

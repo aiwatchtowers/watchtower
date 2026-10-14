@@ -363,6 +363,27 @@ func TestAutomationIndex_GetMissingIsNotFound(t *testing.T) {
 	}
 }
 
+func TestAutomationIndex_CompareAndSetSchedule(t *testing.T) {
+	d := openTestDB(t)
+	id := seedAutomationRow(t, d, "sched", filepath.Join(t.TempDir(), "sched.md"), "h")
+	first := time.Date(2026, 10, 14, 8, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	before := mustGetAutomation(t, d, id).LastScheduledFor
+	if err := d.CompareAndSetAutomationSchedule(id, before, &first, &second); err != nil {
+		t.Fatalf("CAS from the read value: %v", err)
+	}
+	if err := d.CompareAndSetAutomationSchedule(id, before, &second, nil); !errors.Is(err, ErrScheduleChanged) {
+		t.Errorf("CAS from a stale value = %v, want ErrScheduleChanged", err)
+	}
+	a := mustGetAutomation(t, d, id)
+	if !sameAutomationTime(a.LastScheduledFor, first) || !sameAutomationTime(a.NextRunAt, second) {
+		t.Errorf("schedule = %v / %v, want %v / %v untouched", a.LastScheduledFor, a.NextRunAt, first, second)
+	}
+	if err := d.CompareAndSetAutomationSchedule(4242, nil, &first, nil); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("CAS on a missing row = %v, want ErrAutomationNotFound", err)
+	}
+}
+
 func TestAutomationIndex_ScheduleAndFilterAndDelete(t *testing.T) {
 	d := openTestDB(t)
 	dir := t.TempDir()

@@ -17,6 +17,11 @@ var ErrAutomationNotFound = errors.New("automation not found")
 // approval_hash: the recipe changed after the owner looked at it.
 var ErrHashMismatch = errors.New("approval hash does not match the recipe")
 
+// ErrScheduleChanged refuses a scheduler write whose expected
+// last_scheduled_for is no longer the row's: another writer (a confirm, an
+// enable, the indexer) moved the schedule point since the scheduler read it.
+var ErrScheduleChanged = errors.New("automation schedule changed since it was read")
+
 // automationTimeLayout is the form of every automation timestamp (UTC RFC 3339
 // seconds, the house created_at default).
 const automationTimeLayout = "2006-01-02T15:04:05Z"
@@ -358,8 +363,9 @@ func (db *DB) ConfirmAutomation(id int64, hash string, now time.Time) error {
 	return fmt.Errorf("automation %d: %w", id, ErrHashMismatch)
 }
 
-// SetAutomationSchedule writes the scheduler's last_scheduled_for and
-// next_run_at; nil stores NULL.
+// SetAutomationSchedule writes last_scheduled_for and next_run_at
+// unconditionally; nil stores NULL. The scheduler uses
+// CompareAndSetAutomationSchedule instead.
 func (db *DB) SetAutomationSchedule(id int64, lastScheduledFor, nextRunAt *time.Time) error {
 	res, err := db.Exec(`UPDATE automations SET last_scheduled_for = ?, next_run_at = ? WHERE id = ?`,
 		nullAutomationTime(lastScheduledFor), nullAutomationTime(nextRunAt), id)
@@ -367,6 +373,36 @@ func (db *DB) SetAutomationSchedule(id int64, lastScheduledFor, nextRunAt *time.
 		return fmt.Errorf("setting automation %d schedule: %w", id, err)
 	}
 	return requireAutomationRow(res, id)
+}
+
+// CompareAndSetAutomationSchedule writes last_scheduled_for and next_run_at
+// only while last_scheduled_for still equals prev (nil = NULL), the value the
+// scheduler read; otherwise it fails with ErrScheduleChanged and writes
+// nothing. ErrAutomationNotFound when there is no row.
+func (db *DB) CompareAndSetAutomationSchedule(id int64, prev, lastScheduledFor, nextRunAt *time.Time) error {
+	res, err := db.Exec(`UPDATE automations SET last_scheduled_for = ?, next_run_at = ?
+		WHERE id = ? AND last_scheduled_for IS ?`,
+		nullAutomationTime(lastScheduledFor), nullAutomationTime(nextRunAt), id, nullAutomationTime(prev))
+	if err != nil {
+		return fmt.Errorf("setting automation %d schedule: %w", id, err)
+	}
+	return db.requireScheduleRow(res, id)
+}
+
+// requireScheduleRow maps a compare-and-set schedule update that touched no
+// row to ErrScheduleChanged, or to ErrAutomationNotFound when the row is gone.
+func (db *DB) requireScheduleRow(res sql.Result, id int64) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("automation %d: %w", id, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	if _, err := db.GetAutomation(id); err != nil {
+		return err
+	}
+	return fmt.Errorf("automation %d: %w", id, ErrScheduleChanged)
 }
 
 // PrimeAutomationSchedule sets last_scheduled_for = now on automation id
