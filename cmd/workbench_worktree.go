@@ -75,12 +75,28 @@ func runWorkbenchWorktreeCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var res workbenchgit.WorktreeResult
-	if refused != "" {
+	switch taken, takenErr := heldWorktreeBranches(ctx); {
+	case refused != "":
 		res.Refused, res.RefusedDetail = refused, detail
-	} else {
-		res = workbenchgit.CreateWorktree(ctx, o, workbenchgit.WorktreeRequest{Slug: workbenchWorktreeFlagName})
+	case takenErr != nil:
+		// Without the held names a cleaned-up session's name could be
+		// handed out again, so no worktree is made.
+		res.Error = takenErr.Error()
+	default:
+		res = workbenchgit.CreateWorktree(ctx, o, workbenchgit.WorktreeRequest{Slug: workbenchWorktreeFlagName, Taken: taken})
 	}
 	return writeWorktreeEnvelope(ctx, cmd, id, res)
+}
+
+// heldWorktreeBranches is every worktree branch a session row still holds,
+// in any workbench: a repository can back more than one.
+func heldWorktreeBranches(ctx context.Context) ([]string, error) {
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return nil, err
+	}
+	defer database.Close()
+	return database.HeldWorktreeBranches(ctx)
 }
 
 func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {

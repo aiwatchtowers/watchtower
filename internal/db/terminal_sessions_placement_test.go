@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,4 +27,24 @@ func TestPlacedSessions_ListsRowsWithAWorktreeBranch(t *testing.T) {
 	other, err := d.GetTerminalSession(plain)
 	require.NoError(t, err)
 	assert.False(t, other.WorktreeBranch.Valid)
+}
+
+func TestHeldWorktreeBranches_EveryWorkbenchsRowsDistinct(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	other, err := d.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+	newAgentStateRow(t, d, wb, "claude", "uuid-plain")
+	for _, r := range []struct {
+		wb     int64
+		uuid   string
+		branch string
+	}{{wb, "uuid-b", "wt/b"}, {other, "uuid-a", "wt/a"}, {other, "uuid-a2", "wt/a"}} {
+		id := newAgentStateRow(t, d, r.wb, "claude", r.uuid)
+		_, err := d.Exec(`UPDATE terminal_sessions SET worktree_branch = ? WHERE id = ?`, r.branch, id)
+		require.NoError(t, err)
+	}
+	got, err := d.HeldWorktreeBranches(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"wt/a", "wt/b"}, got)
 }

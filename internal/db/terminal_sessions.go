@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -133,6 +134,36 @@ func (db *DB) PlacedSessions(workbenchID int64) ([]PlacedSession, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// HeldWorktreeBranches lists every worktree_branch a session row still
+// holds, across all workbenches (one repository can back several), in one
+// read-only transaction. `workbench worktree create` never hands out one
+// of these names again, even after the worktree and branch were cleaned up.
+func (db *DB) HeldWorktreeBranches(ctx context.Context) ([]string, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("listing held worktree branches: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT worktree_branch FROM terminal_sessions
+		WHERE worktree_branch IS NOT NULL ORDER BY worktree_branch`)
+	if err != nil {
+		return nil, fmt.Errorf("listing held worktree branches: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, fmt.Errorf("listing held worktree branches: %w", err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing held worktree branches: %w", err)
+	}
+	return out, nil
 }
 
 // AgentCwd is what a claude row records of its main agent's working

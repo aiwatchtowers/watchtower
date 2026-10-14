@@ -81,3 +81,34 @@ func TestWorktreeCreate_Refusals(t *testing.T) {
 	assert.Equal(t, RefusedUnborn, CreateWorktree(context.Background(), Options{Folder: unborn}, WorktreeRequest{Slug: "a"}).Refused)
 	assert.Equal(t, RefusedInvalidName, CreateWorktree(context.Background(), Options{Folder: newRepo(t)}, WorktreeRequest{Slug: "../x"}).Refused)
 }
+
+func TestWorktreeCreate_SkipsANameASessionRowStillHolds(t *testing.T) {
+	dir := newRepo(t)
+	o := options(dir, &recorder{})
+	res := CreateWorktree(context.Background(), o, WorktreeRequest{Slug: "session-1", Taken: []string{"wt/session-1"}})
+	require.True(t, res.Created, "%+v", res)
+	assert.Equal(t, "wt/session-1-2", res.Branch, "a cleaned-up name whose row remains is never handed out again")
+	assert.Equal(t, filepath.Join(dir, ".claude", "worktrees", "session-1-2"), res.Path)
+}
+
+func TestWorktreeCreate_SuffixKeepsTheSlugWithin40(t *testing.T) {
+	dir := newRepo(t)
+	o := options(dir, &recorder{})
+	base := strings.Repeat("a", 38) + "-b" // 40, a dash at 39
+	res := CreateWorktree(context.Background(), o, WorktreeRequest{Slug: base, Taken: []string{"wt/" + base}})
+	require.True(t, res.Created, "%+v", res)
+	slug := strings.TrimPrefix(res.Branch, "wt/")
+	assert.LessOrEqual(t, len(slug), 40)
+	assert.Equal(t, strings.Repeat("a", 38)+"-2", slug, "the base is trimmed, with no trailing dash, before the suffix")
+}
+
+func TestWorktreeCreate_SubfolderMissingFromHEADIsCreatedEmpty(t *testing.T) {
+	dir := newRepo(t)
+	sub := filepath.Join(dir, "app", "new")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	res := CreateWorktree(context.Background(), options(sub, &recorder{}), WorktreeRequest{Slug: "s"})
+	require.True(t, res.Created, "%+v", res)
+	assert.Equal(t, filepath.Join(res.Path, "app", "new"), res.Cwd)
+	assert.DirExists(t, res.Cwd)
+	assert.Contains(t, res.Warning, "the workbench folder app/new is not in the commit; created it empty")
+}

@@ -168,3 +168,22 @@ func TestWorkbenchWorktree_UnknownWorkbenchExitsNonZero(t *testing.T) {
 	_, err := runWorktree(t, "create", "--workbench", "999", "--name", "x", "--json")
 	require.Error(t, err)
 }
+
+func TestWorkbenchWorktree_CreateSkipsANameASessionRowHolds(t *testing.T) {
+	f := newWorktreeFixture(t)
+	_, database, err := openJiraCmdDB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	other, err := database.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+	// A row of another workbench still names wt/held; its worktree and
+	// branch were cleaned up, so only the row keeps the name taken.
+	_, err = database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at, worktree_branch, worktree_base)
+		VALUES (?, 'claude', 'gone', '/nowhere', 'uuid-gone', '2026-10-14T00:00:00Z', 'wt/held', 'abc')`, other)
+	require.NoError(t, err)
+
+	created := f.create(t, "held")
+	require.True(t, created.Created, "%+v", created)
+	assert.Equal(t, "wt/held-2", created.Branch)
+	assert.Equal(t, filepath.Join(f.folder, ".claude", "worktrees", "held-2"), created.Path)
+}

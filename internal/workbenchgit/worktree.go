@@ -2,7 +2,9 @@ package workbenchgit
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +29,10 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // WorktreeRequest is one `workbench worktree create`.
 type WorktreeRequest struct {
 	Slug string // already ASCII-folded by the caller; validated here
+	// Taken are wt/… branch names a session row still holds: never handed
+	// out again, even once their branch and directory are gone, so a resume
+	// of that row never lands in another session's worktree.
+	Taken []string
 }
 
 // WorktreeResult is the `workbench worktree create` and `ensure` envelope.
@@ -48,7 +54,8 @@ type WorktreeResult struct {
 }
 
 // CreateWorktree checks out a new branch wt/<slug> from the folder's HEAD
-// in <top level>/.claude/worktrees/<slug> (a taken name gets -2, -3, …),
+// in <top level>/.claude/worktrees/<slug> (a taken name — an existing
+// branch or directory, or one in req.Taken — gets -2, -3, …),
 // keeps that directory out of the main folder's status, and copies the
 // .worktreeinclude paths into it. A failure after the worktree exists is a
 // Warning: the worktree is returned and usable (spec §5).
@@ -85,7 +92,7 @@ func CreateWorktree(ctx context.Context, o Options, req WorktreeRequest) (res Wo
 		return res
 	}
 	res.Base, res.BaseBranch, res.BaseDirty = strings.TrimSpace(string(base)), st.Branch, st.Dirty
-	slug, err := r.freeSlug(ctx, p.topLevel, req.Slug)
+	slug, err := r.freeSlug(ctx, p.topLevel, req.Slug, req.Taken)
 	if err != nil {
 		res.Refused, res.Error = RefusedGitFailed, gitError(err)
 		return res
@@ -100,18 +107,45 @@ func CreateWorktree(ctx context.Context, o Options, req WorktreeRequest) (res Wo
 		return res
 	}
 	res.Created = true
-	res.Cwd = filepath.Join(res.Path, filepath.FromSlash(strings.TrimSuffix(strings.TrimSpace(string(prefix)), "/")))
+	rel := strings.TrimSuffix(strings.TrimSpace(string(prefix)), "/")
+	res.Cwd = filepath.Join(res.Path, filepath.FromSlash(rel))
+	if _, err := os.Lstat(res.Cwd); errors.Is(err, fs.ErrNotExist) {
+		// A subfolder workbench whose folder holds no committed file: the
+		// session still needs its cwd.
+		if mkErr := os.MkdirAll(res.Cwd, 0o755); mkErr != nil {
+			res.Warning = joinWarning(res.Warning, "creating the workbench folder "+rel+": "+mkErr.Error())
+		} else {
+			res.Warning = joinWarning(res.Warning, "the workbench folder "+rel+" is not in the commit; created it empty")
+		}
+	}
 	res.Included, res.IncludeWarnings = includeInto(ctx, r, p, res.Path)
 	return res
 }
 
-// freeSlug is slug, or slug-2, slug-3, … — the first whose branch and
-// directory are both free.
-func (r *repo) freeSlug(ctx context.Context, top, slug string) (string, error) {
+// joinWarning appends next to an earlier warning.
+func joinWarning(prev, next string) string {
+	if prev == "" {
+		return clip(next)
+	}
+	return clip(prev + "; " + next)
+}
+
+// freeSlug is slug, or slug-2, slug-3, … (the base trimmed so the name
+// stays within maxSlug) — the first whose branch and directory are both
+// free and whose branch no session row holds (taken).
+func (r *repo) freeSlug(ctx context.Context, top, slug string, taken []string) (string, error) {
+	held := make(map[string]bool, len(taken))
+	for _, b := range taken {
+		held[b] = true
+	}
 	for n := 1; n < 1000; n++ {
 		cand := slug
 		if n > 1 {
-			cand = fmt.Sprintf("%s-%d", slug, n)
+			suffix := fmt.Sprintf("-%d", n)
+			cand = strings.TrimRight(slug[:min(len(slug), maxSlug-len(suffix))], "-") + suffix
+		}
+		if held[worktreeBranchRoot+cand] {
+			continue
 		}
 		_, code, err := r.run(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+worktreeBranchRoot+cand)
 		if err != nil && code != 1 {
