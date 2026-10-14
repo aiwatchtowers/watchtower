@@ -330,12 +330,15 @@ func (r *Registry) Trust(name, surface string) (Trust, error) {
 }
 
 // SetTrust changes the trust level on one surface the tool names; execute is
-// refused for External and AlwaysAsk tools, and the workbench surface is no
-// trust place at all (TrustSurfaces).
+// refused for External and AlwaysAsk tools, and only a write tool on one of
+// its TrustSurfaces takes a trust level at all.
 func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	t, ok := r.Get(name)
 	if !ok {
 		return ErrUnknownTool
+	}
+	if err := CheckTrustable(t); err != nil {
+		return err
 	}
 	if trust != TrustAsk && trust != TrustExecute {
 		return fmt.Errorf("invalid trust %q", trust)
@@ -346,22 +349,47 @@ func (r *Registry) SetTrust(name, surface string, trust Trust) error {
 	if t.AlwaysAsk && trust == TrustExecute {
 		return ErrAlwaysAsk
 	}
-	if surface == WorkbenchSurface {
-		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
-	}
-	if strings.TrimSpace(surface) == "" || !visibleOn(t, surface) {
-		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
+	if err := trustSurfaceErr(t, surface); err != nil {
+		return err
 	}
 	return r.db.SetToolTrust(t.Name, surface, string(trust))
 }
 
-// TrustSurfaces is the surfaces of t a trust level is kept for: every one
-// but the workbench, whose write tools apply under DirectApply and never
-// read trust (DEV-06, target 167).
+// CheckTrustable refuses a tool trust does not apply to: a read tool never
+// proposes, so no tool_trust row could ever be read for it.
+func CheckTrustable(t *Tool) error {
+	if t.Access != AccessWrite {
+		return fmt.Errorf("%w: %s is a read tool; trust applies only to write tools", ErrNotWritable, t.Name)
+	}
+	return nil
+}
+
+// trustSurfaceErr refuses a surface that is no trust place for t: one t is
+// not on, the workbench (DEV-06) and the automation surface (P1 automations
+// take no grants; spec 2026-10-14-automations-design leaves those to P2).
+func trustSurfaceErr(t *Tool, surface string) error {
+	switch {
+	case surface == WorkbenchSurface:
+		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
+	case surface == AutomationSurface:
+		return fmt.Errorf("%w: the automation surface takes no trust", ErrSurfaceNotOffered)
+	case strings.TrimSpace(surface) == "" || !visibleOn(t, surface):
+		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
+	}
+	return nil
+}
+
+// TrustSurfaces is the surfaces of t a trust level is kept for: none for a
+// read tool, and for a write tool every surface but the workbench, whose
+// write tools apply under DirectApply and never read trust (DEV-06, target
+// 167), and the automation surface, which takes no trust (trustSurfaceErr).
 func TrustSurfaces(t *Tool) []string {
 	out := make([]string, 0, len(t.Surfaces))
+	if t.Access != AccessWrite {
+		return out
+	}
 	for _, s := range t.Surfaces {
-		if s != WorkbenchSurface {
+		if s != WorkbenchSurface && s != AutomationSurface {
 			out = append(out, s)
 		}
 	}
