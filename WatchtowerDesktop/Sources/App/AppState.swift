@@ -47,11 +47,14 @@ final class AppState {
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
     /// reading survives tab switches. Started with the main app's DB wiring.
-    /// Lazy only because it reads `daemonManager` and `featureVisibility`.
+    /// Lazy only because it reads `daemonManager` and `featureVisibility`;
+    /// `readinessEnvironmentOverride`, set before first use, replaces the
+    /// live environment in tests.
     @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
-        environment: LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
-            Constants.activeWorkspaceDir()
-        }
+        environment: readinessEnvironmentOverride
+            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
+                Constants.activeWorkspaceDir()
+            }
     )
 
     /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
@@ -413,6 +416,9 @@ final class AppState {
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// Test seam: the readiness inputs without the live config, workspace
+    /// directory and stamps.
+    @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `openDatabase` the

@@ -8,21 +8,6 @@ import WatchtowerTestSupport
 @MainActor
 final class ReadinessCenterTests: XCTestCase {
 
-    /// Slack connected and synced once; everything else set per test.
-    private final class FakeEnvironment: ReadinessEnvironment {
-        var now = Date()
-        var daemonRunning = true
-        var syncProgress: SyncProgress?
-        var lastSyncTime: Date? = Date().addingTimeInterval(-3600)
-        var disabledFeatureIDs: Set<String> = []
-        var connected = ConnectedSources(slack: true)
-        var briefingHour = 8
-        var dayPlanHour = 8
-        var pollInterval: String?
-        var stamps: [String: Date] = [:]
-        func stamp(_ fileName: String) -> Date? { stamps[fileName] }
-    }
-
     private var poolPaths: [String] = []
 
     override func tearDown() {
@@ -72,7 +57,7 @@ final class ReadinessCenterTests: XCTestCase {
     }
 
     func testFirstEvaluationAfterStart() async throws {
-        let center = ReadinessCenter(environment: FakeEnvironment())
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
         XCTAssertTrue(center.readiness.isEmpty)
         center.start(pool: try makePool())
         defer { center.stop() }
@@ -82,7 +67,7 @@ final class ReadinessCenterTests: XCTestCase {
 
     func testInsertingContentFlipsToReady() async throws {
         let pool = try makePool()
-        let center = ReadinessCenter(environment: FakeEnvironment())
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
         center.start(pool: pool)
         defer { center.stop() }
         await waitUntil(center) { !$0.isEmpty }
@@ -95,7 +80,7 @@ final class ReadinessCenterTests: XCTestCase {
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }
-        let center = ReadinessCenter(environment: FakeEnvironment())
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
         center.start(pool: pool)
         defer { center.stop() }
         await waitUntil(center) { !$0.isEmpty }
@@ -106,7 +91,7 @@ final class ReadinessCenterTests: XCTestCase {
     }
 
     func testTickReevaluatesWithNewNow() async throws {
-        let environment = FakeEnvironment()
+        let environment = FakeReadinessEnvironment()
         environment.now = today(6)
         environment.briefingHour = 8
         environment.stamps["last_briefing.txt"] = Calendar.current.date(byAdding: .day, value: -1, to: today(8))
@@ -121,19 +106,28 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(center.readiness(for: .briefing), .scheduled(.nextCycle(minutes: 15)))
     }
 
+    /// Hermetic: the workspace directory and config.yaml are temp files.
     func testGarbageStampReadsNil() throws {
         let dir = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         try "abc".write(toFile: dir + "/last_people.txt", atomically: true, encoding: .utf8)
         try "1700000000\n".write(toFile: dir + "/last_ideas.txt", atomically: true, encoding: .utf8)
+        let configPath = dir + "/config.yaml"
+        try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
-        let environment = LiveReadinessEnvironment(daemon: DaemonManager(), visibility: FeatureVisibilityStore()) { dir }
+        let environment = LiveReadinessEnvironment(
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
+        ) { dir }
         XCTAssertNil(environment.stamp("last_people.txt"))
         XCTAssertNil(environment.stamp("last_briefing.txt"))
         XCTAssertEqual(environment.stamp("last_ideas.txt"), Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(environment.briefingHour, 7)
+        XCTAssertEqual(environment.pollInterval, "30m")
 
-        let noWorkspace = LiveReadinessEnvironment(daemon: DaemonManager(), visibility: FeatureVisibilityStore()) { nil }
+        let noWorkspace = LiveReadinessEnvironment(
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
+        ) { nil }
         XCTAssertNil(noWorkspace.stamp("last_ideas.txt"))
         // The names read are the daemon's stamp files (Reset LLM data clears the same list).
         XCTAssertTrue(Set(ReadinessCenter.stampFiles).isSubset(of: DaemonStampFiles.names))
@@ -141,7 +135,7 @@ final class ReadinessCenterTests: XCTestCase {
 
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
-        let center = ReadinessCenter(environment: FakeEnvironment())
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
         center.start(pool: pool)
         await waitUntil(center) { !$0.isEmpty }
         center.stop()
@@ -158,6 +152,7 @@ final class ReadinessCenterTests: XCTestCase {
 
     func testStateSurvivesNavigation() async throws {
         let appState = AppState.isolated()
+        XCTAssertTrue(appState.readinessEnvironmentOverride is FakeReadinessEnvironment, "no live config/stamps in tests")
         appState.readinessCenter.start(pool: try makePool())
         defer { appState.readinessCenter.stop() }
         appState.selectedDestination = .digests

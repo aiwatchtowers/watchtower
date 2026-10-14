@@ -158,14 +158,21 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
     private let daemon: DaemonManager
     private let visibility: FeatureVisibilityStore
     private let workspaceDir: () -> String?
+    private let configPath: String
     /// One parse of config.yaml serves the three reads of a refresh.
     private var config: ConfigService?
     private var configReadAt = Date.distantPast
     private static let configMaxAge: TimeInterval = 1
 
-    init(daemon: DaemonManager, visibility: FeatureVisibilityStore, workspaceDir: @escaping () -> String?) {
+    init(
+        daemon: DaemonManager,
+        visibility: FeatureVisibilityStore,
+        configPath: String = Constants.configPath,
+        workspaceDir: @escaping () -> String?
+    ) {
         self.daemon = daemon
         self.visibility = visibility
+        self.configPath = configPath
         self.workspaceDir = workspaceDir
     }
 
@@ -194,7 +201,7 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
 
     private func currentConfig() -> ConfigService {
         if let config, Date().timeIntervalSince(configReadAt) < Self.configMaxAge { return config }
-        let fresh = ConfigService()
+        let fresh = ConfigService(configPath: configPath)
         config = fresh
         configReadAt = Date()
         return fresh
