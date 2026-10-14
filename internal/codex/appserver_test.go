@@ -23,6 +23,7 @@ const (
 	fakeLogEnv   = "WT_FAKE_APPSERVER_LOG"   // every request received, one JSON line each
 	fakeHooksEnv = "WT_FAKE_APPSERVER_HOOKS" // hooks/list's hooks, a JSON array
 	fakePIDsEnv  = "WT_FAKE_APPSERVER_PIDS"  // hang: "<server pid> <child pid>"
+	fakePGIDEnv  = "WT_FAKE_APPSERVER_PGID"  // the server's pid (its process group), written first thing
 )
 
 func TestMain(m *testing.M) {
@@ -33,6 +34,10 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeAppServer(mode string) int {
+	// Before anything is spawned, so the test's cleanup always knows the group.
+	if err := os.WriteFile(os.Getenv(fakePGIDEnv), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return 2
+	}
 	if mode == "hang" || mode == "ok-child" {
 		child := exec.Command("sleep", "30")
 		if err := child.Start(); err != nil {
@@ -87,8 +92,8 @@ func fakeAnswer(mode string, id int, method string) map[string]any {
 }
 
 type fakeServer struct {
-	log, pids string
-	env       []string
+	log, pids, pgid string
+	env             []string
 }
 
 func newFakeServer(t *testing.T, mode string, hooks []map[string]any) fakeServer {
@@ -98,23 +103,38 @@ func newFakeServer(t *testing.T, mode string, hooks []map[string]any) fakeServer
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := fakeServer{log: filepath.Join(dir, "requests.jsonl"), pids: filepath.Join(dir, "pids")}
+	f := fakeServer{log: filepath.Join(dir, "requests.jsonl"), pids: filepath.Join(dir, "pids"), pgid: filepath.Join(dir, "pgid")}
 	f.env = append(os.Environ(),
-		fakeModeEnv+"="+mode, fakeLogEnv+"="+f.log, fakeHooksEnv+"="+string(hooksJSON), fakePIDsEnv+"="+f.pids)
-	// Backstop for a test that fails before the code under test kills the
-	// stub: the server leads its own process group (Setpgid), so killing the
-	// group takes its sleep child too. StartAppServer owns and waits the
-	// server; the child is reparented and reaped by init.
-	t.Cleanup(func() {
-		if b, err := os.ReadFile(f.pids); err == nil {
-			if fields := strings.Fields(string(b)); len(fields) > 0 {
-				if pgid, err := strconv.Atoi(fields[0]); err == nil && pgid > 1 {
-					_ = syscall.Kill(-pgid, syscall.SIGKILL)
-				}
-			}
-		}
-	})
+		fakeModeEnv+"="+mode, fakeLogEnv+"="+f.log, fakeHooksEnv+"="+string(hooksJSON),
+		fakePIDsEnv+"="+f.pids, fakePGIDEnv+"="+f.pgid)
+	t.Cleanup(func() { reapFakeGroup(t, f) })
 	return f
+}
+
+// reapFakeGroup is the backstop for a test that fails before the code under
+// test kills the stub: the server leads its own process group (Setpgid), so
+// killing the group takes its sleep child too, and the cleanup waits until
+// the group is gone. StartAppServer owns and waits the server; the child is
+// reparented and reaped by init. No pgid file: the stub never started.
+func reapFakeGroup(t *testing.T, f fakeServer) {
+	b, err := os.ReadFile(f.pgid)
+	if err != nil {
+		return
+	}
+	pgid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pgid <= 1 {
+		return
+	}
+	alive := func() bool { return !errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) }
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	deadline := time.Now().Add(5 * time.Second)
+	for alive() {
+		if time.Now().After(deadline) {
+			t.Errorf("fake app-server group %d still alive after SIGKILL", pgid)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (f fakeServer) start(t *testing.T) AppServer {
