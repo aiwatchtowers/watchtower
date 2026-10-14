@@ -9,12 +9,9 @@ struct SessionRoute: Hashable {
 /// age, the Mac's state), its open asks on top, the report's progress and
 /// summary, and the timeline. Opening it asks the Mac for a fresh report.
 /// Its asks open their forms. The actions menu stops a live session on the
-/// Mac after a confirmation; Finish comes with session input.
+/// Mac after a confirmation, and Finish asks it to wrap up. "Tell the
+/// session…" sends it a line (PROJ-16), on a phone the Mac allowed to type.
 struct SessionDetailView: View {
-    /// "Tell the session…" arrives with session input (PROJ-16); until then
-    /// the bar is built but not shown.
-    static let showsTellBar = false
-
     @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     @State private var viewModel: SessionDetailViewModel
@@ -54,14 +51,19 @@ struct SessionDetailView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if Self.showsTellBar {
-                TellSessionBar()
+            if let input = input(now: .now), input.showsBar {
+                TellSessionBar(model: input, isSending: env.sessionInputs.inFlight.contains(
+                    SessionInputSender.sendKey(viewModel.sessionID)
+                )) { text in await send(text) }
             }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let actions = actions(now: .now), actions.hasActions {
                     Menu {
+                        if actions.showsFinish {
+                            Button("Finish", systemImage: "flag.checkered") { finish() }
+                        }
                         if actions.canStop {
                             Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
                         }
@@ -86,7 +88,60 @@ struct SessionDetailView: View {
 
     private func actions(now: Date) -> SessionActionsModel? {
         replica.snapshot.session(viewModel.sessionID).map {
-            SessionActionsModel(session: $0, snapshot: replica.snapshot, inFlight: env.sessionStarts.inFlight, now: now)
+            SessionActionsModel(
+                session: $0, snapshot: replica.snapshot, inFlight: env.sessionStarts.inFlight, now: now,
+                showsFinish: input(now: now)?.showsFinish == true
+            )
+        }
+    }
+
+    private func input(now: Date) -> SessionInputModel? {
+        replica.snapshot.session(viewModel.sessionID).map {
+            SessionInputModel(
+                session: $0, snapshot: replica.snapshot,
+                grant: replica.snapshot.grant(for: env.linkedDevice?.deviceID),
+                typingRequested: env.deviceSettings.typingRequested,
+                delivered: env.sessionInputs.delivered[$0.id], now: now
+            )
+        }
+    }
+
+    /// Whether the line was queued (the bar clears its field then).
+    private func send(_ text: String) async -> Bool {
+        do {
+            return try await env.sessionInputs.send(sessionID: viewModel.sessionID, text: text)
+        } catch {
+            sendError = BoardWriteText.sendError(error)
+            return false
+        }
+    }
+
+    private func finish() {
+        let sessionID = viewModel.sessionID
+        Task {
+            do {
+                try await env.sessionInputs.finish(sessionID: sessionID)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
+        }
+    }
+
+    private func cancelLine(_ row: PendingAction) {
+        Task {
+            do {
+                try await env.sessionInputs.cancel(row)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
+        }
+    }
+
+    private func dismissLine(_ row: PendingAction) {
+        do {
+            try env.sessionInputs.dismiss(row)
+        } catch {
+            sendError = BoardWriteText.sendError(error)
         }
     }
 
@@ -115,11 +170,25 @@ struct SessionDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(detail)
+                if viewModel.waitingForKeys {
+                    Text("Unlock this iPhone to see the latest report.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 if let actions = actions(now: now) {
                     ForEach(actions.stopRows) { StopRowView(row: $0, onDismiss: dismissStop) }
                 }
                 if let notice = detail.approvalNotice {
                     ApprovalNoticeView(text: notice)
+                }
+                if let input = input(now: now) {
+                    ForEach(input.lines) { LineRowView(row: $0, onCancel: cancelLine, onDismiss: dismissLine) }
+                    if let notice = input.notice {
+                        Label(notice, systemImage: "checkmark.circle")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(minHeight: 44, alignment: .leading)
+                    }
                 }
                 if !detail.asks.isEmpty {
                     SessionAsksBox(asks: detail.asks, since: detail.asksSince)
@@ -354,9 +423,57 @@ private struct MilestoneRowView: View {
     }
 }
 
-/// "Tell the session…": a line to an idle session (PROJ-16). Built ahead of
-/// session input and not shown until then (`showsTellBar`).
+/// One line the phone sent, until the Mac applied it: how far it got, why
+/// it is held (Cancel), or the Mac's refusal (Dismiss).
+private struct LineRowView: View {
+    let row: SessionInputModel.LineRow
+    let onCancel: (PendingAction) -> Void
+    let onDismiss: (PendingAction) -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.text).font(TypeScale.rowTitle).lineLimit(2)
+                caption
+            }
+            Spacer(minLength: 8)
+            switch row.state {
+            case .waiting:
+                EmptyView()
+            case .held:
+                Button { onCancel(row.pending) } label: {
+                    Text("Cancel").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Cancel the held message")
+            case .failed:
+                Button { onDismiss(row.pending) } label: {
+                    Text("Dismiss").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Dismiss the message")
+            }
+        }
+        .frame(minHeight: 44)
+        .buttonStyle(.borderless)
+    }
+
+    @ViewBuilder private var caption: some View {
+        switch row.state {
+        case let .waiting(text), let .held(text):
+            Label(text, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+        case let .failed(text):
+            Text(text).font(.caption).foregroundStyle(PhoneTone.red.color)
+        }
+    }
+}
+
+/// "Tell the session…": a line to an idle session (PROJ-16). At a
+/// permission prompt it sends nothing and says so.
 private struct TellSessionBar: View {
+    let model: SessionInputModel
+    let isSending: Bool
+    let onSend: (String) async -> Bool
     @State private var text = ""
 
     var body: some View {
@@ -367,17 +484,23 @@ private struct TellSessionBar: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(minHeight: 44)
                         .accessibilityLabel("Message to the session")
-                    Button {} label: {
-                        Image(systemName: "arrow.right")
-                            .frame(width: 44, height: 44)
+                    if model.canSend {
+                        Button {
+                            Task {
+                                if await onSend(text) { text = "" }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.right")
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSending || !SessionInputText.isSendable(text))
+                        .accessibilityLabel("Send")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(true)
-                    .accessibilityLabel("Send")
                 }
-                Text("Delivered when the agent is idle · opt-in in Settings")
+                Text(model.approvalText ?? SessionInputModel.footnote)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(model.approvalText == nil ? Color.secondary : PhoneTone.waitingForYou.color)
             }
         }
     }

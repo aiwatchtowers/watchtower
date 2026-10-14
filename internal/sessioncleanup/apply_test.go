@@ -172,9 +172,9 @@ func (f *fixture) listsWorktree(root string) bool {
 	return strings.Contains(gitIn(f.t, f.repo, "worktree", "list", "--porcelain"), "worktree "+root+"\n")
 }
 
-// TestProj16_MergedAndPushedWorkIsRemoved is business done-criterion 1: a
+// TestProj18_MergedAndPushedWorkIsRemoved is business done-criterion 1: a
 // merged and a pushed worktree of the session, with their branches, go.
-func TestProj16_MergedAndPushedWorkIsRemoved(t *testing.T) {
+func TestProj18_MergedAndPushedWorkIsRemoved(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	pushed := f.worktree("wt-pushed", "feat/pushed")
@@ -214,7 +214,7 @@ func TestProj16_MergedAndPushedWorkIsRemoved(t *testing.T) {
 	}
 }
 
-func TestProj16_ClaudeHistoryAndMainBuildUntouched(t *testing.T) {
+func TestProj18_ClaudeHistoryAndMainBuildUntouched(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	home := filepath.Join(f.base, "home")
@@ -246,10 +246,10 @@ func TestProj16_ClaudeHistoryAndMainBuildUntouched(t *testing.T) {
 	}
 }
 
-// TestProj16_ApplyRechecksAndActsOnlyOnNamedItems: a worktree that turned
+// TestProj18_ApplyRechecksAndActsOnlyOnNamedItems: a worktree that turned
 // dirty after the plan, or right before it is acted on, is kept; items
 // outside the named set are never touched.
-func TestProj16_ApplyRechecksAndActsOnlyOnNamedItems(t *testing.T) {
+func TestProj18_ApplyRechecksAndActsOnlyOnNamedItems(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	roots := map[string]string{}
@@ -290,7 +290,7 @@ func TestProj16_ApplyRechecksAndActsOnlyOnNamedItems(t *testing.T) {
 	}
 }
 
-func TestProj16_BranchThatMovedAfterThePlanIsKept(t *testing.T) {
+func TestProj18_BranchThatMovedAfterThePlanIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	for _, b := range []string{"feat/early", "feat/late"} {
@@ -332,10 +332,10 @@ func TestProj16_BranchThatMovedAfterThePlanIsKept(t *testing.T) {
 	}
 }
 
-// TestProj16_NoForceNoFetchAnywhere: no git run of an apply carries a
+// TestProj18_NoForceNoFetchAnywhere: no git run of an apply carries a
 // force flag or fetches, every ref delete names the checked tip, and no
 // source file of the package spells a force flag or a fetch.
-func TestProj16_NoForceNoFetchAnywhere(t *testing.T) {
+func TestProj18_NoForceNoFetchAnywhere(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	for _, n := range []string{"a", "b"} {
@@ -383,7 +383,7 @@ func assertNoForceInSources(t *testing.T) {
 	}
 }
 
-func TestProj16_LsregisterRunsBeforeWorktreeRemove(t *testing.T) {
+func TestProj18_LsregisterRunsBeforeWorktreeRemove(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -401,10 +401,10 @@ func TestProj16_LsregisterRunsBeforeWorktreeRemove(t *testing.T) {
 	}
 }
 
-// TestProj16_FailureMidwayLeavesTheRestUntouched: a git run that fails
+// TestProj18_FailureMidwayLeavesTheRestUntouched: a git run that fails
 // (not git's refusal) stops the apply; what follows is not touched and is
 // reported.
-func TestProj16_FailureMidwayLeavesTheRestUntouched(t *testing.T) {
+func TestProj18_FailureMidwayLeavesTheRestUntouched(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	roots := []string{f.pushedWork("wt-a", "feat/a"), f.pushedWork("wt-b", "feat/b")}

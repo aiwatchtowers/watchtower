@@ -1,0 +1,6 @@
+{
+  "id": 1025,
+  "kind": "question",
+  "answer": {"answers": [], "checklist": [], "comments": [], "dismissed": true, "note": "", "verdict": ""},
+  "line": "Ask #1025 answered (question: dismissed) — read it with get_ask 1025 using the watchtower-workbench skill."
+}

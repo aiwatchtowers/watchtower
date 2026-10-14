@@ -112,9 +112,25 @@ type Options struct {
 	Run     Runner // nil = ExecRunner
 }
 
+// addRunNotes adds what the git and pull-request passes learned while
+// walking the board: a filter guard that skipped the squash checks, and a
+// pull-request lookup that did not complete (then PRChecked is false).
+func addRunNotes(rep *Report, g *gitState, pr *prChecker) {
+	if g.guardNote != "" {
+		rep.Notes = append(rep.Notes, g.guardNote)
+	}
+	if pr == nil {
+		return
+	}
+	if note := pr.summary(); note != "" {
+		rep.PRChecked = false
+		rep.Notes = append(rep.Notes, note)
+	}
+}
+
 // Check inspects every target of board against the folder's git state. It
 // never fails: a part it cannot check is skipped and named in Notes.
-func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options) Report {
+func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Options) Report {
 	if o.StaleAfter <= 0 {
 		o.StaleAfter = DefaultStaleAfter
 	}
@@ -124,7 +140,7 @@ func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options
 	if o.Run == nil {
 		o.Run = ExecRunner
 	}
-	rep := Report{WorkbenchID: projectID, Findings: []Finding{}}
+	rep := Report{WorkbenchID: workbenchID, Findings: []Finding{}}
 	g := newGitState(ctx, o)
 	rep.Git = g.workTree
 	rep.Base = g.baseName()
@@ -155,12 +171,7 @@ func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options
 		}
 		rep.Findings = append(rep.Findings, found...)
 	})
-	if pr != nil {
-		if note := pr.summary(); note != "" {
-			rep.PRChecked = false
-			rep.Notes = append(rep.Notes, note)
-		}
-	}
+	addRunNotes(&rep, g, pr)
 	if ctx.Err() != nil && !rep.Incomplete {
 		// The deadline hit during the repository probe: its conclusions
 		// (no work tree, no default branch) are not trustworthy either.

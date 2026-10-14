@@ -4,9 +4,12 @@ import WatchtowerCore
 import WatchtowerSync
 
 /// The `ask_alert` slice (mobile POC spec §4.7, §7), record name
-/// `ask_alert-<owner_asks.id>`: the push trigger for a new owner ask. The
-/// phone's query subscription fires on the record's creation, so each ask
-/// gets its record once:
+/// `ask_alert-<owner_asks.id>`: the push trigger for a new owner ask. Under
+/// E2E the record is sealed under `K_alert` (the only key the phone's
+/// notification extension holds, spec §2.2) and the subscription fires on its
+/// `sig-` signal record (`AskAlertSignal`, D14), written when the alert first
+/// reaches the zone; the title is clipped as before. Each ask gets its record
+/// once:
 /// - only for an ask opened at or after the hub's `enabled_at`, so a first
 ///   enable never alerts on the asks already waiting;
 /// - remembered in the sidecar's `alerted_asks` with the sync generation
@@ -56,8 +59,8 @@ struct AskAlertSlice: SliceSource {
         let stamp = now()
         // The hub's first enable; the heartbeat sets the same value.
         let enabledAt = try HubIdentity(sidecar: sidecar).ensureEnabledAt(stamp)
-        let workbenches = try WorkbenchSlice.publishedWorkbenches(db)
-        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.project.name) })
+        let workbenches = try WorkbenchSlice.publishedWorkbenchRefs(db)
+        let names = Dictionary(uniqueKeysWithValues: workbenches.map { ($0.id, $0.name) })
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, project_id, session_id, kind, title, payload, created_at
             FROM owner_asks WHERE status = 'open' ORDER BY id

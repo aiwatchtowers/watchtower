@@ -189,12 +189,12 @@ func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Bi
 // 1-based BatchParent of the earlier item holding that key
 // (validateTargetItems guaranteed it is earlier). On a failed write the
 // copies no row names are removed again.
-func insertTargetItems(d *db.DB, store workbenchfiles.Store, projectID int64, items []newTargetItem) ([]createdTarget, error) {
+func insertTargetItems(d *db.DB, store workbenchfiles.Store, workbenchID int64, items []newTargetItem) ([]createdTarget, error) {
 	var paths []string
 	for _, it := range items {
 		paths = append(paths, it.Images...)
 	}
-	images, err := ingestImages(d, store, projectID, paths)
+	images, err := ingestImages(d, store, workbenchID, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -202,11 +202,11 @@ func insertTargetItems(d *db.DB, store workbenchfiles.Store, projectID int64, it
 	var ids []int64
 	err = d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		if ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, db.ActorAgent, inputs); err != nil {
+		if ids, err = d.CreateWorkbenchTargetsTx(tx, workbenchID, db.ActorAgent, inputs); err != nil {
 			return err
 		}
 		for i, it := range items {
-			if err := images.attach(tx, projectID, ids[i], it.Images); err != nil {
+			if err := images.attach(tx, workbenchID, ids[i], it.Images); err != nil {
 				return err
 			}
 		}
@@ -217,7 +217,7 @@ func insertTargetItems(d *db.DB, store workbenchfiles.Store, projectID int64, it
 		if !errors.As(err, &verr) {
 			err = fmt.Errorf("creating targets: %w", err)
 		}
-		return nil, images.undo(d, projectID, err)
+		return nil, images.undo(d, workbenchID, err)
 	}
 	created := make([]createdTarget, 0, len(ids))
 	for i, id := range ids {
@@ -356,12 +356,12 @@ func nothingToUpdate(a updateTargetArgs) bool {
 // change re-derives a leaf's progress — and the image rows in one
 // transaction, so a failure part-way leaves the target untouched. A detached
 // image's copy is removed once no row names it.
-func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, projectID int64, a updateTargetArgs) (map[string]any, error) {
-	t, err := targetInWorkbench(d, projectID, a.TargetID)
+func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, a updateTargetArgs) (map[string]any, error) {
+	t, err := targetInWorkbench(d, workbenchID, a.TargetID)
 	if err != nil {
 		return nil, err
 	}
-	images, err := ingestImages(d, store, projectID, a.AddImages)
+	images, err := ingestImages(d, store, workbenchID, a.AddImages)
 	if err != nil {
 		return nil, err
 	}
@@ -371,20 +371,20 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, projectID int64, a 
 			return err
 		}
 		for _, id := range a.RemoveImageIDs {
-			path, err := db.RemoveWorkbenchTargetImageTx(tx, projectID, int64(t.ID), id)
+			path, err := db.RemoveWorkbenchTargetImageTx(tx, workbenchID, int64(t.ID), id)
 			if err != nil {
 				return err
 			}
 			detached = append(detached, path)
 		}
-		return images.attach(tx, projectID, int64(t.ID), a.AddImages)
+		return images.attach(tx, workbenchID, int64(t.ID), a.AddImages)
 	})
 	if err != nil {
-		return nil, images.undo(d, projectID, err)
+		return nil, images.undo(d, workbenchID, err)
 	}
 	out := map[string]any{"target_id": a.TargetID}
 	// The write is committed; a copy left behind is reported, never undone.
-	if err := discardUnreferenced(d, store, projectID, detached); err != nil {
+	if err := discardUnreferenced(d, store, workbenchID, detached); err != nil {
 		out["cleanup_warning"] = "detached image files could not all be removed: " + err.Error()
 	}
 	return out, nil
@@ -421,11 +421,11 @@ func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) e
 // scopeTargetMove refuses a parent_id outside the workbench or inside the
 // target's own subtree before anything is written; applyTargetMove re-checks
 // in the write transaction.
-func scopeTargetMove(d *db.DB, projectID int64, a updateTargetArgs) error {
+func scopeTargetMove(d *db.DB, workbenchID int64, a updateTargetArgs) error {
 	if a.ParentID == nil || *a.ParentID == 0 {
 		return nil
 	}
-	if _, err := targetInWorkbench(d, projectID, *a.ParentID); err != nil {
+	if _, err := targetInWorkbench(d, workbenchID, *a.ParentID); err != nil {
 		return err
 	}
 	return cycleRefusal(d.CheckParentCycle(a.TargetID, sql.NullInt64{Int64: *a.ParentID, Valid: true}), a.TargetID, *a.ParentID)

@@ -13,7 +13,7 @@ final class CloudKitTransportHubTests: XCTestCase {
     }
 
     private func ckRecord(_ name: String, in zoneID: CKRecordZone.ID) -> CKRecord {
-        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: name, zoneID: zoneID))
+        let ck = CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: name, zoneID: zoneID))
         ck.encryptedValues["payload"] = Data("{}".utf8)
         ck["kind"] = "action"
         ck["modifiedAt"] = Date(timeIntervalSince1970: 1_700_000_000)

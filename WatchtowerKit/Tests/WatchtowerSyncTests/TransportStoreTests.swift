@@ -9,6 +9,25 @@ final class TransportStoreTests: XCTestCase {
         CloudRecord(recordName: name, zone: zone, kind: "target", modifiedAt: stamp, payload: Data(payload.utf8))
     }
 
+    /// A queued save is pending until the send is acknowledged; another
+    /// zone's row of the same name is not this one.
+    func testIsPendingFromTheQueueUntilTheSendIsAcknowledged() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .relay))
+
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertTrue(try store.isPending(recordName: "device-1", zone: .relay))
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .data), "another zone")
+
+        try store.clearPending(saves: [(name: "device-1", zone: .relay, sentModifiedAt: stamp)], deletes: [])
+        XCTAssertFalse(try store.isPending(recordName: "device-1", zone: .relay), "acknowledged")
+
+        try store.enqueueDelete(recordNames: ["device-2"], zone: .relay)
+        XCTAssertTrue(try store.isPending(recordName: "device-2", zone: .relay), "a queued delete waits too")
+        try store.dropPending(recordName: "device-2", zone: .relay)
+        XCTAssertFalse(try store.isPending(recordName: "device-2", zone: .relay), "removed")
+    }
+
     func testChangesMirrorInMemorySemantics() throws {
         let store = try TransportStore.inMemory()
         try store.bufferChanged([record("target-1"), record("target-2")])
@@ -244,6 +263,34 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(swept, 1, "exactly the aged event row is deleted")
         let names = try store.changes(in: .relay, since: nil).changed.map(\.recordName)
         XCTAssertEqual(names, ["chunk-new"], "within-window event must survive the sweep")
+    }
+
+    /// The server's date is buffered and decides the sweep (target 168): a writer's far-future `modifiedAt`
+    /// cannot keep an aged event, nor a far-past one sweep a fresh event.
+    func testSweepEventsAgesByTheServersDate() throws {
+        let store = try TransportStore.inMemory()
+        let now = Date()
+        let claimsFresh = CloudRecord(
+            recordName: "action-claims-fresh", zone: .relay, kind: "action",
+            modifiedAt: now.addingTimeInterval(365 * 86_400), payload: Data("{}".utf8),
+            serverModifiedAt: now.addingTimeInterval(-35 * 86_400)
+        )
+        let claimsAged = CloudRecord(
+            recordName: "action-claims-aged", zone: .relay, kind: "action",
+            modifiedAt: Date(timeIntervalSince1970: 1), payload: Data("{}".utf8),
+            serverModifiedAt: now.addingTimeInterval(-60)
+        )
+        try store.bufferChanged([claimsFresh, claimsAged])
+        let batch = try store.changes(in: .relay, since: nil)
+        let buffered = batch.changed.compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
+        let expected = [claimsFresh, claimsAged].compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
+        XCTAssertEqual(buffered.count, 2)
+        for (got, want) in zip(buffered, expected) { XCTAssertEqual(got, want, accuracy: 0.001) }
+
+        let swept = try store.sweepEvents(in: .relay, olderThan: now.addingTimeInterval(-31 * 86_400), upTo: batch.newToken)
+
+        XCTAssertEqual(swept, 1)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["action-claims-aged"])
     }
 
     func testSweepEventsSparesUnconsumedEventsRegardlessOfAge() throws {

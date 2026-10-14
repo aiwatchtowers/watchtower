@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The sessions panel's session row (main list, finished group or the
 /// pinned row — they look alike, board #480): the row with its open asks,
-/// report line and closed-asks button, the tab while on screen.
+/// report line and closed-asks button, the tab while on screen; the ✕
+/// while hovered or under the panel cursor when its agent is not working.
 struct SessionsPanelSessionRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let projectID: Int64
@@ -11,6 +12,10 @@ struct SessionsPanelSessionRow: View {
     let actions: SessionRowActions
     let openAsks: Int
     let closedAsks: Int
+    /// The row under the mouse, kept by the panel: its ✕ shows.
+    @Binding var hoveredRow: Int64?
+    /// The panel has the keyboard (`SessionsPanelKeyView`).
+    let panelHasKeyboard: Bool
 
     var body: some View {
         TerminalSessionRow(
@@ -21,9 +26,40 @@ struct SessionsPanelSessionRow: View {
             reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
-                : nil
+                : nil,
+            quickDelete: quickDeleteAction,
+            deleteButtonTakesKeyboard: vm.requestPanelKeyboard,
+            showsDelete: hoveredRow == row.id || hasCursor,
+            hasCursor: hasCursor
         )
         .panelTab(isSelected: vm.panelSelection == .session(row.id))
+        .onHover { inside in
+            if inside {
+                hoveredRow = row.id
+            } else if hoveredRow == row.id {
+                hoveredRow = nil
+            }
+        }
+    }
+
+    private var hasCursor: Bool {
+        panelHasKeyboard && vm.panelCursor == row.id
+    }
+
+    /// The ✕ and VoiceOver's "Delete session": only on a row whose agent
+    /// is not working (`SessionDeletePolicy.isQuick`), nil otherwise. A
+    /// state that turned busy since the ✕ showed asks first. It leaves the
+    /// keyboard where it is: only a click on the ✕ itself hands it to the
+    /// panel (`deleteButtonTakesKeyboard`), so VoiceOver's action never
+    /// pulls it out of the terminal or the editor.
+    var quickDeleteAction: (() -> Void)? {
+        guard SessionDeletePolicy.isQuick(row.state, isWorkbenchSession: true) else { return nil }
+        let (vm, actions, session) = (vm, actions, row.session)
+        return {
+            Task {
+                if case let .confirm(busy) = await vm.deleteQuicklyOrConfirm(session) { actions.delete(busy) }
+            }
+        }
     }
 }
 

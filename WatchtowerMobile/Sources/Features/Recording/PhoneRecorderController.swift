@@ -15,8 +15,12 @@ protocol AudioCaptureEngine: AnyObject {
     func requestPermission() async -> Bool
     /// Activates the audio session and starts writing `url`.
     func begin(url: URL) throws
+    /// Stops taking audio and releases the microphone: the engine stops and
+    /// the audio session is deactivated (others are told), so a paused
+    /// capture keeps no audio running — nor the app alive in the background.
     func pause()
-    /// Continues writing the same file after a pause or an interruption.
+    /// Re-activates the session and continues writing the same file after
+    /// a pause or an interruption.
     func resume() throws
     /// Stops and finalises the file, then releases the audio session.
     func finish() async
@@ -78,7 +82,15 @@ struct SavedRecording: Equatable {
 ///   screen locked. The recorder never touches the fetch loop, which
 ///   pauses in the background as usual.
 /// - An `AVAudioSession` interruption (a call, Siri) pauses the capture;
-///   its end resumes into the SAME file, and the timer excludes the gap.
+///   its end resumes into the SAME file, and the timer excludes the gap. An
+///   end without `.shouldResume` leaves it paused like the Pause button.
+/// - A pause releases the audio session and stops the ticker; a capture
+///   paused for `pauseLimit` (60 min, board #724 owner decision Q5) is
+///   finished and saved by itself, the same way as Stop, and marked
+///   auto-finished; a save that fails then raises `onAutoFinishFailed`.
+///   An interruption counts as a pause: one longer than `pauseLimit`
+///   finishes the capture, and its later end (even with `.shouldResume`)
+///   changes nothing.
 /// - Time is read only through `now`, and the recorded length is the sum
 ///   of the recording spans, so pauses and interruptions are not audio.
 @MainActor
@@ -108,6 +120,10 @@ final class PhoneRecorderController {
     static let maximumDuration: TimeInterval = 3 * 3_600
     static let capNoticeLead: TimeInterval = 5 * 60
     static let capNoticeText = "Recording stops in 5 minutes (3-hour limit)."
+    /// How long a capture may stay paused before it is finished and saved
+    /// by itself (board #724, owner decision Q5).
+    static let pauseLimit: TimeInterval = 60 * 60
+    static let autoFinishNotice = "Finished automatically after 60 minutes paused."
     /// Waveform bars kept on screen.
     static let waveformBars = 48
 
@@ -131,6 +147,22 @@ final class PhoneRecorderController {
     /// Raised once when the cap notice appears; the app posts a local
     /// notification, since the screen is usually locked by then.
     @ObservationIgnored var onCapNotice: @MainActor () -> Void = {}
+    /// Raised once a long pause finished a capture; the app posts a local
+    /// notification.
+    @ObservationIgnored var onAutoFinish: @MainActor () -> Void = {}
+    /// Raised once a long pause's save failed: the owner is usually away,
+    /// so the app posts a local notification.
+    @ObservationIgnored var onAutoFinishFailed: @MainActor () -> Void = {}
+    /// true when the capture's audio starts or resumes, false when it
+    /// pauses or the capture is saved: the app holds the replica usable in
+    /// the background meanwhile (`DatabaseSuspension`).
+    @ObservationIgnored var onAudioRunning: @MainActor (Bool) -> Void = { _ in }
+    /// Called as a save begins (Stop, the 3-hour cap, a long pause, a dead
+    /// engine); the returned end runs once the save is done. The app keeps
+    /// itself running and the replica usable for the save
+    /// (`BackgroundWork`): after a pause no audio holds either, and a save
+    /// in the background would otherwise fail on a suspended replica.
+    @ObservationIgnored var beginSave: @MainActor () -> @MainActor () -> Void = { {} }
 
     @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private let engine: any AudioCaptureEngine
@@ -138,7 +170,10 @@ final class PhoneRecorderController {
     @ObservationIgnored private let now: @MainActor () -> Date
     @ObservationIgnored private let tickInterval: Duration?
     /// The ledger id of the capture being written.
-    @ObservationIgnored private var captureID: String?
+    @ObservationIgnored private(set) var captureID: String?
+    /// The stop finalizing the capture now (`saving`): a second caller
+    /// waits for it instead of returning early.
+    @ObservationIgnored private var stopping: Task<Void, Never>?
     @ObservationIgnored private var fileURL: URL?
     @ObservationIgnored private var startedAt: Date?
     /// Audio recorded before the current span.
@@ -146,6 +181,11 @@ final class PhoneRecorderController {
     /// When the current recording span began; nil while paused.
     @ObservationIgnored private var spanStart: Date?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// The wait of `pauseLimit`; tests step it by hand.
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    /// When the current pause began; nil while recording.
+    @ObservationIgnored private var pausedAt: Date?
+    @ObservationIgnored private var autoFinishTask: Task<Void, Never>?
     /// false while the app is not active: the ticker slows to
     /// `backgroundTickInterval` (nobody sees the timer or the waveform).
     @ObservationIgnored private var isForeground = true
@@ -157,6 +197,7 @@ final class PhoneRecorderController {
 
     /// - `tickInterval`: how often the timer, waveform and cap advance;
     ///   nil in tests, which call `tick()` themselves.
+    /// - `sleep`: the wait behind the long-pause auto-finish.
     /// The recordings folder is the uploader's, so the ledger and the files
     /// can never disagree on where captures live.
     init(
@@ -164,9 +205,11 @@ final class PhoneRecorderController {
         engine: any AudioCaptureEngine,
         notificationCenter: NotificationCenter = .default,
         now: @escaping @MainActor () -> Date = { Date() },
-        tickInterval: Duration? = .milliseconds(100)
+        tickInterval: Duration? = .milliseconds(100),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.uploader = uploader
+        self.sleep = sleep
         self.engine = engine
         self.directory = uploader.directory
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("phone-recordings", isDirectory: true)
@@ -207,6 +250,21 @@ final class PhoneRecorderController {
         default: false
         }
     }
+
+    /// The recorder owns the microphone or the recorder screen until it is
+    /// closed (multi-hub spec §5.4: one capture at a time across hubs): it
+    /// is presented (a start waiting on permission or the ledger, a capture,
+    /// or a result on screen), capturing (minimized too), or saving (the
+    /// engine's finish still holds the audio session).
+    var holdsMicrophoneOrScreen: Bool {
+        isPresented || isCapturing || phase == .saving
+    }
+
+    /// Whether the ticker runs (off while paused and when nothing captures).
+    var isTicking: Bool { tickTask != nil }
+
+    /// Whether a long pause's auto-finish is armed.
+    var isAutoFinishArmed: Bool { autoFinishTask != nil }
 
     /// The ticker's current period; nil when the ticker is off (tests).
     var currentTickInterval: Duration? {
@@ -328,11 +386,13 @@ final class PhoneRecorderController {
             let (title, eventID) = finalTitleAndEvent(startedAt: start)
             row = try await uploader.beginCapture(fileURL: url, startedAt: start, titleHint: title, eventID: eventID)
             try engine.begin(url: url)
+            protectCapture(url)
             captureID = row?.id
             fileURL = url
             startedAt = start
             spanStart = start
             phase = .recording
+            onAudioRunning(true)
             startTicker()
         } catch {
             Self.logger.error("recording start failed: \(error.localizedDescription, privacy: .public)")
@@ -340,6 +400,19 @@ final class PhoneRecorderController {
                 try? await uploader.discard(id: row.id)
             }
             phase = .failed("Could not start recording: \(error.localizedDescription)")
+        }
+    }
+
+    /// D8: the capture is plaintext audio, `completeUnlessOpen` (it keeps
+    /// writing once the phone locks, and nothing opens it anew while locked)
+    /// until it is sealed. The engine has just created the file (the writer
+    /// refuses an existing one). A failure leaves the folder's class C and
+    /// is logged: a capture is never stopped over an attribute.
+    private func protectCapture(_ url: URL) {
+        do {
+            try FileProtection.protect(url, as: FileProtection.plaintext)
+        } catch {
+            Self.logger.error("capture file protection not set: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -368,17 +441,31 @@ final class PhoneRecorderController {
 
     func pause() {
         guard phase == .recording else { return }
+        enterPause(.user)
+    }
+
+    /// Every pause (the button, an interruption): the span closes, the
+    /// engine releases the audio session, the ticker stops, and the
+    /// long-pause auto-finish is armed.
+    private func enterPause(_ reason: PauseReason) {
         closeSpan()
         engine.pause()
-        phase = .paused(.user)
+        onAudioRunning(false)
+        stopTicker()
+        phase = .paused(reason)
+        pausedAt = now()
+        armAutoFinish()
     }
 
     func resume() {
         guard case .paused = phase else { return }
         do {
             try engine.resume()
+            disarmAutoFinish()
             spanStart = now()
             phase = .recording
+            onAudioRunning(true)
+            startTicker()
         } catch {
             // The microphone cannot continue this file (for example, it
             // changed while paused): end here and save what was written.
@@ -408,16 +495,55 @@ final class PhoneRecorderController {
     /// at once. The phase is `saving` from the first line, so the controls
     /// are off and no mark is dropped while the file closes. The saved
     /// duration is the recorded time, never more than the file holds. Safe
-    /// to call when nothing is capturing.
+    /// to call when nothing is capturing; a call while a stop is saving
+    /// returns once that stop has.
     func stop() async {
+        await finish(autoFinished: false)
+    }
+
+    /// Stop's body; `autoFinished` marks the ledger row of a capture a long
+    /// pause ended. A call while a stop is saving returns once that one has.
+    private func finish(autoFinished: Bool) async {
+        if let stopping {
+            await stopping.value
+            return
+        }
         guard isCapturing, let captureID, let fileURL, let startedAt else { return }
+        // The save below writes the ledger and hands the file to the
+        // transport, in the background too: both are released once it is
+        // done.
+        let endSave = beginSave()
+        defer {
+            onAudioRunning(false)
+            endSave()
+        }
         phase = .saving
         closeSpan()
-        tickTask?.cancel()
-        tickTask = nil
+        stopTicker()
+        disarmAutoFinish()
         self.captureID = nil
         self.fileURL = nil
         self.startedAt = nil
+        let task = Task {
+            await finishStop(captureID: captureID, fileURL: fileURL, startedAt: startedAt, autoFinished: autoFinished)
+        }
+        stopping = task
+        await task.value
+        stopping = nil
+    }
+
+    /// Before a wipe of the replica: a stop already saving (the owner's,
+    /// or the 3-hour cap) is waited for, and a running capture is stopped
+    /// and saved. Returns the id of the capture this call stopped, nil when
+    /// none was running.
+    func stopForWipe() async -> String? {
+        await stopping?.value
+        guard isCapturing, let id = captureID else { return nil }
+        await stop()
+        return id
+    }
+
+    private func finishStop(captureID: String, fileURL: URL, startedAt: Date, autoFinished: Bool) async {
         await engine.finish()
         // The saved length is never more than the file holds; a file with
         // no readable audio is not uploaded at all.
@@ -440,7 +566,8 @@ final class PhoneRecorderController {
                 activeDuration: duration,
                 titleHint: title,
                 eventID: eventID,
-                marks: marks
+                marks: marks,
+                autoFinished: autoFinished
             )
             guard let finished else {
                 phase = .tooShort
@@ -452,6 +579,13 @@ final class PhoneRecorderController {
             Self.logger.error("recording save failed: \(error.localizedDescription, privacy: .public)")
             phase = .failed("Could not save the recording: \(error.localizedDescription)")
             return
+        }
+        // Sealed at once, not behind an upload pass that may wait on the
+        // network: no plaintext audio waits for the Mac (mobile E2E D8).
+        do {
+            try await uploader.sealPending()
+        } catch {
+            Self.logger.warning("recording seal failed, retried by the upload pass: \(error.localizedDescription, privacy: .public)")
         }
         await uploadPending()
     }
@@ -470,17 +604,24 @@ final class PhoneRecorderController {
     /// files no row points at. A capture running right now is left alone.
     func recoverOnLaunch() async {
         do {
-            // Captures begun in this run are skipped by the uploader itself,
-            // so a Record tap during this recovery is never claimed.
-            let recovered = try await uploader.recoverInterruptedCaptures { [engine] url in
-                await engine.recordedDuration(of: url)
-            }
-            if !recovered.isEmpty {
-                Self.logger.notice("recovered \(recovered.count) recordings cut short")
-            }
+            try await recoverInterrupted()
             try await uploader.sweepOrphanFiles()
         } catch {
             Self.logger.error("recording recovery failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Finalizes captures cut short (rows still `recording` that this
+    /// process is not writing) from their files; deletes nothing else.
+    /// Also run before a wipe hands the recordings over.
+    func recoverInterrupted() async throws {
+        // Captures begun in this run are skipped by the uploader itself,
+        // so a Record tap during this recovery is never claimed.
+        let recovered = try await uploader.recoverInterruptedCaptures { [engine] url in
+            await engine.recordedDuration(of: url)
+        }
+        if !recovered.isEmpty {
+            Self.logger.notice("recovered \(recovered.count) recordings cut short")
         }
     }
 
@@ -525,8 +666,14 @@ final class PhoneRecorderController {
         }
     }
 
+    private func stopTicker() {
+        tickTask?.cancel()
+        tickTask = nil
+    }
+
     private func startTicker() {
         tickTask?.cancel()
+        tickTask = nil
         guard tickInterval != nil else { return }
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -542,8 +689,56 @@ final class PhoneRecorderController {
     /// active, and is back to its full rate on return.
     func setForeground(_ foreground: Bool) {
         isForeground = foreground
-        if foreground {
-            Task { await tick() }
+        guard foreground else { return }
+        // A pause that outlived the limit while the app was suspended (its
+        // timer could not fire) ends on the return.
+        if let pausedAt, now().timeIntervalSince(pausedAt) >= Self.pauseLimit {
+            Task { await finishAfterLongPause(captureID: captureID) }
+            return
+        }
+        Task { await tick() }
+    }
+
+    // MARK: - Long pause
+
+    private func armAutoFinish() {
+        autoFinishTask?.cancel()
+        let sleep = sleep
+        let id = captureID
+        autoFinishTask = Task { [weak self] in
+            do {
+                try await sleep(.seconds(Self.pauseLimit))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.finishAfterLongPause(captureID: id)
+        }
+    }
+
+    private func disarmAutoFinish() {
+        autoFinishTask?.cancel()
+        autoFinishTask = nil
+        pausedAt = nil
+    }
+
+    /// Finishes the capture `captureID` if it is still paused: the same save
+    /// as Stop, with the auto-finish notice on the Saved screen and in a
+    /// notification. Runs once: the first call disarms the timer.
+    private func finishAfterLongPause(captureID id: String?) async {
+        guard case .paused = phase, let id, id == captureID else { return }
+        // Not cancelled by the save below: it may be this very task.
+        autoFinishTask = nil
+        Self.logger.notice("capture paused for \(Int(Self.pauseLimit / 60)) min: finishing it")
+        endNotice = Self.autoFinishNotice
+        await finish(autoFinished: true)
+        switch phase {
+        case .saved:
+            onAutoFinish()
+        case .failed:
+            onAutoFinishFailed()
+        default:
+            break
         }
     }
 
@@ -594,14 +789,15 @@ final class PhoneRecorderController {
             // The system already paused the recorder; only a running
             // capture changes state (an owner pause stays an owner pause).
             guard phase == .recording else { return }
-            closeSpan()
-            engine.pause()
-            phase = .paused(.interruption)
+            enterPause(.interruption)
         case let .ended(shouldResume):
             guard phase == .paused(.interruption) else { return }
             if shouldResume {
                 resume()
             } else {
+                // Stays paused like the Pause button: the session is
+                // already released and the pause limit counts from the
+                // interruption's start.
                 phase = .paused(.user)
             }
         case .unknown:

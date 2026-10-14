@@ -1,23 +1,9 @@
 import Foundation
 import Observation
 import os
+import UIKit
+import UserNotifications
 @_spi(DemoTransport) import WatchtowerSync
-
-/// Which transport an `AppEnvironment` runs on: probed in `init()`,
-/// injectable through the designated init for tests. `.cloudKit` NEVER
-/// seeds: a real install starts empty and hydrates from the user's own zone.
-enum TransportKind: String, Sendable {
-    case cloudKit
-    case inMemoryDemo
-}
-
-/// What the CloudKit transport tells the link flow (spec §9).
-enum LinkSignal: Sendable {
-    /// `shared` scope: the Mac's zones are gone (`TransportEvent.unlinked`).
-    case unlinked
-    /// An iCloud account sign-out or switch reset the transport.
-    case accountChanged
-}
 
 /// Why the environment could not boot (shown by `BootFailureView`).
 enum AppEnvironmentError: LocalizedError {
@@ -25,425 +11,619 @@ enum AppEnvironmentError: LocalizedError {
     /// extensions could never read the replica, so the app refuses to boot
     /// instead of silently keeping it somewhere else.
     case appGroupUnavailable
+    /// The registry holds Macs and not one of their sessions could be
+    /// built (`AppEnvironment.live`): the first failure's description.
+    case noHubOpened(String)
 
     var errorDescription: String? {
         switch self {
         case .appGroupUnavailable:
             "The shared app group container is not available. Reinstall Watchtower."
+        case let .noHubOpened(reason):
+            reason
         }
     }
 }
 
-/// Root object for the app: owns the on-device replica, the hydrator that
-/// pulls DataZone into it, and the relay pair (`ActionOutbox` out,
-/// `RelayFeed` echoes in) over the same transport and store. Injected into
-/// the view tree with `.environment`. Owned for the app's lifetime, so its
-/// loop and in-flight work survive any navigation.
-///
-/// One fetch loop drives both consumers: each cycle hydrates DataZone (the
-/// hydrator's pull nudges the CKSyncEngine once) and then reads RelayZone.
-/// Its cadence follows the selected tab (spec §3) and it pauses while the
-/// app is in the background, whatever background mode keeps it alive.
+/// Root object for the app (multi-hub spec §5.3): the app-wide parts (the
+/// tab and the Calendar stack, the recaps seen, the app icon's badge) and
+/// one `HubSession` per linked Mac, the one on screen among them. Injected
+/// into the view tree with `.environment`; the per-hub API the views read
+/// is forwarded to the active session, which the root always has while it
+/// shows the tabs.
 @MainActor
 @Observable
 final class AppEnvironment {
     /// The phone's app group (spec §2.1). The replica lives in its container
     /// so the notification extensions can read it.
     nonisolated static let appGroupID = "group.com.aiwatchtowers.watchtower.mobile"
-    /// The hub a live phone syncs while it has no link (F1 bridge, replaced
-    /// by F2's `HubRegistry`): no Mac has zones of this name, so it syncs
-    /// nothing.
-    nonisolated static let unlinkedHubID = "unlinked"
 
-    let store: ReplicaStore
+    /// The transport every session runs on (`Boot.make` registers for
+    /// pushes on the live one only).
     let transportKind: TransportKind
-    let outbox: ActionOutbox
-    /// `session_report_request` on opening a session detail, throttled per
-    /// session for the app's lifetime.
-    let reportRequests: SessionReportRequester
-    /// The phone's board writes (status, priority, comments, new targets).
-    let boardWriter: BoardWriter
-    /// The owner's unsent ask answers, per ask: they survive navigation.
-    let askDrafts = AskDraftStore()
-    /// The phone's ask answers and what the Mac did with them.
-    let askAnswerer: AskAnswerer
-    /// The phone's session starts (with their progress) and stops.
-    let sessionStarts: SessionStarter
-    let deviceSettings: DeviceSettings
-    /// The Workbench slices as the Now and Workbench tabs and the tab badge
-    /// draw them: one observation for the app's lifetime.
-    let workbenchReplica = WorkbenchReplicaModel()
-    /// The calendar slices as the Calendar and Now tabs draw them.
-    let calendarReplica = CalendarReplicaModel()
-    /// The phone recorder (record a meeting or a voice note), owned for the
-    /// app's lifetime so a capture survives any navigation.
-    let recorder: PhoneRecorderController
-    /// The phone's recordings and their way to the Mac.
-    let phoneRecordings = PhoneRecordingsModel()
-    /// The ready recaps the owner has opened on this phone.
-    let recordingsSeen: RecordingsSeenStore
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
+    /// The ready recaps the owner has opened on this phone.
+    let recordingsSeen: RecordingsSeenStore
+    /// Every hub's session, by hub id.
+    private(set) var sessions: [String: HubSession] = [:]
+    /// The sessions on screen, in the registry's order.
+    private(set) var order: [String] = []
+    /// The hub on screen; nil before one is activated.
+    private(set) var activeHubID: String?
+    /// Registry hubs whose session could not be built at launch (`live`):
+    /// listed with their problem, offered Forget, never put on screen.
+    private(set) var unopenedHubIDs: Set<String> = []
 
-    /// This phone's link, nil until the link flow sets one. The demo
-    /// transport is linked to `DemoSeed.device`.
-    private(set) var linkedDevice: LinkedDevice?
-    /// false while the link stands but nothing may be sent (the hub moved,
-    /// spec §9): the outbox and the uploader refuse as if unlinked.
-    private(set) var writesAllowed = true
+    /// The last active session after `remove` took it off screen with no
+    /// hub left to activate: the forwarders read it (shut down, its data
+    /// as it was) until another hub activates. Never synced or written.
+    @ObservationIgnored private var retained: HubSession?
+    /// Told of the hub a switch puts on screen (`activate`): the root
+    /// re-evaluates the stale notice for it.
+    @ObservationIgnored var onActivate: (@MainActor (HubSession) -> Void)?
 
-    /// The link flow's hooks (`AppRoot`): the transport's link signals, and
-    /// a call after every successful fetch (the heartbeat checks).
-    @ObservationIgnored var onLinkSignal: (@MainActor (LinkSignal) -> Void)?
-    @ObservationIgnored var onFetched: (@MainActor () -> Void)?
-
-    /// When the phone last fetched from the Mac successfully (Settings →
-    /// Your Mac → Last sync); nil before the first successful fetch.
-    private(set) var lastSyncAt: Date?
-
-    /// The loop's cadence: 5 s on Now and Workbench, 30 s otherwise.
-    private(set) var fetchInterval: Duration = .seconds(30)
-    /// false while the app is in the background: the loop is paused.
-    private(set) var isActive = true
-    /// true while the fetch loop runs.
-    var isLooping: Bool { loopTask != nil }
-    /// Fetch cycles the loop has begun (a cancelled loop begins none).
-    @ObservationIgnored private(set) var fetchCycles = 0
-
-    @ObservationIgnored private let transport: any CloudSyncTransport
-    @ObservationIgnored private let hydrator: ReplicaHydrator
-    @ObservationIgnored private let feed: RelayFeed
-    @ObservationIgnored private let uploader: RecordingUploader
-    @ObservationIgnored private var loopTask: Task<Void, Never>?
-    /// The loop's wait between cycles; tests step it by hand.
-    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
-    /// The boot (seed or engine start, first fetch, recovery) is done.
-    @ObservationIgnored private(set) var isBootstrapped = false
-    @ObservationIgnored private var stopped = false
+    /// Persists the active hub; nil persists nothing (tests, the demo).
+    @ObservationIgnored private let registry: HubRegistry?
+    @ObservationIgnored private let setBadge: @MainActor (Int) -> Void
+    /// The total the badge was last set to, or seeded with at init (the
+    /// badge is not written for it: a launch never flashes 0).
+    @ObservationIgnored private var badgeTotal: Int?
+    /// The scene phase as `setActive` last had it: a session added later
+    /// takes it too. nil before the first.
+    @ObservationIgnored private var sceneActive: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppEnvironment")
 
-    /// TRANSPORT SWITCH: a build carrying the iCloud entitlement (signed
-    /// device or TestFlight build) goes live over CloudKit, in the app group
-    /// container; anything else (unsigned simulator and CI builds) runs the
-    /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
-    /// tests: nil keeps the phone's own recordings folder. A live build
-    /// runs `hubID`'s zones in `scope`'s database, linked as `linkedDevice`
-    /// (`AppRoot` reads all three from the `LinkStore`).
-    convenience init(
-        recordingsDirectory: URL? = nil,
-        scope: CloudDatabaseScope = .private,
-        hubID: String = AppEnvironment.unlinkedHubID,
-        linkedDevice: LinkedDevice? = nil
-    ) throws {
-        if CloudKitTransport.entitlementPresent() {
-            let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
-            try self.init(
-                transport: CloudKitTransport(
-                    store: transportStore, scope: scope, hubID: hubID, role: .phone
-                ),
-                replicaPath: Self.liveReplicaPath(in: directory),
-                transportKind: .cloudKit,
-                linkedDevice: linkedDevice,
-                recordingsDirectory: recordingsDirectory
-            )
-        } else {
-            try self.init(
-                transport: InMemoryCloudTransport(),
-                replicaPath: try Self.applicationSupportDirectory().appendingPathComponent("replica.sqlite").path,
-                transportKind: .inMemoryDemo,
-                recordingsDirectory: recordingsDirectory
-            )
-        }
-    }
-
-    /// Designated init with an injectable transport and replica path, so
-    /// wiring tests build isolated environments. Throws when the replica
-    /// cannot open (the app then shows `BootFailureView`). `makeRecorder`
-    /// builds the recorder over the environment's uploader; tests pass a
-    /// fake audio engine and clock, the app the microphone. `sleep` is the
-    /// fetch loop's wait between cycles. `linkedDevice` is the saved link
-    /// (the demo kind is always `DemoSeed.device`).
+    /// `setBadge` sets the app icon's badge to the open asks across every
+    /// hub (`openAskTotal`), called whenever that total changes.
     init(
-        transport: any CloudSyncTransport,
-        replicaPath: String,
-        transportKind: TransportKind = .inMemoryDemo,
-        linkedDevice: LinkedDevice? = nil,
-        defaults: UserDefaults = .standard,
-        recordingsDirectory: URL? = nil,
-        makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-    ) throws {
-        assert(
-            !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
-            "a CloudKitTransport must not run under the demo kind"
-        )
-        store = try ReplicaStore(path: replicaPath)
-        self.sleep = sleep
-        self.transport = transport
+        transportKind: TransportKind,
+        defaults: UserDefaults,
+        registry: HubRegistry? = nil,
+        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
+    ) {
         self.transportKind = transportKind
-        let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
-        self.linkedDevice = device
-
-        // On the live path the hydrator nudges the CKSyncEngine before each
-        // cycle; the feed reads what that fetch buffered, so it gets no pull
-        // of its own. An in-memory stand-in has no engine and gets nil.
-        let pull: (@Sendable () async throws -> Void)? = (transport as? CloudKitTransport)
-            .map { cloud in { @Sendable in try await cloud.pull() } }
-        let hydrator = ReplicaHydrator(transport: transport, store: store, pull: pull)
-        self.hydrator = hydrator
-        let outbox = ActionOutbox(transport: transport, store: store, deviceID: device?.deviceID)
-        self.outbox = outbox
-        reportRequests = SessionReportRequester.sending(through: outbox)
-        boardWriter = BoardWriter.sending(through: outbox, store: store)
-        askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
-        sessionStarts = SessionStarter.sending(through: outbox, store: store)
-        // An `applied` echo clears the queued row; hydrating right behind it
-        // lands the Mac's authoritative change at the same moment.
-        let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in
-            do {
-                _ = try await hydrator.hydrateOnce()
-            } catch {
-                Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-        let uploader = RecordingUploader(
-            transport: transport,
-            store: store,
-            directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
-            deviceID: device?.deviceID
-        )
-        self.uploader = uploader
-        recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
-        feed = RelayFeed(
-            transport: transport,
-            store: store,
-            outbox: outbox,
-            uploads: uploader,
-            onActionApplied: hydrateAfterEcho
-        )
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
-        settings.linkedDevice = device
-        deviceSettings = settings
+        self.registry = registry
+        self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
-        workbenchReplica.start(store: store)
-        calendarReplica.start(store: store)
-        phoneRecordings.start(store: store)
-
-        bootstrapTask = Task { await bootstrap() }
+        observeBadge()
     }
 
-    /// Demo seed or engine start, a first fetch so the screens have content
-    /// at once, then the fetch loop.
-    private func bootstrap() async {
-        // Before any fetch, so no applied echo goes unseen: an ask answer's
-        // delivery, a start's session id.
-        await outbox.setAppliedObserver(Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts))
-        switch transportKind {
-        case .inMemoryDemo:
-            #if DEBUG
+    /// One session, active: the tests and the boot until the registry
+    /// holds the hubs.
+    static func single(_ session: HubSession, defaults: UserDefaults) -> AppEnvironment {
+        let env = AppEnvironment(transportKind: session.transportKind, defaults: defaults)
+        env.add(session)
+        env.activate(session.hubID)
+        return env
+    }
+
+    // MARK: - Sessions
+
+    /// The session on screen. The root never shows the tabs without one.
+    var active: HubSession? { activeHubID.flatMap { sessions[$0] } }
+
+    func session(_ hubID: String) -> HubSession? { sessions[hubID] }
+
+    /// The switcher's and Settings → Macs' rows for the registry's `rows`
+    /// (`HubListModel.items`), over these sessions.
+    func hubListItems(_ rows: [HubRow], now: Date) -> [HubListItem] {
+        HubListModel.items(rows: rows, sessions: sessions, unopened: unopenedHubIDs, activeHubID: activeHubID, now: now)
+    }
+
+    /// Adds (or replaces) `session` at the end of the order, with the
+    /// scene phase the others have and its role.
+    func add(_ session: HubSession) {
+        sessions[session.hubID] = session
+        unopenedHubIDs.remove(session.hubID)
+        if !order.contains(session.hubID) {
+            order.append(session.hubID)
+        }
+        if let sceneActive {
+            session.setActive(sceneActive)
+        }
+        applyRoles()
+    }
+
+    /// Drops a session the caller has already shut down. The caller
+    /// activates another hub first when this one is on screen; otherwise
+    /// no hub is active afterwards (never a dangling id), and the removed
+    /// session is kept as `retained` until another hub activates: views
+    /// still on screen while the root turns to onboarding read it through
+    /// the forwarders instead of trapping.
+    func remove(_ hubID: String) {
+        if activeHubID == hubID {
+            retained = sessions[hubID]
+            activeHubID = nil
+        }
+        sessions[hubID] = nil
+        unopenedHubIDs.remove(hubID)
+        order.removeAll { $0 == hubID }
+    }
+
+    /// Follows the registry's new order (Settings → Macs): the sessions
+    /// listed, in that order; a hub missing from `hubIDs` keeps its place
+    /// after them.
+    func reorder(_ hubIDs: [String]) {
+        let known = hubIDs.filter { sessions[$0] != nil }
+        order = known + order.filter { !known.contains($0) }
+    }
+
+    /// Names every session as the switcher does (`HubDisplayName`), from
+    /// the registry's `rows`: the recorder says which Mac a capture is for.
+    func nameHubs(_ rows: [HubRow]) {
+        let names = HubDisplayName.names(for: rows)
+        for (hubID, session) in sessions {
+            session.hubName = names[hubID]
+        }
+    }
+
+    /// Puts `hubID`'s session on screen and keeps it as the active hub. A
+    /// switch to another hub resets navigation to the root (multi-hub spec
+    /// §5.6): no screen of the old hub stays pushed over the new one, and
+    /// `onActivate` hears of the new hub. A hub with no session here (one
+    /// whose session could not be built at launch) is never put on screen.
+    func activate(_ hubID: String) {
+        guard let session = sessions[hubID] else {
+            Self.logger.error("a hub with no session was not activated")
+            return
+        }
+        retained = nil
+        let switched = activeHubID != hubID
+        if switched {
+            navigation.resetStacks()
+        }
+        activeHubID = hubID
+        if switched {
+            onActivate?(session)
+        }
+        if let registry {
             do {
-                // Each launch builds a new in-memory transport whose change
-                // cursor restarts, so the persisted replica's tokens must be
-                // forgotten or the fresh seed never lands.
-                try store.resetSyncTokens()
-                try await DemoSeed.load(into: transport)
-                try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: Date())
+                try registry.setActive(hubID)
             } catch {
-                Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
-            }
-            #endif
-        case .cloudKit:
-            if let cloud = transport as? CloudKitTransport {
-                // Before the engine starts, so no signal goes unseen; each
-                // reaches whatever hook the link flow set by then.
-                await cloud.setEventHandler { [weak self] event in
-                    guard event == .unlinked else { return }
-                    Task { @MainActor in self?.onLinkSignal?(.unlinked) }
-                }
-                await cloud.setAccountResetHandler { [weak self] in
-                    Task { @MainActor in self?.onLinkSignal?(.accountChanged) }
-                }
-                await cloud.start()
+                Self.logger.error("active hub not saved: \(error.localizedDescription, privacy: .public)")
             }
         }
-        await refresh()
-        // An action the Mac never answered within 24 h is failed locally, so
-        // the queued count never counts it forever.
-        do {
-            try await outbox.sweepSilentPending()
-        } catch {
-            Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
-        }
-        // A capture cut short by a kill is finalized from its file, and
-        // files without a ledger row are deleted. Then the relaunch retry:
-        // recordings saved but not yet acknowledged go out again (the hub's
-        // processed set absorbs duplicates).
-        await recorder.recoverOnLaunch()
-        await recorder.uploadPending()
-        isBootstrapped = true
-        restartLoop()
+        applyRoles()
     }
 
-    /// The outbox's one applied observer, shared by the app and the tests:
-    /// every applied echo goes to both consumers on the main actor, and
-    /// each keeps only its own kind.
-    nonisolated static func appliedObserver(
-        askAnswerer: AskAnswerer,
-        sessionStarts: SessionStarter
-    ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts] action in
-            Task { @MainActor in
-                askAnswerer?.receiveApplied(action)
-                sessionStarts?.receiveApplied(action)
-            }
+    /// The session on screen polls every minute, the others less often
+    /// (`SessionCadence`). Before a hub is activated every session keeps
+    /// its role, so `single` never flips a running session.
+    private func applyRoles() {
+        guard activeHubID != nil else { return }
+        for (hubID, session) in sessions {
+            session.setRole(hubID == activeHubID ? .active : .inactive)
         }
     }
 
-    /// The device recorder: the microphone, recordings in Application
-    /// Support, and a local notification for the 3-hour cap notice.
-    private static func liveRecorder(_ uploader: RecordingUploader) throws -> PhoneRecorderController {
-        let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
-        recorder.onCapNotice = { RecorderNotices.postCapNotice() }
-        return recorder
-    }
-
-    /// One fetch: DataZone, then RelayZone echoes. Returns false when the
-    /// data fetch failed. Used by the loop, silent pushes and pull to
-    /// refresh; every success stamps `lastSyncAt`.
-    @discardableResult
-    func refresh() async -> Bool {
-        do {
-            _ = try await hydrator.hydrateOnce()
-        } catch {
-            Self.logger.error("fetch failed: \(error.localizedDescription, privacy: .public)")
-            return false
-        }
-        lastSyncAt = Date()
-        do {
-            _ = try await feed.pollOnce()
-        } catch {
-            Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
-        }
-        onFetched?()
-        return true
-    }
-
-    /// The selected tab sets the loop's cadence (spec §3).
-    func setFetchInterval(_ interval: Duration) {
-        guard interval != fetchInterval else { return }
-        fetchInterval = interval
-        restartLoop()
-    }
-
-    /// Scene phase: the loop pauses in the background and resumes, with an
-    /// immediate fetch, when the app is active again.
+    /// The scene phase, for every session: each pauses its safety poll
+    /// while the app is not active and decides on the return whether to
+    /// fetch (`HubSession.setActive`).
     func setActive(_ active: Bool) {
-        guard active != isActive else { return }
-        isActive = active
-        // A capture keeps going in the background, but its timer slows.
-        recorder.setForeground(active)
-        restartLoop()
+        sceneActive = active
+        for hubID in order {
+            sessions[hubID]?.setActive(active)
+        }
+    }
+
+    /// One fetch of every session at once; true when any succeeded.
+    @discardableResult
+    func refreshAll(_ trigger: FetchTrigger) async -> Bool {
+        let all = Array(sessions.values)
+        return await withTaskGroup(of: Bool.self) { group in
+            for session in all {
+                group.addTask { await session.refresh(trigger) }
+            }
+            var fetched = false
+            for await success in group where success {
+                fetched = true
+            }
+            return fetched
+        }
+    }
+
+    /// A silent push from `scope`'s database reaches the sessions linked
+    /// there (every session when the scope is unknown, the demo always),
+    /// each fetching it at once (`HubSession.handlePush`). The outcome is
+    /// `.newData` when any brought something, `.failed` when every one
+    /// failed, else `.noData`.
+    func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushScope?) async -> FetchOutcome {
+        let reached = sessions.values.filter { session in
+            guard let scope, let own = session.databaseScope else { return true }
+            return PushScope(own) == scope
+        }
+        guard !reached.isEmpty else { return .noData }
+        let outcomes = await withTaskGroup(of: FetchOutcome.self) { group in
+            for session in reached {
+                group.addTask { await session.handlePush(at: arrival, inForeground: inForeground) }
+            }
+            var outcomes: [FetchOutcome] = []
+            for await outcome in group {
+                outcomes.append(outcome)
+            }
+            return outcomes
+        }
+        if outcomes.contains(.newData) { return .newData }
+        return outcomes.allSatisfy { $0 == .failed } ? .failed : .noData
+    }
+
+    /// Returns once every session's boot has ended.
+    func waitForBoot() async {
+        for session in sessions.values {
+            await session.waitForBoot()
+        }
+    }
+
+    // MARK: - The badge
+
+    /// The open asks across every hub that can still answer them: the app
+    /// icon's badge. A hub the Mac removed (frozen, writes off) cannot, so
+    /// its asks are not counted.
+    var openAskTotal: Int {
+        sessions.values.filter(\.writesAllowed).reduce(0) { $0 + $1.workbenchReplica.openAskCount }
+    }
+
+    /// Sets the badge to `openAskTotal` when it changed from the last known
+    /// total, and observes it again for the next change. The first call
+    /// (the init's, before any session reports) only seeds the total.
+    private func observeBadge() {
+        let total = withObservationTracking {
+            openAskTotal
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeBadge() }
+        }
+        guard let known = badgeTotal else {
+            badgeTotal = total
+            return
+        }
+        guard total != known else { return }
+        badgeTotal = total
+        setBadge(total)
+    }
+
+    /// The app's badge: the notification center's count.
+    static func setAppBadge(_ count: Int) {
+        UNUserNotificationCenter.current().setBadgeCount(count) { error in
+            if let error {
+                logger.error("badge not set: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    // MARK: - The active session, for the views
+
+    /// What the forwarders below read: the active session, else the one
+    /// `remove` took off screen last (`retained`, while the root turns to
+    /// onboarding), else the first session (a link being made before any
+    /// hub is active). Total once the environment has held a session: the
+    /// last hub's removal never traps a view still reading it. Only an
+    /// environment that never held one traps, and the root shows no tabs
+    /// for it (onboarding reads none of these).
+    var activeSession: HubSession {
+        if let session = active ?? retained ?? order.first.flatMap({ sessions[$0] }) {
+            return session
+        }
+        preconditionFailure("no hub session")
+    }
+
+    var store: ReplicaStore { activeSession.store }
+    var outbox: ActionOutbox { activeSession.outbox }
+    var reportRequests: SessionReportRequester { activeSession.reportRequests }
+    var boardWriter: BoardWriter { activeSession.boardWriter }
+    var askDrafts: AskDraftStore { activeSession.askDrafts }
+    var askAnswerer: AskAnswerer { activeSession.askAnswerer }
+    var sessionStarts: SessionStarter { activeSession.sessionStarts }
+    var sessionInputs: SessionInputSender { activeSession.sessionInputs }
+    var deviceSettings: DeviceSettings { activeSession.deviceSettings }
+    var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
+    var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }
+    var phoneRecordings: PhoneRecordingsModel { activeSession.phoneRecordings }
+    /// The held recordings the active hub's Recordings list shows: its own
+    /// not yet adopted, and those waiting for a Mac the phone no longer has
+    /// (no session here) — never another linked hub's, which that hub's
+    /// session adopts (multi-hub spec §5.4: the list shows the active hub's
+    /// recordings). With one hub this is the whole hold, as before.
+    var heldRecordings: [HeldRecording] {
+        let active = activeSession
+        return active.heldRecordings.filter { $0.hubID == active.hubID || sessions[$0.hubID] == nil }
+    }
+    var linkedDevice: LinkedDevice? { activeSession.linkedDevice }
+    var lastSyncAt: Date? { activeSession.lastSyncAt }
+    var isLooping: Bool { activeSession.isLooping }
+
+    /// The session whose recorder owns the microphone or the recorder
+    /// screen (`PhoneRecorderController.holdsMicrophoneOrScreen`: starting,
+    /// capturing or paused, saving, or showing its result until closed),
+    /// if any: a capturing one first, then the active hub's, then any. One
+    /// microphone, so a second capture never starts beside it (multi-hub
+    /// spec §5.4).
+    var capturingSession: HubSession? {
+        let all = order.compactMap { sessions[$0] }
+        if let capturing = all.first(where: { $0.recorder.isCapturing }) { return capturing }
+        if let active, active.recorder.holdsMicrophoneOrScreen { return active }
+        return all.first { $0.recorder.holdsMicrophoneOrScreen }
+    }
+
+    /// The recorder on screen: the owning one (`capturingSession`),
+    /// whichever hub it is for, else the active hub's. A capture started on
+    /// one hub stays with it after a switch, through its save and its
+    /// result until closed: its session saves it and its uploader sends it
+    /// to that Mac, polling while the upload is pending (`SessionCadence`).
+    var recorder: PhoneRecorderController { capturingSession?.recorder ?? activeSession.recorder }
+
+    /// No recorder on any hub owns the microphone or the recorder screen:
+    /// the Record buttons are on.
+    var canStartCapture: Bool { capturingSession == nil }
+
+    /// The Mac a running capture is for when that is not the hub on screen
+    /// ("Recording for <name>" on the recorder); nil otherwise. A hub with
+    /// no name yet reads "another Mac".
+    var captureHubName: String? {
+        guard let capturing = capturingSession, capturing.hubID != activeHubID else { return nil }
+        return capturing.hubName ?? "another Mac"
+    }
+
+    /// Pull to refresh: the session on screen; with none (the last hub just
+    /// removed), nothing is fetched.
+    @discardableResult
+    func refresh(_ trigger: FetchTrigger) async -> Bool {
+        guard let active else { return false }
+        return await active.refresh(trigger)
     }
 
     /// The recorder's "See recordings": closes the finished recorder and
-    /// opens the Recordings list on the Calendar tab.
+    /// opens the Recordings list on the Calendar tab, of the hub the
+    /// recording is for: a capture made for another Mac puts that Mac on
+    /// screen first, as its list is the one that holds it.
     func showRecordings() {
+        let owner = capturingSession
         recorder.close()
+        if let owner, owner.hubID != activeHubID, sessions[owner.hubID] != nil {
+            activate(owner.hubID)
+        }
         navigation.showRecordings()
     }
 
-    /// The one place the phone's link changes (the link flow and unlink):
-    /// Settings, the action outbox and the recording uploader all take the
-    /// new device id, then waiting recordings go out at once. With
-    /// `writesAllowed: false` the link stands (Settings still shows it) but
-    /// the outbox and the uploader get no device id, so nothing is sent.
-    func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
-        linkedDevice = device
-        self.writesAllowed = writesAllowed
-        deviceSettings.linkedDevice = device
-        let sendingID = writesAllowed ? device?.deviceID : nil
-        await outbox.setDeviceID(sendingID)
-        await uploader.setDeviceID(sendingID)
-        await recorder.uploadPending()
-    }
-
-    /// The transport the link flow writes this phone's `device` record
-    /// through.
-    var linkTransport: any CloudSyncTransport { transport }
-
-    /// Asks a CloudKit transport to send its queue now (the unlinked record
-    /// before a stop), once the boot has started its engine.
+    /// The active session's queue, sent now (`HubSession.sendNow`); with
+    /// no hub on screen, nothing.
     func sendNow() async {
-        await bootstrapTask?.value
-        await (transport as? CloudKitTransport)?.sendNow()
+        await active?.sendNow()
     }
 
-    /// Stops the loop for good (tests' teardown; the app never stops).
-    func stop() {
-        stopped = true
-        bootstrapTask?.cancel()
-        loopTask?.cancel()
-        loopTask = nil
-    }
+    // MARK: - Building the app's environment
 
-    /// Stops the loop and the CloudKit engine for good, after the boot has
-    /// ended: the link flow then builds the next environment on the same
-    /// files.
-    func shutDown() async {
-        stop()
-        await bootstrapTask?.value
-        await (transport as? CloudKitTransport)?.stop()
-    }
-
-    private func restartLoop() {
-        loopTask?.cancel()
-        loopTask = nil
-        guard isBootstrapped, isActive, !stopped else { return }
-        let interval = fetchInterval
-        let sleep = sleep
-        loopTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                self.fetchCycles += 1
-                await self.refresh()
-                try? await sleep(interval)
+    /// The live app on a signed build: one session per registry row, in
+    /// the registry's order, each on its own files (`factory`). A row the
+    /// Mac removed (`unlinked_by_mac`) is built frozen: stopped before its
+    /// boot runs (no engine, no fetch, and no device until the freeze sets
+    /// it with writes off), then frozen as a live removal freezes it
+    /// (`HubSession.freeze(as:)`), its replica still readable. A row whose
+    /// session cannot be built (its replica or transport store will not
+    /// open) is logged and gets no session: the other hubs boot, and the
+    /// switcher and Settings → Macs list it with its problem and offer
+    /// Forget (multi-hub spec §6.3). The registry's active hub goes on
+    /// screen when it has a session, else the first row that has one; no
+    /// rows build no session. Rows of which none could be built throw
+    /// (`noHubOpened`): the boot fails rather than onboarding, since the
+    /// links still exist.
+    static func live(
+        registry: HubRegistry,
+        paths _: HubPaths,
+        factory: HubSessionFactory,
+        identity: DeviceIdentity,
+        defaults: UserDefaults,
+        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
+    ) throws -> AppEnvironment {
+        let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry, setBadge: setBadge)
+        let rows = try registry.rows()
+        var firstFailure: (any Error)?
+        for row in rows {
+            do {
+                env.add(try makeSession(for: row, factory: factory, identity: identity))
+            } catch {
+                logger.error("hub session not built, the hub left unopened: \(error.localizedDescription, privacy: .public)")
+                env.unopenedHubIDs.insert(row.hubID)
+                firstFailure = firstFailure ?? error
             }
         }
+        if let firstFailure, env.sessions.isEmpty {
+            throw AppEnvironmentError.noHubOpened(firstFailure.localizedDescription)
+        }
+        env.nameHubs(rows)
+        let saved = try registry.activeHubID
+        let opened = rows.filter { env.sessions[$0.hubID] != nil }
+        if let active = opened.first(where: { $0.hubID == saved }) ?? opened.first {
+            env.activate(active.hubID)
+        }
+        return env
     }
 
-    /// The live replica's file in the app group directory.
-    static func liveReplicaPath(in directory: URL) -> String {
-        directory.appendingPathComponent("replica.sqlite").path
+    /// One registry row's session (see `live`).
+    private static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
+        let device = identity.linkedDevice(for: row.link)
+        guard row.state == .unlinkedByMac else {
+            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
+            // A hub without stored link keys (made before E2E) is built
+            // stopped, before its boot runs: no engine, no fetch, no send;
+            // the launch's `dropUnencryptedLinks` removes it.
+            if session.transportKind == .cloudKit, !session.startsEngine {
+                session.stop()
+            }
+            return session
+        }
+        let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
+        session.stop()
+        Task { await session.freeze(as: device) }
+        return session
     }
 
-    /// The live CloudKit transport's store in the app group directory.
-    static func liveTransportStorePath(in directory: URL) -> String {
-        directory.appendingPathComponent("cloudkit-transport.sqlite").path
+    /// The demo on an unsigned build (simulator, CI): one session over the
+    /// in-memory transport with DemoSeed, its replica in Application
+    /// Support. `recordingsDirectory` is for tests: nil keeps the phone's
+    /// own recordings folder.
+    static func demoSingle(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
+        let session = try demoSession(DemoSeed.primary, recordingsDirectory: recordingsDirectory, energy: energy)
+        return single(session, defaults: .standard)
+    }
+
+    /// The demo as the app shows it: the two demo Macs (`DemoSeed.hubs`),
+    /// each its own session on its own in-memory transport and replica,
+    /// the primary on screen (multi-hub spec §7).
+    static func demo(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
+        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: .standard)
+        for hub in DemoSeed.hubs {
+            env.add(try demoSession(hub, recordingsDirectory: recordingsDirectory, energy: energy))
+        }
+        env.activate(DemoSeed.primary.hubID)
+        return env
+    }
+
+    /// One demo Mac's session. The primary keeps today's replica file; the
+    /// others get their own, and a recordings folder of their own.
+    private static func demoSession(_ hub: DemoSeed.Hub, recordingsDirectory: URL?, energy: EnergyCounter?) throws -> HubSession {
+        let base = try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+        let isPrimary = hub == DemoSeed.primary
+        let recordings = isPrimary ? base : base.appendingPathComponent(hub.hubID, isDirectory: true)
+        let replica = isPrimary ? "replica.sqlite" : "replica-\(hub.hubID).sqlite"
+        return try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try applicationSupportDirectory().appendingPathComponent(replica).path,
+            transportKind: .inMemoryDemo,
+            hubID: hub.hubID,
+            recordingsDirectory: recordings,
+            hold: RecordingHold(directory: base.appendingPathComponent(".held", isDirectory: true)),
+            startsActive: UIApplication.shared.applicationState == .active,
+            energy: energy
+        )
+    }
+
+    /// The CloudKit transport's store file.
+    nonisolated static let transportStoreFileName = "cloudkit-transport.sqlite"
+
+    /// The live CloudKit transport's store, in the app's own Application
+    /// Support: outside the app group, which no extension reads it from,
+    /// because CKSyncEngine writes it from its own callbacks at any moment —
+    /// a lock on a file in the shared container when iOS suspends the app
+    /// gets it killed (0xdead10cc). A store an earlier build kept in the
+    /// app group moves over once (`moveTransportStore`), on the process's
+    /// first call: every later call returns the same path without moving,
+    /// so no move ever runs under a store this process has opened.
+    nonisolated static func liveTransportStorePath() throws -> String {
+        try liveTransportStore.path()
+    }
+
+    nonisolated private static let liveTransportStore = TransportStorePathResolver {
+        try moveTransportStore(from: appGroupDirectory(), to: applicationSupportDirectory())
+    }
+
+    /// Moves the transport store (`transportStoreFileName` and its SQLite
+    /// `-wal`, `-shm` and `-journal` files) from `old` into `new` unless
+    /// `new` already has one, and returns the path to open. The side files
+    /// go first and the database last, so a database in `new` means the
+    /// move is complete. A failed move puts back what it moved and keeps
+    /// the old path for this launch (the next launch tries again). Stashed
+    /// asset files (`transport-assets`) stay where they are: the store
+    /// refers to them by absolute path, and none is a database.
+    nonisolated static func moveTransportStore(from old: URL, to new: URL) -> String {
+        let fileManager = FileManager.default
+        let name = transportStoreFileName
+        let oldMain = old.appendingPathComponent(name)
+        let newMain = new.appendingPathComponent(name)
+        guard fileManager.fileExists(atPath: oldMain.path) else { return newMain.path }
+        guard !fileManager.fileExists(atPath: newMain.path) else {
+            logger.warning("transport store in both places: the app's own copy is used")
+            return newMain.path
+        }
+        var moved: [(from: URL, to: URL)] = []
+        do {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let from = old.appendingPathComponent(name + suffix)
+                guard fileManager.fileExists(atPath: from.path) else { continue }
+                let target = new.appendingPathComponent(name + suffix)
+                // A side file left in `new` by an earlier attempt belongs to
+                // no database there: the old one's is the live one.
+                if fileManager.fileExists(atPath: target.path) {
+                    try fileManager.removeItem(at: target)
+                }
+                try fileManager.moveItem(at: from, to: target)
+                moved.append((from, target))
+            }
+            try fileManager.moveItem(at: oldMain, to: newMain)
+            logger.notice("transport store moved out of the app group")
+            return newMain.path
+        } catch {
+            logger.error("transport store not moved: \(error.localizedDescription, privacy: .public)")
+            for file in moved.reversed() {
+                do {
+                    try fileManager.moveItem(at: file.to, to: file.from)
+                } catch {
+                    logger.fault("transport store side file not put back: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            return oldMain.path
+        }
     }
 
     /// The app group container's Application Support directory. A signed
     /// build without it throws instead of falling back silently.
-    static func appGroupDirectory() throws -> URL {
+    nonisolated static func appGroupDirectory() throws -> URL {
         guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
             logger.fault("app group container \(appGroupID, privacy: .public) is unavailable")
             throw AppEnvironmentError.appGroupUnavailable
         }
-        let directory = group.appendingPathComponent("Library/Application Support", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return try prepareLiveDirectory(group.appendingPathComponent("Library/Application Support", isDirectory: true))
+    }
+
+    /// Creates the live directory with its class (D8) before any database in it: the replica and the transport
+    /// store hold ciphertext that background hydration and the notification extension reach after the first
+    /// unlock (class C); every file SQLite creates there inherits it.
+    nonisolated static func prepareLiveDirectory(_ directory: URL) throws -> URL {
+        try FileProtection.protectDirectory(directory)
         return directory
+    }
+
+    /// A live CloudKit transport's store at `path` (`HubPaths.transportStorePath`): its folder and its incoming
+    /// asset stash (sealed files) take class C (D8) before the store opens, wherever the store lives.
+    static func liveTransportStore(path: String) throws -> TransportStore {
+        try FileProtection.protectDirectory(URL(fileURLWithPath: path).deletingLastPathComponent())
+        let store = try TransportStore(path: path)
+        if let stash = store.stashDirectory {
+            try FileProtection.protectDirectory(stash)
+        }
+        return store
     }
 
     /// Unsigned builds keep the replica in Application Support, which an
     /// uninstall removes (spec §10).
-    private static func applicationSupportDirectory() throws -> URL {
+    nonisolated static func applicationSupportDirectory() throws -> URL {
         try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
+    }
+}
+
+/// Resolves a path once per instance: the first successful `path()` runs
+/// `resolve` (the transport store's move), every later call returns its
+/// result. A throwing resolve caches nothing.
+final class TransportStorePathResolver: Sendable {
+    private let resolved = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let resolve: @Sendable () throws -> String
+
+    init(_ resolve: @escaping @Sendable () throws -> String) {
+        self.resolve = resolve
+    }
+
+    func path() throws -> String {
+        try resolved.withLock { cached in
+            if let cached { return cached }
+            let path = try resolve()
+            cached = path
+            return path
+        }
     }
 }

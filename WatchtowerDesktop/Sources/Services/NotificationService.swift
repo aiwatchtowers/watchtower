@@ -176,6 +176,23 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// A linked phone asks to type into Claude Code sessions (mobile POC
+    /// spec §10, OD-2); the owner answers in Settings → Mobile.
+    func sendMobileTypingRequestNotification(deviceID: String, name: String) {
+        let content = UNMutableNotificationContent()
+        content.title = MobileSettingsViewModel.allowQuestion(name: name)
+        content.body = "Open Settings → Mobile to Allow it."
+        content.sound = .default
+        content.userInfo = ["type": "mobile_typing_request"]
+
+        let request = UNNotificationRequest(
+            identifier: "mobile-typing-request-\(fnv1aHash(deviceID))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func sendDailySummaryNotification(summary: String) {
         let content = UNMutableNotificationContent()
         content.title = "Daily summary ready"

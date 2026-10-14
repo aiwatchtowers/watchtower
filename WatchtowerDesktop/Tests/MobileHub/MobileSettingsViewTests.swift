@@ -114,8 +114,11 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Shared"))
         XCTAssertNoThrow(try view.inspect().find(text: "Typing off"))
         XCTAssertNoThrow(try view.inspect().find(text: "Typing allowed"))
-        let removes = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Remove" }
+        let removes = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Remove…" }
         XCTAssertEqual(removes.count, 2)
+        try removes[0].tap()
+        XCTAssertEqual(model.pendingRemove?.deviceID, "phone-a", "Remove… asks first")
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-a"))
 
         try view.inspect().find(button: "Allow…").tap()
         XCTAssertEqual(model.pendingAllow?.deviceID, "phone-a")
@@ -142,6 +145,43 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(button: "Show a new code"))
         XCTAssertThrowsError(try view.inspect().find(button: "New code"))
         XCTAssertFalse(fixture.shares.isLinkOpen)
+    }
+
+    func testTwoPendingRowsWithOneNameShowTheDuplicateWarning() async throws {
+        let clock = fixture.clock
+        let sheet = MobileLinkSheetViewModel(
+            center: fixture.center, now: { clock.now }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        await sheet.start()
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+        _ = try await fixture.pendingHello(name: "Acme iPhone")
+
+        let view = MobileLinkSheet(model: sheet) {}
+
+        let warning = "Two iPhones named \"Acme iPhone\" are waiting — link only the one whose screen shows this code."
+        XCTAssertEqual(try view.inspect().findAll(ViewType.Text.self) { try $0.string() == warning }.count, 2)
+        await sheet.close()
+    }
+
+    func testThePendingRowShowsNameCodeAndBothButtons() async throws {
+        let clock = fixture.clock
+        let sheet = MobileLinkSheetViewModel(
+            center: fixture.center, now: { clock.now }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        await sheet.start()
+        let phone = try await fixture.pendingHello(name: "Acme iPhone")
+        let sas = try XCTUnwrap(fixture.center.pendingLinks.first?.sas)
+
+        let view = MobileLinkSheet(model: sheet) {}
+
+        XCTAssertNoThrow(try view.inspect().find(text: "Link \"Acme iPhone\"?"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Code \(sas) — check that your iPhone shows the same code"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Refuse"))
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Image.self), "the QR is replaced")
+        try view.inspect().find(button: "Link").tap()
+        await awaitHubCondition("Link reaches the center") { self.fixture.center.devices.count == 1 }
+        XCTAssertEqual(fixture.center.devices.map(\.deviceID), [phone.deviceID.uuidString])
+        await sheet.close()
     }
 
     func testDoneOnTheSheetDismissesIt() throws {

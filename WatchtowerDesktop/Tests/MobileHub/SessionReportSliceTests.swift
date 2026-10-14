@@ -187,18 +187,55 @@ final class SessionReportSliceTests: XCTestCase {
 
     // MARK: - Runner
 
+    /// Board #724: without a linked phone (`isActive` false) the loop
+    /// neither lists the window nor runs the CLI; a linked phone starts the
+    /// due runs.
+    func testWithoutALinkedPhoneTheReportLoopRunsNothing() async throws {
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let listings = OSAllocatedUnfairLock(initialState: 0)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let cliFetch = SessionReportRunner.cliFetch(FakeCLIRunner(stdout: Self.cliJSON(31)))
+        let reports = SessionReportRunner(
+            fetch: { workbench, session, network in
+                calls.withLock { $0 += 1 }
+                return try await cliFetch(workbench, session, network)
+            },
+            sidecar: sidecar,
+            timing: .init(
+                every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60),
+                timeout: .seconds(5), wake: .milliseconds(10)
+            ),
+            isActive: {
+                checks.withLock { $0 += 1 }
+                return linked.withLock { $0 }
+            },
+            window: {
+                listings.withLock { $0 += 1 }
+                return [Self.windowed(31, workbench: 7, live: true)]
+            }
+        )
+        reports.start()
+        defer { reports.stop() }
+        await awaitHubCondition("the loop woke three times") { checks.withLock { $0 } >= 3 }
+        XCTAssertEqual(listings.withLock { $0 }, 0)
+        XCTAssertEqual(calls.withLock { $0 }, 0)
+
+        linked.withLock { $0 = true }
+        await awaitHubCondition("a linked phone starts the runs") { calls.withLock { $0 } >= 1 }
+        let stored: HubSyncState = try XCTUnwrap(self.sidecar)
+        await awaitHubCondition("the report is stored") { (try? stored.sessionReports()[31]) != nil }
+    }
+
     func testArgvMatchesTheCenterAndThePeriodicRunIsOfflineEvery120Seconds() async throws {
         let runner = FakeCLIRunner(stdout: Self.cliJSON(31))
         let clock = TestInstant()
         let reports = self.runner(fetch: SessionReportRunner.cliFetch(runner), clock: clock) { [Self.windowed(31, workbench: 7, live: true)] }
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        reports.setOnChange { changes.withLock { $0 += 1 } }
 
         await reports.runDue()
         XCTAssertEqual(runner.invocations, [
             ["workbench", "session-report", "--workbench", "7", "--session", "31", "--json", "--no-network"]
         ])
-        XCTAssertEqual(changes.withLock { $0 }, 1)
         let stored = try XCTUnwrap(try sidecar.sessionReports()[31])
         XCTAssertEqual(try SessionReportSlice.decode(stored.payload).session.title, "Archive closed targets")
 
@@ -209,7 +246,6 @@ final class SessionReportSliceTests: XCTestCase {
         await reports.runDue()
         XCTAssertEqual(runner.invocations.count, 2, "due at 120 s")
         XCTAssertEqual(runner.invocations.last?.last, "--no-network")
-        XCTAssertEqual(changes.withLock { $0 }, 1, "an unchanged report nudges nothing")
     }
 
     func testARequestTwiceWithin60SecondsRunsTheNetworkCLIOnce() async throws {

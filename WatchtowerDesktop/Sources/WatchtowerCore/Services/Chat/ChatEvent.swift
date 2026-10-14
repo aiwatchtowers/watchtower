@@ -9,6 +9,7 @@ package enum ChatErrorCode: String, Equatable, Sendable {
     case attachmentUnsupported = "attachment_unsupported"
     case interrupted
     case internalError = "internal"
+    case workDirUnsafe = "workdir_unsafe"
 }
 
 package enum ChatTurnStatus: String, Equatable, Sendable {

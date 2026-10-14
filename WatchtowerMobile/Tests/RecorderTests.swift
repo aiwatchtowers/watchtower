@@ -1,4 +1,5 @@
 import AVFoundation
+import GRDB
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -124,6 +125,227 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(rig.engine.resumeCount, 0)
     }
 
+    // MARK: - Pause teardown and the long-pause auto-finish (board #724)
+
+    /// A pause releases the audio session and stops the ticker; the resume
+    /// takes both back.
+    func testAPauseReleasesTheSessionAndStopsTheTicker() async throws {
+        let rig = try makeRecorderRig(tickInterval: .milliseconds(100))
+        await rig.controller.recordVoiceNote()
+        XCTAssertTrue(rig.engine.sessionActive)
+        XCTAssertTrue(rig.controller.isTicking)
+
+        rig.controller.pause()
+        XCTAssertFalse(rig.engine.sessionActive, "a paused capture holds no audio session")
+        XCTAssertFalse(rig.controller.isTicking, "no ticker while paused")
+        XCTAssertTrue(rig.controller.isAutoFinishArmed)
+
+        rig.controller.resume()
+        XCTAssertEqual(rig.controller.phase, .recording)
+        XCTAssertTrue(rig.engine.sessionActive)
+        XCTAssertTrue(rig.controller.isTicking)
+        XCTAssertFalse(rig.controller.isAutoFinishArmed)
+        await rig.controller.stop()
+        XCTAssertFalse(rig.controller.isTicking)
+    }
+
+    /// Sixty minutes of pause finish the capture once, through Stop's own
+    /// save and upload, marked auto-finished, with a notice and a
+    /// notification.
+    func testSixtyMinutesOfPauseFinishAndSaveTheCaptureOnce() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        var notifications = 0
+        rig.controller.onAutoFinish = { notifications += 1 }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(30)
+        rig.controller.pause()
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+        XCTAssertEqual(sleeper.requested, [.seconds(PhoneRecorderController.pauseLimit)])
+        XCTAssertEqual(PhoneRecorderController.pauseLimit, 3_600)
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ rig.controller.savedRecording != nil }, "the long pause did not finish the capture")
+
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+        XCTAssertEqual(saved.durationSec, 30, "the pause is not audio")
+        XCTAssertEqual(rig.controller.endNotice, PhoneRecorderController.autoFinishNotice)
+        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(rig.engine.finishCount, 1)
+        let row = try XCTUnwrap(try rig.store.phoneRecording(id: saved.id))
+        XCTAssertTrue(row.autoFinished)
+        XCTAssertEqual(row.state, .uploading, "the same upload as a Stop")
+        let uploads = try await relayUploads(in: rig.transport)
+        XCTAssertEqual(uploads.map(\.id), [saved.id])
+
+        // Once only: nothing waits any more, and a return changes nothing.
+        XCTAssertEqual(sleeper.waitingCount, 0)
+        rig.controller.setForeground(false)
+        rig.controller.setForeground(true)
+        await rig.controller.stop()
+        XCTAssertEqual(rig.engine.finishCount, 1)
+        XCTAssertEqual(notifications, 1)
+    }
+
+    /// A long pause ends while the app rests in the background: the paused
+    /// capture released its hold and the replica is suspended, so the save
+    /// runs as background work of its own that holds it — the row is saved,
+    /// marked and handed to the transport, and the notification goes out.
+    func testAnAutoFinishInTheBackgroundHoldsTheReplicaForTheSave() async throws {
+        let dir = try makeRecordingsDirectory()
+        addTeardownBlock { NotificationCenter.default.post(name: Database.resumeNotification, object: nil) }
+        let store = try TestPhone.replica(path: dir.appendingPathComponent("replica.sqlite").path, observesSuspension: true)
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig(store: store) { try await sleeper.sleep($0) }
+        let suspension = DatabaseSuspension { NotificationCenter.default.post(name: $0, object: nil) }
+        let tasks = FakeBackgroundTasks()
+        HubSession.holdReplica(
+            for: rig.controller,
+            suspension: suspension,
+            startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true }
+        )
+        var notifications = 0
+        rig.controller.onAutoFinish = { notifications += 1 }
+
+        await rig.controller.recordVoiceNote()
+        suspension.setBackground(true)
+        XCTAssertFalse(suspension.isSuspended, "the running capture holds the replica")
+        rig.clock.advance(30)
+        rig.controller.pause()
+        XCTAssertTrue(suspension.isSuspended, "a paused capture holds nothing")
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ !rig.controller.isCapturing && rig.controller.phase != .saving }, "the long pause did not finish the capture")
+
+        let saved = try XCTUnwrap(rig.controller.savedRecording, "the save failed: \(rig.controller.phase)")
+        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(tasks.begun, ["recording-save"])
+        XCTAssertEqual(tasks.ended.count, 1, "the save's work ends once")
+        XCTAssertTrue(suspension.isSuspended, "the replica rests again after the save")
+        suspension.setBackground(false)
+        let row = try XCTUnwrap(try store.phoneRecording(id: saved.id))
+        XCTAssertTrue(row.autoFinished)
+        XCTAssertEqual(row.state, .uploading)
+        let uploads = try await relayUploads(in: rig.transport)
+        XCTAssertEqual(uploads.map(\.id), [saved.id])
+    }
+
+    /// An auto-finish whose save fails tells the owner (a notification, as
+    /// they are usually away) instead of the saved notice.
+    func testAFailedAutoFinishSaveRaisesTheFailureNotice() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        var saved = 0
+        var failed = 0
+        rig.controller.onAutoFinish = { saved += 1 }
+        rig.controller.onAutoFinishFailed = { failed += 1 }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(30)
+        rig.engine.fileDuration = nil
+        rig.controller.pause()
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ failed == 1 }, "the failed save raised no notice")
+        guard case .failed = rig.controller.phase else {
+            return XCTFail("expected a failed save, got \(rig.controller.phase)")
+        }
+        XCTAssertEqual(saved, 0)
+    }
+
+    /// An interruption that outlasts the pause limit finishes the capture
+    /// like a long pause; its later end, even with `.shouldResume`, changes
+    /// nothing (no resume into the saved file).
+    func testAnInterruptionLongerThanTheLimitFinishesTheCapture() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(20)
+        postInterruption(rig.notifications, began: true)
+        XCTAssertEqual(rig.controller.phase, .paused(.interruption))
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+
+        rig.clock.advance(PhoneRecorderController.pauseLimit + 1)
+        sleeper.tick()
+        try await poll({ rig.controller.savedRecording != nil }, "the long interruption did not finish the capture")
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+
+        postInterruption(rig.notifications, began: false, shouldResume: true)
+        XCTAssertEqual(rig.controller.phase, .saved(saved), "the late end is a no-op")
+        XCTAssertEqual(rig.engine.resumeCount, 0)
+        XCTAssertEqual(rig.engine.finishCount, 1)
+        XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
+    }
+
+    /// A resume before the limit cancels the auto-finish; the capture then
+    /// ends by the owner's Stop, not marked.
+    func testAResumeBeforeTheLimitCancelsTheAutoFinish() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig { try await sleeper.sleep($0) }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(10)
+        rig.controller.pause()
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+        rig.clock.advance(PhoneRecorderController.pauseLimit - 1)
+        rig.controller.resume()
+        try await poll({ sleeper.waitingCount == 0 }, "the resume did not cancel the wait")
+        XCTAssertEqual(rig.controller.phase, .recording)
+
+        rig.clock.advance(10)
+        await rig.controller.stop()
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+        XCTAssertEqual(saved.durationSec, 20)
+        XCTAssertNil(rig.controller.endNotice)
+        XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, false)
+    }
+
+    /// An interruption that ends without `.shouldResume` is a pause: the
+    /// session stays released, no ticker, and the limit finishes it.
+    func testAnInterruptionWithoutResumeBehavesLikeAPause() async throws {
+        let sleeper = TickSleeper()
+        let rig = try makeRecorderRig(tickInterval: .milliseconds(100)) { try await sleeper.sleep($0) }
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(40)
+        postInterruption(rig.notifications, began: true)
+        postInterruption(rig.notifications, began: false, shouldResume: false)
+        XCTAssertEqual(rig.controller.phase, .paused(.user))
+        XCTAssertFalse(rig.engine.sessionActive)
+        XCTAssertFalse(rig.controller.isTicking)
+        XCTAssertTrue(rig.controller.isAutoFinishArmed)
+
+        try await poll({ sleeper.waitingCount == 1 }, "the auto-finish did not wait")
+        rig.clock.advance(PhoneRecorderController.pauseLimit)
+        sleeper.tick()
+        try await poll({ rig.controller.savedRecording != nil }, "the long pause did not finish the capture")
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+        XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
+    }
+
+    /// A suspended app's timer cannot fire: a pause that outlived the limit
+    /// meanwhile finishes on the return to the foreground.
+    func testAPauseThatOutlivedTheLimitFinishesOnTheReturn() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(15)
+        rig.controller.pause()
+        rig.controller.setForeground(false)
+        rig.clock.advance(PhoneRecorderController.pauseLimit - 1)
+        rig.controller.setForeground(true)
+        XCTAssertTrue(rig.controller.isCapturing, "not before the limit")
+
+        rig.controller.setForeground(false)
+        rig.clock.advance(1)
+        rig.controller.setForeground(true)
+        try await poll({ rig.controller.savedRecording != nil }, "the return did not finish the capture")
+        let saved = try XCTUnwrap(rig.controller.savedRecording)
+        XCTAssertEqual(try rig.store.phoneRecording(id: saved.id)?.autoFinished, true)
+        XCTAssertEqual(rig.engine.finishCount, 1)
+    }
+
     // MARK: - Pause and marks
 
     func testMarksAreSecondOffsetsOfRecordedAudioAndStayLocal() async throws {
@@ -147,7 +369,7 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(row.durationSec, 21, "the paused 100 s are not audio")
         XCTAssertEqual(try rig.store.phoneRecordingMarks(id: row.id), [12, 17])
 
-        let batch = try await rig.transport.changes(in: .relay, since: nil)
+        let batch = try await rig.secure.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.payload) as? [String: Any])
         XCTAssertFalse(object.keys.contains { $0.contains("mark") }, "marks never travel: \(object.keys)")
@@ -189,7 +411,7 @@ final class RecorderTests: XCTestCase {
         rig.clock.advance(30)
         await rig.controller.stop()
 
-        let batch = try await rig.transport.changes(in: .relay, since: nil)
+        let batch = try await rig.secure.changes(in: .relay, since: nil)
         let record = try XCTUnwrap(batch.changed.first)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.payload) as? [String: Any])
         XCTAssertNil(object["event_id"], "No meeting leaves event_id absent")
@@ -358,7 +580,8 @@ final class RecorderTests: XCTestCase {
     /// has a new absolute base. Nothing is deleted; recovery and the upload
     /// still find every file.
     func testAMovedContainerKeepsEveryRecording() async throws {
-        let first = try makeRecorderRig()
+        let uploadClock = MutableClock()
+        let first = try makeRecorderRig(uploadClock: uploadClock)
         await first.controller.recordVoiceNote()
         first.clock.advance(30)
         await first.controller.stop()
@@ -374,16 +597,20 @@ final class RecorderTests: XCTestCase {
         let moved = container.appendingPathComponent(first.directory.lastPathComponent, isDirectory: true)
         try FileManager.default.moveItem(at: first.directory, to: moved)
 
-        let relaunched = try makeRecorderRig(sharing: first, directory: moved)
+        // Relaunched once the first backoff step has passed, so the saved
+        // recording is re-sent from its new place.
+        uploadClock.advance(RecordingUploader.retryDelays[0])
+        let relaunched = try makeRecorderRig(sharing: first, directory: moved, uploadClock: uploadClock)
         relaunched.engine.fileDuration = 20
         await relaunched.controller.recoverOnLaunch()
         await relaunched.controller.uploadPending()
 
         let files = try FileManager.default.contentsOfDirectory(atPath: moved.path)
-        XCTAssertEqual(files.count, 2, "nothing is swept: \(files)")
+        // Each recording keeps its plain audio and its sealed copy until the Mac confirms it (ask #89 A).
+        XCTAssertEqual(files.count, 4, "nothing is swept: \(files)")
         XCTAssertEqual(try relaunched.store.phoneRecording(id: strandedID)?.state, .uploading)
         XCTAssertEqual(try relaunched.store.phoneRecording(id: saved.id)?.state, .uploading)
-        let batch = try await relaunched.transport.changes(in: .relay, since: nil)
+        let batch = try await relaunched.secure.changes(in: .relay, since: nil)
         let assets = batch.changed.compactMap(\.assetFileURL)
         XCTAssertEqual(assets.count, 2)
         XCTAssertTrue(assets.allSatisfy { $0.path.hasPrefix(moved.path) && FileManager.default.fileExists(atPath: $0.path) })

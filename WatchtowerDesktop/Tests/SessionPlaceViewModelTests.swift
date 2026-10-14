@@ -119,7 +119,7 @@ final class SessionPlaceViewModelTests: XCTestCase {
         return nil
     }
 
-    private func branch(_ vm: WorkbenchesViewModel) -> String? {
+    private func shownBranch(_ vm: WorkbenchesViewModel) -> String? {
         if case let .worktree(_, _, status) = vm.sessionPlaces.currentPlace(sessionID: sessionID) { return status.branch }
         return nil
     }
@@ -230,11 +230,11 @@ final class SessionPlaceViewModelTests: XCTestCase {
 
         runner.setBranch("feature/y", folder: worktreeA)
         watcher.onChange(GitRefsChange(mayMoveWorktrees: true))
-        await waitUntil { self.branch(vm) == "feature/y" }
+        await waitUntil { self.shownBranch(vm) == "feature/y" }
 
         runner.setBranch("feature/z", folder: worktreeA)
         center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await waitUntil { self.branch(vm) == "feature/z" }
+        await waitUntil { self.shownBranch(vm) == "feature/z" }
         XCTAssertEqual(runner.folderReads, [worktreeA, worktreeA, worktreeA])
         vm.stopGitWatching(projectID: project.id)
     }

@@ -6,6 +6,31 @@ public enum CloudZoneID: String, Codable, CaseIterable, Sendable {
     case relay = "RelayZone"
 }
 
+/// Wire `kind` values of the mobile E2E record types (spec §2.4, §2.8).
+public enum WireKind {
+    /// Every sealed record: the CloudKit `WatchtowerEnvelope` type; the real kind rides in the inner frame (D1).
+    public static let envelope = "wt"
+    /// A payload-free `WatchtowerSignal` record (`sig-<wire name>`), the ask-alert push trigger (D14, F12).
+    public static let signal = "sig"
+}
+
+/// What `SecureTransport` authenticated about a record it opened.
+public struct SealedInfo: Equatable, Sendable {
+    public let wireName: String
+    public let senderID: UUID
+    public let epoch: UInt32
+    public let seq: UInt64
+    public let envelopeClass: EnvelopeClass
+
+    public init(wireName: String, senderID: UUID, epoch: UInt32, seq: UInt64, envelopeClass: EnvelopeClass) {
+        self.wireName = wireName
+        self.senderID = senderID
+        self.epoch = epoch
+        self.seq = seq
+        self.envelopeClass = envelopeClass
+    }
+}
+
 /// One record on the wire: identity + opaque payload. The real transport
 /// (Plan 2) maps this 1:1 onto a CKRecord with `payload` in encryptedValues.
 public struct CloudRecord: Equatable, Sendable {
@@ -34,6 +59,19 @@ public struct CloudRecord: Equatable, Sendable {
     /// for a record this device built, in the in-memory fake unless a test
     /// sets it, and for an event buffered before the field existed.
     public let creatorUserRecordName: String?
+    /// `CKRecord.modificationDate` of a fetched record: when the server last
+    /// stored it. Unlike `modifiedAt` (the writer's own claim), no client
+    /// sets it, so relay hygiene ages records by it. Read-only server
+    /// metadata like `creatorUserRecordName`: nil for a record this device
+    /// built, in the in-memory fake unless a test sets it, and for an event
+    /// buffered before the field existed.
+    public let serverModifiedAt: Date?
+    /// The descriptor of a sealed asset: on save, the caller's descriptor of the ciphertext `assetFileURL`
+    /// (`SecureTransport` puts it in the inner frame); on read, taken from the opened frame. Never on the
+    /// wire record itself (the sealed file is header-less, mobile E2E spec §2.5).
+    public let asset: AssetDescriptor?
+    /// Set only on records `SecureTransport` opened: who sealed it, under which epoch and seq.
+    public let sealed: SealedInfo?
 
     public init(
         recordName: String,
@@ -43,7 +81,10 @@ public struct CloudRecord: Equatable, Sendable {
         payload: Data,
         notifyLevel: String? = nil,
         assetFileURL: URL? = nil,
-        creatorUserRecordName: String? = nil
+        creatorUserRecordName: String? = nil,
+        serverModifiedAt: Date? = nil,
+        asset: AssetDescriptor? = nil,
+        sealed: SealedInfo? = nil
     ) {
         self.recordName = recordName
         self.zone = zone
@@ -53,6 +94,9 @@ public struct CloudRecord: Equatable, Sendable {
         self.notifyLevel = notifyLevel
         self.assetFileURL = assetFileURL
         self.creatorUserRecordName = creatorUserRecordName
+        self.serverModifiedAt = serverModifiedAt
+        self.asset = asset
+        self.sealed = sealed
     }
 }
 

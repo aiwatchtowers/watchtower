@@ -11,12 +11,12 @@ import (
 // children (PROJ-05, docs/inventory/workbench.md).
 
 // insertBoardChild plants a project target under parent with a given status.
-func insertBoardChild(t *testing.T, d *DB, projectID, parentID int64, status string) int64 {
+func insertBoardChild(t *testing.T, d *DB, workbenchID, parentID int64, status string) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO targets (text, level, custom_label, period_start, period_end,
 			source_type, project_id, parent_id, status)
 		VALUES ('child', 'custom', 'project', '2026-09-29', '2026-09-29', 'chat', ?, ?, ?)`,
-		projectID, parentID, status)
+		workbenchID, parentID, status)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)

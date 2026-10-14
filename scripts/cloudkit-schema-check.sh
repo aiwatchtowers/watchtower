@@ -8,7 +8,10 @@
 # applicable in the environment 'production'"). A TestFlight phone and a
 # Developer ID Mac both run on Production, so a missing record type or field
 # there fails their saves with no error on screen. This script fails instead,
-# naming what is missing.
+# naming what is missing. It also fails when Production lacks a record type the
+# current build writes (REQUIRED_TYPES: the E2E hard cut's sealed envelope and
+# signal, mobile E2E spec §2.8), even when Development lacks it too: run a
+# Development build of the Mac hub first so Development defines it, then deploy.
 #
 # Needs a CloudKit management token saved once in an interactive terminal:
 #   xcrun cktool save-token --type management
@@ -19,6 +22,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONTAINER_ID="${CLOUDKIT_CONTAINER_ID:-iCloud.com.aiwatchtowers.watchtower}"
 CONSOLE_URL="https://icloud.developer.apple.com/dashboard/"
+REQUIRED_TYPES="WatchtowerEnvelope WatchtowerSignal"
 
 TEAM_ID="${CLOUDKIT_TEAM_ID:-}"
 if [ -z "$TEAM_ID" ] && [ -f "$PROJECT_ROOT/WatchtowerMobile/Signing.xcconfig" ]; then
@@ -74,6 +78,12 @@ export_schema production
 flatten "$WORK/development.ckdb" >"$WORK/dev.txt"
 flatten "$WORK/production.ckdb" >"$WORK/prod.txt"
 MISSING="$(comm -23 "$WORK/dev.txt" "$WORK/prod.txt")"
+for type in $REQUIRED_TYPES; do
+    if ! grep -q "^$type " "$WORK/prod.txt"; then
+        MISSING="${MISSING:+$MISSING
+}$type (record type; Development needs it first: run a Development build of the Mac hub)"
+    fi
+done
 
 if [ -n "$MISSING" ]; then
     echo "error: CloudKit Production lacks schema that Development has:" >&2

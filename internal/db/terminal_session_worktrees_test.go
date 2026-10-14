@@ -220,3 +220,55 @@ func TestGetTerminalSessionNeedsNoCleanupColumns(t *testing.T) {
 		t.Fatalf("GetTerminalSession on a pre-00111 schema: %v", err)
 	}
 }
+
+func TestSessionTargetBranches_TrimmedDistinctNonEmpty(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
+	if got, err := d.SessionTargetBranches(ctx, id); err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("no links = %#v, %v; want an empty, non-nil list", got, err)
+	}
+	for _, branch := range []string{"feat/b", " feat/a ", "", " ", "feat/b"} {
+		target := insertWorkbenchTargetRow(t, d, wb, "t "+branch)
+		if _, err := d.Exec(`UPDATE targets SET branch = ? WHERE id = ?`, branch, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.LinkSessionTarget(id, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := insertWorkbenchTargetRow(t, d, wb, "not linked")
+	if _, err := d.Exec(`UPDATE targets SET branch = 'feat/other' WHERE id = ?`, other); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.SessionTargetBranches(ctx, id)
+	if err != nil || fmt.Sprint(got) != "[feat/a feat/b]" {
+		t.Fatalf("SessionTargetBranches = %v, %v; want [feat/a feat/b]", got, err)
+	}
+}
+
+func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	inWB := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
+	standalone := newAgentStateRow(t, d, nil, "shell", nil)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_cwd = '/tmp/example/wt', agent_cwd_at = ?,
+		agent_state_at = ?, last_active_at = '2026-10-12T12:00:00Z', finished_at = ? WHERE id = ?`,
+		ledgerAt, ledgerAt, ledgerAt, inWB); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.ListTerminalSessionActivity(ctx)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ListTerminalSessionActivity = %+v, %v; want 2 rows", got, err)
+	}
+	want := TerminalSessionActivity{ID: inWB, WorkbenchID: wb, Title: "s", AgentCwd: "/tmp/example/wt",
+		AgentStateAt: ledgerAt, LastActiveAt: "2026-10-12T12:00:00Z", Finished: true}
+	if got[0] != want {
+		t.Fatalf("row = %+v, want %+v", got[0], want)
+	}
+	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" || got[1].Finished {
+		t.Fatalf("standalone row = %+v", got[1])
+	}
+}

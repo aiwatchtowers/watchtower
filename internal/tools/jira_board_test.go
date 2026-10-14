@@ -196,9 +196,9 @@ func TestConnectJiraBoard_ExternalCannotBeExecuteTrust(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewConnectJiraBoard(connectFactory(&fakeBoardClient{}))))
 
-	err := reg.SetTrust("connect_jira_board", TrustExecute)
+	err := reg.SetTrust("connect_jira_board", "main", TrustExecute)
 	assert.ErrorIs(t, err, ErrExternalExecute)
-	trust, _ := reg.Trust("connect_jira_board")
+	trust, _ := reg.Trust("connect_jira_board", "main")
 	assert.Equal(t, TrustAsk, trust)
 }
 

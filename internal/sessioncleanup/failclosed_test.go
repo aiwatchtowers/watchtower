@@ -56,7 +56,7 @@ func TestBornReason_WithinTheStoredStartSecondIsNotOwned(t *testing.T) {
 
 // With no origin/HEAD, main or master the default branch is unknown: every
 // branch is kept, even a pushed one the session created.
-func TestProj16_UnknownDefaultBranchKeepsEveryBranch(t *testing.T) {
+func TestProj18_UnknownDefaultBranchKeepsEveryBranch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gitIn(t, f.repo, "branch", "-m", "main", "develop")
@@ -80,7 +80,7 @@ func TestProj16_UnknownDefaultBranchKeepsEveryBranch(t *testing.T) {
 
 // A symbolic-ref failure other than "not a symbolic ref" is not read as
 // "no origin/HEAD": the default branch is unknown and the error is shown.
-func TestProj16_OriginHeadReadFailureKeepsEveryBranch(t *testing.T) {
+func TestProj18_OriginHeadReadFailureKeepsEveryBranch(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gitIn(t, f.repo, "branch", "feat/merged", "main")
@@ -112,7 +112,7 @@ func (f *fixture) detachedGone(name string, push bool) string {
 
 // Pruning a detached worktree whose directory is gone drops the only ref
 // to its unpushed commit, so the worktree is kept.
-func TestProj16_PrunableDetachedWorktreeWithUnpushedCommitIsKept(t *testing.T) {
+func TestProj18_PrunableDetachedWorktreeWithUnpushedCommitIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	unpushed := f.detachedGone("wt-unpushed", false)
@@ -125,7 +125,7 @@ func TestProj16_PrunableDetachedWorktreeWithUnpushedCommitIsKept(t *testing.T) {
 	}
 }
 
-func TestProj16_PrunableWorktreeWithUnreadableHeadIsKept(t *testing.T) {
+func TestProj18_PrunableWorktreeWithUnreadableHeadIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.detachedGone("wt", true)
@@ -142,7 +142,7 @@ func TestProj16_PrunableWorktreeWithUnreadableHeadIsKept(t *testing.T) {
 // W6 sees the sessions of every workbench: an agent of a second workbench
 // over the same repository working inside the worktree keeps it, and so
 // does the caller when its session belongs to another workbench.
-func TestProj16_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt(t *testing.T) {
+func TestProj18_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	root := f.pushedWork("wt", "feat/x")
@@ -160,7 +160,7 @@ func TestProj16_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt(t *testing.T) {
 
 // After reflog expiry the oldest remaining entry is some later update, not
 // the creation: the branch's birth is unknown and it is kept.
-func TestProj16_BranchWhoseCreationEntryExpiredIsKept(t *testing.T) {
+func TestProj18_BranchWhoseCreationEntryExpiredIsKept(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	gitIn(t, f.repo, "branch", "feat/old", "main")
@@ -225,7 +225,7 @@ func TestPlan_RelativeGitdirResolvesAgainstTheAdminDir(t *testing.T) {
 // A git failure inside a catch keeps the item as check_failed with git's
 // error in the detail: W4 (status), W7 (ancestry, remote containment) and
 // B4 (the branch's tip).
-func TestProj16_GitFailureInACatchKeepsTheItem(t *testing.T) {
+func TestProj18_GitFailureInACatchKeepsTheItem(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name   string

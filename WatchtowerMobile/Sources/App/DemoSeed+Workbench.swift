@@ -11,6 +11,8 @@ extension DemoSeed {
     static let acmeID: Int64 = 1
     static let websiteID: Int64 = 2
     static let notesID: Int64 = 3
+    /// The second Mac's one workbench.
+    static let homeLabID: Int64 = 1
 
     static func workbenchRecords(now: Date) throws -> [CloudRecord] {
         var records: [CloudRecord] = []
@@ -19,6 +21,43 @@ extension DemoSeed {
             records.append(try record(kind: kind, id: id, json: json, modifiedAt: now))
         }
         return records
+    }
+
+    /// The second Mac's small Workbench (it is its own transport, so the
+    /// ids may repeat the first's): one workbench, one running session
+    /// waiting on one open ask, three targets, no comments.
+    static func secondaryWorkbenchRecords(now: Date) throws -> [CloudRecord] {
+        let ago: (TimeInterval) -> Date = { now.addingTimeInterval(-$0) }
+        let id = homeLabID
+        let slices: [(SliceKind, [String: Any])] = [
+            (.workbench, JSON.workbench(id, [
+                "name": "Home Lab", "folder_display": "~/Projects/home-lab", "branch": "main", "changes": 1,
+                "open_asks": 1, "open_targets": 2, "in_progress_targets": 1, "done_targets": 1,
+                "session_counts": JSON.counts(waiting: 1), "last_session_activity": JSON.stamp(ago(240))
+            ])),
+            (.terminalSession, JSON.session(30, workbench: id, [
+                "title": "Backup schedule", "state_kind": "waiting_on_ask", "state_caption": "Waiting for you · ask #200",
+                "state_tone": "orange", "state_glyph": "questionmark", "open_asks": 1, "oldest_ask_id": 200,
+                "target_id": 600, "last_active_at": JSON.stamp(ago(240))
+            ])),
+            (.ownerAsk, JSON.ask(200, workbench: id, [
+                "workbench_name": "Home Lab", "session_id": 30, "target_id": 600, "kind": "question",
+                "title": "Nightly or weekly backups?", "summary": "The backup job needs one schedule.",
+                "created_at": JSON.stamp(ago(600)),
+                "payload": ["questions": [[
+                    "id": "schedule", "question": "How often should the backup run?",
+                    "options": [["label": "Nightly", "recommended": true], ["label": "Weekly"]]
+                ]]]
+            ])),
+            (.workbenchTarget, JSON.target(600, workbench: id, [
+                "text": "Backup schedule", "status": "in_progress", "progress": 0.4, "open_asks": 1, "session_ids": [30]
+            ])),
+            (.workbenchTarget, JSON.target(601, workbench: id, ["text": "Router notes", "status": "done", "progress": 1])),
+            (.workbenchTarget, JSON.target(602, workbench: id, ["text": "Replace the UPS battery", "priority": "low"]))
+        ]
+        return try slices.map { kind, json in
+            try record(kind: kind, id: try recordID(json), json: json, modifiedAt: now)
+        }
     }
 
     /// Every Workbench slice payload of the demo, in publish order.

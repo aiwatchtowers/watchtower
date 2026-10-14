@@ -26,6 +26,95 @@ extension AppState {
     /// B registers its slice sources and dispatcher handlers here.
     func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
         let dispatcher = MobileHubCommandDispatcher()
+        registerWorkbenchHandlers(on: dispatcher, storage: storage, dbPool: dbPool)
+        // Without a linked phone only the link flow's answer is published,
+        // and the CLI companions run nothing (board #724).
+        let sidecar = storage.sidecar
+        let hasPhone: @Sendable () -> Bool = { MobileLinkCenter.hasLinkedPhone(sidecar) }
+        let inputs = makeSessionInputs(storage: storage, dbPool: dbPool)
+        inputs?.register(on: dispatcher)
+        // The folder's git status goes through the CLI (PROJ-10's git); no
+        // CLI, no refresher, and the workbench records carry no branch.
+        let gitRefresher = workbenchesViewModel?.cli.map { WorkbenchGitRefresher.live(cli: $0, dbPool: dbPool, isActive: hasPhone) }
+        // The terminals' liveness, copied by the fast lane for the session
+        // projection's off-main resolution.
+        let liveness = SessionLivenessBox()
+        let summaries = workbenchesViewModel?.cli.map {
+            SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness, isActive: hasPhone)
+        }
+        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
+        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let hidden = HiddenSessionIDsBox()
+        let sessions = TerminalSessionSlice(
+            liveness: { liveness.current },
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
+            hiddenIDs: { hidden.current }
+        )
+        // Each session's own report (`--session S --json`, scoped by the CLI,
+        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
+        let reports = workbenchesViewModel?.cli.map {
+            SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar, isActive: hasPhone)
+        }
+        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
+        let sources: [any SliceSource] = [
+            WorkbenchSlice(
+                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
+                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
+            ),
+            WorkbenchTargetSlice(),
+            WorkbenchCommentSlice(),
+            sessions,
+            OwnerAskSlice(),
+            AskAlertSlice(sidecar: storage.sidecar),
+            CalendarEventSlice(),
+            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
+            RecordingJobSlice(sidecar: storage.sidecar),
+            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
+        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
+        let transport = storage.transport
+        // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
+            isLinked: hasPhone,
+            // Labelled: a trailing closure would bind to `clock`, the first
+            // closure parameter.
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
+        followPendingDeletes(into: hidden)
+        // The companions' changes (git status, summaries, reports, phone
+        // recording jobs) are normal kinds: the next full tick diffs them.
+        let fastLane = FastLane(
+            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
+            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
+                gitRefresher?.sessionStateChanged(workbenchID: workbench)
+                summaries?.sessionStateChanged(workbenchID: workbench)
+            },
+            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
+        )
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, inputs]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
+        let hub = try assembleMobileHub(
+            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
+            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
+        )
+        wireTyping(hub.linkCenter, inputs: inputs)
+        return hub
+    }
+
+    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
+    /// change. Session and workbench records are normal kinds (board #724):
+    /// the next full tick drops the hidden sessions, no nudge.
+    private func followPendingDeletes(into hidden: HiddenSessionIDsBox) {
+        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
+        workbenchesViewModel?.onPendingDeletesChanged = { ids in hidden.store(ids) }
+    }
+
+    /// The asks', board writes' and session starts' handlers (spec §6).
+    private func registerWorkbenchHandlers(
+        on dispatcher: MobileHubCommandDispatcher, storage: MobileHubStorage, dbPool: DatabasePool
+    ) {
         if let asks = workbenchesViewModel?.asks {
             let askAnswers = AskAnswerHandler(dbPool: dbPool, sidecar: storage.sidecar) { [weak asks] ask, answer in
                 // A rebuilt workbench state rebuilds the hub too; until then
@@ -51,89 +140,36 @@ extension AppState {
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
-        // The folder's git status goes through the CLI (PROJ-10's git); no
-        // CLI, no refresher, and the workbench records carry no branch.
-        let gitRefresher = workbenchesViewModel?.cli.map { cli in
-            WorkbenchGitRefresher(
-                fetch: { try await cli.gitStatus(projectID: $0) },
-                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
+    }
+
+    /// A line from the phone goes through the asks' own delivery
+    /// (`SessionLineDelivery`, PROJ-12) under PROJ-16's gate; no workbench
+    /// state, no session input.
+    private func makeSessionInputs(storage: MobileHubStorage, dbPool: DatabasePool) -> SessionInputHandlers? {
+        workbenchesViewModel.map { vm in
+            SessionInputHandlers(
+                dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
+                status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
+                deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
+                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar)
             )
         }
-        // The terminals' liveness, copied by the fast lane for the session
-        // projection's off-main resolution.
-        let liveness = SessionLivenessBox()
-        let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
-        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
-        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
-        let hidden = HiddenSessionIDsBox()
-        let sessions = TerminalSessionSlice(
-            liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
-            hiddenIDs: { hidden.current }
-        )
-        // Each session's own report (`--session S --json`, scoped by the CLI,
-        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
-        let sidecar = storage.sidecar
-        let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
-        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
-        let sources: [any SliceSource] = [
-            WorkbenchSlice(
-                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
-                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
-            ),
-            WorkbenchTargetSlice(),
-            WorkbenchCommentSlice(),
-            sessions,
-            OwnerAskSlice(),
-            AskAlertSlice(sidecar: storage.sidecar),
-            CalendarEventSlice(),
-            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
-            RecordingJobSlice(sidecar: storage.sidecar),
-            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
-        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
-        let transport = storage.transport
-        let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
-            // Labelled: a trailing closure would bind to `clock`, the first
-            // closure parameter.
-            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
-        )
-        gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
-        summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
-        reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
-        recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
-        followPendingDeletes(into: hidden, publisher: publisher)
-        let fastLane = FastLane(
-            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
-            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
-            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
-                gitRefresher?.sessionStateChanged(workbenchID: workbench)
-                summaries?.sessionStateChanged(workbenchID: workbench)
-            },
-            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
-        )
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
-        return try assembleMobileHub(
-            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
-            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
-        )
     }
 
-    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
-    /// change, each change nudging the session and workbench slices.
-    private func followPendingDeletes(into hidden: HiddenSessionIDsBox, publisher: SlicePublisher) {
-        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
-        workbenchesViewModel?.onPendingDeletesChanged = { [weak publisher] ids in
-            hidden.store(ids)
-            publisher?.nudge(kinds: [.terminalSession, .workbench])
+    /// The phones' typing grants (spec §10): a revoke fails the phone's held
+    /// lines; a request asks the owner — Settings → Mobile shows it, and a
+    /// macOS notice asks while the app is in the background (OD-2).
+    private func wireTyping(_ linkCenter: MobileLinkCenter?, inputs: SessionInputHandlers?) {
+        linkCenter?.onTypingRevoked = { [weak inputs] in inputs?.revoked(deviceID: $0) }
+        linkCenter?.onTypingRequested = { device in
+            guard NSApp?.isActive == false else { return }
+            NotificationService.shared.sendMobileTypingRequestNotification(deviceID: device.deviceID, name: device.name)
         }
     }
 
-    /// The last step of `buildMobileHub`: the link center (when the storage
-    /// has a share service), the relay processor that hands it the phones'
-    /// `device` records, and the hub it hangs on.
+    /// The last step of `buildMobileHub`: the run's link center (when the
+    /// storage has a share service), the relay processor that hands it the
+    /// phones' `device` records, and the hub it hangs on.
     func assembleMobileHub(
         storage: MobileHubStorage,
         dbPool: DatabasePool,
@@ -143,15 +179,16 @@ extension AppState {
         recordingUploads: RelayProcessor.RecordingUploads
     ) throws -> MobileHubService {
         let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
-        let linkCenter = MobileLinkCenter.forHub(storage: storage, macName: hostInfo.macName, publisher: publisher)
+        let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
+        mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            transport: storage.secure, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
             deviceRecords: linkCenter?.relayRoute
         )
         let hub = MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, companions: companions
+            hostInfo: hostInfo, keyring: storage.keyring, companions: companions
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
         linkCenter?.attach(to: hub)
         return hub

@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -21,7 +22,7 @@ final class SettingsWiringTests: XCTestCase {
         HeartbeatPayload(
             updatedAt: updatedAt,
             appVersion: "1.0",
-            hubID: "hub-acme",
+            hubID: TestHub.acme,
             macName: macName,
             flavor: .default,
             lastPublishAt: updatedAt,
@@ -36,16 +37,16 @@ final class SettingsWiringTests: XCTestCase {
 
     // MARK: - Your Mac: online / offline / never connected
 
-    func testHeartbeat719SecondsOldIsOnline() {
+    func testHeartbeat2099SecondsOldIsOnline() {
         let now = Date()
-        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-719)), now: now)
+        let status = MacStatus(heartbeat: heartbeat(updatedAt: now.addingTimeInterval(-2099)), now: now)
         XCTAssertEqual(status, .online(macName: "Acme Mac"))
         XCTAssertEqual(status.title, "Online")
     }
 
-    func testHeartbeat720SecondsOldIsOffline() {
+    func testHeartbeat2100SecondsOldIsOffline() {
         let now = Date()
-        let stamp = now.addingTimeInterval(-720)
+        let stamp = now.addingTimeInterval(-2100)
         let status = MacStatus(heartbeat: heartbeat(updatedAt: stamp), now: now)
         XCTAssertEqual(status, .offline(macName: "Acme Mac", lastSeen: stamp))
         XCTAssertEqual(status.title, "Offline")
@@ -133,8 +134,9 @@ final class SettingsWiringTests: XCTestCase {
     func testSnapshotReadsTheHydratedHeartbeat() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let now = Date()
-        try await transport.save([
+        try await hub.save([
             try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
@@ -145,12 +147,36 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(snapshot.grant, "no linked device, so no grant to read")
     }
 
+    /// The link flow swaps the environment (a new replica) and may keep the
+    /// device id: the observation restarts on the new replica with an empty
+    /// decode cache, so the old Mac's heartbeat is never served.
+    func testANewReplicaForTheSameDeviceShowsItsOwnHeartbeat() async throws {
+        let now = Date()
+        func replica(_ macName: String) async throws -> ReplicaStore {
+            let store = try makePoolStore()
+            let transport = InMemoryCloudTransport()
+            try await TestPhone.hub(over: transport).save(
+                [try CloudRecordFactory.record(for: heartbeat(updatedAt: now, macName: macName), modifiedAt: now)])
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+            return store
+        }
+        let old = try await replica("Old Mac")
+        let new = try await replica("New Mac")
+        let model = SettingsViewModel()
+        model.start(store: old, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "Old Mac" }, "the first replica never loaded")
+
+        model.start(store: new, deviceID: device.deviceID)
+        try await poll({ model.snapshot.heartbeat?.macName == "New Mac" }, "the old replica's heartbeat is still shown")
+        XCTAssertEqual(model.decodeCache.decodes(HeartbeatPayload.recordName), 1, "decoded afresh from the new replica")
+    }
+
     // MARK: - Your Mac: queued
 
     func testQueuedCountEqualsPendingOutboxRows() async throws {
         for expected in [0, 1, 25] {
             let store = try makePoolStore()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: device.deviceID)
+            let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: device.deviceID)
             for _ in 0..<expected {
                 try await outbox.enqueue(kind: .probe, entityRecordName: nil)
             }
@@ -164,7 +190,7 @@ final class SettingsWiringTests: XCTestCase {
     /// The live view model sees a new queued row without a manual refresh.
     func testViewModelObservesTheQueuedCount() async throws {
         let store = try makePoolStore()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: device.deviceID)
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: device.deviceID)
         try await outbox.enqueue(kind: .probe, entityRecordName: nil)
         let model = SettingsViewModel()
         model.start(store: store, deviceID: device.deviceID)
@@ -192,7 +218,7 @@ final class SettingsWiringTests: XCTestCase {
         health.recordFailure("recordings", error: ReadError(), at: now.addingTimeInterval(-300))
         health.recordValue("recordings")
 
-        let rows = SettingsViewModel(health: health).diagnostics(now: now)
+        let rows = SettingsViewModel(health: health).diagnostics(now: now, locale: Locale(identifier: "en_US"))
 
         XCTAssertEqual(rows.map(\.name), ["calendar", "recordings"])
         XCTAssertEqual(rows[0].text, "calendar updates: failed 2×, last 1 min. ago: database is locked")
@@ -202,7 +228,7 @@ final class SettingsWiringTests: XCTestCase {
     // MARK: - Workbench toggles
 
     func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
-        let settings = DeviceSettings(transport: InMemoryCloudTransport(), defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: TestHub.acme)
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.newAskAlerts)
@@ -212,7 +238,7 @@ final class SettingsWiringTests: XCTestCase {
     /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -221,7 +247,7 @@ final class SettingsWiringTests: XCTestCase {
         let saves = await transport.saves
         XCTAssertEqual(saves.count, 1, "a repeated toggle to the same value must not write again")
         XCTAssertEqual(saves.first?.count, 1)
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         let written = try XCTUnwrap(payloads.first)
         XCTAssertTrue(written.typingRequested)
         XCTAssertTrue(written.startSessions)
@@ -232,12 +258,12 @@ final class SettingsWiringTests: XCTestCase {
 
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
         let transport = SpyTransport()
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setStartSessions(false)
 
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         let written = try XCTUnwrap(payloads.first)
         XCTAssertFalse(written.startSessions)
         XCTAssertFalse(written.typingRequested)
@@ -248,7 +274,7 @@ final class SettingsWiringTests: XCTestCase {
     func testToggleWhileUnlinkedKeepsTheChoiceAndWritesNothing() async throws {
         let transport = SpyTransport()
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
 
         await settings.setTypingRequested(true)
 
@@ -256,15 +282,65 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(saves.isEmpty)
         XCTAssertTrue(settings.typingRequested)
         XCTAssertTrue(
-            DeviceSettings(transport: transport, defaults: defaults).typingRequested,
+            DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested,
             "the choice must survive a relaunch"
         )
+    }
+
+    /// Each Mac has its own `device` record: the Workbench choices are kept
+    /// per hub, the new-ask alerts once for the phone.
+    func testTheWorkbenchChoicesAreKeptPerHub() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
+
+        await acme.setTypingRequested(true)
+        await acme.setStartSessions(false)
+        acme.newAskAlerts = false
+
+        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
+        XCTAssertFalse(home.typingRequested, "another hub keeps its own default")
+        XCTAssertTrue(home.startSessions)
+        XCTAssertFalse(home.newAskAlerts, "the alerts choice is the phone's")
+        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
+    }
+
+    /// A choice made while unlinked goes to the first hub with no value of
+    /// its own once its link completes; a hub's own value wins, and either
+    /// way the unlinked choice is used up. Ruling 5: a hub's settings read
+    /// it before then (the link record carries it) without using it up.
+    func testAHubAdoptsTheUnlinkedChoicesUnlessItHasItsOwn() async throws {
+        let transport = SpyTransport()
+        let defaults = try makeDefaults()
+        let unlinked = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: DeviceSettings.unlinkedHubID)
+        await unlinked.setTypingRequested(true)
+        await unlinked.setStartSessions(false)
+        let own = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
+        await own.setTypingRequested(false)
+
+        let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
+        XCTAssertFalse(home.typingRequested, "the hub's own value wins")
+        XCTAssertFalse(home.startSessions, "a key it never had comes from the unlinked choice")
+        let candidate = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.studio)
+        XCTAssertTrue(candidate.typingRequested, "read by every hub until a link completes")
+        XCTAssertNotNil(defaults.object(forKey: "hub.unlinked.device.startSessions"), "reading uses nothing up")
+
+        home.adoptUnlinkedChoices()
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.home).device.startSessions") as? Bool, false, "the hub's own now")
+        XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.home).device.typingRequested") as? Bool, false)
+
+        let acme = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
+        XCTAssertFalse(acme.typingRequested, "used up by the first hub: defaults again")
+        XCTAssertTrue(acme.startSessions)
+        let again = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: DeviceSettings.unlinkedHubID)
+        XCTAssertFalse(again.typingRequested)
+        XCTAssertTrue(again.startSessions)
     }
 
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
         let transport = SpyTransport(failingSaves: [0])
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
@@ -278,7 +354,7 @@ final class SettingsWiringTests: XCTestCase {
     /// write reads the choices.
     func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1) } }
 
@@ -297,7 +373,7 @@ final class SettingsWiringTests: XCTestCase {
 
         let maxInFlight = await transport.maxInFlight
         XCTAssertEqual(maxInFlight, 1, "device-record writes must not overlap")
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         XCTAssertEqual(payloads.map(\.typingRequested), [true, false], "the second write sends the reverted typing choice")
         XCTAssertEqual(payloads.map(\.startSessions), [true, false])
         XCTAssertFalse(settings.typingRequested, "the failed typing write is reverted")
@@ -310,7 +386,7 @@ final class SettingsWiringTests: XCTestCase {
     func testAFailedWriteNeverRevertsANewerToggleOfTheSameSetting() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
         let defaults = try makeDefaults()
-        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme)
         settings.linkedDevice = device
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await transport.release(0, 1, 2) } }
@@ -325,16 +401,16 @@ final class SettingsWiringTests: XCTestCase {
         await transport.release(0, 1, 2)
         _ = await (first.value, second.value, third.value)
         XCTAssertTrue(settings.typingRequested, "the newest toggle keeps its value")
-        let payloads = try await transport.devicePayloads()
+        let payloads = try await deviceWrites(transport)
         XCTAssertEqual(payloads.map(\.typingRequested), [true, true, true], "no write sends the stale revert")
-        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults).typingRequested)
+        XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
     }
 
     /// A-T11 N3: a reverted toggle says why until that setting saves, even
     /// when the other setting's write succeeds right behind it.
     func testARevertedToggleKeepsItsErrorUntilThatSettingSaves() async throws {
         let transport = SpyTransport(failingSaves: [0], holdSaves: true)
-        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
         settings.linkedDevice = device
         defer { Task { await transport.release(0, 1, 2) } }
 
@@ -353,6 +429,85 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(settings.lastError, "a typing save clears it")
     }
 
+    /// The `device` records the phone sealed into the spy, in save order, each opened by the test hub (the
+    /// in-memory transport keeps one version per name, so each is opened on its own).
+    private func deviceWrites(_ spy: SpyTransport) async throws -> [DevicePayload] {
+        var payloads: [DevicePayload] = []
+        for record in await spy.saves.flatMap({ $0 }) {
+            let mac = InMemoryCloudTransport()
+            try await mac.save([record])
+            let opened = try await TestPhone.hub(over: mac).changes(in: .relay, since: nil).changed
+            XCTAssertEqual(opened.count, 1, "the hub opens every device write")
+            payloads += try opened
+                .filter { $0.kind == RelayRecordKind.device.rawValue }
+                .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        }
+        return payloads
+    }
+
+    /// The environment's toggles go through the secure transport: the Mac gets this device's sealed `device`
+    /// record (the hub drops a plaintext one), its payload naming this device.
+    func testAToggleWritesASealedDeviceRecordForThisDevice() async throws {
+        let transport = InMemoryCloudTransport()
+        let linked = LinkedDevice(
+            deviceID: TestPhone.deviceID(), name: device.name, model: device.model, appVersion: device.appVersion,
+            scope: .private, userRecordName: device.userRecordName
+        )
+        let env = try HubSession(
+            transport: transport,
+            replicaPath: try makeReplicaPath(),
+            transportKind: .cloudKit,
+            hubID: TestE2E.hubID.uuidString,
+            linkedDevice: linked,
+            keys: try TestPhone.keys(),
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+
+        await env.deviceSettings.setStartSessions(false)
+
+        XCTAssertNil(env.deviceSettings.lastError)
+        let raw = try await transport.changes(in: .relay, since: nil).changed
+        XCTAssertFalse(raw.isEmpty)
+        XCTAssertTrue(raw.allSatisfy { $0.kind == WireKind.envelope }, "nothing goes out in the clear")
+        let opened = try await TestPhone.hub(over: transport)
+            .changes(in: .relay, since: nil)
+            .changed
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        XCTAssertEqual(opened.map(\.startSessions), [false])
+        XCTAssertEqual(opened.map(\.deviceID), [TestE2E.deviceID.uuidString], "the payload names this device (the sender)")
+    }
+
+    // MARK: - Newer format
+
+    /// An envelope of a newer format than this build reads is kept unread and Settings asks for an update.
+    func testANewerFormatShowsTheUpdateRow() async throws {
+        let store = try makePoolStore()
+        let model = SettingsViewModel()
+        model.start(store: store, deviceID: nil)
+        try await poll { model.formatNotice == nil && model.snapshot.queuedCount == 0 }
+        XCTAssertNil(model.formatNotice, "no notice while every record reads")
+
+        let scratch = InMemoryCloudTransport()
+        let now = Date()
+        try await TestPhone.hub(over: scratch).save([CloudRecordFactory.record(
+            for: SliceRecord(kind: .workbench, id: "1", modifiedAt: now, payload: Data("{}".utf8)))])
+        let changed = try await scratch.changes(in: .data, since: nil).changed
+        let sealed = try XCTUnwrap(changed.first)
+        var newer = sealed.payload
+        newer[newer.startIndex + 3] &+= 1 // the envelope's `ver` byte, after the "WTE" magic
+        let transport = InMemoryCloudTransport()
+        try await transport.save([CloudRecord(
+            recordName: sealed.recordName, zone: .data, kind: sealed.kind, modifiedAt: now, payload: newer)])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        model.refreshFormatNotice()
+        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your Mac uses a newer format.")
+        XCTAssertEqual(store.newerFormatCount(), 1)
+    }
+
     /// Waits (bounded) until the spy has seen `count` save calls.
     private func pollSaves(_ transport: SpyTransport, _ count: Int) async throws {
         let deadline = Date().addingTimeInterval(5)
@@ -365,9 +520,10 @@ final class SettingsWiringTests: XCTestCase {
 
     /// Settings reads the hub's grant for this phone.
     func testSnapshotReadsThisDevicesGrant() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: Date())
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: Date())
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let mine = try await store.reader.read { db in
@@ -380,6 +536,168 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertNil(other.grant, "another device's grant must not show")
     }
 
+    // MARK: - Macs (multi-hub F2, spec §5.6)
+
+    private var macsRegistry: HubRegistry!
+    private var macsDefaults: UserDefaults!
+    private var farewells: [String] = []
+    /// The farewell stays in the send queue until the cap: an unlink in flight.
+    private var farewellStuck = false
+
+    private func macLink(_ hubID: String, _ macName: String) -> LinkRecord {
+        LinkRecord(
+            hubID: hubID, macName: macName, scope: .private, ownerName: "_user-acme", userRecordName: "_user-acme",
+            nonce: "nonce-\(hubID)", dataShareURL: nil, relayShareURL: nil, deviceID: "device-acme-1",
+            linkedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+    }
+
+    /// A live-kind root over in-memory hubs `links` (the Mac-removed ones in
+    /// `frozen`), `active` on screen.
+    private func makeMacsRoot(_ links: [LinkRecord], active: String, frozen: Set<String> = []) throws -> AppRoot {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("settings-macs-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let paths = HubPaths(
+            groupDirectory: base.appendingPathComponent("group", isDirectory: true),
+            localDirectory: base.appendingPathComponent("local", isDirectory: true),
+            recordingsBase: base.appendingPathComponent("phone-recordings", isDirectory: true)
+        )
+        for directory in [paths.groupDirectory, paths.localDirectory, paths.recordingsBase] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let defaults = try makeDefaults()
+        macsDefaults = defaults
+        let registry = try HubRegistry(path: paths.registryPath)
+        macsRegistry = registry
+        for link in links {
+            try registry.upsert(link, now: Date())
+            if frozen.contains(link.hubID) { try registry.setState(.unlinkedByMac, for: link.hubID) }
+        }
+        try registry.setActive(active)
+        let engine = FakeAudioEngine()
+        let clock = FakeClock()
+        let factory = HubSessionFactory { _, hubID, scope, device in
+            try paths.prepare(hubID)
+            let session = try HubSession(
+                transport: InMemoryCloudTransport(),
+                replicaPath: paths.replicaPath(hubID),
+                transportKind: .cloudKit,
+                hubID: hubID,
+                linkedDevice: device,
+                keys: try TestHub.keys(hubID),
+                defaults: defaults,
+                recordingsDirectory: paths.recordingsDirectory(hubID),
+                hold: RecordingHold(directory: paths.holdDirectory),
+                databaseScope: scope
+            ) { uploader in
+                PhoneRecorderController(
+                    uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
+                )
+            }
+            return session
+        }
+        let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
+        let env = try AppEnvironment.live(
+            registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults
+        ) { _ in }
+        addTeardownBlock { @MainActor in for hubID in env.order { env.session(hubID)?.stop() } }
+        let noSend: @MainActor (HubSession) async -> Void = { _ in }
+        return AppRoot(
+            env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
+            linking: LinkingViewModel(
+                container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity,
+                keys: try TestE2E.phoneStore()
+            ),
+            startWork: nil,
+            farewellDelivery: AppRoot.FarewellDelivery(
+                isPending: { [weak self] _, record in
+                    self?.farewells.append(record.recordName)
+                    return self?.farewellStuck ?? false
+                },
+                cap: .seconds(1), pause: .milliseconds(20), send: noSend
+            )
+        )
+    }
+
+    func testReorderingPersistsInTheRegistryAndFollowsOnScreen() throws {
+        let root = try makeMacsRoot(
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac"), macLink(TestHub.lab, "Lab Mac")], active: TestHub.acme
+        )
+
+        root.linking.moveHub(TestHub.lab, to: 0)
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.env.order, [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the Mac on screen stays")
+    }
+
+    func testUnlinkingAnInactiveMacRemovesOnlyIt() async throws {
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
+
+        await root.linking.unlink(TestHub.home)
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.acme])
+        XCTAssertEqual(root.env.order, [TestHub.acme])
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme)
+        XCTAssertEqual(farewells.count, 1, "a linked Mac hears the farewell")
+    }
+
+    /// Spec §5.7: the active Mac's unlink from Settings activates the next
+    /// Mac in order; the last one returns to onboarding.
+    func testUnlinkingTheActiveMacActivatesTheNextAndTheLastShowsOnboarding() async throws {
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
+
+        await root.linking.unlink(TestHub.acme)
+
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertFalse(root.showsOnboarding)
+
+        await root.linking.unlink(TestHub.home)
+
+        XCTAssertNil(root.env.activeHubID)
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// A reorder during an unlink in flight does nothing.
+    func testReorderingWhileAnUnlinkIsInFlightDoesNothing() async throws {
+        let root = try makeMacsRoot(
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac"), macLink(TestHub.lab, "Lab Mac")], active: TestHub.acme
+        )
+        farewellStuck = true
+        let unlinking = Task { await root.linking.unlink(TestHub.lab) }
+        for _ in 0 ..< 1000 where !root.linking.isBusy { await Task.yield() }
+        XCTAssertTrue(root.linking.isBusy)
+
+        root.linking.moveHub(TestHub.home, to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID).filter { $0 != TestHub.lab }, [TestHub.acme, TestHub.home])
+        await unlinking.value
+
+        root.linking.moveHub(TestHub.home, to: 0)
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.home, TestHub.acme], "idle again: the move goes through")
+    }
+
+    func testForgettingAFrozenMacRemovesItWithNoFarewell() async throws {
+        let root = try makeMacsRoot(
+            [macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme, frozen: [TestHub.home]
+        )
+
+        await root.linking.forget(TestHub.home)
+
+        XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.acme])
+        XCTAssertTrue(farewells.isEmpty)
+    }
+
+    func testTheTogglesReadTheActiveMacsKeysAfterASwitch() async throws {
+        let root = try makeMacsRoot([macLink(TestHub.acme, "Acme Mac"), macLink(TestHub.home, "Home Mac")], active: TestHub.acme)
+        await root.env.deviceSettings.setTypingRequested(true)
+
+        root.env.activate(TestHub.home)
+
+        XCTAssertFalse(root.env.deviceSettings.typingRequested, "the new Mac has its own choice")
+        XCTAssertEqual(macsDefaults.object(forKey: "hub.\(TestHub.acme).device.typingRequested") as? Bool, true)
+        XCTAssertNil(macsDefaults.object(forKey: "hub.\(TestHub.home).device.typingRequested"))
+    }
 }
 
 /// Records every `save` call (one entry per call), fails the calls whose
@@ -425,11 +743,5 @@ private actor SpyTransport: CloudSyncTransport {
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
-    }
-
-    func devicePayloads() throws -> [DevicePayload] {
-        try saves.flatMap { $0 }
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
     }
 }

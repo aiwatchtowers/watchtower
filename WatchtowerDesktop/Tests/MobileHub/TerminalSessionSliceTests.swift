@@ -14,8 +14,8 @@ final class TerminalSessionSliceTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
     /// The slice's clock: the background agent count (#411) is judged at it.
-    private let now = Date()
-    private var started: Date { now.addingTimeInterval(-600) }
+    private let fixedNow = Date()
+    private var started: Date { fixedNow.addingTimeInterval(-600) }
 
     override func setUpWithError() throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
@@ -32,8 +32,8 @@ final class TerminalSessionSliceTests: XCTestCase {
         summary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary? = { _, _ in nil }
     ) -> TerminalSessionSlice {
         let liveness = SessionLiveness(liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }))
-        let now = clock ?? self.now
-        let sliceClock: @Sendable () -> Date = { now }
+        let sliceNow = clock ?? fixedNow
+        let sliceClock: @Sendable () -> Date = { sliceNow }
         return TerminalSessionSlice(liveness: { liveness }, reportSummary: summary, now: sliceClock)
     }
 
@@ -179,7 +179,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         let published = try payloads(slice(live: live))
         let rows = try dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: []) }
         let statuses = SessionAgentStatus.resolve(
-            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }), now: now
+            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }), now: fixedNow
         )
 
         for (item, id) in seeded {
@@ -266,6 +266,37 @@ final class TerminalSessionSliceTests: XCTestCase {
         let source = slice()
         let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
         XCTAssertEqual(counts, .init(working: 0, waiting: 2, needsApproval: 0, finished: 0, failed: 0, stopped: 0, notRunning: 0))
+    }
+
+    /// #411 §10 (board #73): a count the Mac shows over after two failed
+    /// probes (`SessionLiveness.displayOver`) goes out as Stopped, the same
+    /// row without it as Agents working. Review F8: only for the count it
+    /// was judged for — a newer report or another run is Agents working.
+    func testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount() throws {
+        let session = try dbPool.write { db -> Int64 in
+            let project = try TestDatabase.insertWorkbench(db)
+            let id = try SliceSeed.insertSession(db, projectID: project)
+            try self.setState(db, id, state: "waiting", background: 2, backgroundAt: 2)
+            return id
+        }
+        let fixedNow = self.fixedNow
+        let started = self.started
+        let shown = { (over: [Int64: ShownOverCount]) -> TerminalSessionSlice in
+            let liveness = SessionLiveness(liveIDs: [session], startedAt: [session: started], displayOver: over)
+            return TerminalSessionSlice(liveness: { liveness }, reportSummary: { _, _ in nil }, now: { fixedNow })
+        }
+        let judged = ShownOverCount(run: started, reportedAt: stamp(2))
+        XCTAssertEqual(try payloads(shown([:]))[session]?["state_kind"] as? String, "working")
+        let over = try XCTUnwrap(try payloads(shown([session: judged]))[session])
+        XCTAssertEqual(over["state_kind"] as? String, "stopped")
+        XCTAssertEqual(over["state_caption"] as? String, "Stopped")
+
+        let olderReport = ShownOverCount(run: started, reportedAt: stamp(1))
+        XCTAssertEqual(try payloads(shown([session: olderReport]))[session]?["state_kind"] as? String, "working",
+                       "the row holds a newer report than the one judged over")
+        let otherRun = ShownOverCount(run: started.addingTimeInterval(-60), reportedAt: stamp(2))
+        XCTAssertEqual(try payloads(shown([session: otherRun]))[session]?["state_kind"] as? String, "working",
+                       "judged over for another run")
     }
 
     private static func wire(_ tone: SessionStatePresentation.Tone) -> String {
@@ -422,8 +453,6 @@ final class TerminalSessionSliceTests: XCTestCase {
             workbenches: { .init(live: [project], published: [project]) },
             clock: { clock.now }
         )
-        let changes = OSAllocatedUnfairLock(initialState: 0)
-        summaries.setOnChange { changes.withLock { $0 += 1 } }
         let source = slice(live: [session]) { summaries.summary(workbenchID: $0, sessionID: $1) }
 
         let before = try XCTUnwrap(try payloads(source)[session])
@@ -432,7 +461,6 @@ final class TerminalSessionSliceTests: XCTestCase {
 
         await summaries.runDue()
         XCTAssertEqual(runner.invocations, [["workbench", "session-report", "--workbench", String(project), "--summary", "--json"]])
-        XCTAssertEqual(changes.withLock { $0 }, 1)
         let mapped = try XCTUnwrap(try payloads(source)[session])
         XCTAssertEqual(mapped["report_target_id"] as? Int, 415)
         XCTAssertEqual(mapped["report_done"] as? Int, 1)
@@ -446,7 +474,41 @@ final class TerminalSessionSliceTests: XCTestCase {
         let kept = try XCTUnwrap(try payloads(source)[session])
         XCTAssertEqual(kept["report_target_id"] as? Int, 415, "a summary failure keeps the last values")
         XCTAssertEqual(kept["report_pr_line"] as? String, "PR #175 open")
-        XCTAssertEqual(changes.withLock { $0 }, 1, "and nudges nothing")
+    }
+
+    /// Board #724: without a linked phone (`isActive` false) the loop
+    /// neither lists the workbenches nor runs the CLI; a linked phone
+    /// starts the due runs.
+    func testWithoutALinkedPhoneTheSummaryLoopRunsNothing() async throws {
+        let linked = OSAllocatedUnfairLock(initialState: false)
+        let checks = OSAllocatedUnfairLock(initialState: 0)
+        let listings = OSAllocatedUnfairLock(initialState: 0)
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let isActive: @Sendable () -> Bool = {
+            checks.withLock { $0 += 1 }
+            return linked.withLock { $0 }
+        }
+        let summaries = SessionReportSummaryRunner(
+            fetch: { _ in
+                calls.withLock { $0 += 1 }
+                return []
+            },
+            workbenches: {
+                listings.withLock { $0 += 1 }
+                return .init(live: [7], published: [7])
+            },
+            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(5), wake: .milliseconds(10)),
+            isActive: isActive
+        )
+        summaries.start()
+        defer { summaries.stop() }
+        await awaitHubCondition("the loop woke three times") { checks.withLock { $0 } >= 3 }
+        XCTAssertEqual(listings.withLock { $0 }, 0)
+        XCTAssertEqual(calls.withLock { $0 }, 0)
+
+        linked.withLock { $0 = true }
+        await awaitHubCondition("a linked phone starts the runs") { calls.withLock { $0 } >= 1 }
+        XCTAssertGreaterThanOrEqual(listings.withLock { $0 }, 1)
     }
 
     func testSummaryCadenceIsEvery60SecondsAndAStateChangeIsCoalesced() async throws {

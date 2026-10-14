@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,9 +99,13 @@ func discoveryTransport(ctx context.Context, spec ServerSpec) (mcp.Transport, *h
 		cmd.Stderr = stderr
 		return &mcp.CommandTransport{Command: cmd}, stderr, nil
 	case "http":
+		endpoint, err := url.Parse(spec.URL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing the server url: %w", err)
+		}
 		return &mcp.StreamableClientTransport{
 			Endpoint:             spec.URL,
-			HTTPClient:           &http.Client{Transport: headerTransport{headers: spec.Headers}},
+			HTTPClient:           &http.Client{Transport: headerTransport{headers: spec.Headers, origin: endpoint}},
 			MaxRetries:           -1,
 			DisableStandaloneSSE: true,
 		}, nil, nil
@@ -167,15 +172,21 @@ func withStderr(err error, stderr *headBuffer) error {
 	return err
 }
 
-// headerTransport adds the connection's static/OAuth headers to every request.
+// headerTransport adds the connection's static/OAuth headers to the
+// requests that go to the server's own origin (scheme and host). A redirect
+// to another host, or down to http, goes out without them, so a secret never
+// leaves for a server the owner did not name.
 type headerTransport struct {
 	headers map[string]string
+	origin  *url.URL
 }
 
 func (t headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
+	if req.URL.Scheme == t.origin.Scheme && req.URL.Host == t.origin.Host {
+		req = req.Clone(req.Context())
+		for k, v := range t.headers {
+			req.Header.Set(k, v)
+		}
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }

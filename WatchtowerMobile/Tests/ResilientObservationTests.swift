@@ -1,5 +1,7 @@
 import Foundation
 import GRDB
+import UIKit
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -17,15 +19,30 @@ final class ResilientObservationTests: XCTestCase {
     private final class FailSwitch: @unchecked Sendable {
         private let lock = NSLock()
         private var on = false
+        private var locked = false
+        private var hiding = false
         var isOn: Bool {
             get { lock.withLock { on } }
             set { lock.withLock { on = newValue } }
+        }
+
+        /// The read leaves out the rows without throwing, as a list read (`payloads(of:)`) does while locked.
+        var hidesRows: Bool {
+            get { lock.withLock { hiding } }
+            set { lock.withLock { hiding = newValue } }
+        }
+
+        /// The read throws `KeyStoreError.locked`, as a replica read does while the keychain is locked.
+        var isLocked: Bool {
+            get { lock.withLock { locked } }
+            set { lock.withLock { locked = newValue } }
         }
     }
 
     @MainActor
     private final class Received {
         var values: [Int] = []
+        var waitingForKeys = 0
     }
 
     private struct Fixture {
@@ -34,6 +51,7 @@ final class ResilientObservationTests: XCTestCase {
         let health: ObservationHealth
         let sleeper: TickSleeper
         let received: Received
+        let unlocks = NotificationCenter()
     }
 
     private func makeFixture() throws -> Fixture {
@@ -54,13 +72,17 @@ final class ResilientObservationTests: XCTestCase {
             name: name,
             reader: fixture.pool,
             health: fixture.health,
+            unlocks: fixture.unlocks,
             sleep: { try await sleeper.sleep($0) },
             observation: {
                 ValueObservation.tracking { db in
+                    if failing.isLocked { throw KeyStoreError.locked }
                     if failing.isOn { throw ProbeError() }
+                    if failing.hidesRows { return 0 }
                     return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM probe") ?? 0
                 }
             },
+            onWaitingForKeys: { received.waitingForKeys += 1 },
             onChange: { received.values.append($0) }
         )
     }
@@ -97,6 +119,78 @@ final class ResilientObservationTests: XCTestCase {
         XCTAssertEqual(failure.lastMessage, "probe read failed")
         XCTAssertTrue(failure.recovered)
         withExtendedLifetime(observation) {}
+    }
+
+    /// Mobile E2E: a read the locked keychain refuses is not a failure. The observation keeps its last value,
+    /// says it waits for the keys, and starts again at the unlock signal, without waiting out its backoff.
+    func testALockedReadWaitsForTheUnlockWithoutAFailure() async throws {
+        let fixture = try makeFixture()
+        let observation = start(fixture)
+        try await poll({ fixture.received.values == [0] }, "the initial value is missing")
+
+        fixture.failing.isLocked = true
+        try insertRow(fixture)
+        try await poll({ fixture.received.waitingForKeys == 1 }, "the locked read was not reported as waiting")
+        XCTAssertNil(fixture.health.failures["probe"], "a locked keychain is not a failure")
+        XCTAssertEqual(fixture.received.values, [0], "the last value stays")
+
+        fixture.failing.isLocked = false
+        fixture.unlocks.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ fixture.received.values == [0, 1] }, "the unlock did not restart the observation")
+        try insertRow(fixture)
+        try await poll({ fixture.received.values == [0, 1, 2] }, "the restarted observation stopped following writes")
+        XCTAssertNil(fixture.health.failures["probe"])
+        withExtendedLifetime(observation) {}
+    }
+
+    /// Review Focus 1 for lists: a list read skips the rows it cannot open while locked and delivers what is
+    /// left, without throwing. The unlock signal restarts it anyway, so the rows come back without a write.
+    func testTheUnlockRestartsALiveObservationThatLeftOutLockedRows() async throws {
+        let fixture = try makeFixture()
+        let observation = start(fixture)
+        try insertRow(fixture)
+        try await poll({ fixture.received.values.last == 1 }, "the initial value is missing")
+
+        fixture.failing.hidesRows = true
+        try insertRow(fixture)
+        try await poll({ fixture.received.values.last == 0 }, "the locked re-read did not deliver its partial value")
+        XCTAssertEqual(fixture.received.waitingForKeys, 0, "nothing threw")
+
+        fixture.failing.hidesRows = false
+        fixture.unlocks.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ fixture.received.values.last == 2 }, "the unlock did not re-read the list")
+        XCTAssertNil(fixture.health.failures["probe"])
+        withExtendedLifetime(observation) {}
+    }
+
+    /// The same on a real screen model and replica: the Calendar list goes empty when a write lands while the
+    /// keys are locked, and the unlock signal alone fills it again.
+    func testTheCalendarFillsAgainAtUnlockWithoutAnotherWrite() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mobile-unlock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore(
+            path: dir.appendingPathComponent("replica.sqlite").path,
+            opener: EnvelopeReplicaOpener(hubID: TestE2E.hubID.uuidString, deviceID: TestE2E.deviceID, keys: keys))
+        let transport = InMemoryCloudTransport()
+        try await TestPhone.hub(over: transport).save(try DemoSeed.calendarRecords(now: Date()))
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let model = CalendarReplicaModel()
+        model.start(store: store)
+        try await poll({ !model.snapshot.events.isEmpty }, "the model did not load the events")
+        let count = model.snapshot.events.count
+
+        keys.isLocked = true
+        // A write the observation tracks (a change stamp, board #724), with no new row to index: its read skips
+        // the locked rows, and the decode cache keeps nothing from it.
+        let pool = try XCTUnwrap(store.reader as? DatabasePool)
+        try await pool.write { db in try db.execute(sql: "UPDATE slice_kind_versions SET version = version + 1") }
+        try await poll({ model.snapshot.events.isEmpty }, "the locked re-read left the rows out")
+
+        keys.isLocked = false
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        try await poll({ model.snapshot.events.count == count }, "the unlock alone did not fill the list again")
     }
 
     func testRepeatedErrorsBackOffToThirtySeconds() async throws {
@@ -182,21 +276,24 @@ final class ResilientObservationTests: XCTestCase {
         let store = try makePoolStore()
         let pool = try XCTUnwrap(store.reader as? DatabasePool)
         let transport = InMemoryCloudTransport()
+        let hub = TestPhone.hub(over: transport)
         let hydrator = ReplicaHydrator(transport: transport, store: store)
         let now = Date()
-        try await transport.save(try DemoSeed.calendarRecords(now: now))
+        try await hub.save(try DemoSeed.calendarRecords(now: now))
         _ = try await hydrator.hydrateOnce()
         let model = CalendarReplicaModel()
         model.start(store: store)
         try await poll({ !model.snapshot.events.isEmpty }, "the model did not load the events")
         let failuresBefore = ObservationHealth.shared.failures["calendar"]?.count ?? 0
 
-        // A write the model observes, after which its read fails: the real
-        // table swapped for one without the payload column.
+        // A write the model observes (it bumps the calendar's change stamp,
+        // as every replica write does), after which its read fails: the
+        // real table swapped for one without the payload column.
         try await pool.write { db in
             try db.execute(sql: "ALTER TABLE slice_records RENAME TO slice_records_away")
             try db.execute(sql: "CREATE TABLE slice_records (record_name TEXT, kind TEXT)")
             try db.execute(sql: "INSERT INTO slice_records VALUES ('x', 'x')")
+            try db.execute(sql: "UPDATE slice_kind_versions SET version = version + 1 WHERE kind = 'calendar_event'")
         }
         try await poll({ (ObservationHealth.shared.failures["calendar"]?.count ?? 0) > failuresBefore }, "the failed read was not reported")
         try await pool.write { db in
@@ -206,7 +303,7 @@ final class ResilientObservationTests: XCTestCase {
 
         let later = now.addingTimeInterval(3_600)
         let before = model.snapshot.events.map(\.startTime)
-        try await transport.save(try DemoSeed.calendarRecords(now: later))
+        try await hub.save(try DemoSeed.calendarRecords(now: later))
         _ = try await hydrator.hydrateOnce()
         try await poll({ model.snapshot.events.map(\.startTime) != before }, "the calendar froze after the failed read")
         XCTAssertEqual(ObservationHealth.shared.failures["calendar"]?.recovered, true)

@@ -28,6 +28,8 @@ package struct CalendarAccount: FetchableRecord, Identifiable, Equatable {
     // MARK: - Status predicates
 
     package var isOK: Bool { status == "ok" }
+    /// The sync stopped it: its server would get the password in cleartext.
+    package var isStoppedForCleartext: Bool { CleartextRefusal.stopped(status: status, error: error) }
 
     // MARK: - Provider predicates
 

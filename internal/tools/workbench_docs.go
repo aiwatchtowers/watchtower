@@ -96,17 +96,17 @@ func checkDocumentFile(rel, abs string) error {
 	return nil
 }
 
-// commentInWorkbench loads a comment and fails unless it belongs to projectID.
-func commentInWorkbench(d *db.DB, projectID, commentID int64) (*db.WorkbenchComment, error) {
+// commentInWorkbench loads a comment and fails unless it belongs to workbenchID.
+func commentInWorkbench(d *db.DB, workbenchID, commentID int64) (*db.WorkbenchComment, error) {
 	notHere := notInWorkbench("comment", commentID)
-	if projectID <= 0 || commentID <= 0 {
+	if workbenchID <= 0 || commentID <= 0 {
 		return nil, notHere
 	}
 	c, err := d.GetWorkbenchComment(commentID)
 	if err != nil {
 		return nil, fmt.Errorf("loading comment %d: %w", commentID, err)
 	}
-	if c == nil || c.WorkbenchID != projectID {
+	if c == nil || c.WorkbenchID != workbenchID {
 		return nil, notHere
 	}
 	return c, nil
@@ -287,8 +287,8 @@ func addAgentComment(d *db.DB, c db.WorkbenchComment) (int64, error) {
 	return id, nil
 }
 
-func agentComment(projectID, targetID, parentID int64, label, body string) db.WorkbenchComment {
-	c := db.WorkbenchComment{WorkbenchID: projectID, Author: "agent", AgentLabel: label, Body: strings.TrimSpace(body)}
+func agentComment(workbenchID, targetID, parentID int64, label, body string) db.WorkbenchComment {
+	c := db.WorkbenchComment{WorkbenchID: workbenchID, Author: "agent", AgentLabel: label, Body: strings.TrimSpace(body)}
 	if targetID != 0 {
 		c.TargetID = sql.NullInt64{Int64: targetID, Valid: true}
 	}
@@ -366,11 +366,11 @@ func scopeResolve(ctx context.Context, d *db.DB, b Binding, commentID int64) err
 
 // resolveComment posts the optional reply and resolves the root in one
 // transaction: a failure leaves neither, so a Retry cannot duplicate the reply.
-func resolveComment(d *db.DB, projectID int64, label string, a resolveCommentArgs) (any, error) {
+func resolveComment(d *db.DB, workbenchID int64, label string, a resolveCommentArgs) (any, error) {
 	out := map[string]any{"comment_id": a.CommentID}
 	err := d.WithTx(func(tx *sql.Tx) error {
 		if strings.TrimSpace(a.Reply) != "" {
-			id, err := d.AddWorkbenchCommentTx(tx, agentComment(projectID, 0, a.CommentID, label, a.Reply))
+			id, err := d.AddWorkbenchCommentTx(tx, agentComment(workbenchID, 0, a.CommentID, label, a.Reply))
 			if err != nil {
 				return fmt.Errorf("adding comment: %w", err)
 			}

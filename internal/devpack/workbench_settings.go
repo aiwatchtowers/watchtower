@@ -24,6 +24,93 @@ import (
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
+// ErrSymlinkOutsideFolder means a file the installer writes in the workbench
+// folder is a symlink whose target lies outside that folder (a link to
+// ~/.claude/settings.json would make our hooks global). Install and removal
+// refuse it before any write (PROJ-04, owner decision 2026-10-14, ask #109):
+// the owner replaces the link with a regular file or points it inside the
+// folder. The Desktop matches "outside the workbench folder" in the CLI's
+// message (WorkbenchesViewModel.createInstallNote); keep it in every such
+// message (TestInstallErrorTextsTheDesktopMatches).
+var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench folder")
+
+// What an OutsideFolderError left in place outside the folder.
+const (
+	leftoverHooks = "hooks"
+	leftoverSkill = "skill"
+)
+
+// OutsideFolderError is an ErrSymlinkOutsideFolder refusal, naming the link
+// in the folder and Outside, the path outside it the write or removal would
+// have reached — where, on a removal, Watchtower's hooks or skill stay for
+// the owner to remove by hand (Hint).
+type OutsideFolderError struct {
+	Link, Outside string
+	leftover      string // leftoverHooks or leftoverSkill
+	msg           string
+}
+
+func (e *OutsideFolderError) Error() string { return e.msg }
+func (e *OutsideFolderError) Unwrap() error { return ErrSymlinkOutsideFolder }
+
+// Hint tells the owner what a refused removal left outside the folder and
+// what to remove by hand (ask #118).
+func (e *OutsideFolderError) Hint() string {
+	if e.leftover == leftoverSkill {
+		return fmt.Sprintf("Watchtower's skill stays in %s — remove it by hand", e.Outside)
+	}
+	return fmt.Sprintf("Watchtower's hooks stay in %s — remove the entries marked watchtower by hand", e.Outside)
+}
+
+// OutsideFolderHints is the Hint of every OutsideFolderError in err (a
+// joined error included) whose outside path exists, each once, in order.
+func OutsideFolderHints(err error) []string {
+	var hints []string
+	var walk func(error)
+	walk = func(err error) {
+		if err == nil {
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		var oe *OutsideFolderError
+		if !errors.As(err, &oe) {
+			return
+		}
+		if _, statErr := os.Lstat(oe.Outside); statErr == nil && !slices.Contains(hints, oe.Hint()) {
+			hints = append(hints, oe.Hint())
+		}
+	}
+	walk(err)
+	return hints
+}
+
+// WithoutHinted is err minus every OutsideFolderError OutsideFolderHints
+// names (a joined error is filtered part by part), or nil when nothing else
+// failed: a caller that shows the hints reports only the rest.
+func WithoutHinted(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var rest []error
+		for _, e := range joined.Unwrap() {
+			if r := WithoutHinted(e); r != nil {
+				rest = append(rest, r)
+			}
+		}
+		return errors.Join(rest...)
+	}
+	if len(OutsideFolderHints(err)) > 0 {
+		return nil
+	}
+	return err
+}
+
 // hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
 // workbench (after the watchtower binary), and the entry's timeout.
@@ -144,20 +231,20 @@ func settingsLocalPath(dir string) string {
 }
 
 // InstallSessionStartHook adds or repairs one SessionStart command hook for
-// projectID, running command, in dir's .claude/settings.local.json. An
+// workbenchID, running command, in dir's .claude/settings.local.json. An
 // existing entry is recognised by looksLikeOurHook — a stale entry from a
 // different watchtower binary path is updated in place (a bin change is an
 // update, not a second entry: I2/PROJ-04), and an exact match is a no-op.
 // Every other key, event and hook is preserved; the group omits a matcher so
 // it fires on startup, resume, clear and compact alike.
-func InstallSessionStartHook(dir, command string, projectID int64) (bool, error) {
-	return installHook(dir, sessionStartSpec, command, projectID)
+func InstallSessionStartHook(dir, command string, workbenchID int64) (bool, error) {
+	return installHook(dir, sessionStartSpec, command, workbenchID)
 }
 
 // InstallStopHook is InstallSessionStartHook for the Stop hook that runs the
 // board drift check (PROJ-07), under the same PROJ-04 rules.
-func InstallStopHook(dir, command string, projectID int64) (bool, error) {
-	return installHook(dir, stopSpec, command, projectID)
+func InstallStopHook(dir, command string, workbenchID int64) (bool, error) {
+	return installHook(dir, stopSpec, command, workbenchID)
 }
 
 // InstallStateHooks installs the session state hooks (stateHookSpecs) for
@@ -190,14 +277,18 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 	return guarded || blocked, err
 }
 
-// installHook sets spec's entry for projectID to command, replacing the
+// installHook sets spec's entry for workbenchID to command, replacing the
 // marker prompt it supersedes (hookSpec.replacesMarkerPrompt): the prompt
 // entry goes and its keys other than type, prompt and command (the owner's timeout
 // among them) are carried onto our command entry. A command entry already
 // there keeps the keys it holds — the in-place rule of upsertOurHook; a
 // fresh one takes the prompt's over its defaults (PROJ-04).
-func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
+func installHook(dir string, spec hookSpec, command string, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
 		return false, err
@@ -209,35 +300,35 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 	var carried map[string]any
 	dropped := false
 	if spec.replacesMarkerPrompt {
-		isMarker := func(h any) bool { return isOurMarkerPrompt(h, projectID) }
+		isMarker := func(h any) bool { return isOurMarkerPrompt(h, workbenchID) }
 		carried = carriedKeys(groups, isMarker)
 		groups, dropped = withoutHooks(groups, isMarker)
 	}
-	held := anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
-	updated, changed := upsertOurHook(groups, spec, projectID, command)
-	updated = withKeysOnOurHook(updated, spec, projectID, carried, !held)
+	held := anyHook(groups, func(h any) bool { return isOurHook(h, spec, workbenchID) })
+	updated, changed := upsertOurHook(groups, spec, workbenchID, command)
+	updated = withKeysOnOurHook(updated, spec, workbenchID, carried, !held)
 	changed = changed || dropped
 	if !changed {
 		return false, nil
 	}
 	hooks[spec.event] = updated
 	settings["hooks"] = hooks
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // RemoveSessionStartHook removes every hook object recognised as ours for
-// projectID (looksLikeOurHook), regardless of which watchtower binary wrote
+// workbenchID (looksLikeOurHook), regardless of which watchtower binary wrote
 // it. A group left with no hooks is dropped, then an empty SessionStart, an
 // empty hooks object, and — when nothing at all is left — the file itself
 // (a symlinked file keeps its link, its target emptied to {}).
 // Anything else in the file stays.
-func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
-	return removeHook(dir, sessionStartSpec, projectID)
+func RemoveSessionStartHook(dir string, workbenchID int64) (bool, error) {
+	return removeHook(dir, sessionStartSpec, workbenchID)
 }
 
 // RemoveStopHook is RemoveSessionStartHook for the Stop hook (PROJ-02/04).
-func RemoveStopHook(dir string, projectID int64) (bool, error) {
-	return removeHook(dir, stopSpec, projectID)
+func RemoveStopHook(dir string, workbenchID int64) (bool, error) {
+	return removeHook(dir, stopSpec, workbenchID)
 }
 
 // RemoveStateHooks removes every session state hook of workbenchID
@@ -266,10 +357,14 @@ func RemoveAskGuardHooks(dir string, workbenchID int64) (bool, error) {
 	return guarded || blocked, err
 }
 
-func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
+func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, existed, err := readSettings(file)
 	if err != nil || !existed {
+		return false, err
+	}
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
 		return false, err
 	}
 	hooks, groups, err := eventGroupsOf(settings, file, spec.event)
@@ -277,7 +372,7 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 		return false, err
 	}
 	kept, changed := withoutHooks(groups, func(h any) bool {
-		return isOurHook(h, spec, projectID) || spec.replacesMarkerPrompt && isOurMarkerPrompt(h, projectID)
+		return isOurHook(h, spec, workbenchID) || spec.replacesMarkerPrompt && isOurMarkerPrompt(h, workbenchID)
 	})
 	if !changed {
 		return false, nil
@@ -285,29 +380,25 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	pruneEmpty(settings, hooks, spec.event, kept)
 	// A symlinked file (dotfiles-managed) is never removed: that would drop
 	// the link and leave our hook in its target. Its target gets {} instead.
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return false, err
-	}
 	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
 		return true, nil
 	}
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for
-// projectID (looksLikeOurHook) is installed in dir's
+// workbenchID (looksLikeOurHook) is installed in dir's
 // .claude/settings.local.json.
-func HasSessionStartHook(dir string, projectID int64) (bool, error) {
-	return hasHook(dir, sessionStartSpec, projectID)
+func HasSessionStartHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, sessionStartSpec, workbenchID)
 }
 
 // HasStopHook is HasSessionStartHook for the Stop hook.
-func HasStopHook(dir string, projectID int64) (bool, error) {
-	return hasHook(dir, stopSpec, projectID)
+func HasStopHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, stopSpec, workbenchID)
 }
 
 // HasStateHooks reports whether every session state hook of workbenchID is
@@ -359,7 +450,7 @@ func HasAskToolBlockHook(dir string, workbenchID int64) (bool, error) {
 	return hasHook(dir, askToolBlockSpec, workbenchID)
 }
 
-func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
+func hasHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, _, existed, err := readSettings(file)
 	if err != nil || !existed {
@@ -369,7 +460,7 @@ func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return hasOurHook(groups, spec, projectID), nil
+	return hasOurHook(groups, spec, workbenchID), nil
 }
 
 // readSettings decodes file as one JSON object. A missing or whitespace-only
@@ -452,23 +543,23 @@ func groupHooks(g any) (map[string]any, []any, bool) {
 }
 
 // looksLikeOurHook reports whether cmd is spec's hook command for
-// projectID, recognised independent of which watchtower binary wrote it
+// workbenchID, recognised independent of which watchtower binary wrote it
 // (I2/PROJ-04): a stale entry installed from the CLI-store path and a fresh
 // one installed from PATH must both be recognised as ours, or an install
 // from a second binary duplicates the hook and a delete orphans the first
 // entry. After stripping an optional single-quoted binary token
 // (hookSpec.command's only quoting style — see unquoteShellSingle), the
 // command must end in exactly spec's suffix — e.g.
-// " workbench brief --workbench <projectID>", or its pre-rename form
-// " project brief --project <projectID>" (looksLikeLegacyHook) — and the
+// " workbench brief --workbench <workbenchID>", or its pre-rename form
+// " project brief --project <workbenchID>" (looksLikeLegacyHook) — and the
 // binary's basename must be "watchtower".
-func looksLikeOurHook(cmd string, spec hookSpec, projectID int64) bool {
-	return endsInOurCommand(cmd, spec.suffix(projectID)) || looksLikeLegacyHook(cmd, spec, projectID)
+func looksLikeOurHook(cmd string, spec hookSpec, workbenchID int64) bool {
+	return endsInOurCommand(cmd, spec.suffix(workbenchID)) || looksLikeLegacyHook(cmd, spec, workbenchID)
 }
 
 // looksLikeLegacyHook is looksLikeOurHook for the pre-rename command only.
-func looksLikeLegacyHook(cmd string, spec hookSpec, projectID int64) bool {
-	return endsInOurCommand(cmd, spec.legacySuffix(projectID))
+func looksLikeLegacyHook(cmd string, spec hookSpec, workbenchID int64) bool {
+	return endsInOurCommand(cmd, spec.legacySuffix(workbenchID))
 }
 
 func endsInOurCommand(cmd, suffix string) bool {
@@ -492,17 +583,17 @@ func unquoteShellSingle(s string) string {
 	return strings.ReplaceAll(s[1:len(s)-1], `'\''`, "'")
 }
 
-func isOurHook(h any, spec hookSpec, projectID int64) bool {
+func isOurHook(h any, spec hookSpec, workbenchID int64) bool {
 	cmd, ok := hookCommand(h)
-	return ok && looksLikeOurHook(cmd, spec, projectID)
+	return ok && looksLikeOurHook(cmd, spec, workbenchID)
 }
 
 // isOurMarkerPrompt reports whether h is the old Stop prompt hook of
-// projectID: a prompt whose first line is exactly its marker, whatever the
+// workbenchID: a prompt whose first line is exactly its marker, whatever the
 // rest says (v1–v3, or an owner's edit — ours all the same, PROJ-04).
-func isOurMarkerPrompt(h any, projectID int64) bool {
+func isOurMarkerPrompt(h any, workbenchID int64) bool {
 	text, ok := hookString(h, "prompt")
-	return ok && opensWithLine(text, askGuardMarker(projectID))
+	return ok && opensWithLine(text, askGuardMarker(workbenchID))
 }
 
 // opensWithLine reports whether text's first line (a trailing "\r"
@@ -512,9 +603,9 @@ func opensWithLine(text, line string) bool {
 	return trimCR(first) == line
 }
 
-func isLegacyHook(h any, spec hookSpec, projectID int64) bool {
+func isLegacyHook(h any, spec hookSpec, workbenchID int64) bool {
 	cmd, ok := hookCommand(h)
-	return ok && looksLikeLegacyHook(cmd, spec, projectID)
+	return ok && looksLikeLegacyHook(cmd, spec, workbenchID)
 }
 
 // hookCommand is a hook object's command string.
@@ -535,10 +626,10 @@ func hookString(h any, key string) (string, bool) {
 // hasOurHook counts our entry only in a group whose matcher is spec's: in
 // another group it is not the hook we install (one under matcher "" would
 // fire for every tool), and an install repairs it.
-func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
+func hasOurHook(groups []any, spec hookSpec, workbenchID int64) bool {
 	for _, g := range groups {
 		m, hs, ok := groupHooks(g)
-		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
+		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, workbenchID) }) {
 			return true
 		}
 	}
@@ -611,7 +702,7 @@ func LegacyPermissionRules(dir string) (int, error) {
 	return n, nil
 }
 
-// upsertOurHook returns groups with our hook for projectID set to command.
+// upsertOurHook returns groups with our hook for workbenchID set to command.
 // The first entry recognised by isOurHook is kept and, if it differs,
 // updated in place with its other keys kept; any further one (there should
 // never be more than one, but a hand-edited file could hold a leftover) is
@@ -619,7 +710,7 @@ func LegacyPermissionRules(dir string) (int, error) {
 // is dropped too, so it is re-added in a group of its own. Absent any
 // match, a new group is appended, carrying spec's matcher. changed is false
 // only when exactly one matching entry already held command.
-func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string) ([]any, bool) {
+func upsertOurHook(groups []any, spec hookSpec, workbenchID int64, command string) ([]any, bool) {
 	found := false
 	changed := false
 	out := make([]any, 0, len(groups))
@@ -632,7 +723,7 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string)
 		rest := make([]any, 0, len(hs))
 		groupChanged := false
 		for _, h := range hs {
-			if !isOurHook(h, spec, projectID) {
+			if !isOurHook(h, spec, workbenchID) {
 				rest = append(rest, h)
 				continue
 			}
@@ -706,16 +797,16 @@ func carriedKeys(groups []any, match func(h any) bool) map[string]any {
 	return keys
 }
 
-// withKeysOnOurHook returns groups with keys set on our hook for projectID:
+// withKeysOnOurHook returns groups with keys set on our hook for workbenchID:
 // with override every key, else only those it does not hold yet.
-func withKeysOnOurHook(groups []any, spec hookSpec, projectID int64, keys map[string]any, override bool) []any {
+func withKeysOnOurHook(groups []any, spec hookSpec, workbenchID int64, keys map[string]any, override bool) []any {
 	if len(keys) == 0 {
 		return groups
 	}
 	out := slices.Clone(groups)
 	for i, g := range out {
 		m, hs, ok := groupHooks(g)
-		j := slices.IndexFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) })
+		j := slices.IndexFunc(hs, func(h any) bool { return isOurHook(h, spec, workbenchID) })
 		if !ok || j < 0 {
 			continue
 		}
@@ -800,9 +891,9 @@ func pruneEmpty(settings, hooks map[string]any, event string, kept []any) {
 }
 
 // writeSettings replaces file atomically, keeping its mode. Keys come out
-// sorted (encoding/json), HTML characters unescaped, two-space indented. When
-// file is a symlink (e.g. dotfiles-managed), the write lands on its resolved
-// target so the link itself survives.
+// sorted (encoding/json), HTML characters unescaped, two-space indented. file
+// is already resolved past a symlink (resolveSymlinkInside), so a link
+// (e.g. dotfiles-managed) keeps pointing at the target the write lands on.
 func writeSettings(file string, settings map[string]any, mode os.FileMode) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -811,11 +902,7 @@ func writeSettings(file string, settings map[string]any, mode os.FileMode) error
 	if err := enc.Encode(settings); err != nil {
 		return fmt.Errorf("encoding %s: %w", file, err)
 	}
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(target, buf.Bytes(), mode)
+	return atomicWriteFile(file, buf.Bytes(), mode)
 }
 
 // resolveSymlink returns the path an atomic write to file should target:
@@ -839,6 +926,70 @@ func resolveSymlink(file string) (string, error) {
 		return "", fmt.Errorf("%s is a symlink to a missing file: %w", file, err)
 	}
 	return target, nil
+}
+
+// resolveSymlinkInside is resolveSymlink for a file of the workbench folder
+// root: a symlink whose resolved target lies outside root is refused with
+// ErrSymlinkOutsideFolder, naming the link, its target and the fix first (the
+// Desktop shows the start of the CLI's stderr), so the caller writes nothing
+// anywhere. The same holds for a directory between root and file (.claude,
+// .codex) that is a symlink leaving root. A link that stays inside root is
+// followed as before.
+func resolveSymlinkInside(file, root string) (string, error) {
+	realRoot, err := dirInside(filepath.Dir(file), file, root, leftoverHooks)
+	if err != nil {
+		return "", err
+	}
+	target, err := resolveSymlink(file)
+	if err != nil || target == file {
+		return target, err
+	}
+	if outsideRoot(realRoot, target) {
+		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftoverHooks,
+			msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%v)",
+				file, target, ErrSymlinkOutsideFolder)}
+	}
+	return target, nil
+}
+
+// dirInside refuses with an OutsideFolderError (ErrSymlinkOutsideFolder)
+// when the nearest existing directory at or above start, below root,
+// resolves outside root — a write or removal of path (start or below it)
+// would land there (a .claude, .claude/skills or skill directory linked
+// elsewhere). leftover names what path holds. It returns root resolved.
+func dirInside(start, path, root, leftover string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", root, err)
+	}
+	// The nearest existing directory decides where a write lands; one not
+	// yet created is made under it.
+	for dir := start; dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("inspecting %s: %w", dir, err)
+		}
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
+		if outsideRoot(realRoot, realDir) {
+			rel, _ := filepath.Rel(dir, path)
+			return "", &OutsideFolderError{Link: dir, Outside: filepath.Join(realDir, rel), leftover: leftover,
+				msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%v)",
+					dir, realDir, ErrSymlinkOutsideFolder)}
+		}
+		break
+	}
+	return realRoot, nil
+}
+
+// outsideRoot reports whether the resolved path target lies outside the
+// resolved directory realRoot.
+func outsideRoot(realRoot, target string) bool {
+	rel, err := filepath.Rel(realRoot, target)
+	return err != nil || !filepath.IsLocal(rel)
 }
 
 // atomicWriteFile replaces path with data via a temp file in the same
@@ -1061,7 +1212,10 @@ func readExclude(file string) (excludeDoc, error) {
 // writeExclude writes the owner's lines first, verbatim and in order, then
 // our block — or no block at all once it is empty. Like writeSettings, a
 // symlinked exclude file is written through to its target, atomically, and
-// its existing permission bits (or 0o644 for a brand-new file) are kept.
+// its existing permission bits (or 0o644 for a brand-new file) are kept. It
+// is not held to the folder (resolveSymlinkInside): info/exclude lives in the
+// git dir, often outside the folder anyway, and only our marked block of
+// ignore lines is ever written there.
 func writeExclude(file string, d excludeDoc) error {
 	out := slices.Clone(d.outside)
 	if len(d.block) > 0 {

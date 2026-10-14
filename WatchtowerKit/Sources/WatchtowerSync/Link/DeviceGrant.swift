@@ -11,7 +11,11 @@ public struct LinkRefusal: OpenWireValue {
     public static let usedCode = Self(rawValue: "used_code")
     public static let expiredCode = Self(rawValue: "expired_code")
     public static let unknownCode = Self(rawValue: "unknown_code")
-    public static let knownValues: [Self] = [.usedCode, .expiredCode, .unknownCode]
+    /// The owner refused on the Mac, or closed the confirmation sheet.
+    public static let notConfirmed = Self(rawValue: "not_confirmed")
+    /// The code already has as many phones waiting as the Mac shows (SAS v2 attempt cap): a further one is refused.
+    public static let tooManyRequests = Self(rawValue: "too_many_requests")
+    public static let knownValues: [Self] = [.usedCode, .expiredCode, .unknownCode, .notConfirmed, .tooManyRequests]
 }
 
 /// The hub's `device_grant` slice (mobile POC spec §4.13), record name
@@ -38,6 +42,16 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let startSessionsAllowed: Bool
     /// nil while the hub has not decided yet.
     public let decidedAt: Date?
+    /// The hub read the hello and waits for the owner; absent otherwise.
+    public let awaitingConfirmation: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// SAS v2: with `awaitingConfirmation`, base64url of the hub's confirm nonce (`KeyDerivation.sas`), drawn after
+    /// the hub accepted this phone's hello; the phone shows its code only once it has it. Absent otherwise.
+    public let confirmNonce: String?
+    /// With `confirmNonce`: `KeyDerivation.linkCodeTag` of the link code the waiting request was made with, so a
+    /// keybox left from an earlier code never gives this scan a code. Absent otherwise.
+    public let linkCodeTag: String?
+    /// Removed on the Mac (D9); absent otherwise.
+    public let revoked: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
 
@@ -54,6 +68,10 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case typingAllowed
         case startSessionsAllowed
         case decidedAt
+        case awaitingConfirmation
+        case confirmNonce
+        case linkCodeTag
+        case revoked
     }
 
     public init(
@@ -66,7 +84,11 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         linkedAt: Date? = nil,
         typingAllowed: Bool,
         startSessionsAllowed: Bool,
-        decidedAt: Date? = nil
+        decidedAt: Date? = nil,
+        awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        confirmNonce: String? = nil,
+        linkCodeTag: String? = nil,
+        revoked: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) {
         self.deviceID = deviceID
         self.hubID = hubID
@@ -78,5 +100,9 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.typingAllowed = typingAllowed
         self.startSessionsAllowed = startSessionsAllowed
         self.decidedAt = decidedAt
+        self.awaitingConfirmation = awaitingConfirmation
+        self.confirmNonce = confirmNonce
+        self.linkCodeTag = linkCodeTag
+        self.revoked = revoked
     }
 }

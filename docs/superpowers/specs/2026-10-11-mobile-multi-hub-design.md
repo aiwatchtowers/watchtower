@@ -1,6 +1,6 @@
 # Mobile companion — one phone, several Macs (multi-hub) — design
 
-Date: 2026-10-11. Status: draft for owner review. Phase F of the mobile POC (after A–E).
+Date: 2026-10-11. Status: F1 and F2 built; §5.5 notifications per hub to be built with A13 (board #17). Phase F of the mobile POC (after A–E).
 Builds on `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` (the POC spec, "the base spec") and `docs/features/mobile-companion.md`.
 
 ## 1. Goal
@@ -39,7 +39,7 @@ The hub writes `DataZone-<hub_id>` and `RelayZone-<hub_id>` in its owner's priva
 
 ### 3.2 Hub identity
 
-- `HubIdentity` keeps `hub_id`, `enabled_at` and the heartbeat. The foreign-heartbeat read, the refusal (`.otherHub`), `takeOver()`, the `onTakeOver` seam and the heartbeat-tick stop (`.tookOver`) are removed. The heartbeat is still written every 300 s, into the hub's own DataZone.
+- `HubIdentity` keeps `hub_id`, `enabled_at` and the heartbeat. The foreign-heartbeat read, the refusal (`.otherHub`), `takeOver()`, the `onTakeOver` seam and the heartbeat-tick stop (`.tookOver`) are removed. The heartbeat is still written into the hub's own DataZone, every 900 s since board #724 (was 300 s).
 - Two installs on one Mac (two build flavors) are two hubs; the phone tells them apart by `flavor`.
 
 ### 3.3 Zone lifecycle
@@ -123,7 +123,7 @@ A recording goes to the Mac that was active when it started; the ledger row reco
 
 ### 5.6 Switcher UI
 
-- A chip with the active Mac's name at the top of Now and Workbench opens the list of Macs: name, `flavor`, an online dot (heartbeat under 720 s), the open-ask count; at the bottom **Add Mac** (QR scan).
+- A chip with the active Mac's name at the top of Now and Workbench opens the list of Macs: name, `flavor`, an online dot (heartbeat under 2100 s since board #724; was 720 s), the open-ask count; at the bottom **Add Mac** (QR scan).
 - Settings → Macs: reorder, unlink any Mac, Forget a long-offline or Mac-unlinked one.
 - Two Macs with the same name also show a short `hub_id` suffix.
 

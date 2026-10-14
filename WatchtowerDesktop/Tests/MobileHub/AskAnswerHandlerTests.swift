@@ -57,7 +57,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         processes = []
         models = []
         sidecar = try HubSyncState.inMemory()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = RecordingSession()
@@ -154,7 +154,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         let dispatcher = MobileHubCommandDispatcher()
         dispatcher.register(.askAnswer) { try await handler.handle($0) }
         let transport = StubHubTransport()
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
+        let processor = RelayProcessor(transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
         let record = try pendingActionRecord(
             kind: .askAnswer, entityID: String(ask), params: ["workbench_id": .integer(p), "answer": yes]
         )
@@ -181,7 +181,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         let dispatcher = MobileHubCommandDispatcher()
         dispatcher.register(.askAnswer) { try await handler.handle($0) }
         let transport = StubHubTransport()
-        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
+        let processor = RelayProcessor(transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
         let record = try pendingActionRecord(
             kind: .askAnswer, entityID: String(ask), params: ["workbench_id": .integer(p), "answer": yes]
         )
@@ -195,13 +195,13 @@ final class AskAnswerHandlerTests: XCTestCase {
             XCTAssertTrue(error is URLError, "\(error)")
         }
         XCTAssertEqual(try stored(ask).status, "answered", "stored before the echo")
-        XCTAssertNotEqual(try sidecar.relayPhase(record.recordName), .done)
+        XCTAssertNotEqual(try sidecar.relayPhase(record.plainName), .done)
         _ = try await processor.processOnce()
 
         let echoes = try transport.saved.map { try decodeAction($0.record) }.filter { $0.status != .pending }
         XCTAssertEqual(echoes.map(\.status), [.applied])
         XCTAssertEqual(echoes.first?.result, ["delivery": .string("submitted")])
-        XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+        XCTAssertEqual(try sidecar.relayPhase(record.plainName), .done)
         XCTAssertEqual(typed.count, 2, "one paste and its Return")
     }
 

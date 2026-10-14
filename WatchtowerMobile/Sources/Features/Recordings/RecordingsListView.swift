@@ -15,11 +15,12 @@ struct RecordingsListView: View {
                 replica: env.calendarReplica.snapshot,
                 seen: env.recordingsSeen.value,
                 now: context.date,
-                calendar: .current
+                calendar: .current,
+                held: env.heldRecordings
             ))
         }
         .navigationTitle("Recordings")
-        .refreshable { await env.refresh() }
+        .refreshable { await env.refresh(.pull) }
     }
 
     private func content(_ model: RecordingsListModel) -> some View {
@@ -61,7 +62,9 @@ struct RecordingsListView: View {
                     .accessibilityLabel(entry.accessibilityLabel)
                 if entry.offersRetry, let id = entry.phoneRecordingID {
                     Button("Retry") {
-                        Task { await env.recorder.retry(id: id) }
+                        // The list is the active hub's: its own recorder,
+                        // even while another hub's capture is on screen.
+                        Task { await env.activeSession.recorder.retry(id: id) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
@@ -102,6 +105,7 @@ private struct RecordingRow: View {
         case .recordingOnPhone: "record.circle"
         case .sending: "arrow.up.circle"
         case .waitingForMac: "clock"
+        case .heldForMac: "pause.circle"
         case .sendFailed, .macFailed: "exclamationmark.triangle"
         case .onMac: "waveform"
         case .ready: "checkmark"

@@ -654,3 +654,51 @@ func TestReactionCmd_LostClaimDispatchesNothingAndRefundsBudget(t *testing.T) {
 	assert.Equal(t, 1, budget.remaining, "a lost claim refunds its slot")
 	assert.Equal(t, 0, countAllAgentActions(t, database))
 }
+
+// TestReactionCmd_ToolNotOnReactionSurfaceIsRefused: the dictionary can name
+// any registered tool, but Propose admits only a tool the "reaction" surface
+// lists — a main-only write (send_slack_message's shape) mapped to an emoji
+// is refused before the compose call: no AI call, no agent_actions row, a
+// skipped ledger row.
+func TestReactionCmd_ToolNotOnReactionSurfaceIsRefused(t *testing.T) {
+	database := seededPipelineDB(t, 1)
+	reg := newTestRegistry(t, database)
+	schema, err := jsonschema.For[struct {
+		Text   string `json:"text"`
+		Reason string `json:"reason"`
+	}](nil)
+	require.NoError(t, err)
+	executed := 0
+	require.NoError(t, reg.Register(&tools.Tool{
+		Name: "main_only_send", Description: "fake main-only write", InputSchema: schema,
+		Access: tools.AccessWrite, Surfaces: []string{"main"},
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(context.Context, *db.DB, tools.Call) (any, error) {
+			executed++
+			return "sent", nil
+		},
+	}))
+	require.NoError(t, reg.SetTrust("main_only_send", "main", tools.TrustExecute))
+	_, err = database.Exec(`INSERT OR REPLACE INTO reaction_command_map (emoji, kind, tool, enabled)
+		VALUES ('outbox_tray', 'builtin_tool', 'main_only_send', 1)`)
+	require.NoError(t, err)
+	items := []slack.ReactedItem{
+		msgItem("C1", "333.3", "UAUTHOR", "send this on", "",
+			slack.ItemReaction{Name: "outbox_tray", Users: []string{"UOWNER"}}),
+	}
+	accountsFn := func(context.Context) ([]Account, error) {
+		return []Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: stubLister{items: items}}}, nil
+	}
+	gen := &mockGenerator{out: `{"text":"forwarded","reason":"owner reacted"}`}
+	p := New(database, &config.Config{}, gen, reg, accountsFn, nil)
+
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, countAllAgentActions(t, database))
+	assert.Zero(t, executed)
+	assert.Zero(t, gen.calls, "refused before the compose call")
+	var status, errText string
+	require.NoError(t, database.QueryRow(`SELECT status, error FROM reaction_commands`).Scan(&status, &errText))
+	assert.Equal(t, "skipped", status)
+	assert.Contains(t, errText, "not available on the reaction surface")
+}

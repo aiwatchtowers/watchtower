@@ -140,7 +140,7 @@ final class SessionDetailWiringTests: XCTestCase {
     /// through two view models (the view re-created), queues one request.
     func testOpeningTwiceWithin60sSendsOneRequest() async throws {
         let store = try makePoolStore()
-        let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         var clock = now
         let requester = SessionReportRequester.sending(through: outbox) { clock }
 
@@ -191,9 +191,10 @@ final class SessionDetailWiringTests: XCTestCase {
     /// The view model reads the session's report and timeline from the
     /// replica and follows later writes.
     func testTheViewModelObservesTheSessionsRecords() async throws {
-        let store = try makePoolStore()
+        let store = try makePoolStore(.demo)
         let transport = InMemoryCloudTransport()
-        try await DemoSeed.load(into: transport, now: now)
+        let hub = TestPhone.hub(over: transport, .demo)
+        try await DemoSeed.load(into: hub, now: now)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
         let requester = SessionReportRequester(now: { Date() }, send: { _ in })
         let model = SessionDetailViewModel(sessionID: 11, store: store, requester: requester)
@@ -239,9 +240,12 @@ final class SessionDetailWiringTests: XCTestCase {
 
     /// The view model and the screen model hold exactly these fields.
     func testTheDetailModelsHaveNoTranscriptField() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try TestPhone.replica()
         let viewModel = SessionDetailViewModel(sessionID: 11, store: store, requester: SessionReportRequester(now: { Date() }, send: { _ in }))
-        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "store", "requester", "cancellable"])
+        XCTAssertEqual(
+            fieldNames(viewModel),
+            ["sessionID", "report", "timeline", "waitingForKeys", "store", "requester", "cancellable", "decodeCache"]
+        )
         XCTAssertEqual(fieldNames(try model(11)), [
             "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "asks", "asksSince", "report",
             "timeline", "timelineEmptyText", "timelineMoreText"
@@ -275,12 +279,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertTrue(drawn.contains("Plain title"))
         XCTAssertTrue(drawn.contains("Working"))
         XCTAssertFalse(drawn.contains { $0.contains(secret) }, "transcript text reached the screen")
-    }
-
-    // MARK: - The Tell bar waits for B-T18
-
-    func testTheTellBarIsHidden() {
-        XCTAssertFalse(SessionDetailView.showsTellBar)
     }
 
     // MARK: - Helpers

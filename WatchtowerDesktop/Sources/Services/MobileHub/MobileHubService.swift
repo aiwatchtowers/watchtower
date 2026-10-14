@@ -68,6 +68,28 @@ struct MobileHubStorage {
     /// CloudKit. No user prompt: silent pushes need no notification
     /// permission.
     var registerForPushes: (@MainActor () -> Void)?
+    /// The hub's E2E keys (Task 10): the Keychain identity and the sealed epoch keys in `hubstate.db`. One per
+    /// sidecar (it owns the envelope seq allocator). nil only in a live storage without the CloudKit entitlement
+    /// (an unsigned dev build has no data protection keychain and reaches no CloudKit).
+    var keyring: HubKeyring?
+    /// The hub's record I/O (Task 11): `transport` behind the keyring, sealing what the hub publishes; the
+    /// sidecar is its persisted wire → plain name map (F19). Lifecycle calls stay on `transport`. nil exactly when
+    /// `keyring` is: then nothing is published, never in the clear.
+    var secure: SecureTransport?
+
+    /// A stub storage (tests): no CloudKit, and a hub identity in an in-memory keychain.
+    static func stub(transport: any HubTransport, sidecar: HubSyncState) throws -> Self {
+        var storage = Self(transport: transport, sidecar: sidecar)
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        storage.keyring = keyring
+        storage.secure = sealing(transport, keyring: keyring, sidecar: sidecar)
+        return storage
+    }
+
+    /// The hub's sealing transport over `transport`: the keyring provides the keys and the relay rollback guard.
+    static func sealing(_ transport: any HubTransport, keyring: HubKeyring, sidecar: HubSyncState) -> SecureTransport {
+        SecureTransport(inner: transport, keys: keyring, rollback: keyring, names: sidecar)
+    }
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -85,12 +107,18 @@ struct MobileHubStorage {
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
+        let keyring = CloudKitTransport.entitlementPresent()
+            ? try HubKeyring(hubID: hubID, sidecar: sidecar, store: KeychainHubKeyStore(backend: SecItemKeychainBackend()))
+            : nil
+        let transport = CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub)
         return Self(
-            transport: CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub),
+            transport: transport,
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
             shares: CloudKitShareService(hubID: hubID),
-            registerForPushes: registerForCloudKitPushes
+            registerForPushes: registerForCloudKitPushes,
+            keyring: keyring,
+            secure: keyring.map { sealing(transport, keyring: $0, sidecar: sidecar) }
         )
     }
 
@@ -121,13 +149,21 @@ final class MobileHubService {
     nonisolated static let defaultRelayActiveInterval: Duration = .seconds(3)
     /// A phone action seen this recently keeps the fast relay cadence.
     nonisolated static let activityWindow: TimeInterval = 300
-    /// The heartbeat is rewritten this often (spec §3).
-    nonisolated static let heartbeatInterval: Duration = .seconds(300)
+    /// The heartbeat is rewritten this often (spec §3; 15 min since board
+    /// #724, owner decision Q2: each write is a silent push to the phone).
+    nonisolated static let heartbeatInterval: Duration = .seconds(900)
+    /// How often the heartbeat loop compares the accounts' rows and
+    /// `sharing` with what the last write carried; a change is written at
+    /// once (Settings on the phone shows them), no change writes nothing.
+    nonisolated static let defaultHeartbeatFactsCheckInterval: Duration = .seconds(60)
     /// Bound on each CloudKit wait the hub adds: the iCloud user lookup,
     /// the legacy zone check and the zone delete.
     nonisolated static let defaultCloudTimeout: Duration = .seconds(30)
-    /// Heartbeat ticks failing in a row before the hub stops (3 × 300 s
-    /// outlasts the 720 s the phone waits before it shows the Mac offline).
+    /// Heartbeat ticks failing in a row before the hub stops: 3 × 900 s
+    /// (45 min) outlasts the 35 min (`RelayFeed.heartbeatStaleAfter`) the
+    /// phone waits before it shows the Mac offline, so the phone has shown
+    /// it offline before the hub gives up; one missed write (30 min) does
+    /// not show it offline.
     nonisolated static let maxTickFailures = 3
 
     private(set) var status: HubStatus = .off
@@ -141,6 +177,10 @@ final class MobileHubService {
     /// (multi-hub spec §3.3): the link center forgets codes and phones. A
     /// throw keeps the delete pending, so the next start redoes it.
     @ObservationIgnored var onZonesDeleted: (@MainActor () throws -> Void)?
+    /// Runs on the main actor after the iCloud account signed out or
+    /// switched (the transport's account reset): the link center forgets
+    /// the old user.
+    @ObservationIgnored var onAccountChanged: (@MainActor () -> Void)?
     /// Phone linking (Settings → Mobile); nil when the storage has no share
     /// service.
     @ObservationIgnored var linkCenter: MobileLinkCenter?
@@ -152,13 +192,26 @@ final class MobileHubService {
     @ObservationIgnored private let companions: [any HubCompanion]
     @ObservationIgnored private let processor: RelayProcessor
     @ObservationIgnored private let sidecar: HubSyncState
+    /// The hub's E2E keys; `start()` creates `K_meta` and the first epoch when none exist. nil in tests that seal
+    /// with fixed test keys, and without the CloudKit entitlement.
+    @ObservationIgnored private let keyring: HubKeyring?
     @ObservationIgnored private let identity: HubIdentity
     @ObservationIgnored private let hostInfo: HubHostInfo
     @ObservationIgnored private let heartbeatEvery: Duration
+    @ObservationIgnored private let heartbeatFactsEvery: Duration
+    /// What the last heartbeat write carried (or the last facts check
+    /// tried to write); nil before the first.
+    @ObservationIgnored private var heartbeatFacts: HeartbeatFacts?
     @ObservationIgnored private let cloudTimeout: Duration
     @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
-    /// The iCloud user record name, once looked up.
+    /// The iCloud user record name, once looked up; forgotten when the
+    /// account changes.
     @ObservationIgnored private var ownerUser: String?
+    /// Bumped by an account change, so a lookup still running then never
+    /// stores the old user.
+    @ObservationIgnored private var ownerEpoch = 0
+    /// A due epoch rotation failed and was logged; cleared by the next one that runs.
+    @ObservationIgnored private var rotationFailing = false
     /// Heartbeat ticks failed in a row; reset by a good tick and a start.
     @ObservationIgnored private var tickFailures = 0
     @ObservationIgnored private let relayIdleInterval: Duration
@@ -193,11 +246,13 @@ final class MobileHubService {
         processor: RelayProcessor,
         sidecar: HubSyncState,
         hostInfo: HubHostInfo,
+        keyring: HubKeyring? = nil,
         companions: [any HubCompanion] = [],
         relayIdleInterval: Duration = MobileHubService.defaultRelayIdleInterval,
         relayActiveInterval: Duration = MobileHubService.defaultRelayActiveInterval,
         availabilityReprobeInterval: Duration = .seconds(600),
         heartbeatInterval: Duration = MobileHubService.heartbeatInterval,
+        heartbeatFactsCheckInterval: Duration = MobileHubService.defaultHeartbeatFactsCheckInterval,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         now: @escaping @Sendable () -> Date = { Date() },
         isEnabled: @escaping () -> Bool
@@ -207,9 +262,11 @@ final class MobileHubService {
         self.companions = companions
         self.processor = processor
         self.sidecar = sidecar
+        self.keyring = keyring
         self.identity = HubIdentity(sidecar: sidecar)
         self.hostInfo = hostInfo
         self.heartbeatEvery = heartbeatInterval
+        self.heartbeatFactsEvery = heartbeatFactsCheckInterval
         self.cloudTimeout = cloudTimeout
         self.relayIdleInterval = relayIdleInterval
         self.relayActiveInterval = relayActiveInterval
@@ -229,7 +286,8 @@ final class MobileHubService {
     }
 
     /// Asks the publisher's fast lane for `kinds` (B and C call this on a
-    /// change they know of).
+    /// change they know of); only the urgent kinds are kept, the others
+    /// ride the 30 s full tick.
     func nudge(kinds: Set<SliceKind>) {
         publisher.nudge(kinds: kinds)
     }
@@ -256,6 +314,14 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        do {
+            try markE2ECutIfDue()
+        } catch {
+            logger.error("E2E cut check failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
         let zonesSettled = await finishPendingZoneDelete()
         guard status == .starting, epoch == startEpoch else { return }
         guard zonesSettled else {
@@ -271,6 +337,20 @@ final class MobileHubService {
             startReprobeLoop()
             return
         }
+        do {
+            // The zones are gone: the cut, if one ran, is done. Then, before anything seals: K_meta and the first
+            // epoch (idempotent).
+            try finishE2ECut()
+            try keyring?.ensureGroupKeys()
+        } catch {
+            logger.error("hub group keys unavailable: \(String(describing: error), privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's encryption keys: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
+        // The resume check: a rotation that came due while the hub was off runs before anything seals; one
+        // committed before a crash reads as fresh and does not run again (Review Focus 4).
+        rotateEpochIfDue()
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.
@@ -289,7 +369,10 @@ final class MobileHubService {
         await resolveOwnerUser()
         guard status == .starting, epoch == startEpoch else { return }
         do {
-            try await writeHeartbeat(hubID: try identity.hubID())
+            let wrote = try await writeHeartbeat(hubID: try identity.hubID()) {
+                status == .starting && epoch == startEpoch
+            }
+            guard wrote else { return }
         } catch {
             logger.error("first heartbeat failed: \(error.localizedDescription, privacy: .public)")
             status = .unavailable("Couldn't write the heartbeat: \(error.localizedDescription)")
@@ -297,8 +380,11 @@ final class MobileHubService {
             return
         }
         tickFailures = 0
-        publisher.start()
+        // The companions first: the fast lane's liveness copy must be in
+        // place before the publisher's first full cycle, or that cycle
+        // would publish live sessions as not running.
         companions.forEach { $0.start() }
+        publisher.start()
         startRelayLoop()
         startHeartbeatLoop()
         hubOffProblem = nil
@@ -317,7 +403,7 @@ final class MobileHubService {
         let publisher = self.publisher
         let logger = self.logger
         let now = self.now
-        await transport.setAccountResetHandler {
+        await transport.setAccountResetHandler { [weak self] in
             do {
                 try sidecar.wipeSyncState(now: now())
             } catch {
@@ -325,6 +411,7 @@ final class MobileHubService {
             }
             // The new account's zone gets every record again, restaged.
             publisher.removeStagedAssets()
+            Task { @MainActor in self?.accountChanged() }
         }
         await transport.setDataZoneResetHandler {
             do {
@@ -335,14 +422,16 @@ final class MobileHubService {
             // The recreated zone gets every record again, restaged.
             publisher.removeStagedAssets()
         }
-        await transport.setRecordRejectedHandler { recordName, zone in
+        // CloudKit names the rejected record by its wire name; the publisher maps it back (F19).
+        await transport.setRecordRejectedHandler { wireName, zone in
             guard zone == .data else { return }
-            publisher.recordRejected(recordName)
+            Task { await publisher.recordRejected(wireName: wireName) }
         }
     }
 
     func stop() {
         publisher.stop()
+        linkCenter?.cancelSweepRetry()
         companions.forEach { $0.stop() }
         heartbeatTask?.cancel()
         heartbeatTask = nil
@@ -512,6 +601,48 @@ final class MobileHubService {
         }
     }
 
+    /// The E2E hard cut (spec §2.8, D13): a hub that published before the E2E build (or whose pairing a recreated
+    /// identity voided) deletes its two zones once, through the pending zone delete that `finishPendingZoneDelete`
+    /// runs next, which forgets the phones (`onZonesDeleted`, keys included) and wipes the sync state. Due when the
+    /// marker is absent on a hub that ran before, `pending` (a cut a failure, a timeout or a crash interrupted),
+    /// or `1` with a recreated identity or stored keys that no longer open. A hub that never ran, or one without
+    /// keys (nothing is published), cuts nothing.
+    private func markE2ECutIfDue() throws {
+        guard let keyring else { return }
+        switch try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) {
+        case HubIdentity.e2eCutDone?:
+            if keyring.identityWasRecreated {
+                logger.notice("E2E cut due: the hub identity was recreated")
+            } else if try keyring.storedGroupKeysUnreadable() {
+                logger.error("E2E cut due: the stored hub keys do not open under this identity; phones must re-pair")
+            } else {
+                return
+            }
+        case nil:
+            guard try keyring.identityWasRecreated || sidecar.ranBeforeE2E() else {
+                try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+                return
+            }
+            logger.notice("E2E cut due: first start on the E2E build; linked phones re-pair once")
+        default:
+            logger.notice("E2E cut due: finishing an interrupted cut")
+        }
+        try sidecar.markE2ECutPending()
+    }
+
+    /// After the cut's zone delete settled: the pre-E2E staged files (plaintext, no `.desc`) go, the phones and the
+    /// group keys are forgotten even without a link center, and only then is the marker `1` (never beside a pre-E2E
+    /// device row). A crash before it reruns the cut.
+    private func finishE2ECut() throws {
+        guard let keyring,
+              try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey) == HubIdentity.e2eCutPending else { return }
+        publisher.removeStagedAssets()
+        try sidecar.clearLinkState()
+        try keyring.resetGroupKeys()
+        try sidecar.setMetaValue(HubIdentity.e2eCutDone, forKey: HubIdentity.e2eMigrationKey)
+        logger.notice("E2E cut done: this Mac's zones start empty on fresh keys")
+    }
+
     /// First start on the per-hub build: the transport store, bound to no
     /// hub, wipes itself at `start()`, so what the sidecar believes published
     /// and its relay cursor describe the old fixed-name zones. Forgets them
@@ -596,6 +727,7 @@ final class MobileHubService {
     /// One relay cycle: pull, daily hygiene, then passes until the backlog
     /// is empty — a long Mac sleep drains in one cycle (Review focus 5).
     private func runRelayCycle() async {
+        rotateEpochIfDue()
         do {
             try await transport.pull()
             try await processor.runHygieneIfDue()
@@ -608,6 +740,23 @@ final class MobileHubService {
             return
         } catch {
             logger.error("relay cycle failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Spec §2.2: at each cycle start, the epoch rotates once it is 90 days old or used 2^28 seqs. The rotation
+    /// wipes the slice hashes, so the publisher's next cycle republishes the window under the new epoch; the
+    /// keyboxes are nudged first. A failure keeps the current epoch (still valid) and is retried next cycle,
+    /// logged once per failing stretch.
+    func rotateEpochIfDue() {
+        guard let keyring else { return }
+        do {
+            let rotated = try keyring.rotateIfDue()
+            rotationFailing = false
+            if rotated { publisher.nudge(kinds: [.deviceGrant]) }
+        } catch {
+            guard !rotationFailing else { return }
+            rotationFailing = true
+            logger.error("epoch rotation failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -624,14 +773,70 @@ final class MobileHubService {
 
     // MARK: - Heartbeat (multi-hub spec §3.2)
 
+    /// Writes the heartbeat every `heartbeatEvery`, and checks its facts
+    /// every `heartbeatFactsEvery` in between; a facts write restarts the
+    /// interval.
     private func startHeartbeatLoop() {
         heartbeatTask?.cancel()
-        heartbeatTask = Task { [weak self, interval = heartbeatEvery] in
+        heartbeatTask = Task { [weak self, interval = heartbeatEvery, check = heartbeatFactsEvery] in
+            var sinceWrite = Duration.zero
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                let step = min(check, interval - sinceWrite)
+                try? await Task.sleep(for: step)
                 guard let self, !Task.isCancelled else { return }
-                await self.heartbeatTick()
+                sinceWrite += step
+                if sinceWrite >= interval {
+                    sinceWrite = .zero
+                    await self.heartbeatTick()
+                } else if await self.refreshHeartbeatIfFactsChanged() {
+                    sinceWrite = .zero
+                }
             }
+        }
+    }
+
+    /// The heartbeat fields the phone's Settings shows that change without
+    /// the hub: the accounts' status rows and `sharing`.
+    private struct HeartbeatFacts: Equatable {
+        let accounts: [HeartbeatAccount]
+        let sharing: HubSharing
+    }
+
+    /// The facts now; nil when the accounts read failed (a failure is not
+    /// an empty list, so it is never compared or written as one). The
+    /// accounts are read off the main actor (`HubHostInfo.accounts`).
+    private func currentHeartbeatFacts() async -> HeartbeatFacts? {
+        do {
+            let accounts = try await hostInfo.accounts()
+            return HeartbeatFacts(accounts: Array(accounts.prefix(HeartbeatPayload.maxAccounts)), sharing: sharing)
+        } catch {
+            logger.error("heartbeat accounts read failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Rewrites the heartbeat at once when its facts differ from what the
+    /// last write carried, so an account's status or `sharing` reaches the
+    /// phone without waiting for the 15 min tick; unchanged facts write
+    /// nothing. One attempt per change: a failure is logged and left to the
+    /// next tick (it does not count toward `maxTickFailures`). A failed
+    /// accounts read skips the check (no change seen, nothing written). True
+    /// when it wrote.
+    @discardableResult
+    func refreshHeartbeatIfFactsChanged() async -> Bool {
+        guard status == .running, heartbeatFacts != nil else { return false }
+        guard let current = await currentHeartbeatFacts(), status == .running,
+              let written = heartbeatFacts, current != written else { return false }
+        heartbeatFacts = current
+        let checkEpoch = epoch
+        do {
+            return try await writeHeartbeat(hubID: try identity.hubID(), facts: current) {
+                status == .running && epoch == checkEpoch
+            }
+        } catch {
+            guard status == .running, epoch == checkEpoch else { return false }
+            logger.warning("heartbeat rewrite for changed accounts or sharing failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -646,7 +851,8 @@ final class MobileHubService {
             let hubID = try identity.hubID()
             await resolveOwnerUser()
             guard status == .running, epoch == tickEpoch else { return }
-            try await writeHeartbeat(hubID: hubID)
+            let wrote = try await writeHeartbeat(hubID: hubID) { status == .running && epoch == tickEpoch }
+            guard wrote else { return }
             tickFailures = 0
         } catch {
             guard status == .running, epoch == tickEpoch else { return }
@@ -665,9 +871,21 @@ final class MobileHubService {
     }
 
     /// Writes this hub's heartbeat into its own DataZone, stamped with this
-    /// Mac's clock (multi-hub spec §3.2).
-    private func writeHeartbeat(hubID: String) async throws {
+    /// Mac's clock (multi-hub spec §3.2). When the accounts read fails it
+    /// carries the accounts the last write carried (none before the first).
+    /// `isCurrent` is checked after the accounts read: a stop or disable
+    /// meanwhile writes nothing (neither `enabled_at` nor the record), and
+    /// false is returned.
+    private func writeHeartbeat(
+        hubID: String, facts: HeartbeatFacts? = nil, isCurrent: () -> Bool
+    ) async throws -> Bool {
+        var read = facts
+        if read == nil {
+            read = await currentHeartbeatFacts()
+        }
+        guard isCurrent() else { return false }
         let at = now()
+        let facts = read ?? HeartbeatFacts(accounts: heartbeatFacts?.accounts ?? [], sharing: sharing)
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,
@@ -677,13 +895,16 @@ final class MobileHubService {
             lastPublishAt: publisher.lastPublishAt,
             lastRelayAt: lastRelayAt,
             relayBacklog: processor.relayBacklog,
-            accounts: Array(hostInfo.accounts().prefix(HeartbeatPayload.maxAccounts)),
+            accounts: facts.accounts,
             enabledAt: try identity.ensureEnabledAt(at),
             ownerUser: ownerUser ?? "",
-            sharing: sharing
+            sharing: facts.sharing
         )
         let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
-        try await transport.save([record])
+        // Sealed like every DataZone record (spec §2.7: the fixed name `heartbeat` stays).
+        try await publisher.saveHeartbeat(record)
+        heartbeatFacts = facts
+        return true
     }
 
     /// Looks the iCloud user up once (bounded); retried at the next write
@@ -691,9 +912,18 @@ final class MobileHubService {
     private func resolveOwnerUser() async {
         guard ownerUser == nil else { return }
         let lookup = hostInfo.ownerUser
-        if let found = await Self.bounded(cloudTimeout, { await lookup() }) {
+        let epoch = ownerEpoch
+        if let found = await Self.bounded(cloudTimeout, { await lookup() }), epoch == ownerEpoch {
             ownerUser = found
         }
+    }
+
+    /// The account signed out or switched: the heartbeat's `owner_user` and
+    /// the link center's are looked up again.
+    func accountChanged() {
+        ownerUser = nil
+        ownerEpoch += 1
+        onAccountChanged?()
     }
 
     /// Runs `operation` for at most `timeout`. On timeout it is cancelled,

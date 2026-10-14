@@ -163,6 +163,41 @@ final class WorkbenchCLITests: XCTestCase {
         )
     }
 
+    /// A removal refused through a link leaving the folder: the delete still
+    /// completes, and the warning names the file and what to remove by hand
+    /// instead of the raw error (PROJ-02's exception, ask #118).
+    func testDeleteWarningNamesTheFileLinkedOutside() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"""
+        {"id":3,"deleted":true,"removal_ok":false,"removal_error":"",\#
+        "removal_hints":["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"],\#
+        "files_ok":true,"files_error":""}
+        """#.utf8))
+        let result = try await WorkbenchCLI(runner: runner).delete(projectID: 3)
+        XCTAssertEqual(result.removalHints,
+                       ["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"])
+        XCTAssertEqual(
+            result.cleanupWarning,
+            "The workbench was deleted, but Watchtower could not clean a file linked outside its folder. "
+                + "Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand."
+        )
+    }
+
+    /// Hints never hide another cleanup failure: Go's removal_error carries
+    /// whatever the hints do not name, and the warning shows both.
+    func testDeleteWarningKeepsAnUnrelatedFailureBesideTheHints() {
+        let deleted = WorkbenchDeleted(
+            id: 3, deleted: true, removalOK: false, removalError: "unregistering the MCP server failed",
+            removalHints: ["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"],
+            filesOK: true, filesError: ""
+        )
+        XCTAssertEqual(
+            deleted.cleanupWarning,
+            "The workbench was deleted, but Watchtower could not clean a file linked outside its folder. "
+                + "Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand.; "
+                + "cleaning its folder failed: unregistering the MCP server failed"
+        )
+    }
+
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)

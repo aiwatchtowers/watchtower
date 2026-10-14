@@ -14,7 +14,9 @@ import WatchtowerSync
 /// session state milestones (`session_milestones`, spec §4.9), and the
 /// linking state (spec §2.3): the issued QR codes (`link_codes`), the linked
 /// phones (`devices`, spec §10) and the refused link attempts
-/// (`link_refusals`, published as `device_grant` with `link_refused`).
+/// (`link_refusals`, published as `device_grant` with `link_refused`), the
+/// phone lines held for an idle session (`held_session_lines`, spec §6.6,
+/// PROJ-16), and the E2E key tables (`HubSyncState+Keys.swift`).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -29,7 +31,9 @@ final class HubSyncState: Sendable {
     static let hubIDKey = "hub_id"
     private static let generationKey = "sync_generation"
 
-    private let queue: DatabaseQueue
+    /// Internal for the `HubSyncState+…` extensions (key tables) and tests that seed rows; everything else
+    /// goes through the typed methods.
+    let queue: DatabaseQueue
     /// One relay pass at a time over this ledger, whichever processor runs
     /// it (a rebuilt hub shares the sidecar with the one it replaces).
     let relayGate = RelayPassGate()
@@ -109,14 +113,30 @@ final class HubSyncState: Sendable {
                     ref INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
+                CREATE TABLE IF NOT EXISTS held_session_lines (
+                    record_name TEXT PRIMARY KEY,
+                    action BLOB NOT NULL,
+                    session_id INTEGER NOT NULL,
+                    line TEXT NOT NULL,
+                    run INTEGER,
+                    launch TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    typing INTEGER NOT NULL DEFAULT 0
+                );
                 """)
             try Self.createLinkTables(db)
+            try Self.createKeyTables(db)
             // A sidecar created before the ledger kept echoes and buffer
             // marks gains the columns; its old `done` rows hold neither (no
             // echo: skipped as before; no mark: the pre-mark behaviour).
             let columns = Set(try db.columns(in: "relay_processed").map(\.name))
             for (name, type) in [("echo", "BLOB"), ("done_seq", "INTEGER")] where !columns.contains(name) {
                 try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN \(name) \(type)")
+            }
+            // A sidecar created before the Mac kept the phone's typing
+            // request gains it, unrequested.
+            if try !db.columns(in: "devices").contains(where: { $0.name == "typing_requested" }) {
+                try db.execute(sql: "ALTER TABLE devices ADD COLUMN typing_requested INTEGER NOT NULL DEFAULT 0")
             }
             return .commit
         }
@@ -140,7 +160,8 @@ final class HubSyncState: Sendable {
                     linked_at REAL NOT NULL,
                     typing_allowed INTEGER NOT NULL DEFAULT 0,
                     start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
-                    decided_at REAL
+                    decided_at REAL,
+                    typing_requested INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS link_refusals (
                     device_id TEXT PRIMARY KEY,
@@ -176,27 +197,32 @@ final class HubSyncState: Sendable {
     /// Records `hashes` (record name → hash) only while the sync generation
     /// is still `generation`, checked in the same transaction, so a reset
     /// cannot land between the check and the writes. False (nothing
-    /// written) when a reset bumped it.
-    func setHashes(_ hashes: [String: String], ifGeneration generation: Int) throws -> Bool {
+    /// written) when a reset bumped it. `wireNames` (record name → the
+    /// opaque name it was sent under) fills `slice_state.wire_name` (F19), so
+    /// a rejection of a record queued in an earlier launch still maps back.
+    func setHashes(
+        _ hashes: [String: String], wireNames: [String: String] = [:], ifGeneration generation: Int
+    ) throws -> Bool {
         try queue.write { db in
             guard try Self.generation(db) == generation else { return false }
             for (name, hash) in hashes {
-                try Self.upsertHash(hash, for: name, db)
+                try Self.upsertHash(hash, for: name, wireName: wireNames[name], db)
             }
             return true
         }
     }
 
-    private static func upsertHash(_ hash: String, for recordName: String, _ db: Database) throws {
+    private static func upsertHash(_ hash: String, for recordName: String, wireName: String? = nil, _ db: Database) throws {
         try db.execute(
             sql: """
-                INSERT INTO slice_state (record_name, payload_hash, pushed_at)
-                VALUES (?, ?, ?)
+                INSERT INTO slice_state (record_name, payload_hash, pushed_at, wire_name)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(record_name) DO UPDATE SET
                     payload_hash = excluded.payload_hash,
-                    pushed_at = excluded.pushed_at
+                    pushed_at = excluded.pushed_at,
+                    wire_name = COALESCE(excluded.wire_name, slice_state.wire_name)
                 """,
-            arguments: [recordName, hash, Date().timeIntervalSince1970]
+            arguments: [recordName, hash, Date().timeIntervalSince1970, wireName]
         )
     }
 
@@ -393,21 +419,149 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Retention: drops ledger entries last touched before `date`. Safe
-    /// because the cutoff lies past the relay max age: a re-delivered record
-    /// that old fails the age check (`expired`) and is never applied, and an
-    /// already-echoed record is skipped on its echo status first.
-    func pruneRelayProcessed(olderThan date: Date) throws {
+    /// A `done` action's later outcome (a held phone line delivered,
+    /// cancelled, expired or failed, spec §6.6): its stored outcome and echo
+    /// change, its buffer mark stays. False when the record is not `done`.
+    @discardableResult
+    func replaceRelayEcho(_ recordName: String, outcome: String, echo: Data, at date: Date) throws -> Bool {
         try queue.write { db in
             try db.execute(
-                sql: "DELETE FROM relay_processed WHERE updated_at < ?",
-                arguments: [date.timeIntervalSince1970]
+                sql: """
+                    UPDATE relay_processed SET outcome = ?, echo = ?, updated_at = ?
+                    WHERE record_name = ? AND phase = 'done'
+                    """,
+                arguments: [outcome, echo, date.timeIntervalSince1970, recordName]
             )
+            return db.changesCount > 0
+        }
+    }
+
+    // MARK: - Held phone lines (spec §6.6, PROJ-16)
+
+    /// A phone line (`session_input`, `session_finish_request`) waiting for
+    /// its session to be idle. In memory it is a `SessionLineDelivery` held
+    /// line; this row lets a hub restart queue it again and tells an
+    /// interrupted paste (`typing`) from a line never typed.
+    struct HeldSessionLine: Equatable, Sendable {
+        /// The action as the phone wrote it (its echoes rewrite it).
+        let action: Data
+        let recordName: String
+        let sessionID: Int64
+        let line: String
+        /// The session's process run when the line was held, and the app
+        /// launch that run number belongs to (`TerminalCenter.runs` restart
+        /// at every launch).
+        let run: Int?
+        let launch: String
+        var reason: String
+        /// Set right before a paste of it; a row found set at a hub start
+        /// was interrupted mid-paste.
+        var typing = false
+    }
+
+    func saveHeldLine(_ line: HeldSessionLine) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO held_session_lines (record_name, action, session_id, line, run, launch, reason, typing)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(record_name) DO UPDATE SET reason = excluded.reason, typing = excluded.typing
+                    """,
+                arguments: [
+                    line.recordName, line.action, line.sessionID, line.line, line.run, line.launch, line.reason, line.typing
+                ]
+            )
+        }
+    }
+
+    func heldLine(_ recordName: String) throws -> HeldSessionLine? {
+        try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM held_session_lines WHERE record_name = ?", arguments: [recordName])
+                .map(Self.heldLine)
+        }
+    }
+
+    /// Every held line, in the order they were held.
+    func heldLines() throws -> [HeldSessionLine] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM held_session_lines ORDER BY rowid").map(Self.heldLine)
+        }
+    }
+
+    /// Claims a held line for its paste: marks it being typed only when it
+    /// is still held and not claimed already. False: the line is gone
+    /// (cancelled, finished) or another try of it is typing it.
+    func claimHeldLineForTyping(_ recordName: String) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE held_session_lines SET typing = 1 WHERE record_name = ? AND typing = 0",
+                arguments: [recordName]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    func removeHeldLine(_ recordName: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM held_session_lines WHERE record_name = ?", arguments: [recordName])
+        }
+    }
+
+    private static func heldLine(_ row: Row) -> HeldSessionLine {
+        HeldSessionLine(
+            action: row["action"], recordName: row["record_name"], sessionID: row["session_id"], line: row["line"],
+            run: row["run"], launch: row["launch"], reason: row["reason"], typing: row["typing"]
+        )
+    }
+
+    /// Retention: drops ledger entries last touched before `date`. Safe for
+    /// actions because the cutoff lies past the relay max age: a re-delivered
+    /// record that old fails the age check (`expired`) and is never applied,
+    /// and an already-echoed record is skipped on its echo status first. The
+    /// relay rollback guard (`relay_seen`, F3) goes by the same cutoff on its
+    /// own `at`: its keys are wire names, so it is never joined to the ledger.
+    ///
+    /// Uploads carry no authenticated age (D4 amended, Task 12 ruling): an
+    /// upload's envelope opens as long as the epoch it was sealed in is
+    /// accepted (the current one, and the previous one inside its D10
+    /// grace), so its ledger row (`recupload-…`) and every `relay_seen` row
+    /// of an accepted epoch outlive the cutoff until that epoch is no longer
+    /// accepted. The ledger has no epoch column: an upload handled at or after
+    /// the oldest accepted epoch's creation may have been sealed in it, so it
+    /// is kept (an over-keep, never an under-keep). No `hub_epochs` row (a
+    /// keyless hub): the cutoff alone.
+    func pruneRelayProcessed(olderThan date: Date, now: Date = Date()) throws {
+        try queue.write { db in
+            let accepted = try Self.oldestAcceptedRelayEpoch(db, now: now)
+            try db.execute(
+                sql: """
+                    DELETE FROM relay_processed WHERE updated_at < ?
+                        AND NOT (? AND record_name LIKE 'recupload-%' AND updated_at >= ?)
+                    """,
+                arguments: [
+                    date.timeIntervalSince1970, accepted != nil, accepted?.createdAt.timeIntervalSince1970 ?? 0
+                ]
+            )
+            try db.execute(
+                sql: "DELETE FROM relay_seen WHERE at < ? AND NOT (? AND epoch >= ?)",
+                arguments: [date.timeIntervalSince1970, accepted != nil, Int64(accepted?.epoch ?? 0)])
             try db.execute(
                 sql: "DELETE FROM ask_answer_deliveries WHERE at < ?",
                 arguments: [date.timeIntervalSince1970]
             )
         }
+    }
+
+    /// The oldest epoch whose relay envelopes the hub still opens (D10): the
+    /// previous one while its grace runs, else the current one.
+    private static func oldestAcceptedRelayEpoch(_ db: Database, now: Date) throws -> StoredEpoch? {
+        let epochs = try latestEpochs(db)
+        guard let current = epochs.last else { return nil }
+        if epochs.count == 2, let previous = epochs.first, let retired = previous.retiredAt,
+           now.timeIntervalSince(retired) < HubKeyring.previousEpochGrace {
+            return previous
+        }
+        return current
     }
 
     // MARK: - Ask answer deliveries (spec §5.2, §6.2)
@@ -500,6 +654,16 @@ final class HubSyncState: Sendable {
                     updatedAt: Date(timeIntervalSince1970: row["updated_at"])
                 )
             }
+        }
+    }
+
+    /// Whether the hub ingested the phone recording `uploadID` (its job is remembered; kept 31 days,
+    /// `RecordingJobSlice.sidecarRetention`).
+    func hasPhoneRecording(uploadID: String) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT EXISTS (SELECT 1 FROM phone_recordings WHERE upload_id = ?)", arguments: [uploadID]
+            ) ?? false
         }
     }
 
@@ -702,6 +866,10 @@ final class HubSyncState: Sendable {
         var startSessionsAllowed = true
         /// When the owner last changed a grant; nil while undecided.
         var decidedAt: Date?
+        /// The phone's own "Type into sessions" toggle (its `device`
+        /// record's `typing_requested`): Settings → Mobile asks the owner to
+        /// Allow it. Never a grant by itself.
+        var typingRequested = false
 
         /// The device gate's creator check (spec §5.2 rule 4): in `shared`
         /// scope a record must be written by the phone's own iCloud user.
@@ -723,6 +891,9 @@ final class HubSyncState: Sendable {
         let scope: DeviceScope
         let reason: LinkRefusal
         let at: Date
+        /// The refused hello's agreement key: the refusal keybox is sealed to it (F5). nil for a refusal from
+        /// before E2E.
+        var agreementKey: Data?
     }
 
     /// What a nonce does for a device.
@@ -735,7 +906,10 @@ final class HubSyncState: Sendable {
 
         static func of(_ code: LinkCode?, deviceID: String, now: Date) -> Self {
             guard let code else { return .refused(.unknownCode) }
-            if let used = code.usedByDevice { return used == deviceID ? .alreadyUsedByThisDevice : .refused(.usedCode) }
+            if let used = code.usedByDevice {
+                // Ids are UUID text whose spelling may differ (`linkDevice` keeps the stored row's).
+                return used.caseInsensitiveCompare(deviceID) == .orderedSame ? .alreadyUsedByThisDevice : .refused(.usedCode)
+            }
             return code.exp >= now ? .valid : .refused(.expiredCode)
         }
     }
@@ -781,38 +955,56 @@ final class HubSyncState: Sendable {
     /// Links `device` with `nonce` in one transaction: the decision is
     /// re-checked there, and only a `.valid` one marks the code used by the
     /// device, upserts its row (a re-link keeps the owner's grants) and
-    /// forgets its refusal. Returns the decision it found.
+    /// forgets its refusal, its revoked keybox, its relay rollback marks and
+    /// its `last_seq`. Returns the decision it found.
     func linkDevice(_ device: LinkedDevice, nonce: String, now: Date) throws -> LinkDecision {
-        try queue.write { db in
-            let decision = LinkDecision.of(try Self.fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
-            guard decision == .valid else { return decision }
-            try db.execute(
-                sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
-                arguments: [device.deviceID, now.timeIntervalSince1970, nonce]
-            )
-            try db.execute(
-                sql: """
-                    INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
-                                         start_sessions_allowed, decided_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id) DO UPDATE SET
-                        name = excluded.name, scope = excluded.scope,
-                        user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
-                    """,
-                arguments: [
-                    device.deviceID, device.name, device.scope.rawValue, device.userRecordName,
-                    device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
-                    device.decidedAt?.timeIntervalSince1970
-                ]
-            )
-            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [device.deviceID])
-            return .valid
-        }
+        try queue.write { db in try Self.linkDevice(device, nonce: nonce, now: now, db) }
     }
 
+    /// `linkDevice` inside the caller's transaction.
+    static func linkDevice(_ device: LinkedDevice, nonce: String, now: Date, _ db: Database) throws -> LinkDecision {
+        let decision = LinkDecision.of(try fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
+        guard decision == .valid else { return decision }
+        // A re-link keeps the row's own spelling: ids match ignoring case (`linkedDevice`), the key does not.
+        let deviceID = try String.fetchOne(
+            db, sql: "SELECT device_id FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [device.deviceID]
+        ) ?? device.deviceID
+        try db.execute(
+            sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
+            arguments: [deviceID, now.timeIntervalSince1970, nonce]
+        )
+        try db.execute(
+            sql: """
+                INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
+                                     start_sessions_allowed, decided_at, typing_requested)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    name = excluded.name, scope = excluded.scope,
+                    user_record_name = excluded.user_record_name, linked_at = excluded.linked_at,
+                    typing_requested = excluded.typing_requested
+                """,
+            arguments: [
+                deviceID, device.name, device.scope.rawValue, device.userRecordName,
+                device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
+                device.decidedAt?.timeIntervalSince1970, device.typingRequested
+            ]
+        )
+        try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        // Linked again: its revoked keybox gives way to the linked one.
+        try db.execute(sql: "DELETE FROM revoked_devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        // A re-link (a reinstall, a lost seq floor) restarts the phone's seqs under the same epoch: its old
+        // rollback marks would refuse its fixed-name records as `.older`. They protect nothing any more, because
+        // the re-link replaces the link nonce its relay keys derive from (final review Kit I2 / Desktop I-1).
+        try db.execute(sql: "DELETE FROM relay_seen WHERE sender_id = ? COLLATE NOCASE", arguments: [deviceID])
+        try db.execute(sql: "UPDATE devices SET last_seq = NULL WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+        return .valid
+    }
+
+    /// Device ids are UUID text; the lookup ignores case, like the key rows (`deviceKeyRow`).
     func linkedDevice(_ deviceID: String) throws -> LinkedDevice? {
         try queue.read { db in
-            try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID]).map(Self.device)
+            try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+                .map(Self.device)
         }
     }
 
@@ -824,13 +1016,21 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Whether any phone is linked (the publisher's and the CLI
+    /// companions' gate: nothing but `device_grant` is published without one).
+    func hasLinkedDevice() throws -> Bool {
+        try queue.read { db in try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM devices)") ?? false }
+    }
+
     /// Deletes the device's row and refusal; the removed row, nil when it
-    /// was not linked.
+    /// was not linked. Ids match ignoring case, like `linkedDevice`: a
+    /// differently spelled id never leaves a removed phone linked.
     func removeLinkedDevice(_ deviceID: String) throws -> LinkedDevice? {
         try queue.write { db in
-            let row = try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID])
-            try db.execute(sql: "DELETE FROM devices WHERE device_id = ?", arguments: [deviceID])
-            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [deviceID])
+            let row = try Row.fetchOne(
+                db, sql: "SELECT * FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE", arguments: [deviceID])
             return row.map(Self.device)
         }
     }
@@ -846,27 +1046,47 @@ final class HubSyncState: Sendable {
     func setDeviceGrant(_ grant: DeviceGrantKind, _ allowed: Bool, deviceID: String, at date: Date) throws -> Bool {
         try queue.write { db in
             try db.execute(
-                sql: "UPDATE devices SET \(grant.rawValue) = ?, decided_at = ? WHERE device_id = ?",
+                sql: "UPDATE devices SET \(grant.rawValue) = ?, decided_at = ? WHERE device_id = ? COLLATE NOCASE",
                 arguments: [allowed, date.timeIntervalSince1970, deviceID]
             )
             return db.changesCount > 0
         }
     }
 
-    func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
+    /// Stores the phone's typing request (not a grant, no `decided_at`).
+    /// False when the device is not linked or the value did not change.
+    func setTypingRequested(_ requested: Bool, deviceID: String) throws -> Bool {
         try queue.write { db in
             try db.execute(
-                sql: """
-                    INSERT INTO link_refusals (device_id, name, scope, reason, at) VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(device_id) DO UPDATE SET
-                        name = excluded.name, scope = excluded.scope, reason = excluded.reason, at = excluded.at
-                    """,
-                arguments: [
-                    refusal.deviceID, refusal.name, refusal.scope.rawValue, refusal.reason.rawValue,
-                    refusal.at.timeIntervalSince1970
-                ]
+                sql: "UPDATE devices SET typing_requested = ? WHERE device_id = ? COLLATE NOCASE AND typing_requested != ?",
+                arguments: [requested, deviceID, requested]
             )
+            return db.changesCount > 0
         }
+    }
+
+    func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
+        try queue.write { db in try Self.saveLinkRefusal(refusal, db) }
+    }
+
+    /// `saveLinkRefusal` inside the caller's transaction. A refusal without an agreement key keeps the one stored.
+    static func saveLinkRefusal(_ refusal: LinkRefusalRecord, _ db: Database) throws {
+        // One refusal per phone whatever the id's spelling (the upsert key is case-sensitive).
+        try db.execute(
+            sql: "DELETE FROM link_refusals WHERE device_id = ? COLLATE NOCASE AND device_id != ?",
+            arguments: [refusal.deviceID, refusal.deviceID])
+        try db.execute(
+            sql: """
+                INSERT INTO link_refusals (device_id, name, scope, reason, at, agreement_key) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                    name = excluded.name, scope = excluded.scope, reason = excluded.reason, at = excluded.at,
+                    agreement_key = COALESCE(excluded.agreement_key, link_refusals.agreement_key)
+                """,
+            arguments: [
+                refusal.deviceID, refusal.name, refusal.scope.rawValue, refusal.reason.rawValue,
+                refusal.at.timeIntervalSince1970, refusal.agreementKey
+            ]
+        )
     }
 
     /// Every remembered refusal, newest first.
@@ -875,7 +1095,8 @@ final class HubSyncState: Sendable {
             try Row.fetchAll(db, sql: "SELECT * FROM link_refusals ORDER BY at DESC, device_id").map { row in
                 LinkRefusalRecord(
                     deviceID: row["device_id"], name: row["name"], scope: DeviceScope(rawValue: row["scope"]),
-                    reason: LinkRefusal(rawValue: row["reason"]), at: Date(timeIntervalSince1970: row["at"])
+                    reason: LinkRefusal(rawValue: row["reason"]), at: Date(timeIntervalSince1970: row["at"]),
+                    agreementKey: row["agreement_key"]
                 )
             }
         }
@@ -888,14 +1109,19 @@ final class HubSyncState: Sendable {
     }
 
     /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
-    /// code, linked phone and refusal.
+    /// code, linked phone, pending link request, refusal and revoked phone,
+    /// and the lines held for those phones (their records went with the zones).
     func clearLinkState() throws {
         try queue.write { db in
-            try db.execute(sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM link_refusals")
+            try db.execute(
+                sql: """
+                    DELETE FROM link_codes; DELETE FROM devices; DELETE FROM pending_devices; DELETE FROM link_refusals;
+                    DELETE FROM revoked_devices; DELETE FROM held_session_lines
+                    """)
         }
     }
 
-    private static func fetchLinkCode(_ nonce: String, _ db: Database) throws -> LinkCode? {
+    static func fetchLinkCode(_ nonce: String, _ db: Database) throws -> LinkCode? {
         try Row.fetchOne(db, sql: "SELECT * FROM link_codes WHERE nonce = ?", arguments: [nonce]).map(linkCode)
     }
 
@@ -908,7 +1134,7 @@ final class HubSyncState: Sendable {
         )
     }
 
-    private static func device(_ row: Row) -> LinkedDevice {
+    static func device(_ row: Row) -> LinkedDevice {
         LinkedDevice(
             deviceID: row["device_id"],
             name: row["name"],
@@ -917,7 +1143,8 @@ final class HubSyncState: Sendable {
             linkedAt: Date(timeIntervalSince1970: row["linked_at"]),
             typingAllowed: row["typing_allowed"],
             startSessionsAllowed: row["start_sessions_allowed"],
-            decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:))
+            decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            typingRequested: row["typing_requested"]
         )
     }
 
@@ -977,6 +1204,30 @@ final class HubSyncState: Sendable {
                 arguments: [Self.generationKey, Self.generationKey]
             )
         }
+    }
+
+    /// The epoch rotation's share of the publish state, in the rotation's transaction (Task 14, D3). Every
+    /// `slice_state` row is kept with a blank hash (its record name and wire name stay):
+    /// - no hash matches, so the next cycle republishes the whole window under the new epoch, keyboxes included;
+    /// - the publisher still knows what the zone holds, so a record that left the window meanwhile is deleted,
+    ///   never orphaned under the old epoch;
+    /// - an `ask_alert` already in the zone is resealed under the new `K_alert` but gets no second `sig-` signal
+    ///   (no second lock-screen alert; its wire name is stable, `K_meta` does not rotate, D5).
+    ///
+    /// The relay token, the ledger and the alerted asks stay. The generation is bumped, so a cycle that sealed
+    /// under the old epoch neither saves nor records what it sealed, and the alerts of the bumped generation move to
+    /// the new one (still published, unlike an account reset's).
+    static func wipeForRotation(_ db: Database) throws {
+        try db.execute(sql: "UPDATE slice_state SET payload_hash = ''")
+        let generation = try generation(db)
+        try db.execute(
+            sql: """
+                INSERT INTO hub_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+            arguments: [generationKey, String(generation + 1)])
+        try db.execute(
+            sql: "UPDATE alerted_asks SET generation = ? WHERE generation = ?", arguments: [generation + 1, generation])
     }
 
     /// The sync generation counter: 0 until the first `wipeSyncState(now:)`.

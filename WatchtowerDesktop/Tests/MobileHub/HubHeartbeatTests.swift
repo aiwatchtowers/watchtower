@@ -1,12 +1,15 @@
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
 /// The heartbeat (multi-hub spec §3.2): written into the hub's own DataZone
-/// every 300 s; another Mac's heartbeat changes nothing.
+/// every 15 min, and at once when its accounts or sharing change; another
+/// Mac's heartbeat changes nothing.
 @MainActor
 final class HubHeartbeatTests: XCTestCase {
     private var dbPath: String!
@@ -38,15 +41,16 @@ final class HubHeartbeatTests: XCTestCase {
         sidecar: HubSyncState,
         host: HubHostInfo = testHostInfo(),
         now: Date? = nil,
-        reprobeEvery: Duration = .seconds(3600)
+        reprobeEvery: Duration = .seconds(3600),
+        factsCheckEvery: Duration = .seconds(3600)
     ) throws -> MobileHubService {
         let instant = now ?? self.now
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: [],
             timing: .init(tick: .seconds(3600), fastWindow: .seconds(3600), fastSpacing: .seconds(3600))
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(),
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(),
             hubID: try sidecar.ensureHubID()
         ) { instant }
         let hub = MobileHubService(
@@ -55,6 +59,7 @@ final class HubHeartbeatTests: XCTestCase {
             relayIdleInterval: .seconds(3600), relayActiveInterval: .seconds(3600),
             availabilityReprobeInterval: reprobeEvery,
             heartbeatInterval: .seconds(3600),
+            heartbeatFactsCheckInterval: factsCheckEvery,
             now: { instant }, isEnabled: { true }
         )
         hubs.append(hub)
@@ -73,17 +78,85 @@ final class HubHeartbeatTests: XCTestCase {
         try await cloud.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: heartbeat.updatedAt)])
     }
 
-    /// Every heartbeat this transport saved, decoded, in order.
+    /// Every heartbeat this transport saved, opened by the paired phone and decoded, in order.
     private func savedHeartbeats(_ transport: StubHubTransport) throws -> [HeartbeatPayload] {
-        try transport.saved
+        try transport.openedSaves()
             .filter { $0.record.recordName == HeartbeatPayload.recordName }
             .map { try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: $0.record.payload) }
     }
 
+    // MARK: - Account change (#65)
+
+    /// After the iCloud account signed out or switched, the heartbeat and
+    /// the attached link center's QR name the new user.
+    func testAnAccountResetLooksTheOwnerUpAgainForTheHeartbeatAndTheQR() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let host = HubHostInfo(
+            macName: "Mac acme", appVersion: "0.0.0-test", flavor: .default, accounts: { [] }, ownerUser: { owner.value }
+        )
+        let hub = try makeHub(transport: transport, sidecar: sidecar, host: host)
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { owner.value },
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: hub)
+        await hub.enable()
+        let issued1 = try await center.issueCode()
+        XCTAssertEqual(issued1.ownerUser, "_owner-acme")
+        await center.closeLink(reason: .sheetClosed)
+
+        owner.set("_owner-new")
+        transport.fireAccountReset()
+
+        try await awaitHubCondition("the heartbeat names the new user") {
+            await hub.heartbeatTick()
+            return try savedHeartbeats(transport).last?.ownerUser == "_owner-new"
+        }
+        let issued2 = try await center.issueCode()
+        XCTAssertEqual(issued2.ownerUser, "_owner-new")
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// A lookup still running when the account changes may answer with the
+    /// old user: the heartbeat never carries it.
+    func testAnOwnerLookupRunningAcrossAnAccountResetNeverReachesTheHeartbeat() async throws {
+        let owner = OwnerUserBox("_owner-acme")
+        let gate = SaveGate()
+        let transport = StubHubTransport()
+        let host = HubHostInfo(
+            macName: "Mac acme", appVersion: "0.0.0-test", flavor: .default, accounts: { [] },
+            ownerUser: {
+                let answer = owner.value
+                await gate.park()
+                return answer
+            }
+        )
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), host: host)
+        let enabling = Task { await hub.enable() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        owner.set("_owner-new")
+        hub.accountChanged()
+        gate.release()
+        await enabling.value
+        await hub.heartbeatTick()
+
+        let owners = try savedHeartbeats(transport).map(\.ownerUser)
+        XCTAssertFalse(owners.contains("_owner-acme"), "\(owners)")
+        XCTAssertEqual(owners.last, "_owner-new")
+    }
+
     // MARK: - Enable
 
+    /// Board #724, owner decision Q2: every 15 min, and three failed
+    /// writes in a row (45 min) outlast the phone's 35 min offline mark.
     func testPinnedHeartbeatTiming() {
-        XCTAssertEqual(MobileHubService.heartbeatInterval, .seconds(300))
+        XCTAssertEqual(MobileHubService.heartbeatInterval, .seconds(900))
+        XCTAssertEqual(MobileHubService.maxTickFailures, 3)
+        XCTAssertGreaterThan(MobileHubService.heartbeatInterval * MobileHubService.maxTickFailures, .seconds(35 * 60))
     }
 
     func testAnotherMacsLiveHeartbeatNeitherRefusesNorStopsThisHub() async throws {
@@ -147,7 +220,7 @@ final class HubHeartbeatTests: XCTestCase {
         let instant = now
         let clock: @Sendable () -> Date = { instant }
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: [], now: clock
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(), sources: [], now: clock
         )
         XCTAssertNil(publisher.lastPublishAt)
 
@@ -159,9 +232,9 @@ final class HubHeartbeatTests: XCTestCase {
     func testTheHeartbeatLoopRewritesTheRecord() async throws {
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
-        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport, sources: [])
+        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport.sealing(), sources: [])
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         let hub = MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
@@ -173,6 +246,137 @@ final class HubHeartbeatTests: XCTestCase {
         await hub.enable()
 
         try await awaitHubCondition("the loop writes the heartbeat again") { try savedHeartbeats(transport).count >= 3 }
+    }
+
+    /// Board #724: the heartbeat now waits 15 min, so a changed account
+    /// status or sharing is written at the next facts check instead; an
+    /// unchanged check writes nothing.
+    func testChangedAccountsOrSharingRewriteTheHeartbeatAtOnce() async throws {
+        let transport = StubHubTransport()
+        let accounts = OSAllocatedUnfairLock(initialState: [HeartbeatAccount(kind: .slack, label: "acme", status: "ok")])
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo { accounts.withLock { $0 } }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        let unchanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(unchanged)
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "unchanged facts write nothing")
+
+        accounts.withLock { $0 = [HeartbeatAccount(kind: .slack, label: "acme", status: "revoked")] }
+        let statusChanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertTrue(statusChanged)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.accounts.map(\.status), ["revoked"])
+
+        hub.sharing = .available
+        let sharingChanged = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertTrue(sharingChanged)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.sharing, .available)
+
+        let again = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(again)
+        XCTAssertEqual(try savedHeartbeats(transport).count, 3, "one write per change")
+    }
+
+    /// A failed accounts read is not an empty list: the facts check sees no
+    /// change and writes nothing, and the next tick keeps the accounts the
+    /// last write carried (board #724).
+    func testAFailedAccountsReadIsNeitherAChangeNorAnEmptyList() async throws {
+        struct ReadFailed: Error {}
+        let transport = StubHubTransport()
+        let failing = OSAllocatedUnfairLock(initialState: false)
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo {
+                if failing.withLock({ $0 }) { throw ReadFailed() }
+                return [HeartbeatAccount(kind: .google, label: "acme", status: "ok")]
+            }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        failing.withLock { $0 = true }
+        let changed = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(changed, "a failed read is no change")
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "nothing written, no push")
+
+        await hub.heartbeatTick()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
+        XCTAssertEqual(try savedHeartbeats(transport).last?.accounts.map(\.label), ["acme"], "the tick keeps the last accounts")
+
+        failing.withLock { $0 = false }
+        let recovered = await hub.refreshHeartbeatIfFactsChanged()
+        XCTAssertFalse(recovered, "the same accounts once the read works again")
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
+    }
+
+    /// A stop while a tick's accounts read is held: the tick writes
+    /// nothing once the read returns (board #724).
+    func testAStopDuringATicksAccountsReadWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let gate = SaveGate()
+        let holding = OSAllocatedUnfairLock(initialState: false)
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo {
+                if holding.withLock({ $0 }) { await gate.park() }
+                return [HeartbeatAccount(kind: .slack, label: "acme", status: "ok")]
+            }
+        )
+        await hub.enable()
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1)
+
+        holding.withLock { $0 = true }
+        let tick = Task { await hub.heartbeatTick() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        hub.stop()
+        gate.release()
+        await tick.value
+
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "a stopped hub writes no heartbeat")
+    }
+
+    /// A stop while the first heartbeat's accounts read is held: neither
+    /// `enabled_at` nor the heartbeat is written.
+    func testAStopDuringTheFirstHeartbeatsAccountsReadWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let gate = SaveGate()
+        let hub = try makeHub(
+            transport: transport, sidecar: sidecar,
+            host: testHostInfo {
+                await gate.park()
+                return []
+            }
+        )
+        let enabling = Task { await hub.enable() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        hub.stop()
+        gate.release()
+        _ = await enabling.value
+
+        XCTAssertEqual(try savedHeartbeats(transport).count, 0, "a stopped start writes no heartbeat")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.enabledAtKey), "nor enabled_at")
+        XCTAssertEqual(hub.status, .off)
+    }
+
+    /// The loop runs the facts check between two heartbeat ticks.
+    func testTheHeartbeatLoopWritesChangedAccountsBeforeTheTick() async throws {
+        let transport = StubHubTransport()
+        let accounts = OSAllocatedUnfairLock(initialState: [HeartbeatAccount(kind: .jira, label: "acme", status: "ok")])
+        let hub = try makeHub(
+            transport: transport, sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo { accounts.withLock { $0 } }, factsCheckEvery: .milliseconds(10)
+        )
+        await hub.enable()
+
+        accounts.withLock { $0 = [HeartbeatAccount(kind: .jira, label: "acme", status: "error")] }
+        try await awaitHubCondition("the loop writes the changed status") {
+            try savedHeartbeats(transport).last?.accounts.map(\.status) == ["error"]
+        }
+        XCTAssertEqual(try savedHeartbeats(transport).count, 2)
     }
 
     // MARK: - enabled_at
@@ -230,6 +434,46 @@ final class HubHeartbeatTests: XCTestCase {
         XCTAssertEqual(record.record.zone, .data, "the heartbeat lives in DataZone")
     }
 
+    /// Spec §2.7: the heartbeat keeps its fixed, key-free name, but its body is a signed DataZone envelope.
+    func testTheHeartbeatIsASignedEnvelopeNamedHeartbeat() async throws {
+        let transport = StubHubTransport()
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac acme"))
+
+        await hub.enable()
+
+        let wire = try XCTUnwrap(transport.saved.first { $0.record.recordName == HeartbeatPayload.recordName }?.record)
+        XCTAssertEqual(wire.kind, WireKind.envelope)
+        XCTAssertNil(wire.payload.range(of: Data("Mac acme".utf8)), "no Mac name in the clear")
+        let header = try Envelope.parse(wire.payload).header
+        XCTAssertTrue(header.flags.contains(.signed))
+        XCTAssertEqual(header.envelopeClass, .data)
+        XCTAssertNoThrow(try TestE2E.opener().verify(wireName: wire.recordName, envelope: wire.payload), "hub_sig verifies")
+        XCTAssertEqual(try savedHeartbeats(transport).first?.macName, "Mac acme")
+    }
+
+    /// No hub keys (the keyring is nil without the CloudKit entitlement): no heartbeat in the clear, the hub stays
+    /// unavailable.
+    func testWithoutHubKeysTheHubDoesNotStartAndWritesNothing() async throws {
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: nil, sources: [])
+        let processor = RelayProcessor(
+            transport: nil, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+        )
+        let hub = MobileHubService(
+            transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
+            hostInfo: testHostInfo(), relayIdleInterval: .seconds(3600), relayActiveInterval: .seconds(3600),
+            availabilityReprobeInterval: .seconds(3600)
+        ) { true }
+        hubs.append(hub)
+
+        let status = await hub.enable()
+
+        guard case .unavailable(let message) = status else { return XCTFail("\(status)") }
+        XCTAssertTrue(message.hasPrefix("Couldn't write the heartbeat"), message)
+        XCTAssertTrue(transport.saved.isEmpty, "never a plaintext heartbeat")
+    }
+
     func testBuildFlavorMapsToTheWireFlavor() {
         XCTAssertEqual(HubIdentity.flavor(buildFlavor: ""), .default)
         XCTAssertEqual(HubIdentity.flavor(buildFlavor: "dev"), .default)
@@ -254,7 +498,7 @@ final class HubHeartbeatTests: XCTestCase {
 
         await hub.enable()
 
-        let record = try XCTUnwrap(transport.saved.first { $0.record.recordName == HeartbeatPayload.recordName })
+        let record = try XCTUnwrap(try transport.openedSaves().first { $0.record.recordName == HeartbeatPayload.recordName })
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.record.payload) as? [String: Any])
         let accounts = try XCTUnwrap(json["accounts"] as? [[String: Any]])
         XCTAssertEqual(accounts.count, 3, "the removed Slack account is left out")

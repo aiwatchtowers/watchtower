@@ -24,7 +24,14 @@ struct LinkedDevice: Equatable, Sendable {
 /// The two Workbench choices are requests to the Mac: each change rewrites
 /// the phone's `device` record while it is linked. Before linking, the
 /// choice is only kept, and the link flow sends it with the link record.
-/// Every choice is persisted in `UserDefaults`, so it survives a relaunch.
+/// A choice kept with no hub at all (`unlinkedHubID`, from an earlier
+/// build) is every hub's default until a link completes and adopts it.
+/// Every choice is persisted in `UserDefaults`, so it survives a relaunch;
+/// the two Workbench choices per hub (each Mac has its own `device` record),
+/// the alerts choice once for the phone.
+/// The record goes out sealed (`SecureTransport`, mobile E2E): the hub
+/// drops a plaintext `device` record, and takes a sealed one only when its
+/// payload names the sending device.
 @MainActor
 @Observable
 final class DeviceSettings {
@@ -41,8 +48,9 @@ final class DeviceSettings {
     /// Set by the environment when the phone links or unlinks.
     var linkedDevice: LinkedDevice?
 
-    @ObservationIgnored private let transport: any CloudSyncTransport
+    @ObservationIgnored private let transport: SecureTransport
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let keys: Keys
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The last queued device-record write. Writes run one at a time, in
     /// toggle order, and each sends the choices current when it runs, so the
@@ -55,27 +63,69 @@ final class DeviceSettings {
     @ObservationIgnored private var errorSetting: Setting?
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceSettings")
 
+    /// The keys of the Workbench choices kept with no hub.
+    nonisolated static let unlinkedHubID = "unlinked"
+
     private enum Setting {
         case typingRequested, startSessions
     }
 
-    private enum Keys {
-        static let typingRequested = "device.typingRequested"
-        static let startSessions = "device.startSessions"
+    /// The `UserDefaults` keys: the Workbench choices under the hub's id.
+    private struct Keys {
         static let newAskAlerts = "notifications.newAsks"
+        let typingRequested: String
+        let startSessions: String
+
+        init(hubID: String) {
+            typingRequested = "hub.\(hubID).device.typingRequested"
+            startSessions = "hub.\(hubID).device.startSessions"
+        }
     }
 
     init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         defaults: UserDefaults,
+        hubID: String,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.defaults = defaults
+        let keys = Keys(hubID: hubID)
+        self.keys = keys
         self.now = now
-        typingRequested = defaults.object(forKey: Keys.typingRequested) as? Bool ?? false
-        startSessions = defaults.object(forKey: Keys.startSessions) as? Bool ?? true
+        // A key the hub never had reads the unlinked choice, without using
+        // it up: a candidate's link record carries it, an orphan's session
+        // leaves it (`adoptUnlinkedChoices` makes it the hub's own).
+        let unlinked = Keys(hubID: Self.unlinkedHubID)
+        typingRequested = defaults.object(forKey: keys.typingRequested) as? Bool
+            ?? defaults.object(forKey: unlinked.typingRequested) as? Bool ?? false
+        startSessions = defaults.object(forKey: keys.startSessions) as? Bool
+            ?? defaults.object(forKey: unlinked.startSessions) as? Bool ?? true
         newAskAlerts = defaults.object(forKey: Keys.newAskAlerts) as? Bool ?? true
+    }
+
+    /// The link to this hub completed: the choices it shows (a value of
+    /// its own, else the unlinked one's) become its own, and the unlinked
+    /// choices are dropped, so the next link starts from the defaults.
+    func adoptUnlinkedChoices() {
+        let unlinked = Keys(hubID: Self.unlinkedHubID)
+        guard keys.typingRequested != unlinked.typingRequested else { return }
+        for (own, carried, value) in [
+            (keys.typingRequested, unlinked.typingRequested, typingRequested),
+            (keys.startSessions, unlinked.startSessions, startSessions)
+        ] {
+            if defaults.object(forKey: own) == nil, defaults.object(forKey: carried) != nil {
+                defaults.set(value, forKey: own)
+            }
+            defaults.removeObject(forKey: carried)
+        }
+    }
+
+    /// Deletes `hubID`'s Workbench choices (its link was removed).
+    static func removeChoices(of hubID: String, defaults: UserDefaults) {
+        let keys = Keys(hubID: hubID)
+        defaults.removeObject(forKey: keys.typingRequested)
+        defaults.removeObject(forKey: keys.startSessions)
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -85,7 +135,7 @@ final class DeviceSettings {
         await write(.typingRequested) { [weak self] saved in
             guard let self else { return }
             if saved {
-                defaults.set(value, forKey: Keys.typingRequested)
+                defaults.set(value, forKey: keys.typingRequested)
             } else {
                 typingRequested = previous
             }
@@ -99,7 +149,7 @@ final class DeviceSettings {
         await write(.startSessions) { [weak self] saved in
             guard let self else { return }
             if saved {
-                defaults.set(value, forKey: Keys.startSessions)
+                defaults.set(value, forKey: keys.startSessions)
             } else {
                 startSessions = previous
             }

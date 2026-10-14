@@ -64,10 +64,10 @@ final class ChatSidebarRenderTests: XCTestCase {
             .defaultAppStorage(defaults)
     }
 
-    /// The selected chat covers the panel's edge line at its row; another
-    /// row, the project row, the New chat row and the space below the list
-    /// keep it. Right of
-    /// the panel the conversation paints the detail backdrop.
+    /// The selected chat covers the panel's edge line at its row with the
+    /// detail backdrop; another row, the project row, the New chat row and
+    /// the space below the list keep it. Right of the panel the conversation
+    /// paints the detail backdrop.
     func testSelectedChatTabCoversThePanelEdgeLine() async throws {
         let ids = try await dbManager.dbPool.write { d in
             try ["first", "second", "third"].map { try Self.answered(d, title: $0) }

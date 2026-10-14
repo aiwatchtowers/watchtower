@@ -52,6 +52,11 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
             let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
             XCTAssertEqual(panel.alpha, 255, "an empty capture would compare equal to another one")
             XCTAssertEqual(detail.alpha, 255, "an empty capture would compare equal to another one")
+            // In Dark the workspace is darker than the panel on every macOS
+            // (macOS 26 draws the window and control backgrounds alike).
+            if name == .darkAqua {
+                XCTAssertNotEqual(detail, panel, "\(name): the workspace against the panel")
+            }
             // A sentinel stands in for the window behind the tab, so any spot
             // the tab leaves unpainted shows.
             let page = try render(WorkbenchesView(vm: vm).environment(appState).background(Color.red), appearance)

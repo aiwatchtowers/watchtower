@@ -1,7 +1,5 @@
 import Foundation
 import os
-import Security
-import UIKit
 import WatchtowerSync
 
 /// The Mac this phone is linked to (mobile POC spec §2.3): the hub, the
@@ -22,6 +20,15 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// kept so the shares can be accepted again (spec §2.3 fallback F2).
     let dataShareURL: String?
     let relayShareURL: String?
+    /// The device id this phone linked with (its `device` record's): the
+    /// grant the removal check reads (#64), whatever the Keychain says
+    /// later. nil in a link saved before it was kept: no removal is ever
+    /// read from such a link.
+    var deviceID: String?
+    /// The linked grant's `linked_at` (the Mac's clock) when the link was
+    /// saved; nil in an older link. A removal is read only from a heartbeat
+    /// newer than it.
+    var linkedAt: Date?
 
     /// The database the phone's transport syncs for this link.
     var databaseScope: CloudDatabaseScope {
@@ -39,45 +46,78 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// record was written: an earlier answer (a refusal of another code) is
     /// not this scan's.
     let baseline: DeviceGrant?
+    /// `baseline` was read (nil then means no grant). false while the sync
+    /// stack restarts, before the device record is written; a value saved
+    /// by an older build reads false.
+    let baselineCaptured: Bool
+    /// The scanned code's `iat`, on the Mac's clock (mobile E2E review M-3):
+    /// a `linked` keybox decided before it is an older link, not this scan's
+    /// confirmation. nil in a value an older build saved.
+    let issuedAt: Date?
+
+    init(link: LinkRecord, deadline: Date, baseline: DeviceGrant?, baselineCaptured: Bool, issuedAt: Date? = nil) {
+        self.link = link
+        self.deadline = deadline
+        self.baseline = baseline
+        self.baselineCaptured = baselineCaptured
+        self.issuedAt = issuedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        link = try container.decode(LinkRecord.self, forKey: .link)
+        deadline = try container.decode(Date.self, forKey: .deadline)
+        baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
+        baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+        issuedAt = try container.decodeIfPresent(Date.self, forKey: .issuedAt)
+    }
 }
 
-/// The phone's link, persisted in `UserDefaults`: the one record the link
-/// flow writes and the app boots from (which database to sync, which
-/// device to be).
+/// The link flow's state in `UserDefaults`: a link waiting for its grant,
+/// which a relaunch resumes. The saved links are the hub registry's
+/// (`HubRegistry`); an F1 phone's single link is read here once, by
+/// `HubBoot.migrateF1`, which moves it into the registry and clears it.
 final class LinkStore {
     private let defaults: UserDefaults
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LinkStore")
 
     private enum Keys {
-        static let link = "link.record"
+        static let legacyLink = "link.record"
         static let pending = "link.pending"
+        static let legacyGrantMissingSince = "link.grantMissingSince"
     }
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
     }
 
-    var link: LinkRecord? {
-        get { read(LinkRecord.self, key: Keys.link) }
-        set { write(newValue, key: Keys.link) }
+    /// The single link of F1 (`link.record`), for the migration only.
+    var legacyLink: LinkRecord? {
+        get { read(LinkRecord.self, key: Keys.legacyLink) }
+        set { write(newValue, key: Keys.legacyLink) }
+    }
+
+    /// `link.record` holds data that does not decode: a link is saved, but
+    /// `legacyLink` reads nil.
+    var holdsUnreadableLink: Bool {
+        defaults.object(forKey: Keys.legacyLink) != nil && legacyLink == nil
+    }
+
+    /// F1's first look of the removal check (#64), for the migration only.
+    var legacyGrantMissingSince: Date? {
+        get { defaults.object(forKey: Keys.legacyGrantMissingSince) as? Date }
+        set { defaults.set(newValue, forKey: Keys.legacyGrantMissingSince) }
+    }
+
+    /// Removes F1's link keys.
+    func clearLegacyLink() {
+        defaults.removeObject(forKey: Keys.legacyLink)
+        defaults.removeObject(forKey: Keys.legacyGrantMissingSince)
     }
 
     var pending: PendingLink? {
         get { read(PendingLink.self, key: Keys.pending) }
         set { write(newValue, key: Keys.pending) }
-    }
-
-    /// The database the app syncs at boot: the link's, else a pending
-    /// link's, else the phone's own private database.
-    var bootScope: CloudDatabaseScope {
-        link?.databaseScope ?? pending?.link.databaseScope ?? .private
-    }
-
-    /// The hub whose zones the app syncs at boot: the link's, else a pending
-    /// link's, else `AppEnvironment.unlinkedHubID` (F1's single-link bridge
-    /// until F2's `HubRegistry`).
-    var bootHubID: String {
-        link?.hubID ?? pending?.link.hubID ?? AppEnvironment.unlinkedHubID
     }
 
     /// Plain JSON (local state, not wire format: RelayCoder's snake-case
@@ -104,84 +144,5 @@ final class LinkStore {
         } catch {
             Self.logger.error("could not save \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
-    }
-}
-
-/// What this phone's `device` record says about the phone itself (spec
-/// §5.1).
-struct DeviceIdentity: Equatable, Sendable {
-    /// A UUID kept in the Keychain, so it survives a reinstall.
-    let deviceID: String
-    let name: String
-    let model: String
-    let appVersion: String
-
-    func linkedDevice(scope: DeviceScope, userRecordName: String) -> LinkedDevice {
-        LinkedDevice(
-            deviceID: deviceID,
-            name: name,
-            model: model,
-            appVersion: appVersion,
-            scope: scope,
-            userRecordName: userRecordName
-        )
-    }
-
-    func linkedDevice(for link: LinkRecord) -> LinkedDevice {
-        linkedDevice(scope: link.scope, userRecordName: link.userRecordName)
-    }
-
-    /// This phone: the Keychain device id, the device's name (at most 60
-    /// grapheme clusters) and model, the app's marketing version.
-    @MainActor
-    static func current(defaults: UserDefaults = .standard) -> Self {
-        Self(
-            deviceID: DeviceIDKeychain.deviceID(fallback: defaults),
-            name: String(UIDevice.current.name.prefix(DevicePayload.maxNameLength)),
-            model: UIDevice.current.model,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-        )
-    }
-}
-
-/// The device id in the Keychain (`kSecClassGenericPassword`, this device
-/// only), created on first use.
-enum DeviceIDKeychain {
-    private static let service = "com.aiwatchtowers.watchtower.mobile.device"
-    private static let account = "device_id"
-    private static let fallbackKey = "device.id"
-    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceIDKeychain")
-
-    /// The stored id, or a new one saved now. A Keychain that refuses the
-    /// write keeps the id in `fallback` (lost on reinstall) instead.
-    static func deviceID(fallback: UserDefaults) -> String {
-        if let stored = read() { return stored }
-        if let kept = fallback.string(forKey: fallbackKey) { return kept }
-        let created = UUID().uuidString
-        let status = SecItemAdd([
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData: Data(created.utf8)
-        ] as CFDictionary, nil)
-        if status != errSecSuccess {
-            logger.error("keychain refused the device id (\(status, privacy: .public)); keeping it in defaults")
-            fallback.set(created, forKey: fallbackKey)
-        }
-        return created
-    }
-
-    private static func read() -> String? {
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching([
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne
-        ] as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(bytes: data, encoding: .utf8)
     }
 }

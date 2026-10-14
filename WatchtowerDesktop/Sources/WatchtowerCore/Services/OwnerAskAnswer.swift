@@ -1,9 +1,10 @@
 import Foundation
 
 /// `owner_asks.answer`: written by the Desktop, read by Go's `get_ask`
-/// (`asks.Answer`). Every key is always written, so `encoded()` is the
-/// canonical form `internal/asks/testdata/answers` pins byte for byte —
-/// change both sides together.
+/// (`asks.Answer`). Every key is always written but `dismissed`, written
+/// only when true (Go's `omitempty`), so `encoded()` is the canonical form
+/// `internal/asks/testdata/answers` pins byte for byte — change both sides
+/// together.
 package struct OwnerAskAnswer: Equatable, Sendable {
     package enum Verdict: String, Sendable {
         case approved, changes
@@ -85,20 +86,29 @@ package struct OwnerAskAnswer: Equatable, Sendable {
     package var checklist: [CheckAnswer]
     package var comments: [Comment]
     package var note: String
+    /// The owner closed the ask without answering it (board #223): nothing
+    /// else but an optional note.
+    package var dismissed: Bool
 
     package init(
         verdict: Verdict? = nil,
         answers: [QuestionAnswer] = [],
         checklist: [CheckAnswer] = [],
         comments: [Comment] = [],
-        note: String = ""
+        note: String = "",
+        dismissed: Bool = false
     ) {
         self.verdict = verdict
         self.answers = answers
         self.checklist = checklist
         self.comments = comments
         self.note = note
+        self.dismissed = dismissed
     }
+
+    /// The drawer's Dismiss: the ask closes unanswered, and the agent goes
+    /// on without it (Go's `asks.DismissedText`).
+    package static let dismissal = Self(dismissed: true)
 
     /// A Quick ask's one-tap answer (spec 2026-10-10 Part 9.1): `label`
     /// picked for its one question.
@@ -145,7 +155,7 @@ package struct OwnerAskAnswer: Equatable, Sendable {
 
 extension OwnerAskAnswer: Codable {
     private enum CodingKeys: String, CodingKey {
-        case verdict, answers, checklist, comments, note
+        case verdict, answers, checklist, comments, note, dismissed
     }
 
     package init(from decoder: Decoder) throws {
@@ -162,6 +172,7 @@ extension OwnerAskAnswer: Codable {
         checklist = try c.decodeIfPresent([CheckAnswer].self, forKey: .checklist) ?? []
         comments = try c.decodeIfPresent([Comment].self, forKey: .comments) ?? []
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        dismissed = try c.decodeIfPresent(Bool.self, forKey: .dismissed) ?? false
     }
 
     package func encode(to encoder: Encoder) throws {
@@ -171,5 +182,6 @@ extension OwnerAskAnswer: Codable {
         try c.encode(checklist, forKey: .checklist)
         try c.encode(comments, forKey: .comments)
         try c.encode(note, forKey: .note)
+        if dismissed { try c.encode(true, forKey: .dismissed) }
     }
 }

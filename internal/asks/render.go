@@ -11,9 +11,17 @@ import (
 // after a colon (the Desktop's labels, so the agent reads what the owner
 // pressed), each comment as `> quote`, its
 // heading and its body, then the note. Sections are separated by a blank
-// line; an empty section is left out.
+// line; an empty section is left out. A dismissal says so and what the
+// agent does next, then the note.
 func Render(kind string, p Payload, a Answer) string {
 	var sections []string
+	if a.Dismissed {
+		sections = append(sections, DismissedText)
+		if note := strings.TrimSpace(a.Note); note != "" {
+			sections = append(sections, "Note: "+note)
+		}
+		return strings.Join(sections, "\n\n")
+	}
 	if kind == KindReview {
 		sections = append(sections, "Verdict: "+verdictText(a.Verdict))
 	}
@@ -31,6 +39,11 @@ func Render(kind string, p Payload, a Answer) string {
 	}
 	return strings.Join(sections, "\n\n")
 }
+
+// DismissedText is get_ask's answer_text for a dismissed ask.
+const DismissedText = "Dismissed: the owner closed this ask without answering — it is not a priority for them. " +
+	"Do not ask it again and do not wait for it. Go on where the work allows, taking the default you would " +
+	"recommend (say which one you took); leave aside what cannot be done without the answer."
 
 func verdictText(verdict string) string {
 	switch verdict {

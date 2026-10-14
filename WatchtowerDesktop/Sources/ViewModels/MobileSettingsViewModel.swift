@@ -18,18 +18,66 @@ protocol MobileSettingsHost: AnyObject {
 /// The hub and its link center are the app's (`AppState.mobileHub`); this
 /// model reads them and refreshes the polled parts (iCloud account, last
 /// publish, backlog, throttling) every `refreshInterval` while the tab is
-/// on screen.
+/// on screen (`windowVisibility`, run by the view's `.task`).
 @MainActor
 @Observable
 final class MobileSettingsViewModel {
     nonisolated static let corpNotice = "Work data from this Mac will be stored in your personal iCloud account."
     nonisolated static let needsSignedBuild = "Needs a signed build"
     nonisolated static let slowingLine = "iCloud is slowing sync down"
-    nonisolated static let removedSameAppleID =
-        "Removed. It is signed into your Apple ID, so it can still read synced data until you sign it out of iCloud"
+    /// D9/F18: a removed same-Apple-ID phone keeps what it already holds but gets no newer keys.
+    nonisolated static func removedSameAppleID(_ name: String) -> String {
+        "Removed \(name). It can no longer read anything new from this Mac."
+    }
     /// Throttling this long shows `slowingLine` (spec §9).
     nonisolated static let slowingAfter: TimeInterval = 60
-    nonisolated static let refreshInterval: Duration = .seconds(5)
+    nonisolated static let refreshInterval: Duration = .seconds(30)
+    /// While the hub starts and until its first publish, so the tab does not
+    /// look stalled right after Sync with iPhone is turned on.
+    nonisolated static let startingRefreshInterval: Duration = .seconds(5)
+
+    /// The wait before the next refresh: `startingRefreshInterval` while
+    /// the hub is starting or running with no publish yet, else
+    /// `refreshInterval` (an unavailable hub waits the long one).
+    nonisolated static func nextRefresh(isOn: Bool, status: HubStatus?, lastPublishAt: Date?) -> Duration {
+        guard isOn else { return refreshInterval }
+        switch status {
+        case .starting: return startingRefreshInterval
+        case .running: return lastPublishAt == nil ? startingRefreshInterval : refreshInterval
+        default: return refreshInterval
+        }
+    }
+
+    /// The one-time confirmation of a phone's typing request (spec §10),
+    /// the dialog's and the macOS notice's.
+    nonisolated static func allowQuestion(name: String) -> String {
+        "Allow \"\(name)\" to type into Claude Code sessions?"
+    }
+
+    /// Remove's confirmation (spec §2.3), the dialog's title.
+    nonisolated static func removeQuestion(name: String) -> String {
+        "Remove \"\(name)\"?"
+    }
+
+    /// What Remove does to that phone, under the question: a shared phone
+    /// loses the Mac's data at once; a same-Apple-ID one keeps what it
+    /// already synced, but the Mac changes its keys (D9), so it reads
+    /// nothing new.
+    nonisolated static func removeConsequence(_ scope: DeviceScope) -> String {
+        switch scope {
+        case .private:
+            "It stops syncing with this Mac and can no longer read anything new: this Mac changes its keys. "
+                + "Linking it again needs a new code."
+        default:
+            "It leaves this Mac's iCloud sharing at once and loses its data. Linking it again needs a new code."
+        }
+    }
+
+    /// A phone row's typing state.
+    nonisolated static func typingLabel(_ device: HubSyncState.LinkedDevice) -> String {
+        if device.typingAllowed { return "Typing allowed" }
+        return device.typingRequested ? "Asks to type into sessions" : "Typing off"
+    }
 
     /// `CloudKitTransport.entitlementPresent()`: false on an ad-hoc build,
     /// which cannot turn the toggle on (an inherited on can be turned off).
@@ -49,13 +97,18 @@ final class MobileSettingsViewModel {
     private(set) var notice: String?
     /// The phone whose Allow… waits for confirmation.
     var pendingAllow: HubSyncState.LinkedDevice?
+    /// The phone whose Remove waits for confirmation; drives the dialog.
+    var pendingRemove: HubSyncState.LinkedDevice?
+    /// The phone the Remove dialog is about, kept while it dismisses (when
+    /// `pendingRemove` is already nil), so its title and message never fall
+    /// back to another phone's or a generic text.
+    private(set) var removeSubject: HubSyncState.LinkedDevice?
     /// The QR sheet while it is up.
     private(set) var linkSheet: MobileLinkSheetViewModel?
 
     @ObservationIgnored private let host: any MobileSettingsHost
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
-    @ObservationIgnored private var refreshTask: Task<Void, Never>?
 
     init(
         host: any MobileSettingsHost,
@@ -130,22 +183,26 @@ final class MobileSettingsViewModel {
 
     // MARK: - Lifecycle
 
-    /// The tab appeared: refresh now and every `refreshInterval`.
-    func appeared() {
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self, sleep] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                await self.refresh()
-                await sleep(Self.refreshInterval)
-            }
+    /// The view's `.task`, keyed on its window being on screen: while it
+    /// is, refreshes now and then every `nextRefresh` until the task is
+    /// cancelled, so the polling ends when the tab goes away or its window
+    /// closes or hides, even where SwiftUI sends no `onDisappear`. A hidden
+    /// or closed window also closes an open QR and its link, as leaving the
+    /// tab does, instead of leaving the link open until it expires.
+    func windowVisibility(_ visible: Bool) async {
+        guard visible else {
+            await linkSheetDismissed()
+            return
+        }
+        while !Task.isCancelled {
+            await refresh()
+            guard !Task.isCancelled else { return }
+            await sleep(Self.nextRefresh(isOn: isOn, status: hub?.status, lastPublishAt: lastPublishAt))
         }
     }
 
-    /// The tab left the screen: the polling stops and an open QR closes.
+    /// The tab left the screen: an open QR closes.
     func disappeared() async {
-        refreshTask?.cancel()
-        refreshTask = nil
         await linkSheetDismissed()
     }
 
@@ -223,13 +280,27 @@ final class MobileSettingsViewModel {
         }
     }
 
-    /// Remove (spec §2.3). A same-Apple-ID phone still reads the private
-    /// database, and the notice says so.
+    func requestRemove(_ device: HubSyncState.LinkedDevice) {
+        removeSubject = device
+        pendingRemove = device
+    }
+
+    /// The confirmed Remove: for a shared phone it is at once and cannot be
+    /// undone, so nothing is removed without it.
+    func confirmRemove() async {
+        guard let device = pendingRemove else { return }
+        pendingRemove = nil
+        await remove(device)
+    }
+
+    /// Remove (spec §2.3). The epoch rotates with it (D9): a same-Apple-ID
+    /// phone still reaches the private database but no longer has the keys
+    /// to read anything new, and the notice says so.
     func remove(_ device: HubSyncState.LinkedDevice) async {
         guard let center = hub?.linkCenter else { return }
         do {
             try await center.remove(deviceID: device.deviceID)
-            notice = device.scope == .private ? Self.removedSameAppleID : "Removed \(device.name)."
+            notice = device.scope == .private ? Self.removedSameAppleID(device.name) : "Removed \(device.name)."
         } catch {
             let why = error.localizedDescription
             if center.devices.contains(where: { $0.deviceID == device.deviceID }) {

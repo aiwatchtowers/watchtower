@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import GRDB
+import os
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -21,7 +22,7 @@ final class MobileHubServiceTests: XCTestCase {
     override func setUp() async throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
         sidecar = try HubSyncState.inMemoryPerHub()
-        try sidecar.linkTestDevice("device-a")
+        try sidecar.linkTestDevice()
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         defaults = UserDefaults(suiteName: suiteName)
     }
@@ -40,23 +41,26 @@ final class MobileHubServiceTests: XCTestCase {
         relayActiveInterval: Duration? = nil,
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
+        sources: [any SliceSource] = [],
         assets: SliceAssetStore? = nil,
         cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
+        keyring: HubKeyring? = nil,
+        reprobeInterval: Duration = .milliseconds(20),
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: sidecar, transport: transport, sources: [],
+            dbPool: dbPool, state: sidecar, transport: transport.sealing(names: sidecar), sources: sources,
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)),
             assets: assets
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport.sealing(), sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
-            hostInfo: testHostInfo(), companions: companions,
+            hostInfo: testHostInfo(), keyring: keyring, companions: companions,
             relayIdleInterval: relayInterval, relayActiveInterval: relayActiveInterval ?? relayInterval,
-            availabilityReprobeInterval: .milliseconds(20), cloudTimeout: cloudTimeout, isEnabled: isEnabled
+            availabilityReprobeInterval: reprobeInterval, cloudTimeout: cloudTimeout, isEnabled: isEnabled
         )
     }
 
@@ -91,6 +95,7 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(hub.relayInterval(), .seconds(30))
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: try sidecar.testKeyring(),
             nudge: { _ in }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
         )
         hub.linkCenter = center
@@ -135,6 +140,20 @@ final class MobileHubServiceTests: XCTestCase {
         service.stop()
         XCTAssertEqual(companion.stops, 1)
         offline.stop()
+    }
+
+    /// Board #724: the companions start before the publisher, so its first
+    /// full cycle already sees the fast lane's liveness copy (live
+    /// sessions are never published as not running).
+    func testCompanionsStartBeforeThePublishersFirstCycle() async throws {
+        let order = OSAllocatedUnfairLock(initialState: [String]())
+        let source = OrderedSliceSource(kind: .terminalSession) { order.withLock { $0.append("read") } }
+        let companion = OrderedCompanion { order.withLock { $0.append("companion") } }
+        let service = makeService(transport: StubHubTransport(), companions: [companion], sources: [source])
+        await service.start()
+        await awaitHubCondition("the publisher's first cycle reads") { order.withLock { $0.contains("read") } }
+        XCTAssertEqual(order.withLock { $0.first }, "companion")
+        service.stop()
     }
 
     func testRunningHubAnswersAProbe() async throws {
@@ -295,6 +314,31 @@ final class MobileHubServiceTests: XCTestCase {
         )
     }
 
+    /// The staged files are ciphertext with a `.desc` descriptor (holding `K_asset`) beside each: an account reset
+    /// and turning the hub off remove both, never leaving a key behind.
+    func testAccountResetAndDisableStillRemoveStagedFilesAndDescriptors() async throws {
+        let store = try stagedAssetStore()
+        let file = store.fileURL(recordName: "meeting_transcript-1", fileName: "segments.json")
+        let descriptor = file.appendingPathExtension("desc")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, assets: store)
+        await service.start()
+
+        transport.fireAccountReset()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path), "the descriptor goes with its file")
+
+        _ = try store.stage(Data("[]".utf8), fileName: "segments.json", recordName: "meeting_transcript-1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
+        XCTAssertNil(store.stagedDescriptor(recordName: "meeting_transcript-1", fileName: "segments.json"))
+    }
+
     func testStopStopsTheTransport() async {
         let transport = StubHubTransport()
         let service = makeService(transport: transport)
@@ -351,17 +395,24 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(transport.starts, 0, "a start() queued before the hub was replaced does nothing")
     }
 
+    /// CloudKit names the rejected record by its opaque wire name; the hub maps it back through
+    /// `slice_state.wire_name` (F19) and clears that plain name's hash only.
     func testRejectedDataRecordClearsItsHash() async throws {
-        try sidecar.setHash("hash", for: "workbench-1")
-        try sidecar.setHash("hash", for: "workbench-2")
+        let wire = try testSecureTransport(InMemoryCloudTransport()).wireName(plain: "workbench-1", zone: .data)
+        XCTAssertTrue(try sidecar.setHashes(
+            ["workbench-1": "hash", "workbench-2": "hash"], wireNames: ["workbench-1": wire],
+            ifGeneration: try sidecar.generation()
+        ))
         let transport = StubHubTransport()
         let service = makeService(transport: transport)
         await service.start()
         defer { service.stop() }
 
-        transport.fireRecordRejected("workbench-1", zone: .data)
+        transport.fireRecordRejected(wire, zone: .data)
 
-        XCTAssertEqual(Set(try sidecar.hashes(forKind: .workbench).keys), ["workbench-2"])
+        await awaitHubCondition("the rejected record's hash is cleared") {
+            (try? Set(self.sidecar.hashes(forKind: .workbench).keys)) == ["workbench-2"]
+        }
     }
 
     // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
@@ -603,7 +654,8 @@ final class MobileHubServiceTests: XCTestCase {
         let service = makeService(transport: transport)
         let center = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
-            nudge: { _ in }
+            keyring: try sidecar.testKeyring(),
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
         )
         center.attach(to: service)
         await service.start()
@@ -616,6 +668,311 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertEqual(service.sharing, HubSharing.none)
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+    }
+
+    /// Task 14: hub off forgets the group keys with the phones (the next pairing starts on fresh keys) and the
+    /// revoked keyboxes (their zone is gone).
+    func testTurningTheHubOffResetsGroupKeys() async throws {
+        let transport = StubHubTransport()
+        let keyring = try sidecar.testKeyring()
+        try keyring.rotate(reason: .manual)
+        _ = try sidecar.writeKeys { db in
+            try db.execute(
+                sql: "INSERT INTO revoked_devices (device_id, name, scope, agreement_key, removed_at) VALUES (?, 'Old', 'private', ?, 0)",
+                arguments: [UUID().uuidString, Data(repeating: 9, count: 32)])
+        }
+        let service = makeService(transport: transport, keyring: keyring)
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: keyring,
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: service)
+        await service.start()
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertTrue(try sidecar.latestEpochs().isEmpty, "every epoch is forgotten")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubKeyring.metaKeySealedKey), "K_meta is forgotten")
+        XCTAssertThrowsError(try keyring.currentEpoch()) { XCTAssertEqual($0 as? SecureTransportError, .keysUnavailable) }
+        let revoked = try await sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM revoked_devices") }
+        XCTAssertEqual(revoked, 0)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+    }
+
+    // MARK: - E2E hard cut (Task 15, spec §2.8, D13)
+
+    /// The real link center on `service`: the cut forgets the phones through it (`hubZonesDeleted`).
+    private func attachLinkCenter(to service: MobileHubService, keyring: HubKeyring) -> MobileLinkCenter {
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: keyring,
+            nudge: { _ in } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: service)
+        return center
+    }
+
+    /// A hub already on the E2E build: group keys under the identity in `store` and the marker set.
+    private func migratedHub(store: InMemoryHubKeyStore) throws -> HubKeyring {
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        try keyring.ensureGroupKeys()
+        try sidecar.setMetaValue("1", forKey: HubIdentity.e2eMigrationKey)
+        return keyring
+    }
+
+    private func sliceStateRows() async throws -> Int {
+        try await sidecar.queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM slice_state") ?? -1 }
+    }
+
+    /// The pre-E2E hub (a linked phone, a legacy hash, a plaintext staged file) meets the E2E build: its zones go
+    /// through the pending-delete path before the engine runs, the phones are forgotten, the hub starts on fresh
+    /// keys, and the marker makes it happen once.
+    func testFirstStartOnTheE2EBuildDeletesTheZonesForgetsPhonesAndSetsTheMarkerOnce() async throws {
+        try sidecar.setMetaValue(String(Date().timeIntervalSince1970), forKey: HubIdentity.enabledAtKey)
+        XCTAssertTrue(try sidecar.setHashes(["device_grant-x": "legacy"], ifGeneration: try sidecar.generation()))
+        let store = try stagedAssetStore()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        XCTAssertTrue(keyring.identityWasRecreated, "a new identity over pre-E2E phones")
+        let service = makeService(transport: transport, assets: store, keyring: keyring)
+        let center = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(Array(transport.lifecycle.prefix(2)), ["deleteZones", "start"], "the cut runs before the engine")
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty, "every phone re-pairs")
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertFalse(store.isStaged(recordName: "meeting_transcript-1", fileName: "segments.json"), "no plaintext stays")
+        XCTAssertFalse(keyring.identityWasRecreated)
+        XCTAssertEqual(try keyring.currentEpoch(), 1, "fresh group keys")
+        XCTAssertNoThrow(try keyring.metaKey())
+        let slices = try await sliceStateRows()
+        XCTAssertEqual(slices, 0, "no legacy hash survives")
+
+        service.stop()
+        await service.waitUntilStopped()
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1, "the cut runs once")
+        service.stop()
+    }
+
+    func testAFailedMigrationDeleteKeepsTheMarkerPendingAndRetriesNextStart() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeleteError(CKError(.networkUnavailable))
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+        _ = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(transport.starts, 0, "no engine on the pre-E2E zones")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "pending")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty, "nothing forgotten before the zones are gone")
+        XCTAssertThrowsError(try keyring.currentEpoch(), "nothing is sealed before the cut")
+
+        transport.setZoneDeleteError(nil)
+        await awaitHubCondition("the reprobe retries the cut and starts") { service.status == .running }
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try keyring.currentEpoch(), 1)
+        service.stop()
+    }
+
+    func testARecreatedIdentityTriggersTheSameCut() async throws {
+        _ = try migratedHub(store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        let recreated = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        XCTAssertTrue(recreated.identityWasRecreated)
+        let service = makeService(transport: transport, keyring: recreated)
+        _ = attachLinkCenter(to: service, keyring: recreated)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertNoThrow(try recreated.metaKey(), "the new keys open under the new identity")
+        XCTAssertNoThrow(try recreated.epochKeys(try recreated.currentEpoch()))
+        service.stop()
+    }
+
+    func testAMigratedHubDoesNotCutAgain() async throws {
+        let store = InMemoryHubKeyStore()
+        let first = try migratedHub(store: store)
+        let meta = try first.metaKey()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        let service = makeService(transport: transport, keyring: keyring)
+        _ = attachLinkCenter(to: service, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 0)
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty, "the phones stay")
+        XCTAssertEqual(try keyring.metaKey(), meta, "the keys stay")
+        service.stop()
+    }
+
+    /// Crash-resume: the app dies after the zones were deleted and the phones forgotten, before the marker was
+    /// written. The next start sees `pending` and runs the cut again (a missing zone counts as deleted).
+    func testACutKilledBeforeTheMarkerIsFinishedAtTheNextStart() async throws {
+        let store = InMemoryHubKeyStore()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        try sidecar.clearLinkState()
+        try keyring.resetGroupKeys()
+        try sidecar.setMetaValue("pending", forKey: HubIdentity.e2eMigrationKey)
+        let transport = StubHubTransport()
+        let restarted = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: store)
+        XCTAssertFalse(restarted.identityWasRecreated)
+        let service = makeService(transport: transport, keyring: restarted)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        XCTAssertEqual(try restarted.currentEpoch(), 1)
+        service.stop()
+    }
+
+    /// Crash-resume: the delete went through but forgetting the phones failed (as if killed there). Both markers
+    /// stay, and the next start finishes the cut.
+    func testACutWhosePhonesWereNotForgottenIsRedoneAtTheNextStart() async throws {
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        // No reprobe retry in between: exactly one delete per start.
+        let service = makeService(transport: transport, keyring: keyring, reprobeInterval: .seconds(3600))
+        service.onZonesDeleted = { throw URLError(.cannotWriteToFile) }
+
+        await service.start()
+        XCTAssertEqual(service.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "pending")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        service.stop()
+        await service.waitUntilStopped()
+
+        _ = attachLinkCenter(to: service, keyring: keyring)
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 2, "the cut ran again, once")
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    /// The crash window between creating an identity and marking the cut: the marker says migrated, the flag is
+    /// gone with the relaunch, but the stored keys no longer open. They cannot be used, so the hub cuts.
+    func testKeysSealedUnderALostIdentityTriggerTheCut() async throws {
+        let survivor = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        try survivor.resetGroupKeys()
+        _ = try migratedHub(store: InMemoryHubKeyStore())
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, keyring: survivor)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertNoThrow(try survivor.metaKey())
+        service.stop()
+    }
+
+    func testAFreshHubSetsTheMarkerWithoutACut() async throws {
+        sidecar = try HubSyncState.inMemory()
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(transport.zoneDeletes, 0, "a hub that never ran has no zones to cut")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    /// Review fix 3: a pre-E2E hub whose `enabled_at` is missing and whose phones are gone still published (its
+    /// slice hashes, or the per-hub adoption, say so): it cuts, never leaving plaintext zones behind.
+    func testAPreE2EHubWithoutEnabledAtOrPhonesStillCuts() async throws {
+        for published in [true, false] {
+            sidecar = try HubSyncState.inMemory()
+            if published {
+                XCTAssertTrue(try sidecar.setHashes(["task-1": "legacy"], ifGeneration: try sidecar.generation()))
+            } else {
+                try sidecar.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+            }
+            let transport = StubHubTransport()
+            let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+            let service = makeService(transport: transport, keyring: keyring)
+
+            await service.start()
+
+            XCTAssertEqual(transport.zoneDeletes, 1, "published: \(published)")
+            XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+            service.stop()
+            await service.waitUntilStopped()
+        }
+    }
+
+    /// Review fix 2: without a link center (no `onZonesDeleted`), the cut still forgets the pre-E2E phones: marker
+    /// `1` never coexists with their rows.
+    func testACutWithoutALinkCenterStillForgetsThePhones() async throws {
+        let transport = StubHubTransport()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore())
+        let service = makeService(transport: transport, keyring: keyring)
+
+        await service.start()
+
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey), "1")
+        service.stop()
+    }
+
+    func testAHubWithoutKeysNeverCuts() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+
+        await service.start()
+
+        XCTAssertEqual(transport.zoneDeletes, 0, "nothing is published without keys")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.e2eMigrationKey))
+        service.stop()
+    }
+
+    /// Spec §2.2: the 90-day (or 2^28-message) rotation runs at the next relay cycle once due, exactly once.
+    func testRotationRunsWhenDueAtCycleStart() async throws {
+        let transport = StubHubTransport()
+        let clock = LinkTestClock()
+        let keyring = try HubKeyring(hubID: try sidecar.ensureHubID(), sidecar: sidecar, store: InMemoryHubKeyStore()) {
+            clock.now
+        }
+        let service = makeService(transport: transport, keyring: keyring)
+        await service.start()
+        defer { service.stop() }
+        XCTAssertEqual(try keyring.currentEpoch(), 1, "start made the first epoch")
+
+        clock.advance(HubKeyring.rotationAge)
+        await awaitHubCondition("the due rotation runs at a cycle start") { (try? keyring.currentEpoch()) == 2 }
+        let rotatedAt = service.lastRelayAt
+        await awaitHubCondition("two more relay cycles") { service.lastRelayAt != rotatedAt }
+        let later = service.lastRelayAt
+        await awaitHubCondition("two more relay cycles") { service.lastRelayAt != later }
+
+        XCTAssertEqual(try keyring.currentEpoch(), 2, "never a third epoch")
+        XCTAssertEqual(service.status, .running)
     }
 
     /// Round 2: `.networkUnavailable` is refused before anything is sent.
@@ -680,6 +1037,7 @@ final class MobileHubServiceTests: XCTestCase {
     /// An AppState whose hub storage is a stub; counts how often it is built.
     private func makeAppState(
         transport: StubHubTransport,
+        shares: (any ShareService)? = nil,
         pushRegistrations: (@MainActor () -> Void)? = nil,
         storageBuilds: @escaping () -> Void
     ) throws -> AppState {
@@ -689,8 +1047,10 @@ final class MobileHubServiceTests: XCTestCase {
         let sidecar = try XCTUnwrap(self.sidecar)
         appState.makeMobileHubStorage = {
             storageBuilds()
-            var storage = MobileHubStorage(transport: transport, sidecar: sidecar)
+            var storage = try MobileHubStorage.stub(transport: transport, sidecar: sidecar)
             storage.registerForPushes = pushRegistrations
+            storage.shares = shares
+            storage.ownerUser = { "_owner-acme" }
             return storage
         }
         return appState
@@ -804,6 +1164,77 @@ final class MobileHubServiceTests: XCTestCase {
         await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 2 }
     }
 
+    /// #66.7: a new QR wakes the relay loop instead of waiting the idle interval.
+    func testIssuingACodeWakesTheRelayLoop() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(3600))
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
+        )
+        center.attach(to: service)
+        await service.start()
+        defer { service.stop() }
+        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 1 }
+
+        _ = try await center.issueCode()
+
+        await awaitHubCondition("the open code wakes the relay loop") { transport.pulls == 2 }
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// #66.1: a hub rebuilt while the QR is on screen keeps the run's link
+    /// center: the code stays open and its link is not closed.
+    func testAHubRebuiltWithTheQROpenKeepsTheCodeAndItsLink() async throws {
+        let transport = StubHubTransport()
+        let shares = FakeShareService()
+        let appState = try makeAppState(transport: transport, shares: shares) {}
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        let first = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the first hub runs") { first.status == .running }
+        let center = try XCTUnwrap(first.linkCenter)
+        let code = try await center.issueCode()
+        shares.clearCalls()
+
+        runInitWorkbenches(appState)
+        let rebuilt = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the rebuilt hub runs") { rebuilt.status == .running }
+
+        XCTAssertTrue(rebuilt.linkCenter === center)
+        XCTAssertEqual(rebuilt.sharing, .available, "the rebuilt heartbeat says the link is open")
+        XCTAssertEqual(center.openCode?.nonce, code.nonce)
+        XCTAssertTrue(shares.isLinkOpen)
+        XCTAssertFalse(shares.calls.contains("setPublicLink:false"), "\(shares.calls)")
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// A hub rebuilt with no QR on screen still retries a pending sweep.
+    func testAHubRebuiltWithoutAQRRetriesAPendingSweep() async throws {
+        let shares = FakeShareService()
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
+            keyring: try sidecar.testKeyring(),
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) } // swiftlint:disable:this trailing_closure
+        )
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        center.attach(to: makeService(transport: StubHubTransport()))
+        await awaitHubCondition("the first attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        try sidecar.setMetaValue("1", forKey: MobileLinkCenter.sweepPendingKey)
+        shares.clearCalls()
+
+        center.attach(to: makeService(transport: StubHubTransport()))
+
+        await awaitHubCondition("the rebuilt hub's attach sweeps") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "0"
+        }
+        XCTAssertTrue(shares.calls.contains("setPublicLink:false"))
+    }
+
     func testWakeRelayWhileStoppedDoesNothing() async throws {
         let transport = StubHubTransport()
         let service = makeService(transport: transport, relayInterval: .seconds(3600))
@@ -855,4 +1286,32 @@ final class CountingCompanion: HubCompanion, @unchecked Sendable {
 
     func start() { lock.withLock { startCount += 1 } }
     func stop() { lock.withLock { stopCount += 1 } }
+}
+
+/// A companion that reports its start.
+final class OrderedCompanion: HubCompanion, @unchecked Sendable {
+    private let onStart: () -> Void
+
+    init(onStart: @escaping () -> Void) {
+        self.onStart = onStart
+    }
+
+    func start() { onStart() }
+    func stop() {}
+}
+
+/// A slice source with no records that reports each read.
+final class OrderedSliceSource: SliceSource, @unchecked Sendable {
+    let kind: SliceKind
+    private let onRead: () -> Void
+
+    init(kind: SliceKind, onRead: @escaping () -> Void) {
+        self.kind = kind
+        self.onRead = onRead
+    }
+
+    func records(_ db: Database) throws -> [SliceRecord] {
+        onRead()
+        return []
+    }
 }

@@ -1,6 +1,17 @@
 import Foundation
 import os
 
+/// What the phone can say about the Mac from the DataZone heartbeat.
+public enum DesktopReachability: Equatable, Sendable {
+    /// The heartbeat is under `RelayFeed.heartbeatStaleAfter` old.
+    case reachable
+    /// No heartbeat, an old one, or one that does not read.
+    case unreachable
+    /// The heartbeat is sealed and cannot be opened now: the keychain is
+    /// locked, or the keys for its epoch have not arrived. Never "offline".
+    case keysUnavailable
+}
+
 /// The phone's SINGLE relay consumer (Plan 4 decision 3): owns the persisted
 /// relay-zone change token (`replica_meta`, key `relay_change_token`) and
 /// fans records out in-process —
@@ -22,14 +33,24 @@ import os
 /// left behind by the advancing token.
 ///
 /// Buffer retention: once the token advances, the consumed relay events are
-/// compacted from a `CompactingTransport` (best-effort, logged) — without it
-/// every hub echo would stay in the phone's transport store forever.
+/// compacted through `SecureTransport`'s `CompactingTransport` conformance
+/// (best-effort, logged) — without it every hub echo would stay in the
+/// phone's transport store forever.
+///
+/// Mobile E2E: the feed reads through `SecureTransport`, which opens the
+/// hub's h2p echoes (and the phone's own p2h records) and drops anything
+/// else before routing. A locked keychain makes `changes` throw
+/// `SecureTransportError.keysUnavailable`: the cycle fails with the token
+/// untouched, so the same batch replays after unlock (Review Focus 1). An
+/// older version of an echo already seen is dropped by the rollback guard.
 public actor RelayFeed {
-    /// The desktop refreshes its heartbeat every 300 s; the phone shows the
-    /// Mac online while the heartbeat is UNDER 720 s old (mobile POC spec §3).
-    public static let heartbeatStaleAfter: Duration = .seconds(12 * 60)
+    /// The desktop refreshes its heartbeat every 15 min; the phone shows the
+    /// Mac online while the heartbeat is UNDER 35 min (2100 s) old — one
+    /// missed write still reads online (mobile POC spec §3, board #724
+    /// owner decision Q2; was 300 s / 720 s).
+    public static let heartbeatStaleAfter: Duration = .seconds(35 * 60)
 
-    private let transport: any CloudSyncTransport
+    private let transport: SecureTransport
     private let store: ReplicaStore
     private let outbox: ActionOutbox
     /// `RecordingUploader` in the app (wired by AppEnvironment); nil in
@@ -60,9 +81,10 @@ public actor RelayFeed {
     /// instance (a newer desktop may ship kinds this build does not know).
     private(set) var loggedUnknownKinds: Set<String> = []
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
+    private static let staticLogger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
 
     public init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         store: ReplicaStore,
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
@@ -143,9 +165,8 @@ public actor RelayFeed {
     /// against the hub's own buffer. Hygiene only — a failure is logged and
     /// retried at the next advancing cycle; it never fails this one.
     private func compactConsumedRelay(keepSince token: CloudChangeToken) async {
-        guard let compacting = transport as? any CompactingTransport else { return }
         do {
-            try await compacting.compact(in: .relay, keepSince: token)
+            try await transport.compact(in: .relay, keepSince: token)
         } catch {
             logger.warning("relay-zone compaction failed (will retry next cycle): \(error.localizedDescription, privacy: .public)")
         }
@@ -169,9 +190,9 @@ public actor RelayFeed {
             // DataZone (spec §4.1); RelayZone is writable by a share
             // participant, so a relay-zone heartbeat never proves liveness.
             break
-        case .device:
-            // The phone's own link record reflecting back; the Mac is its
-            // consumer and answers through the `device_grant` slice.
+        case .device, .hello:
+            // The phone's own link record (or its sealed hello) reflecting back; the Mac is its
+            // consumer and answers through the `device_grant` slice / the keybox.
             break
         case .recordingUpload:
             guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
@@ -206,14 +227,42 @@ public actor RelayFeed {
 
     // MARK: - Liveness
 
-    /// True while the last desktop heartbeat is under 720 s old (spec §3);
-    /// false when none was ever seen. `now` is injectable for
-    /// tests and for view models that batch-evaluate against one timestamp.
+    /// `.reachable` while the last desktop heartbeat is under 2100 s old
+    /// (spec §3); `.unreachable` when none was ever seen or it is older;
+    /// `.keysUnavailable` while the sealed heartbeat cannot be opened (a
+    /// locked keychain is not an offline Mac). `now` is injectable for tests
+    /// and for view models that batch-evaluate against one timestamp.
+    nonisolated public func desktopReachability(now: Date = Date()) -> DesktopReachability {
+        Self.desktopReachability(store: store, now: now)
+    }
+
+    /// The same check over `store`, for a reader without a feed (the
+    /// recording uploader's relaunch re-save).
+    public static func desktopReachability(store: ReplicaStore, now: Date = Date()) -> DesktopReachability {
+        let age: Duration?
+        do {
+            age = try store.heartbeatAge(now: now)
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            return .keysUnavailable
+        } catch {
+            // Any other read error: liveness cannot be proven.
+            staticLogger.warning(
+                "heartbeat unreadable, the Mac reads as offline: \(String(describing: error), privacy: .public)")
+            return .unreachable
+        }
+        guard let age else { return .unreachable }
+        return age < heartbeatStaleAfter ? .reachable : .unreachable
+    }
+
+    /// True only while `desktopReachability` is `.reachable` (a locked
+    /// keychain cannot prove the Mac online).
     nonisolated public func isDesktopReachable(now: Date = Date()) -> Bool {
-        // A read error means we cannot prove liveness — report unreachable
-        // (try? flattens heartbeatAge's own nil into the same branch).
-        guard let age = try? store.heartbeatAge(now: now) else { return false }
-        return age < Self.heartbeatStaleAfter
+        desktopReachability(now: now) == .reachable
+    }
+
+    /// `isDesktopReachable` over `store`.
+    public static func isDesktopReachable(store: ReplicaStore, now: Date = Date()) -> Bool {
+        desktopReachability(store: store, now: now) == .reachable
     }
 
     // MARK: - Poll loop
@@ -228,6 +277,9 @@ public actor RelayFeed {
                 guard let self else { break }
                 do {
                     _ = try await self.pollOnce()
+                } catch SecureTransportError.keysUnavailable {
+                    // Expected while the phone is locked: the batch replays after unlock.
+                    self.logger.notice("relay poll waits for the keychain")
                 } catch {
                     self.logger.error("relay poll cycle failed: \(error.localizedDescription, privacy: .public)")
                 }

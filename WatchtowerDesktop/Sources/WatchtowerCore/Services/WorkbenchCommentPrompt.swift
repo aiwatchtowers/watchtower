@@ -34,13 +34,20 @@ package enum WorkbenchCommentPrompt {
     /// 2026-10-02 §9.5): line breaks become LF and tabs stay — text inside a
     /// paste, as SwiftTerm's own ⌘V sends it — while every other control
     /// scalar is still dropped.
-    package static func terminalPayload(_ line: String, bracketedPaste: Bool, keepingLineBreaks: Bool = false) -> TerminalPayload {
+    ///
+    /// `keepingFormatCharacters` (a line from the phone, PROJ-16): format
+    /// scalars (Cf: the zero-width joiner of an emoji sequence, say) stay;
+    /// none of them can end the paste.
+    package static func terminalPayload(
+        _ line: String, bracketedPaste: Bool, keepingLineBreaks: Bool = false, keepingFormatCharacters: Bool = false
+    ) -> TerminalPayload {
         var clean = String.UnicodeScalarView()
         let source = keepingLineBreaks ? line.replacingOccurrences(of: "\r\n", with: "\n") : line
         for scalar in source.unicodeScalars {
             if keepingLineBreaks, CharacterSet.newlines.contains(scalar) {
                 clean.append("\n")
-            } else if !isControl(scalar) || (keepingLineBreaks && scalar == "\t") {
+            } else if !isControl(scalar) || (keepingLineBreaks && scalar == "\t")
+                        || (keepingFormatCharacters && scalar.properties.generalCategory == .format) {
                 clean.append(scalar)
             }
         }

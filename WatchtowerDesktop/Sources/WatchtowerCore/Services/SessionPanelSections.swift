@@ -6,15 +6,15 @@ import Foundation
 /// not; every other row stays in the main list in the saved drag order.
 /// Pure, so the panel, the switcher, ⌘1…⌘9 and ⌘K read one split.
 package struct SessionPanelSections: Equatable, Sendable {
-    package enum Section: Equatable, Sendable { case main, finished }
+    package enum SessionSection: Equatable, Sendable { case main, finished }
 
     /// The on-screen session's section, kept while it stays on screen so a
     /// row never jumps under the owner's eyes (§3.3).
     package struct Sticky: Equatable, Sendable {
         package let sessionID: Int64
-        package let section: Section
+        package let section: SessionSection
 
-        package init(sessionID: Int64, section: Section) {
+        package init(sessionID: Int64, section: SessionSection) {
             self.sessionID = sessionID
             self.section = section
         }
@@ -121,7 +121,7 @@ package struct SessionPanelSections: Equatable, Sendable {
     /// (a new prompt, no longer finished) always returns to the main list:
     /// the sticky section never holds a row that is not finished (owner
     /// brief #480 §1).
-    private static func heldInGroup(_ id: Int64, section: Section, sticky: Sticky?) -> Bool {
+    private static func heldInGroup(_ id: Int64, section: SessionSection, sticky: Sticky?) -> Bool {
         guard section == .finished else { return false }
         return !(sticky?.sessionID == id && sticky?.section == .main)
     }
@@ -129,7 +129,7 @@ package struct SessionPanelSections: Equatable, Sendable {
     /// A row's real section: finished with no open ask → the group;
     /// everything else (a finished session with an open ask included) waits
     /// for the owner in the main list.
-    package static func panelSection(of state: SessionSwitcherPresentation.State) -> Section {
+    package static func panelSection(of state: SessionSwitcherPresentation.State) -> SessionSection {
         state.kind == .finished && state.openAsks == 0 ? .finished : .main
     }
 
@@ -139,7 +139,7 @@ package struct SessionPanelSections: Equatable, Sendable {
     /// new prompt). With no state read yet, the liveness decides.
     package static func panelSection(
         of id: Int64, liveIDs: Set<Int64>, statuses: [Int64: SessionAgentStatus]
-    ) -> Section {
+    ) -> SessionSection {
         panelSection(of: statuses[id]?.state ?? SessionSwitcherPresentation.state(of: id, liveIDs: liveIDs, statuses: statuses))
     }
 
