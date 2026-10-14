@@ -367,6 +367,8 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), marker)
+			assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)",
+				"the refusal says where the decision can be made")
 			_, err = runActions(t, "apply", strconv.FormatInt(approved, 10), "--json")
 			require.Error(t, err)
 			_, err = runActions(t, "trust", "create_target", "execute")
