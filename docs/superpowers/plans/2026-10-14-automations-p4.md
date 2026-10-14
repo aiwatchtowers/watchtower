@@ -222,7 +222,7 @@
 
 **Files:**
 - Create: `internal/daemon/automation_events.go`, `internal/daemon/automation_events_test.go`
-- Modify: `internal/daemon/daemon.go` (field, setter, `runSync`, mail syncer interfaces), `cmd/sync.go` (build `automations.NewBus` next to P1's scheduler/executor, `wake` = the executor's `Wake`)
+- Modify: `internal/daemon/daemon.go` (field, setter, `runSync`, mail syncer interfaces), `cmd/automations_daemon.go` (build `automations.NewBus` next to P1's scheduler/executor in `newDaemonAutomations`/`wireAutomations`, `wake` = the executor's `Wake`; P1's wiring moved out of `cmd/sync.go`, which only calls `wireAutomations`)
 
 **Interfaces:**
 - Consumes: Tasks 2, 4–6; P1 `(*Daemon).SetAutomations`, `cfg.Automations.Enabled`.
