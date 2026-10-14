@@ -32,7 +32,7 @@ func mustManifest(t *testing.T, entries []string, outputs ...string) *Manifest {
 
 // autoTool is a fake registry tool visible on the automation surface.
 func autoTool(name string) *tools.Tool {
-	return &tools.Tool{Name: name, Surfaces: []string{automationSurface}}
+	return &tools.Tool{Name: name, Surfaces: []string{tools.AutomationSurface}}
 }
 
 func openManifestTestDB(t *testing.T) *db.DB {
@@ -132,19 +132,20 @@ func TestManifest_PersonalRefusesShellSessionAsk(t *testing.T) {
 }
 
 func TestManifest_ScopeMatching(t *testing.T) {
+	d := openManifestTestDB(t)
 	list := tools.NewListJiraIssues()
 	m := mustManifest(t, []string{"jira:read@PAY"})
-	expectAdmit(t, nil, m, list, `{"project":"pay"}`)
-	expectDeny(t, nil, m, list, `{"project":"OPS"}`, "jira:read@OPS")
-	expectDeny(t, nil, m, list, `{}`, "jira:read@*")
+	expectAdmit(t, d, m, list, `{"project":"pay"}`)
+	expectDeny(t, d, m, list, `{"project":"OPS"}`, "jira:read@OPS")
+	expectDeny(t, d, m, list, `{}`, "jira:read@*")
 
 	star := mustManifest(t, []string{"jira:read@*"})
 	for _, a := range []string{`{"project":"pay"}`, `{"project":"OPS"}`, `{}`} {
-		expectAdmit(t, nil, star, list, a)
+		expectAdmit(t, d, star, list, a)
 	}
 	glob := mustManifest(t, []string{"jira:read@P*"})
-	expectAdmit(t, nil, glob, list, `{"project":"PAY"}`)
-	expectDeny(t, nil, glob, list, `{}`, "jira:read@*")
+	expectAdmit(t, d, glob, list, `{"project":"PAY"}`)
+	expectDeny(t, d, glob, list, `{}`, "jira:read@*")
 }
 
 func TestManifest_ToolPermissionAdmitsWithoutCapability(t *testing.T) {
@@ -156,15 +157,17 @@ func TestManifest_ToolPermissionAdmitsWithoutCapability(t *testing.T) {
 }
 
 func TestManifest_JiraScopeFromRealArgs(t *testing.T) {
+	d := openManifestTestDB(t)
 	m := mustManifest(t, []string{"jira:read@PAY"})
 	get := tools.NewGetJiraIssue()
-	expectAdmit(t, nil, m, get, `{"key":"PAY-1"}`)
-	expectDeny(t, nil, m, get, `{"key":"OPS-1"}`, "jira:read@OPS")
+	expectAdmit(t, d, m, get, `{"key":"PAY-1"}`)
+	expectDeny(t, d, m, get, `{"key":"OPS-1"}`, "jira:read@OPS")
+	expectDeny(t, d, m, get, `{"key":"nodash"}`, "jira:read@*")
 	expectDeny(t, nil, m, tools.NewGetJiraStatusHistory(), `{"keys":["PAY-1","OPS-2"]}`, "jira:read@OPS")
 	tis := tools.NewGetJiraTimeInStatus()
-	expectAdmit(t, nil, m, tis, `{"issue_keys":["PAY-3"]}`)
-	expectDeny(t, nil, m, tis, `{"board_id":4}`, "jira:read@*")
-	expectAdmit(t, nil, m, tis, `{"project":"pay","issue_keys":["OPS-1"]}`)
+	expectAdmit(t, nil, m, tis, `{"issue_keys":["PAY-3"],"include_linked":false}`)
+	expectDeny(t, nil, m, tis, `{"board_id":4,"include_linked":false}`, "jira:read@*")
+	expectAdmit(t, nil, m, tis, `{"project":"pay","issue_keys":["OPS-1"],"include_linked":false}`)
 
 	w := mustManifest(t, []string{"jira:write@PAY"})
 	create, comment := autoTool("create_jira_issue"), autoTool("add_jira_comment")
@@ -234,7 +237,7 @@ var everyCapability = []string{
 	"slack:read@*", "slack:write@*", "gmail:read@*", "gmail:write@*", "jira:read@*", "jira:write@*",
 	"calendar:read@*", "calendar:write@*", "confluence:read@*", "confluence:write@*",
 	"targets:read", "targets:write", "tracks:read", "tracks:write", "ideas:read", "ideas:write",
-	"digests:read", "digests:write", "people:read", "people:write", "transcripts:read", "transcripts:write",
+	"people:read", "people:write", "transcripts:read", "transcripts:write",
 	"meetings:read", "dayplan:read", "llm:strong", "agent:run",
 }
 
@@ -363,7 +366,11 @@ func TestClampListLimit(t *testing.T) {
 func TestManifest_ToolNotOnAutomationSurfaceDenied(t *testing.T) {
 	m := mustManifest(t, []string{"tool:get_confluence_page", "confluence:read@*"})
 	page := tools.NewGetConfluencePage(nil)
-	expectDeny(t, nil, m, page, `{}`, "tool:get_confluence_page")
+	_, err := m.AllowTool(context.Background(), nil, page, json.RawMessage(`{}`))
+	var pd *PermissionDenied
+	if !errors.As(err, &pd) || pd.Needed != "" || pd.Reason == "" {
+		t.Fatalf("err = %#v, want a PermissionDenied with a Reason and no Needed", err)
+	}
 }
 
 func TestManifest_LLMStrongImpliesLight(t *testing.T) {
@@ -481,18 +488,21 @@ func TestManifest_CoversWidening(t *testing.T) {
 }
 
 // toolOnlyTools are the automation-visible tools deliberately admitted only
-// by tool:<name> (D21 knowledge tools; D23 cross-source and single-purpose
-// reads). The D23 ones are registered by Task 5b.
+// by tool:<name>: the D21 knowledge tools, the cross-source digest reads and
+// find_experts (D21 applied in the Task 4 review), and the D23 cross-source
+// and single-purpose reads (registered by Task 5b).
 var toolOnlyTools = []string{
 	"search_knowledge", "get_knowledge_document", "get_task_context",
+	"find_experts", "list_digests", "get_digest", "get_today_briefing",
 	"list_inbox", "memory_recall", "memory_open", "memory_map", "get_writing_style",
 }
 
 func TestToolCapabilities_CoversEveryAutomationTool(t *testing.T) {
 	// The automation-visible read set available to this package: the shared
-	// read tools. Task 5b switches this to buildAutomationRegistry's list.
-	for _, tool := range tools.ReadTools() {
-		if !tool.VisibleOn(automationSurface) {
+	// read tools and the email reads. Task 5b switches this to
+	// buildAutomationRegistry's list.
+	for _, tool := range append(tools.ReadTools(), tools.NewListEmails(), tools.NewGetEmail()) {
+		if !tool.VisibleOn(tools.AutomationSurface) {
 			continue
 		}
 		_, has := ToolCapabilities[tool.Name]
