@@ -270,6 +270,16 @@ struct QuickCaptureView: View {
         }
     }
 
+    /// While the engine loads: the first dictation's download with its
+    /// progress (#744), else a plain "Loading model…".
+    static func listeningText(_ center: DictationCenter) -> String {
+        guard center.isEngineLoading else { return "Listening…" }
+        if let download = center.modelDownload, case .downloading = download.state {
+            return download.progressLine(now: Date()) + " (one-time). Speak freely, nothing is lost."
+        }
+        return "Loading model… speak freely, nothing is lost."
+    }
+
     private var recordingState: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
@@ -280,9 +290,7 @@ struct QuickCaptureView: View {
                     // The mic is already hot and buffering while the engine
                     // loads — loading presents as "already listening", and
                     // Stop still finalizes (buffered speech is delivered).
-                    Text(center.isEngineLoading
-                         ? "Loading model… speak freely, nothing is lost."
-                         : "Listening…")
+                    Text(Self.listeningText(center))
                         .foregroundStyle(.secondary)
                     MicLevelBars(level: center.micLevel)
                     timerText(center)

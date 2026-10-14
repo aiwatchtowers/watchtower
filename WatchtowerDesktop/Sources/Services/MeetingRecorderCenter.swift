@@ -162,6 +162,12 @@ final class MeetingRecorderCenter {
     /// engines resident at once.
     var dictationEngineResident: (() -> Bool)?
 
+    /// Wired by AppState (#744): a fresh engine load first awaits the model's
+    /// download here, so a first recording shows its progress and a joined
+    /// download is never started twice; the warm policy prewarms only a
+    /// model already on disk. nil (tests) loads straight away.
+    var modelProvisioner: TranscriptionModelProvisioner?
+
     /// Calendar event the active/last recording belongs to; `nil` for ad-hoc.
     private(set) var currentEventID: String?
     /// Title snapshot for the active/last recording.
@@ -596,7 +602,19 @@ final class MeetingRecorderCenter {
             // Fall through to load what the user actually selected now.
         }
         let key = engineKey()
+        if let modelKey = TranscriptionModelProvisioner.ModelKey(id: key) {
+            try await modelProvisioner?.prepare(modelKey, purpose: .meetings)
+        }
         return LoadedEngine(transcriber: try await engineFactory(config), key: key)
+    }
+
+    /// Whether the model a load would use is confirmed on disk. True without
+    /// a provisioner (tests) or for a key that names no provider model.
+    private func modelOnDisk() -> Bool {
+        guard let modelProvisioner, let modelKey = TranscriptionModelProvisioner.ModelKey(id: engineKey()) else {
+            return true
+        }
+        return modelProvisioner.isDownloaded(modelKey)
     }
 
     /// Parks a finished job's engine back into the warm slot so the next
@@ -651,6 +669,7 @@ final class MeetingRecorderCenter {
             warmPresent: warmTranscriber != nil,
             prewarmInFlight: prewarmTask != nil,
             keyMatches: warmKey == engineKey(),
+            modelOnDisk: modelOnDisk(),
             window: meetingsProvider(now),
             now: now
         )

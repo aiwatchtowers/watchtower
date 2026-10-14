@@ -24,6 +24,8 @@ struct ParakeetProvider: TranscriptionProvider {
          "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk"]
     }
 
+    func downloadSizeBytes(model: String) -> Int64? { 480_000_000 }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await AsrModels.download(version: .v3) { downloadProgress in
             progress(downloadProgress.fractionCompleted)

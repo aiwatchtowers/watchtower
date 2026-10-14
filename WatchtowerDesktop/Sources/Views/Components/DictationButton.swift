@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Pure span-management math for dictation, extracted out of `DictationButton`
 /// so it's testable without ViewInspector. The button captures `base` once
@@ -165,15 +166,23 @@ struct DictationButton: View {
                 // loading presents as "already listening" with this badge, and
                 // Stop still finalizes (buffered speech is delivered, never
                 // discarded).
-                Text("Loading model…")
+                Text(Self.loadingText(center.modelDownload))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .help(center.modelDownload.map { $0.progressLine(now: Date()) + ". " + ModelDownloadText.oneTimeNote }
+                          ?? "")
             }
             capsuleControl(systemName: "pause.fill", identifier: "dictation.pause",
                            help: "Pause dictation") { center.pause() }
             capsuleControl(systemName: "stop.fill", identifier: "dictation.stop",
                            help: "Stop and insert (Esc cancels)") { center.stop() }
         }
+    }
+
+    /// "Loading model…", or the first dictation's download percent (#744).
+    static func loadingText(_ download: TranscriptionModelProvisioner.Download?) -> String {
+        guard let download, case let .downloading(progress) = download.state else { return "Loading model…" }
+        return "Downloading model… \(Int(progress * 100))%"
     }
 
     private func pausedCapsule(_ center: DictationCenter) -> some View {

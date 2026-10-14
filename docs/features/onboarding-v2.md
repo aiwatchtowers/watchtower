@@ -25,6 +25,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   switched off in Settings — and Reset to goals turns it on.
 - Tasks & Jira → `stream-digests`, `next-step`.
 - Meetings → `briefing` (meeting prep rides the daily briefing).
+  It is also the only goal that downloads the transcription model ahead of
+  use, after the first sync (#744, `TranscriptionModelAutoDownload`); every
+  other route downloads it at the first recording or dictation.
 - Development → nothing (Workbench, the chat, Targets and Knowledge search
   need no switch).
 - Always on: `knowledge-search`, `secretary-inbox` (Attention detection,

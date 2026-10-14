@@ -22,9 +22,16 @@ protocol TranscriptionProvider: Sendable {
     func availability() -> ProviderAvailability
     /// nil = not language-restricted (e.g. Whisper's 99 languages).
     func supportedLanguages(model: String) -> Set<String>?
+    /// Roughly how much `prefetch` downloads for `model` the first time, for
+    /// the download's "of about 1.6 GB"; nil when unknown.
+    func downloadSizeBytes(model: String) -> Int64?
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws
     func makeTranscriber(model: String,
                          progress: @escaping @Sendable (Double) -> Void) async throws -> Transcriber
+}
+
+extension TranscriptionProvider {
+    func downloadSizeBytes(model: String) -> Int64? { nil }
 }
 
 /// A loaded engine (holds the heavy model). Lives for one recording/decode.

@@ -18,6 +18,19 @@ struct WhisperKitProvider: TranscriptionProvider {
     func availability() -> ProviderAvailability { .available }
     func supportedLanguages(model: String) -> Set<String>? { nil }
 
+    /// On-disk sizes of the Core ML folders, measured; `small` and `base`
+    /// are the dictation-only variants.
+    func downloadSizeBytes(model: String) -> Int64? {
+        [
+            "large-v3-v20240930": 1_600_000_000,
+            "large-v3": 3_100_000_000,
+            "distil-large-v3": 1_500_000_000,
+            "medium": 1_500_000_000,
+            "small": 490_000_000,
+            "base": 150_000_000
+        ][model]
+    }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await WhisperKitEngine.ensureModelFilesDownloaded(modelName: model, downloadProgress: progress)
     }

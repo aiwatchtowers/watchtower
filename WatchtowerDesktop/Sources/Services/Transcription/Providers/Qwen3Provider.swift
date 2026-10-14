@@ -50,6 +50,8 @@ struct Qwen3Provider: TranscriptionProvider {
     /// this id.
     private static let huggingFaceModelId = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
 
+    func downloadSizeBytes(model: String) -> Int64? { 710_000_000 }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await Qwen3ASRModel.fromPretrained(modelId: Self.huggingFaceModelId) { fraction, _ in
             progress(fraction)

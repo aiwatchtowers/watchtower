@@ -40,7 +40,10 @@ package enum WarmEnginePolicy {
 
     /// One poll tick's verdict. Semantics (the design contract):
     /// - `.prewarm` — engine free, warm slot empty, no prewarm in flight,
-    ///   toggle ON, and (a meeting is ongoing OR one starts in ≤ `prewarmLead`);
+    ///   toggle ON, the model already on disk, and (a meeting is ongoing OR
+    ///   one starts in ≤ `prewarmLead`). A prewarm never downloads the model
+    ///   (#744): that waits for the Meetings goal's download or the first
+    ///   recording, both of which show their progress;
     /// - `.unload` — warm present but NOTHING holds it: no capture, no job, no
     ///   ongoing meeting, no meeting starting in ≤ `prewarmLead` (or toggle
     ///   OFF, or key mismatch);
@@ -52,6 +55,7 @@ package enum WarmEnginePolicy {
         warmPresent: Bool,
         prewarmInFlight: Bool,
         keyMatches: Bool,
+        modelOnDisk: Bool,
         window: WarmMeetingWindow,
         now: Date
     ) -> Decision {
@@ -63,7 +67,7 @@ package enum WarmEnginePolicy {
             // no longer what a recording would use.
             return (toggleEnabled && keyMatches && soon) ? .none : .unload
         }
-        if toggleEnabled, !prewarmInFlight, soon {
+        if toggleEnabled, !prewarmInFlight, modelOnDisk, soon {
             return .prewarm
         }
         return .none

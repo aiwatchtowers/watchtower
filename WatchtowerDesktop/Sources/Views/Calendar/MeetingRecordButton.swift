@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Record/Stop control for a calendar event, or ad-hoc capture when
 /// `eventID`/`title` are nil. Shared between the Meetings list header
@@ -38,6 +39,16 @@ struct MeetingRecordButton: View {
         .controlSize(.small)
         .tint(isRecordingThis ? .red : nil)
         .disabled((center.isCapturing && !isRecordingThis) || !SystemAudioRecorder.isSupported)
-        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
+        .help(SystemAudioRecorder.isSupported ? firstRecordingHint : "Recording requires macOS 14.4+")
+    }
+
+    /// Said before the first recording, while the model is not on disk yet
+    /// (#744): that recording downloads it, once.
+    private var firstRecordingHint: String {
+        guard let key = appState.meetingModelKey, !appState.transcriptionModelProvisioner.isDownloaded(key) else {
+            return ""
+        }
+        let size = TranscriptionModelProvisioner.describe(key).sizeBytes.map { " (about \(ModelDownloadText.size($0)))" } ?? ""
+        return "The first recording downloads the transcription model\(size) — once; it stays on this Mac."
     }
 }

@@ -209,6 +209,9 @@ final class AppState {
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
     let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
+    /// The Meetings goal's download ahead of use while it waits for the
+    /// first sync (`autoDownloadTranscriptionModel`); nil when none waits.
+    @ObservationIgnored var transcriptionModelAutoDownload: Task<Void, Never>?
 
     /// Provider/model registry from `watchtower ai models --json`, shared by
     /// the chat model picker and Settings suggestions. Loaded lazily.
@@ -754,6 +757,8 @@ final class AppState {
         meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
+        meetingRecorderCenter.modelProvisioner = transcriptionModelProvisioner
+        dictationCenter.modelProvisioner = transcriptionModelProvisioner
         installLifecycleHooks()
         launchTask = Task {
             await syncCLIBinaryStore()
@@ -783,6 +788,7 @@ final class AppState {
                 // meeting reminders, polling) waits for completeOnboarding().
                 if !needsOnboarding {
                     wireAppDatabase(manager)
+                    autoDownloadTranscriptionModel()
                 }
                 // The daemon's cycle generates everything itself: a launch
                 // needs nothing more than a running daemon.
@@ -1269,6 +1275,8 @@ final class AppState {
         // related-features offer.
         lastReadConnectedSources = nil
         connectedSourcesRefresh = Task { await refreshConnectedSources() }
+        // A re-run may have just added the Meetings goal.
+        autoDownloadTranscriptionModel()
     }
 
     /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
