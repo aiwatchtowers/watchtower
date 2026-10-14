@@ -109,3 +109,22 @@ func TestProj04_SkillDirectoryLinkInsideTheFolderIsFollowed(t *testing.T) {
 	assert.True(t, st.Skill)
 	assert.FileExists(t, filepath.Join(agents, WorkbenchSkillName, "SKILL.md"))
 }
+
+// A removal refused through a link names what it left outside and what to
+// remove by hand (ask #118); a path that does not exist outside is no hint.
+func TestOutsideFolderHints_NameTheLeftovers(t *testing.T) {
+	folder := fakeRepo(t)
+	outside := t.TempDir()
+	seedOutsideSkill(t, outside)
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, ".claude"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(folder, ".claude", "skills")))
+	err := RemoveWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
+	require.ErrorIs(t, err, ErrSymlinkOutsideFolder)
+	realOutside, evalErr := filepath.EvalSymlinks(outside)
+	require.NoError(t, evalErr)
+	assert.Equal(t, []string{"Watchtower's skill stays in " + filepath.Join(realOutside, WorkbenchSkillName) + " — remove it by hand"},
+		OutsideFolderHints(err))
+
+	gone := &OutsideFolderError{Outside: filepath.Join(outside, "missing.json"), leftover: leftoverHooks}
+	assert.Empty(t, OutsideFolderHints(gone))
+}

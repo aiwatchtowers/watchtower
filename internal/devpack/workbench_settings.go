@@ -34,6 +34,61 @@ var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 // message (TestInstallErrorTextsTheDesktopMatches).
 var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench folder")
 
+// What an OutsideFolderError left in place outside the folder.
+const (
+	leftoverHooks = "hooks"
+	leftoverSkill = "skill"
+)
+
+// OutsideFolderError is an ErrSymlinkOutsideFolder refusal, naming the link
+// in the folder and Outside, the path outside it the write or removal would
+// have reached — where, on a removal, Watchtower's hooks or skill stay for
+// the owner to remove by hand (Hint).
+type OutsideFolderError struct {
+	Link, Outside string
+	leftover      string // leftoverHooks or leftoverSkill
+	msg           string
+}
+
+func (e *OutsideFolderError) Error() string { return e.msg }
+func (e *OutsideFolderError) Unwrap() error { return ErrSymlinkOutsideFolder }
+
+// Hint tells the owner what a refused removal left outside the folder and
+// what to remove by hand (ask #118).
+func (e *OutsideFolderError) Hint() string {
+	if e.leftover == leftoverSkill {
+		return fmt.Sprintf("Watchtower's skill stays in %s — remove it by hand", e.Outside)
+	}
+	return fmt.Sprintf("Watchtower's hooks stay in %s — remove the entries marked watchtower by hand", e.Outside)
+}
+
+// OutsideFolderHints is the Hint of every OutsideFolderError in err (a
+// joined error included) whose outside path exists, each once, in order.
+func OutsideFolderHints(err error) []string {
+	var hints []string
+	var walk func(error)
+	walk = func(err error) {
+		if err == nil {
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		var oe *OutsideFolderError
+		if !errors.As(err, &oe) {
+			return
+		}
+		if _, statErr := os.Lstat(oe.Outside); statErr == nil && !slices.Contains(hints, oe.Hint()) {
+			hints = append(hints, oe.Hint())
+		}
+	}
+	walk(err)
+	return hints
+}
+
 // hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
 // workbench (after the watchtower binary), and the entry's timeout.
@@ -859,7 +914,7 @@ func resolveSymlink(file string) (string, error) {
 // .codex) that is a symlink leaving root. A link that stays inside root is
 // followed as before.
 func resolveSymlinkInside(file, root string) (string, error) {
-	realRoot, err := dirInside(filepath.Dir(file), root)
+	realRoot, err := dirInside(filepath.Dir(file), file, root, leftoverHooks)
 	if err != nil {
 		return "", err
 	}
@@ -868,24 +923,26 @@ func resolveSymlinkInside(file, root string) (string, error) {
 		return target, err
 	}
 	if outsideRoot(realRoot, target) {
-		return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%w)",
-			file, target, ErrSymlinkOutsideFolder)
+		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftoverHooks,
+			msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%v)",
+				file, target, ErrSymlinkOutsideFolder)}
 	}
 	return target, nil
 }
 
-// dirInside refuses dir with ErrSymlinkOutsideFolder when the nearest
-// existing directory at or above it, below root, resolves outside root — a
-// write or removal under dir would land there (a .claude, .claude/skills or
-// skill directory linked elsewhere). It returns root resolved.
-func dirInside(dir, root string) (string, error) {
+// dirInside refuses with an OutsideFolderError (ErrSymlinkOutsideFolder)
+// when the nearest existing directory at or above start, below root,
+// resolves outside root — a write or removal of path (start or below it)
+// would land there (a .claude, .claude/skills or skill directory linked
+// elsewhere). leftover names what path holds. It returns root resolved.
+func dirInside(start, path, root, leftover string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", root, err)
 	}
 	// The nearest existing directory decides where a write lands; one not
 	// yet created is made under it.
-	for ; dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+	for dir := start; dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
@@ -896,8 +953,10 @@ func dirInside(dir, root string) (string, error) {
 			return "", fmt.Errorf("resolving %s: %w", dir, err)
 		}
 		if outsideRoot(realRoot, realDir) {
-			return "", fmt.Errorf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%w)",
-				dir, realDir, ErrSymlinkOutsideFolder)
+			rel, _ := filepath.Rel(dir, path)
+			return "", &OutsideFolderError{Link: dir, Outside: filepath.Join(realDir, rel), leftover: leftover,
+				msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%v)",
+					dir, realDir, ErrSymlinkOutsideFolder)}
 		}
 		break
 	}

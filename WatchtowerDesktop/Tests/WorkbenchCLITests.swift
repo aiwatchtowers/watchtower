@@ -163,6 +163,25 @@ final class WorkbenchCLITests: XCTestCase {
         )
     }
 
+    /// A removal refused through a link leaving the folder: the delete still
+    /// completes, and the warning names the file and what to remove by hand
+    /// instead of the raw error (PROJ-02's exception, ask #118).
+    func testDeleteWarningNamesTheFileLinkedOutside() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"""
+        {"id":3,"deleted":true,"removal_ok":false,"removal_error":"x links to /tmp/a/settings.json, outside the workbench folder",\#
+        "removal_hints":["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"],\#
+        "files_ok":true,"files_error":""}
+        """#.utf8))
+        let result = try await WorkbenchCLI(runner: runner).delete(projectID: 3)
+        XCTAssertEqual(result.removalHints,
+                       ["Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand"])
+        XCTAssertEqual(
+            result.cleanupWarning,
+            "The workbench was deleted, but Watchtower could not clean a file linked outside its folder. "
+                + "Watchtower's hooks stay in /tmp/a/settings.json — remove the entries marked watchtower by hand."
+        )
+    }
+
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)

@@ -101,7 +101,7 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
@@ -151,6 +151,18 @@ touches the hook trust entries in `~/.codex/config.toml`: one trust key per
 event covers every folder, so they stay (harmless once no workbench uses
 them). The codex rows go with the workbench like every terminal session row.
 
+**Exception (owner approved 2026-10-14, ask #118, target 156):** a file or
+directory the removal would write or remove through that is a symlink
+leaving the folder (`settings.local.json`, `.claude`, `.claude/skills`, a
+`.codex` hook file, `.agents/skills`) is refused (PROJ-04), so what
+Watchtower put there stays. The delete still completes, and the CLI
+(stderr, and `--json`'s `removal_hints`) and the Desktop's delete warning
+(`WorkbenchDeleted.cleanupWarning`) name the exact outside file and what to
+remove by hand — "Watchtower's hooks stay in <file> — remove the entries
+marked watchtower by hand" (or the skill's directory to remove);
+`devpack.OutsideFolderHints`, only for an outside path that exists.
+`integrate remove --workbench N` prints the same lines under its problems.
+
 **Why locked:** Owner decision D7. A half-deleted workbench — orphan targets, a
 hook that briefs about a workbench that no longer exists, an MCP server
 registered against a dead id — is worse than no workbench at all, and the owner
@@ -168,6 +180,7 @@ must be able to undo the whole feature for a folder in one step.
 - `cmd/integrate_workbench_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
 - `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (no hook of the deleted workbench — brief, drift check, session state or ask guard — survives in `settings.local.json`; the owner's own `Stop`, `UserPromptSubmit` and `PreToolUse` hooks and keys do)
 - `internal/devpack/workbench_legacy_test.go::TestProj02_RemoveLegacyFolderLeavesNothingInstalled` (a never-resynced pre-rename folder: legacy hooks, skill, registration and exclude lines gone, `git status` clean, `integrate status` reports nothing installed)
+- `cmd/workbench_delete_outside_test.go::TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks` (since 2026-10-14, ask #118: the delete completes, `removal_ok` false, `removal_hints` and stderr name the outside file, which stays byte-identical); supporting: `internal/devpack/skill_symlink_test.go::TestOutsideFolderHints_NameTheLeftovers`, Desktop `WorkbenchCLITests.testDeleteWarningNamesTheFileLinkedOutside`
 - Codex (2026-10-12, board #399): `cmd/integrate_workbench_test.go::TestProj02_WorkbenchDeleteRemovesTheCodexSkill`; supporting: `internal/devpack/codex_install_test.go` (`TestRemoveCodex_RemovesSkillExcludeAndNeverTrust`, `TestRemoveCodex_KeepsAnEditedSkillAndItsExcludeLine`)
 
 **Locked since:** 2026-09-29
@@ -1766,6 +1779,7 @@ asks would be worse than the dialog it replaces.
 ## Changelog
 
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).
+- 2026-10-14 (target 156; **approved by the owner 2026-10-14, ask #118**): **PROJ-02 amended — an exception for links leaving the folder.** When the removal refuses a file or directory linked outside the folder (PROJ-04), the delete still completes and names the exact outside file and what to remove by hand: `devpack.OutsideFolderError` (an `ErrSymlinkOutsideFolder` refusal carrying the outside path; the error text is unchanged) and `devpack.OutsideFolderHints`, printed by `workbench delete` (stderr, `--json` `removal_hints`) and `integrate remove --workbench N`, shown by the Desktop's delete warning in place of the raw error. New guard `TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks`; no guard changed.
 - 2026-10-14 (target 156, security review group 146; **approved by the owner 2026-10-14, ask #109**, "refuse with an error"): **PROJ-04 amended** — a `settings.local.json` (or imported `.codex` hook file) symlink is followed only while its target stays inside the workbench folder; one leaving it (e.g. to `~/.claude/settings.json`, which made our hooks global) is refused by install and removal before any write, with an error naming the link, its target and the fix (`devpack.ErrSymlinkOutsideFolder`); likewise a `.claude`/`.codex` directory (any directory between the folder and the file) that is a symlink leaving the folder, and a `.claude`/`.claude/skills`/`.agents/skills` (or skill) directory linked outside it: the skill install and removal refuse before writing or removing a skill file (guard `TestProj04_SkillDirectoryLinkOutsideTheFolderIsRefused`, with `TestProj04_SkillDirectoryLinkInsideTheFolderIsFollowed` for a link inside). The two symlink guards `TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink` and `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget` had their link target moved inside the folder — the intended change, their assertions unchanged (a link is kept and written through); new guards `TestProj04_SymlinkOutsideTheFolderIsRefused` and `TestProj04_DedupeRefusesASymlinkOutsideTheFolder`. The git `info/exclude` file keeps following its link (it lives in the git dir). No other guard changed.
 - 2026-10-13 (mobile E2E final review, **owner approved, ask #96**): **PROJ-16 condition (0) gains a dated note**, heading, guarantee and guards unchanged. Under E2E every relay record is sealed to a linked phone's key, so a record that opens under no linked phone's key (an unknown or a removed key) is dropped with no answer — the Mac cannot seal a reply to a key it does not know (D9) — instead of being answered `device_not_linked`; a record that opens under a linked phone's key but names another `device_id` still gets `device_not_linked`. Nothing unlinked is typed either way.
 - 2026-10-12 (board #565, WT1–WT4 #566–#569; spec `docs/superpowers/specs/2026-10-12-session-worktree-design.md` §8, plan `docs/superpowers/plans/2026-10-12-session-worktree.md`; **PROJ-11, PROJ-10 and PROJ-03 amended, owner approved 2026-10-12, ask #188**): a session knows the folder its agent works in. **PROJ-11** — the main agent's hook events record their `cwd` in `agent_cwd`/`agent_cwd_at` (migration `00110`) without touching any state column. **PROJ-10** — `workbench git status|branches|switch|create --folder F` resolve F against the repository's worktrees before any git runs there (`folder_not_a_worktree`, `folder_unreadable`, `git_failed`; scope `""` = unresolved), and the header's branch menu works on the shown session's worktree, unavailable for a worktree Go did not place; the agent check counts an unknown, stale or removed place. **PROJ-03** — the code viewer works on that root with tabs and buffers per root (lexical key), and a removed worktree is never written again. No guard relaxed, renamed or split; new guards listed under each contract.

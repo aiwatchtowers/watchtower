@@ -178,6 +178,9 @@ func runCodexRemove(ctx context.Context, w io.Writer, p *db.Workbench) error {
 	fmt.Fprintln(w, "  The hook trust in ~/.codex/config.toml is shared by every workbench and was left in place.")
 	if rmErr != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", rmErr)
+		for _, h := range devpack.OutsideFolderHints(rmErr) {
+			fmt.Fprintf(w, "  %s\n", h)
+		}
 	}
 	return rmErr
 }

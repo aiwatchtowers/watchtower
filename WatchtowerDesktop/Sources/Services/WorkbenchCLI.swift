@@ -25,19 +25,27 @@ struct WorkbenchTargetAdded: Decodable, Equatable {
 /// Watchtower's stored copies of the targets' images could not all be
 /// removed (`filesError`). A CLI older than the images feature sends no
 /// `files_*` keys: nothing to remove, so they decode as clean.
+/// `removalHints` name what a removal refused through a link leaving the
+/// folder left there and what to remove by hand (PROJ-02's exception, ask
+/// #118); absent from an older CLI.
 struct WorkbenchDeleted: Decodable, Equatable {
     let id: Int64
     let deleted: Bool
     let removalOK: Bool
     let removalError: String
+    let removalHints: [String]
     let filesOK: Bool
     let filesError: String
 
-    init(id: Int64, deleted: Bool, removalOK: Bool, removalError: String, filesOK: Bool = true, filesError: String = "") {
+    init(
+        id: Int64, deleted: Bool, removalOK: Bool, removalError: String, removalHints: [String] = [],
+        filesOK: Bool = true, filesError: String = ""
+    ) {
         self.id = id
         self.deleted = deleted
         self.removalOK = removalOK
         self.removalError = removalError
+        self.removalHints = removalHints
         self.filesOK = filesOK
         self.filesError = filesError
     }
@@ -48,6 +56,7 @@ struct WorkbenchDeleted: Decodable, Equatable {
         deleted = try c.decode(Bool.self, forKey: .deleted)
         removalOK = try c.decode(Bool.self, forKey: .removalOK)
         removalError = try c.decode(String.self, forKey: .removalError)
+        removalHints = try c.decodeIfPresent([String].self, forKey: .removalHints) ?? []
         filesOK = try c.decodeIfPresent(Bool.self, forKey: .filesOK) ?? true
         filesError = try c.decodeIfPresent(String.self, forKey: .filesError) ?? ""
     }
@@ -56,15 +65,22 @@ struct WorkbenchDeleted: Decodable, Equatable {
         case id, deleted
         case removalOK = "removal_ok"
         case removalError = "removal_error"
+        case removalHints = "removal_hints"
         case filesOK = "files_ok"
         case filesError = "files_error"
     }
 
     /// The non-blocking warning for a delete whose cleanup partly failed, or
-    /// nil when everything was removed.
+    /// nil when everything was removed. Hints, when the CLI sent any, replace
+    /// the raw removal error: they name the exact file and what to remove.
     var cleanupWarning: String? {
         var parts: [String] = []
-        if !removalOK { parts.append("cleaning its folder failed: \(removalError)") }
+        if !removalHints.isEmpty {
+            parts.append("Watchtower could not clean a file linked outside its folder. "
+                + removalHints.map { $0 + "." }.joined(separator: " "))
+        } else if !removalOK {
+            parts.append("cleaning its folder failed: \(removalError)")
+        }
         if !filesOK { parts.append("removing its stored images failed: \(filesError)") }
         return parts.isEmpty ? nil : "The workbench was deleted, but " + parts.joined(separator: "; ")
     }

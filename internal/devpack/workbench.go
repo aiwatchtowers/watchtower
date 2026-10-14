@@ -586,7 +586,8 @@ func isDir(p string) bool {
 // (ErrSymlinkOutsideFolder, PROJ-04): nothing is written or removed there.
 func skillDirsInside(folder, skillsDir string, skills ...Skill) error {
 	for _, s := range skills {
-		if _, err := dirInside(filepath.Join(skillsDir, s.Name), folder); err != nil {
+		dir := filepath.Join(skillsDir, s.Name)
+		if _, err := dirInside(dir, dir, folder, leftoverSkill); err != nil {
 			return err
 		}
 	}
