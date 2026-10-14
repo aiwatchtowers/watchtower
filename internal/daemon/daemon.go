@@ -2025,8 +2025,9 @@ func (d *Daemon) runDayPlanPhases(ctx context.Context, now time.Time) {
 }
 
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a
-// plan: enabled, hour gate passed, real-attempt budget not exhausted today,
-// a known owner, no plan yet for today.
+// plan: enabled, hour gate passed (skipped for the first plan on a fresh
+// install, dayPlanFresh), real-attempt budget not exhausted today, a known
+// owner, no plan yet for today.
 func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if d.dayPlanPipeline == nil {
 		return false
@@ -2039,7 +2040,8 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if targetHour <= 0 {
 		targetHour = config.DefaultDayPlanHour
 	}
-	if now.Hour() < targetHour {
+	// dayPlanFresh queries the DB, so it is asked only when the hour refuses.
+	if now.Hour() < targetHour && !d.dayPlanFresh() {
 		return false
 	}
 	date := now.Format("2006-01-02")
@@ -2057,6 +2059,26 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	}
 	existing, _ := d.db.GetDayPlan(owner.ID, date)
 	return existing == nil
+}
+
+// dayPlanFresh reports a fresh install: no day plan ever generated, no
+// day_plans row at all. DB-only, because lastDayPlanDate is in memory and
+// lost on restart. A nil DB or a DB error reads as not fresh, so the hour
+// gate keeps applying.
+//
+// Dual path: the Desktop's readiness model mirrors this rule in
+// WatchtowerDesktop/Sources/WatchtowerCore/Services/FeatureReadiness.swift —
+// change both together.
+func (d *Daemon) dayPlanFresh() bool {
+	if d.db == nil {
+		return false
+	}
+	has, err := d.db.HasAnyDayPlan()
+	if err != nil {
+		d.logger.Printf("day plan: fresh-install check failed, keeping the hour gate: %v", err)
+		return false
+	}
+	return !has
 }
 
 // runDayPlanPhase is Phase 7: generate today's day plan once per day after

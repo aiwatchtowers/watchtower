@@ -194,9 +194,9 @@ func TestDaemon_PeopleNoDataRunLeavesNoPipelineRun(t *testing.T) {
 	assert.Equal(t, 1, peopleRunCount(t, database), "the first cycle with data is tracked")
 }
 
-// briefingClock is today at the given local hour: a fixed clock for the
-// briefing gate, never a hard-coded date.
-func briefingClock(hour int) time.Time {
+// firstRunClock is today at the given local hour: a fixed clock for the
+// briefing and day-plan gates, never a hard-coded date.
+func firstRunClock(hour int) time.Time {
 	return firstRunDayStart().Add(time.Duration(hour) * time.Hour)
 }
 
@@ -219,15 +219,15 @@ func seedFirstRunBriefing(t *testing.T, database *db.DB) {
 func TestShouldRunBriefingAt_FreshInstallIgnoresHour(t *testing.T) {
 	d, _ := briefingFirstRunSetup(t)
 
-	assert.True(t, d.shouldRunBriefingAt(briefingClock(6)), "the first briefing does not wait for briefing.hour")
+	assert.True(t, d.shouldRunBriefingAt(firstRunClock(6)), "the first briefing does not wait for briefing.hour")
 }
 
 func TestShouldRunBriefingAt_HourGateAppliesAfterFirst(t *testing.T) {
 	d, database := briefingFirstRunSetup(t)
 	seedFirstRunBriefing(t, database)
 
-	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)))
-	assert.True(t, d.shouldRunBriefingAt(briefingClock(9)))
+	assert.False(t, d.shouldRunBriefingAt(firstRunClock(6)))
+	assert.True(t, d.shouldRunBriefingAt(firstRunClock(9)))
 }
 
 func TestShouldRunBriefingAt_StampWipedRowsExistKeepsHourGate(t *testing.T) {
@@ -235,19 +235,19 @@ func TestShouldRunBriefingAt_StampWipedRowsExistKeepsHourGate(t *testing.T) {
 	seedFirstRunBriefing(t, database)
 	require.True(t, d.lastBriefing.IsZero())
 
-	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)), "a lost last_briefing.txt is not a fresh install")
+	assert.False(t, d.shouldRunBriefingAt(firstRunClock(6)), "a lost last_briefing.txt is not a fresh install")
 }
 
 func TestShouldRunBriefingAt_NilDBIsNotFresh(t *testing.T) {
 	d := newQuietDaemon(t)
 	d.config.Briefing = config.BriefingConfig{Enabled: true, Hour: 8}
 
-	assert.False(t, d.shouldRunBriefingAt(briefingClock(6)))
+	assert.False(t, d.shouldRunBriefingAt(firstRunClock(6)))
 }
 
 func TestShouldRunBriefingAt_FreshButBudgetExhaustedFalse(t *testing.T) {
 	d, _ := briefingFirstRunSetup(t)
-	now := briefingClock(6)
+	now := firstRunClock(6)
 	for range maxDailyAIAttempts {
 		d.recordBriefingAttempt(now.Format("2006-01-02"))
 	}
@@ -271,5 +271,50 @@ func TestDaemon_FirstBriefingNoDataKeepsBudget(t *testing.T) {
 	assert.Equal(t, 0, gen.calls, "no digests: the AI is not reached")
 	assert.Equal(t, 0, d.briefingAttempts)
 	assert.True(t, d.lastBriefing.IsZero())
-	assert.True(t, d.shouldRunBriefingAt(briefingClock(6)), "still fresh on the next cycle")
+	assert.True(t, d.shouldRunBriefingAt(firstRunClock(6)), "still fresh on the next cycle")
+}
+
+// dayPlanFirstRunSetup is a fresh-install daemon with the day plan on at
+// 08:00 and a runner that is never asked to generate by these gate tests.
+func dayPlanFirstRunSetup(t *testing.T) (*Daemon, *db.DB) {
+	t.Helper()
+	d, database := firstRunTestSetup(t)
+	d.config.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 8}
+	d.SetDayPlanPipeline(&fakeDayPlanRunner{database: database})
+	return d, database
+}
+
+var firstRunOwner = db.Owner{ID: "U001", Source: db.OwnerSourceSlack, SlackUserID: "U001"}
+
+func TestShouldRunDayPlan_FreshInstallIgnoresHour(t *testing.T) {
+	d, _ := dayPlanFirstRunSetup(t)
+
+	assert.True(t, d.shouldRunDayPlan(firstRunClock(6), firstRunOwner), "the first day plan does not wait for day_plan.hour")
+}
+
+func TestShouldRunDayPlan_HourGateAppliesAfterFirst(t *testing.T) {
+	d, database := dayPlanFirstRunSetup(t)
+	_, err := database.CreateDayPlan(&db.DayPlan{
+		UserID: firstRunOwner.ID, PlanDate: firstRunDayStart().AddDate(0, 0, -1).Format("2006-01-02"),
+		Status: db.DayPlanStatusActive, GeneratedAt: time.Now(),
+	})
+	require.NoError(t, err)
+
+	assert.False(t, d.shouldRunDayPlan(firstRunClock(6), firstRunOwner))
+}
+
+func TestShouldRunDayPlan_FreshUnknownOwnerFalse(t *testing.T) {
+	d, _ := dayPlanFirstRunSetup(t)
+
+	assert.False(t, d.shouldRunDayPlan(firstRunClock(6), db.Owner{}), "no owner stays a benign skip")
+}
+
+func TestShouldRunDayPlan_FreshBudgetExhaustedFalse(t *testing.T) {
+	d, _ := dayPlanFirstRunSetup(t)
+	now := firstRunClock(6)
+	for range maxDailyAIAttempts {
+		d.recordDayPlanAttempt(now.Format("2006-01-02"))
+	}
+
+	assert.False(t, d.shouldRunDayPlan(now, firstRunOwner))
 }
