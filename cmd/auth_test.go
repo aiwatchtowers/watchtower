@@ -18,7 +18,7 @@ func TestAuthCommandRegistered(t *testing.T) {
 }
 
 func TestAuthSubcommandsRegistered(t *testing.T) {
-	subs := map[string]bool{"login": false, "prepare": false, "complete": false, "trust-cert": false, "check-cert": false}
+	subs := map[string]bool{"login": false, "prepare": false, "trust-cert": false, "check-cert": false}
 	for _, cmd := range authCmd.Commands() {
 		if _, ok := subs[cmd.Name()]; ok {
 			subs[cmd.Name()] = true
@@ -26,6 +26,14 @@ func TestAuthSubcommandsRegistered(t *testing.T) {
 	}
 	for name, found := range subs {
 		assert.True(t, found, "auth %s subcommand should be registered", name)
+	}
+}
+
+// `auth complete --code` was the half of an in-app OAuth flow the Desktop
+// never shipped: an unauthenticated code-for-token exchange nothing calls.
+func TestAuthCompleteIsGone(t *testing.T) {
+	for _, cmd := range authCmd.Commands() {
+		assert.NotEqual(t, "complete", cmd.Name())
 	}
 }
 
@@ -76,8 +84,6 @@ func TestResolveOAuthConfig_FromEnv(t *testing.T) {
 }
 
 func TestAuthFlags(t *testing.T) {
-	assert.NotNil(t, authCompleteCmd.Flags().Lookup("code"))
-	assert.NotNil(t, authCompleteCmd.Flags().Lookup("redirect-uri"))
 	assert.NotNil(t, authPrepareCmd.Flags().Lookup("redirect-uri"))
 	assert.NotNil(t, authLoginCmd.Flags().Lookup("no-open"))
 }

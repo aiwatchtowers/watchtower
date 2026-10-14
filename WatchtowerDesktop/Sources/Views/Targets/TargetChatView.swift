@@ -214,7 +214,7 @@ struct TargetChatPane: View {
         AgentActionCardView(
             action: action,
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),
-            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
             onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
             gestureError: chatVM.actionFeed.rowErrors[action.id]
@@ -370,7 +370,7 @@ struct TargetChatProposals: View {
         AgentActionCardView(
             action: action,
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),
-            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
             onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
             gestureError: chatVM.actionFeed.rowErrors[action.id]

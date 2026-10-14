@@ -57,6 +57,15 @@ package enum MemoryVaultGit {
         return candidates.first(where: isExecutable)
     }
 
+    /// A background read's argv: the Desktop twin of Go's `gitbin.ReadArgs`
+    /// (internal/gitbin/run.go — keep the two in sync). A folder's own
+    /// .git/config can name commands git runs by itself (core.fsmonitor on a
+    /// status, core.hooksPath, a gpg.program behind log.showSignature); a
+    /// command-line -c outranks it, so a read never runs one.
+    package static func readArgs(_ arguments: [String]) -> [String] {
+        ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"] + arguments
+    }
+
     /// `xcode-select -p`: the active developer directory, nil when none is
     /// set. Unlike the shims it only prints, never prompts.
     static func developerDir() async -> String? {
@@ -71,7 +80,7 @@ package enum MemoryVaultGit {
     private static func run(git: String, arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = arguments
+        process.arguments = readArgs(arguments)
         return await ProcessPipes.run(process)
     }
 }

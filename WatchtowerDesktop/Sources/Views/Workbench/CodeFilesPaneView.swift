@@ -694,6 +694,24 @@ struct MonacoEditorView: NSViewRepresentable {
 
         // MARK: WKNavigationDelegate
 
+        /// The page may only ever be the bundled editor: a link, a script
+        /// redirect or a new window would put a page that can post `text`
+        /// (an autosave) in its place.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+        ) {
+            let allowed = CodeEditorSchemeHandler.allowsNavigation(
+                to: navigationAction.request.url,
+                mainFrame: navigationAction.targetFrame?.isMainFrame ?? false
+            )
+            if !allowed {
+                NSLog("CodeFilesPane: a navigation away from the editor page was cancelled")
+            }
+            decisionHandler(allowed ? .allow : .cancel)
+        }
+
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
             files.editorErrors[project.id] = "The editor could not load: \(error.localizedDescription)"
         }
@@ -755,6 +773,12 @@ final class CodeEditorSchemeHandler: NSObject, WKURLSchemeHandler {
     static let shared = CodeEditorSchemeHandler()
     // swiftlint:disable:next force_unwrapping
     static let pageURL = URL(string: "\(scheme)://editor/index.html")!
+
+    /// The editor's web view navigates nowhere but its own page, in its
+    /// main frame (a nil target frame is a new window).
+    static func allowsNavigation(to url: URL?, mainFrame: Bool) -> Bool {
+        mainFrame && url == pageURL
+    }
 
     private let root: URL? = AppBundle.resources.url(forResource: "CodeEditorWeb", withExtension: nil)?.standardizedFileURL
 

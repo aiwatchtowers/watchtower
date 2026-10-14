@@ -83,6 +83,7 @@ func TestLogin_HappyPath(t *testing.T) {
 			AuthedUser: slack.OAuthV2ResponseAuthedUser{
 				ID:          "U12345",
 				AccessToken: "xoxp-test-token",
+				Scope:       "channels:read,chat:write",
 			},
 			Team: slack.OAuthV2ResponseTeam{
 				ID:   "T12345",
@@ -138,6 +139,7 @@ func TestLogin_HappyPath(t *testing.T) {
 		assert.Equal(t, "T12345", res.result.TeamID)
 		assert.Equal(t, "Test Team", res.result.TeamName)
 		assert.Equal(t, "U12345", res.result.UserID)
+		assert.Equal(t, "channels:read,chat:write", res.result.Scope, "the granted scopes are carried for the token file")
 	case <-time.After(5 * time.Second):
 		t.Fatal("Login did not complete in time")
 	}
@@ -438,70 +440,6 @@ func TestPrepare_UniqueState(t *testing.T) {
 	r2, err := Prepare(cfg, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, r1.State, r2.State, "each Prepare call should generate a unique state")
-}
-
-func TestComplete_HappyPath(t *testing.T) {
-	oldExchange := exchangeToken
-	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-		assert.Equal(t, "cid", clientID)
-		assert.Equal(t, "csec", clientSecret)
-		assert.Equal(t, "the-code", code)
-		assert.Equal(t, "https://127.0.0.1:18491/callback", redirectURI)
-		return &slack.OAuthV2Response{
-			AuthedUser: slack.OAuthV2ResponseAuthedUser{
-				ID:          "U111",
-				AccessToken: "xoxp-complete-token",
-				Scope:       "channels:read,chat:write",
-			},
-			Team: slack.OAuthV2ResponseTeam{ID: "T111", Name: "Complete Team"},
-		}, nil
-	}
-	defer func() { exchangeToken = oldExchange }()
-
-	cfg := OAuthConfig{ClientID: "cid", ClientSecret: "csec"}
-	result, err := Complete(context.Background(), cfg, "the-code", "https://127.0.0.1:18491/callback")
-	require.NoError(t, err)
-	assert.Equal(t, "xoxp-complete-token", result.AccessToken)
-	assert.Equal(t, "T111", result.TeamID)
-	assert.Equal(t, "Complete Team", result.TeamName)
-	assert.Equal(t, "U111", result.UserID)
-	assert.Equal(t, "channels:read,chat:write", result.Scope, "the granted scopes are carried for the token file")
-}
-
-func TestComplete_EmptyCode(t *testing.T) {
-	cfg := OAuthConfig{ClientID: "id", ClientSecret: "sec"}
-	_, err := Complete(context.Background(), cfg, "", "https://127.0.0.1:18491/callback")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no authorization code")
-}
-
-func TestComplete_ExchangeError(t *testing.T) {
-	oldExchange := exchangeToken
-	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-		return nil, fmt.Errorf("slack API error")
-	}
-	defer func() { exchangeToken = oldExchange }()
-
-	cfg := OAuthConfig{ClientID: "id", ClientSecret: "sec"}
-	_, err := Complete(context.Background(), cfg, "code", "https://127.0.0.1:18491/callback")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exchanging code")
-}
-
-func TestComplete_EmptyToken(t *testing.T) {
-	oldExchange := exchangeToken
-	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-		return &slack.OAuthV2Response{
-			AuthedUser: slack.OAuthV2ResponseAuthedUser{ID: "U1", AccessToken: ""},
-			Team:       slack.OAuthV2ResponseTeam{ID: "T1", Name: "Team"},
-		}, nil
-	}
-	defer func() { exchangeToken = oldExchange }()
-
-	cfg := OAuthConfig{ClientID: "id", ClientSecret: "sec"}
-	_, err := Complete(context.Background(), cfg, "code", "https://127.0.0.1:18491/callback")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no user access token")
 }
 
 func TestPortFromAddr(t *testing.T) {
@@ -823,27 +761,6 @@ func TestUserScopes(t *testing.T) {
 	assert.Contains(t, UserScopes, "team:read")
 	assert.Contains(t, UserScopes, "chat:write", "send_slack_message posts with the user token")
 	assert.Greater(t, len(UserScopes), 10)
-}
-
-func TestComplete_WithExpiresIn(t *testing.T) {
-	oldExchange := exchangeToken
-	exchangeToken = func(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*slack.OAuthV2Response, error) {
-		return &slack.OAuthV2Response{
-			AuthedUser: slack.OAuthV2ResponseAuthedUser{
-				ID:          "U222",
-				AccessToken: "xoxp-expiring",
-				ExpiresIn:   3600,
-			},
-			Team: slack.OAuthV2ResponseTeam{ID: "T222", Name: "Expiry Team"},
-		}, nil
-	}
-	defer func() { exchangeToken = oldExchange }()
-
-	cfg := OAuthConfig{ClientID: "cid", ClientSecret: "csec"}
-	result, err := Complete(context.Background(), cfg, "code", "https://127.0.0.1:18491/callback")
-	require.NoError(t, err)
-	assert.Equal(t, 3600, result.ExpiresIn)
-	assert.Equal(t, "xoxp-expiring", result.AccessToken)
 }
 
 func TestDefaultRedirectPort(t *testing.T) {

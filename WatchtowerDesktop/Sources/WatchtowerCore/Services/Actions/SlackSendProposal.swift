@@ -19,11 +19,29 @@ package struct SlackSendProposal: Equatable, Sendable {
         package let label: String
         package let threadTS: String
         package let isDM: Bool
+        /// A DM only (Go `slackRecipient`): the raw user id, the handle and
+        /// the real name pinned beside `label`. The label prefers the display
+        /// name, which anyone may set to look like someone else; the handle
+        /// and the id are unique within the workspace.
+        package var userID = ""
+        package var handle = ""
+        package var realName = ""
 
-        /// "#general in Acme", "a thread in #general in Acme", "@Alice in Acme".
+        /// "#general in Acme", "a thread in #general in Acme",
+        /// "@Alice (Alice Example, @alice · U123) in Acme".
         package var line: String {
-            let place = threadTS.isEmpty || isDM ? label : "a thread in \(label)"
+            let place = isDM ? label + identity : threadTS.isEmpty ? label : "a thread in \(label)"
             return workspace.isEmpty ? place : "\(place) in \(workspace)"
+        }
+
+        /// " (Alice Example, @alice · U123)" for a DM: the real name unless the
+        /// label already is it, then the unforgeable handle and id; "" when
+        /// none was pinned.
+        private var identity: String {
+            let unique = [handle.isEmpty ? "" : "@" + handle, userID].filter { !$0.isEmpty }.joined(separator: " · ")
+            let name = realName.isEmpty || label == "@" + realName ? "" : realName
+            let parts = [name, unique].filter { !$0.isEmpty }
+            return parts.isEmpty ? "" : " (\(parts.joined(separator: ", ")))"
         }
     }
 
@@ -51,12 +69,16 @@ package struct SlackSendProposal: Equatable, Sendable {
     }
 
     private static func recipient(_ raw: [String: Any]) -> Recipient {
-        Recipient(
+        let userID = AgentAction.stringValue(raw["user_id"]) ?? ""
+        return Recipient(
             accountID: (raw["account_id"] as? NSNumber)?.int64Value ?? 0,
             workspace: AgentAction.stringValue(raw["workspace"]) ?? "",
             label: AgentAction.stringValue(raw["label"]) ?? "?",
             threadTS: AgentAction.stringValue(raw["thread_ts"]) ?? "",
-            isDM: !(AgentAction.stringValue(raw["user_id"]) ?? "").isEmpty
+            isDM: !userID.isEmpty,
+            userID: userID,
+            handle: AgentAction.stringValue(raw["handle"]) ?? "",
+            realName: AgentAction.stringValue(raw["real_name"]) ?? ""
         )
     }
 
