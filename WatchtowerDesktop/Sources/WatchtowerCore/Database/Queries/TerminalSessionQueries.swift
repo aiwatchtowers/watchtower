@@ -217,10 +217,28 @@ package enum TerminalSessionQueries {
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
     }
 
-    /// "Start fresh": a new Claude session id under the same named row.
+    /// The per-conversation columns a conversation change clears, as Go's
+    /// `SetTerminalClaudeSessionID` and `SetTerminalAgentSessionID` clear
+    /// them: the turn order, the background agent count, the agent turns and
+    /// the chat question. The working directory (`agent_cwd`) stays.
+    private static let conversationResetColumns = """
+        agent_turn_end = NULL, agent_tool_run = 0,
+        agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+        agent_turns = NULL
+        """
+
+    /// "Start fresh": a new Claude session id under the same named row. The
+    /// old conversation's columns go with it, the same write as Go's
+    /// `SetTerminalClaudeSessionID` (the old transcript path included), so the
+    /// row never shows the previous conversation's counts until the next run
+    /// mark overwrites them (board #552).
     package static func replaceClaudeSessionID(_ db: Database, id: Int64, uuid: String) throws {
         try db.execute(
-            sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+            sql: """
+                UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
+                \(conversationResetColumns)
+                WHERE id = ?
+                """,
             arguments: [uuid, id]
         )
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
@@ -228,13 +246,16 @@ package enum TerminalSessionQueries {
 
     /// "Start fresh" on a codex row: NULLs the stored session id and
     /// transcript path, so the next launch starts a new Codex session whose
-    /// first SessionStart reports the new id. Any other kind is left
+    /// first SessionStart reports the new id, and clears the old
+    /// conversation's columns as `replaceClaudeSessionID` does (Go clears the
+    /// same ones when that first SessionStart stores the id). Any other kind is left
     /// untouched (a claude row keeps its id: see `replaceClaudeSessionID`).
     /// Throws `notFound` when the row is gone.
     package static func resetAgentSession(_ db: Database, id: Int64) throws {
         try db.execute(
             sql: """
-                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL
+                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL,
+                \(conversationResetColumns)
                 WHERE id = ? AND kind = 'codex'
                 """,
             arguments: [id]
