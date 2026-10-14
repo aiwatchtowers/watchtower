@@ -428,9 +428,6 @@ extension WorkbenchesViewModel {
     /// `ticket` is the switch's `beginSwitch` when the caller took it before
     /// an await of its own; otherwise it is taken here.
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
-        // A Delete and Clean Up closed its terminal and is removing its
-        // worktree: no resume (board #535).
-        guard !cleaningUpSessions.contains(session.id) else { return }
         let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
         // A failure is reported already (`reopen`).
         _ = try? await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
@@ -442,6 +439,11 @@ extension WorkbenchesViewModel {
     private func reopen(
         _ session: TerminalSession, placement: Placement, ticket: Int?, checkLaunch: Bool
     ) async throws -> TerminalSession {
+        // Every resume of an existing row comes here (a click, ⌘N, Work on
+        // It, the phone's open_existing): a row a cleanup runs on — its
+        // terminal closed, its worktree being removed — is refused, silently
+        // as a start already running is (board #535).
+        guard !cleaningUpSessions.contains(session.id) else { throw TargetStartError.inProgress }
         if let ticket { clearSwitchError(projectID: session.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
@@ -468,6 +470,7 @@ extension WorkbenchesViewModel {
     /// all (Codex mints one; `resetAgentSession`). A shell has no agent
     /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
+        guard !cleaningUpSessions.contains(session.id) else { return }
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)

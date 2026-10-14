@@ -111,8 +111,11 @@ extension WorkbenchesViewModel {
         center.forgetCleanup(scope)
         endCleanupRun(session.id)
         await delete(session)
-        if let notice = SessionCleanupPresentation.keptAfterDeleteNotice(title: session.title, kept: kept) {
-            setSessionError(notice, projectID: workbenchID)
+        // Information, not an error: it rides the Undo bar while the row
+        // waits there, and leaves with it (Undo or the commit).
+        if let notice = SessionCleanupPresentation.keptAfterDeleteNotice(title: session.title, kept: kept),
+           pendingDeletes.ids.contains(session.id) {
+            cleanupKeptNotices[session.id] = notice
         }
         return true
     }
@@ -134,23 +137,35 @@ extension WorkbenchesViewModel {
 
     // MARK: Clean Up… sheet
 
-    /// The sheet's ticked items it would remove: pending removals of the
-    /// ready plan among `ticked`; empty in any other phase.
+    /// The sheet's ticked items it would remove: pending removals of a
+    /// known kind in the ready plan among `ticked` (an unknown kind is
+    /// listed but never ticked, as the Delete dialog never offers it);
+    /// empty in any other phase.
     func sheetCleanupChoice(_ session: TerminalSession, ticked: Set<String>) -> [SessionCleanupItem] {
         guard case let .ready(plan) = deleteCleanupPhase(session) else { return [] }
-        return plan.items.filter { ticked.contains($0.key) && $0.isPendingRemoval }
+        let removable = Set(plan.knownRemovableKeys)
+        return plan.items.filter { ticked.contains($0.key) && removable.contains($0.key) }
+    }
+
+    /// The Undo bar's line for the sessions waiting in it whose Delete and
+    /// Clean Up kept shown items; nil when there is none.
+    var pendingCleanupNotice: String? {
+        let lines = pendingDeletes.batch.compactMap { cleanupKeptNotices[$0.sessionID] }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// The sheet's **Clean Up**: applies exactly the ticked pending
     /// removals in a run this view model owns, then reloads the report's
-    /// Cleanup line. Ending while the sheet is closed, it puts a failure on
-    /// the page and forgets the phase; with the sheet open, the sheet shows
-    /// the result. True when nothing failed.
+    /// Cleanup line. The row is busy meanwhile, as under Delete and Clean
+    /// Up. A failure the sheet did not show (it was closed when the apply
+    /// ended) goes on the page; once the sheet is gone the phase is
+    /// forgotten. True when nothing failed.
     @discardableResult
     func applySheetCleanup(_ session: TerminalSession, ticked: Set<String>) async -> Bool {
         let keys = sheetCleanupChoice(session, ticked: ticked).map(\.key)
-        guard let workbenchID = session.projectID, let center = sessionCleanup,
-              !keys.isEmpty, cleanupRuns[session.id] == nil else { return false }
+        guard let workbenchID = session.projectID, let center = sessionCleanup, !keys.isEmpty,
+              cleanupRuns[session.id] == nil, !cleaningUpSessions.contains(session.id) else { return false }
+        cleaningUpSessions.insert(session.id)
         let run = Task {
             let ok = await center.applyCleanup(sessionID: session.id, workbenchID: workbenchID, items: keys)
             await self.finishSheetCleanup(session, workbenchID: workbenchID, center: center, ok: ok)
@@ -163,13 +178,17 @@ extension WorkbenchesViewModel {
     private func finishSheetCleanup(
         _ session: TerminalSession, workbenchID: Int64, center: SessionCleanupCenter, ok: Bool
     ) async {
-        cleanupRuns[session.id] = nil
-        await loadCleanupRecord(sessionID: session.id)
-        guard !openCleanupSheets.contains(session.id) else { return }
         let scope = SessionCleanupScope.session(session.id)
-        if !ok {
-            let reason = center.failureText(for: scope) ?? "unknown error"
-            setSessionError("Cleanup of “\(session.title)” failed: \(reason)", projectID: workbenchID)
+        // Read before the await: a Done click meanwhile forgets nothing (the
+        // run is still listed), and a failure the open sheet showed is not
+        // reported twice.
+        let unseenFailure = ok || openCleanupSheets.contains(session.id)
+            ? nil : center.failureText(for: scope) ?? "unknown error"
+        await loadCleanupRecord(sessionID: session.id)
+        endCleanupRun(session.id)
+        guard !openCleanupSheets.contains(session.id) else { return }
+        if let unseenFailure {
+            setSessionError("Cleanup of “\(session.title)” failed: \(unseenFailure)", projectID: workbenchID)
         }
         center.forgetCleanup(scope)
     }

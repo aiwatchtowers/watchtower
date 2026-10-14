@@ -84,6 +84,12 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
     package var removableKeys: [String] {
         items.filter(\.isPendingRemoval).map(\.key)
     }
+
+    /// `removableKeys` of a kind this build knows: what the app offers to
+    /// remove (an unknown kind is shown, never offered).
+    package var knownRemovableKeys: [String] {
+        items.filter { $0.isPendingRemoval && $0.kind.isKnown }.map(\.key)
+    }
 }
 
 /// One thing a plan would remove or keeps, with why (Go's

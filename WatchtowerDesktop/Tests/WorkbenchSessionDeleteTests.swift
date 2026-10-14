@@ -270,6 +270,7 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
                        "feat/old was never shown as removable: never applied")
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
         XCTAssertNil(vm.sessionErrors[p])
+        XCTAssertNil(vm.pendingCleanupNotice, "nothing shown was kept")
     }
 
     /// Something else still runs in the worktree after the close: nothing
@@ -285,7 +286,8 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertTrue(applyCalls(runner).isEmpty)
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
-        XCTAssertEqual(vm.sessionErrors[p],
+        XCTAssertNil(vm.sessionErrors[p], "information, not an error")
+        XCTAssertEqual(vm.pendingCleanupNotice,
                        "“\(row.title)” deleted; 2 items were kept: x — a process is running in it; feat/x — checked out")
     }
 
@@ -303,7 +305,13 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
 
         XCTAssertTrue(ok, "a kept item is not a failure")
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
-        XCTAssertEqual(vm.sessionErrors[p], "“\(row.title)” deleted; 1 item was kept: feat/x — unpushed commits")
+        XCTAssertNil(vm.sessionErrors[p], "a successful delete is not an error line")
+        XCTAssertEqual(vm.pendingCleanupNotice, "“\(row.title)” deleted; 1 item was kept: feat/x — unpushed commits",
+                       "told on the Undo bar")
+
+        await vm.undoPendingDeletes()
+        XCTAssertNil(vm.pendingCleanupNotice, "Undo brings the row back: no “deleted” line stays")
+        XCTAssertTrue(vm.cleanupKeptNotices.isEmpty)
     }
 
     func testBusyRowRefusesDeleteAndResume() async throws {
@@ -333,6 +341,80 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertEqual(applyCalls(runner).count, 1)
         XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id))
         XCTAssertFalse(vm.cleaningUpSessions.contains(row.id))
+    }
+
+    /// Work on It (and the phone's open_existing) on the session's target
+    /// while its Delete and Clean Up runs: no resume, no new row.
+    func testWorkOnDuringTheCleanupDoesNotResume() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, _) = makeVM(runner)
+        let acme = folder.appendingPathComponent("acme").path
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: acme) }
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.workOn(targetID: target, targetText: "Ship it", projectID: p)
+        let row = try XCTUnwrap(vm.terminalSessions[p]?.first { $0.targetID == target })
+        XCTAssertTrue(terminals.liveIDs.contains(row.id))
+        await vm.planCleanupBeforeDelete(row)
+
+        runner.holdsCalls = true
+        let run = vm.startDeleteAndCleanUp(row, choice: vm.deleteCleanupChoice(row))
+        await waitForHeldCall(runner)
+        await vm.workOn(targetID: target, targetText: "Ship it", projectID: p)
+        await vm.startFresh(row)
+
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "the closed agent is not resumed")
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForTarget($0, targetID: target) }
+        XCTAssertEqual(rows.map(\.id), [row.id], "and no new session starts")
+        runner.release()
+        let ok = await run.value
+        XCTAssertTrue(ok)
+    }
+
+    /// A Clean Up… apply makes the row busy too.
+    func testSheetApplyMarksTheRowBusy() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, _) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        vm.cleanupSheetAppeared(row)
+        await vm.planCleanupForSheet(row)
+
+        runner.holdsCalls = true
+        let apply = Task { await vm.applySheetCleanup(row, ticked: Set(CleanupFixture.plannedKeys)) }
+        await waitForHeldCall(runner)
+        XCTAssertTrue(vm.cleaningUpSessions.contains(row.id))
+        let intent = await vm.deleteQuicklyOrConfirm(row)
+        XCTAssertEqual(intent, .busy)
+        await vm.delete(row)
+        XCTAssertFalse(vm.pendingDeletes.ids.contains(row.id), "no delete while the apply runs")
+        let deleteAndCleanUp = await vm.startDeleteAndCleanUp(row, choice: nil).value
+        XCTAssertFalse(deleteAndCleanUp, "no Delete and Clean Up either")
+
+        runner.release()
+        let ok = await apply.value
+        XCTAssertTrue(ok)
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id), "free again once it ended")
+        XCTAssertEqual(applyCalls(runner).count, 1)
+    }
+
+    /// An item of a kind this version does not know is listed in the sheet
+    /// but never ticked or applied, as in the Delete dialog.
+    func testSheetNeverAppliesUnknownKinds() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.planWithUnknownKind), .success(CleanupFixture.applied)
+        ])
+        let (vm, cleanup) = makeVM(runner)
+        let (_, row) = try await liveSession(vm)
+        await vm.planCleanupForSheet(row)
+        guard case let .ready(plan) = cleanup.cleanupPhase(for: .session(row.id)) else { return XCTFail("no plan") }
+        XCTAssertEqual(plan.knownRemovableKeys, ["branch:feat/x"], "the sheet's default ticks")
+
+        let ticked: Set = ["gizmo:1", "branch:feat/x"]
+        XCTAssertEqual(vm.sheetCleanupChoice(row, ticked: ticked).map(\.key), ["branch:feat/x"])
+        await vm.applySheetCleanup(row, ticked: ticked)
+
+        XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, ["--item=branch:feat/x"])
     }
 
     // MARK: - Leaving the page (F1)
@@ -494,26 +576,40 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertEqual(vm.cleanupReportLine(sessionID: other), "Cleanup ran — result unreadable")
     }
 
+    /// The section's observation follows the stored result: it first
+    /// shows what is there, then a result written later (the agent's
+    /// `finish_session` cleanup) — a one-time read would miss the second.
     func testReportWatchesTheStoredResult() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
         let (vm, _) = makeVM(runner)
         let (_, row) = try await liveSession(vm)
+        try await storeCleanupResult(CleanupFixture.appliedWithError, at: "2026-10-12T09:00:00Z", sessionID: row.id)
         let watch = Task { await vm.observeCleanupRecord(sessionID: row.id) }
         defer { watch.cancel() }
+        try await waitUntil { vm.cleanupRecords[row.id]?.at == "2026-10-12T09:00:00Z" }
 
-        // The agent's `finish_session` cleanup writes the result meanwhile.
-        try await pool.write { db in
-            try db.execute(
-                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
-                arguments: [String(bytes: CleanupFixture.applied, encoding: .utf8), "2026-10-12T10:00:00Z", row.id]
-            )
-        }
-        for _ in 0..<200 where vm.cleanupReportLine(sessionID: row.id) == nil {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await storeCleanupResult(CleanupFixture.applied, at: "2026-10-12T10:00:00Z", sessionID: row.id)
+        try await waitUntil { vm.cleanupRecords[row.id]?.at == "2026-10-12T10:00:00Z" }
 
         XCTAssertEqual(vm.cleanupReportLine(sessionID: row.id), "1 worktree, 1 branch removed (~2.0 GB)")
         watch.cancel()
         await watch.value
+    }
+
+    private func storeCleanupResult(_ json: Data, at: String, sessionID: Int64) async throws {
+        try await pool.write { db in
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
+                arguments: [String(bytes: json, encoding: .utf8), at, sessionID]
+            )
+        }
+    }
+
+    /// Waits up to 2 s for `condition`; fails the test past that.
+    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<200 where !condition() {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(condition(), "timed out", file: file, line: line)
     }
 }

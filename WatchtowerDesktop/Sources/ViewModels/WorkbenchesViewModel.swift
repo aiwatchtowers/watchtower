@@ -121,6 +121,10 @@ final class WorkbenchesViewModel {
     /// The sessions whose Clean Up… sheet is on screen: an apply ending
     /// while it is not shows its failure on the page instead.
     @ObservationIgnored var openCleanupSheets: Set<Int64> = []
+    /// Per deleted session, what its Delete and Clean Up kept of the items
+    /// the dialog showed: told on the Undo bar while the row waits there,
+    /// dropped once it leaves the batch (Undo or the commit).
+    var cleanupKeptNotices: [Int64: String] = [:]
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter
@@ -241,7 +245,10 @@ final class WorkbenchesViewModel {
     /// `onPendingDeletesChanged` (the phone's session slice).
     var pendingDeletes = PendingSessionDeletes() {
         didSet {
-            if oldValue.ids != pendingDeletes.ids { onPendingDeletesChanged?(pendingDeletes.ids) }
+            if oldValue.ids != pendingDeletes.ids {
+                onPendingDeletesChanged?(pendingDeletes.ids)
+                cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
+            }
         }
     }
     /// The hidden ids changed (MobileHub: the `terminal_session` slice

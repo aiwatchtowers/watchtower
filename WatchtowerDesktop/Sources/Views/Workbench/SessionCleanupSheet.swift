@@ -30,7 +30,7 @@ struct SessionCleanupSheet: View {
         .onAppear { vm.cleanupSheetAppeared(session) }
         .onDisappear { vm.cleanupSheetDisappeared(session) }
         .onChange(of: phase, initial: true) { _, now in
-            if case let .ready(plan) = now { ticked = Set(plan.removableKeys) }
+            if case let .ready(plan) = now { ticked = Set(plan.knownRemovableKeys) }
         }
     }
 
@@ -113,7 +113,7 @@ private struct SessionCleanupPhaseView: View {
 
     /// A pending removal's tick; nil for an item that cannot be ticked.
     private func tickBinding(_ item: SessionCleanupItem) -> Binding<Bool>? {
-        guard item.isPendingRemoval, case .ready = phase else { return nil }
+        guard item.isPendingRemoval, item.kind.isKnown, case .ready = phase else { return nil }
         return Binding(
             get: { ticked.contains(item.key) },
             set: { on in
@@ -164,6 +164,7 @@ private struct SessionCleanupItemRow: View {
         if !item.error.isEmpty { return "Failed: \(item.error)" }
         if item.done { return "Removed" }
         if item.action == .keep { return "Kept — " + SessionCleanupPresentation.reasonText(item.reason ?? .unknown("")) }
+        if !item.kind.isKnown { return "Left alone — this version cannot remove it" }
         guard item.kind == .worktree else { return nil }
         return SessionCleanupPresentation.sizeText(bytes: item.bytes, known: item.bytesKnown)
     }
