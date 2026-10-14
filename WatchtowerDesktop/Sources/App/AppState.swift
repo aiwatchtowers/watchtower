@@ -599,7 +599,7 @@ final class AppState {
         // Launch catch-up: the one full retro pass (spec §4.1), skipped with
         // "Voice recognition" off (spec §6).
         let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
-        Task { await voiceRegistryCenter.catchUp(voiceRecognition: voiceRecognition) }
+        voiceRegistryCenter.startCatchUp(voiceRecognition: voiceRecognition)
         observeVoiceRegistryCatchUp()
     }
 
