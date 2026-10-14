@@ -136,15 +136,17 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		return res.grant, res.err
 	case <-loginCtx.Done():
 		if delivered.Load() {
-			// A result that landed together with the deadline still wins.
+			// The callback came: its handler always delivers, and its exchange
+			// ends with loginCtx, so wait for that outcome — the page it
+			// serves and what Login returns must agree. The bound only guards
+			// a handler that died without delivering.
 			select {
 			case res := <-resultCh:
 				return res.grant, res.err
-			default:
+			case <-time.After(5 * time.Second):
 			}
-			// The callback came and its exchange ran into the deadline: the
-			// owner was just in the browser, so this is not ErrLoginTimedOut
-			// (which would keep the app from coming back).
+			// Still not ErrLoginTimedOut: the owner was just in the browser,
+			// so the app should come back.
 			return nil, fmt.Errorf("mcpoauth: login timed out while finishing the sign-in: %w", loginCtx.Err())
 		}
 		return nil, fmt.Errorf("mcpoauth: %w or was cancelled: %w", oauthpage.ErrLoginTimedOut, loginCtx.Err())
