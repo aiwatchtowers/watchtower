@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WatchtowerCore
 
 /// One file open in a Files tab. `diskText` is the last version read or
 /// written; `text` is the editor's. Edits save themselves `autosaveDelay`
@@ -72,13 +73,25 @@ final class CodeFileBuffer {
     private(set) var rebasedRevision = -1
     /// The last failed write or reload, as a full sentence for the banner.
     var saveError: String?
+    /// Its root's worktree was removed (board #565): nothing is ever written
+    /// again — a write would recreate the folder. The edits stay in memory
+    /// for Copy or Discard.
+    private(set) var writesLocked = false
+    /// Told when a save finds the buffer's worktree folder gone (the
+    /// buffer has locked itself): the center marks the root removed.
+    @ObservationIgnored var onWorktreeMissing: (() -> Void)?
     @ObservationIgnored private var autosave: Task<Void, Never>?
     @ObservationIgnored private let autosaveDelay: Duration
+    /// The linked worktree the file lives in, nil for the workbench folder:
+    /// every write first checks it still exists, so a worktree removed
+    /// while nothing watched it is never recreated by a save.
+    @ObservationIgnored private let worktreeFolder: URL?
 
-    init(url: URL, relPath: String, autosaveDelay: Duration = .seconds(1)) {
+    init(url: URL, relPath: String, autosaveDelay: Duration = .seconds(1), worktreeFolder: URL? = nil) {
         self.url = url
         self.relPath = relPath
         self.autosaveDelay = autosaveDelay
+        self.worktreeFolder = worktreeFolder
     }
 
     var isDirty: Bool { state == .loaded && text != diskText }
@@ -86,6 +99,7 @@ final class CodeFileBuffer {
 
     /// Why a close could not save this buffer, nil when it can.
     var unsavedReason: String? {
+        if writesLocked { return Self.lockedReason }
         if let problem { return problem.message }
         return saveError
     }
@@ -121,9 +135,18 @@ final class CodeFileBuffer {
         }
     }
 
+    nonisolated static let lockedReason = "Its worktree was removed, so these edits are never written."
+
+    /// The root's worktree is gone: autosave stops and every later save is
+    /// refused, whatever the disk shows (also when the folder comes back).
+    func lockWrites() {
+        cancelAutosave()
+        writesLocked = true
+    }
+
     private func scheduleAutosave() {
         autosave?.cancel()
-        guard isDirty, problem == nil else { return }
+        guard isDirty, problem == nil, !writesLocked else { return }
         let delay = autosaveDelay
         autosave = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
@@ -179,31 +202,12 @@ final class CodeFileBuffer {
     func saveNow(explicit: Bool = false, overwrite: Bool = false) -> Bool {
         cancelAutosave()
         guard state == .loaded else { return true }
+        guard !writesLocked else { return !isDirty }
         let gone = deletedOnDisk || problem == .deletedWhileEditing
         guard isDirty || (gone && explicit) else { return true }
-        switch problem {
-        case .conflict?: return false
-        case .unreadable?: if !overwrite { return false }
-        case .deletedWhileEditing?: if !explicit { return false }
-        case nil: break
-        }
-        switch Self.read(url) {
-        case let .success(onDisk) where onDisk != diskText:
-            problem = .conflict
-            return false
-        case .success:
-            break
-        case .failure(.missing):
-            if !explicit {
-                problem = .deletedWhileEditing
-                return false
-            }
-        case let .failure(error):
-            if !overwrite {
-                problem = .unreadable(error)
-                return false
-            }
-        }
+        guard worktreeStillThere() else { return !isDirty }
+        guard problemAllowsWrite(explicit: explicit, overwrite: overwrite),
+              diskAllowsWrite(explicit: explicit, overwrite: overwrite) else { return false }
         do {
             try Self.write(text, to: url)
             diskText = text
@@ -214,6 +218,42 @@ final class CodeFileBuffer {
         } catch {
             saveError = "Could not save: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    /// false — and the buffer locked for good — when its worktree folder
+    /// is gone.
+    private func worktreeStillThere() -> Bool {
+        guard let worktreeFolder, !CodeRootPolicy.directoryExists(worktreeFolder) else { return true }
+        lockWrites()
+        onWorktreeMissing?()
+        return false
+    }
+
+    private func problemAllowsWrite(explicit: Bool, overwrite: Bool) -> Bool {
+        switch problem {
+        case .conflict?: false
+        case .unreadable?: overwrite
+        case .deletedWhileEditing?: explicit
+        case nil: true
+        }
+    }
+
+    /// The disk still holds the version the edits were made on (or the
+    /// owner chose to write anyway); otherwise `problem` says why not.
+    private func diskAllowsWrite(explicit: Bool, overwrite: Bool) -> Bool {
+        switch Self.read(url) {
+        case let .success(onDisk) where onDisk != diskText:
+            problem = .conflict
+            return false
+        case .success:
+            return true
+        case .failure(.missing):
+            if !explicit { problem = .deletedWhileEditing }
+            return explicit
+        case let .failure(error):
+            if !overwrite { problem = .unreadable(error) }
+            return overwrite
         }
     }
 

@@ -12,7 +12,8 @@ struct WorkbenchFilesSection: View {
     static let heightRange: ClosedRange<Double> = 120...700
 
     @Bindable var vm: WorkbenchesViewModel
-    let project: Workbench
+    /// The folder FILES shows (the workbench folder or a worktree).
+    let root: CodeRoot
     @AppStorage("workbench.files.expanded") private var isExpanded = false
     @AppStorage("workbench.files.height") private var height: Double = 300
     @State private var liveHeight: Double?
@@ -26,7 +27,7 @@ struct WorkbenchFilesSection: View {
 
     var body: some View {
         let files = vm.codeFiles
-        let tree = files.tree(for: project)
+        let tree = files.tree(for: root)
         VStack(spacing: 0) {
             if isExpanded { resizeHandle } else { Divider() }
             header(tree)
@@ -34,18 +35,18 @@ struct WorkbenchFilesSection: View {
                 notices(files)
                 CodeFileTreeList(
                     tree: tree,
-                    activeFile: files.tabs(for: project).active,
-                    git: files.git(for: project),
+                    activeFile: files.tabs(for: root).active,
+                    git: files.git(for: root),
                     edit: $edit,
                     actions: rowActions(tree)
                 )
                 .frame(height: liveHeight ?? height)
-                // Keyed by the workbench: the panel is not rebuilt when a deep
-                // link switches workbenches, and each one counts as shown
+                // Keyed by the code root: the panel is not rebuilt when a deep
+                // link switches workbenches, and each root counts as shown
                 // exactly while this runs.
-                .task(id: project.id) {
+                .task(id: root) {
                     tree.loadIfNeeded()
-                    await files.show(project)
+                    await files.show(root)
                 }
             }
         }
@@ -84,7 +85,7 @@ struct WorkbenchFilesSection: View {
         trashCount = nil
         trashing = entry
         guard entry.isDirectory else { return }
-        let url = project.folderURL.appendingPathComponent(entry.relPath)
+        let url = root.folder.appendingPathComponent(entry.relPath)
         Task {
             let count = await Task.detached { CodeFilesCenter.fileCount(at: url) }.value
             if trashing == entry { trashCount = count }
@@ -100,7 +101,10 @@ struct WorkbenchFilesSection: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text("FILES").sidebarSectionLabel()
+                    Text(root.filesCaption).sidebarSectionLabel()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(root.isMain ? "" : "The worktree the session on screen works in:\n\(root.folder.path)")
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -144,10 +148,10 @@ struct WorkbenchFilesSection: View {
 
     @ViewBuilder
     private func notices(_ files: CodeFilesCenter) -> some View {
-        if let error = files.watchErrors[project.id] {
+        if let error = files.watchErrors[root] {
             Text(error).font(.caption2).foregroundStyle(.orange).padding(.horizontal, 12)
         }
-        if let error = files.gitErrors[project.id] {
+        if let error = files.gitErrors[root] {
             Text("Git status unavailable — the marks may be out of date.")
                 .font(.caption2)
                 .foregroundStyle(.orange)
@@ -162,7 +166,7 @@ struct WorkbenchFilesSection: View {
                 if entry.isDirectory {
                     tree.toggle(entry.relPath)
                 } else {
-                    Task { await vm.openFile(entry.relPath, project: project, preview: preview) }
+                    Task { await vm.openFile(entry.relPath, root: root, preview: preview) }
                 }
             },
             newEntry: { entry, folder in
@@ -171,7 +175,7 @@ struct WorkbenchFilesSection: View {
             rename: { entry in edit = CodeTreeEdit(kind: .rename(entry.relPath), text: entry.name) },
             trash: { confirmTrash($0) },
             commit: commit,
-            root: project.folderURL
+            root: root.folder
         )
     }
 
@@ -190,10 +194,10 @@ struct WorkbenchFilesSection: View {
         case let .create(folder, directory):
             do {
                 if folder {
-                    try files.createFolder(current.text, in: directory, project: project)
+                    try files.createFolder(current.text, in: directory, root: root)
                 } else {
-                    try files.createFile(current.text, in: directory, project: project)
-                    vm.showFilesPane(projectID: project.id)
+                    try files.createFile(current.text, in: directory, root: root)
+                    vm.showFilesPane(projectID: root.workbenchID)
                 }
                 edit = nil
             } catch {
@@ -207,7 +211,7 @@ struct WorkbenchFilesSection: View {
             let started = current.kind
             Task {
                 do {
-                    try await files.rename(path, to: text, project: project)
+                    try await files.rename(path, to: text, root: root)
                     if edit?.kind == started { edit = nil }
                 } catch {
                     guard edit?.kind == started else { return }
@@ -222,7 +226,7 @@ struct WorkbenchFilesSection: View {
     private func moveToTrash(_ entry: CodeFileEntry) {
         Task {
             do {
-                try await vm.codeFiles.moveToTrash(entry.relPath, project: project)
+                try await vm.codeFiles.moveToTrash(entry.relPath, root: root)
             } catch {
                 operationError = error.localizedDescription
             }

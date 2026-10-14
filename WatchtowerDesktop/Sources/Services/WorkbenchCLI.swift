@@ -673,33 +673,47 @@ struct WorkbenchCLI {
 
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
-    /// Desktop never does.
-    func gitStatus(projectID: Int64) async throws -> WorkbenchGitStatus {
-        let data = try await runner.run(args: ["workbench", "git", "status", "--workbench", String(projectID), "--json"])
+    /// Desktop never does. `folder` (absolute) asks about that folder instead
+    /// of the workbench folder (board #565): Go places it — `folder_scope`,
+    /// `folder_root`, `worktree_name` — and reports that worktree's status.
+    /// nil (the main folder) sends no flag, so the main argv is unchanged.
+    func gitStatus(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitStatus {
+        var args = ["workbench", "git", "status", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
     }
 
-    /// The local branches, newest commit first.
-    func gitBranches(projectID: Int64) async throws -> WorkbenchGitBranches {
-        let data = try await runner.run(args: ["workbench", "git", "branches", "--workbench", String(projectID), "--json"])
+    /// The local branches, newest commit first. `folder`: a session's
+    /// worktree, as for `gitStatus` — a folder in none of the repository's
+    /// worktrees comes back refused (`folder_not_a_worktree`), exit 0.
+    func gitBranches(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitBranches {
+        var args = ["workbench", "git", "branches", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitBranches.self, from: data)
     }
 
     /// Switches the folder to a local branch. Go decides the guards: without
     /// `stash` a dirty tree comes back as `needs_confirmation`, and so does
     /// `agentRunning` (a fact only the Desktop knows) without `confirmAgent`.
-    /// A refusal exits 0 with the envelope.
+    /// A refusal exits 0 with the envelope. `folder`: switch a session's
+    /// worktree instead of the workbench folder (board #565).
     func gitSwitch(
         projectID: Int64,
         branch: String,
         stash: Bool,
         agentRunning: Bool,
-        confirmAgent: Bool
+        confirmAgent: Bool,
+        folder: String? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
@@ -707,8 +721,12 @@ struct WorkbenchCLI {
 
     /// Creates a branch from HEAD and switches to it (`git switch -c`): no
     /// files change, so no guard applies.
-    func gitCreateBranch(projectID: Int64, name: String) async throws -> WorkbenchGitSwitchResult {
-        let data = try await runner.run(args: ["workbench", "git", "create", "--workbench", String(projectID), "--name", name, "--json"])
+    /// `folder`: in a session's worktree (board #565).
+    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil) async throws -> WorkbenchGitSwitchResult {
+        var args = ["workbench", "git", "create", "--workbench", String(projectID), "--name", name]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
     }
 

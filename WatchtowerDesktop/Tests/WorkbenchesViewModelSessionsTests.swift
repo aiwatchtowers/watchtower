@@ -78,8 +78,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM() -> WorkbenchesViewModel {
-        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+    private func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { [weak self] id in
             guard let self else { throw CancellationError() }
@@ -124,6 +124,62 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     }
 
     private var launches: [TerminalLaunch] { processes.flatMap(\.launches) }
+
+    // MARK: - New sessions start in the main folder (board #565)
+
+    /// The page shows a session placed in a worktree of `acme` (its
+    /// recorded cwd, read through `workbench git status --folder`).
+    private func showWorktreeSession(_ vm: WorkbenchesViewModel, projectID p: Int64) async throws {
+        let worktree = folder.appendingPathComponent("acme/.claude/worktrees/mobile-a", isDirectory: true)
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        let row = try await insertSession(.init(projectID: p, kind: .claude, title: "wt", folderPath: acme,
+                                                claudeSessionID: UUID().uuidString.lowercased()))
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ? WHERE id = ?",
+                           arguments: [worktree.path, "2026-10-12 10:00:00.000", row.id])
+        }
+        await vm.reload()
+        let project = try XCTUnwrap(vm.summaries.first { $0.id == p }?.project)
+        vm.makeGitWatcher = { _, _, onChange in SessionPlaceViewModelTests.FakeWatcher(onChange: onChange) }
+        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitNotificationCenter = NotificationCenter()
+        await vm.startGitWatching(project: project)
+        var layout = WorkspaceLayout.default
+        layout.primary = .session(row.id)
+        vm.setLayout(layout, projectID: p)
+        let deadline = Date().addingTimeInterval(5)
+        while vm.activeCodeRoot(project: project).isMain, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(vm.activeCodeRoot(project: project).isMain, "the page shows the worktree")
+        vm.stopGitWatching(projectID: p)
+    }
+
+    func testPlusStartsInTheMainFolderWhileAWorktreeSessionIsShown() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM(runner: SessionPlaceViewModelTests.RoutingRunner(workbenchID: p))
+        try await showWorktreeSession(vm, projectID: p)
+
+        await vm.newSession(projectID: p)
+
+        let started = try await rows(p).filter { $0.title != "wt" }
+        XCTAssertEqual(started.map(\.folderPath), [acme])
+        XCTAssertEqual(launches.map(\.currentDirectory), [acme])
+    }
+
+    func testWorkOnItStartsInTheMainFolder() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        let vm = makeVM(runner: SessionPlaceViewModelTests.RoutingRunner(workbenchID: p))
+        try await showWorktreeSession(vm, projectID: p)
+
+        await vm.workOn(targetID: target, targetText: "Ship it")
+
+        let all = try await rows(p)
+        let row = try XCTUnwrap(all.first { $0.targetID == target })
+        XCTAssertEqual(row.folderPath, acme)
+        XCTAssertEqual(launches.map(\.currentDirectory), [acme])
+    }
 
     // MARK: - Work on it
 
@@ -671,6 +727,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let probe = ProbedTerminalSession()
         center.makeProcess = { probe }
         let vm = makeVM()
+        vm.deleteSleep = { _ in } // the Undo window ends at once (PROJ-17)
         await vm.reload()
         vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
@@ -681,6 +738,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         }
 
         await vm.delete(row)
+        await vm.deleteCommitTask?.value
 
         XCTAssertTrue(rowExistedAtDetach, "the process closed while the row still existed")
         XCTAssertNil(center.states[row.id])
@@ -1105,7 +1163,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.showSession(id: first.id)
         await vm.showSession(id: second.id)
 
-        XCTAssertNotNil(vm.drilledSessions.first { $0.id == second.id }, "a legacy closed session is listed")
+        XCTAssertNotNil(vm.panelSections(projectID: p).searchRows.first { $0.id == second.id }, "a legacy closed session is listed")
         XCTAssertEqual(vm.panelSelection, .session(second.id))
         XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
         XCTAssertEqual(launches.last?.args.last, "exec claude --resume \(try XCTUnwrap(second.claudeSessionID))")
@@ -1120,7 +1178,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         await vm.newSessionOnPage()
 
-        let row = try XCTUnwrap(vm.drilledSessions.first)
+        let row = try XCTUnwrap(vm.panelSections(projectID: p).main.first)
         XCTAssertEqual(vm.panelSelection, .session(row.id))
         XCTAssertEqual(launches.count, 1)
     }
@@ -1670,21 +1728,21 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
         await vm.loadSessions(projectID: p)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id])
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [second.id, first.id])
 
         clock = clock.addingTimeInterval(60)
         await vm.showSession(id: first.id)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [second.id, first.id], "opening does not raise it")
 
-        vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)
-        XCTAssertEqual(vm.drilledSessions.map(\.id), [first.id, second.id])
+        vm.moveSessions(vm.panelSections(projectID: p).main.map(\.session), projectID: p, from: [1], to: 0)
+        XCTAssertEqual(vm.panelSections(projectID: p).visibleOrder, [first.id, second.id])
 
         let third = try await liveSession(p, "third")
         let relaunched = makeVM()
         await relaunched.reload()
         relaunched.drill(into: p)
         await relaunched.loadSessions(projectID: p)
-        XCTAssertEqual(relaunched.drilledSessions.map(\.id), [third.id, first.id, second.id])
+        XCTAssertEqual(relaunched.panelSections(projectID: p).visibleOrder, [third.id, first.id, second.id])
     }
 
     func testStandaloneAndProjectOrdersAreSavedApart() async throws {

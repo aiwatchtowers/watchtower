@@ -53,6 +53,9 @@ enum CodeQuestionQuickAction: CaseIterable, Identifiable {
 /// Open Quickly's answer card and the Questions tab.
 struct CodeQuestionRef {
     let project: Workbench
+    /// The folder the question's file is read from and its links open in
+    /// (`root.workbenchID == project.id`).
+    let root: CodeRoot
     let conversationID: Int64
     /// What `context_id` names; `path` "" for Open Quickly with no file open.
     let origin: CodeQuestionOrigin

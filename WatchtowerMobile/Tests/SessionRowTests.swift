@@ -34,13 +34,13 @@ final class SessionRowTests: XCTestCase {
     /// a tone from a newer Mac falls back to secondary.
     func testEveryStateToneMapsToItsSystemColour() {
         let expected: [TerminalSessionState.Tone: Color] = [
-            .green: .green, .orange: .orange, .blue: .blue, .red: .red, .secondary: .secondary
+            .green: .green, .orange: .orange, .blue: .blue, .red: .red, .secondary: .secondary, .purple: .purple
         ]
         XCTAssertEqual(Set(expected.keys), Set(TerminalSessionState.Tone.knownValues))
         for (tone, color) in expected {
             XCTAssertEqual(PhoneTone(tone).color, color, "tone \(tone.rawValue)")
         }
-        XCTAssertEqual(PhoneTone(TerminalSessionState.Tone(rawValue: "purple")), .secondary)
+        XCTAssertEqual(PhoneTone(TerminalSessionState.Tone(rawValue: "teal")), .secondary)
     }
 
     func testANonLiveSessionDrawsARingAndALiveOneAFill() throws {

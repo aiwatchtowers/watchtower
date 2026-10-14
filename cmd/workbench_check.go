@@ -393,7 +393,7 @@ func recordCodexStopState(database *db.DB, row db.TerminalSession, in hookEvent,
 	if err != nil {
 		return err
 	}
-	turn := hookTurn{stop: true}
+	turn := hookTurn{stop: true, cwd: hookCwd("Stop", "", in.Cwd)}
 	if n := codexBackgroundCount(turns); n > 0 {
 		turn.background = sql.NullInt64{Int64: n, Valid: true}
 	}
@@ -547,7 +547,7 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	turn := hookTurn{stop: true, tasks: in.BackgroundTasks}
+	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 

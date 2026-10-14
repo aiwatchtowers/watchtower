@@ -301,6 +301,26 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(branches.branches.map(\.name), ["main"])
     }
 
+    /// Board #565: `--folder` only when asked about a session's folder; the
+    /// main folder's argv is unchanged.
+    func testGitStatusPassesFolderOnlyForAWorktree() async throws {
+        let worktree = "/tmp/acme/.claude/worktrees/mobile-a"
+        let envelope = #"""
+            {"git":true,"branch":"feature/x","folder_requested":"\#(worktree)","folder_scope":"worktree",
+             "folder_root":"\#(worktree)","worktree_name":"mobile-a"}
+            """#
+        let runner = FakeCLIRunner(stdout: Data(envelope.utf8))
+        let cli = WorkbenchCLI(runner: runner)
+        _ = try await cli.gitStatus(projectID: 3)
+        let status = try await cli.gitStatus(projectID: 3, folder: worktree)
+        XCTAssertEqual(runner.invocations, [
+            ["workbench", "git", "status", "--workbench", "3", "--json"],
+            ["workbench", "git", "status", "--workbench", "3", "--folder", worktree, "--json"]
+        ])
+        XCTAssertEqual(status.folderScope, .worktree)
+        XCTAssertEqual(status.worktreeName, "mobile-a")
+    }
+
     func testGitSwitchPassesFlagsOnlyWhenSet() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"switched":true,"branch":"-odd name"}"#.utf8))
         let cli = WorkbenchCLI(runner: runner)

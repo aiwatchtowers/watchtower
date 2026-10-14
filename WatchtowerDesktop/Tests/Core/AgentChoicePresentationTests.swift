@@ -4,22 +4,22 @@ import XCTest
 /// The per-launch agent choice (board #399, D1).
 final class AgentChoicePresentationTests: XCTestCase {
     func testNewSessionMenuListsBothAgentsDisablesMissing() {
-        let both = AgentChoicePresentation.newSession { _ in true }
+        let both = AgentChoicePresentation.newSessionAgentChoices { _ in true }
         XCTAssertEqual(both.map(\.title), ["New Claude Code session", "New Codex session"])
         XCTAssertEqual(both.map(\.isAvailable), [true, true])
         XCTAssertEqual(both.map(\.hint), [nil, nil])
 
-        let noCodex = AgentChoicePresentation.newSession { $0 == .claude }
+        let noCodex = AgentChoicePresentation.newSessionAgentChoices { $0 == .claude }
         XCTAssertEqual(noCodex.map(\.agent), [.claude, .codex], "a missing agent stays listed")
         XCTAssertEqual(noCodex[1].title, "New Codex session (not installed)")
         XCTAssertFalse(noCodex[1].isAvailable)
         XCTAssertEqual(noCodex[1].hint, "Codex was not found. Install it, or set codex_path in Watchtower's config.")
 
-        let noClaude = AgentChoicePresentation.newSession { $0 == .codex }
+        let noClaude = AgentChoicePresentation.newSessionAgentChoices { $0 == .codex }
         XCTAssertFalse(noClaude[0].isAvailable)
         XCTAssertTrue(noClaude[0].hint?.contains("claude_path") == true)
 
-        let none = AgentChoicePresentation.newSession { _ in false }
+        let none = AgentChoicePresentation.newSessionAgentChoices { _ in false }
         XCTAssertEqual(none.map(\.isAvailable), [false, false])
     }
 
@@ -43,7 +43,7 @@ final class AgentChoicePresentationTests: XCTestCase {
             AgentChoicePresentation.notInstalledHint(.codex),
             TerminalLaunch.exitMessage(code: 127, agent: .codex),
             TerminalLaunch.exitMessage(code: 1, agent: .codex)
-        ] + AgentChoicePresentation.newSession { _ in false }.filter { $0.agent == .codex }.flatMap { [$0.title, $0.hint ?? ""] }
+        ] + AgentChoicePresentation.newSessionAgentChoices { _ in false }.filter { $0.agent == .codex }.flatMap { [$0.title, $0.hint ?? ""] }
             + AgentChoicePresentation.workOnOthers(defaultAgent: .claude) { _ in false }.flatMap { [$0.title, $0.hint ?? ""] }
         for text in codexStrings {
             XCTAssertFalse(text.contains("Claude"), text)

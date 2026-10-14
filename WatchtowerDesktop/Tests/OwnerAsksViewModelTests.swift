@@ -37,6 +37,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
     /// Runs in the pause between an answer's paste and its Return.
     private var onPause: (() async -> Void)?
 
+    nonisolated private static let checklist = #"{"checklist":[{"id":"1","text":"Launch"}]}"#
     nonisolated private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
 
     override func setUpWithError() throws {
@@ -1217,9 +1218,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
     /// A running Claude Code session with one open ask filed from it, read
     /// through the real state center: its row holds `agentState` written
-    /// this run and a fresh count of 2 background agents.
+    /// this run and a fresh count of `background` agents (nil = none).
     private func seedBackgroundSession(
-        agentState: String
+        agentState: String, askKind: String = "question", payload: String = OwnerAsksViewModelTests.questions, background: Int? = 2
     ) async throws -> (vm: WorkbenchesViewModel, session: TerminalSession, ask: OwnerAsk) {
         let acme = folder.path
         let (p, s, askID) = try await pool.write { d in
@@ -1227,19 +1228,19 @@ final class OwnerAsksViewModelTests: XCTestCase {
             let s = try TerminalSessionQueries.create(d, .init(
                 projectID: p, kind: .claude, title: "claude", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
             ))
-            let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions)
+            let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, kind: askKind, payload: payload)
             return (p, s, ask)
         }
         center.transcriptExists = { _ in false }
         center.start(s, fresh: true)
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let reported = formatter.string(from: Date().addingTimeInterval(-1))
+        let reported = background.map { _ in formatter.string(from: Date().addingTimeInterval(-1)) }
         try await pool.write { d in
             try d.execute(sql: """
                 UPDATE terminal_sessions SET agent_state = ?, agent_state_at = '2999-01-01T00:00:00.000Z',
-                    agent_background = 2, agent_background_at = ? WHERE id = ?
-                """, arguments: [agentState, reported, s.id])
+                    agent_background = ?, agent_background_at = ? WHERE id = ?
+                """, arguments: [agentState, background, reported, s.id])
         }
         let states = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: center, notifier: RecordingSessionNotifier(), defaults: defaults
@@ -1249,8 +1250,32 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         await states.poll()
         let ask = try await openAsk(vm, project: p, id: askID)
-        pick(vm, askID)
+        if askKind == "check" {
+            vm.asks.drafts.update(askID) { $0.checks["1"] = .ok }
+        } else {
+            pick(vm, askID)
+        }
         return (vm, s, ask)
+    }
+
+    /// PROJ-12 (#534, spec 2026-10-12-sessions-panel-design §2.5): Ready to
+    /// check sits at the prompt like Waiting for you — the Return gate reads
+    /// the hooks, not the kind — so a check's answer gets its Return.
+    func testProj12_AnAnswerIntoAReadyToCheckSessionGetsTheReturn() async throws {
+        let (vm, s, ask) = try await seedBackgroundSession(
+            agentState: "waiting", askKind: "check", payload: Self.checklist, background: nil
+        )
+        XCTAssertEqual(vm.agentStates?.statuses[s.id]?.state.kind, .readyToCheck)
+        XCTAssertEqual(vm.agentStates?.statuses[s.id]?.isAtPrompt, true)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        let stored = try await status(ask.id)
+        XCTAssertEqual(stored.status, "answered")
+        XCTAssertEqual(typed.count, 2)
+        XCTAssertEqual(typed[1], [0x0D], "Return comes alone, after the paste")
+        XCTAssertNil(center.answerHints[s.id])
     }
 
     /// PROJ-12 (#411, spec §5.4): Agents working is a turn end — the agent

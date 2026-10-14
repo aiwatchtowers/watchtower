@@ -11,7 +11,9 @@ extension WorkbenchesViewModel {
         if let projectID = selectedWorkbenchID { await loadSessions(projectID: projectID) }
         await loadSwitcherSummaries()
         do {
-            goToSessions = try await dbPool.read { try TerminalSessionQueries.fetchAllWorkbenchSessions($0) }
+            let read = try await dbPool.read { try TerminalSessionQueries.fetchAllWorkbenchSessions($0) }
+            // A session waiting in the Undo batch is hidden here too (PROJ-17).
+            goToSessions = withoutPendingDeletes(read)
             goToError = nil
         } catch {
             goToError = "Could not load sessions: \(error.localizedDescription)"
@@ -25,10 +27,11 @@ extension WorkbenchesViewModel {
     }
 
     /// The palette's sections for `query` (`GoToRanking`): the page's own
-    /// sessions in the panel's order first, when a workbench page is shown.
+    /// sessions first, when a workbench page is shown — the panel's main
+    /// list, then its finished group, the session switcher's order (#480).
     func goToSections(query: String) -> [GoToSection] {
         let current = selectedWorkbenchID.map {
-            GoToRanking.Current(workbenchID: $0, orderedSessions: orderedSessions(projectID: $0))
+            GoToRanking.Current(workbenchID: $0, orderedSessions: panelOrderedSessions(projectID: $0))
         }
         return GoToRanking.results(query: query, current: current, sessions: goToSessions, workbenches: switcherSummaries)
     }

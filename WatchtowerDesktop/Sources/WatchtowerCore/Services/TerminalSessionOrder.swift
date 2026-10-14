@@ -33,4 +33,22 @@ package enum TerminalSessionOrder {
         ids.insert(contentsOf: moving, at: destination - source.count { $0 < destination })
         return ids
     }
+
+    /// A drag in a list that shows only part of the workbench's sessions
+    /// (the sessions panel's main list, #480): `full` is the saved order
+    /// applied over all of them. The displayed ids' slots inside `full` are
+    /// refilled in their new order; every other id (the finished group, a
+    /// pending delete) keeps its index, so it takes its place back when it
+    /// returns. A displayed id missing from `full` goes on top, like a
+    /// never-placed session.
+    package static func move(
+        _ displayed: [TerminalSession], within full: [Int64], from source: IndexSet, to destination: Int
+    ) -> [Int64] {
+        let reordered = move(displayed, from: source, to: destination)
+        let shown = Set(reordered)
+        var queue = reordered.filter { full.contains($0) }[...]
+        let refilled = full.map { id in shown.contains(id) ? queue.popFirst() ?? id : id }
+        let missing = reordered.filter { !full.contains($0) }
+        return missing + refilled
+    }
 }
