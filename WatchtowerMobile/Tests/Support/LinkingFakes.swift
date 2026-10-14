@@ -411,3 +411,31 @@ final class FakeLinkHost: LinkHost {
         }
     }
 }
+
+/// A link clock whose sleeps wait for `release()` and whose `now` stands
+/// still: the grant wait polls once, then the test answers for the Mac.
+final class GateLinkClock: LinkClock, @unchecked Sendable {
+    let start = Date()
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var waiting: Int { lock.withLock { waiters.count } }
+
+    func now() -> Date { start }
+
+    func sleep(for duration: Duration) async throws {
+        await withCheckedContinuation { continuation in
+            lock.withLock { waiters.append(continuation) }
+        }
+        try Task.checkCancellation()
+    }
+
+    func release() {
+        let all = lock.withLock {
+            let parked = waiters
+            waiters = []
+            return parked
+        }
+        all.forEach { $0.resume() }
+    }
+}

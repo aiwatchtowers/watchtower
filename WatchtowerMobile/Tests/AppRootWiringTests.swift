@@ -418,7 +418,7 @@ final class AppRootWiringTests: XCTestCase {
         let check = try XCTUnwrap(farewellChecks.first, "the removal looked at the send queue", line: line)
         XCTAssertEqual(check.hubID, hubID, line: line)
         XCTAssertTrue(check.running, "sent before the session stops", line: line)
-        let sent = try await deviceWrites(in: try transport(hubID))
+        let sent = try await TestPhone.deviceWrites(in: try transport(hubID))
         XCTAssertEqual(sent.last?.unlinked, true, "the hub's own transport carried it", line: line)
         XCTAssertEqual(check.record.kind, WireKind.envelope, "the queue is looked at for the sealed record", line: line)
     }
@@ -1633,14 +1633,6 @@ final class AppRootWiringTests: XCTestCase {
 
     // MARK: - Glue: the link URL and Unlink (board #71)
 
-    /// The `device` records the phone sealed into `transport`, as the test hub opens them.
-    private func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
-        let opened = try await TestPhone.hub(over: transport).changes(in: .relay, since: nil).changed
-        return try opened
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
-    }
-
     /// A `watchtower://link` URL on a live root runs the whole flow over the
     /// real host: the code's hub's session, the sealed hello, the Mac's
     /// waiting keybox (the code) and linked keybox (the keys), the row.
@@ -2044,34 +2036,6 @@ private actor GatedTransport: CloudSyncTransport {
             await withCheckedContinuation { waiters.append($0) }
         }
         return try await inner.changes(in: zone, since: token)
-    }
-}
-
-/// A link clock whose sleeps wait for `release()` and whose `now` stands
-/// still: the grant wait polls once, then the test answers for the Mac.
-private final class GateLinkClock: LinkClock, @unchecked Sendable {
-    let start = Date()
-    private let lock = NSLock()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    var waiting: Int { lock.withLock { waiters.count } }
-
-    func now() -> Date { start }
-
-    func sleep(for duration: Duration) async throws {
-        await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
-        }
-        try Task.checkCancellation()
-    }
-
-    func release() {
-        let all = lock.withLock {
-            let parked = waiters
-            waiters = []
-            return parked
-        }
-        all.forEach { $0.resume() }
     }
 }
 

@@ -238,6 +238,14 @@ enum TestPhone {
         }
     }
 
+    /// The `device` records the phone sealed into `transport`, as the test hub opens them.
+    static func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
+        let opened = try await hub(over: transport).changes(in: .relay, since: nil).changed
+        return try opened
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+    }
+
     /// `plain` as the hub ships a record's asset: sealed into `url`, its
     /// descriptor riding in the record's frame.
     static func sealAsset(_ plain: Data, to url: URL) throws -> AssetDescriptor {
