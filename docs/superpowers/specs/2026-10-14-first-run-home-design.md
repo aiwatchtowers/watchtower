@@ -461,23 +461,21 @@ touched package.
 Each sub-project updates `docs/app-guide.md` (Home section, empty states)
 and, for P4, `docs/daemon-pipeline.md`.
 
-### 6. Open questions for the owner
+### 6. Owner decisions (spec approved 2026-10-14, ask #285)
 
-1. **Day plan in P4.** Should the first day plan also skip the
-   `day_plan.hour` gate on a fresh install? Recommended: yes. A plan for
-   the rest of today is still useful, and it runs once.
-2. **Home for existing installs.** Should every install, not only new
-   ones, open on Home at launch (today it opens on Inbox)? Recommended:
-   yes, one rule for everyone.
-3. **Briefing card on Today.** Headline only, or the briefing's
-   first-paragraph summary? Recommended: the summary, two lines,
+The owner approved the spec without overriding any recommendation, so each
+open question is settled as recommended:
+
+1. **Day plan in P4:** yes, the first day plan skips the `day_plan.hour`
+   gate on a fresh install, once.
+2. **Home for existing installs:** yes, every install opens on Home at
+   launch; one rule for everyone.
+3. **Briefing card on Today:** the first-paragraph summary, two lines,
    truncated.
-4. **Try this slots.** Up to 3 cards at once within a 6-row zone. Is that
-   the right size?
-5. **Getting ready time cap.** Should the zone also fold after 3 days even
-   if a feature never becomes ready (e.g. people cards in a tiny
-   workspace)? Recommended: yes.
-6. **Name.** "Home" or "Today"?
-7. **Catch-Up landing.** Work-communication users used to land on
-   Catch-Up after onboarding. They now land on Home with a Catch-Up card.
-   OK?
+4. **Try this slots:** up to 3 cards at once within a 6-row zone.
+5. **Getting ready time cap:** the zone folds after 3 days even if a
+   feature never becomes ready.
+6. **Name:** "Home" (the name used throughout the brainstorm).
+7. **Catch-Up landing:** onboarding lands on Home; Catch-Up is a card there.
+
+Any of these can still be revisited on the Home mockup (#784) before P2.
