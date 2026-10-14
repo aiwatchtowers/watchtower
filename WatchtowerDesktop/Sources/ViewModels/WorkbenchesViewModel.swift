@@ -245,6 +245,18 @@ final class WorkbenchesViewModel {
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    /// Per workbench, one line about where its last new session started
+    /// when that was not the plain choice (spec 2026-10-14-session-worktrees
+    /// §7: "Started in the folder: …", a `base_dirty` or worktree warning);
+    /// nil once a start had nothing to say. Shown above the sessions panel.
+    var startNotice: [Int64: String] = [:]
+    /// Per workbench, the last start's placement turn (decide, make the
+    /// worktree, insert the row): the next start awaits it before deciding,
+    /// so two starts at one moment do not both see the folder free (§4).
+    @ObservationIgnored var placementTurns: [Int64: Task<Void, Never>] = [:]
+    /// Rows a start inserted whose launch has not returned yet, by id: they
+    /// count as live for the next start's decision.
+    @ObservationIgnored var startingRows: [Int64: TerminalSession] = [:]
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]

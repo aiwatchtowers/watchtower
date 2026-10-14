@@ -218,6 +218,12 @@ final class TerminalCenter {
         return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
     }
 
+    /// The live agent rows of `projectID`, as they were started.
+    func liveAgentRows(ofWorkbench projectID: Int64) -> [TerminalSession] {
+        let live = liveAgentIDs
+        return rows.values.filter { $0.projectID == projectID && live.contains($0.id) }
+    }
+
     func process(for sessionID: Int64) -> (any TerminalSessionProcess)? {
         processes[sessionID]
     }
