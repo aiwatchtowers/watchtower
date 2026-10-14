@@ -47,6 +47,10 @@ struct CalendarEventsView: View {
     /// `syncHealthError` because it is cleared by the daemon coming up (by
     /// any route: the app, the tray), not by a state change.
     @State private var restartError: String?
+    /// The old daemon outlived the stop (`stopTimedOut`): one IS running, but
+    /// it started before the change the restart was for, so its running does
+    /// not clear the error — only a successful restart does.
+    @State private var restartErrorOutlivesDaemon = false
     @State private var syncHealthReadFailed = false
     @State private var isRestartingSync = false
     /// Derived tri-state position of the now-line marker relative to the
@@ -104,7 +108,7 @@ struct CalendarEventsView: View {
                 calDAVCalendarCount: counts.calDAV,
                 daemonRunning: daemonRunning
             )
-            if daemonRunning { restartError = nil }
+            if daemonRunning, !restartErrorOutlivesDaemon { restartError = nil }
             // An action's error belongs to the state it was raised in.
             if health != syncHealth { syncHealthError = nil }
             syncHealth = health
@@ -139,8 +143,15 @@ struct CalendarEventsView: View {
         do {
             try await DaemonManager.restart()
             restartError = nil
+            restartErrorOutlivesDaemon = false
         } catch {
-            restartError = "Couldn't start the sync: \(error.localizedDescription)"
+            NSLog("CalendarEventsView: sync restart failed: %@", error.localizedDescription)
+            restartError = "Couldn't restart the sync: \(error.localizedDescription)"
+            if case DaemonRestartError.stopTimedOut = error {
+                restartErrorOutlivesDaemon = true
+            } else {
+                restartErrorOutlivesDaemon = false
+            }
         }
         await refreshSyncHealth()
     }
@@ -658,13 +669,17 @@ struct CalendarEventsView: View {
     @ViewBuilder
     private var syncHealthBanner: some View {
         switch syncHealth {
-        case .ok:
-            // A failed restart can land on an otherwise healthy state (the
-            // calendars synced before) — it must still be seen.
-            // Cleared as soon as a daemon is seen running.
+        case .ok, .awaitingFirstSync:
+            // A failed restart can land on an otherwise healthy or waiting
+            // state (calendars synced before, or an old daemon still up) —
+            // it must still be seen, with the retry.
             if let restartError {
-                healthBanner(icon: "exclamationmark.triangle", text: "The sync isn't running.", error: restartError) {
-                    syncButton("Start Sync") { await restartSync() }
+                healthBanner(icon: "exclamationmark.triangle", text: "The sync didn't restart.", error: restartError) {
+                    syncButton("Restart Sync") { await restartSync() }
+                }
+            } else if syncHealth == .awaitingFirstSync {
+                healthBanner(icon: nil, text: "Syncing your calendar — events appear within a minute.", error: nil) {
+                    EmptyView()
                 }
             }
         case .syncOff:
@@ -690,10 +705,6 @@ struct CalendarEventsView: View {
                 error: restartError
             ) {
                 syncButton("Start Sync") { await restartSync() }
-            }
-        case .awaitingFirstSync:
-            healthBanner(icon: nil, text: "Syncing your calendar — events appear within a minute.", error: nil) {
-                EmptyView()
             }
         }
     }
