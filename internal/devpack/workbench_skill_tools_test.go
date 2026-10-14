@@ -100,13 +100,12 @@ func TestWorkbenchSkill_ExplainsBothWorkOnPrompts(t *testing.T) {
 
 // Spec 2026-10-12 §6.5: one skill serves Claude Code and Codex, so it names
 // the tool prefix each agent shows, both ask-the-user tools the guard blocks,
-// and no agent-specific pasted-image path. The text change ships as pack v7
-// (the v6 fixture upgrades it, TestWorkbenchSkill_UpgradesAnUnedited…).
+// and no agent-specific pasted-image path. The text change shipped as pack v7
+// (the pack marker is checked by TestWorkbenchSkill_TeachesFinishingASession).
 func TestSkillText_NamesBothToolSpellings(t *testing.T) {
 	_, body := devpack.WorkbenchSkill()
 	content := string(body)
 	for _, want := range []string{
-		"\nx-watchtower-pack: v7\n",
 		"Claude Code shows them as `mcp__watchtower-workbench__<tool>`, Codex as `mcp__watchtower_workbench__<tool>`",
 		"`AskUserQuestion` tool is blocked here, and so is Codex's `request_user_input`",
 		"the path your agent shows for a pasted image",

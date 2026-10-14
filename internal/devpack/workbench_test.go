@@ -121,15 +121,16 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v7 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v8 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
 // first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner;
-// v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings).
+// v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings;
+// v8: spec 2026-10-12-session-cleanup §11, clean up before finishing).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v7\n") {
-		t.Fatalf("the skill must carry %s: v7", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v8\n") {
+		t.Fatalf("the skill must carry %s: v8", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -143,6 +144,42 @@ func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 		if !strings.Contains(section, want) {
 			t.Errorf("the Finishing a session section never says %q", want)
 		}
+	}
+}
+
+// Spec 2026-10-12-session-cleanup §11 (pack v8): before finish_session the
+// agent runs the brief's Cleanup: command, applies it, never removes a
+// worktree or branch by hand, and the summary limit makes room for the
+// cleanup line — the same 4 lines the finish_session tool line allows.
+func TestWorkbenchSkill_FinishingSectionNamesTheCleanupStep(t *testing.T) {
+	_, body := WorkbenchSkill()
+	content := string(body)
+	start := strings.Index(content, "## Finishing a session")
+	if start < 0 {
+		t.Fatal("the skill has no Finishing a session section")
+	}
+	section := content[start:]
+	if next := strings.Index(section[1:], "\n## "); next >= 0 {
+		section = section[:next+1]
+	}
+	for _, want := range []string{
+		"**Clean up first.**", "the brief's `Cleanup:` command", "`--apply`", "`--worktree`/`--branch`",
+		"Never remove a worktree or branch by hand.", "the command's `summary` line", "2–4 lines",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the Finishing a session section never says %q", want)
+		}
+	}
+	cleanup, finish := strings.Index(section, "`Cleanup:`"), strings.Index(section, "**The summary**")
+	if cleanup < 0 || finish < cleanup {
+		t.Error("the cleanup step must come before the summary")
+	}
+	if strings.Contains(section, "2–3 lines") {
+		t.Error("the finish summary limit still says 2–3 lines")
+	}
+	tools := content[strings.Index(content, "## Tools"):strings.Index(content, "## Setup")]
+	if !strings.Contains(tools, "`finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines") {
+		t.Error("the finish_session tool line no longer allows the 4 lines the section asks for")
 	}
 }
 
@@ -198,11 +235,11 @@ func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v6 → v7): a copy we wrote
+// DEV-04 across every previous version (v1..v7 → v8): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)

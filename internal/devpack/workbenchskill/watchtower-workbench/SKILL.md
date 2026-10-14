@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v7
+x-watchtower-pack: v8
 ---
 
 # Watchtower Workbench
@@ -104,7 +104,8 @@ When you are the controller executing a plan whose tasks are on the board:
 
 When the work this session was started for is done or handed to the owner — its tasks closed, the PR opened or merged, the remaining owner work filed as asks — call `finish_session`. The owner sees the session as finished, with your summary, in the Watchtower app.
 
-- **The summary** is 2–3 lines: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), and anything risky.
+- **Clean up first.** Leave any worktree you are in (`ExitWorktree`, or `cd` back to the workbench folder), `git fetch`, then run the brief's `Cleanup:` command to list what this session would remove, and the same command with `--apply` to remove it when the list has anything to remove. Add `--worktree`/`--branch` for anything you created that the list misses. Never remove a worktree or branch by hand. Put the command's `summary` line into your `finish_session` summary. Kept items are not a failure: mention them only if the owner must act.
+- **The summary** is 2–4 lines: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), anything risky, and the cleanup line.
 - **After the call**, write "session finished" in your final text: a check at the end of every turn sends a turn that reports the work complete without it back to you.
 - Do not call it after every task, nor while work in this session's scope is still in progress.
 
