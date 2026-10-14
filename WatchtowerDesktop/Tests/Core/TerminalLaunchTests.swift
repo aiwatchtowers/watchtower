@@ -246,7 +246,7 @@ final class TerminalLaunchSetupTests: XCTestCase {
             process.waitUntilExit()
             XCTFail("the launch did not finish")
         }
-        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let out = String(bytes: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         XCTAssertTrue(out.contains("running the worktree setup command"), out)
         XCTAssertTrue(out.contains("the worktree setup command failed (exit 3); starting the agent anyway."), out)
         XCTAssertTrue(out.hasSuffix("started\n"), out)

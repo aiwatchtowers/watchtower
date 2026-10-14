@@ -45,17 +45,24 @@ final class SessionStartPlacementTests: XCTestCase {
         let folder = "/repo"
         let plain = row(folderPath: folder)
         let placed = row(folderPath: "/repo/.claude/worktrees/a", worktreeBranch: "wt/a")
-        XCTAssertTrue(SessionStartPlacement.occupies(row: plain, place: .unknown, workbenchFolder: folder), "fresh, before its first hook")
+        XCTAssertTrue(
+            SessionStartPlacement.occupies(row: plain, place: .unknown, workbenchFolder: folder), "fresh, before its first hook"
+        )
         XCTAssertTrue(SessionStartPlacement.occupies(row: plain, place: .main, workbenchFolder: folder))
-        XCTAssertFalse(SessionStartPlacement.occupies(row: placed, place: .unknown, workbenchFolder: folder), "placed, before its first hook")
+        XCTAssertFalse(
+            SessionStartPlacement.occupies(row: placed, place: .unknown, workbenchFolder: folder), "placed, before its first hook"
+        )
         XCTAssertTrue(SessionStartPlacement.occupies(row: placed, place: .main, workbenchFolder: folder), "an agent that cd'd back")
-        XCTAssertFalse(SessionStartPlacement.occupies(row: plain, place: .removed(name: "x", path: "/repo/.claude/worktrees/x"), workbenchFolder: folder))
+        let removed = SessionPlace.removed(name: "x", path: "/repo/.claude/worktrees/x")
+        XCTAssertFalse(SessionStartPlacement.occupies(row: plain, place: removed, workbenchFolder: folder))
     }
 
     func testSlug() {
-        XCTAssertEqual(SessionStartPlacement.slug(targetID: 229, targetText: "Параллельные Sessions & worktrees!", sessionNumber: 3), "229-sessions-worktrees")
+        let text = "Параллельные Sessions & worktrees!"
+        XCTAssertEqual(SessionStartPlacement.slug(targetID: 229, targetText: text, sessionNumber: 3), "229-sessions-worktrees")
         XCTAssertEqual(SessionStartPlacement.slug(targetID: nil, targetText: nil, sessionNumber: 3), "session-3")
-        XCTAssertLessThanOrEqual(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "word ", count: 30), sessionNumber: 1).count, 40)
+        let long = SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "word ", count: 30), sessionNumber: 1)
+        XCTAssertLessThanOrEqual(long.count, 40)
         XCTAssertFalse(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "ab ", count: 30), sessionNumber: 1).hasSuffix("-"))
     }
 

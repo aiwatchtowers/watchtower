@@ -48,7 +48,7 @@ package enum SessionStartPlacement: Equatable, Sendable {
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .lowercased()
         let words = folded
-            .split(whereSeparator: { !($0.isASCII && ($0.isLetter || $0.isNumber)) })
+            .split { !($0.isASCII && ($0.isLetter || $0.isNumber)) }
             .map(String.init)
         var out = "\(targetID)"
         for w in words where out.count + 1 + w.count <= 40 { out += "-" + w }

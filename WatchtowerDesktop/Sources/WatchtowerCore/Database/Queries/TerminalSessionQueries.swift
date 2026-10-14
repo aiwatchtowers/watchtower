@@ -68,8 +68,9 @@ package enum TerminalSessionQueries {
                      worktree_branch, worktree_base)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
-                new.claudeSessionID, new.worktreeBranch, new.worktreeBase,
+            arguments: [
+                new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
+                new.claudeSessionID, new.worktreeBranch, new.worktreeBase
             ]
         )
         let id = db.lastInsertedRowID

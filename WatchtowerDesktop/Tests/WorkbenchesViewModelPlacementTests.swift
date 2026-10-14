@@ -404,4 +404,22 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         XCTAssertEqual(center.states[row.id], .unavailable("The worktree \(worktree) could not be restored: busy"))
         XCTAssertTrue(launches.isEmpty)
     }
+
+    func testResumeWhenEnsureFindsTheDirectoryLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setEnsureReply(#"""
+            {"workbench_id":1,"created":false,"path":"","cwd":"","branch":"","base":"","base_branch":"",
+             "base_dirty":false,"included":[],"include_warnings":[]}
+            """#)
+        let url = worktreeURL
+        runner.onEnsure = { try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: true)
+
+        await vm.open(row)
+
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+        XCTAssertNotEqual(center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true)
+    }
 }

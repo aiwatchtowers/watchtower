@@ -69,7 +69,11 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// it (`codex`), its script in `codexCommandEnv`; without one there is
     /// no binary to run, and the launch exits 127 ("Codex was not found").
     package static func make(
-        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, codex: CodexLaunchArgs? = nil,
+        shell: String?,
+        folder: String,
+        mode: Mode,
+        rowID: Int64? = nil,
+        codex: CodexLaunchArgs? = nil,
         setup: String? = nil
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell

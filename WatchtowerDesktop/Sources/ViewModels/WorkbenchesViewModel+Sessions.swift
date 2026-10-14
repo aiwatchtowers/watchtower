@@ -790,10 +790,7 @@ extension WorkbenchesViewModel {
     /// folder. A setup command never runs here.
     private func restoreWorktree(_ row: TerminalSession) async -> Bool {
         guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: row.folderPath, isDirectory: &isDirectory), isDirectory.boolValue {
-            return true
-        }
+        if center.states[row.id] == .running || Self.isDirectory(row.folderPath) { return true }
         guard let top = SessionStartPlacement.worktreeTop(ofCwd: row.folderPath) else { return true } // the launch reports the folder
         guard let cli else {
             center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: no CLI is available.")
@@ -801,19 +798,28 @@ extension WorkbenchesViewModel {
         }
         do {
             let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch)
-            if result.created { return true }
+            // An existing directory is a no-op (`created` false, nothing refused): launch.
+            if result.created || (result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath)) {
+                return true
+            }
             if result.refused == "unknown_branch" {
                 center.refuseLaunch(
                     row, reason: "The worktree and its branch \(branch) were cleaned up — start a new session."
                 )
             } else {
-                let why = [result.refusedDetail, result.error, result.refused].first { !$0.isEmpty } ?? "it was refused."
+                let why = [result.refusedDetail, result.error, result.refused].first { !$0.isEmpty }
+                    ?? "the directory is still missing."
                 center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(why)")
             }
         } catch {
             center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(error.localizedDescription)")
         }
         return false
+    }
+
+    private static func isDirectory(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     /// The row `activate` launches and, for a Codex row, whether it resumes
