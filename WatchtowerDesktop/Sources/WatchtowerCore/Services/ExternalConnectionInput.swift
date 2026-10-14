@@ -53,10 +53,13 @@ public enum ExternalConnectionTransportRule {
             + "localhost, 127.0.0.1 or ::1."
 
     /// True when `url` is plain http to a host other than loopback — headers
-    /// sent there would travel in cleartext.
+    /// sent there would travel in cleartext — and, failing closed like Go's
+    /// refusal of a URL it cannot parse, when `url` does not parse at all.
     public static func sendsSecretInCleartext(url: String) -> Bool {
-        guard let components = URLComponents(string: url.trimmingCharacters(in: .whitespacesAndNewlines)),
-              components.scheme?.lowercased() == "http" else { return false }
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let components = URLComponents(string: trimmed) else { return true }
+        guard components.scheme?.lowercased() == "http" else { return false }
         return !isLoopbackHost(components.host ?? "")
     }
 

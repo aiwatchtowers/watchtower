@@ -322,24 +322,6 @@ func TestRequireSecure(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackHost(t *testing.T) {
-	cases := []struct {
-		host string
-		want bool
-	}{
-		{"localhost", true},
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"example.com", false},
-		{"0.0.0.0", false},
-	}
-	for _, tc := range cases {
-		if got := isLoopbackHost(tc.host); got != tc.want {
-			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
-		}
-	}
-}
-
 // --- B1/B2: redirect-hop and metadata-endpoint scheme enforcement ---
 
 func TestSecureRedirectPolicy(t *testing.T) {

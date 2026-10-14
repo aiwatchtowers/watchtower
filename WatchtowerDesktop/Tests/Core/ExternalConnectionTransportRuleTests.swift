@@ -10,6 +10,12 @@ final class ExternalConnectionTransportRuleTests: XCTestCase {
         }
     }
 
+    /// Go refuses a URL it cannot parse; so does the sheet.
+    func testAnUnparsableURLFailsClosed() {
+        XCTAssertNil(URLComponents(string: "http://exa mple.com/%zz"))
+        XCTAssertTrue(ExternalConnectionTransportRule.sendsSecretInCleartext(url: "http://exa mple.com/%zz"))
+    }
+
     func testHTTPSAndLoopbackAreAllowed() {
         for url in [
             "https://mcp.example.com/mcp", "http://127.0.0.1:8080/mcp", "http://localhost/mcp",
