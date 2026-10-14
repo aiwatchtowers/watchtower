@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/extsync"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/imap"
@@ -404,7 +405,7 @@ func runSyncDetach(cfg *config.Config) error {
 	}
 
 	logPath := logFilePath(cfg)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+	if err := fsutil.MakePrivateDir(filepath.Dir(logPath)); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
@@ -506,7 +507,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncDetach(cfg)
 	}
 
-	if err := makePrivateDir(cfg.WorkspaceDir()); err != nil {
+	if err := fsutil.MakePrivateDir(cfg.WorkspaceDir()); err != nil {
 		return fmt.Errorf("creating workspace directory: %w", err)
 	}
 	// Acquire exclusive lock to prevent concurrent syncs. --users-only takes
@@ -1461,14 +1462,4 @@ func printProgressJSON(w io.Writer, snap sync.Snapshot, syncErr error) {
 	}
 	data, _ := json.Marshal(p)
 	fmt.Fprintln(w, string(data))
-}
-
-// makePrivateDir creates dir 0700, and narrows one an older install left
-// 0755 (MkdirAll never changes an existing directory's mode): the
-// workspace holds the database and tokens.
-func makePrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return os.Chmod(dir, 0o700)
 }

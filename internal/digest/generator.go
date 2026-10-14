@@ -281,7 +281,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	configDir, _ := os.UserHomeDir()
 	if configDir != "" {
 		configDir = filepath.Join(configDir, ".config", "watchtower")
-		if err := os.MkdirAll(configDir, 0o700); err != nil {
+		if err := fsutil.MakePrivateDir(configDir); err != nil {
 			configDir = os.TempDir()
 		}
 		cmd.Dir = configDir

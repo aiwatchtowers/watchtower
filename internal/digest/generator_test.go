@@ -411,3 +411,31 @@ func TestGenerateAndDigestLock_CreatePrivateDirectories(t *testing.T) {
 		}
 	}
 }
+
+// An existing ~/.config/watchtower an older install left 0755 is narrowed
+// to 0700 when Generate runs from it.
+func TestGenerate_NarrowsAnExistingConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "watchtower")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho '{\"type\":\"result\",\"result\":\"ok\",\"is_error\":false}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := NewClaudeGenerator("light", "strong", script).Generate(context.Background(), "sys", "hi", ""); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	info, err := os.Stat(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("%s: mode %o, want 700", configDir, perm)
+	}
+}
