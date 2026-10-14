@@ -20,6 +20,9 @@ struct AppleProvider: TranscriptionProvider {
     var displayName: String { "Apple Speech (macOS 26+)" }
     var models: [TranscriptionModelOption] { [.init(id: "system", label: "System model")] }
     var supportsLive: Bool { false }
+    /// macOS installs the speech assets; `prefetch` stays a Settings-only
+    /// warmup and a recording never waits on it.
+    var downloadsModel: Bool { false }
 
     func availability() -> ProviderAvailability {
         if #available(macOS 26, *) { return .available }

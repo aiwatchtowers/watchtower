@@ -42,13 +42,14 @@ struct MeetingRecordButton: View {
         .help(SystemAudioRecorder.isSupported ? firstRecordingHint : "Recording requires macOS 14.4+")
     }
 
-    /// Said before the first recording, while the model is not on disk yet
-    /// (#744): that recording downloads it, once.
+    /// Said before the first recording, while the model is not known to be
+    /// on disk (#744; an install from before it has no record yet): that
+    /// recording downloads it, once.
     private var firstRecordingHint: String {
         guard let key = appState.meetingModelKey, !appState.transcriptionModelProvisioner.isDownloaded(key) else {
             return ""
         }
         let size = TranscriptionModelProvisioner.describe(key).sizeBytes.map { " (about \(ModelDownloadText.size($0)))" } ?? ""
-        return "The first recording downloads the transcription model\(size) — once; it stays on this Mac."
+        return "Unless it is on this Mac already, the first recording downloads the transcription model\(size) — once."
     }
 }

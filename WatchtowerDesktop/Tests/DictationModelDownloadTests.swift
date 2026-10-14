@@ -18,23 +18,15 @@ final class DictationModelDownloadTests: MeetingRecorderTestCase {
         return defaults
     }
 
-    func testFirstDictationShowsTheDownloadAndLoadsOnceItLands() async throws {
-        let defaults = try whisperDefaults()
-        var releaseDownload: CheckedContinuation<Void, Never>?
-        var downloads = 0
-        let models = TranscriptionModelProvisioner(
-            downloadFn: { _, _, progress in
-                downloads += 1
-                progress(0.4)
-                await withCheckedContinuation { releaseDownload = $0 }
-            },
-            describe: { _ in (label: "Whisper small", sizeBytes: 490_000_000) },
-            defaults: defaults)
-        var engineLoads = 0
+    private func center(
+        _ models: TranscriptionModelProvisioner,
+        defaults: UserDefaults,
+        engineLoads: @escaping @MainActor () -> Void
+    ) -> DictationCenter {
         let center = DictationCenter(
             recorderFactory: { FakeMicRecorder() },
             engineFactory: { _ in
-                engineLoads += 1
+                await engineLoads()
                 return TestTranscriber(ScriptedEngine(texts: ["hello"]), supportsLive: true)
             },
             appleSupported: { false },
@@ -43,52 +35,80 @@ final class DictationModelDownloadTests: MeetingRecorderTestCase {
             engineIdleTTL: .seconds(900)
         )
         center.modelProvisioner = models
+        return center
+    }
+
+    func testFirstDictationShowsTheDownloadAndLoadsOnceItLands() async throws {
+        let defaults = try whisperDefaults()
+        let download = HeldDownload()
+        let models = TranscriptionModelProvisioner.forTests(download, defaults: defaults, label: "Whisper small")
+        var engineLoads = 0
+        let center = center(models, defaults: defaults) { engineLoads += 1 }
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("the download to be held") { download.isHeld }
         await waitUntil("the download to report progress") {
-            if case .downloading(progress: 0.4) = center.modelDownload?.state { return true }
-            return false
+            center.modelDownload?.state == .downloading(progress: 0.25)
         }
         XCTAssertEqual(center.modelDownload?.key, smallKey)
         XCTAssertEqual(engineLoads, 0, "the engine must not load before its model is on disk")
-        XCTAssertEqual(DictationButton.loadingText(center.modelDownload), "Downloading model… 40%")
+        XCTAssertEqual(DictationButton.loadingText(center.modelDownload), "Downloading model… 25%")
 
-        releaseDownload?.resume()
+        download.finish()
         await waitUntil("the engine to load") { !center.isEngineLoading }
         XCTAssertEqual(engineLoads, 1)
-        XCTAssertEqual(downloads, 1)
+        XCTAssertEqual(download.calls, 1)
         XCTAssertNil(center.modelDownload, "a loaded engine has no download to show")
         XCTAssertEqual(DictationButton.loadingText(nil), "Loading model…")
         center.cancel()
     }
 
-    func testAFailedDownloadFailsTheDictationInPlainWords() async throws {
+    /// Cancelling a first dictation mid-download stops waiting at once — no
+    /// engine load, nothing left on the capsule — while the download carries
+    /// on, and the next dictation finds the model on disk.
+    func testCancelDuringTheDownloadLeavesTheDownloadRunning() async throws {
         let defaults = try whisperDefaults()
-        let models = TranscriptionModelProvisioner(
-            downloadFn: { _, _, _ in throw URLError(.notConnectedToInternet) },
-            describe: { _ in (label: "Whisper small", sizeBytes: nil) },
-            defaults: defaults)
+        let download = HeldDownload()
+        let models = TranscriptionModelProvisioner.forTests(download, defaults: defaults)
         var engineLoads = 0
-        let center = DictationCenter(
-            recorderFactory: { FakeMicRecorder() },
-            engineFactory: { _ in
-                engineLoads += 1
-                return TestTranscriber(ScriptedEngine(texts: ["hello"]), supportsLive: true)
-            },
-            appleSupported: { false },
-            runnerResolver: { FakeCLIRunner(stdout: Data()) },
-            defaults: defaults,
-            engineIdleTTL: .seconds(900)
-        )
-        center.modelProvisioner = models
+        let center = center(models, defaults: defaults) { engineLoads += 1 }
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("the download to be held") { download.isHeld }
+        center.cancel()
+        await waitUntil("the dictation to settle") { center.phase == .idle }
+        XCTAssertFalse(center.isEngineLoading)
+        XCTAssertNil(center.modelDownload)
+        XCTAssertNotNil(models.download(for: smallKey), "the download keeps going")
+
+        download.finish()
+        await waitUntil("the download to land") { models.isDownloaded(self.smallKey) }
+        XCTAssertEqual(engineLoads, 0)
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("the second dictation's engine") { !center.isEngineLoading }
+        XCTAssertEqual(engineLoads, 1)
+        XCTAssertEqual(download.calls, 1, "the second dictation needs no download")
+        center.cancel()
+    }
+
+    func testAFailedDownloadFailsTheDictationInPlainWords() async throws {
+        let defaults = try whisperDefaults()
+        let download = HeldDownload()
+        let models = TranscriptionModelProvisioner.forTests(download, defaults: defaults)
+        var engineLoads = 0
+        let center = center(models, defaults: defaults) { engineLoads += 1 }
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("the download to be held") { download.isHeld }
+        download.failWith = URLError(.notConnectedToInternet)
+        download.finish()
         await waitUntil("the dictation to fail") {
             if case .failed = center.phase { return true }
             return false
         }
         guard case let .failed(message) = center.phase else { return XCTFail("expected .failed") }
-        XCTAssertTrue(message.contains("connection dropped"), message)
+        XCTAssertTrue(message.hasPrefix("The connection dropped"), message)
         XCTAssertEqual(engineLoads, 0)
         XCTAssertNotNil(models.download(for: smallKey), "the failed download stays on screen with Retry")
     }

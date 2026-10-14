@@ -1033,6 +1033,9 @@ final class MeetingRecorderCenter {
                 // engine is taken instead of loading a second one.
                 loaded = try await self.takeWarmOrLoad(config)
             } catch {
+                // A failed model download is on screen already (its pill has
+                // Retry); the batch pass at Stop tries the download again.
+                print("[MeetingRecorder] live engine unavailable: " + error.localizedDescription)
                 await MainActor.run { setState(.unavailable) }
                 return nil
             }

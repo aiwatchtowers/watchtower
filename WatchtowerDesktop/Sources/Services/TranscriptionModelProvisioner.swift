@@ -108,6 +108,8 @@ final class TranscriptionModelProvisioner {
 
     private let downloadFn: (String, String, @escaping @Sendable (Double) -> Void) async throws -> Void
     private let describe: (ModelKey) -> (label: String, sizeBytes: Int64?)
+    private let downloadsModel: (ModelKey) -> Bool
+    private let filesMissing: (ModelKey) -> Bool
     /// Extra best-effort warmups run after a meeting model downloaded (e.g.
     /// diarizer models). No progress, failures swallowed by the closure itself.
     private let prefetchExtras: @Sendable () async -> Void
@@ -120,12 +122,20 @@ final class TranscriptionModelProvisioner {
             try await provider.prefetch(model: model, progress: progress)
         },
         describe: @escaping (ModelKey) -> (label: String, sizeBytes: Int64?) = TranscriptionModelProvisioner.describe,
+        downloadsModel: @escaping (ModelKey) -> Bool = {
+            TranscriptionProviderRegistry.resolve(providerID: $0.providerID).downloadsModel
+        },
+        filesMissing: @escaping (ModelKey) -> Bool = {
+            TranscriptionProviderRegistry.resolve(providerID: $0.providerID).modelFilesMissing(model: $0.model)
+        },
         prefetchExtras: @escaping @Sendable () async -> Void = {},
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init
     ) {
         self.downloadFn = downloadFn
         self.describe = describe
+        self.downloadsModel = downloadsModel
+        self.filesMissing = filesMissing
         self.prefetchExtras = prefetchExtras
         self.defaults = defaults
         self.now = now
@@ -141,9 +151,19 @@ final class TranscriptionModelProvisioner {
         return (label, provider.downloadSizeBytes(model: key.model))
     }
 
-    /// Whether a finished download confirmed the model on disk.
+    /// Whether a load can go ahead without a download: the engine ships no
+    /// model of ours, or the model is on disk.
     func isDownloaded(_ key: ModelKey) -> Bool {
-        downloaded.contains(key.id)
+        !downloadsModel(key) || isConfirmedOnDisk(key)
+    }
+
+    /// A finished download recorded the model, and its files are still
+    /// there (or the provider cannot tell). The files are looked at only for
+    /// a recorded model — never, for an owner who never transcribed, in a
+    /// folder macOS guards — and a cache deleted by hand downloads again,
+    /// with its progress, instead of silently inside an engine load.
+    private func isConfirmedOnDisk(_ key: ModelKey) -> Bool {
+        downloaded.contains(key.id) && !filesMissing(key)
     }
 
     func download(for key: ModelKey) -> Download? {
@@ -156,7 +176,7 @@ final class TranscriptionModelProvisioner {
     /// download of another model with the same purpose unless a first use is
     /// waiting on it.
     func ensureDownloaded(_ key: ModelKey, purpose: Purpose = .meetings) {
-        guard running[key] == nil, !isDownloaded(key) else { return }
+        guard running[key] == nil, !isConfirmedOnDisk(key) else { return }
         for other in downloads where other.key != key && other.purpose == purpose {
             guard running[other.key]?.waiters.isEmpty ?? true else { continue }
             running.removeValue(forKey: other.key)?.task.cancel()
@@ -276,6 +296,8 @@ final class TranscriptionModelProvisioner {
                 Task.detached { [prefetchExtras] in await prefetchExtras() }
             }
         case .failure(let error):
+            // The pill shows a plain sentence; the full error goes to the log.
+            print("[ModelDownload] \(key.id) failed: \(String(reflecting: error))")
             let sizeBytes = downloads.first { $0.key == key }?.sizeBytes
             let failure = DownloadFailed(message: ModelDownloadText.failureMessage(for: error, sizeBytes: sizeBytes))
             if let index = downloads.firstIndex(where: { $0.key == key }) {

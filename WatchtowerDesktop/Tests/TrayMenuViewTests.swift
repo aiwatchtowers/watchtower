@@ -205,4 +205,34 @@ final class TrayMenuViewTests: XCTestCase {
         XCTAssertTrue(review)
         XCTAssertTrue(train)
     }
+
+    // MARK: - Model download line (#744)
+
+    private static func download(_ state: TranscriptionModelProvisioner.State, startedAt: Date)
+        -> TranscriptionModelProvisioner.Download {
+        TranscriptionModelProvisioner.Download(
+            key: .init(providerID: "whisperkit", model: "large-v3"), purpose: .meetings, label: "Large v3",
+            sizeBytes: nil, state: state, startedAt: startedAt, startFraction: 0.2)
+    }
+
+    func testModelDownloadLineShowsProgressAndTimeLeft() {
+        let start = Date()
+        // 0.2 → 0.6 in 40 s: the remaining 40% takes about 40 s.
+        let line = TrayMenuContent.modelDownloadText(Self.download(.downloading(progress: 0.6), startedAt: start),
+                                                     now: start.addingTimeInterval(40))
+        XCTAssertEqual(line, "Downloading Large v3 — 60%, less than a minute left (one-time)")
+    }
+
+    func testModelDownloadLineShowsAFailureAndTheRetryItem() throws {
+        var retried: TranscriptionModelProvisioner.ModelKey?
+        let failed = Self.download(.failed("The connection dropped."), startedAt: Date())
+        XCTAssertEqual(TrayMenuContent.modelDownloadText(failed), "Large v3 download failed: The connection dropped.")
+        let view = TrayMenuContent(
+            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil, voicesPendingCount: 0,
+            modelDownloads: [failed], retryModelDownloadAction: { retried = $0 },
+            updateVersion: nil, updateAction: {}, syncNowAction: {}, quickCaptureAction: {}, voicesAction: {},
+            reviewVoicesAction: {}, trainVoicesAction: {}, openAction: {}, settingsAction: {})
+        try view.inspect().find(button: "Retry Large v3 Download").tap()
+        XCTAssertEqual(retried, failed.key)
+    }
 }

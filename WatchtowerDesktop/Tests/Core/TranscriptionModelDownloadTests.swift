@@ -25,16 +25,8 @@ final class TranscriptionModelAutoDownloadTests: XCTestCase {
     /// The default goals (all but Meetings) and zero goals wait for the
     /// first recording or dictation.
     func testWithoutTheMeetingsGoalNothingDownloads() {
-        XCTAssertEqual(decide(goals: OnboardingGoalsModel.defaultGoals), .skip)
+        XCTAssertEqual(decide(goals: [.workCommunication, .tasksAndJira, .development]), .skip)
         XCTAssertEqual(decide(goals: []), .skip)
-    }
-
-    /// Goals changed later: a re-run that adds Meetings downloads, one that
-    /// drops it no longer does.
-    func testGoalsChangedLaterFollowTheNewGoals() {
-        XCTAssertEqual(decide(goals: [.development]), .skip)
-        XCTAssertEqual(decide(goals: [.development, .meetings]), .download)
-        XCTAssertEqual(decide(goals: [.development]), .skip)
     }
 
     func testNothingDownloadsDuringOnboarding() {

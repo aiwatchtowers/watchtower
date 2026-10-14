@@ -4,26 +4,6 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// A model download held until the test releases it.
-@MainActor
-private final class HeldDownload {
-    private(set) var calls = 0
-    private var release: CheckedContinuation<Void, Never>?
-
-    func call(_: String, _: String, _ progress: @escaping @Sendable (Double) -> Void) async throws {
-        calls += 1
-        progress(0.25)
-        await withCheckedContinuation { release = $0 }
-    }
-
-    var isHeld: Bool { release != nil }
-
-    func finish() {
-        release?.resume()
-        release = nil
-    }
-}
-
 /// `MeetingRecorderCenter` with the model provisioner wired (#744): a first
 /// recording waits for the model's download (joining one already running),
 /// and the warm policy never prewarms a model that is not on disk yet.
@@ -40,10 +20,7 @@ final class MeetingRecorderModelDownloadTests: MeetingRecorderTestCase {
     }
 
     private func provisioner(_ download: HeldDownload, defaults: UserDefaults) -> TranscriptionModelProvisioner {
-        TranscriptionModelProvisioner(
-            downloadFn: { try await download.call($0, $1, $2) },
-            describe: { _ in (label: "Large v3", sizeBytes: nil) },
-            defaults: defaults)
+        .forTests(download, defaults: defaults, label: "Large v3")
     }
 
     /// First use while the background download runs: the live pass waits
@@ -76,6 +53,7 @@ final class MeetingRecorderModelDownloadTests: MeetingRecorderTestCase {
         let config = singleWindowConfig()
         await center.startRecording(eventID: nil, title: "First", config: config)
         for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(center.liveEngineState, .loading, "the live pass is waiting, not done")
         XCTAssertEqual(engineLoads, 0, "the engine must not load before its model is on disk")
         XCTAssertNotNil(models.download(for: modelKey), "the download stays visible while the recording waits")
 
@@ -126,5 +104,66 @@ final class MeetingRecorderModelDownloadTests: MeetingRecorderTestCase {
         center.warmPolicyTick(config: config)
         await waitUntil("the prewarm to park its engine") { center.isEngineWarm }
         XCTAssertEqual(engineLoads, 1)
+    }
+
+    /// A first recording whose download fails, all the way through: the live
+    /// pass gives up (the pill shows the failure), Stop downloads again
+    /// while the capture is already over, a second failure fails the job in
+    /// plain words with the audio kept, and the job's Retry downloads and
+    /// transcribes.
+    func testFirstRecordingWhoseDownloadFailsFailsTheJobAndRetryRecovers() async throws {
+        let download = HeldDownload()
+        let defaults = try isolatedDefaults()
+        var engineLoads = 0
+        let recorder = FakeRecorder()
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["recovered"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir,
+            engineKey: engineKey
+        )
+        let models = provisioner(download, defaults: defaults)
+        center.modelProvisioner = models
+        let config = singleWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        await waitUntil("the live pass's download to start") { download.isHeld }
+        download.failWith = URLError(.networkConnectionLost)
+        download.finish()
+        await waitUntil("the live pass to give up") { center.liveEngineState == .unavailable }
+        guard case .failed = models.download(for: modelKey)?.state else {
+            return XCTFail("the failed download stays on screen with Retry")
+        }
+
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        let stop = Task { await center.stopAndProcess(config: config) }
+        await waitUntil("Stop to download again") { download.calls == 2 && download.isHeld }
+        XCTAssertFalse(center.isCapturing, "the capture is over while the transcript waits for the model")
+        download.failWith = URLError(.notConnectedToInternet)
+        download.finish()
+        await stop.value
+
+        let job = try XCTUnwrap(center.jobs.first)
+        guard case let .failed(message) = job.phase else { return XCTFail("expected a failed job, got \(job.phase)") }
+        XCTAssertTrue(message.contains("connection dropped"), message)
+        XCTAssertEqual(engineLoads, 0)
+        XCTAssertTrue(runner.savedTranscripts.isEmpty)
+
+        let retry = Task { await center.retryTranscription(config: config) }
+        await waitUntil("the job's retry to download") { download.calls == 3 && download.isHeld }
+        download.finish()
+        await retry.value
+
+        XCTAssertEqual(runner.savedTranscripts, ["recovered"])
+        XCTAssertTrue(models.isDownloaded(modelKey))
+        XCTAssertNil(models.download(for: modelKey))
     }
 }

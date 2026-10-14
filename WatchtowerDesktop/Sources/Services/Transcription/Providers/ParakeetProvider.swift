@@ -26,6 +26,10 @@ struct ParakeetProvider: TranscriptionProvider {
 
     func downloadSizeBytes(model: String) -> Int64? { 480_000_000 }
 
+    func modelFilesMissing(model: String) -> Bool {
+        !AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)
+    }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await AsrModels.download(version: .v3) { downloadProgress in
             progress(downloadProgress.fractionCompleted)

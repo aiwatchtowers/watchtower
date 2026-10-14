@@ -241,7 +241,7 @@ struct QuickCaptureView: View {
         case .paused:
             pausedState
         case .stopping:
-            loadingState(text: "Transcribing…")
+            loadingState(text: center?.modelDownload.map { $0.progressLine(now: Date()) } ?? "Transcribing…")
         case .cleaning:
             loadingState(text: "Cleaning up…")
         case let .failed(message, raw):

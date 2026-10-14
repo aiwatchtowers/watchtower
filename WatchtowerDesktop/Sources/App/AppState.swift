@@ -209,9 +209,8 @@ final class AppState {
     /// so download progress is visible (and retryable) from anywhere,
     /// independent of whether a recording is in progress.
     let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
-    /// The Meetings goal's download ahead of use while it waits for the
-    /// first sync (`autoDownloadTranscriptionModel`); nil when none waits.
-    @ObservationIgnored var transcriptionModelAutoDownload: Task<Void, Never>?
+    /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
+    @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
     /// Provider/model registry from `watchtower ai models --json`, shared by
     /// the chat model picker and Settings suggestions. Loaded lazily.

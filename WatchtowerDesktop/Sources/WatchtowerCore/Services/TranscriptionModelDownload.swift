@@ -48,8 +48,7 @@ package enum ModelDownloadText {
         fraction: Double,
         secondsLeft: TimeInterval?
     ) -> String {
-        let percent = Int((min(max(fraction, 0), 1) * 100).rounded(.down))
-        var line = "Downloading \(model) — \(percent)%"
+        var line = "Downloading \(model) — \(percent(fraction))%"
         if let sizeBytes {
             line += " of about \(size(sizeBytes))"
         }
@@ -57,6 +56,11 @@ package enum ModelDownloadText {
             line += ", \(timeLeft(secondsLeft))"
         }
         return line
+    }
+
+    /// Whole percent, clamped to 0…100 whatever a library reports.
+    package static func percent(_ fraction: Double) -> Int {
+        Int((min(max(fraction, 0), 1) * 100).rounded(.down))
     }
 
     package static func size(_ bytes: Int64) -> String {
@@ -109,12 +113,14 @@ package enum ModelDownloadText {
     /// A URL-loading failure anywhere in the error: the error itself, an
     /// `NSUnderlyingErrorKey` chain, or a value a library wrapped it in (the
     /// model hub's `networkError(URLError)` case), plus the hub's offline
-    /// mode, which it reports only as text.
+    /// mode, which it reports only as text (`offlineModeError`).
     package static func isNetworkFailure(_ error: Error) -> Bool {
         if containsError(error, matching: { $0.domain == NSURLErrorDomain && networkCodes.contains($0.code) }) {
             return true
         }
-        return String(describing: error).localizedCaseInsensitiveContains("offline")
+        let text = String(describing: error)
+        return text.localizedCaseInsensitiveContains("offlineModeError")
+            || text.localizedCaseInsensitiveContains("offline mode")
     }
 
     private static func isOutOfSpace(_ error: Error) -> Bool {

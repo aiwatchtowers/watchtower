@@ -31,6 +31,25 @@ struct WhisperKitProvider: TranscriptionProvider {
         ][model]
     }
 
+    /// The Hub cache folder WhisperKit downloads into — HubApi's default
+    /// base (Documents/huggingface) plus the repo — holds one folder per
+    /// variant, named "<family>_<model>" or "<family>-<model>". Present =
+    /// both weight files landed (the Hub moves each file in only once it is
+    /// complete).
+    func modelFilesMissing(model: String) -> Bool {
+        let fileManager = FileManager.default
+        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return false }
+        let repo = documents.appending(path: "huggingface/models/argmaxinc/whisperkit-coreml")
+        guard let folders = try? fileManager.contentsOfDirectory(atPath: repo.path) else { return true }
+        return !folders.contains { name in
+            guard name.hasSuffix("_\(model)") || name.hasSuffix("-\(model)") else { return false }
+            let folder = repo.appending(path: name)
+            return ["AudioEncoder", "TextDecoder"].allSatisfy {
+                fileManager.fileExists(atPath: folder.appending(path: "\($0).mlmodelc/weights/weight.bin").path)
+            }
+        }
+    }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await WhisperKitEngine.ensureModelFilesDownloaded(modelName: model, downloadProgress: progress)
     }

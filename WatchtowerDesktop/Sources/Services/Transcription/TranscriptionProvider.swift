@@ -25,6 +25,16 @@ protocol TranscriptionProvider: Sendable {
     /// Roughly how much `prefetch` downloads for `model` the first time, for
     /// the download's "of about 1.6 GB"; nil when unknown.
     func downloadSizeBytes(model: String) -> Int64?
+    /// False for an engine that ships no model of ours to download (Apple's
+    /// system speech model): a load never waits on a download for it.
+    var downloadsModel: Bool { get }
+    /// Whether `model`'s files are known to be gone from the library's cache,
+    /// from the disk alone; false when they are there or the provider cannot
+    /// tell. Consulted only for a model
+    /// Watchtower has downloaded before, so it never touches a folder macOS
+    /// guards (the WhisperKit cache is under Documents) for an owner who
+    /// never transcribed.
+    func modelFilesMissing(model: String) -> Bool
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws
     func makeTranscriber(model: String,
                          progress: @escaping @Sendable (Double) -> Void) async throws -> Transcriber
@@ -32,6 +42,8 @@ protocol TranscriptionProvider: Sendable {
 
 extension TranscriptionProvider {
     func downloadSizeBytes(model: String) -> Int64? { nil }
+    var downloadsModel: Bool { true }
+    func modelFilesMissing(model: String) -> Bool { false }
 }
 
 /// A loaded engine (holds the heavy model). Lives for one recording/decode.

@@ -97,7 +97,9 @@ struct DictationButton: View {
             case .paused:
                 pausedCapsule(center)
             case .stopping:
-                progressCapsule("Transcribing…")
+                // Stopped during a first dictation's download: the transcript
+                // waits for it, so keep showing its progress (#744).
+                progressCapsule(center.modelDownload == nil ? "Transcribing…" : Self.loadingText(center.modelDownload))
             case .cleaning:
                 progressCapsule("Cleaning…")
             case .failed(let message):
@@ -182,7 +184,7 @@ struct DictationButton: View {
     /// "Loading model…", or the first dictation's download percent (#744).
     static func loadingText(_ download: TranscriptionModelProvisioner.Download?) -> String {
         guard let download, case let .downloading(progress) = download.state else { return "Loading model…" }
-        return "Downloading model… \(Int(progress * 100))%"
+        return "Downloading model… \(ModelDownloadText.percent(progress))%"
     }
 
     private func pausedCapsule(_ center: DictationCenter) -> some View {

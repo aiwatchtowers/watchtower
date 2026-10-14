@@ -102,10 +102,14 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
     }
 
     private func makeProvisioner(_ downloader: GateDownloader,
+                                 downloadsModel: @escaping (Key) -> Bool = { _ in true },
+                                 filesMissing: @escaping (Key) -> Bool = { _ in false },
                                  now: @escaping () -> Date = Date.init) -> TranscriptionModelProvisioner {
         TranscriptionModelProvisioner(
             downloadFn: downloader.call,
             describe: { key in (label: "Model \(key.model)", sizeBytes: 1_600_000_000) },
+            downloadsModel: downloadsModel,
+            filesMissing: filesMissing,
             defaults: defaults,
             now: now)
     }
@@ -413,5 +417,113 @@ final class TranscriptionModelProvisionerTests: XCTestCase {
 
         downloader.release("large-v3")
         await provisioner.task(for: large)?.value
+    }
+
+    /// A cache deleted by hand behind the marker downloads again, visibly,
+    /// instead of silently inside the engine load.
+    func testAModelWhoseFilesWentMissingDownloadsAgain() async throws {
+        let downloader = GateDownloader()
+        defaults.set([large.id], forKey: TranscriptionModelProvisioner.downloadedModelsKey)
+        var missing = false
+        let filesMissing: (Key) -> Bool = { _ in missing }
+        let provisioner = makeProvisioner(downloader, filesMissing: filesMissing)
+        XCTAssertTrue(provisioner.isDownloaded(large))
+
+        missing = true
+        XCTAssertFalse(provisioner.isDownloaded(large))
+        var entered = downloader.enteredStream.makeAsyncIterator()
+        let firstUse = Task { @MainActor in try await provisioner.prepare(large, purpose: .meetings) }
+        _ = await entered.next()
+        await drainMainActor()
+        XCTAssertEqual(state(provisioner, large), .downloading(progress: 0.5))
+        missing = false
+        downloader.release("large-v3")
+        try await firstUse.value
+        XCTAssertEqual(downloader.callCount, 1)
+    }
+
+    /// Files are looked at only for a model Watchtower recorded — an owner
+    /// who never transcribed never has the (Documents) cache touched.
+    func testFilesAreNotLookedAtForAModelNeverDownloaded() {
+        var looked = 0
+        let filesMissing: (Key) -> Bool = { _ in
+            looked += 1
+            return false
+        }
+        let provisioner = makeProvisioner(GateDownloader(), filesMissing: filesMissing)
+        XCTAssertFalse(provisioner.isDownloaded(large))
+        XCTAssertEqual(looked, 0)
+    }
+
+    /// An engine that ships no model of ours (Apple) never waits on a
+    /// download at first use.
+    func testAnEngineWithNoModelOfOursNeverWaits() async throws {
+        let downloader = GateDownloader()
+        let apple = Key(providerID: "apple", model: "system")
+        let downloadsModel: (Key) -> Bool = { $0.providerID != "apple" }
+        let provisioner = makeProvisioner(downloader, downloadsModel: downloadsModel)
+        XCTAssertTrue(provisioner.isDownloaded(apple))
+        try await provisioner.prepare(apple, purpose: .meetings)
+        XCTAssertEqual(downloader.callCount, 0)
+        XCTAssertTrue(provisioner.downloads.isEmpty)
+    }
+
+    /// Retry keeps the failed download's purpose: retrying the dictation
+    /// model must not supersede a running meeting download.
+    func testRetryKeepsThePurpose() async throws {
+        let downloader = GateDownloader()
+        let provisioner = makeProvisioner(downloader)
+        var entered = downloader.enteredStream.makeAsyncIterator()
+
+        provisioner.ensureDownloaded(small, purpose: .dictation)
+        _ = await entered.next()
+        downloader.release("small", error: FakeDownloadError())
+        await provisioner.task(for: small)?.value
+        provisioner.ensureDownloaded(large, purpose: .meetings)
+        _ = await entered.next()
+
+        provisioner.retry(small)
+        _ = await entered.next()
+        await drainMainActor()
+        XCTAssertEqual(Set(provisioner.downloads.map(\.key)), [large, small])
+        XCTAssertNotNil(provisioner.task(for: large), "the meeting download keeps running")
+
+        downloader.release("small")
+        downloader.release("large-v3")
+        await provisioner.task(for: small)?.value
+        await provisioner.task(for: large)?.value
+        XCTAssertTrue(provisioner.isDownloaded(small))
+        XCTAssertTrue(provisioner.isDownloaded(large))
+    }
+
+    /// Two first uses waiting on one download both learn it failed.
+    func testEveryWaiterGetsTheFailure() async throws {
+        let downloader = GateDownloader()
+        let provisioner = makeProvisioner(downloader)
+        var entered = downloader.enteredStream.makeAsyncIterator()
+
+        let first = Task { @MainActor in try await provisioner.prepare(large, purpose: .meetings) }
+        _ = await entered.next()
+        let second = Task { @MainActor in try await provisioner.prepare(large, purpose: .meetings) }
+        await drainMainActor()
+        downloader.release("large-v3", error: URLError(.timedOut))
+
+        for waiter in [first, second] {
+            do {
+                try await waiter.value
+                XCTFail("every waiter must see the failure")
+            } catch is TranscriptionModelProvisioner.DownloadFailed {}
+        }
+        XCTAssertEqual(downloader.callCount, 1)
+    }
+
+    func testModelKeyParsesOnlyProviderAndModel() {
+        XCTAssertEqual(Key(id: "whisperkit|large-v3"), large)
+        XCTAssertEqual(Key(id: "a|b|c"), Key(providerID: "a", model: "b|c"))
+        XCTAssertNil(Key(id: ""))
+        XCTAssertNil(Key(id: "whisperkit|"))
+        XCTAssertNil(Key(id: "|model"))
+        XCTAssertNil(Key(id: "no-separator"))
+        XCTAssertEqual(large.id, "whisperkit|large-v3")
     }
 }
