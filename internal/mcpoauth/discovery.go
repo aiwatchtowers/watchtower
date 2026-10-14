@@ -234,9 +234,11 @@ func requireSecureEndpoints(meta *Metadata, metaURL string) error {
 	return nil
 }
 
-// requireSecure rejects plain http URLs except against a loopback host
+// requireSecure rejects any scheme but https and http, and leaves the http
+// decision to netsec's one rule: plain http only to a loopback host
 // (127.0.0.1, ::1, localhost) — the shape a local httptest server or a
-// local callback redirect takes. Every other host must use https.
+// local callback redirect takes. A refused http URL wraps
+// netsec.ErrCleartext.
 func requireSecure(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -246,9 +248,10 @@ func requireSecure(rawURL string) error {
 	case "https":
 		return nil
 	case "http":
-		if netsec.IsLoopbackHost(u.Hostname()) {
-			return nil
+		if err := netsec.RequireSecureURL(rawURL, "an OAuth exchange"); err != nil {
+			return fmt.Errorf("mcpoauth: %s must use https (plain http is only allowed for loopback hosts): %w", rawURL, netsec.ErrCleartext)
 		}
+		return nil
 	}
 	return fmt.Errorf("mcpoauth: %s must use https (plain http is only allowed for loopback hosts)", rawURL)
 }

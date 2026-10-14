@@ -3,11 +3,14 @@ package mcpoauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"watchtower/internal/netsec"
 )
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
@@ -746,5 +749,18 @@ func TestDiscover_OpenIDFallback_IssuerMustMatch(t *testing.T) {
 	_, err := Discover(context.Background(), mcpServer.URL+"/mcp")
 	if err == nil || !strings.Contains(err.Error(), "issuer") {
 		t.Fatalf("Discover: err = %v, want an issuer mismatch", err)
+	}
+}
+
+// requireSecure leaves the http decision to netsec's one rule (a refusal
+// wraps netsec.ErrCleartext) and still refuses any other scheme.
+func TestRequireSecure_DelegatesHTTPToNetsec(t *testing.T) {
+	if err := requireSecure("http://mcp.example.com/mcp"); !errors.Is(err, netsec.ErrCleartext) {
+		t.Errorf("remote http: err = %v, want netsec.ErrCleartext", err)
+	}
+	for _, u := range []string{"ftp://mcp.example.com/mcp", "file:///etc/passwd", "HTTPS-ish://x"} {
+		if err := requireSecure(u); err == nil || !strings.Contains(err.Error(), "must use https") {
+			t.Errorf("requireSecure(%q) = %v, want an https refusal", u, err)
+		}
 	}
 }
