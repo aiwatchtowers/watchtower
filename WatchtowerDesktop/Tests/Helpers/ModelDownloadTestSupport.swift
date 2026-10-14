@@ -33,12 +33,13 @@ extension TranscriptionModelProvisioner {
     static func forTests(
         _ download: HeldDownload,
         defaults: UserDefaults,
-        label: String = "Test model"
+        label: String = "Test model",
+        downloadsModel: @escaping (ModelKey) -> Bool = { _ in true }
     ) -> TranscriptionModelProvisioner {
         TranscriptionModelProvisioner(
             downloadFn: { try await download.call($0, $1, $2) },
             describe: { _ in (label: label, sizeBytes: nil) },
-            downloadsModel: { _ in true },
+            downloadsModel: downloadsModel,
             filesMissing: { _ in false },
             defaults: defaults)
     }

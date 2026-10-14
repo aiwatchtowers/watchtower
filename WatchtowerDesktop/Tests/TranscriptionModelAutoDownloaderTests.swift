@@ -48,11 +48,15 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         super.tearDown()
     }
 
-    private func make(_ download: HeldDownload, sleep: ManualSleep? = nil)
-        -> (TranscriptionModelAutoDownloader, TranscriptionModelProvisioner) {
+    private func make(
+        _ download: HeldDownload,
+        sleep: ManualSleep? = nil,
+        downloadsModel: @escaping (TranscriptionModelProvisioner.ModelKey) -> Bool = { _ in true }
+    ) -> (TranscriptionModelAutoDownloader, TranscriptionModelProvisioner) {
         let sleep = sleep ?? ManualSleep()
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
-        let provisioner = TranscriptionModelProvisioner.forTests(download, defaults: defaults)
+        let provisioner = TranscriptionModelProvisioner.forTests(download, defaults: defaults,
+                                                                 downloadsModel: downloadsModel)
         let auto = TranscriptionModelAutoDownloader(
             inputs: .init(
                 goals: { [weak self] in self?.goals ?? [] },
@@ -173,5 +177,27 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         auto.run()
         await waitUntil("the download to start") { download.isHeld }
         download.finish()
+    }
+
+    /// An engine whose assets are macOS's (Apple) never makes a recording
+    /// wait, but the Meetings goal still installs them once in the background.
+    func testTheMeetingsGoalInstallsAnAppleEngineOnce() async {
+        let download = HeldDownload()
+        let notOurs: (TranscriptionModelProvisioner.ModelKey) -> Bool = { $0.providerID != "apple" }
+        let (auto, provisioner) = make(download, downloadsModel: notOurs)
+        let apple = TranscriptionModelProvisioner.ModelKey(providerID: "apple", model: "system")
+        goals = [.meetings]
+        modelKey = apple
+        XCTAssertTrue(provisioner.isDownloaded(apple), "a recording never waits on it")
+
+        auto.run()
+        await waitUntil("the install to start") { download.isHeld }
+        download.finish()
+        await provisioner.task(for: apple)?.value
+        XCTAssertTrue(provisioner.isConfirmedOnDisk(apple))
+
+        auto.run()
+        await settle(auto)
+        XCTAssertEqual(download.calls, 1, "installed once")
     }
 }
