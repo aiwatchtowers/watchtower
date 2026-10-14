@@ -173,6 +173,34 @@ package enum TerminalSessionQueries {
         try db.columns(in: "terminal_sessions").contains { $0.name == "agent_cwd_at" }
     }
 
+    /// Session `id`'s stored cleanup outcome (board #535, migration 00111):
+    /// `cleanup_result` decoded tolerantly (an undecodable one is a record
+    /// with a nil result) and `cleanup_at`. Nil when the row is gone, has no
+    /// result yet, or the database predates 00111. Read-only: Go writes the
+    /// columns. Kept out of `TerminalSession` and its `SELECT *` readers, as
+    /// Go keeps them out of `GetTerminalSession`; the column probe and its
+    /// `DatabasePool.read` rule are `fetchAgentCwds`'.
+    package static func fetchCleanupRecord(_ db: Database, sessionID: Int64) throws -> SessionCleanupRecord? {
+        guard try db.columns(in: "terminal_sessions").contains(where: { $0.name == "cleanup_result" }) else {
+            return nil
+        }
+        let row = try Row.fetchOne(
+            db,
+            sql: "SELECT cleanup_result, cleanup_at FROM terminal_sessions WHERE id = ? AND cleanup_result IS NOT NULL",
+            arguments: [sessionID]
+        )
+        guard let row else { return nil }
+        let json: String = row["cleanup_result"]
+        var result: SessionCleanupPlan?
+        do {
+            result = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        } catch {
+            NSLog("TerminalSessionQueries: session %lld cleanup_result does not decode: %@",
+                  sessionID, String(describing: error))
+        }
+        return SessionCleanupRecord(result: result, at: row["cleanup_at"] ?? "")
+    }
+
     /// Best-effort, unchecked: a session deleted meanwhile is not active,
     /// which is what it asks for.
     package static func touch(_ db: Database, id: Int64) throws {

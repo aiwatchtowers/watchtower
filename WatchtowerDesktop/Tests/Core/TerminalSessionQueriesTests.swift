@@ -478,4 +478,64 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(rows.first?.agentCwdAt)
         }
     }
+
+    // MARK: - Cleanup result (board #535)
+
+    func testFetchCleanupRecordReadsTheStoredResultAndStamp() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            let json = #"{"session_id":\#(row.id),"mode":"apply","items":[],"summary":"1 worktree removed (~2 GB)"}"#
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = '2026-10-12T10:00:00Z' WHERE id = ?",
+                arguments: [json, row.id]
+            )
+            let record = try XCTUnwrap(TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertEqual(record.at, "2026-10-12T10:00:00Z")
+            XCTAssertEqual(record.result?.summary, "1 worktree removed (~2 GB)")
+            XCTAssertEqual(record.result?.mode, "apply")
+        }
+    }
+
+    func testFetchCleanupRecordIsNilWithoutAResultOrARow() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id + 100))
+        }
+    }
+
+    /// Garbage in `cleanup_result` is a record without a result, not an error
+    /// that would fail the report.
+    func testFetchCleanupRecordKeepsAnUndecodableResultAsNil() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET cleanup_result = 'not json' WHERE id = ?", arguments: [row.id]
+            )
+            let record = try XCTUnwrap(TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+            XCTAssertNil(record.result)
+            XCTAssertEqual(record.at, "")
+        }
+    }
+
+    /// A database without migration 00111: no record, and every other
+    /// session read still works (the columns stay out of `TerminalSession`).
+    func testADatabaseWithoutTheCleanupColumnsStillLoadsSessions() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN cleanup_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN cleanup_result")
+            let project = try TestDatabase.insertWorkbench(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: row.id)?.id, row.id)
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id), [row.id])
+            XCTAssertNil(try TerminalSessionQueries.fetchCleanupRecord(db, sessionID: row.id))
+        }
+    }
 }
