@@ -1025,11 +1025,6 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     decided_at      TEXT    NOT NULL DEFAULT '',
     applied_at      TEXT    NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS tool_trust (
-    tool       TEXT PRIMARY KEY,
-    trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
 CREATE TABLE IF NOT EXISTS reaction_command_map (
     emoji      TEXT PRIMARY KEY,
     kind       TEXT    NOT NULL DEFAULT 'builtin_tool'
@@ -1581,9 +1576,23 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
+);
+CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    root       TEXT NOT NULL,
+    branch     TEXT NOT NULL DEFAULT '',
+    first_at   TEXT NOT NULL,
+    PRIMARY KEY (session_id, root, branch)
+);
+CREATE TABLE IF NOT EXISTS "tool_trust" (
+    tool       TEXT NOT NULL,
+    surface    TEXT NOT NULL,
+    trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (tool, surface)
 );
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE

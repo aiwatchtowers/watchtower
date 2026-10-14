@@ -204,9 +204,10 @@ struct WatchtowerMobileApp: App {
         case ready(AppRoot)
         case failed(String)
         /// The Keychain is locked (a push launched the app before the first
-        /// unlock since a restart): the device id cannot be read, and a new
-        /// one would unlink the phone from its Mac. The boot runs again once
-        /// protected data is available.
+        /// unlock since a restart): the device id cannot be read
+        /// (`KeyStoreError.locked`), and a new identity would unlink the
+        /// phone from its Mac. The boot runs again once protected data is
+        /// available.
         case waitingForUnlock
         case hostingTests
 
@@ -240,10 +241,14 @@ struct WatchtowerMobileApp: App {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
                 return .ready(root)
-            } catch let locked as DeviceIDKeychain.Unavailable where locked.isLocked {
+            } catch KeyStoreError.locked {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
                     .notice("keychain locked before the first unlock: the boot waits for it")
                 return .waitingForUnlock
+            } catch let keychain as KeyStoreError {
+                Logger(subsystem: "WatchtowerMobile", category: "Boot")
+                    .critical("boot failed: keychain \(String(describing: keychain), privacy: .public)")
+                return .failed("The Keychain could not read this iPhone's Watchtower keys (\(keychain)).")
             } catch {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
                     .critical("boot failed: \(error.localizedDescription, privacy: .public)")

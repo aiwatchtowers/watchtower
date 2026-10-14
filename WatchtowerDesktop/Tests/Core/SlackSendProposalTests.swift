@@ -31,8 +31,35 @@ final class SlackSendProposalTests: XCTestCase {
         XCTAssertEqual(thread.recipientLine, "To: a thread in #ops in Acme")
         let dm = try XCTUnwrap(SlackSendProposal(action: action(args:
             ##"{"text":"x","target":{"account_id":2,"workspace":"Beta","user_id":"U1","label":"@Alice"}}"##)))
-        XCTAssertEqual(dm.recipientLine, "To: @Alice in Beta")
+        XCTAssertEqual(dm.recipientLine, "To: @Alice (U1) in Beta")
         XCTAssertTrue(dm.target?.isDM == true)
+    }
+
+    /// A DM shows who the person really is beside the display-name label:
+    /// the real name, the handle and the user id Go pinned (target 227).
+    func testDMLineShowsTheHandleAndTheUserID() throws {
+        let dm = try XCTUnwrap(SlackSendProposal(action: action(args:
+            ##"{"text":"x","target":{"account_id":1,"workspace":"Acme","user_id":"U123","label":"@Alice","##
+                + ##""handle":"alice","real_name":"Alice Example"}}"##)))
+        XCTAssertEqual(dm.target?.userID, "U123")
+        XCTAssertEqual(dm.target?.handle, "alice")
+        XCTAssertEqual(dm.target?.realName, "Alice Example")
+        XCTAssertEqual(dm.recipientLine, "To: @Alice (Alice Example, @alice · U123) in Acme")
+        // The card shows these two apart.
+        XCTAssertEqual(dm.target?.place, "@Alice (Alice Example) in Acme")
+        XCTAssertEqual(dm.target?.identity, "@alice · U123", "only what the person cannot set")
+
+        // A real name the label already shows is not repeated.
+        let same = try XCTUnwrap(SlackSendProposal(action: action(args:
+            ##"{"text":"x","target":{"account_id":1,"workspace":"Acme","user_id":"U9","label":"@Bob Example","##
+                + ##""handle":"bob","real_name":"Bob Example"}}"##)))
+        XCTAssertEqual(same.recipientLine, "To: @Bob Example (@bob · U9) in Acme")
+
+        // The picker's rows carry the same identity per workspace.
+        let args = ##"{"text":"x","candidates":[{"account_id":1,"workspace":"Acme","user_id":"U1","label":"@Alice","handle":"alice"},"##
+            + ##"{"account_id":2,"workspace":"Beta","user_id":"U2","label":"@Alice","handle":"alice.b","real_name":"Alice B"}]}"##
+        let picked = try XCTUnwrap(SlackSendProposal(action: action(args: args)))
+        XCTAssertEqual(picked.candidates.map(\.line), ["@Alice (@alice · U1) in Acme", "@Alice (Alice B, @alice.b · U2) in Beta"])
     }
 
     func testOtherToolsAndUnreadableArgsAreNotSlackProposals() {

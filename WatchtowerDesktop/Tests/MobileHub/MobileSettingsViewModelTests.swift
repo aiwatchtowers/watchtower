@@ -261,7 +261,7 @@ final class MobileSettingsViewModelTests: XCTestCase {
         XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-b"), "Remove… asks first")
         XCTAssertEqual(MobileSettingsViewModel.removeQuestion(name: "iPhone"), "Remove \"iPhone\"?")
         XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.shared).contains("at once"))
-        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.private).contains("sign it out of iCloud"))
+        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.private).contains("can no longer read anything new"))
 
         model.pendingRemove = nil
         await model.confirmRemove()
@@ -339,7 +339,8 @@ final class MobileSettingsViewModelTests: XCTestCase {
         func record(_ value: Duration) { lock.withLock { values.append(value) } }
     }
 
-    func testRemovingASameAppleIDPhoneSaysItCanStillRead() async throws {
+    /// F18/D9: a removed same-Apple-ID phone gets no newer keys, so it can no longer read anything new.
+    func testRemovingASameAppleIDPhoneShowsTheNewSentence() async throws {
         await fixture.tearDown()
         fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
         let model = fixture.makeModel()
@@ -348,10 +349,7 @@ final class MobileSettingsViewModelTests: XCTestCase {
 
         XCTAssertNil(try fixture.sidecar.linkedDevice("phone-a"))
         XCTAssertTrue(model.devices.isEmpty)
-        XCTAssertEqual(
-            model.notice,
-            "Removed. It is signed into your Apple ID, so it can still read synced data until you sign it out of iCloud"
-        )
+        XCTAssertEqual(model.notice, "Removed iPhone. It can no longer read anything new from this Mac.")
     }
 
     func testRemovingASharedPhoneDropsItsParticipant() async throws {

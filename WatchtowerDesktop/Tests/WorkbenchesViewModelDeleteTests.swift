@@ -79,6 +79,31 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertNil(vm.deletingWorkbenchID)
     }
 
+    /// A workbench deleted while its sessions wait in the Undo batch (PROJ-17):
+    /// the delete's cascade removed them, so the batch forgets them and its
+    /// window stops — nothing left to commit or restore.
+    func testWorkbenchDeleteDropsItsPendingSessions() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let session = try await pool.write {
+            try TerminalSessionQueries.create($0, .init(projectID: id, kind: .shell, title: "Session A", folderPath: "/tmp"))
+        }
+        let vm = makeVM(DeletingCLIRunner(pool: pool))
+        vm.deleteSleep = { _ in try? await Task.sleep(for: .seconds(60)) } // cancelled below, never waited out
+        await vm.reload()
+        await vm.loadSessions(projectID: id)
+        await vm.delete(session)
+        XCTAssertEqual(vm.pendingDeleteToast, "Session deleted")
+
+        let ok = await vm.deleteWorkbench(id)
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
+        XCTAssertNil(vm.pendingDeleteToast)
+        XCTAssertNil(vm.deleteCommitTask, "the window stops with nothing left in it")
+        let row = try await pool.read { try TerminalSessionQueries.fetch($0, id: session.id) }
+        XCTAssertNil(row, "gone with the workbench (PROJ-02)")
+    }
+
     /// The rows are gone but the folder cleanup failed: the project still
     /// leaves the list, and a non-blocking warning names the removal error.
     func testFolderCleanupFailureDeletesTheProjectAndWarns() async throws {
@@ -220,8 +245,8 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         let usages = appState.codeUsagesCenter
         XCTAssertEqual(usages.workspace, pool.path, "the inspector state is this workspace's")
-        // AppState's center writes to the standard defaults: drop this run's
-        // workspace entries afterwards.
+        // AppState's center writes to the isolated suite, shared by this
+        // shard's isolated() instances: drop this run's workspace entries.
         defer { Self.dropInspectorState(of: pool.path) }
         usages.setInspectorShown(true, workbenchID: id)
         usages.selectInspectorTab(.questions, workbenchID: id)
@@ -238,7 +263,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertFalse(usages.isInspectorShown(workbenchID: id), "the deleted workbench's inspector is pruned")
         XCTAssertEqual(usages.inspectorTab(workbenchID: id), .usages)
         XCTAssertTrue(usages.isInspectorShown(workbenchID: other))
-        let relaunched = CodeUsagesCenter()
+        let relaunched = CodeUsagesCenter(defaults: AppState.isolatedDefaults)
         relaunched.useWorkspace(pool.path)
         XCTAssertFalse(relaunched.isInspectorShown(workbenchID: id), "and gone from its defaults")
         XCTAssertEqual(relaunched.inspectorTab(workbenchID: id), .usages)
@@ -247,9 +272,9 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
 
     private static func dropInspectorState(of workspace: String) {
         for key in [CodeUsagesCenter.shownInspectorsKey, CodeUsagesCenter.inspectorTabsKey] {
-            guard var stored = UserDefaults.standard.dictionary(forKey: key) else { continue }
+            guard var stored = AppState.isolatedDefaults.dictionary(forKey: key) else { continue }
             stored[workspace] = nil
-            UserDefaults.standard.set(stored, forKey: key)
+            AppState.isolatedDefaults.set(stored, forKey: key)
         }
     }
 }

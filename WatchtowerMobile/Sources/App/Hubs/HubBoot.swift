@@ -12,12 +12,15 @@ struct HubSessionFactory {
     /// The live app: a `CloudKitTransport` on the hub's own transport store
     /// and a session on the hub's replica and recordings folder, sharing
     /// the hold, with the battery counter and the boot's background work.
-    static func live(paths: HubPaths) -> Self {
+    /// The session seals and opens with `keys` (the Keychain) for its hub
+    /// (mobile E2E); the transport store's folder and stash take class C
+    /// (D8, `AppEnvironment.liveTransportStore`).
+    static func live(paths: HubPaths, keys: any PhoneKeyStore) -> Self {
         Self { _, hubID, scope, device in
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
-            let transportStore = try TransportStore(path: paths.transportStorePath(hubID))
+            let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID))
             let transport = CloudKitTransport(
                 store: transportStore,
                 scope: scope,
@@ -32,6 +35,7 @@ struct HubSessionFactory {
                 transportStore: transportStore,
                 hubID: hubID,
                 linkedDevice: device,
+                keys: PhoneKeys(store: keys, hubID: hubID),
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
                 databaseScope: scope,

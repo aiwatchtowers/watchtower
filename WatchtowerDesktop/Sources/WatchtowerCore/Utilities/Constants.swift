@@ -284,7 +284,7 @@ package enum Constants {
         )
         if let fullPath = probed.path { env["PATH"] = fullPath }
         if let codexHome = probed.codexHome { env["CODEX_HOME"] = codexHome }
-        env.removeValue(forKey: "CLAUDECODE")
+        env = withoutAgentMarkers(env)
         // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
         let nvmDirs = [
             NSHomeDirectory() + "/.nvm/versions/node",
@@ -307,6 +307,16 @@ package enum Constants {
             }
         }
         return (env, probed.path != nil)
+    }
+
+    /// The variables an AI coding agent's shell carries — keep in sync with
+    /// `agentEnvMarkers` in cmd/actions.go. The CLI refuses an approve or an
+    /// apply while any is set (AGENT-07), so the app, when launched from such
+    /// a shell, must not hand them to the `watchtower` it runs for the owner.
+    package nonisolated static let agentEnvMarkers = ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "WATCHTOWER_TERMINAL_SESSION_ID"]
+
+    package nonisolated static func withoutAgentMarkers(_ env: [String: String]) -> [String: String] {
+        env.filter { !agentEnvMarkers.contains($0.key) }
     }
 
     /// `resolvedEnvironment()`'s value when the login shell answered it.

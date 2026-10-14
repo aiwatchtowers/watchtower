@@ -52,6 +52,17 @@ final class TerminalSessionOrderTests: XCTestCase {
         XCTAssertEqual(TerminalSessionOrder.move(shown, from: [0, 1], to: 4), [2, 1, 4, 3])
     }
 
+    func testMoveWithinKeepsHiddenSlots() {
+        // 9 sits in the finished group, between two main rows.
+        let shown = [make(3), make(2), make(1)]
+        let saved = TerminalSessionOrder.move(shown, within: [3, 9, 2, 1], from: [0], to: 3)
+        XCTAssertEqual(saved, [2, 9, 1, 3], "the hidden id keeps its index")
+        let back = TerminalSessionOrder.apply([make(1), make(2), make(3), make(9)], saved: saved)
+        XCTAssertEqual(ids(back), [2, 9, 1, 3], "returning to the main list restores its place")
+        XCTAssertEqual(TerminalSessionOrder.move(shown, within: [9, 2, 1], from: [2], to: 0), [3, 9, 1, 2],
+                       "a displayed id missing from the full order goes on top")
+    }
+
     func testKey() {
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: 7), "projects.sessionOrder.7")
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: nil), "projects.sessionOrder.standalone")

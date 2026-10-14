@@ -25,19 +25,32 @@ struct WorkbenchTargetAdded: Decodable, Equatable {
 /// Watchtower's stored copies of the targets' images could not all be
 /// removed (`filesError`). A CLI older than the images feature sends no
 /// `files_*` keys: nothing to remove, so they decode as clean.
+/// `removalHints` name what a removal refused through a link leaving the
+/// folder left there and what to remove by hand (PROJ-02's exception, ask
+/// #118); absent from an older CLI.
 struct WorkbenchDeleted: Decodable, Equatable {
     let id: Int64
     let deleted: Bool
     let removalOK: Bool
     let removalError: String
+    let removalHints: [String]
     let filesOK: Bool
     let filesError: String
 
-    init(id: Int64, deleted: Bool, removalOK: Bool, removalError: String, filesOK: Bool = true, filesError: String = "") {
+    init(
+        id: Int64,
+        deleted: Bool,
+        removalOK: Bool,
+        removalError: String,
+        removalHints: [String] = [],
+        filesOK: Bool = true,
+        filesError: String = ""
+    ) {
         self.id = id
         self.deleted = deleted
         self.removalOK = removalOK
         self.removalError = removalError
+        self.removalHints = removalHints
         self.filesOK = filesOK
         self.filesError = filesError
     }
@@ -48,6 +61,7 @@ struct WorkbenchDeleted: Decodable, Equatable {
         deleted = try c.decode(Bool.self, forKey: .deleted)
         removalOK = try c.decode(Bool.self, forKey: .removalOK)
         removalError = try c.decode(String.self, forKey: .removalError)
+        removalHints = try c.decodeIfPresent([String].self, forKey: .removalHints) ?? []
         filesOK = try c.decodeIfPresent(Bool.self, forKey: .filesOK) ?? true
         filesError = try c.decodeIfPresent(String.self, forKey: .filesError) ?? ""
     }
@@ -56,15 +70,25 @@ struct WorkbenchDeleted: Decodable, Equatable {
         case id, deleted
         case removalOK = "removal_ok"
         case removalError = "removal_error"
+        case removalHints = "removal_hints"
         case filesOK = "files_ok"
         case filesError = "files_error"
     }
 
     /// The non-blocking warning for a delete whose cleanup partly failed, or
-    /// nil when everything was removed.
+    /// nil when everything was removed. Hints name the exact file linked
+    /// outside the folder and what to remove; `removal_error` then carries
+    /// only the other failures (Go's `devpack.WithoutHinted`), so none hides
+    /// behind the hints.
     var cleanupWarning: String? {
         var parts: [String] = []
-        if !removalOK { parts.append("cleaning its folder failed: \(removalError)") }
+        if !removalHints.isEmpty {
+            parts.append("Watchtower could not clean a file linked outside its folder. "
+                + removalHints.map { $0 + "." }.joined(separator: " "))
+        }
+        if !removalOK, !removalError.isEmpty || removalHints.isEmpty {
+            parts.append("cleaning its folder failed: \(removalError)")
+        }
         if !filesOK { parts.append("removing its stored images failed: \(filesError)") }
         return parts.isEmpty ? nil : "The workbench was deleted, but " + parts.joined(separator: "; ")
     }
@@ -673,33 +697,47 @@ struct WorkbenchCLI {
 
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
-    /// Desktop never does.
-    func gitStatus(projectID: Int64) async throws -> WorkbenchGitStatus {
-        let data = try await runner.run(args: ["workbench", "git", "status", "--workbench", String(projectID), "--json"])
+    /// Desktop never does. `folder` (absolute) asks about that folder instead
+    /// of the workbench folder (board #565): Go places it — `folder_scope`,
+    /// `folder_root`, `worktree_name` — and reports that worktree's status.
+    /// nil (the main folder) sends no flag, so the main argv is unchanged.
+    func gitStatus(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitStatus {
+        var args = ["workbench", "git", "status", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
     }
 
-    /// The local branches, newest commit first.
-    func gitBranches(projectID: Int64) async throws -> WorkbenchGitBranches {
-        let data = try await runner.run(args: ["workbench", "git", "branches", "--workbench", String(projectID), "--json"])
+    /// The local branches, newest commit first. `folder`: a session's
+    /// worktree, as for `gitStatus` — a folder in none of the repository's
+    /// worktrees comes back refused (`folder_not_a_worktree`), exit 0.
+    func gitBranches(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitBranches {
+        var args = ["workbench", "git", "branches", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitBranches.self, from: data)
     }
 
     /// Switches the folder to a local branch. Go decides the guards: without
     /// `stash` a dirty tree comes back as `needs_confirmation`, and so does
     /// `agentRunning` (a fact only the Desktop knows) without `confirmAgent`.
-    /// A refusal exits 0 with the envelope.
+    /// A refusal exits 0 with the envelope. `folder`: switch a session's
+    /// worktree instead of the workbench folder (board #565).
     func gitSwitch(
         projectID: Int64,
         branch: String,
         stash: Bool,
         agentRunning: Bool,
-        confirmAgent: Bool
+        confirmAgent: Bool,
+        folder: String? = nil
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }
         if agentRunning { args.append("--agent-running") }
         if confirmAgent { args.append("--confirm-agent") }
+        if let folder { args += ["--folder", folder] }
         args.append("--json")
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
@@ -707,8 +745,12 @@ struct WorkbenchCLI {
 
     /// Creates a branch from HEAD and switches to it (`git switch -c`): no
     /// files change, so no guard applies.
-    func gitCreateBranch(projectID: Int64, name: String) async throws -> WorkbenchGitSwitchResult {
-        let data = try await runner.run(args: ["workbench", "git", "create", "--workbench", String(projectID), "--name", name, "--json"])
+    /// `folder`: in a session's worktree (board #565).
+    func gitCreateBranch(projectID: Int64, name: String, folder: String? = nil) async throws -> WorkbenchGitSwitchResult {
+        var args = ["workbench", "git", "create", "--workbench", String(projectID), "--name", name]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
     }
 

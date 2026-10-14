@@ -148,7 +148,7 @@ final class FastLaneTests: XCTestCase {
 
     private func latestPayloads(_ transport: StubHubTransport, kind: SliceKind) throws -> [String: [String: Any]] {
         var latest: [String: [String: Any]] = [:]
-        for saved in transport.saved where saved.record.kind == kind.rawValue {
+        for saved in try transport.openedSaves() where saved.record.kind == kind.rawValue {
             latest[saved.record.recordName] = try SliceJSON.object(saved.record.payload)
         }
         return latest
@@ -202,7 +202,7 @@ final class FastLaneTests: XCTestCase {
         let clock = FakeClock()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(),
             sources: [terminalSlice(liveness)],
             clock: { clock.now },
             sendNow: { await transport.sendNow() }
@@ -257,7 +257,7 @@ final class FastLaneTests: XCTestCase {
         _ = try HubIdentity(sidecar: sidecar).ensureEnabledAt(started)
         let wall = self.wall
         let publisher = SlicePublisher(
-            dbPool: pool, state: sidecar, transport: transport,
+            dbPool: pool, state: sidecar, transport: transport.sealing(names: sidecar),
             sources: [terminalSlice(liveness), AskAlertSlice(sidecar: sidecar) { wall.now }]
         )
         let log = NudgeLog()
@@ -270,8 +270,8 @@ final class FastLaneTests: XCTestCase {
         try hookWrites([row.id], "working", at: 1)
         await center.poll()
         try await publisher.publishOnce()
-        let alerts = { transport.saved.filter { $0.record.kind == SliceKind.askAlert.rawValue }.count }
-        XCTAssertEqual(alerts(), 1, "the open ask's alert")
+        let alerts = { try transport.openedSaves().filter { $0.record.kind == SliceKind.askAlert.rawValue }.count }
+        XCTAssertEqual(try alerts(), 1, "the open ask's alert")
 
         let turnEnd = stamp(2)
         let other = try DatabaseQueue(path: path)
@@ -299,7 +299,7 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(published["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(published["state_glyph"] as? String, "person.2.fill")
         XCTAssertEqual(published["state_tone"] as? String, "green")
-        XCTAssertEqual(alerts(), 1, "no second ask_alert")
+        XCTAssertEqual(try alerts(), 1, "no second ask_alert")
     }
 
     /// #411 §10 (board #73): two failed staleness probes show the count over
@@ -317,7 +317,7 @@ final class FastLaneTests: XCTestCase {
         let liveness = SessionLivenessBox()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport, sources: [terminalSlice(liveness)]
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [terminalSlice(liveness)]
         )
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         lane.start()
@@ -358,7 +358,7 @@ final class FastLaneTests: XCTestCase {
         let clock = FakeClock()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport, sources: [terminalSlice(liveness)]
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [terminalSlice(liveness)]
         ) { clock.now }
         let lane = makeLane(center, liveness: liveness) { publisher.nudge(kinds: $0) }
         lane.start()
@@ -547,7 +547,7 @@ final class FastLaneTests: XCTestCase {
         let clock = FakeClock()
         let transport = StubHubTransport()
         let publisher = SlicePublisher(
-            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport,
+            dbPool: pool, state: try HubSyncState.inMemory(), transport: transport.sealing(),
             sources: [terminalSlice(liveness)],
             clock: { clock.now },
             sendNow: { await transport.sendNow() }

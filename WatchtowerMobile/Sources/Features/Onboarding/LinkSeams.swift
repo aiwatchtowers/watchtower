@@ -8,8 +8,9 @@ protocol LinkContainer: Sendable {
     /// `CKContainer.userRecordID().recordName`.
     func userRecordName() async throws -> String
     /// Fetches every URL's share metadata, then accepts them all; throws if
-    /// any metadata fetch or accept fails.
-    func acceptShares(_ urls: [URL]) async throws
+    /// any metadata fetch or accept fails, or if the shares are not exactly
+    /// `hubID`'s two zone-wide shares owned by `ownerName` (nothing accepted).
+    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws
     /// Leaves the Mac's shares: deletes the accepted zone-wide share records
     /// of `hubID`'s two zones from this phone's shared database.
     func leaveShares(ownerName: String, hubID: String) async throws
@@ -44,12 +45,23 @@ protocol LinkHost: AnyObject {
     func linkedHubs() -> [HubRow]
     /// Settings → Macs: `hubID` moves to `index` in the registry's order.
     func moveHub(_ hubID: String, to index: Int)
-    /// `hubID`'s transport in `scope`'s database: its session if one runs in
-    /// that scope; else a new session in its own directory (a row in another
-    /// scope, or frozen, is removed first with its recordings held).
-    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
-    /// One fetch of `hubID`'s session, then this phone's grant there.
-    func fetchGrant(hubID: String, deviceID: String) async -> DeviceGrant?
+    /// `hubID`'s transport in `scope`'s database, sealing with the phone's
+    /// keys for that hub: its session if one runs in that scope; else a new
+    /// session in its own directory (a row in another scope, or frozen, is
+    /// removed first with its recordings held). `fresh` (a new pairing:
+    /// the replica must not keep an old link's rollback marks, outbox or
+    /// sealed recordings) removes a running session of the hub first too.
+    /// A new session's seqs start above the ceiling a removal of the same
+    /// hub left in this process (F29).
+    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
+    /// One fetch of `hubID`'s session, then this phone's keybox there
+    /// (`device_grant-<device_id>`, the epoch keys included).
+    func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// `hubID`'s keybox as its replica holds it, without a fetch.
+    func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// Epoch keys of `hubID` joined the Keychain: the rows its replica
+    /// stored but could not open yet are opened now.
+    func keysMerged(hubID: String)
     /// The link completed: adds or updates the row, sets the device on the
     /// session (writes on) and activates it. Throws `HubRegistryError.full`
     /// for a new hub when every slot is taken.
@@ -59,15 +71,17 @@ protocol LinkHost: AnyObject {
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
     /// Removes `hubID`: deletes its row, then sends `farewell` (the
     /// `unlinked` device record of an unlink; nil sends nothing) through
-    /// the hub's own transport and waits, bounded, for it to leave the send
-    /// queue; then stops its session (a running capture stopped and saved),
-    /// hands its recordings to the hold (`keepRecordings`; false on an
-    /// iCloud account change, when they are lost and counted) and deletes
-    /// its files; the next hub in order becomes active. Returns what was
-    /// lost. Also drops a session that never got a row (a failed link).
+    /// the hub's own transport (sealed) and waits, bounded, for it to leave
+    /// the send queue; then stops its session (a running capture stopped
+    /// and saved), hands its recordings to the hold (`keepRecordings`;
+    /// false on an iCloud account change, when they are lost and counted)
+    /// and deletes its files; the next hub in order becomes active. Returns
+    /// what was lost. Also drops a session that never got a row (a failed
+    /// link). The hub's keys stay: the link flow removes them.
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe
     /// The Mac removed this phone: the row turns `unlinked_by_mac` and the
-    /// session freezes (no sync, no writes, data readable).
+    /// session freezes (no sync, no writes, data readable with the hub's
+    /// keys, which stay until Forget).
     func markRemovedByMac(_ hubID: String) async
     /// The removal check's first look at `hubID` (#64), kept on its row.
     func setGrantMissingSince(_ date: Date?, hubID: String)

@@ -26,10 +26,12 @@ final class FakeTerminalSession: TerminalSessionProcess {
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
     func exit(_ code: Int32?) { onExit?(code) }
 
-    private(set) var pathLinkFolder: String?
+    private var pathLinkFolderSource: (() -> String)?
+    /// The folder a click would resolve in now.
+    var pathLinkFolder: String? { pathLinkFolderSource?() }
     private(set) var openPathLink: ((TerminalPathLinks.Location) -> Void)?
-    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
-        pathLinkFolder = folder
+    func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+        pathLinkFolderSource = folder
         openPathLink = open
     }
 
@@ -431,6 +433,76 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         center.start(try row(project: nil, folder: folder.path), fresh: true)
         XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path))
+    }
+
+    // MARK: - The agent check by place (board #565)
+
+    private func worktreePlace(_ url: URL) -> SessionPlace {
+        let status = WorkbenchGitStatus(git: true, topLevel: url.path)
+        return .worktree(name: url.lastPathComponent, root: url, status: status)
+    }
+
+    /// A live row of the workbench proven in another worktree does not
+    /// count; one in the switched work tree does.
+    func testAWorkbenchRowCountsByItsWorktree() throws {
+        let worktreeA = try dir(".claude/worktrees/mobile-a")
+        let worktreeB = try dir(".claude/worktrees/mobile-b")
+        let center = makeCenter()
+        let s = try row(project: 1)
+        center.start(s, fresh: true)
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 1, workTree: worktreeA.path) { _ in self.worktreePlace(worktreeB) })
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 1, workTree: worktreeA.path) { _ in self.worktreePlace(worktreeA) })
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 1, workTree: folder.path) { _ in self.worktreePlace(worktreeA) },
+                       "a worktree nested in the main folder is not the main folder's work tree")
+    }
+
+    /// A row in the main folder counts for the main folder's work tree only.
+    func testAWorkbenchRowInTheMainFolderCountsThereOnly() throws {
+        let worktreeA = try dir(".claude/worktrees/mobile-a")
+        let center = makeCenter()
+        center.start(try row(project: 1), fresh: true)
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 1, workTree: folder.path) { _ in .main })
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 1, workTree: worktreeA.path) { _ in .main })
+    }
+
+    /// An unknown or removed place may be anywhere: it counts for every
+    /// work tree, so the confirmation is never skipped for it.
+    func testAnUnknownOrRemovedPlaceCountsAsMaybeHere() throws {
+        let worktreeA = try dir(".claude/worktrees/mobile-a")
+        let center = makeCenter()
+        center.start(try row(project: 1), fresh: true)
+        let removed = SessionPlace.removed(name: "mobile-b", path: folder.path + "/.claude/worktrees/mobile-b")
+        for place in [SessionPlace.unknown, removed] {
+            XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 1, workTree: worktreeA.path) { _ in place }, "\(place)")
+            XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 1, workTree: folder.path) { _ in place }, "\(place)")
+        }
+    }
+
+    /// Another workbench's or a standalone row keeps its folder rule: its
+    /// place is not asked.
+    func testARowOfAnotherWorkbenchIsJudgedByItsFolder() throws {
+        let worktreeA = try dir(".claude/worktrees/mobile-a")
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: worktreeA.path), fresh: true)
+        var asked = false
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: worktreeA.path) { _ in
+            asked = true
+            return .main
+        })
+        XCTAssertFalse(asked)
+    }
+
+    /// ⌘-clicked paths resolve in the session's code root: its worktree
+    /// once the view model says so, else its folder.
+    func testPathLinksResolveInTheSessionsRoot() throws {
+        let worktreeA = try dir(".claude/worktrees/mobile-a")
+        let center = makeCenter()
+        var root: String?
+        center.pathLinkRoot = { _, _ in root }
+        center.start(try row(project: 1), fresh: true)
+        XCTAssertEqual(sessions[0].pathLinkFolder, folder.path, "no root known: the session's folder")
+        root = worktreeA.path
+        XCTAssertEqual(sessions[0].pathLinkFolder, worktreeA.path, "asked again at the click")
     }
 
     func testASessionInASiblingPackageOfTheSameRepositoryCounts() throws {
@@ -1075,8 +1147,8 @@ final class TerminalCenterTests: XCTestCase {
     /// with its workbench; a standalone terminal keeps SwiftTerm's handler.
     func testPathLinksAreWiredForWorkbenchSessionsOnly() throws {
         let center = makeCenter()
-        var opened: [(Int64, TerminalPathLinks.Location)] = []
-        center.onPathLink = { opened.append(($0, $1)) }
+        var opened: [(Int64, Int64, TerminalPathLinks.Location)] = []
+        center.onPathLink = { opened.append(($0, $1, $2)) }
         let workbench = try row(project: 1)
         let standalone = try row(project: nil, kind: .shell)
         center.start(workbench, fresh: true)
@@ -1086,7 +1158,8 @@ final class TerminalCenterTests: XCTestCase {
         let location = TerminalPathLinks.Location(path: "a.go", line: 3, col: nil)
         sessions[0].openPathLink?(location)
         XCTAssertEqual(opened.map(\.0), [1])
-        XCTAssertEqual(opened.map(\.1), [location])
+        XCTAssertEqual(opened.map(\.1), [workbench.id], "the session it was clicked in")
+        XCTAssertEqual(opened.map(\.2), [location])
     }
 
     /// Board #500: a workbench session's `ask #N` is looked up and opened

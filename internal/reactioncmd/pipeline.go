@@ -294,13 +294,17 @@ func (p *Pipeline) release(id int64, emoji string) {
 	}
 }
 
+// reactionSurface is the registry surface reaction commands propose on.
+const reactionSurface = "reaction"
+
 func ledgerKey(channelID, ts, emoji string) string {
 	return channelID + "\x00" + ts + "\x00" + emoji
 }
 
 // resolveTool returns the registered tool a candidate's emoji maps to, or
-// ok=false with the detail of the terminal `skipped` outcome to record — both
-// checks are free (no AI call, no side effect).
+// ok=false with the detail of the terminal `skipped` outcome to record — every
+// check is free (no AI call, no side effect). A tool the reaction surface does
+// not list is refused here, before the compose call, as Propose would.
 func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok bool) {
 	if c.Mapping.Kind != "builtin_tool" || c.Mapping.Tool == "" {
 		return nil, "emoji maps to no built-in tool", false
@@ -308,6 +312,9 @@ func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok
 	tool, ok = p.registry.Get(c.Mapping.Tool)
 	if !ok {
 		return nil, "tool not registered: " + c.Mapping.Tool, false
+	}
+	if !tool.VisibleOn(reactionSurface) {
+		return nil, tool.Name + " is not available on the reaction surface", false
 	}
 	return tool, "", true
 }
@@ -328,11 +335,12 @@ func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool) 
 		return "failed", 0, "compose: " + err.Error(), stepFinalize
 	}
 	// Surface "reaction" keeps these proposals out of any chat conversation;
-	// the External-never-auto-execute rule (AGENT-03) and per-tool trust are
+	// the External-never-auto-execute rule (AGENT-03) and trust per tool and
+	// surface are
 	// enforced inside Propose, so a create_jira_issue reaction always lands as
 	// a pending proposal even if create_target is execute-trusted.
 	binding := tools.Binding{
-		Surface:     "reaction",
+		Surface:     reactionSurface,
 		ContextType: "reaction",
 		ContextID:   c.ChannelID + "@" + c.MessageTS, // REACT-02: real message ref for reminders/brief
 	}

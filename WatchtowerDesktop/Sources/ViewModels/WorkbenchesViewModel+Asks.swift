@@ -18,6 +18,13 @@ extension WorkbenchesViewModel {
         if selectedWorkbenchID != projectID { drill(into: projectID) }
         guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return false }
         if let sessionID = ask.sessionID {
+            // A session waiting in the Undo batch is deleted as far as the
+            // owner can tell (PROJ-17, spec §4.3): no other session on
+            // screen, the deleted row's message.
+            if pendingDeletes.ids.contains(sessionID) {
+                reportSwitchError("That session no longer exists.", projectID: projectID, ticket: beginSwitch(projectID: projectID))
+                return true
+            }
             if keepKeyboard { terminalCenter?.keepKeyboardOnAttach(sessionID) }
             await revealTerminal(projectID: projectID, sessionID: sessionID)
             // A failed open already reports itself; no drawer beside nothing.

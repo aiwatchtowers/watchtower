@@ -274,4 +274,60 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertNil(Pres.upstreamCaption(WorkbenchGitBranch(name: "main", upstream: "origin/main")))
         XCTAssertEqual(Pres.upstreamCaption(WorkbenchGitBranch(name: "old", upstream: "origin/old", upstreamGone: true)), "upstream gone")
     }
+
+    /// Go's detail for this refusal is only the scope word; the owner reads
+    /// what happened instead — a gone worktree and a folder outside the
+    /// repository are told apart.
+    func testFolderNotAWorktreeRefusalText() {
+        for scope in ["missing", ""] {
+            let result = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: scope)
+            XCTAssertEqual(Pres.outcome(result).error,
+                           "This session's worktree is gone — the branch menu is unavailable.", scope)
+        }
+        let outside = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: "outside")
+        XCTAssertEqual(Pres.outcome(outside).error,
+                       "This session's folder is outside this repository — the branch menu is unavailable.")
+    }
+
+    /// A session folder that could not be read names the OS error; a switch
+    /// and the branch list say it in the same words.
+    func testFolderUnreadableRefusalText() {
+        let detail = "reading the folder: lstat /tmp/x: permission denied"
+        let result = WorkbenchGitSwitchResult(refused: "folder_unreadable", refusedDetail: detail)
+        let text = "This session's folder could not be read — the branch menu is unavailable (\(detail))."
+        XCTAssertEqual(Pres.outcome(result).error, text)
+        XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: detail), text)
+        XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: ""),
+                       "This session's folder could not be read — the branch menu is unavailable.")
+    }
+
+    /// A worktree root Go does not place in a worktree gets a note instead
+    /// of the main folder's status; an unresolved place gets one too.
+    func testWorktreeScopeNote() {
+        func status(_ scope: String) -> WorkbenchGitStatus {
+            // swiftlint:disable:next force_try
+            try! JSONDecoder().decode(WorkbenchGitStatus.self, from: Data(#"{"git":true,"folder_scope":"\#(scope)"}"#.utf8))
+        }
+        XCTAssertEqual(Pres.worktreeScopeNote(status("missing")), Pres.folderNotAWorktreeText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("outside")), Pres.folderOutsideTheRepositoryText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("")), Pres.folderUnreadableText(""))
+        XCTAssertEqual(Pres.worktreeScopeNote(status("bogus")), Pres.folderUnreadableText(""))
+        XCTAssertEqual(Pres.worktreeScopeNote(status("worktree")), Pres.folderResolvedElsewhereText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("main")), Pres.folderResolvedToMainText)
+        for note in [Pres.folderNotAWorktreeText, Pres.folderOutsideTheRepositoryText, Pres.folderUnreadableText(""),
+                     Pres.folderResolvedToMainText, Pres.folderResolvedElsewhereText] {
+            XCTAssertTrue(note.hasSuffix("the branch menu is unavailable."), note)
+        }
+        XCTAssertFalse(Pres.folderResolvedElsewhereText.contains("gone"))
+    }
+
+    /// A branch list refused for its folder decodes the refusal.
+    func testABranchListRefusalDecodes() throws {
+        let data = Data(#"{"git":false,"branches":[],"branches_ok":false,"refused":"git_failed","refused_detail":"x"}"#.utf8)
+        let list = try JSONDecoder().decode(WorkbenchGitBranches.self, from: data)
+        XCTAssertEqual(list.refused, "git_failed")
+        XCTAssertEqual(list.refusedDetail, "x")
+        let old = try JSONDecoder().decode(WorkbenchGitBranches.self, from: Data(#"{"git":true}"#.utf8))
+        XCTAssertEqual(old.refused, "", "an older CLI sends none")
+    }
 }

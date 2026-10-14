@@ -198,6 +198,7 @@ func TestAllTablesExist(t *testing.T) {
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
+		"terminal_session_worktrees",
 	}
 
 	for _, table := range expectedTables {

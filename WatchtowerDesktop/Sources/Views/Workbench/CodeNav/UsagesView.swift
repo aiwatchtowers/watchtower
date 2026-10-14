@@ -7,10 +7,10 @@ import WatchtowerCore
 /// `line  text` with the name bold. A click opens the file at the line.
 struct UsagesView: View {
     let usages: CodeUsagesCenter
-    let project: Workbench
+    let root: CodeRoot
 
     var body: some View {
-        if let model = usages.usages(for: project.id) {
+        if let model = usages.usages(for: root) {
             VStack(alignment: .leading, spacing: 0) {
                 header(model)
                 Divider()
@@ -19,11 +19,11 @@ struct UsagesView: View {
                         DisclosureGroup(isExpanded: expansion(of: group.path)) {
                             ForEach(group.rows) { row in
                                 UsageRowView(row: row) {
-                                    Task { await usages.openUsage(row, project: project) }
+                                    Task { await usages.openUsage(row, root: root) }
                                 }
                             }
                         } label: {
-                            UsageGroupLabel(group: group, folder: project.folderURL)
+                            UsageGroupLabel(group: group, folder: root.folder)
                         }
                     }
                 }
@@ -70,8 +70,8 @@ struct UsagesView: View {
     /// matches stream in.
     private func expansion(of path: String) -> Binding<Bool> {
         Binding(
-            get: { usages.usages(for: project.id)?.isCollapsed(path) == false },
-            set: { usages.setCollapsed(!$0, path: path, workbenchID: project.id) }
+            get: { usages.usages(for: root)?.isCollapsed(path) == false },
+            set: { usages.setCollapsed(!$0, path: path, root: root) }
         )
     }
 }

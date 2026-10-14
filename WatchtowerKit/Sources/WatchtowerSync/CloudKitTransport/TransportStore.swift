@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -33,6 +34,11 @@ public final class TransportStore: Sendable {
         try createSchema()
     }
 
+    /// The fetched-asset stash directory (`transport-assets/` next to the
+    /// database); nil for an in-memory store. The phone sets its file
+    /// protection class (mobile E2E D8); the store creates it on demand.
+    public var stashDirectory: URL? { assetsDirectory }
+
     public static func inMemory() throws -> TransportStore {
         try TransportStore(queue: DatabaseQueue())
     }
@@ -58,7 +64,8 @@ public final class TransportStore: Sendable {
                     deleted INTEGER NOT NULL DEFAULT 0,
                     notify_level TEXT,
                     asset_path TEXT,
-                    creator TEXT
+                    creator TEXT,
+                    server_modified_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS pending (
                     record_name TEXT NOT NULL,
@@ -104,6 +111,10 @@ public final class TransportStore: Sendable {
             // creator (the hub's device gate) is fetched metadata: events only.
             if try !db.columns(in: "events").contains(where: { $0.name == "creator" }) {
                 try db.execute(sql: "ALTER TABLE events ADD COLUMN creator TEXT")
+            }
+            // server_modified_at (target 168, relay hygiene's clock) is fetched metadata too: events only.
+            if try !db.columns(in: "events").contains(where: { $0.name == "server_modified_at" }) {
+                try db.execute(sql: "ALTER TABLE events ADD COLUMN server_modified_at REAL")
             }
             // hub_id (multi-hub spec §4.4): the hub this store's state belongs to.
             if try !db.columns(in: "scope").contains(where: { $0.name == "hub_id" }) {
@@ -298,13 +309,15 @@ public final class TransportStore: Sendable {
                 try db.execute(
                     sql: """
                         INSERT INTO events
-                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator)
-                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator,
+                             server_modified_at)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
                         """,
                     arguments: [
                         record.zone.rawValue, record.recordName, record.kind,
                         record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName
+                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName,
+                        record.serverModifiedAt?.timeIntervalSince1970
                     ]
                 )
             }
@@ -358,7 +371,8 @@ public final class TransportStore: Sendable {
                         payload: row["payload"] ?? Data(),
                         notifyLevel: row["notify_level"],
                         assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:)),
-                        creatorUserRecordName: row["creator"]
+                        creatorUserRecordName: row["creator"],
+                        serverModifiedAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:))
                     ))
                 }
             }
@@ -368,20 +382,40 @@ public final class TransportStore: Sendable {
 
     // MARK: - Fetched-asset stash
 
+    /// The largest fetched asset the store stashes: a phone recording at the
+    /// uploader's cap, sealed (the largest asset any record legitimately
+    /// carries; a meeting transcript's is smaller).
+    public static let maximumStashBytes = RecordingUploader.maximumSealedAssetBytes
+
     /// Copies a fetched CKAsset file into the store's durable asset
     /// directory, named after the record so a re-fetch overwrites rather
     /// than accumulates. Returns the stashed URL, or nil when there is
-    /// nowhere to stash (in-memory store) or the copy failed — callers keep
-    /// the original (temporary) URL in that case, best-effort. A relay
-    /// upload's consumer (the desktop hub) deletes the stashed file once
-    /// ingested; a data-zone stash goes at `compactEvents(in: .data, …)`.
-    func stashAsset(from url: URL, recordName: String) -> URL? {
+    /// nowhere to stash (in-memory store), the file is over `maxBytes` or
+    /// the copy failed — callers keep the original (temporary) URL in that
+    /// case, best-effort. A relay upload's consumer (the desktop hub)
+    /// deletes the stashed file once ingested; a data-zone stash goes at
+    /// `compactEvents(in: .data, …)`.
+    ///
+    /// The record name is server-supplied and unauthenticated here (the
+    /// stash runs before anything is opened), so the file name is its
+    /// SHA-256 with the zone, in hex: never a path of the sender's choosing.
+    func stashAsset(
+        from url: URL, recordName: String, zone: CloudZoneID, maxBytes: Int64 = TransportStore.maximumStashBytes
+    ) -> URL? {
         guard let assetsDirectory else { return nil }
-        // Record names are `recupload-<uuid>` shaped, but sanitize anyway:
-        // a path separator in a name must not escape the stash directory.
-        let safeName = recordName.replacingOccurrences(of: "/", with: "_")
-        let destination = assetsDirectory.appendingPathComponent(safeName)
+        let destination = assetsDirectory.appendingPathComponent(Self.stashFileName(recordName: recordName, zone: zone))
+        guard destination.deletingLastPathComponent().standardizedFileURL == assetsDirectory.standardizedFileURL else {
+            logger.error("stash path for \(recordName, privacy: .public) left the stash directory: not stashed")
+            return nil
+        }
         do {
+            // An unreadable size is refused like an oversized one (fail closed).
+            let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
+            guard let size, size <= maxBytes else {
+                let shown = size.map { "\($0) bytes" } ?? "an unreadable size"
+                logger.warning("fetched asset for \(recordName, privacy: .public) has \(shown, privacy: .public): not stashed")
+                return nil
+            }
             try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
@@ -395,6 +429,12 @@ public final class TransportStore: Sendable {
                 """)
             return nil
         }
+    }
+
+    /// The stash file name of a record: hex SHA-256 of zone and name.
+    static func stashFileName(recordName: String, zone: CloudZoneID) -> String {
+        let digest = SHA256.hash(data: Data("\(zone.rawValue)\u{0}\(recordName)".utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - CK system fields
@@ -638,8 +678,10 @@ public final class TransportStore: Sendable {
         }
     }
 
-    /// Drops buffered events that are BOTH older than `cutoff` (by `modified_at`)
-    /// AND at or below the consumer floor `token`. Returns the number of rows deleted.
+    /// Drops buffered events that are BOTH older than `cutoff` (by the server's
+    /// `server_modified_at`, else the writer's `modified_at` for an event buffered
+    /// before it was kept) AND at or below the consumer floor `token`. Returns the
+    /// number of rows deleted.
     ///
     /// Why AGE-based and not purely token-based (the Plan 3 final-review argument):
     /// sweeping everything ≤ the consumer token is `compactEvents` — it deletes
@@ -676,7 +718,7 @@ public final class TransportStore: Sendable {
     public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) throws -> Int {
         try queue.write { db in
             try db.execute(
-                sql: "DELETE FROM events WHERE zone = ? AND modified_at < ? AND seq <= ?",
+                sql: "DELETE FROM events WHERE zone = ? AND COALESCE(server_modified_at, modified_at) < ? AND seq <= ?",
                 arguments: [zone.rawValue, cutoff.timeIntervalSince1970, token.value]
             )
             return db.changesCount

@@ -160,7 +160,7 @@ func TestConfluencePageTools_Shape(t *testing.T) {
 	assert.Contains(t, edit.Description, "A section ends at the first ⟦layout boundary⟧ line", "the tool docs name where a section stops")
 	require.NoError(t, reg.Register(get))
 	require.NoError(t, reg.Register(edit))
-	assert.ErrorIs(t, reg.SetTrust("edit_confluence_page", TrustExecute), ErrExternalExecute)
+	assert.ErrorIs(t, reg.SetTrust("edit_confluence_page", "main", TrustExecute), ErrExternalExecute)
 	for _, rt := range ReadTools() {
 		assert.NotEqual(t, "get_confluence_page", rt.Name, "a live network read is chat-mode only, never dev-mode MCP (DEV-01)")
 	}

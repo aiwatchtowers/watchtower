@@ -119,6 +119,6 @@ func TestCreateTarget_Registration(t *testing.T) {
 	assert.Equal(t, "create_target", tool.Name)
 	assert.Equal(t, AccessWrite, tool.Access)
 	assert.False(t, tool.External)
-	assert.Equal(t, []string{"main"}, tool.Surfaces)
+	assert.Equal(t, []string{"main", "reaction"}, tool.Surfaces)
 	require.NotNil(t, tool.InputSchema)
 }

@@ -251,7 +251,7 @@ final class WorkbenchQueriesTests: XCTestCase {
             let fresh = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: "new?", targetID: t)
             let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
             let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s, title: "Review the plan")
-            let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
+            let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "check", title: "Check the build")
             _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
             let other = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
             _ = try TestDatabase.insertOwnerAsk(d, projectID: other)
@@ -265,10 +265,10 @@ final class WorkbenchQueriesTests: XCTestCase {
             XCTAssertEqual(snap.questions.first?.targetTitle, "Task 1")
             XCTAssertEqual(snap.lastAgentCommentID, fresh)
             XCTAssertEqual(snap.openAsks, [
-                ask: .init(title: "Review the plan", sessionID: s),
-                outside: .init(title: "Check the build"),
-                broken: .init(title: "Broken")
-            ], "this workbench's open asks only")
+                ask: .init(title: "Review the plan", sessionID: s, kind: .question),
+                outside: .init(title: "Check the build", kind: .check),
+                broken: .init(title: "Broken", kind: .question)
+            ], "this workbench's open asks only, each with its kind")
             XCTAssertEqual(snap.targets[t], .init(title: "Task 1", status: "in_progress"))
             XCTAssertTrue(snap.ownerTouched.isEmpty)
         }

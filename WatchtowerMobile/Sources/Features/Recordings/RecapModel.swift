@@ -15,6 +15,9 @@ enum TranscriptBody: Equatable {
     /// The record carries no asset (yet).
     case notArrived
     case unreadable(String)
+    /// The keys to open it cannot be read now (the phone is locked, or an
+    /// epoch's keys have not arrived): it opens once they can.
+    case waitingForKeys
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "TranscriptBody")
 
@@ -115,6 +118,11 @@ final class RecapBodyModel {
                 // The screen shows the failure until the restarted observation delivers.
                 self?.loaded = RecapLoader.Loaded(body: .unreadable(error.localizedDescription), marks: [])
             },
+            onWaitingForKeys: { [weak self] in
+                // A body already read stays; none yet says why.
+                guard let self, loaded == nil else { return }
+                loaded = RecapLoader.Loaded(body: .waitingForKeys, marks: [])
+            },
             onChange: { [weak self] value in self?.loaded = value }
         )
     }
@@ -209,6 +217,9 @@ struct RecapModel {
         case .unreadable:
             segments = []
             transcriptError = "The transcript could not be read on this phone."
+        case .waitingForKeys:
+            segments = []
+            transcriptError = "Unlock this iPhone to read the transcript."
         }
         // Each speaker keeps one colour, in order of first appearance.
         var toneBySpeaker: [String: PhoneTone] = [:]

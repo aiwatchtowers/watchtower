@@ -12,6 +12,16 @@ struct AssistantToolRow: Identifiable, Equatable, Decodable, Sendable {
     let alwaysAsk: Bool
     let surfaces: [String]
     var trust: String
+    /// Trust per chat surface (`trust_by_surface`, target 167): an execute on
+    /// one surface never covers another. Empty from a CLI older than the field.
+    let trustBySurface: [String: String]
+
+    /// The surfaces a trust switch is offered on: every surface but the
+    /// workbench, whose write tools always apply directly (DEV-06).
+    var trustSurfaces: [String] { surfaces.filter { $0 != AssistantToolSurface.workbench } }
+
+    /// On the workbench surface only: no switch, a note instead.
+    var appliesOnlyInWorkbench: Bool { !surfaces.isEmpty && trustSurfaces.isEmpty }
 
     /// Locked to "ask": SetTrust refuses execute for both kinds.
     var isLockedToAsk: Bool { external || alwaysAsk }
@@ -19,6 +29,7 @@ struct AssistantToolRow: Identifiable, Equatable, Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case name, description, access, external, surfaces, trust
         case alwaysAsk = "always_ask"
+        case trustBySurface = "trust_by_surface"
     }
 
     init(from decoder: Decoder) throws {
@@ -31,6 +42,13 @@ struct AssistantToolRow: Identifiable, Equatable, Decodable, Sendable {
         alwaysAsk = try c.decodeIfPresent(Bool.self, forKey: .alwaysAsk) ?? false
         surfaces = try c.decode([String].self, forKey: .surfaces)
         trust = try c.decode(String.self, forKey: .trust)
+        trustBySurface = try c.decodeIfPresent([String: String].self, forKey: .trustBySurface) ?? [:]
+    }
+
+    /// Whether `surface` runs this tool without approval; an older CLI's
+    /// single `trust` stands for every surface.
+    func executes(on surface: String) -> Bool {
+        (trustBySurface[surface] ?? trust) == "execute"
     }
 }
 
@@ -66,9 +84,13 @@ final class AssistantToolsViewModel {
         }
     }
 
-    func setTrust(_ name: String, execute: Bool) async {
+    /// Sets the trust on one surface only, so turning one switch on never
+    /// grants execute on the tool's other surfaces.
+    func setTrust(_ name: String, surface: String, execute: Bool) async {
         do {
-            _ = try await runner().run(args: ["actions", "trust", name, execute ? "execute" : "ask"])
+            _ = try await runner().run(
+                args: ["actions", "trust", name, execute ? "execute" : "ask", "--surface", surface]
+            )
             error = nil
         } catch {
             self.error = error.localizedDescription

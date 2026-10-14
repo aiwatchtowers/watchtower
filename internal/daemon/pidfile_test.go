@@ -635,3 +635,13 @@ func writeTaggedPID(t *testing.T, path string, pid int, startUnix int64) {
 	content := fmt.Sprintf("%d %d %s", pid, startUnix, pidFileFormatTag)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
+
+// The workspace directory holds the database and logs: one WritePID
+// creates is the owner's alone.
+func TestWritePID_CreatesPrivateDirectories(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "workspace")
+	require.NoError(t, WritePID(filepath.Join(dir, "daemon.pid")))
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}

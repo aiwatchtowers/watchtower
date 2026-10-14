@@ -85,7 +85,8 @@ func NewCreateTarget() *Tool {
 			"remember, remind, or track something as a task.",
 		InputSchema: schema,
 		Access:      AccessWrite,
-		Surfaces:    []string{"main"},
+		// "reaction": the seeded :white_check_mark: reaction command proposes it.
+		Surfaces: []string{"main", "reaction"},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a createTargetArgs
 			if err := decodeStrict(raw, &a); err != nil {

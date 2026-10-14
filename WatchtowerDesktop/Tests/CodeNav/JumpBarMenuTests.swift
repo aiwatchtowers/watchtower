@@ -17,6 +17,7 @@ final class JumpBarMenuTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suite: String!
     private var project: Workbench!
+    private var root: CodeRoot { project.mainCodeRoot }
     private var codeIndex: CodeIndexCenter!
     private var navigation: CodeNavigationCenter!
     private var beeps = 0
@@ -168,26 +169,26 @@ final class JumpBarMenuTests: XCTestCase {
         navigation.workbenches = vm
         vm.codeFiles.codeIndex = codeIndex
         vm.codeFiles.navigation = navigation
-        codeIndex.index(for: project.id).applyIndexLines(
+        codeIndex.index(for: root).applyIndexLines(
             [.file(CodeIndexFileResult(file: path, lang: "swift", symbols: symbols)),
              .file(CodeIndexFileResult(file: "src/app.swift", lang: "swift", symbols: []))],
             from: .update
         )
         final class Shown { var menus: [(JumpBarMenu, NSView)] = [] }
         let shown = Shown()
-        let controller = JumpBarController(files: vm.codeFiles, project: project) { shown.menus.append(($0, $1)) }
+        let controller = JumpBarController(files: vm.codeFiles, root: root) { shown.menus.append(($0, $1)) }
         return (controller, vm, { shown.menus })
     }
 
     func testTheSnapshotFollowsTheCursorInTheFileOnScreen() {
         let (controller, vm, _) = makeController()
         XCTAssertNil(controller.snapshot(), "no tab open")
-        vm.codeFiles.open(path, project: project, preview: false)
+        vm.codeFiles.open(path, root: root, preview: false)
         XCTAssertEqual(controller.snapshot()?.model.segments.last, .file(path: path), "no cursor reported yet")
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 13, col: 2), workbenchID: project.id)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 13, col: 2), root: root)
         XCTAssertEqual(controller.snapshot()?.model.segments.suffix(2), [.symbol(store), .symbol(load)])
         XCTAssertEqual(controller.snapshot()?.model.segments.first, .folder(name: "acme-jump-bar", path: ""))
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/app.swift", line: 13, col: 2), workbenchID: project.id)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/app.swift", line: 13, col: 2), root: root)
         XCTAssertEqual(controller.snapshot()?.model.segments.last, .file(path: path), "a cursor in another file does not count")
     }
 
@@ -195,25 +196,25 @@ final class JumpBarMenuTests: XCTestCase {
     /// "text search" like an unsupported one; a code file says nothing.
     func testAMarkupFileSaysTextSearch() {
         let (controller, vm, _) = makeController()
-        codeIndex.index(for: project.id).applyIndexLines(
+        codeIndex.index(for: root).applyIndexLines(
             [.file(CodeIndexFileResult(file: "site.css", lang: "css", symbols: [], holdsDefinitions: false))], from: .update
         )
-        vm.codeFiles.open("site.css", project: project, preview: false)
+        vm.codeFiles.open("site.css", root: root, preview: false)
         XCTAssertEqual(controller.snapshot()?.model.status, .textSearch(language: "CSS"))
-        vm.codeFiles.open(path, project: project, preview: false)
+        vm.codeFiles.open(path, root: root, preview: false)
         XCTAssertNil(controller.snapshot()?.model.status)
     }
 
     func testControlSixShowsTheLastSegmentsMenuWithTheFilter() throws {
         let (controller, vm, shown) = makeController()
         navigation.registerJumpBar(controller, for: project.id)
-        vm.codeFiles.open(path, project: project, preview: false)
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 4, col: 2), workbenchID: project.id)
+        vm.codeFiles.open(path, root: root, preview: false)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 4, col: 2), root: root)
         let segments = try XCTUnwrap(controller.snapshot()?.model.segments)
         let anchors = segments.indices.map { _ in NSView() }
         anchors.enumerated().forEach { controller.setAnchor($1, segment: $0) }
 
-        navigation.showFileSymbols(project: project)
+        navigation.showFileSymbols(root: root)
         XCTAssertEqual(beeps, 0)
         let (menu, anchor) = try XCTUnwrap(shown().first)
         XCTAssertTrue(anchor === anchors.last, "dropped from the last segment")
@@ -222,24 +223,24 @@ final class JumpBarMenuTests: XCTestCase {
 
         // A pick goes through the navigation center: on Back, opened at the line.
         trigger(try XCTUnwrap(menu.menu.items.first { $0.title == "load" }))
-        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.line, 12)
-        XCTAssertTrue(navigation.canGoBack(workbenchID: project.id))
+        XCTAssertEqual(vm.codeFiles.reveals[root]?.line, 12)
+        XCTAssertTrue(navigation.canGoBack(root: project.mainCodeRoot))
     }
 
     func testControlSixBeepsWithoutSymbols() {
         let (controller, vm, shown) = makeController()
         navigation.registerJumpBar(controller, for: project.id)
-        vm.codeFiles.open("src/app.swift", project: project, preview: false)
+        vm.codeFiles.open("src/app.swift", root: root, preview: false)
         controller.setAnchor(NSView(), segment: 2)
-        navigation.showFileSymbols(project: project)
+        navigation.showFileSymbols(root: root)
         XCTAssertEqual(beeps, 1)
         XCTAssertTrue(shown().isEmpty)
     }
 
     func testAMiddleSegmentShowsItsNeighbours() throws {
         let (controller, vm, shown) = makeController()
-        vm.codeFiles.open(path, project: project, preview: false)
-        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 4, col: 2), workbenchID: project.id)
+        vm.codeFiles.open(path, root: root, preview: false)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: path, line: 4, col: 2), root: root)
         let anchor = NSView()
         controller.setAnchor(anchor, segment: 1)
         controller.showMenu(segment: 1)

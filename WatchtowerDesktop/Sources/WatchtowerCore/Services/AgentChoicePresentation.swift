@@ -18,7 +18,7 @@ package struct AgentChoice: Identifiable, Equatable, Sendable {
 /// Standalone terminals are not covered: Codex needs a workbench.
 package enum AgentChoicePresentation {
     /// "New Claude Code session", "New Codex session", in a fixed order.
-    package static func newSession(available: (AgentKind) -> Bool) -> [AgentChoice] {
+    package static func newSessionAgentChoices(available: (AgentKind) -> Bool) -> [AgentChoice] {
         AgentKind.allCases.map { choice($0, title: "New \($0.displayName) session", available: available($0)) }
     }
 

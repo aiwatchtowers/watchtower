@@ -29,6 +29,9 @@ struct LinkedDevice: Equatable, Sendable {
 /// Every choice is persisted in `UserDefaults`, so it survives a relaunch;
 /// the two Workbench choices per hub (each Mac has its own `device` record),
 /// the alerts choice once for the phone.
+/// The record goes out sealed (`SecureTransport`, mobile E2E): the hub
+/// drops a plaintext `device` record, and takes a sealed one only when its
+/// payload names the sending device.
 @MainActor
 @Observable
 final class DeviceSettings {
@@ -45,7 +48,7 @@ final class DeviceSettings {
     /// Set by the environment when the phone links or unlinks.
     var linkedDevice: LinkedDevice?
 
-    @ObservationIgnored private let transport: any CloudSyncTransport
+    @ObservationIgnored private let transport: SecureTransport
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let keys: Keys
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -80,7 +83,7 @@ final class DeviceSettings {
     }
 
     init(
-        transport: any CloudSyncTransport,
+        transport: SecureTransport,
         defaults: UserDefaults,
         hubID: String,
         now: @escaping @Sendable () -> Date = { Date() }

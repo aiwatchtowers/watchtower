@@ -44,9 +44,11 @@ extension AppState {
         }
         let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
         let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let hidden = HiddenSessionIDsBox()
         let sessions = TerminalSessionSlice(
             liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
+            hiddenIDs: { hidden.current }
         )
         // Each session's own report (`--session S --json`, scoped by the CLI,
         // PROJ-14) and the timeline's state milestones; no CLI, no reports.
@@ -68,16 +70,18 @@ extension AppState {
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
             RecordingJobSlice(sidecar: storage.sidecar),
             SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
+        // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
             isLinked: hasPhone,
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
         )
+        followPendingDeletes(into: hidden)
         // The companions' changes (git status, summaries, reports, phone
         // recording jobs) are normal kinds: the next full tick diffs them.
         let fastLane = FastLane(
@@ -97,6 +101,14 @@ extension AppState {
         )
         wireTyping(hub.linkCenter, inputs: inputs)
         return hub
+    }
+
+    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
+    /// change. Session and workbench records are normal kinds (board #724):
+    /// the next full tick drops the hidden sessions, no nudge.
+    private func followPendingDeletes(into hidden: HiddenSessionIDsBox) {
+        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
+        workbenchesViewModel?.onPendingDeletesChanged = { ids in hidden.store(ids) }
     }
 
     /// The asks', board writes' and session starts' handlers (spec §6).
@@ -139,7 +151,7 @@ extension AppState {
                 dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
                 status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
                 deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-                lateEcho: RelayProcessor.lateEcho(transport: storage.transport, sidecar: storage.sidecar)
+                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar)
             )
         }
     }
@@ -170,13 +182,13 @@ extension AppState {
         let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
         mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            transport: storage.secure, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
             deviceRecords: linkCenter?.relayRoute
         )
         let hub = MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, companions: companions
+            hostInfo: hostInfo, keyring: storage.keyring, companions: companions
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
         linkCenter?.attach(to: hub)
         return hub

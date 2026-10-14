@@ -199,6 +199,16 @@ final class SessionTimelineSliceTests: XCTestCase {
         XCTAssertEqual(SessionTimelineSlice.stateText(.live(.background)), "Agents working")
     }
 
+    /// #534: Ready to check is a milestone text of its own, "Ready for
+    /// review" when every open ask is a review.
+    func testTimelineTextForReadyToCheck() {
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.readyToCheck, openAsks: 2, openQuestionAsks: 0, openReviewAsks: 1)),
+                       "Ready to check")
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.readyToCheck, openAsks: 2, openQuestionAsks: 0, openReviewAsks: 2)),
+                       "Ready for review")
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.waitingOnAsk, openAsks: 1)), "Waiting for you")
+    }
+
     /// Review I1: a change the fast lane reports while the pass's window
     /// read is out (the read returned the state from before it) is
     /// resolved by the next pass, not dropped.

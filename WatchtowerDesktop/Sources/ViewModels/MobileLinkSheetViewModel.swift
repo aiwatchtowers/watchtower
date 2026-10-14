@@ -6,7 +6,10 @@ import WatchtowerSync
 /// on the link center, counts its 10 minutes down, offers New code, and
 /// closes the public link at 0 (`.expired`) and when the sheet closes
 /// (`.sheetClosed`). The open code itself lives on `MobileLinkCenter`; this
-/// model only shows it.
+/// model only shows it. While phones wait for the owner's confirmation
+/// (`MobileLinkCenter.pendingLinks`, mobile E2E spec §2.3), the sheet shows
+/// them with their four-digit codes instead of the QR; Link and Refuse go to
+/// the center.
 @MainActor
 @Observable
 final class MobileLinkSheetViewModel: Identifiable {
@@ -26,6 +29,11 @@ final class MobileLinkSheetViewModel: Identifiable {
     private(set) var remainingSeconds = 0
     /// The QR of the code on screen, rendered once per code.
     private(set) var qrImage: CGImage?
+    /// Why the last Link or Refuse failed; nil once one succeeds.
+    private(set) var decisionError: String?
+
+    /// The link requests waiting for the owner. They live on the center, so they survive the sheet.
+    var pendingLinks: [MobileLinkCenter.PendingLink] { center.pendingLinks }
 
     @ObservationIgnored private let center: MobileLinkCenter
     @ObservationIgnored private let now: () -> Date
@@ -53,6 +61,26 @@ final class MobileLinkSheetViewModel: Identifiable {
         self.sleep = sleep
     }
 
+    /// Pairing code v2: why this waiting row needs a second look, nil when it does not. Two rows with one code
+    /// cannot be told apart by comparing (refuse both); two rows with one name (a photographed QR answered under the
+    /// owner's phone name) are told apart only by the code.
+    func duplicateWarning(for link: MobileLinkCenter.PendingLink) -> String? {
+        Self.duplicateWarning(for: link, among: pendingLinks)
+    }
+
+    nonisolated static func duplicateWarning(
+        for link: MobileLinkCenter.PendingLink, among links: [MobileLinkCenter.PendingLink]
+    ) -> String? {
+        let others = links.filter { $0.id != link.id }
+        if others.contains(where: { $0.sas == link.sas }) {
+            return "Two iPhones show code \(link.sas) — refuse both and show a new code."
+        }
+        if others.contains(where: { $0.name.localizedCaseInsensitiveCompare(link.name) == .orderedSame }) {
+            return "Two iPhones named \"\(link.name)\" are waiting — link only the one whose screen shows this code."
+        }
+        return nil
+    }
+
     /// "9:59".
     var countdownText: String {
         String(format: "%d:%02d", remainingSeconds / 60, remainingSeconds % 60)
@@ -68,6 +96,25 @@ final class MobileLinkSheetViewModel: Identifiable {
     /// New code (and Show a new code once it expired).
     func newCode() async {
         await issue()
+    }
+
+    /// Link: the phone is linked and gets its keys; the code is used. Bound to the code the row showed.
+    func confirm(_ link: MobileLinkCenter.PendingLink) async {
+        await decide { try await $0.confirmLink(deviceID: link.id, sas: link.sas) }
+    }
+
+    /// Refuse: the phone reads `not_confirmed`.
+    func refuse(_ link: MobileLinkCenter.PendingLink) async {
+        await decide { try await $0.refuseLink(deviceID: link.id) }
+    }
+
+    private func decide(_ decision: (MobileLinkCenter) async throws -> Void) async {
+        do {
+            try await decision(center)
+            decisionError = nil
+        } catch {
+            decisionError = error.localizedDescription
+        }
     }
 
     /// The sheet closed: no more countdown, and the public link closes.

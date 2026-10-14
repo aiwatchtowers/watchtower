@@ -46,6 +46,8 @@ final class OpenQuicklySession {
     static let textSearchMax = 500
 
     let project: Workbench
+    /// The folder searched and opened in (the page's code root).
+    let root: CodeRoot
     let index: WorkbenchCodeIndex
     /// The git marks when the panel opened (file rows show them).
     let gitStatuses: [String: GitFileStatus]
@@ -71,6 +73,7 @@ final class OpenQuicklySession {
 
     init(
         project: Workbench,
+        root: CodeRoot,
         index: WorkbenchCodeIndex,
         scope: CodeSearchScope,
         boosts: CodeRankingBoosts,
@@ -80,6 +83,7 @@ final class OpenQuicklySession {
         askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled
     ) {
         self.project = project
+        self.root = root
         self.index = index
         self.boosts = boosts
         self.gitStatuses = gitStatuses
@@ -201,7 +205,7 @@ final class OpenQuicklySession {
     private func startTextSearch(_ query: String) {
         searchedQuery = query
         let options = CodeSearchOptions(query: query, max: Self.textSearchMax, context: 1)
-        run = startSearch(project.folderURL, options, { [weak self] match in
+        run = startSearch(root.folder, options, { [weak self] match in
             self?.matchArrived(match, query: query)
         }, { [weak self] outcome in
             self?.searchFinished(outcome, query: query)
@@ -247,7 +251,7 @@ final class OpenQuicklySession {
     func loadPreview(path: String, line: Int) async {
         let key = Self.previewKey(path: path, line: line)
         guard previews[key] == nil else { return }
-        let url = project.folderURL.appendingPathComponent(path)
+        let url = root.folder.appendingPathComponent(path)
         let preview = await Task.detached(priority: .userInitiated) { () -> OpenQuicklyFilePreview in
             do {
                 guard let text = String(bytes: try Data(contentsOf: url), encoding: .utf8) else {
@@ -275,6 +279,8 @@ final class OpenQuicklyCenter {
     /// The workbench page on screen and its window.
     struct Host {
         let project: Workbench
+        /// The page's code root: what Open Quickly searches and opens in.
+        let root: CodeRoot
         weak var window: NSWindow?
     }
 
@@ -288,7 +294,7 @@ final class OpenQuicklyCenter {
     /// panel's answer card shows its conversation.
     @ObservationIgnored weak var questions: CodeQuestionCenter?
     /// ⌥⌘↩ (spec §9.5; the hand-over is Task 13's, hidden until then).
-    @ObservationIgnored var onHandToClaude: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
+    @ObservationIgnored var onHandToClaude: @MainActor (_ query: String, _ project: Workbench, _ root: CodeRoot) -> Void = { _, _, _ in }
     @ObservationIgnored private let codeIndex: CodeIndexCenter
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let presenter: OpenQuicklyPresenting
@@ -318,13 +324,20 @@ final class OpenQuicklyCenter {
         return host.project
     }
 
-    /// The workbench page is in `window` (again, or another workbench now).
-    func pageAppeared(_ project: Workbench, window: NSWindow?) {
-        if let session, session.project.id != project.id || session.project.folderURL != project.folderURL {
+    /// The code root of `keyWorkbench`'s page: what the Navigate menu's
+    /// commands act on.
+    var keyRoot: CodeRoot? {
+        keyWorkbench == nil ? nil : host?.root
+    }
+
+    /// The workbench page is in `window` (again, or another workbench or
+    /// code root now).
+    func pageAppeared(_ project: Workbench, root: CodeRoot, window: NSWindow?) {
+        if let session, session.project.id != project.id || session.root != root {
             dismiss(restoringFocus: false)
         }
         if host == nil || host?.window !== window { watchKeyState(of: window) }
-        host = Host(project: project, window: window)
+        host = Host(project: project, root: root, window: window)
     }
 
     /// The workbench page left the screen: the panel closes with it.
@@ -361,19 +374,19 @@ final class OpenQuicklyCenter {
             presenter.presentPanel(session, center: self, over: host.window)
             return
         }
-        let project = host.project
-        codeIndex.markShown(workbenchID: project.id, folder: project.folderURL)
+        let root = host.root
+        codeIndex.markShown(root: root)
         let files = workbenches?.codeFiles
         let boosts = files.map { files in
             CodeRankingBoosts(
-                openTabs: files.tabs(for: project).paths,
-                recent: files.recentFiles(for: project),
-                gitModified: Set(files.git(for: project).files.keys)
+                openTabs: files.tabs(for: root).paths,
+                recent: files.recentFiles(for: root),
+                gitModified: Set(files.git(for: root).files.keys)
             )
         } ?? .none
         let session = OpenQuicklySession(
-            project: project, index: codeIndex.index(for: project.id), scope: scope, boosts: boosts,
-            gitStatuses: files?.git(for: project).files ?? [:], startSearch: startSearch, askAIEnabled: askAIEnabled
+            project: host.project, root: root, index: codeIndex.index(for: root), scope: scope, boosts: boosts,
+            gitStatuses: files?.git(for: root).files ?? [:], startSearch: startSearch, askAIEnabled: askAIEnabled
         )
         self.session = session
         presenter.presentPanel(session, center: self, over: host.window)
@@ -384,7 +397,7 @@ final class OpenQuicklyCenter {
         guard let session else { return }
         self.session = nil
         session.stop()
-        codeIndex.markHidden(workbenchID: session.project.id)
+        codeIndex.markHidden(root: session.root)
         presenter.dismissPanel(restoringFocus: restoringFocus)
     }
 
@@ -398,7 +411,7 @@ final class OpenQuicklyCenter {
     /// closes; a link to nothing beeps and keeps it.
     func openAnswerLink(_ url: URL) async {
         guard let session, let questions else { return }
-        await questions.openLink(url, project: session.project) { dismiss(restoringFocus: false) }
+        await questions.openLink(url, project: session.project, root: session.root) { dismiss(restoringFocus: false) }
     }
 
     /// What a Return asked for.
@@ -408,23 +421,24 @@ final class OpenQuicklyCenter {
         case .none:
             break
         case let .open(target, beside):
-            let project = session.project
+            let root = session.root
             dismiss(restoringFocus: false)
-            Task { await workbenches?.openFile(at: target, project: project, beside: beside) }
+            Task { await workbenches?.openFile(at: target, root: root, beside: beside) }
         case let .askAI(query):
             guard let questions else {
                 session.showAskError("Couldn't start the question.")
                 return
             }
-            switch questions.askFromOpenQuickly(query, project: session.project) {
+            switch questions.askFromOpenQuickly(query, project: session.project, root: session.root) {
             case let .started(conversationID): session.showAnswer(conversationID: conversationID)
             case let .failed(message): session.showAskError(message)
             }
         case let .handToClaude(query):
             // The hand-off sheet goes on the page: the panel closes first.
             let project = session.project
+            let root = session.root
             dismiss(restoringFocus: false)
-            onHandToClaude(query, project)
+            onHandToClaude(query, project, root)
         }
     }
 }

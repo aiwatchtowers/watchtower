@@ -449,3 +449,30 @@ func TestIgnored_GitFailure(t *testing.T) {
 		t.Errorf("warnings = %q, want one line naming the git failure", w)
 	}
 }
+
+// A planted .git/config never runs a command: the listing and the ignore
+// check run no fsmonitor command of the folder's, and answer as before.
+func TestFiles_UntrustedConfigRunsNoFSMonitor(t *testing.T) {
+	repo := t.TempDir()
+	git := gitInit(t, repo)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := filepath.Join(t.TempDir(), "fsmonitor")
+	write(t, filepath.Dir(hook), "fsmonitor", []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"))
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, repo, ".gitignore", []byte("*.log\n"))
+	write(t, repo, "top.go", []byte("package top\n"))
+	git("add", "top.go")
+	git("config", "core.fsmonitor", hook)
+
+	if got, want := list(t, Files(context.Background(), repo)), []string{".gitignore", "top.go"}; !slices.Equal(got, want) {
+		t.Fatalf("Files = %v, want %v", got, want)
+	}
+	if got := Ignored(context.Background(), repo, []string{"a.log", "top.go"}); !got["a.log"] || got["top.go"] {
+		t.Fatalf("Ignored = %v", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the folder's fsmonitor command ran")
+	}
+}

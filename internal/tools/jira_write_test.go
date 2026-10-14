@@ -181,7 +181,7 @@ func TestJiraWriteTools_ExternalOnMainAndTargetWithReason(t *testing.T) {
 		assert.Contains(t, tool.InputSchema.Required, "key")
 		require.NoError(t, reg.Register(tool))
 		// AGENT-03: an external write can never be trusted to execute.
-		assert.ErrorIs(t, reg.SetTrust(tool.Name, TrustExecute), ErrExternalExecute)
+		assert.ErrorIs(t, reg.SetTrust(tool.Name, "main", TrustExecute), ErrExternalExecute)
 	}
 }
 

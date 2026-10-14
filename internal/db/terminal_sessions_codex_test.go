@@ -19,7 +19,7 @@ func writeState(d *DB, id, wb int64, sid string, at time.Time) (bool, error) {
 }
 
 func writeRunMark(d *DB, id, wb int64, sid string, at time.Time) (bool, error) {
-	return d.MarkTerminalAgentRun(id, wb, sid, at)
+	return d.MarkTerminalAgentRun(id, wb, sid, at, "")
 }
 
 func writeClearState(d *DB, id, wb int64, sid string, _ time.Time) (bool, error) {

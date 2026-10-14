@@ -33,7 +33,10 @@ var locateGit = gitbin.Locate
 // non-interactive and lock-free: the check only reads. "git" is the binary
 // gitbin locates — never a PATH lookup, never the /usr/bin/git shim, whose
 // install dialog would pop in the owner's face; with none found it runs
-// nothing and returns gitbin.ErrUnavailable.
+// nothing and returns gitbin.ErrUnavailable. git runs with the folder's
+// fsmonitor command, hooks, signature checks and filter drivers off
+// (gitbin.ReadArgsIn): the
+// check runs in the background on a folder Watchtower does not vouch for.
 func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	bin := name
 	if name == "git" {
@@ -43,7 +46,14 @@ func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args
 		}
 		bin = located
 	}
-	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, args...)
+	argv := args
+	if name == "git" {
+		var err error
+		if argv, err = gitbin.ReadArgsIn(ctx, bin, dir, args...); err != nil {
+			return nil, -1, err
+		}
+	}
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, argv...)
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
@@ -68,6 +78,10 @@ type gitState struct {
 	bases       []string // resolved commits of origin/<default> and <default>, whichever exist
 	baseLabel   string   // e.g. "origin/main"
 	notes       []string
+	// guardNote is set once when a file-content read was refused because
+	// the folder's filter drivers could not be switched off
+	// (gitbin.ErrFilterGuard): Check names it instead of degrading silently.
+	guardNote string
 }
 
 func newGitState(ctx context.Context, o Options) *gitState {
@@ -174,6 +188,9 @@ func (g *gitState) baseName() string { return g.baseLabel }
 
 func (g *gitState) git(ctx context.Context, args ...string) (string, int, error) {
 	out, code, err := g.o.Run(ctx, g.o.Folder, nil, "git", args...)
+	if errors.Is(err, gitbin.ErrFilterGuard) && g.guardNote == "" {
+		g.guardNote = "squash-merge checks skipped: " + err.Error()
+	}
 	return string(out), code, err
 }
 
@@ -439,7 +456,7 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	// -U0 on both sides: patch-id hashes context lines, so a line main
 	// changed next to the branch's hunks would make an otherwise identical
 	// squash differ.
-	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "-U0", fork, sha)
+	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "-U0", fork, sha)
 	if err != nil {
 		return unknown
 	}
@@ -450,7 +467,7 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	if !ok || len(want) != 1 {
 		return unknown
 	}
-	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff",
+	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
 		"--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
 	if err != nil {
 		return unknown

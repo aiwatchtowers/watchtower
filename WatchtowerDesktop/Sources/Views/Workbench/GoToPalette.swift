@@ -123,7 +123,7 @@ struct GoToPalette: View {
             }
         } else {
             let now = vm.now()
-            let currentRows = currentSessionRows(now: now)
+            let currentRows = currentSessionRows()
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
@@ -147,12 +147,10 @@ struct GoToPalette: View {
     }
 
     /// The page's sessions as the session switcher shows them (state,
-    /// `#id` badge), by id.
-    private func currentSessionRows(now: Date) -> [Int64: SessionSwitcherPresentation.Row] {
+    /// `#id` badge, the panel's ⌘N), by id.
+    private func currentSessionRows() -> [Int64: SessionSwitcherPresentation.Row] {
         guard let projectID = vm.selectedWorkbenchID else { return [:] }
-        let rows = SessionSwitcherPresentation.rows(
-            vm.orderedSessions(projectID: projectID), liveIDs: vm.terminalCenter?.liveIDs ?? [], statuses: vm.sessionStatuses, now: now
-        )
+        let rows = vm.panelSections(projectID: projectID).searchRows
         return Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
     }
 

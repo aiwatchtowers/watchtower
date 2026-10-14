@@ -2,6 +2,7 @@ package caldav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/netsec"
 )
 
 // testFeed is a mutable ICS feed served over httptest, so tests can change
@@ -364,5 +366,31 @@ END:VCALENDAR
 	ids := eventIDs(t, database, syncer.CalendarID())
 	if len(ids) != 1 || !strings.HasSuffix(ids[0], ":evt-10d") {
 		t.Fatalf("want only the 10-day-old event with history_days=14, got %v", ids)
+	}
+}
+
+// A CalDAV account on plain http to a remote host stops syncing visibly:
+// its row carries the cleartext refusal under netsec.StatusPrefix.
+func TestCalDAVSyncRecordsACleartextRefusal(t *testing.T) {
+	database := db.OpenTestDB(t)
+	id, err := database.CreateCalendarAccount(db.CalendarAccount{Provider: "caldav", Username: "u", URL: "http://dav.example.com/"})
+	if err != nil {
+		t.Fatalf("create calendar account: %v", err)
+	}
+	acct, err := database.GetCalendarAccount(id)
+	if err != nil {
+		t.Fatalf("get calendar account: %v", err)
+	}
+	cfg := &config.Config{}
+	syncer := NewSyncer(acct, &Credentials{Password: "p"}, database, cfg, nil)
+	if _, err := syncer.Sync(context.Background()); !errors.Is(err, netsec.ErrCleartext) {
+		t.Fatalf("Sync err = %v, want netsec.ErrCleartext", err)
+	}
+	updated, err := database.GetCalendarAccount(id)
+	if err != nil {
+		t.Fatalf("get calendar account: %v", err)
+	}
+	if updated.Status != "error" || !strings.HasPrefix(updated.Error, netsec.StatusPrefix) {
+		t.Errorf("want status=error with the %q prefix, got status=%q error=%q", netsec.StatusPrefix, updated.Status, updated.Error)
 	}
 }

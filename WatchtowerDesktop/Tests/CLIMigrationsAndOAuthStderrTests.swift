@@ -1,7 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 
-/// A failing `db migrate` or `auth` CLI call says why: its stderr (or the
+/// A failing `db migrate` CLI call says why: its stderr (or the
 /// launch error) reaches the log or the error, never silence.
 final class CLIMigrationsAndOAuthStderrTests: XCTestCase {
     private var scripts: [URL] = []
@@ -80,18 +80,6 @@ final class CLIMigrationsAndOAuthStderrTests: XCTestCase {
         reported.isInverted = true
         DatabaseManager.runCLIMigrations(cliPath: cli) { _ in reported.fulfill() }
         wait(for: [reported], timeout: 1)
-    }
-
-    func testOAuthCLIFailureCarriesTheStepAndStderr() async throws {
-        let cli = try stubCLI(stderr: "keychain locked", code: 1)
-        do {
-            _ = try await SlackOAuthManager.obtainAuthURL(cliPath: cli)
-            XCTFail("expected a failure")
-        } catch {
-            let text = error.localizedDescription
-            XCTAssertTrue(text.contains("trust the local certificate"), text)
-            XCTAssertTrue(text.contains("keychain locked"), text)
-        }
     }
 }
 

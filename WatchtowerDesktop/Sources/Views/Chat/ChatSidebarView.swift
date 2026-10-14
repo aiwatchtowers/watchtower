@@ -19,8 +19,11 @@ struct ChatSidebarView: View {
     /// The history takes ↑/↓ once a row was clicked, as the List's own
     /// selection did.
     @FocusState private var historyFocused: Bool
+    /// The history follows the selected chat (board #561), view-local.
+    @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
+        let conversationIDs = historyVM.sections.flatMap { $0.conversations.map(\.id) }
         VStack(spacing: 0) {
             HStack {
                 Text("Chats").font(.headline)
@@ -33,32 +36,42 @@ struct ChatSidebarView: View {
             // on its own click (VoiceOver has the row's action) and ↑/↓ move
             // the selection while the history has focus.
             // Labels are rows, not Section headers: a header draws the plain
-            // list's band.
-            List {
-                newChatRow
-                projectsSection
-                ForEach(historyVM.sections) { section in
-                    sectionLabel(Text(section.kind.title.uppercased()))
-                    ForEach(section.conversations) { conv in
-                        Text(conv.displayTitle)
-                            .lineLimit(1)
-                            .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
-                            .onTapGesture { select(conv.id) }
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityAction { select(conv.id) }
-                            .contextMenu { menu(conv) }
+            // list's band. The list follows the selected chat, which may be
+            // selected before it is listed (the policy keeps it pending).
+            ScrollViewReader { proxy in
+                List {
+                    newChatRow
+                    projectsSection
+                    ForEach(historyVM.sections) { section in
+                        sectionLabel(Text(section.kind.title.uppercased()))
+                        ForEach(section.conversations) { conv in
+                            Text(conv.displayTitle)
+                                .lineLimit(1)
+                                .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
+                                .onTapGesture { select(conv.id) }
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityAction { select(conv.id) }
+                                .contextMenu { menu(conv) }
+                        }
                     }
                 }
+                // Sits in a plain HStack (ChatView's ChatSplitView), not a
+                // NavigationSplitView column — see panelListStyle. The panel's
+                // colour and edge line are `panelSurface()`'s, behind the tabs.
+                .clearPlainList()
+                .focusable()
+                .focused($historyFocused)
+                .focusEffectDisabled()
+                .onKeyPress(.upArrow) { historyVM.selectAdjacent(by: -1) ? .handled : .ignored }
+                .onKeyPress(.downArrow) { historyVM.selectAdjacent(by: 1) ? .handled : .ignored }
+                .onChange(of: historyVM.selectedConversationID, initial: true) { _, id in
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: conversationIDs))
+                }
+                // Project rows are keyed by `sidebarRowKey` strings, never a chat id.
+                .onChange(of: conversationIDs) { _, ids in
+                    proxy.followSelection(scroll.panelScrollTarget(rows: ids))
+                }
             }
-            // Sits in a plain HStack (ChatView's ChatSplitView), not a
-            // NavigationSplitView column — see panelListStyle. The panel's
-            // colour and edge line are `panelSurface()`'s, behind the tabs.
-            .clearPlainList()
-            .focusable()
-            .focused($historyFocused)
-            .focusEffectDisabled()
-            .onKeyPress(.upArrow) { historyVM.selectAdjacent(by: -1) ? .handled : .ignored }
-            .onKeyPress(.downArrow) { historyVM.selectAdjacent(by: 1) ? .handled : .ignored }
             if let error = historyVM.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
