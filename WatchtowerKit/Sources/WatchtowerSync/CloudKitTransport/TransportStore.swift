@@ -545,9 +545,10 @@ public final class TransportStore: Sendable {
     /// old zone — so a store bound to anything else, or to no hub (every
     /// store of the single-hub build), is wiped first. Returns whether it
     /// held state to wipe: a brand-new store with no binding and no state
-    /// returns false.
+    /// returns false. `CloudKitTransport.start()` calls it; public so the
+    /// phone's tests check a moved store as the start will.
     @discardableResult
-    func adoptScope(_ scope: CloudDatabaseScope, hubID: String) throws -> Bool {
+    public func adoptScope(_ scope: CloudDatabaseScope, hubID: String) throws -> Bool {
         let wiped = try queue.write { db in
             let stored = try Self.readBinding(db)
             var wipe = stored?.scope != scope || stored?.hubID != hubID
@@ -589,6 +590,12 @@ public final class TransportStore: Sendable {
                 """,
             arguments: [kind, ownerName, hubID]
         )
+    }
+
+    /// Closes the database for good, before its files are deleted (the
+    /// phone's hub removal); later calls throw. Closing again does nothing.
+    public func close() throws {
+        try queue.close()
     }
 
     // MARK: - Reset / retention / eviction

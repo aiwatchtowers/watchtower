@@ -68,7 +68,9 @@ enum HubBoot {
     /// the hub's keys, and the link into the registry (active); then the
     /// legacy link keys go. A failed move throws before the registry is
     /// written, so the next launch tries again from the same state. With
-    /// an empty registry and no link, the legacy replica and transport
+    /// an empty registry, no link and a pending one (a kill mid-link), the
+    /// same files move into the pending hub's directories, nothing else
+    /// changes (#221). With neither, the legacy replica and transport
     /// store (an unlinked phone's) are deleted; the audio stays.
     /// `legacyTransportStorePath` is `AppEnvironment.liveTransportStorePath()`
     /// (#232's move out of the group has run, or failed and points there).
@@ -102,6 +104,20 @@ enum HubBoot {
                 logger.fault("saved link unreadable: the F1 files are kept, nothing migrated")
                 return
             }
+            // A link a kill left waiting (#221): its transport store queues the
+            // device record not sent yet, so the files move into the pending
+            // hub's directories, where the resumed wait picks them up. F1's
+            // link restarted the transport on the pending hub, whose start bound
+            // the store to it, so the session's start keeps it; a store bound to
+            // no hub (the single-hub build's) is wiped there, as anywhere.
+            if let pendingHubID = store.pending?.link.hubID, HubPaths.isValidHubID(pendingHubID) {
+                try moveF1Files(
+                    to: pendingHubID, replica: legacyReplica, transport: legacyTransport,
+                    recordings: legacyRecordings, paths: paths, fileManager: fileManager
+                )
+                logger.notice("F1 files moved to the pending link's hub")
+                return
+            }
             for database in [legacyReplica, legacyTransport] {
                 try removeDatabase(database, fileManager: fileManager)
             }
@@ -113,10 +129,10 @@ enum HubBoot {
             logger.fault("saved link's hub id is not a plain name: nothing migrated")
             return
         }
-        try paths.prepare(hubID)
-        try moveDatabase(legacyReplica, to: URL(fileURLWithPath: paths.replicaPath(hubID)), fileManager: fileManager)
-        try moveDatabase(legacyTransport, to: URL(fileURLWithPath: paths.transportStorePath(hubID)), fileManager: fileManager)
-        try moveAudio(from: legacyRecordings, to: paths.recordingsDirectory(hubID), fileManager: fileManager)
+        try moveF1Files(
+            to: hubID, replica: legacyReplica, transport: legacyTransport,
+            recordings: legacyRecordings, paths: paths, fileManager: fileManager
+        )
         for key in legacyDeviceKeys {
             let legacy = "device.\(key)"
             let own = "hub.\(hubID).device.\(key)"
@@ -151,6 +167,7 @@ enum HubBoot {
             session.stop()
             await session.shutDown()
             let handover = await session.handOverRecordings(stoppedCapture: nil, keep: true)
+            session.closeDatabases()
             if let problem = handover.problem {
                 // Audio the hold could not take may still be in the hub's
                 // folder: nothing is deleted, the next launch tries again.
@@ -163,6 +180,21 @@ enum HubBoot {
     }
 
     // MARK: - Files
+
+    /// The F1 replica, transport store and audio into `hubID`'s directories.
+    private static func moveF1Files(
+        to hubID: String,
+        replica: URL,
+        transport: URL,
+        recordings: URL,
+        paths: HubPaths,
+        fileManager: FileManager
+    ) throws {
+        try paths.prepare(hubID)
+        try moveDatabase(replica, to: URL(fileURLWithPath: paths.replicaPath(hubID)), fileManager: fileManager)
+        try moveDatabase(transport, to: URL(fileURLWithPath: paths.transportStorePath(hubID)), fileManager: fileManager)
+        try moveAudio(from: recordings, to: paths.recordingsDirectory(hubID), fileManager: fileManager)
+    }
 
     /// Moves a SQLite database and its side files: the side files first and
     /// the database last, so a database at `target` means the move is done.

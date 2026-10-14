@@ -181,4 +181,24 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertNil(ck.encryptedValues["modifiedAt"])
         XCTAssertEqual(ck["kind"] as? String, WireKind.envelope)
     }
+
+    // MARK: - Direct save (the phone's kept farewell, #143)
+
+    /// A direct save sends a fresh record (no change tag) in the hub's zone
+    /// of the record's kind, owned by the shared link's owner.
+    func testADirectSaveSendsAFreshRecordInTheHubsZone() {
+        let record = CloudRecord(
+            recordName: "abcdefghijklmnopqrstuvwxyz", zone: .relay, kind: WireKind.envelope, modifiedAt: stamp,
+            payload: Data("WTE".utf8))
+
+        let ck = CloudKitTransport.directSaveRecord(record, scope: .shared(ownerName: "_owner-acme"), hubID: "hub-a")
+
+        XCTAssertEqual(ck.recordID.zoneID.zoneName, "RelayZone-hub-a")
+        XCTAssertEqual(ck.recordID.zoneID.ownerName, "_owner-acme")
+        XCTAssertNil(ck.recordChangeTag, "nothing fetched: no change tag")
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck, zone: .relay), record)
+
+        let own = CloudKitTransport.directSaveRecord(record, scope: .private, hubID: "hub-a")
+        XCTAssertEqual(own.recordID.zoneID.ownerName, CKCurrentUserDefaultName)
+    }
 }

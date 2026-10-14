@@ -530,4 +530,23 @@ final class TransportStoreTests: XCTestCase {
         try unbound.enqueueSave([record("target-1")])
         XCTAssertTrue(try unbound.adoptScope(.private, hubID: "hub-a"), "an unbound store with state is wiped")
     }
+
+    /// The phone's removal closes the store before its files go: every
+    /// later call throws, and a second close does nothing.
+    func testAClosedStoreThrowsOnEveryCallAndClosesAgainQuietly() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("transport-close-\(UUID().uuidString).sqlite").path
+        addTeardownBlock {
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+        }
+        let store = try TransportStore(path: path)
+        try store.enqueueSave([record("device-1", zone: .relay)])
+
+        try store.close()
+
+        XCTAssertThrowsError(try store.isPending(recordName: "device-1", zone: .relay))
+        XCTAssertThrowsError(try store.enqueueSave([record("device-2", zone: .relay)]))
+        XCTAssertThrowsError(try store.changes(in: .relay, since: nil))
+        XCTAssertNoThrow(try store.close(), "closing again does nothing")
+        XCTAssertTrue(try TransportStore(path: path).isPending(recordName: "device-1", zone: .relay), "the file is intact")
+    }
 }
