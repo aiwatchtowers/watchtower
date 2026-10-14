@@ -36,6 +36,8 @@ final class EmptyStateTabWiringTests: XCTestCase {
         let copy = try copy(destination)
         XCTAssertNoThrow(try view.inspect().find(text: copy.title), file: file, line: line)
         XCTAssertNoThrow(try view.inspect().find(text: copy.landsHere), file: file, line: line)
+        // A tab with no pipeline (Targets, Workbench) has no readiness line.
+        guard copy.feature != nil else { return }
         XCTAssertNoThrow(try view.inspect().find(text: "Within ~15 min"), "the readiness line", file: file, line: line)
     }
 
@@ -111,5 +113,104 @@ final class EmptyStateTabWiringTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Syncing Slack…"))
         try view.inspect().find(button: "Build a recap").tap()
         XCTAssertTrue(built)
+    }
+
+    // MARK: - Source and work tabs
+
+    private func withReadiness(_ readiness: Readiness) -> EmptyStateContext {
+        var context = EmptyStateContext()
+        context.readiness = { _ in readiness }
+        return context
+    }
+
+    func testCalendarEmptyOffersConnect() throws {
+        var performed: EmptyStateAction?
+        var context = withReadiness(.needsSource(.calendar))
+        context.perform = { performed = $0 }
+        let view = CalendarEventsView.notConnectedState(context: context) { Text("google") }
+        let copy = try copy(.calendar)
+        XCTAssertNoThrow(try view.inspect().find(text: copy.title))
+        try view.inspect().find(button: "Connect a calendar").tap()
+        XCTAssertEqual(performed, .connect(.calendar))
+        XCTAssertNoThrow(try view.inspect().find(text: "google"), "the in-place connect options stay")
+
+        // Connected and synced but nothing upcoming: the tab's own line, not "connect".
+        let noEvents = CalendarEventsView.noEventsState(context: withReadiness(.ready))
+        XCTAssertNoThrow(try noEvents.inspect().find(text: "No upcoming events"))
+        let scheduled = withReadiness(.scheduled(.nextCycle(minutes: 15)))
+        try assertSharedState(CalendarEventsView.noEventsState(context: scheduled), .calendar)
+    }
+
+    func testStatisticsEmptyNoLongerSaysNoData() throws {
+        let views: [AnyView] = [
+            AnyView(ActivityStatisticsView.emptyState(context: context)),
+            AnyView(ChannelStatisticsView.emptyState(context: context)),
+            AnyView(UserStatisticsView.emptyState(context: context))
+        ]
+        for view in views {
+            try assertSharedState(view, .statistics)
+            XCTAssertThrowsError(try view.inspect().find(text: "No data"))
+        }
+    }
+
+    func testWorkloadEmptyOffersConnectJira() throws {
+        let view = WorkloadView.emptyState(hasEntries: false, context: withReadiness(.needsSource(.jira)))
+        XCTAssertNoThrow(try view.inspect().find(text: try copy(.workload).title))
+        XCTAssertNoThrow(try view.inspect().find(button: "Connect Jira"))
+        XCTAssertThrowsError(try view.inspect().find(text: "No workload data"))
+        // Entries hidden by the search or a signal filter: not "no data".
+        let filtered = WorkloadView.emptyState(hasEntries: true, context: context)
+        XCTAssertNoThrow(try filtered.inspect().find(text: "No matches"))
+    }
+
+    func testJiraTabsEmptyUseSharedState() throws {
+        try assertSharedState(BlockerMapView.emptyState(context: context), .blockers)
+        try assertSharedState(ProjectMapView.emptyState(isFiltered: false, context: context), .projectMap)
+        try assertSharedState(ReleaseDashboardView.emptyState(isFiltered: false, context: context), .releases)
+        try assertSharedState(BoardsView.notConnectedState(context: context), .boards)
+
+        // Jira data present: no blockers is good news, said in the tab's own words.
+        XCTAssertNoThrow(try BlockerMapView.emptyState(context: withReadiness(.ready)).inspect().find(text: "No blockers"))
+        // A search that hides everything keeps its own state.
+        let searched = ProjectMapView.emptyState(isFiltered: true, context: context)
+        XCTAssertNoThrow(try searched.inspect().find(text: "No matching epics"))
+        let searchedReleases = ReleaseDashboardView.emptyState(isFiltered: true, context: context)
+        XCTAssertNoThrow(try searchedReleases.inspect().find(text: "No matching releases"))
+    }
+
+    func testTargetsEmptyUsesSharedState() throws {
+        var created = false
+        let view = TargetsListView.emptyState(context: context) { created = true }
+        try assertSharedState(view, .targets)
+        try view.inspect().find(button: "New target").tap()
+        XCTAssertTrue(created)
+        XCTAssertNoThrow(try view.inspect().find(text: TargetsListView.reactionHint))
+        XCTAssertTrue(TargetsListView.reactionHint.contains("React with an emoji in Slack"))
+    }
+
+    func testWorkbenchEmptyOffersAddFolder() throws {
+        var added = false
+        let view = WorkbenchesView.emptyState(
+            hasWorkbenches: false, agentName: "Claude Code", context: context
+        ) { added = true }
+        let copy = try copy(.workbench)
+        XCTAssertNoThrow(try view.inspect().find(text: copy.title))
+        try view.inspect().find(button: "Add a folder").tap()
+        XCTAssertTrue(added)
+        // Workbenches exist, none picked: the tab's own hint.
+        let picking = WorkbenchesView.emptyState(hasWorkbenches: true, agentName: "Claude Code", context: context) {}
+        XCTAssertThrowsError(try picking.inspect().find(text: copy.title))
+        XCTAssertNoThrow(try picking.inspect().find(text: "Pick a folder to start a workbench. Claude Code sets it up from there."))
+    }
+
+    func testInboxEmptyKeepsCheatSheet() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        dbPath = path
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        let view = ActionStripActionsView(
+            vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
+            onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, emptyState: context)
+        try assertSharedState(view, .inbox)
+        XCTAssertNoThrow(try view.inspect().find(ReactionCheatSheetView.self))
     }
 }

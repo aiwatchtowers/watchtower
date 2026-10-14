@@ -5,6 +5,26 @@ struct WorkloadView: View {
     @State private var viewModel: WorkloadViewModel?
     @State private var selectedUserID: String?
 
+    /// No entries at all: the shared empty state (Connect Jira), with what
+    /// the tab needs kept inside; entries hidden by the search or a signal
+    /// filter: "No matches".
+    @ViewBuilder
+    static func emptyState(hasEntries: Bool, context: EmptyStateContext) -> some View {
+        if hasEntries {
+            Text("No matches")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TabEmptyState(.workload, context: context) {
+                Text("Jira issues with assigned Slack users will appear here")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if let vm = viewModel {
@@ -84,19 +104,7 @@ struct WorkloadView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if vm.filteredEntries.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "gauge.with.dots.needle.33percent")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("No workload data")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text("Jira issues with assigned Slack users will appear here")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Self.emptyState(hasEntries: !vm.entries.isEmpty, context: appState.emptyStateContext)
             } else {
                 workloadTable(vm)
             }

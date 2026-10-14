@@ -4,6 +4,26 @@ struct BlockerMapView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: BlockerMapViewModel?
 
+    /// With Jira data, no blockers is good news, in the tab's own words;
+    /// before any Jira data, the shared empty state.
+    static func emptyState(context: EmptyStateContext) -> some View {
+        ContentAwareEmptyState(.blockers, context: context) {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark.shield")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+                Text("No blockers")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("No blocked or stale issues found in Jira")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -58,7 +78,7 @@ struct BlockerMapView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if vm.blockers.isEmpty {
-                emptyState
+                Self.emptyState(context: appState.emptyStateContext)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
@@ -92,22 +112,6 @@ struct BlockerMapView: View {
                 }
             }
         }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.shield")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text("No blockers")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("No blocked or stale issues found in Jira")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func sectionHeader(

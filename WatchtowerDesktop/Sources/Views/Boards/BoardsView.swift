@@ -7,6 +7,11 @@ struct BoardsView: View {
     @State private var jiraConnected = JiraQueries.isConnected()
     @State private var activeDetail: BoardsNavItem?
 
+    /// No Jira: the shared empty state (Connect Jira → Settings → Connections).
+    static func notConnectedState(context: EmptyStateContext) -> some View {
+        TabEmptyState(.boards, context: context)
+    }
+
     var body: some View {
         if jiraConnected {
             connectedContent
@@ -120,33 +125,7 @@ struct BoardsView: View {
     // MARK: - Not Connected
 
     private var notConnectedPlaceholder: some View {
-        VStack(spacing: 16) {
-            Spacer()
-
-            Image(systemName: "rectangle.on.rectangle.angled")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-
-            Text("No board sources connected")
-                .font(.title3)
-                .fontWeight(.medium)
-
-            Text("Connect Jira in Settings to start tracking boards.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            Button("Open Settings") {
-                // `showSettingsWindow:` via sendAction is a no-op on macOS 14+.
-                appState.settingsTab = .connections
-                openSettings()
-            }
-            .buttonStyle(.borderedProminent)
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        Self.notConnectedState(context: appState.emptyStateContext)
     }
 }
 

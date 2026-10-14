@@ -79,3 +79,32 @@ extension TabEmptyState where Extra == EmptyView {
         self.init(destination, context: context) { EmptyView() }
     }
 }
+
+/// For a tab whose own "nothing here" is news while its feature has content
+/// (no blockers, nothing upcoming): that view while the feature is `.ready`,
+/// the shared empty state otherwise.
+struct ContentAwareEmptyState<Own: View>: View {
+    let destination: SidebarDestination
+    let context: EmptyStateContext
+    let own: Own
+
+    init(_ destination: SidebarDestination, context: EmptyStateContext, @ViewBuilder own: () -> Own) {
+        self.destination = destination
+        self.context = context
+        self.own = own()
+    }
+
+    var body: some View {
+        if hasContent {
+            own
+        } else {
+            TabEmptyState(destination, context: context)
+        }
+    }
+
+    private var hasContent: Bool {
+        let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8)
+        guard let feature = copy?.feature else { return false }
+        return context.readiness(feature) == .ready
+    }
+}

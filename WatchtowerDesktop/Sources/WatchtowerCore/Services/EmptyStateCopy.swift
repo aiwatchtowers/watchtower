@@ -80,7 +80,7 @@ package enum EmptyStateCopyTable {
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
             landsHere: "Messages and mentions waiting for your reply, plus reaction shortcuts.",
-            feature: .inbox, primaryAction: .tabAction(label: "Reaction cheat sheet")),
+            feature: .inbox, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",
             landsHere: "Ideas and decisions picked up from conversations, every ~6 h.",

@@ -47,8 +47,10 @@ struct ActionStripView: View {
                         featureError: appState.featureManager.loadError,
                         onEnable: enableReactionCommands,
                         onOpenSettings: openReactionDictionary,
-                        onOpen: open
-                    ) { id in await appState.reconnectSlack(accountID: id) }
+                        onOpen: open,
+                        onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+                        emptyState: appState.emptyStateContext
+                    )
                 } else {
                     ProgressView()
                 }
@@ -135,6 +137,8 @@ struct ActionStripActionsView: View {
     let onOpen: (AgentActionDestination) -> Void
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
+    /// The empty strip's readiness and actions (`AppState.emptyStateContext`).
+    var emptyState: EmptyStateContext = .neutral
 
     @State private var showsCheatSheet = false
 
@@ -145,15 +149,17 @@ struct ActionStripActionsView: View {
             }
             if vm.actionRows.isEmpty && vm.reminderRows.isEmpty {
                 ScrollView {
-                    ReactionCheatSheetView(
-                        rows: cheatSheetRows,
-                        feature: feature,
-                        isEnabling: isEnabling,
-                        error: featureError,
-                        onEnable: onEnable,
-                        onOpenSettings: onOpenSettings
-                    )
-                    .frame(maxWidth: .infinity)
+                    TabEmptyState(.inbox, context: emptyState) {
+                        ReactionCheatSheetView(
+                            rows: cheatSheetRows,
+                            feature: feature,
+                            isEnabling: isEnabling,
+                            error: featureError,
+                            onEnable: onEnable,
+                            onOpenSettings: onOpenSettings
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
                     .padding(.top, 24)
                 }
                 .accessibilityIdentifier("actionStrip.cheatSheet")
