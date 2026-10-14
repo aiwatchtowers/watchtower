@@ -58,4 +58,11 @@ final class SessionStartPlacementTests: XCTestCase {
         XCTAssertLessThanOrEqual(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "word ", count: 30), sessionNumber: 1).count, 40)
         XCTAssertFalse(SessionStartPlacement.slug(targetID: 1, targetText: String(repeating: "ab ", count: 30), sessionNumber: 1).hasSuffix("-"))
     }
+
+    func testWorktreeTopOfACwd() {
+        XCTAssertEqual(SessionStartPlacement.worktreeTop(ofCwd: "/r/.claude/worktrees/a"), "/r/.claude/worktrees/a")
+        XCTAssertEqual(SessionStartPlacement.worktreeTop(ofCwd: "/r/.claude/worktrees/a/app/web"), "/r/.claude/worktrees/a")
+        XCTAssertNil(SessionStartPlacement.worktreeTop(ofCwd: "/r/elsewhere"))
+        XCTAssertNil(SessionStartPlacement.worktreeTop(ofCwd: "/r/.claude/worktrees"))
+    }
 }

@@ -752,7 +752,9 @@ extension WorkbenchesViewModel {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        if let center = terminalCenter, let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
+        let restorable = fresh ? true : await restoreWorktree(row)
+        if restorable, let center = terminalCenter,
+           let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
             let mode = await center.launch(
                 row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume, setup: setup
@@ -778,6 +780,40 @@ extension WorkbenchesViewModel {
         }
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// A resume of a placed row whose worktree directory is gone (cleaned
+    /// up, or deleted by hand) re-adds it from its branch at the same path,
+    /// so the agent's transcript resolves by cwd (spec 2026-10-14 §7). False
+    /// — the row `.unavailable`, nothing launches — when the branch is gone
+    /// too or the worktree could not be restored; never a start in the main
+    /// folder. A setup command never runs here.
+    private func restoreWorktree(_ row: TerminalSession) async -> Bool {
+        guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: row.folderPath, isDirectory: &isDirectory), isDirectory.boolValue {
+            return true
+        }
+        guard let top = SessionStartPlacement.worktreeTop(ofCwd: row.folderPath) else { return true } // the launch reports the folder
+        guard let cli else {
+            center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: no CLI is available.")
+            return false
+        }
+        do {
+            let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch)
+            if result.created { return true }
+            if result.refused == "unknown_branch" {
+                center.refuseLaunch(
+                    row, reason: "The worktree and its branch \(branch) were cleaned up — start a new session."
+                )
+            } else {
+                let why = [result.refusedDetail, result.error, result.refused].first { !$0.isEmpty } ?? "it was refused."
+                center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(why)")
+            }
+        } catch {
+            center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(error.localizedDescription)")
+        }
+        return false
     }
 
     /// The row `activate` launches and, for a Codex row, whether it resumes

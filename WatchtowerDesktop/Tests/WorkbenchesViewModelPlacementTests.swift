@@ -33,10 +33,27 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
 
         func setCreateReply(_ json: String) { lock.withLock { reply = json } }
 
+        /// The `worktree ensure` answer; nil = a created worktree at `worktree`.
+        func setEnsureReply(_ json: String) { lock.withLock { ensureReply = json } }
+        private var ensureReply: String?
+        /// Runs when `worktree ensure` is called (the CLI re-adds the directory).
+        var onEnsure: (@Sendable () -> Void)?
+
+        var ensureCalls: [[String]] { calls.filter { $0.starts(with: ["workbench", "worktree", "ensure"]) } }
+
         func run(args: [String]) async throws -> Data {
             let custom: String? = lock.withLock {
                 recorded.append(args)
                 return reply
+            }
+            if args.starts(with: ["workbench", "worktree", "ensure"]) {
+                let custom = lock.withLock { ensureReply }
+                onEnsure?()
+                return Data((custom ?? #"""
+                    {"workbench_id":\#(workbenchID),"created":true,"path":"\#(worktree)","cwd":"\#(worktree)",
+                     "branch":"wt/x","base":"a1b2c3d4e5f6","base_branch":"main","base_dirty":false,
+                     "included":[],"include_warnings":[]}
+                    """#).utf8)
             }
             if args.starts(with: ["workbench", "worktree", "create"]) {
                 let name = args.firstIndex(of: "--name").map { args[$0 + 1] } ?? "x"
@@ -308,5 +325,83 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         await vm.newStandalone(kind: .shell, folder: URL(fileURLWithPath: acme))
 
         XCTAssertEqual(runner.createdNames, [])
+    }
+
+    /// A placed, stopped row whose worktree directory is `gone` or present.
+    private func placedRow(_ p: Int64, gone: Bool) async throws -> TerminalSession {
+        if gone { try FileManager.default.removeItem(at: worktreeURL) }
+        let folder = worktree
+        return try await pool.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: p, kind: .claude, title: "placed", folderPath: folder,
+                claudeSessionID: UUID().uuidString.lowercased(), worktreeBranch: "wt/session-2", worktreeBase: "abc"
+            ))
+        }
+    }
+
+    func testResumeOfACleanedUpWorktreeReAddsIt() async throws {
+        let p = try await workbench(setup: "make deps")
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: true)
+        // The CLI re-adds the directory.
+        let url = worktreeURL
+        runner.onEnsure = { try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+
+        await vm.open(row)
+
+        let call = try XCTUnwrap(runner.ensureCalls.first)
+        XCTAssertEqual(call[call.firstIndex(of: "--path").map { $0 + 1 }!], worktree)
+        XCTAssertEqual(call[call.firstIndex(of: "--branch").map { $0 + 1 }!], "wt/session-2")
+        let launch = try XCTUnwrap(launches.last)
+        XCTAssertEqual(launch.currentDirectory, worktree)
+        XCTAssertFalse(launch.environment.contains { $0.hasPrefix(TerminalLaunch.setupCommandEnv) }, "a resume never runs the setup command")
+    }
+
+    func testResumeWithTheBranchGoneIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setEnsureReply(#"""
+            {"workbench_id":1,"created":false,"path":"","cwd":"","branch":"","base":"","base_branch":"",
+             "base_dirty":false,"included":[],"include_warnings":[],"refused":"unknown_branch"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: true)
+
+        await vm.open(row)
+
+        XCTAssertEqual(
+            center.states[row.id],
+            .unavailable("The worktree and its branch wt/session-2 were cleaned up — start a new session.")
+        )
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testResumeOfAnExistingWorktreeCallsNothing() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+    }
+
+    func testResumeThatCannotRestoreIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setEnsureReply(#"""
+            {"workbench_id":1,"created":false,"path":"","cwd":"","branch":"","base":"","base_branch":"",
+             "base_dirty":false,"included":[],"include_warnings":[],"refused":"path_in_use","refused_detail":"busy"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: true)
+
+        await vm.open(row)
+
+        XCTAssertEqual(center.states[row.id], .unavailable("The worktree \(worktree) could not be restored: busy"))
+        XCTAssertTrue(launches.isEmpty)
     }
 }

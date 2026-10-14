@@ -793,6 +793,14 @@ final class TerminalCenter {
         return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume, setup: setup)
     }
 
+    /// Shows `session` as `.unavailable(reason)` without launching it: a
+    /// refusal made before the launch (a worktree that could not return).
+    func refuseLaunch(_ session: TerminalSession, reason: String) {
+        if states[session.id] == .running { return }
+        rows[session.id] = session
+        states[session.id] = .unavailable(reason)
+    }
+
     /// Starts the row's process unless it is running. A `claude` row resumes
     /// its stored Claude session (`--resume`) when Claude Code has a
     /// transcript for it; without one (the owner never typed, or the first

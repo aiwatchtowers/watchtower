@@ -54,4 +54,16 @@ package enum SessionStartPlacement: Equatable, Sendable {
         for w in words where out.count + 1 + w.count <= 40 { out += "-" + w }
         return out
     }
+
+    /// The worktree top a session's cwd belongs to: the ancestor of `cwd`
+    /// whose parent's last two components are `.claude/worktrees`; nil
+    /// outside one. A string walk: the path is not resolved.
+    package static func worktreeTop(ofCwd cwd: String) -> String? {
+        let parts = cwd.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count >= 3 else { return nil }
+        for i in 2..<parts.count where parts[i - 2] == ".claude" && parts[i - 1] == "worktrees" {
+            return (cwd.hasPrefix("/") ? "/" : "") + parts[0...i].joined(separator: "/")
+        }
+        return nil
+    }
 }
