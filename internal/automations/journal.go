@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // Step statuses the journal writes (automation_run_steps.status).
@@ -358,14 +358,9 @@ func marshalForStep(v any) string {
 	return string(b)
 }
 
-// clipUTF8 cuts s to at most n bytes on a rune boundary.
+// clipUTF8 cuts s to at most n bytes on a rune boundary (tools.ClipUTF8Bytes,
+// the one copy of the rule, without the truncated flag).
 func clipUTF8(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
+	out, _ := tools.ClipUTF8Bytes(s, n)
+	return out
 }
