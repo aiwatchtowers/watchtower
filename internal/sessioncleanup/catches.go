@@ -98,8 +98,12 @@ func catchFolders(_ context.Context, b *builder, w worktree) (string, string, er
 	return "", "", nil
 }
 
-// catchOwnWorktree is W2: observed by the session and born after it.
+// catchOwnWorktree is W2: observed by the session and born after it, or
+// the placed row's own worktree (owned by record, spec 2026-10-14 §9).
 func catchOwnWorktree(_ context.Context, b *builder, w worktree) (string, string, error) {
+	if b.seen.placedWorktree(w, b.repo.worktrees) {
+		return "", "", nil
+	}
 	if !b.seen.sawWorktree(w) {
 		return ReasonNotThisSession, "", nil
 	}
@@ -289,8 +293,12 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 	return "", "", nil
 }
 
-// catchOwnBranch is B3: observed by the session and born after it.
+// catchOwnBranch is B3: observed by the session and born after it, or the
+// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
+	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch {
+		return "", "", nil
+	}
 	if !b.seen.branches[br.Name] {
 		return ReasonNotThisSession, "", nil
 	}

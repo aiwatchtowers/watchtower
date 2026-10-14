@@ -11,9 +11,12 @@ import (
 // named are the branches a target or the agent named: a worktree with one
 // of them checked out is observed too (a subagent whose hooks carried no cwd
 // of its own). A ledger branch alone never adopts a worktree: the session
-// may have had it checked out elsewhere.
+// may have had it checked out elsewhere. placedCwd and placedBranch are a
+// placed row's own folder_path (symlink-resolved) and worktree_branch, ""
+// for every other row.
 type observed struct {
-	roots, branches, named map[string]bool
+	roots, branches, named  map[string]bool
+	placedCwd, placedBranch string
 }
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
@@ -39,6 +42,23 @@ func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, decla
 // target or the agent named is checked out there.
 func (o observed) sawWorktree(w worktree) bool {
 	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
+}
+
+// placedWorktree reports whether w is the row's own placed worktree: a
+// linked worktree, and the longest listed root containing placedCwd.
+// Watchtower created this worktree and branch for this row (board #229); by
+// record they are the session's, although born before the row (spec
+// 2026-10-14-session-worktrees-design.md §9).
+func (o observed) placedWorktree(w worktree, all []worktree) bool {
+	if o.placedCwd == "" || w.Main || w.Bare || !pathWithin(o.placedCwd, w.Root) {
+		return false
+	}
+	for _, other := range all {
+		if len(other.Root) > len(w.Root) && pathWithin(o.placedCwd, other.Root) {
+			return false
+		}
+	}
+	return true
 }
 
 // Ownership reasons.

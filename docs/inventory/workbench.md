@@ -1636,7 +1636,7 @@ PROJ-17 guards above unchanged.
 
 ## PROJ-18 — session cleanup never removes unsaved, unpushed, in-use or someone else's work
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13; the spec's open questions were answered in ask #193: **Delete and Clean Up** is the default button, and the one-time sweep hint ships)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13; the spec's open questions were answered in ask #193: **Delete and Clean Up** is the default button, and the one-time sweep hint ships; amended 2026-10-14 (placed sessions, board #229, asks #122/#124))
 
 **Observable:** `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 repository and local branches, and only after every catch passes, checked again immediately before the removal:
@@ -1649,6 +1649,8 @@ folder, anything under `~/.claude`, a path that is not a linked worktree, or a r
 uses `--force` or an unconditional ref delete; signals only orphan processes (ppid 1, the current user, inside the
 session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A plan writes nothing; an apply acts
 only on items eligible at that moment and, when items are named, only on those.
+
+*2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch` — although both were born before the row. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
 
 As shipped (each stricter than, never weaker than, the wording above):
 - **Fail closed.** A catch git could not answer keeps the item `check_failed`
@@ -1707,6 +1709,8 @@ loses uncommitted work for good, so every doubt keeps the item.
 - `internal/sessioncleanup/apply_test.go` — `TestProj18_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1), `TestProj18_ClaudeHistoryAndMainBuildUntouched`, `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems`, `TestProj18_BranchThatMovedAfterThePlanIsKept`, `TestProj18_NoForceNoFetchAnywhere`, `TestProj18_LsregisterRunsBeforeWorktreeRemove`, `TestProj18_FailureMidwayLeavesTheRestUntouched`
 - `internal/sessioncleanup/failclosed_test.go` — `TestProj18_UnknownDefaultBranchKeepsEveryBranch`, `TestProj18_OriginHeadReadFailureKeepsEveryBranch`, `TestProj18_PrunableDetachedWorktreeWithUnpushedCommitIsKept`, `TestProj18_PrunableWorktreeWithUnreadableHeadIsKept`, `TestProj18_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt`, `TestProj18_BranchWhoseCreationEntryExpiredIsKept`, `TestProj18_GitFailureInACatchKeepsTheItem`
 - `internal/sessioncleanup/nested_test.go::TestProj18_WorktreeHoldingANestedWorktreeIsKept` (W9)
+- `internal/sessioncleanup/placed_test.go` — `TestCleanupPlacedRowOwnsItsWorktreeAndBranch`, `TestCleanupPlacedSubfolderRowOwnsItsWorktree`, `TestCleanupPlacedRowStillKeepsUncommittedWork`, `TestCleanupUnplacedOldWorktreeStillKept`
+- `internal/workbenchgit/worktree_ensure_test.go` — `TestProj18_PlacementNeverForcesOrDiscards`
 - `internal/sessioncleanup/procs_test.go::TestProj18_OnlyOrphansAreSignalled`
 - `internal/sessioncleanup/untrusted_test.go::TestProj18_PlantedGitConfigRunsNoCommand`
 - `cmd/workbench_cleanup_test.go` — `TestProj18_CallerSessionCannotCleanAnotherSession`, `TestProj18_CallerSessionCannotSweep`, `TestProj18_CallerSessionCannotNameAnotherWorkbench`, `TestProj18_CallerSessionEmptyVariableIsRefused`

@@ -233,7 +233,26 @@ func (b *builder) loadObserved(ctx context.Context) error {
 		return fmt.Errorf("reading session %d target branches: %w", b.session.ID, err)
 	}
 	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
+	b.observePlacement()
 	return nil
+}
+
+// observePlacement records a placed row's own worktree and branch as seen,
+// so they are listed; W2 and B3 then own them by record (placedWorktree).
+func (b *builder) observePlacement() {
+	if b.session.PlacedCwd == "" {
+		return
+	}
+	b.seen.placedCwd = resolvePath(b.session.PlacedCwd)
+	for _, w := range b.repo.worktrees {
+		if b.seen.placedWorktree(w, b.repo.worktrees) {
+			b.seen.roots[w.Root] = true
+		}
+	}
+	if b.session.PlacedBranch != "" {
+		b.seen.placedBranch = b.session.PlacedBranch
+		b.seen.branches[b.seen.placedBranch] = true
+	}
 }
 
 // worktreeItems lists and evaluates the worktree candidates: in session

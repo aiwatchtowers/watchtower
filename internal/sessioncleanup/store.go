@@ -28,7 +28,8 @@ var ErrStandaloneSession = errors.New("not a workbench session")
 // row keeps db.ErrTerminalSessionNotFound in the chain; an unreadable
 // created_at is an error, never a zero start (a zero start would make
 // everything the session saw look younger than it); a standalone terminal
-// has no workbench to clean up.
+// has no workbench to clean up. A placed row (worktree_branch set) carries
+// its folder_path and worktree_branch.
 func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionInfo, error) {
 	row, err := s.DB.GetTerminalSession(sessionID)
 	if err != nil {
@@ -41,7 +42,11 @@ func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionIn
 	if err != nil {
 		return SessionInfo{}, err
 	}
-	return SessionInfo{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, CreatedAt: start}, nil
+	info := SessionInfo{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, CreatedAt: start}
+	if row.WorktreeBranch.Valid {
+		info.PlacedCwd, info.PlacedBranch = row.FolderPath, row.WorktreeBranch.String
+	}
+	return info, nil
 }
 
 // SessionWorktrees is db.DB.SessionWorktrees.
