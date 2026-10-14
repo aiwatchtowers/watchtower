@@ -272,6 +272,27 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertEqual(runner.cancelledCount, 1, "the CLI is stopped, not left to run")
     }
 
+    /// A second plan for the same scope stops the first: one CLI child,
+    /// never two lsof scans racing.
+    func testStartingAPlanStopsTheOneRunning() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.plan)])
+        runner.holdsCalls = true
+        let center = SessionCleanupCenter(runner: runner)
+
+        let first = center.startPlan(sessionID: 9, workbenchID: 2)
+        while runner.heldCount < 1 { await Task.yield() }
+        let second = center.startPlan(sessionID: 9, workbenchID: 2)
+        while runner.heldCount < 2 { await Task.yield() }
+        runner.release()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(runner.cancelledCount, 1, "the first plan was stopped")
+        guard case .ready = center.cleanupPhase(for: .session(9)) else {
+            return XCTFail("the second plan is ready, got \(center.cleanupPhase(for: .session(9)))")
+        }
+    }
+
     func testApplyWithoutItemsRunsNothing() async {
         let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.applied)])
         let center = SessionCleanupCenter(runner: runner)

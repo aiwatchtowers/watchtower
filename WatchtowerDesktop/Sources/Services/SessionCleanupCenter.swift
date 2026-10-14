@@ -67,7 +67,7 @@ final class SessionCleanupCenter {
     /// Per scope, the plan last started by `startPlan`: owned here, never by
     /// a view, so a sheet torn down when the owner leaves the page neither
     /// stops the CLI nor fails the plan.
-    @ObservationIgnored private var planRuns: [SessionCleanupScope: Task<Void, Never>] = [:]
+    @ObservationIgnored private var planRuns: [SessionCleanupScope: (token: UUID, task: Task<Void, Never>)] = [:]
 
     init(runner: (any SessionCleanupRunning)?) {
         self.runner = runner
@@ -89,14 +89,20 @@ final class SessionCleanupCenter {
     /// Starts planning session `sessionID`'s cleanup in a task the center
     /// owns (see `planCleanup`) and returns it. A caller awaiting its value
     /// may be cancelled — a sheet's `.task` when the page is left — without
-    /// cancelling the plan: it runs on and its phase stays readable.
+    /// cancelling the plan: it runs on and its phase stays readable. A
+    /// plan this started earlier for the scope and still running is
+    /// stopped (its answer would be dropped anyway); a finished one is not
+    /// kept.
     @discardableResult
     func startPlan(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) -> Task<Void, Never> {
+        let scope = SessionCleanupScope.session(sessionID)
+        let token = UUID()
         let run = Task<Void, Never> { [weak self] in
             guard let self else { return }
             await planCleanup(sessionID: sessionID, workbenchID: workbenchID, closingSession: closingSession)
+            if planRuns[scope]?.token == token { planRuns[scope] = nil }
         }
-        planRuns[.session(sessionID)] = run
+        planRuns.updateValue((token, run), forKey: scope)?.task.cancel()
         return run
     }
 
@@ -169,7 +175,7 @@ final class SessionCleanupCenter {
         guard cleanupPhase(for: scope) != .applying else { return }
         runSerials[scope, default: 0] += 1
         phases[scope] = nil
-        planRuns.removeValue(forKey: scope)?.cancel()
+        planRuns.removeValue(forKey: scope)?.task.cancel()
     }
 
     // MARK: Running
