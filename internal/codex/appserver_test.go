@@ -323,6 +323,11 @@ func zombie(pid int) bool {
 // group at once, the budget notwithstanding: nothing it spawned survives.
 func TestAppServer_CallerCancelKillsTheGroup(t *testing.T) {
 	t.Run("while starting", func(t *testing.T) {
+		// A budget far past the test's own bounds: the cancel, not the
+		// budget, is what ends the start.
+		old := appServerBudget
+		appServerBudget = time.Minute
+		t.Cleanup(func() { appServerBudget = old })
 		f := newFakeServer(t, "hang", nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
