@@ -101,6 +101,19 @@ func newFakeServer(t *testing.T, mode string, hooks []map[string]any) fakeServer
 	f := fakeServer{log: filepath.Join(dir, "requests.jsonl"), pids: filepath.Join(dir, "pids")}
 	f.env = append(os.Environ(),
 		fakeModeEnv+"="+mode, fakeLogEnv+"="+f.log, fakeHooksEnv+"="+string(hooksJSON), fakePIDsEnv+"="+f.pids)
+	// Backstop for a test that fails before the code under test kills the
+	// stub: the server leads its own process group (Setpgid), so killing the
+	// group takes its sleep child too. StartAppServer owns and waits the
+	// server; the child is reparented and reaped by init.
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(f.pids); err == nil {
+			if fields := strings.Fields(string(b)); len(fields) > 0 {
+				if pgid, err := strconv.Atoi(fields[0]); err == nil && pgid > 1 {
+					_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				}
+			}
+		}
+	})
 	return f
 }
 
@@ -298,14 +311,29 @@ func TestAppServer_CallerCancelKillsTheGroup(t *testing.T) {
 	t.Run("while starting", func(t *testing.T) {
 		f := newFakeServer(t, "hang", nil)
 		ctx, cancel := context.WithCancel(context.Background())
-		time.AfterFunc(300*time.Millisecond, cancel)
-		start := time.Now()
+		defer cancel()
+		// Cancel once the stub has spawned its child and written the pids —
+		// a fixed delay raced the stub's own start-up (a -race test binary
+		// re-exec can take longer than the delay), and a group killed before
+		// the write leaves no pids to check. The "hang" stub never answers
+		// initialize, so the cancel still lands while StartAppServer waits.
+		cancelled := make(chan time.Time, 1)
+		go func() {
+			defer func() { cancelled <- time.Now(); cancel() }()
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if b, err := os.ReadFile(f.pids); err == nil && len(strings.Fields(string(b))) == 2 {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
 		_, err := StartAppServer(ctx, os.Args[0], nil, f.env)
 		if !errors.Is(err, ErrCodexTrustUnavailable) {
 			t.Fatalf("err = %v", err)
 		}
-		if d := time.Since(start); d > 5*time.Second {
-			t.Fatalf("took %s: the cancel did not end the wait", d)
+		if d := time.Since(<-cancelled); d > 5*time.Second {
+			t.Fatalf("took %s after the cancel: the cancel did not end the wait", d)
 		}
 		waitPIDsGone(t, f)
 	})
