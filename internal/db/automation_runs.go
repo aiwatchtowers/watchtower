@@ -731,8 +731,11 @@ type AutomationRunStep struct {
 
 // StepFinish is a step's outcome (FinishAutomationRunStep) or, for
 // MarkAutomationRunStep, only its non-zero ActionID/AskID/SessionID links.
+// Permission (the entry that admitted the call, or the one it lacked) is
+// written by FinishAutomationRunStep only when non-empty.
 type StepFinish struct {
 	Status, ResultSummary, Error string
+	Permission                   string
 	Auto                         bool
 	ActionID, AskID, SessionID   int64
 	InputTokens, OutputTokens    int64
@@ -798,10 +801,11 @@ func (db *DB) FinishAutomationRunStep(id int64, f StepFinish) error {
 		return err
 	}
 	res, err := db.Exec(`UPDATE automation_run_steps SET status = ?, result_summary = ?, error = ?, auto = ?,
+		permission = CASE WHEN ? != '' THEN ? ELSE permission END,
 		`+stepLinkSQL+`, input_tokens = ?, output_tokens = ?, tokens_estimated = ?, reported_cost_usd = ?,
 		duration_ms = ?, finished_at = ?
 		WHERE id = ? AND finished_at IS NULL`,
-		f.Status, f.ResultSummary, f.Error, f.Auto,
+		f.Status, f.ResultSummary, f.Error, f.Auto, f.Permission, f.Permission,
 		f.ActionID, f.ActionID, f.AskID, f.AskID, f.SessionID, f.SessionID,
 		f.InputTokens, f.OutputTokens, f.TokensEstimated, nullRunCost(f.ReportedCostUSD), f.DurationMS,
 		formatAutomationTime(f.Now), id)

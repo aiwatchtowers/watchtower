@@ -678,6 +678,30 @@ func TestSteps_MarkIsNonFinal(t *testing.T) {
 	wantErrIs(t, "mark of a missing step", d.MarkAutomationRunStep(999, "waiting", StepFinish{}), ErrAutomationRunStepNotFound)
 }
 
+func TestSteps_FinishWritesPermissionOnlyWhenSet(t *testing.T) {
+	d := openTestDB(t)
+	_, run := seedRunningAutomationRun(t, d)
+	kept, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: "tool", Status: "ok",
+		Permission: "jira:read@PAY", StartedAt: runTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := mustAppendAutomationRunStep(t, d, run, "tool", "ok")
+	if err := d.FinishAutomationRunStep(kept, StepFinish{Status: "ok", Now: runTestNow}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.FinishAutomationRunStep(set, StepFinish{Status: "denied", Permission: "jira:read@OPS", Now: runTestNow}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := d.ListAutomationRunSteps(run)
+	if err != nil || len(steps) != 2 {
+		t.Fatalf("steps = %d, %v", len(steps), err)
+	}
+	if steps[0].Permission != "jira:read@PAY" || steps[1].Permission != "jira:read@OPS" {
+		t.Errorf("permissions = %q, %q", steps[0].Permission, steps[1].Permission)
+	}
+}
+
 // wantStep checks the run's only step as [status, action_id, ask_id, finished, result_summary].
 func wantStep(t *testing.T, d *DB, run int64, want []any) {
 	t.Helper()
