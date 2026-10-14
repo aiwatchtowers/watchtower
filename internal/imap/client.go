@@ -39,9 +39,8 @@ func Dial(cfg AccountConfig, auth Authenticator) (client *Client, uidValidity ui
 	case SecurityNone:
 		// Authenticate sends the password (or token): never in cleartext
 		// to a remote host.
-		if !netsec.IsLoopbackHost(cfg.Host) {
-			return nil, 0, fmt.Errorf("imap: security %q would send the password to %s in cleartext; use ssl or starttls "+
-				"(none is allowed only for a loopback host: %s)", SecurityNone, cfg.Host, netsec.LoopbackHosts)
+		if err := netsec.RequireTLS(cfg.Host, `security "none" (choose ssl or starttls)`); err != nil {
+			return nil, 0, fmt.Errorf("imap: %w", err)
 		}
 		c, err = imapclient.DialInsecure(addr, nil)
 	default:

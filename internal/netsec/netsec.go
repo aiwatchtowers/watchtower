@@ -6,6 +6,7 @@
 package netsec
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -14,6 +15,28 @@ import (
 
 // LoopbackHosts names the hosts the rule exempts, for error messages.
 const LoopbackHosts = "localhost, 127.0.0.1, ::1"
+
+// ErrCleartext is what every refusal of this package wraps, so a caller can
+// tell "stopped because the secret would travel in cleartext" from any
+// other failure.
+var ErrCleartext = errors.New("a secret would be sent unencrypted")
+
+// StatusPrefix starts a row error (an account's or a connection's) that
+// records an ErrCleartext refusal; the Desktop keys its "Stopped syncing"
+// row on it (Swift `CleartextRefusal.statusPrefix`).
+const StatusPrefix = "transport: "
+
+// StatusMessage is err as a row's error text: StatusPrefix first when err is
+// an ErrCleartext refusal.
+func StatusMessage(err error) string {
+	if errors.Is(err, ErrCleartext) {
+		return StatusPrefix + err.Error()
+	}
+	return err.Error()
+}
+
+// allowsCleartext is the one place the exemption lives: a loopback host.
+func allowsCleartext(host string) bool { return IsLoopbackHost(host) }
 
 // IsLoopbackHost reports whether h (a hostname without port; IPv6 brackets
 // allowed) names the local machine: "localhost" or a loopback IP literal.
@@ -34,9 +57,19 @@ func RequireSecureURL(rawURL, what string) error {
 	if err != nil {
 		return fmt.Errorf("parsing URL: %w", err)
 	}
-	if !strings.EqualFold(u.Scheme, "http") || IsLoopbackHost(u.Hostname()) {
+	if !strings.EqualFold(u.Scheme, "http") || allowsCleartext(u.Hostname()) {
 		return nil
 	}
-	return fmt.Errorf("%s sends a secret, so %s must use https: plain http would carry it in cleartext "+
-		"(http is allowed only for a loopback host: %s)", what, u.Redacted(), LoopbackHosts)
+	return fmt.Errorf("%w: %s sends a secret, so %s must use https: plain http would carry it in cleartext "+
+		"(http is allowed only for a loopback host: %s)", ErrCleartext, what, u.Redacted(), LoopbackHosts)
+}
+
+// RequireTLS refuses a connection to host without TLS: what (e.g. "IMAP
+// security \"none\"") would send a password in cleartext.
+func RequireTLS(host, what string) error {
+	if allowsCleartext(host) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s would send the password to %s in cleartext; use TLS "+
+		"(no TLS is allowed only for a loopback host: %s)", ErrCleartext, what, host, LoopbackHosts)
 }

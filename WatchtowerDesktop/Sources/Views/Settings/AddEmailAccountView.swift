@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for connecting a new email source, presented from the Settings →
 /// Email Accounts section. Three provider cards:
@@ -55,8 +56,37 @@ struct AddEmailAccountView: View {
 
     private var port: Int? { Int(portText) }
 
+    /// Security "none" to a remote host: the CLI refuses it, so the sheet does.
+    private var noneRefused: Bool { CleartextRefusal.refusesNoTLS(host: host) }
+
+    /// Port, security, and the inline refusal of "None" to a remote host.
+    @ViewBuilder
+    private var imapPortAndSecurity: some View {
+        HStack {
+            TextField("Port", text: $portText, prompt: Text("993"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 80)
+
+            Picker("", selection: $security) {
+                ForEach(IMAPSecurity.allCases) { option in
+                    Text(option.displayLabel).tag(option)
+                        .disabled(option == .none && noneRefused)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+        }
+
+        if security == .none && noneRefused {
+            Text(CleartextRefusal.imapCaption)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+
     private var canConnectIMAP: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty
+        !(security == .none && noneRefused)
+            && !host.trimmingCharacters(in: .whitespaces).isEmpty
             && !username.trimmingCharacters(in: .whitespaces).isEmpty
             && !password.isEmpty
             && port != nil
@@ -197,19 +227,7 @@ struct AddEmailAccountView: View {
                 TextField("Host", text: $host, prompt: Text("imap.example.com"))
                     .textFieldStyle(.roundedBorder)
 
-                HStack {
-                    TextField("Port", text: $portText, prompt: Text("993"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-
-                    Picker("", selection: $security) {
-                        ForEach(IMAPSecurity.allCases) { option in
-                            Text(option.displayLabel).tag(option)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                }
+                imapPortAndSecurity
 
                 TextField("Username", text: $username, prompt: Text("you@example.com"))
                     .textFieldStyle(.roundedBorder)

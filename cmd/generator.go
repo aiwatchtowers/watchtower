@@ -314,11 +314,15 @@ var errInsecureTransport = errors.New("refusing to send the connection's headers
 // transportReasonPrefix marks the row error recordInsecureTransport writes.
 // It is not toolsReasonPrefix: no tool-policy change clears it, only a
 // launch that finds the URL fixed (or the headers gone).
-const transportReasonPrefix = "transport: "
+const transportReasonPrefix = netsec.StatusPrefix
+
+// insecureTransportReason is the row's copy, for the owner, after the prefix.
+const insecureTransportReason = "Uses plain http, so its headers (a secret) would be sent unencrypted — " +
+	"remove it and add it again with an https URL."
 
 func recordInsecureTransport(database *db.DB, c db.ExternalConnection, err error) {
 	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
-	if serr := database.SetExternalConnectionStatus(c.ID, "error", transportReasonPrefix+err.Error()); serr != nil {
+	if serr := database.SetExternalConnectionStatus(c.ID, "error", transportReasonPrefix+insecureTransportReason); serr != nil {
 		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, serr)
 	}
 }

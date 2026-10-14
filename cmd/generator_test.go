@@ -547,8 +547,8 @@ func TestLoadExternalMCPServers_StaticHeadersOverRemoteHTTPNotMounted(t *testing
 	require.NoError(t, err)
 	require.Equal(t, "error", conn.Status)
 	require.True(t, strings.HasPrefix(conn.Error, transportReasonPrefix), conn.Error)
-	require.Contains(t, conn.Error, "must use https")
-	require.Contains(t, conn.Error, "loopback")
+	require.Equal(t, transportReasonPrefix+insecureTransportReason, conn.Error)
+	require.Contains(t, conn.Error, "add it again with an https URL")
 
 	// A tool-policy change never clears it, and a listing says why it
 	// failed rather than "sign in again".
