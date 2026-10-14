@@ -28,18 +28,19 @@ Checks something on a schedule.
 
 ` + "```js\nlog(\"tick\")\n```\n"
 
-// useBerlin sets time.Local to Europe/Berlin for the test (cron runs in the
-// local zone) and restores it afterwards.
-func useBerlin(t *testing.T) *time.Location {
+func loadZone(t *testing.T, name string) *time.Location {
 	t.Helper()
-	loc, err := time.LoadLocation("Europe/Berlin")
+	loc, err := time.LoadLocation(name)
 	if err != nil {
-		t.Fatalf("load Europe/Berlin: %v", err)
+		t.Fatalf("load %s: %v", name, err)
 	}
-	old := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = old })
 	return loc
+}
+
+// zoned returns s with its local zone fixed to loc.
+func zoned(s *automations.Scheduler, loc *time.Location) *automations.Scheduler {
+	automations.SetSchedulerZone(s, func() *time.Location { return loc })
+	return s
 }
 
 type schedFixture struct {
@@ -56,7 +57,7 @@ type schedFixture struct {
 
 func newSchedFixture(t *testing.T, start time.Time) *schedFixture {
 	t.Helper()
-	loc := useBerlin(t)
+	loc := loadZone(t, "Europe/Berlin")
 	ws := t.TempDir()
 	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
 	if err != nil {
@@ -72,11 +73,11 @@ func newSchedFixture(t *testing.T, start time.Time) *schedFixture {
 
 // newScheduler returns a fresh Scheduler (a daemon restart) over the fixture.
 func (f *schedFixture) newScheduler() *automations.Scheduler {
-	return automations.NewScheduler(f.d, f.ix, f.clock, func() {
+	return zoned(automations.NewScheduler(f.d, f.ix, f.clock, func() {
 		f.mu.Lock()
 		f.wakes++
 		f.mu.Unlock()
-	})
+	}), f.loc)
 }
 
 func (f *schedFixture) wakeCount() int {
@@ -405,11 +406,11 @@ func (f *schedFixture) tickEveryMinute(t *testing.T, id int64, from, to time.Tim
 	return f.runs(t, id)
 }
 
-func scheduledTimes(rs []db.AutomationRun) []string {
+func scheduledTimes(rs []db.AutomationRun, loc *time.Location) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
 		if r.ScheduledFor != nil {
-			out = append(out, r.ScheduledFor.In(time.Local).Format("01-02 15:04 MST"))
+			out = append(out, r.ScheduledFor.In(loc).Format("01-02 15:04 MST"))
 		}
 	}
 	return out
@@ -449,7 +450,7 @@ func TestScheduler_DSTTransition(t *testing.T) {
 			a := f.seed(t, "nightly", tc.cron, "run_once")
 			// Walk minute by minute in real time; the fall-back hour is lived twice.
 			rs := f.tickEveryMinute(t, a.ID, local(tc.from).Add(time.Minute), local(tc.to))
-			if got := scheduledTimes(rs); !slices.Equal(got, tc.want) {
+			if got := scheduledTimes(rs, f.loc); !slices.Equal(got, tc.want) {
 				t.Errorf("scheduled = %v, want %v", got, tc.want)
 			}
 		})
@@ -469,7 +470,6 @@ func TestScheduler_DSTSleepOverGapCatchesUpOnce(t *testing.T) {
 
 func TestAuto09_SchedulerOnlyQueues(t *testing.T) {
 	f := newSchedFixture(t, time.Time{})
-	gen := &automationstest.FakeGenerator{Replies: []string{"never"}}
 	f.clock.Set(f.at(14, 8, 0))
 	a := f.seed(t, "twice", "0 9,17 * * *", "run_once")
 	f.tick(t, f.at(14, 9, 0))
@@ -480,8 +480,9 @@ func TestAuto09_SchedulerOnlyQueues(t *testing.T) {
 		t.Fatal("no runs queued")
 	}
 	for _, r := range rs {
-		if r.Status != db.RunQueued || r.StartedAt != nil {
-			t.Errorf("run %d status=%q started_at=%v, want queued and never started", r.ID, r.Status, r.StartedAt)
+		if r.Status != db.RunQueued || r.StartedAt != nil || r.RecipeSnapshot != "" {
+			t.Errorf("run %d status=%q started_at=%v snapshot=%d bytes, want queued and never claimed",
+				r.ID, r.Status, r.StartedAt, len(r.RecipeSnapshot))
 		}
 		steps, err := f.d.ListAutomationRunSteps(r.ID)
 		if err != nil {
@@ -490,9 +491,6 @@ func TestAuto09_SchedulerOnlyQueues(t *testing.T) {
 		if len(steps) != 0 {
 			t.Errorf("run %d has %d steps, want 0", r.ID, len(steps))
 		}
-	}
-	if n := gen.CallCount(); n != 0 {
-		t.Errorf("generator calls = %d, want 0", n)
 	}
 }
 
@@ -550,8 +548,9 @@ func TestScheduler_RunTicksAtMinuteBoundaryAndOnWake(t *testing.T) {
 	f.clock.Set(f.at(14, 8, 0))
 	a := f.seed(t, "morning", "0 9 * * *", "run_once")
 	clock := &stepClock{now: f.at(14, 8, 59).Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
-	s := automations.NewScheduler(f.d, f.ix, clock, nil)
+	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 
@@ -600,10 +599,143 @@ func TestScheduler_OneBadRowDoesNotBlockOthers(t *testing.T) {
 	now := f.at(14, 9, 0)
 	f.clock.Set(now)
 	// No indexer: a rescan would rewrite the corrupted row from its file.
-	err := automations.NewScheduler(f.d, nil, f.clock, nil).Tick(context.Background(), now)
+	err := zoned(automations.NewScheduler(f.d, nil, f.clock, nil), f.loc).Tick(context.Background(), now)
 	if err == nil || !strings.Contains(err.Error(), "broken") {
 		t.Errorf("Tick error = %v, want one naming the broken automation", err)
 	}
 	wantRunCount(t, f.runs(t, bad.ID), 0)
 	wantRunCount(t, f.runs(t, good.ID), 1)
+}
+
+func TestScheduler_ClockBackwardsTransientWaits(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	f.clock.Set(f.at(14, 8, 0))
+	a := f.seed(t, "morning", "0 9 * * *", "run_once")
+	f.tick(t, f.at(14, 9, 0))
+	f.settle(t, a.ID)
+	// The clock steps back 2.5 h and runs through 09:00 again, then is corrected.
+	for now := f.at(14, 6, 30); !now.After(f.at(14, 9, 30)); now = now.Add(5 * time.Minute) {
+		f.tick(t, now)
+		f.settle(t, a.ID)
+	}
+	wantTime(t, "last_scheduled_for", f.get(t, a.ID).LastScheduledFor, f.at(14, 9, 0))
+	f.tick(t, f.at(14, 12, 0))
+	wantRunCount(t, f.runs(t, a.ID), 1)
+	f.tick(t, f.at(15, 9, 0))
+	rs := f.runs(t, a.ID)
+	wantRunCount(t, rs, 2)
+	wantRun(t, rs[1], db.TriggerSchedule, f.at(15, 9, 0))
+}
+
+func TestScheduler_ClockBackwardsUnderADayDoesNotReprime(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	f.clock.Set(f.at(14, 8, 0))
+	a := f.seed(t, "morning", "0 9 * * *", "run_once")
+	f.setLast(t, a.ID, f.at(15, 7, 0)) // 23 h ahead of the next tick
+	f.tick(t, f.at(14, 8, 0))
+	wantTime(t, "last_scheduled_for", f.get(t, a.ID).LastScheduledFor, f.at(15, 7, 0))
+	f.tick(t, f.at(14, 9, 0))
+	wantRunCount(t, f.runs(t, a.ID), 0)
+	f.tick(t, f.at(15, 9, 0))
+	wantRunCount(t, f.runs(t, a.ID), 1)
+}
+
+func TestScheduler_ConcurrentConfirmSkipsRow(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	f.clock.Set(f.at(14, 8, 0))
+	a := f.seed(t, "morning", "0 9 * * *", "run_once")
+	hookRan := false
+	automations.SetSchedulerBeforeWrite(f.s, func(row db.Automation) {
+		if hookRan {
+			return
+		}
+		hookRan = true
+		// The owner edits the script and confirms it between the
+		// scheduler's read and its write: the confirm stamps
+		// last_scheduled_for = now.
+		text := strings.NewReplacer("CRON", "0 9 * * *", "MISSED", "run_once").Replace(schedRecipe)
+		text = strings.Replace(text, `log("tick")`, `log("tock")`, 1)
+		if err := os.WriteFile(row.Path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		edited := f.indexed(t, "morning")
+		if err := f.d.ConfirmAutomation(edited.ID, edited.ApprovalHash, f.at(14, 9, 0).Add(30*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	f.tick(t, f.at(14, 9, 0))
+	if !hookRan {
+		t.Fatal("the write hook never ran")
+	}
+	wantRunCount(t, f.runs(t, a.ID), 0)
+	wantTime(t, "last_scheduled_for", f.get(t, a.ID).LastScheduledFor, f.at(14, 9, 0).Add(30*time.Second))
+	f.tick(t, f.at(14, 9, 1))
+	wantRunCount(t, f.runs(t, a.ID), 0)
+	f.tick(t, f.at(15, 9, 0))
+	wantRunCount(t, f.runs(t, a.ID), 1)
+}
+
+func TestScheduler_ZoneChangeTakesEffectWithoutRestart(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	f.clock.Set(f.at(14, 8, 0))
+	a := f.seed(t, "morning", "0 9 * * *", "run_once")
+	newYork := loadZone(t, "America/New_York")
+	zone := f.loc
+	automations.SetSchedulerZone(f.s, func() *time.Location { return zone })
+	f.tick(t, f.at(14, 8, 30))
+	wantTime(t, "next_run_at", f.get(t, a.ID).NextRunAt, f.at(14, 9, 0))
+
+	zone = newYork // the owner flies to New York and the Mac follows
+	f.tick(t, f.at(14, 9, 0))
+	wantRunCount(t, f.runs(t, a.ID), 0)
+	nyNine := time.Date(2026, 10, 14, 9, 0, 0, 0, newYork)
+	wantTime(t, "next_run_at", f.get(t, a.ID).NextRunAt, nyNine)
+	f.tick(t, nyNine)
+	rs := f.runs(t, a.ID)
+	wantRunCount(t, rs, 1)
+	wantRun(t, rs[0], db.TriggerSchedule, nyNine)
+}
+
+func TestScheduler_ZoneNameFromLink(t *testing.T) {
+	cases := []struct {
+		target, want string
+		ok           bool
+	}{
+		{"/var/db/timezone/zoneinfo/Europe/Berlin", "Europe/Berlin", true},
+		{"/usr/share/zoneinfo/America/Argentina/Buenos_Aires", "America/Argentina/Buenos_Aires", true},
+		{"../usr/share/zoneinfo/UTC", "UTC", true},
+		{"/usr/share/zoneinfo/", "", false},
+		{"/etc/some-other-file", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := automations.ZoneNameFromLink(tc.target)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("ZoneNameFromLink(%q) = %q, %v; want %q, %v", tc.target, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestScheduler_WakeCoalesces(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 8), fire: make(chan time.Time)}
+	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
+	// Three wakes before Run starts: one buffered, two coalesced into it.
+	s.Wake()
+	s.Wake()
+	s.Wake()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	clock.waitAfter(t) // the start tick
+	clock.waitAfter(t) // the one coalesced wake's tick
+	select {
+	case d := <-clock.calls:
+		t.Fatalf("a third tick ran (wait %s); wakes were not coalesced", d)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("Run = %v, want nil", err)
+	}
 }

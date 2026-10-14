@@ -211,7 +211,11 @@ type EnqueueRequest struct {
 	RerunOf           int64
 	AdvanceScheduleTo *time.Time // set: last_scheduled_for advances in the same tx
 	NextRunAt         *time.Time // written with AdvanceScheduleTo (nil stores NULL)
-	Now               time.Time
+	// ExpectLastScheduledFor is, with AdvanceScheduleTo, the last_scheduled_for
+	// the caller read (nil = NULL); a row that no longer has it fails the whole
+	// request with ErrScheduleChanged.
+	ExpectLastScheduledFor *time.Time
+	Now                    time.Time
 }
 
 // EnqueueAutomationRun queues a run in one transaction. Checks, in order:
@@ -221,7 +225,9 @@ type EnqueueRequest struct {
 // inserted (P4 merges the new cycle's events into it); else a queued row is
 // inserted with queued_at = Now. When AdvanceScheduleTo is set,
 // last_scheduled_for/next_run_at advance in the same tx whether or not a row
-// was inserted.
+// was inserted — compare-and-set against ExpectLastScheduledFor: when the
+// row's last_scheduled_for moved since the caller read it, the transaction
+// rolls back (no run inserted) and the error wraps ErrScheduleChanged.
 func (db *DB) EnqueueAutomationRun(r EnqueueRequest) (runID int64, coalesced bool, err error) {
 	if err := requireRunTime(r.Now, fmt.Sprintf("enqueueing a run of automation %d", r.AutomationID)); err != nil {
 		return 0, false, err
@@ -237,12 +243,7 @@ func (db *DB) EnqueueAutomationRun(r EnqueueRequest) (runID int64, coalesced boo
 		return 0, false, err
 	}
 	if r.AdvanceScheduleTo != nil {
-		res, err := tx.Exec(`UPDATE automations SET last_scheduled_for = ?, next_run_at = ? WHERE id = ?`,
-			nullAutomationTime(r.AdvanceScheduleTo), nullAutomationTime(r.NextRunAt), r.AutomationID)
-		if err != nil {
-			return 0, false, fmt.Errorf("advancing the schedule of automation %d: %w", r.AutomationID, err)
-		}
-		if err := requireAutomationRow(res, r.AutomationID); err != nil {
+		if err := advanceScheduleTx(tx, r); err != nil {
 			return 0, false, err
 		}
 	}
@@ -250,6 +251,32 @@ func (db *DB) EnqueueAutomationRun(r EnqueueRequest) (runID int64, coalesced boo
 		return 0, false, fmt.Errorf("enqueueing a run of automation %d: %w", r.AutomationID, err)
 	}
 	return runID, coalesced, nil
+}
+
+// advanceScheduleTx is EnqueueAutomationRun's compare-and-set schedule write.
+func advanceScheduleTx(tx *sql.Tx, r EnqueueRequest) error {
+	res, err := tx.Exec(`UPDATE automations SET last_scheduled_for = ?, next_run_at = ?
+		WHERE id = ? AND last_scheduled_for IS ?`,
+		nullAutomationTime(r.AdvanceScheduleTo), nullAutomationTime(r.NextRunAt), r.AutomationID,
+		nullAutomationTime(r.ExpectLastScheduledFor))
+	if err != nil {
+		return fmt.Errorf("advancing the schedule of automation %d: %w", r.AutomationID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("advancing the schedule of automation %d: %w", r.AutomationID, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM automations WHERE id = ?)`, r.AutomationID).Scan(&exists); err != nil {
+		return fmt.Errorf("advancing the schedule of automation %d: %w", r.AutomationID, err)
+	}
+	if !exists {
+		return fmt.Errorf("automation %d: %w", r.AutomationID, ErrAutomationNotFound)
+	}
+	return fmt.Errorf("automation %d: %w", r.AutomationID, ErrScheduleChanged)
 }
 
 func enqueueRunTx(tx *sql.Tx, r EnqueueRequest) (int64, bool, error) {

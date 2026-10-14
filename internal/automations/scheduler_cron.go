@@ -27,6 +27,14 @@ const maxWallSkips = 10000
 //     occurs twice on a fall-back day is due once (its first occurrence), and
 //     a time inside the skipped spring-forward hour is due once, at the
 //     instant the hour is skipped (02:30 → 03:00 on that day).
+//
+// This follows Vixie cron's DST handling with two deliberate differences:
+// Vixie calls a job "wildcard" when its minute OR hour field is a wildcard,
+// while here only the hour field decides ("* 2 * * *" is a wall-clock
+// appointment: on a fall-back day it fires through the first 02:xx hour
+// only, not through both); and Vixie infers a DST change from the size of a
+// wall-clock jump, while here the zone database's transitions are used, so a
+// real clock jump is never taken for one (the missed-run rules handle it).
 type cronSchedule struct {
 	loc     *time.Location
 	elapsed cron.Schedule // hour field with '*': robfig instants in loc
@@ -43,6 +51,9 @@ func parseCronSchedule(expr string, loc *time.Location) (*cronSchedule, error) {
 	var err error
 	if strings.Contains(fields[1], "*") {
 		c.elapsed, err = cron.ParseStandard(expr)
+		if spec, ok := c.elapsed.(*cron.SpecSchedule); ok {
+			spec.Location = loc
+		}
 	} else {
 		c.wall, err = cron.ParseStandard("TZ=UTC " + expr)
 	}
@@ -56,7 +67,6 @@ func parseCronSchedule(expr string, loc *time.Location) (*cronSchedule, error) {
 // none is found (robfig gives up five years out, e.g. "0 0 30 2 *").
 func (c *cronSchedule) next(t time.Time) time.Time {
 	if c.elapsed != nil {
-		// robfig computes in the argument's zone when its own is time.Local.
 		return c.elapsed.Next(t.In(c.loc))
 	}
 	w := floatingWall(t.In(c.loc))
