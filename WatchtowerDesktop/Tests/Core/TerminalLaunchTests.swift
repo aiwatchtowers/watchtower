@@ -238,11 +238,14 @@ final class TerminalLaunchSetupTests: XCTestCase {
         process.environment = ["WATCHTOWER_WORKTREE_SETUP": "exit 3"]
         let pipe = Pipe()
         process.standardOutput = pipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        addTeardownBlock { if process.isRunning { process.terminate() } }
-        let done = expectation(description: "exit")
-        process.terminationHandler = { _ in done.fulfill() }
-        wait(for: [done], timeout: 10)
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("the launch did not finish")
+        }
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         XCTAssertTrue(out.contains("running the worktree setup command"), out)
         XCTAssertTrue(out.contains("the worktree setup command failed (exit 3); starting the agent anyway."), out)
