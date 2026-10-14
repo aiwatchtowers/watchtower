@@ -5,11 +5,15 @@ import os
 extension CloudKitTransport {
     // MARK: - Direct save
 
-    /// Saves one record into `hubID`'s zone of `scope`'s database with one
-    /// request, outside any engine and store: nothing is fetched first, and
-    /// the save overwrites whatever the server holds (`.allKeys`, no change
-    /// tag compared). The phone's unlink farewell kept after its hub's files
-    /// went (#143) goes out this way. Throws the CloudKit error, the
+    /// Saves one record into `hubID`'s zone of `scope`'s database outside
+    /// any engine and store, as a compare-and-swap: a fresh record first
+    /// (no change tag), and on `serverRecordChanged` once more over the
+    /// server copy it was refused for (`.ifServerRecordUnchanged` both
+    /// times). The phone's unlink farewell kept after its hub's files went
+    /// (#143) goes out this way: it replaces the copy it read, never a write
+    /// that lands after that read, so a farewell given up on at its cap that
+    /// reaches the server late is refused there rather than clobbering a
+    /// relink's `device` record (#261). Throws the CloudKit error, the
     /// record's own included. The caller checks the entitlement first.
     public static func saveDirectly(
         _ record: CloudRecord,
@@ -17,13 +21,34 @@ extension CloudKitTransport {
         hubID: String,
         containerID: String = WatchtowerCloud.containerID
     ) async throws {
-        let ck = directSaveRecord(record, scope: scope, hubID: hubID)
         let database = scope.database(in: CKContainer(identifier: containerID))
-        let (saves, _) = try await database.modifyRecords(saving: [ck], deleting: [], savePolicy: .allKeys, atomically: false)
-        _ = try saves[ck.recordID]?.get()
+        try await saveDirectly(record, scope: scope, hubID: hubID) { ck in
+            let (saves, _) = try await database.modifyRecords(
+                saving: [ck], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: false)
+            _ = try saves[ck.recordID]?.get()
+        }
     }
 
-    /// The record a direct save sends: a fresh one (no system fields) in
+    /// The direct save's two tries over `save` (one conditional save of one
+    /// record; tests replace it). A save cancelled while the first try ran
+    /// (the farewell's cap) never tries again: the copy it was refused for
+    /// may already be a new link's.
+    static func saveDirectly(
+        _ record: CloudRecord,
+        scope: CloudDatabaseScope,
+        hubID: String,
+        save: (CKRecord) async throws -> Void
+    ) async throws {
+        do {
+            try await save(directSaveRecord(record, scope: scope, hubID: hubID))
+        } catch let error as CKError where error.code == .serverRecordChanged {
+            guard let server = error.serverRecord else { throw error }
+            try Task.checkCancellation()
+            try await save(ckRecord(from: record, in: server.recordID.zoneID, systemFields: archivedSystemFields(of: server)))
+        }
+    }
+
+    /// The record a direct save first sends: a fresh one (no system fields) in
     /// the hub's zone of the record's kind.
     static func directSaveRecord(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) -> CKRecord {
         ckRecord(from: record, in: HubZones(scope: scope, hubID: hubID).zoneID(for: record.zone), systemFields: nil)
