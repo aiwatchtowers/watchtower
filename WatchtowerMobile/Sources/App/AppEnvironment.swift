@@ -228,11 +228,17 @@ final class AppEnvironment {
     /// there (every session when the scope is unknown, the demo always),
     /// each fetching it at once (`HubSession.handlePush`). The outcome is
     /// `.newData` when any brought something, `.failed` when every one
-    /// failed, else `.noData`.
+    /// failed, else `.noData`. The other sessions only note it: a push
+    /// launching the app into the background leaves them unfetched until
+    /// the first activation (`HubSession.noteForeignPush`).
     func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushScope?) async -> FetchOutcome {
-        let reached = sessions.values.filter { session in
-            guard let scope, let own = session.databaseScope else { return true }
-            return PushScope(own) == scope
+        var reached: [HubSession] = []
+        for session in sessions.values {
+            if let scope, let own = session.databaseScope, PushScope(own) != scope {
+                session.noteForeignPush()
+            } else {
+                reached.append(session)
+            }
         }
         guard !reached.isEmpty else { return .noData }
         let outcomes = await withTaskGroup(of: FetchOutcome.self) { group in

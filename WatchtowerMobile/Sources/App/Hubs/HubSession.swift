@@ -299,8 +299,12 @@ final class HubSession {
     /// The first silent push that arrived before the launch fetch began: a
     /// launch into the background for it takes the light reach.
     @ObservationIgnored private var pushBeforeLaunch: PushArrival?
-    /// The launch took the light reach (a push launched the app): the first
-    /// activation fetches in full whatever the last fetch's age.
+    /// A silent push for another database arrived before the launch fetch
+    /// began (`noteForeignPush`): a launch into the background for it
+    /// skips the launch fetch.
+    @ObservationIgnored private var foreignPushBeforeLaunch = false
+    /// The launch took the light reach or none (a push launched the app):
+    /// the first activation fetches in full whatever the last fetch's age.
     @ObservationIgnored private var fullFetchOwed = false
     /// Ends the boot's background work (`BackgroundWork`): run once, when the boot ends or the
     /// session stops.
@@ -544,14 +548,20 @@ final class HubSession {
     /// The launch fetch, begun right after the transport started, so a push
     /// that arrived before it is served by it (`handlePush`). In the
     /// foreground it takes the full reach; a launch into the background for
-    /// a push takes the push's light reach, without the forced zone poll,
-    /// and the first activation then fetches in full.
+    /// a push takes the push's light reach, without the forced zone poll;
+    /// one for a push of another database only fetches nothing (#232's
+    /// battery budget). Either way the first activation then fetches in full.
     private func beginLaunchFetch() {
         guard !stopped else { return }
         var depth = RemoteFetchDepth.full
         if !isActive, let push = pushBeforeLaunch {
             depth = .push(since: push.at, pollOnFallback: false)
             fullFetchOwed = true
+        } else if !isActive, foreignPushBeforeLaunch {
+            // No launch fetch: a push of this hub's own arriving later is
+            // fetched on its own (`handlePush`).
+            fullFetchOwed = true
+            return
         }
         launchFetchTask = startFetch(.launch, depth: depth)
     }
@@ -742,6 +752,15 @@ final class HubSession {
             await transportStartTask?.value
         }
         return await fetch(for: push)
+    }
+
+    /// A silent push for another database (`AppEnvironment.handlePush`):
+    /// one arriving before the launch fetch began keeps a launch into the
+    /// background from fetching this hub (`beginLaunchFetch`). Fetches
+    /// nothing itself.
+    func noteForeignPush() {
+        guard !stopped, launchFetchTask == nil else { return }
+        foreignPushBeforeLaunch = true
     }
 
     /// The fetch serving `push`: one begun after it, else one follow-up
