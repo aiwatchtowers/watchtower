@@ -133,12 +133,14 @@ final class CommentAnchorTests: XCTestCase {
     /// so a fixed wall-clock bound flaked (0.50–0.78 s against 0.5 s); a slow
     /// runner slows both sides of the ratio alike. Each side is the fastest of
     /// three runs on a monotonic clock, since noise only ever adds time.
-    /// Measured locally (debug build): the current `locate` runs at 1.93–1.96×
-    /// the baseline idle and 2.3–2.4× with every core saturated; the pre-fix
-    /// scan at 4.7–4.9×. The bound of 3.5 sits between them with room on
-    /// both sides. (A 1 MB vs 2 MB scaling check would not catch the old scan:
-    /// with the quote length fixed, O(n·m) also grows linearly in n.) The
-    /// absolute 5 s ceiling is only a backstop far above any CI reading.
+    /// Measured locally only (debug build): the current `locate` runs at
+    /// 1.95–1.99× the baseline idle and up to 2.4× with every core saturated;
+    /// the pre-fix scan at 4.71–4.86×. The bound of 3.4 is the geometric mean
+    /// of the worst current reading under load and the best pre-fix one
+    /// (√(2.4 × 4.71) ≈ 3.36), about 1.4× clear of each. (A 1 MB vs 2 MB
+    /// scaling check would not catch the old scan: with the quote length
+    /// fixed, O(n·m) also grows linearly in n.) The absolute 5 s ceiling is
+    /// only a backstop far above any CI reading.
     func testReflowMatchOnLargeDocumentCompletesQuickly() throws {
         let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
         let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.
@@ -154,7 +156,7 @@ final class CommentAnchorTests: XCTestCase {
 
         var found: Range<String.Index>?
         let locateTime = Self.fastestOfThree { found = made.locate(in: big) }
-        var collapsedLength = 0
+        var collapsed = "" // counted outside the timing: only the collapse pass is measured
         let baselineTime = Self.fastestOfThree {
             var out = ""
             var lastWasSpace = false
@@ -167,11 +169,11 @@ final class CommentAnchorTests: XCTestCase {
                     lastWasSpace = false
                 }
             }
-            collapsedLength = out.count
+            collapsed = out
         }
-        XCTAssertGreaterThan(collapsedLength, 0)
+        XCTAssertGreaterThan(collapsed.count, 0)
 
-        let maxBaselineMultiple = 3.5
+        let maxBaselineMultiple = 3.4
         let ratio = locateTime / max(baselineTime, 1e-6)
         XCTAssertLessThan(
             ratio, maxBaselineMultiple,
