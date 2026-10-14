@@ -110,11 +110,10 @@ func TestRecordGoogleConnection_NewGrantTurnsItsSwitchOn(t *testing.T) {
 	assert.False(t, acct.GmailEnabled)
 }
 
-// A reconnect re-requests every service the account already had; it must not
-// turn back on a sync the owner switched off in Settings.
-func TestRecordGoogleConnection_ReconsentKeepsAnOwnerOff(t *testing.T) {
-	body := "calendar:\n  enabled: false\ngmail:\n  enabled: false\n"
-	path, cfg := writeSyncSwitchConfig(t, body)
+// Owner decision 2026-10-14: a reconnect is a request to sync too — a
+// re-consent turns back on a switch the owner had turned off.
+func TestRecordGoogleConnection_ReconsentTurnsTheSwitchesBackOn(t *testing.T) {
+	path, cfg := writeSyncSwitchConfig(t, "calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
 	database := db.OpenTestDB(t)
 	id, err := database.CreateGoogleAccount(db.GoogleAccount{CalendarEnabled: true, GmailEnabled: true})
 	require.NoError(t, err)
@@ -123,14 +122,34 @@ func TestRecordGoogleConnection_ReconsentKeepsAnOwnerOff(t *testing.T) {
 		googleConnectResult{wantCalendar: true, wantGmail: true, calEnabled: true, gmEnabled: true})
 	require.NoError(t, err)
 
-	got, err := os.ReadFile(path)
+	reloaded, err := config.Load(path)
 	require.NoError(t, err)
-	assert.Equal(t, body, string(got), "services the account already had keep their switches")
+	assert.True(t, reloaded.Calendar.Enabled, "a reconnected calendar syncs again")
+	assert.True(t, reloaded.Gmail.Enabled, "a reconnected Gmail syncs again")
 }
 
-// Widening an existing account (Gmail-only, now also Calendar) turns on only
-// the gained service.
-func TestRecordGoogleConnection_WideningTurnsOnOnlyTheGainedService(t *testing.T) {
+// A re-consent that drops a service (the owner unchecked it on Google's
+// consent page) leaves that service's switch as it was: only what was
+// granted is turned on.
+func TestRecordGoogleConnection_ReconsentLeavesAnUngrantedSwitchAlone(t *testing.T) {
+	path, cfg := writeSyncSwitchConfig(t, "calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+	database := db.OpenTestDB(t)
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{CalendarEnabled: true, GmailEnabled: true})
+	require.NoError(t, err)
+
+	err = recordGoogleConnection(&bytes.Buffer{}, &bytes.Buffer{}, path, cfg, database, id,
+		googleConnectResult{wantCalendar: true, wantGmail: true, calEnabled: false, gmEnabled: true})
+	require.NoError(t, err)
+
+	reloaded, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, reloaded.Calendar.Enabled, "Calendar was not granted this time")
+	assert.True(t, reloaded.Gmail.Enabled)
+}
+
+// Widening an existing account (Gmail-only, now also Calendar) turns on
+// every granted service, the one it already had included.
+func TestRecordGoogleConnection_WideningTurnsOnEveryGrantedService(t *testing.T) {
 	path, cfg := writeSyncSwitchConfig(t, "calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
 	database := db.OpenTestDB(t)
 	id, err := database.CreateGoogleAccount(db.GoogleAccount{GmailEnabled: true})
@@ -143,7 +162,7 @@ func TestRecordGoogleConnection_WideningTurnsOnOnlyTheGainedService(t *testing.T
 	reloaded, err := config.Load(path)
 	require.NoError(t, err)
 	assert.True(t, reloaded.Calendar.Enabled)
-	assert.False(t, reloaded.Gmail.Enabled, "Gmail was already granted; its off switch is the owner's")
+	assert.True(t, reloaded.Gmail.Enabled)
 }
 
 // The account is connected once its row is written: a failed switch write

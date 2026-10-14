@@ -469,23 +469,20 @@ type googleConnectResult struct {
 
 // recordGoogleConnection stores a finished consent for accountID — granted
 // services, email, auth state — reports it, and turns on the global sync
-// switch for each service the account newly gained (#740). A re-consent of a
-// service the account already had leaves its switch alone, so a sync the
-// owner turned off in Settings stays off across a reconnect. The account is
-// connected once the row is written, so a failed switch write is a warning,
-// not a failed connect (the Calendar tab offers Turn On Calendar Sync).
+// switch for every service the consent granted (#740). A re-consent counts
+// too: reconnecting a service is asking for it to sync, so a switch the
+// owner turned off in Settings comes back on (owner decision 2026-10-14).
+// The account is connected once the row is written, so a failed switch write
+// is a warning, not a failed connect (the Calendar tab offers Turn On
+// Calendar Sync).
 func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *config.Config, database *db.DB, accountID int64, r googleConnectResult) error {
-	before, err := database.GetGoogleAccount(accountID)
-	if err != nil {
-		return fmt.Errorf("loading account %d: %w", accountID, err)
-	}
 	if err := database.UpdateGoogleAccountConnection(accountID, r.email, r.calEnabled, r.gmEnabled); err != nil {
 		return fmt.Errorf("recording connection: %w", err)
 	}
 	_ = database.SetGoogleAccountAuthState(accountID, "ok", "")
 
 	printGoogleConnectionResult(out, r.wantCalendar, r.wantGmail, r.calEnabled, r.gmEnabled, accountID)
-	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled && !before.CalendarEnabled, r.gmEnabled && !before.GmailEnabled); err != nil {
+	if err := enableGoogleSyncSwitches(configPath, cfg, r.calEnabled, r.gmEnabled); err != nil {
 		fmt.Fprintf(errOut, "warning: account connected, but turning its sync on failed: %v\n", err)
 	}
 	return nil
