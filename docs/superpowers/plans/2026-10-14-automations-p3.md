@@ -14,11 +14,11 @@
 
 **Depends on:** P1 merged (all seams below), P2 merged (migration 00114 `automation_tool_grants`, `automations auto … on|off --hash`, the `automation` surface rows in `agent_actions` with `context_type='automation_run'`).
 
-## Header notes — seam changes needed (not invented here; see the report)
+## Header notes — seams (settled in P1's "Seams for later phases")
 
-1. **In-memory journal / dry run (P1).** `automations.NewJournal(d, runID, dryRun)` always writes `automation_run_steps` rows and `ExecuteInline` needs a `queued` run row; `draft_automation` must write nothing (AGENT-06, spec §11). P3 needs, in P1's package, `func NewMemoryJournal() *Journal` + `func (j *Journal) Steps() []db.AutomationRunStep` (same type, no DB) and `func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptions) (*DryRunReport, error)` (`DryRunOptions{Budget Budget; Modules func(Backends) []Module}`; `DryRunReport{Steps []db.AutomationRunStep; Outputs []db.AutomationOutput; InputTokens, OutputTokens int64; Estimated bool; Status, Error string}`). If P1 lands without them, Task 1 adds exactly these names to `internal/automations` (an addition, nothing renamed) and the P1 seam list is amended in the same PR.
-2. **CLI JSON shapes (P1).** P1 Task 12 names the commands but not the `--json` keys the Desktop decodes. P3 consumes the keys pinned in Task 5 (`show`, `validate`, `dry-run`, `run`, `save`); P1's implementation must emit them (Task 5 asserts them in `cmd` and fixes them if they differ).
-3. **`automations wake` (P1 seam text "P3 adds `automations wake` if the Desktop needs a bare wake").** P3 adds it (Task 5); the Desktop sends it after an Approve/Reject of a `context_type='automation_run'` row (spec §7.4).
+1. **In-memory dry run (P1).** `automations.NewMemoryJournal()`, `(*Journal).Steps()`, `automations.DryRunInMemory(ctx, Backends, *Recipe, DryRunOptions{Budget, Modules}) (*DryRunReport, error)` with `DryRunReport{Steps, Outputs, InputTokens, OutputTokens, Estimated, Status, Error}` are P1's (Tasks 6 and 10, with `TestDryRunInMemory_WritesNoRows` / `TestDryRunInMemory_BudgetBound`). `draft_automation` consumes them; P3 adds nothing to `internal/automations` for them.
+2. **CLI JSON shapes (P1).** The `--json` keys of `show`, `validate`, `run`, `dry-run` (with `run_id`) and `save` are pinned by P1 Task 12 (they were drafted here and moved there). P3 decodes them as pinned and only **adds**: `validate --against <id>` and `save --expect-content-hash <sha>` (Task 5); no key is renamed.
+3. **`automations wake` (P1 seam: "P3 adds the `automations wake` subcommand").** P3 adds it in `cmd/automations_wake.go` over P1's `wakeAutomations(cfg)` (Task 5); the Desktop sends it after an Approve/Reject of a `context_type='automation_run'` row (spec §7.4).
 4. **Grants in `show --json` (P2).** The spec pins `automation_tool_grants` and `automations auto`, not `show --json`'s grant keys. P3 reads grants through GRDB from `automation_tool_grants` (spec §9.4, pinned) and needs nothing else from P2's JSON.
 5. **Templates CLI (P6).** The gallery consumes `automations templates --json` and `automations install-template <name> [--workbench N] --json`; their keys are pinned in Task 13 as P6's contract. Until P6 merges, the gallery shows its empty state.
 6. **Open owner question (not a seam).** `draft_automation` returns dry-run step summaries to the main-chat model. A draft that reads `list_emails`/`get_email` (automation surface only, never offered to the main chat) therefore shows clipped mail data to the main chat before the owner confirmed anything. The spec allows it (§11, the purpose of a dry run, D2's posture); P3 implements the spec and flags it for the owner in the report.
@@ -49,7 +49,7 @@
 3. **The editor surface is narrow.** On `automation_editor` the only write tool mounted is `save_automation`; no other write tool (including any tool with empty `Surfaces`) leaks onto it. Pinned: Task 3 `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads`.
 4. **Auto grants are never kept by default.** A save that changes `approval_hash` lists the grants it pauses with every "Keep auto for …" box unchecked; no `auto … on` runs unless the owner checks one. Pinned: Task 10 `testAuto03_KeepAutoBoxesUncheckedByDefault`, `testNoAutoOnWithoutACheckedBox`.
 5. **Draft writes nothing, even for a script that calls `output.*`/`state.set`/a write tool.** Pinned: Task 1 `TestDraftAutomation_WritesNothing` (also in the AGENT-06 chat-mode guard, Task 3).
-6. **Wire shapes with empty arrays** decode on the Swift side. Pinned: Task 5 `TestAutomationsCLI_JSONEmptyArraysNotNull`, Task 6 `testDecodesEmptyStateJSON`.
+6. **Wire shapes with empty arrays** decode on the Swift side. Pinned: P1 Task 12 `TestAutomationsCLI_JSONEmptyArraysNotNull` (Go side), Task 5 `TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray`, Task 6 `testDecodesEmptyStateJSON`.
 7. **Async state survives navigation** for Run now, Dry run, Save and the editor chat. Pinned: Task 7 `testDryRunSurvivesNavigation`, Task 10 `testSaveSurvivesNavigation`.
 
 ---
@@ -59,13 +59,12 @@
 | Path | Responsibility |
 |---|---|
 | `internal/automations/authoring/{deps.go,draft.go,save.go,authoring_test.go}` | `draft_automation`, `save_automation` |
-| `internal/automations/{journal.go,dryrun_memory.go}` | seam additions (header note 1) |
 | `internal/tools/registry.go` | `AutomationEditorSurface` constant |
 | `cmd/actions_registry.go`, `cmd/mcp.go`, `cmd/ai.go` | registration; `--surface automation_editor` |
 | `internal/mcp/actions_test.go` | AGENT-06 chat-only call list gains `draft_automation` |
 | `internal/chat/prompt_sections.go` (`ActionsContract`) + golden, Swift `AgentToolsContract` | main-chat actions contract names the two tools |
 | `internal/skills/shipped/create-automation.md`, `internal/skills/skills_test.go` | the skill |
-| `cmd/automations.go`, `cmd/automations_wake.go`, `cmd/automations_test.go` | `wake`, `validate --against`, `save --expect-content-hash`, pinned JSON |
+| `cmd/automations.go`, `cmd/automations_wake.go`, `cmd/automations_test.go` | `wake`, `validate --against`, `save --expect-content-hash` (JSON keys are P1's) |
 | `WatchtowerDesktop/Sources/WatchtowerCore/Models/AutomationModels.swift` | rows, statuses, badges |
 | `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/AutomationQueries.swift` | reads + the two output writes |
 | `WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/` | `AutomationsCLI`, `AutomationTriggerText`, `AutomationsPollPolicy`, `DryRunPresentation`, `AutomationsViewModel`, `RecipeFrontmatter`, `AutomationFormModel`, `AutomationSavePlan`, `AutomationEditorCenter`, `RecipeBufferModel`, `AutomationTemplate` |
@@ -82,13 +81,11 @@
 
 **Files:**
 - Create: `internal/automations/authoring/deps.go`, `internal/automations/authoring/draft.go`, `internal/automations/authoring/draft_test.go`
-- Create or modify (header note 1): `internal/automations/dryrun_memory.go`, `internal/automations/journal.go`, `internal/automations/dryrun_memory_test.go`
 
 **Interfaces:**
-- Consumes: `automations.ParseRecipe`, `automations.Scope{Kind, WorkbenchID}`, `automations.ScopePersonal|ScopeWorkbench`, `automations.ApprovalHash`, `automations.ParseManifest`, `(*Manifest).Normalized()`, `(*Manifest).Outputs()`, `automations.Covers`, `automations.Backends{Generator, Registry, Clock}`, `automations.DefaultModules`, `automations.Budget`, `db.GetAutomationBySlug`, `db.Automation`, `db.AutomationRunStep`, `db.AutomationOutput`, `tools.Tool`, `tools.AccessRead`, `tools.ValidationError`, `cfg.Automations.Enabled`.
+- Consumes: `automations.ParseRecipe`, `automations.Scope{Kind, WorkbenchID}`, `automations.ScopePersonal|ScopeWorkbench`, `automations.ApprovalHash`, `automations.ParseManifest`, `(*Manifest).Normalized()`, `(*Manifest).Outputs()`, `automations.Covers`, `automations.Backends{DB, Generator, Registry, Clock}`, `automations.DefaultModules`, `automations.Budget`, `automations.DryRunInMemory`/`DryRunOptions`/`DryRunReport` (P1), `db.GetAutomationBySlug`, `db.Automation`, `db.AutomationRunStep`, `db.AutomationOutput`, `tools.Tool`, `tools.AccessRead`, `tools.ValidationError`, `cfg.Automations.Enabled`.
 - Produces:
-  - (seam, header note 1) `func NewMemoryJournal() *Journal`; `func (j *Journal) Steps() []db.AutomationRunStep`; `type DryRunOptions struct { Budget Budget; Modules func(Backends) []Module }`; `type DryRunReport struct { Steps []db.AutomationRunStep; Outputs []db.AutomationOutput; InputTokens, OutputTokens int64; Estimated bool; Status, Error string }`; `func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptions) (*DryRunReport, error)` — `Env.DryRun = true`, `Env.Run` a synthetic `&db.AutomationRun{ID: 0, Trigger: db.TriggerDryRun}`, `Env.Wait` nil (a wait-capable call returns `{status:"dry_run"}` before waiting), daily remainder unbounded (not counted, v1 limit), commit buffer never committed.
-  - `package authoring`: `type Deps struct { DB *db.DB; WorkspaceDir string; WorkbenchFolder func(id int64) (string, error); Backends func() automations.Backends; Enabled func() bool; Clock automations.Clock }`.
+  - `package authoring`: `type Deps struct { DB *db.DB; WorkspaceDir string; Backends func() automations.Backends; Enabled func() bool; Clock automations.Clock }` — a workbench's folder comes from `Backends().Workbench` (P1's `WorkbenchResolver`, nil until P5 wires it; P3 refuses workbench saves anyway, R-P3-5), so there is no second folder lookup here.
   - `func NewDraftAutomation(d Deps) *tools.Tool` — `Name: "draft_automation"`, `Access: tools.AccessRead`, `Surfaces: []string{"main", tools.AutomationEditorSurface}`; args `{recipe_text: string (required), slug?: string, workbench_id?: int}`.
   - `type DraftResult struct { OK bool `json:"ok"`; Errors []string `json:"errors"`; Manifest DraftManifest `json:"manifest"`; Widening []string `json:"widening"`; DryRun *DraftDryRun `json:"dry_run"` }`; `type DraftManifest struct { Name, Slug, Scope, TriggerKind, Trigger string; Permissions, Outputs []string; BudgetTokens, BudgetMinutes int; ApprovalHash string }`; `type DraftDryRun struct { Steps []DraftStep `json:"steps"`; Outputs []DraftOutput `json:"outputs"`; Tokens int64 `json:"tokens"`; Status, Error string }`; `type DraftStep struct { Seq int; Kind, Name, Status, Args, Result, Permission, Error string; Tokens int64 }` (args/result clipped 4 KiB as the journal does).
   - **My ruling R-P3-1 (not in the spec):** `draft_automation` takes an optional `slug`; when an automation with that `(scope, slug)` exists, `widening = Covers(saved permissions, new permissions)`, else `widening` = every normalised permission (a new recipe widens from nothing). The spec's arg list has no way to say "editing".
@@ -97,8 +94,6 @@
 - Depends on: none (P1 merged).
 
 - [ ] **Step 1: Failing tests** (`automationstest.FakeGenerator`, `FakeRegistry`, `FakeClock`, temp file DB):
-  - `TestDryRunInMemory_WritesNoRows` — script calls `llm`, a read `tool`, `state.set`, `output.inbox`, `log` → report has 5 steps, `output`/`state` steps `dry_run`; `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`, `agent_actions` row counts unchanged.
-  - `TestDryRunInMemory_BudgetBound` — `opts.Budget{Tokens: 50000, Minutes: 5}`, FakeGenerator 30000 tokens per call, script calls `llm` 3× → `Status == "budget_exceeded"`, third call never reaches the generator.
   - `TestDraftAutomation_WritesNothing` — same guard-table row counts before/after a draft whose script also calls `tool("create_target", …)` with `tool:create_target` (write → `{status:"dry_run"}`, no `agent_actions` row).
   - `TestDraftAutomation_BoundsMinOfRecipeAnd50k5min` — recipe `budget {tokens: 2000000, minutes: 60}` → the dry run runs with 50000 / 5; recipe `{tokens: 1000, minutes: 1}` → 1000 / 1.
   - `TestDraftAutomation_ParseErrorNoModelCall` — two js blocks → `ok:false`, `errors` names "exactly one", generator calls 0, `dry_run` null.
@@ -107,8 +102,8 @@
   - `TestDraftAutomation_ApprovalHashMatchesParser` — `manifest.approval_hash == automations.ApprovalHash(parsed)`.
   - `TestDraftAutomation_FeatureOffRefused`.
   - `TestDraftAutomation_NotInReadTools` — not in `tools.ReadTools()`; `VisibleOn("main")`, `VisibleOn("automation_editor")` true; `VisibleOn("automation")` false.
-- [ ] **Step 2:** `go test ./internal/automations/... -run 'TestDryRunInMemory|TestDraftAutomation'` → FAIL.
-- [ ] **Step 3:** Implement (seam additions first if absent).
+- [ ] **Step 2:** `go test ./internal/automations/authoring -run 'TestDraftAutomation'` → FAIL.
+- [ ] **Step 3:** Implement over P1's `DryRunInMemory`.
 - [ ] **Step 4:** Step 2 command → PASS; `go test ./internal/automations/...` → PASS.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): draft_automation with an in-memory dry run`.
 
@@ -118,7 +113,7 @@
 - Create: `internal/automations/authoring/save.go`, `internal/automations/authoring/save_test.go`
 
 **Interfaces:**
-- Consumes: Task 1 `Deps`; `automations.ParseRecipe`, `ApprovalHash`, `ContentHash`, `Covers`, `PersonalDir`, `NewIndexer` + `(*Indexer).RescanPersonal`; `db.GetAutomationBySlug`, `db.ConfirmAutomation`, `db.ErrHashMismatch`; `internal/fsutil` atomic write (`fsutil.WriteFileAtomic` or the helper P1's `automations save` uses — reuse it, do not write a second one); `tools.Tool{AlwaysAsk: true}`, `Normalize`, `Execute`.
+- Consumes: Task 1 `Deps`; `automations.ParseRecipe`, `ApprovalHash`, `ContentHash`, `Covers`, `PersonalDir`, `NewIndexer` + `(*Indexer).RescanPersonal`; `db.GetAutomationBySlug`, `db.ConfirmAutomation`, `db.ErrHashMismatch`; `fsutil.WriteFileAtomic(path, data, 0o644)` (the helper P1's `automations save` uses — do not write a second one); `tools.Tool{AlwaysAsk: true}`, `Normalize`, `Execute`.
 - Produces:
   - `func NewSaveAutomation(d Deps) *tools.Tool` — `Name: "save_automation"`, `Access: tools.AccessWrite`, `AlwaysAsk: true`, `External: false`, `Surfaces: []string{"main", tools.AutomationEditorSurface}`.
   - Args in: `{recipe_text (required), slug (required, ValidSlug), workbench_id?, reason (required), dry_run_summary?}`.
@@ -200,25 +195,23 @@
 - Modify: `cmd/automations.go`, `cmd/automations_wake.go`, `cmd/automations_test.go`
 
 **Interfaces:**
-- Consumes: P1 CLI and `wakeAutomations(cfg)`; `automations.Covers`, `ApprovalHash`, `ContentHash`.
-- Produces (P3-owned additions; nothing renamed):
+- Consumes: P1 CLI, its pinned `--json` keys (P1 Task 12) and `wakeAutomations(cfg)`; `automations.Covers`, `ApprovalHash`, `ContentHash`.
+- Produces (P3-owned additions; nothing renamed, no pinned key changed):
   - `automations wake` — sends `SIGUSR2` through `wakeAutomations`; no daemon → prints `daemon not running`, exit 0; open under agent markers (it changes nothing).
-  - `automations validate <file> [--against <id>] [--workbench N] --json` → `{"ok": bool, "errors": [string], "slug": string, "name": string, "scope": string, "approval_hash": string, "content_hash": string, "permissions": [string], "outputs": [string], "widening": [string]}`. `--against` takes scope from that automation and computes `widening = Covers(its current permissions_json, new)`; without it `widening` = all permissions. Exit 1 only on a usage error; a parse error is `ok:false` with exit 0 under `--json` (the Desktop decodes it).
+  - `automations validate <file> --against <id> [--json]` — the P1 command and keys (`{"ok", "errors", "slug", "name", "scope", "approval_hash", "content_hash", "permissions", "outputs", "widening"}`, `ok:false` with exit 0 under `--json`); `--against` takes the scope from that automation (it and `--workbench` are mutually exclusive) and computes `widening = Covers(its current permissions_json, new)`; without it P1's rule holds (`widening` = all permissions).
   - `automations save … --expect-content-hash <sha>` — refuses (exit 1, "the recipe changed on disk since you opened it") when the target file's current content hash differs; `""` means "the file must not exist".
-  - Pinned JSON the Desktop decodes (P1 emits; this task asserts and fixes): `show <id> --json` → `{"id", "slug", "scope", "project_id", "path", "name", "description", "script", "recipe_text", "trigger_kind", "trigger_spec", "permissions": [], "outputs": [], "budget_tokens", "budget_minutes", "concurrency", "missed_policy", "pause_timeout_hours", "enabled", "runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening": []}`; `run <id> --json` → `{"run_id", "coalesced", "daemon_running"}`; `dry-run <id> --json` → `{"run_id", "status", "error", "input_tokens", "output_tokens"}` (the Desktop reads the steps from the DB by `run_id`); `save … --json` → `{"automation_id", "path", "approval_hash", "confirmed"}`.
+  - The JSON the Desktop decodes is P1 Task 12's pinned set (`show`, `validate`, `run`, `dry-run` → `run_id`, `save`), asserted there by `TestAutomationsCLI_ShowJSONKeys`, `…_ValidateJSONKeys`, `…_RunJSONKeys`, `…_DryRunJSONKeys`, `…_SaveJSONKeys`, `TestAutomationsCLI_JSONEmptyArraysNotNull` and `TestAutomationsCLI_ValidateParseErrorIsOkFalse`; this task does not re-pin them.
 - Depends on: none (P1 CLI merged).
 
 - [ ] **Step 1: Failing tests:**
   - `TestAutomationsCLI_WakeWithoutDaemonExitsZero`; `TestAutomationsCLI_WakeAllowedUnderAgentMarkers`.
   - `TestAutomationsCLI_ValidateAgainstComputesWidening` — saved `jira:read@PAY`, file with `jira:read@*` → `widening ["jira:read@*"]`, `approval_hash` equals the one `show` reports after saving that file.
-  - `TestAutomationsCLI_ValidateParseErrorIsOkFalse` — exit 0, `ok:false`, `errors` non-empty.
+  - `TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray` — `--against` with identical permissions → `"widening":[]`, not `null`.
   - `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad` — `--expect-content-hash <old>` after the file was rewritten → exit 1, file keeps the rewritten bytes, `confirmed_hash` unchanged; `--expect-content-hash ""` when the file exists → refused.
-  - `TestAutomationsCLI_JSONEmptyArraysNotNull` — `show` and `validate` of a recipe with no permissions/outputs → `[]` not `null` for `permissions`, `outputs`, `widening`, `errors`.
-  - `TestAutomationsCLI_ShowJSONKeys` / `TestAutomationsCLI_DryRunJSONKeys` — exact key sets above.
-- [ ] **Step 2:** `go test ./cmd -run 'TestAutomationsCLI_(Wake|Validate|Save|JSON|Show|DryRun)'` → FAIL.
+- [ ] **Step 2:** `go test ./cmd -run 'TestAutomationsCLI_(Wake|ValidateAgainst|SaveRefuses)'` → FAIL (P1's JSON key tests stay green).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Step 2 command → PASS.
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): wake, validate --against, save --expect-content-hash, pinned JSON`.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): wake, validate --against, save --expect-content-hash`.
 
 ### Task 6: Swift Core — models, queries, CLI client, trigger text — **Heavy Swift — serial**
 
@@ -226,7 +219,7 @@
 - Create: `Sources/WatchtowerCore/Models/AutomationModels.swift`, `Sources/WatchtowerCore/Database/Queries/AutomationQueries.swift`, `Sources/WatchtowerCore/Services/Automations/{AutomationsCLI.swift,AutomationTriggerText.swift,AutomationsPollPolicy.swift,DryRunPresentation.swift}`, `Tests/Core/{AutomationQueriesTests,AutomationsCLITests,AutomationTriggerTextTests,DryRunPresentationTests}.swift` (paths under `WatchtowerDesktop/`)
 
 **Interfaces:**
-- Consumes: the 00113/00114 tables (in `TestDatabase+Schema.swift`, regenerated by P1/P2), `CLIRunnerProtocol`, Task 5 JSON.
+- Consumes: the 00113/00114 tables (in `TestDatabase+Schema.swift`, regenerated by P1/P2), `CLIRunnerProtocol`, the P1 Task 12 JSON plus Task 5's additions.
 - Produces (all `package`):
   - `struct Automation: FetchableRecord, Identifiable, Equatable, Sendable { id: Int64; slug: String; scope: Scope; projectID: Int64?; path, name, triggerKind, triggerSpecJSON, missedPolicy: String; concurrency, budgetTokens, budgetMinutes, pauseTimeoutHours: Int; permissions, outputs: [String]; recipeText, contentHash, approvalHash, confirmedHash, parseError: String; enabled: Bool; lastScheduledFor, nextRunAt, removedAt: Date?; enum Scope: String { case personal, workbench }; var needsConfirmation: Bool /* parseError.isEmpty && removedAt == nil && confirmedHash != approvalHash */; var isRunnable: Bool /* the Go Runnable() rule */ }` — JSON columns decode with `?? []`; dates parsed as UTC RFC 3339 (explicit timezone).
   - `enum AutomationRunStatus: String { case queued, running, waiting, succeeded, failed, budgetExceeded = "budget_exceeded", timedOut = "timed_out", cancelled, expired; var isActive: Bool; var badge: StatusBadge }`; `enum StatusBadge { case green, blue, red, orange, grey }` (the spec's mapping).
@@ -234,7 +227,7 @@
   - `enum AutomationRowBadge: Equatable { case needsConfirmation, autoPaused, disabled, parseError }`.
   - `struct AutomationListItem: Identifiable, Equatable { automation: Automation; lastRun: AutomationRun?; activeRun: AutomationRun?; tokens7d: Int64; badges: [AutomationRowBadge]; triggerText: String }`.
   - `enum AutomationQueries { static func fetchList(_ db: Database, now: Date) throws -> [AutomationListItem]` (excludes `removed_at IS NOT NULL`; name order; `tokens7d` = Σ input+output over runs with `started_at ≥ now − 7 days`, dry runs included — my ruling R-P3-6: "tokens this week" is the CLI's rolling 7 days); `fetchRuns(_ db: Database, automationID: Int64, limit: Int) throws -> [AutomationRun]`; `fetchSteps(_ db: Database, runID: Int64) throws -> [AutomationRunStep]`; `fetchGrants(_ db: Database, automationID: Int64) throws -> [AutomationToolGrant]`; `fetchReports(_ db: Database, automationID: Int64, limit: Int) throws -> [AutomationOutput]` (`kind='report'`); `attentionCount(_ db: Database) throws -> Int` (needs confirmation + runs `waiting` with `waiting_reason IN ('approval','ask')` — my reading of "waiting on the owner", R-P3-7); `fetchInboxOutputs(_ db: Database) throws -> [AutomationOutputCard]` (`kind='inbox' AND read_at IS NULL AND dismissed_at IS NULL`, newest first, with automation name and run id); `inboxOutputCount(_ db: Database) throws -> Int`; `markOutputRead(_ db: Database, id: Int64, now: Date) throws`; `dismissOutput(_ db: Database, id: Int64, now: Date) throws` (both guarded `AND read_at IS NULL AND dismissed_at IS NULL`, the only Swift writes, §9.6); `runLabels(_ db: Database, runIDs: [Int64]) throws -> [Int64: String]` (`"⚙ <name> · run #<run id>"`) }`.
-  - `struct AutomationsCLI { init(runner: CLIRunnerProtocol); static func args(_ op: Op) -> [String]; func run(_ id: Int64) async throws -> RunResult; func dryRun(_ id: Int64) async throws -> DryRunResult; func show(_ id: Int64) async throws -> AutomationDetail; func validate(file: URL, against: Int64?) async throws -> ValidateResult; func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws -> SaveResult; func confirm(_ id: Int64, hash: String) async throws; func setEnabled(_ id: Int64, _ on: Bool) async throws; func setAuto(_ id: Int64, tool: String, on: Bool, hash: String?) async throws; func delete(_ id: Int64) async throws; func cancel(runID: Int64) async throws; func wake() async throws; func templates() async throws -> [AutomationTemplate]; func installTemplate(_ name: String, workbenchID: Int64?) async throws -> InstallResult }`; result structs decode Task 5's keys (arrays default to `[]`).
+  - `struct AutomationsCLI { init(runner: CLIRunnerProtocol); static func args(_ op: Op) -> [String]; func run(_ id: Int64) async throws -> RunResult; func dryRun(_ id: Int64) async throws -> DryRunResult; func show(_ id: Int64) async throws -> AutomationDetail; func validate(file: URL, against: Int64?) async throws -> ValidateResult; func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws -> SaveResult; func confirm(_ id: Int64, hash: String) async throws; func setEnabled(_ id: Int64, _ on: Bool) async throws; func setAuto(_ id: Int64, tool: String, on: Bool, hash: String?) async throws; func delete(_ id: Int64) async throws; func cancel(runID: Int64) async throws; func wake() async throws; func templates() async throws -> [AutomationTemplate]; func installTemplate(_ name: String, workbenchID: Int64?) async throws -> InstallResult }`; result structs decode P1 Task 12's pinned keys (arrays default to `[]`; unknown extra keys, such as P2's `grants` or P6's `files`/`params`/`installed`, are ignored).
   - `enum AutomationTriggerText { static func describe(kind: String, specJSON: String) -> String }`; `enum CronText { static func describe(_ expr: String) -> String }`.
   - `enum AutomationsPollPolicy { static func interval(hasActiveRuns: Bool, tabVisible: Bool) -> Duration }` — my ruling R-P3-8: active run → 2 s, tab visible → 10 s, otherwise 60 s (badge only).
   - `enum DryRunPresentation { static func lines(steps: [AutomationRunStep]) -> [String] }`.
@@ -242,7 +235,7 @@
 
 - [ ] **Step 1: Failing tests:**
   - `AutomationQueriesTests`: `testListExcludesRemovedAndOrdersByName`; `testBadges` (table: unconfirmed → needsConfirmation; confirmed + grant with old hash → autoPaused; `enabled=0` → disabled; parse error → parseError only); `testTokens7dRollingWindowIncludesDryRuns` (runs at now−6d23h and now−7d1h); `testAttentionCountCountsConfirmationAndOwnerWaits` (waiting `approval` and `ask` count; `app`/`session` do not); `testInboxOutputsOnlyUnreadInboxKind` (`report`, `briefing`, read, dismissed excluded); `testOutputWritesTouchOnlyReadAndDismissed` (every other column byte-identical); `testRunLabels`; `testDatesDecodeAsUTC`.
-  - `AutomationsCLITests` (fake runner records args): `testRunArgs` → `["automations","run","7","--json"]`; `testDryRunArgs`; `testSaveArgs` → `["automations","save","--file",F,"--path",P,"--confirm-hash",H,"--expect-content-hash",C,"--json"]`; `testAutoOnArgs` / `testAutoOffArgs` (no `--hash` on off); `testValidateAgainstArgs`; `testDecodesEmptyStateJSON` (Task 5's empty-array payloads); `testNonZeroExitSurfacesStderr`.
+  - `AutomationsCLITests` (fake runner records args): `testRunArgs` → `["automations","run","7","--json"]`; `testDryRunArgs`; `testSaveArgs` → `["automations","save","--file",F,"--path",P,"--confirm-hash",H,"--expect-content-hash",C,"--json"]`; `testAutoOnArgs` / `testAutoOffArgs` (no `--hash` on off); `testValidateAgainstArgs`; `testDecodesEmptyStateJSON` (the empty-array payloads of P1's `TestAutomationsCLI_JSONEmptyArraysNotNull`); `testIgnoresUnknownKeys`; `testNonZeroExitSurfacesStderr`.
   - `AutomationTriggerTextTests` (table): `0 9 * * 1-5` → "Weekdays 09:00"; `0 9 * * *` → "Daily 09:00"; `0 10,16 * * 1-5` → "Weekdays 10:00, 16:00"; `0 9 * * 1` → "Mondays 09:00"; `0 17 * * 5` → "Fridays 17:00"; `*/15 * * * *` → "Cron: */15 * * * *"; button `{label:"Release"}` → "Button: Release"; event `gmail.new_messages` where `{account:"work"}` → "On new Gmail (work)"; event without `where` → "On new Gmail"; `slack.new_messages` → "On new Slack messages"; `jira.issue_changed` → "On Jira change"; `calendar.event_changed` → "On calendar change"; `confluence.page_changed` → "On Confluence change"; manual → "Manual"; `''` → "—".
   - `DryRunPresentationTests`: tool write `dry_run` → "Would propose create_jira_issue {…}" (args clipped 200 chars); output inbox `dry_run` → "Would post to Inbox: <title>"; output report → "Would add a report: <title>"; state `dry_run` → "Would save state"; llm ok → "Asked the assistant · 1,234 tokens"; denied → "Denied — needs jira:read@OPS"; read ok → "Read list_jira_issues".
   - `AutomationsPollPolicyTests`: the three intervals.
@@ -403,7 +396,7 @@
 - Create: `Sources/WatchtowerCore/Services/Automations/AutomationTemplate.swift`, `Sources/Views/Automations/AutomationTemplateGalleryView.swift`, `Tests/Core/AutomationTemplateGalleryTests.swift`
 
 **Interfaces:**
-- Consumes (P6's contract, pinned here — header note 5): `automations templates --json` → `[{"name": string, "title": string, "description": string, "scope": "personal"|"workbench", "trigger_text": string, "permissions": [string], "outputs": [string]}]` (always an array); `automations install-template <name> [--workbench N] --json` → `{"automation_id": int, "path": string}` (installed unconfirmed and disabled, spec §15).
+- Consumes (P6's contract, pinned here — header note 5; P6 Task 8 emits exactly these keys and may add `files`, `params` and `installed`, which the Desktop ignores): `automations templates --json` → `[{"name": string, "title": string, "description": string, "scope": "personal"|"workbench", "trigger_text": string, "permissions": [string], "outputs": [string]}]` (always an array); `automations install-template <name> [--workbench N] --json` → `{"automation_id": int, "path": string}` (the first installed recipe; installed unconfirmed and disabled, spec §15). The Desktop passes no `--param`: a template with a placeholder (`jira-state-report`'s `<PROJECT>`) installs with the literal placeholder and opens in the form with that parse error to fix. A workbench template that installs several recipes (P6's `release-buttons` → `release`, `deploy-test`, `deploy-stage`) opens the first.
 - Produces: `struct AutomationTemplate: Decodable, Identifiable, Equatable`; a gallery sheet of cards (title, description, trigger, permissions, outputs, scope tag); **Install** — personal → `install-template <name>`; workbench → a workbench picker (`WorkbenchQueries` list) then `--workbench N`; on success the Automations tab selects the new automation and opens the edit form unconfirmed (Save confirms, §12.3); a parse error in the installed copy (a template placeholder such as `<PROJECT>`) shows in the form as the parse error to fix. With no templates (P6 not merged, or the CLI fails with "unknown command") the gallery shows "No templates yet." Install runs in `AutomationsViewModel` (`installTemplate(_:workbenchID:) async`) so it survives navigation.
 - Depends on: Tasks 7, 10.
 

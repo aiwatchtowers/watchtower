@@ -13,11 +13,11 @@
 **Branch:** `feature/automations-p4` → PR into `feature/automations`. Never `main`. Depends on P1 merged into `feature/automations`. May run as a parallel lane with P2 (P4 touches `internal/daemon` sync phases and read-only DB helpers; P2 the registry).
 
 **Header notes (seams):**
-- Consumes P1's names exactly: `db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID, Trigger, EventCycle, EventJSON, Now})`, `db.TriggerEvent`, `db.GetAutomationRun`, `db.ListAutomations(db.AutomationFilter{TriggerKind: "event", RunnableOnly: true})`, `automations.Trigger`/`EventTrigger{Type, Where}`/`EventTypes`, `automations.TriggerInfo{Events}`, `(*Executor).Wake`, `daemon.AutomationRunner`/`(*Daemon).SetAutomations`, `cfg.Automations.Enabled`, `automationstest.*`.
-- **Seam changes needed** (P1 owns the names; applied in P1 if not merged yet, otherwise in the P4 task named, updating P1's "Seams for later phases" in the same commit):
-  - **S5 `TriggerInfo` has no truncation flag and P1's executor does not say it fills `Events` from `event_json`.** Spec §8 stores "the matching events (at most 100, plus `truncated: true`)". `TriggerInfo` gains `Truncated bool` (exposed as `trigger.truncated`), and the executor decodes `automation_runs.event_json` into `TriggerInfo.Events`/`Truncated` for `trigger='event'` runs (Task 3).
-  - **S6 A coalesced event trigger loses its events.** P1's `EnqueueAutomationRun` coalesces a second `event` trigger onto an already `queued` event run of the same automation and inserts nothing, so the second cycle's events would vanish. P4 adds `db.MergeQueuedAutomationRunEvents` (Task 2) — it does not create runs; `EnqueueAutomationRun` stays the only way to create one.
-  - **S7 The `event_json` shape is unpinned in P1.** P4 pins it: `{"cycles": ["<cycle id>", …], "events": [<event>, …≤100], "count": <total matched>, "truncated": <bool>}` (Task 2).
+- Consumes P1's names exactly: `db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID, Trigger, EventCycle, EventJSON, Now})`, `db.TriggerEvent`, `db.GetAutomationRun`, `db.ListAutomations(db.AutomationFilter{TriggerKind: "event", RunnableOnly: true})`, `db.AutomationEventPayload`, `automations.Trigger`/`EventTrigger{Type, Where}`/`EventTypes`, `automations.MaxEventsPerRun`, `automations.TriggerInfo{Events, Truncated}`, `(*Executor).Wake`, `daemon.AutomationRunner`/`(*Daemon).SetAutomations`, `cfg.Automations.Enabled`, `automationstest.*`.
+- **Seams settled in P1** (P4 consumes them, adds no parallel name):
+  - **S5** `TriggerInfo.Truncated`, and P1's executor decodes `event_json` into `trigger.events`/`trigger.truncated` for `trigger='event'` runs (P1 Task 10: `TestExecutor_EventRunExposesTriggerEvents`, `…_NonEventRunHasNoEvents`, `…_MalformedEventJSONFailsAsBackend`). P4 only produces the rows; Task 3 below is an integration check, not an implementation.
+  - **S7** the `event_json` shape `{"cycles": ["<cycle id>", …], "events": [<event>, … ≤ 100], "count": <total matched>, "truncated": <bool>}` is P1's `db.AutomationEventPayload`, documented on the 00113 column; `MaxEventsPerRun = 100` is in P1's `limits.go`.
+- **Owned by P4 (S6):** `db.MergeQueuedAutomationRunEvents` (Task 2). It fits P1's queue invariants: it never inserts a run (`EnqueueAutomationRun` stays the only way to create one), never writes `event_cycle` (the unique `(automation_id, event_cycle)` index keeps the first cycle), and only touches a row still `queued` with `trigger='event'` (the partial unique queued index is untouched). P1's enqueue already treats a cycle listed in any run's `event_json.cycles` as delivered (check 1 of its order), so a merged cycle is never enqueued again.
 
 ## Global Constraints
 
@@ -59,7 +59,7 @@
 | `internal/automations/eventsrc.go`, `eventsrc_slack.go`, `eventsrc_mail.go`, `eventsrc_jira.go`, `eventsrc_calendar.go`, `eventsrc_confluence.go` | `EventSource`/`EventDiff` per source |
 | `internal/db/automation_event_sources.go` | read-only snapshot/diff queries |
 | `internal/db/automation_runs.go` | `MergeQueuedAutomationRunEvents` |
-| `internal/automations/executor.go`, `sandbox.go` | S5: `trigger.events`, `trigger.truncated` |
+| `internal/automations/bus_executor_test.go` | integration check: a flushed run decodes in P1's executor (S5 is P1's) |
 | `internal/gmail/sync.go`, `internal/imap/sync.go` | `AccountID()` accessors |
 | `internal/daemon/automation_events.go`, `internal/daemon/daemon.go` | bus wiring, observed phases, `Flush` |
 | `cmd/sync.go` | build the bus when the daemon starts |
@@ -96,17 +96,17 @@
 
 **Files:**
 - Create: `internal/automations/bus.go`, `internal/automations/bus_test.go`
-- Modify: `internal/db/automation_runs.go`, `internal/db/automation_runs_test.go`, `internal/automations/limits.go` (`MaxEventsPerRun = 100`)
+- Modify: `internal/db/automation_runs.go`, `internal/db/automation_runs_test.go`
 
 **Interfaces:**
-- Consumes: `db.ListAutomations(db.AutomationFilter{TriggerKind: "event", RunnableOnly: true})`, `db.EnqueueAutomationRun`, `db.GetAutomationRun`, `automations.Trigger` (decoding `trigger_spec` with the same type P1 marshals), Task 1.
+- Consumes: `db.ListAutomations(db.AutomationFilter{TriggerKind: "event", RunnableOnly: true})`, `db.EnqueueAutomationRun`, `db.GetAutomationRun`, `db.AutomationEventPayload`, `automations.MaxEventsPerRun`, `automations.Trigger` (decoding `trigger_spec` with the same type P1 marshals), Task 1.
 - Produces:
-  - `db`: `func (d *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events []json.RawMessage, total int, maxEvents int) (merged bool, err error)` — one `BEGIN IMMEDIATE` tx: only while `status='queued'` and `trigger='event'`; a `cycleID` already in `event_json.cycles` → `(true, nil)` with nothing written (idempotent); else appends the cycle, appends events up to `maxEvents` (older kept, newer beyond the cap dropped), adds `total` to `count`, sets `truncated` when anything was dropped. Not queued any more → `(false, nil)`.
+  - `db`: `func (d *DB) MergeQueuedAutomationRunEvents(runID int64, cycleID string, events []json.RawMessage, total int, maxEvents int) (merged bool, err error)` — one `BEGIN IMMEDIATE` tx over the run's `AutomationEventPayload`: only while `status='queued'` and `trigger='event'`; never writes `event_cycle`; a `cycleID` already in `event_json.cycles` → `(true, nil)` with nothing written (idempotent); else appends the cycle, appends events up to `maxEvents` (older kept, newer beyond the cap dropped), adds `total` to `count`, sets `truncated` when anything was dropped. Not queued any more → `(false, nil)`.
   - `type Bus struct{…}`; `func NewBus(d *db.DB, clock Clock, wake func(), logger *log.Logger) *Bus`.
   - `func (b *Bus) Begin() error` — loads the subscriptions (automation id + `EventTrigger`) and clears the previous cycle's matches.
   - `func (b *Bus) Wants(eventType string) bool` — any subscription of that type.
   - `func (b *Bus) Publish(events ...Event)` — for each subscription of the event's type whose `where` matches: keep the first `MaxEventsPerRun`, count all; safe for concurrent callers (mutex).
-  - `type FlushReport struct { Queued, Merged, Coalesced int }`; `func (b *Bus) Flush(cycleID string) (FlushReport, error)` — per subscription with ≥ 1 match: `EnqueueAutomationRun{AutomationID, Trigger: db.TriggerEvent, EventCycle: cycleID, EventJSON: {"cycles":[cycleID],"events":[…],"count":n,"truncated":…}, Now: clock.Now()}`; on `coalesced`: if that run's `event_cycle == cycleID` → nothing (already delivered); else `MergeQueuedAutomationRunEvents`; a merge returning `false` (the run was claimed meanwhile) → `EnqueueAutomationRun` once more; one subscription's error is logged and does not stop the others; `wake()` once when anything was queued or merged; matches are cleared after `Flush`.
+  - `type FlushReport struct { Queued, Merged, Coalesced int }`; `func (b *Bus) Flush(cycleID string) (FlushReport, error)` — per subscription with ≥ 1 match: `EnqueueAutomationRun{AutomationID, Trigger: db.TriggerEvent, EventCycle: cycleID, EventJSON: <db.AutomationEventPayload{Cycles: [cycleID], Events, Count, Truncated}>, Now: clock.Now()}`; on `coalesced`: if the returned run already lists `cycleID` (its `event_cycle` or its `event_json.cycles` — P1's check 1) → nothing (already delivered); else (P1's check 2, a queued run of another cycle) `MergeQueuedAutomationRunEvents`; a merge returning `false` (the run was claimed meanwhile) → `EnqueueAutomationRun` once more; one subscription's error is logged and does not stop the others; `wake()` once when anything was queued or merged; matches are cleared after `Flush`.
 - Depends on: Task 1.
 
 - [ ] **Step 1: Failing tests** (file DB, `automationstest.SeedAutomation` with `trigger: {event: …}`):
@@ -119,30 +119,29 @@
   - `TestBus_WantsOnlySubscribedTypes`; `TestBus_BeginClearsPreviousCycle`.
   - `TestBus_WakeCalledOnceWhenQueued` / not called when nothing queued.
   - `TestMergeQueuedEvents_RefusesNonQueuedAndNonEvent` (db).
-- [ ] **Step 2:** `go test ./internal/automations -run 'TestAuto09_Flush|TestBus_'` and `go test ./internal/db -run TestMergeQueuedEvents` → FAIL.
+  - `TestMergeQueuedEvents_KeepsQueueInvariants` (db) — after a merge of cycle B into the queued run of cycle A: `event_cycle` still A, exactly one queued row of the automation, `EnqueueAutomationRun{EventCycle: B}` → coalesced onto that run (P1's check 1), also after the run finished.
+- [ ] **Step 2:** `go test ./internal/automations -run 'TestAuto09_Flush|TestBus_'` and `go test ./internal/db -run 'TestMergeQueuedEvents|TestEnqueue_EventCycle'` → FAIL (new ones; P1's `TestEnqueue_EventCycle*` stay green).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Step 2 commands → PASS; `go test -race ./internal/automations -run TestBus_` once.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): event bus with one run per automation per cycle`.
 
-### Task 3: `trigger.events` in the script (S5)
+### Task 3: The bus's rows reach `trigger.events` (S5 integration check)
 
 **Files:**
-- Modify: `internal/automations/sandbox.go` (`TriggerInfo.Truncated`), `internal/automations/executor.go` (decode `event_json`), `internal/automations/executor_test.go`
+- Create: `internal/automations/bus_executor_test.go`
 
 **Interfaces:**
-- Consumes: `db.AutomationRun.EventJSON`, `TriggerInfo{Kind, RunID, …, Events}` (P1).
-- Produces: for `trigger='event'` runs, `trigger.events` = the stored events (flat objects of Task 1), `trigger.truncated` = the stored flag; for every other trigger `trigger.events` is `undefined` and `trigger.truncated` is `false`. A malformed `event_json` ends the run `failed` with `error_kind='backend'` before the script starts (never a panic).
-- Depends on: Task 2 (shape).
+- Consumes: P1's executor, which already decodes `event_json` into `trigger.events`/`trigger.truncated` (S5, P1 Task 10); Task 2's `Flush` and merge.
+- Produces: nothing new — pins that what the bus writes is what P1's executor decodes (one shape, one owner).
+- Depends on: Task 2.
 
 - [ ] **Step 1: Failing tests:**
-  - `TestExecutor_EventRunExposesTriggerEvents` — a queued event run with two events → the script returns `trigger.events.length + ":" + trigger.events[0].channel + ":" + trigger.truncated` = `"2:releases:false"`.
-  - `TestExecutor_NonEventRunHasNoEvents` — manual run → `typeof trigger.events === "undefined"`.
-  - `TestExecutor_MalformedEventJSONFailsAsBackend`.
-  - `TestSandbox_TriggerEventsAreReadOnly` — `trigger.events.push(1)` throws in strict mode, or leaves the array unchanged.
-- [ ] **Step 2:** `go test ./internal/automations -run 'TestExecutor_EventRun|TestExecutor_NonEventRun|TestExecutor_MalformedEventJSON|TestSandbox_TriggerEvents'` → FAIL.
-- [ ] **Step 3:** Implement.
+  - `TestBus_FlushedRunDecodesInExecutor` — `Publish` two `slack.new_messages` events, `Flush`, `Executor.Step` → the script returns `trigger.events.length + ":" + trigger.events[0].channel + ":" + trigger.truncated` = `"2:releases:false"`.
+  - `TestBus_MergedAndTruncatedRunDecodesInExecutor` — 150 events over two cycles merged into one queued run → `trigger.events.length === 100`, `trigger.truncated === true`.
+- [ ] **Step 2:** `go test ./internal/automations -run 'TestBus_FlushedRunDecodes|TestBus_MergedAndTruncated'` → FAIL.
+- [ ] **Step 3:** Fix only the bus side if they fail (the decoder is P1's).
 - [ ] **Step 4:** Step 2 command → PASS.
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): expose trigger.events to event runs`.
+- [ ] **Step 5:** `make lint-diff`; commit `test(automations): bus rows decode as trigger.events`.
 
 ### Task 4: Sources — Slack and mail
 
@@ -259,7 +258,7 @@
 - Modify: `docs/inventory/automations.md`, `docs/features/automations.md`, `docs/inventory/README.md` (module row gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`)
 
 **Interfaces:**
-- Consumes: everything above; P1 executor with `automationstest` fakes.
+- Consumes: everything above; P1 executor (incl. its S5 `trigger.events` decoding) with `automationstest` fakes.
 - Produces:
   - `TestEventAutomation_EndToEnd` — a confirmed, enabled recipe `trigger: {event: {type: slack.new_messages, where: {channel: releases}}}`, `permissions: [llm:light]`, `outputs: [inbox]`, script `output.inbox({title: "New in #" + trigger.events[0].channel, body: String(trigger.events[0].count)})`; one simulated cycle through `runSync`'s observed Slack phase + `Flush`; `Executor.Step` → run `succeeded`, one inbox output `"New in #releases"` / `"2"`; a second cycle with no new messages → no run.
   - Inventory: **AUTO-09** event half Planned → **Enforced** — Observable gains "the event bus's `Flush` only inserts `queued` rows (one per automation per cycle) and merges into a still-queued event run; event runs carry ids, labels, enums and counts only"; guards `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle`, `TestBus_EventsCarryNoContent` (`internal/automations/bus_test.go`, `events_test.go`). No new AUTO number. AGENT/STRIP/REACT entries untouched.

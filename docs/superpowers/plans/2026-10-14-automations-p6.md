@@ -4,20 +4,20 @@
 
 **Goal:** The last three SDK capabilities and the gallery: `mcp(server, tool, args)` — a Go-side call to an enabled Quick Connection, read-only per QC-02; `agent(instruction, {tools, budget, tier})` — a bounded tool loop per decision D3 (the `claude`/`codex` CLI providers get a headless process whose chat-mode MCP server is bound to `--surface automation --automation-run N`, the effective tool set and the run env marker; ollama gets the runtime-B loop); and the five gallery templates of spec §15 with `automations templates` / `install-template`. Budgets are in tokens.
 
-**Architecture:** Two new backends join `automations.Backends` (P1 allows new fields): `MCP MCPCaller` and `Agent AgentRunner`, both implemented in `cmd` (where Quick Connections secrets, `buildToolRegistry` and provider resolution live) and wired into the daemon's executor and the CLI's `dry-run`. `MCPModule`/`AgentModule` append to `DefaultModules`. `mcp()` reuses `internal/externalmcp`'s go-sdk client (new `CallTool`) under `ResolveTools`' verdict, 30 s per call. `agent()` computes the effective tool set (`tools ∩ manifest-admitted ∩ visible on automation`, minus writes in a dry run), carves its budget from the run's remainder, and runs either `agentloop` (in-process, per-call gate and token hooks) or a CLI child in its own process group with a stripped environment, whose MCP server re-derives and enforces the same set per call. Inside `agent()` every write stays a pending proposal.
+**Architecture:** Two new backends join `automations.Backends` (P1 allows new fields; `backends.go`): `MCP MCPCaller` and `Agent AgentRunner`, both implemented in `cmd` (where Quick Connections secrets, `buildToolRegistry` and provider resolution live) and wired into the daemon's executor and the CLI's `dry-run`. `MCPModule`/`AgentModule` append to `DefaultModules`. `mcp()` reuses `internal/externalmcp`'s go-sdk client (new `CallTool`) under `ResolveTools`' verdict, 30 s per call. `agent()` computes the effective tool set (`tools ∩ manifest-admitted ∩ visible on automation`, minus writes in a dry run), carves its budget from the run's remainder, and runs either `agentloop` (in-process, per-call gate and token hooks) or a CLI child in its own process group with a stripped environment, whose MCP server re-derives and enforces the same set per call. Inside `agent()` every write stays a pending proposal.
 
 **Tech Stack:** Go 1.26, `github.com/modelcontextprotocol/go-sdk` (already used by `externalmcp`), `internal/agentloop`, `internal/ai` (claude CLI), `internal/codex`, `embed` for templates. No migration. No Swift (the gallery UI is P3's, over `templates --json`).
 
 **Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` — §3.1 (`mcp:`, `agent:run`), §3.2 (mcp matching), §3.4 (secrets), §4 (dry run: `mcp` reads run, `agent` without writes), §5 (`mcp`, `agent` rows), §6.5 (`agent()` runtime), §7.5 (tokens), §10 (`templates`, `install-template`), §12.3, §15 (templates), §16, §17, §18 P6 tests, §20 D3/D4/D13. QC-01..04: `docs/inventory/quick-connections.md`. P1 plan and its **Seams for later phases**: `docs/superpowers/plans/2026-10-14-automations-p1.md`; P2 plan `…-p2.md` (`Binding.AutomationRunID`, automation trust order).
 
-**Branch:** `feature/automations-p6` → PR into `feature/automations`. Never `main`. Depends on P1 and P2 merged. Tasks 8–10 (templates) additionally depend on **P5** (`SessionModule`/`ShellModule` and their test fakes; templates 2 and 5 call `session()`/`shell()`) and on **P4 Task 3** (`trigger.events`; template 1 is an event recipe).
+**Branch:** `feature/automations-p6` → PR into `feature/automations`. Never `main`. Depends on P1 and P2 merged. Tasks 8–10 (templates) additionally depend on **P5** (`SessionModule`/`ShellModule` and their test fakes; templates 2 and 5 call `session()`/`shell()`). Template 1 is an event recipe; its `trigger.events` decoding is P1's (S5), and its tests seed `event_json` on the row directly, so P6 does not depend on P4.
 
 **Header notes (seams):**
-- Consumes P1's names exactly: `automations.Backends` (new fields `MCP`, `Agent` — P1: "P6 adds MCP/agent backends as new fields"), `Module`/`Definer`/`SDKFunc`/`Env`, `DefaultModules` (P6 appends `MCPModule`, `AgentModule`), `(*Manifest).AllowMCP`/`AllowCapability`/`AllowLLM`/`AllowTool`, `Meter.BeforeCall|Debit|Remaining|Deadline`, `Journal`, `SourceLLMLight`/`SourceLLMStrong`, `RunEnvMarker`, `PersonalDir`/`WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, `ParseRecipe`, `automationstest.*`. P2's `tools.Binding.AutomationRunID` and the automation trust branch.
-- **Seam changes needed:**
-  - **S8 `agent()` writes must stay pending (spec §6.5 "proposals stay pending"), but P2's trust order would auto-apply them under an active grant or a `tool_trust(…,'automation')=execute`.** `tools.Binding` gains `AutomationAgent bool`; on the `automation` surface `resolveTrust` returns `ask` for it right after the AlwaysAsk rule (Task 4). A narrowing of P2's AGENT-03 exception, never a widening.
-  - **S9 The list-`limit` injection of P1's `tool()` is unexported** and `agent()`'s per-call gate needs the same clamp (default 50, max 200). Exported as `automations.ClampListLimit(t *tools.Tool, args json.RawMessage) json.RawMessage` (Task 4) — the same function P1's `ToolModule` already uses, not a second one.
-  - Consumes P2's S1 signature `(*Manifest).AllowTool(ctx, d, t, args)`.
+- Consumes P1's names exactly: `automations.Backends` (new fields `MCP`, `Agent` appended in `backends.go` — P1: "P6 appends `MCP MCPCaller` and `Agent AgentRunner`"), `Module`/`Definer`/`SDKFunc`/`Env`, `DefaultModules` (P6 appends `MCPModule`, `AgentModule`), `(*Manifest).AllowMCP`/`AllowCapability`/`AllowLLM`/`AllowTool(ctx, d, t, args)` (S1), `ClampListLimit` (S9), `Meter.BeforeCall|Debit|Remaining|Deadline`, `Journal`, `SourceLLMLight`/`SourceLLMStrong`, `RunEnvMarker`, `PersonalDir`/`WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, `ParseRecipe`, `fsutil.WriteFileAtomic`, `automationstest.*`. P2's `tools.Binding.AutomationRunID`, `tools.Binding.AutomationAgent`, the automation trust branch and `(*Manifest).AdmitsTool`.
+- **Seams settled elsewhere (consumed here, not re-made):**
+  - **S8** `tools.Binding.AutomationAgent bool` is P2's (P2 Task 3, added with `AutomationRunID`): on the `automation` surface `resolveTrust` returns `ask` for it right after the AlwaysAsk rule, so `agent()` writes stay pending even under an active grant or a `tool_trust(…,'automation')=execute` (spec §6.5). Pinned at registry level by P2's `TestTrustOrder_AutomationSurface`; P6 pins it end to end with `TestAgent_WritesStayProposals` (Task 7) and `TestAgentMCPServer_WriteIsPendingProposalWithRunContext` (Task 5).
+  - **S9** `automations.ClampListLimit(t *tools.Tool, args json.RawMessage) json.RawMessage` is exported by P1 (Task 4) and used by P1's `tool()`; P6's gates call the same function.
+  - The "admitted by name" rule is P2's `(*Manifest).AdmitsTool` — `EffectiveAgentTools` uses it rather than a second copy.
 - **Cross-plan contracts already pinned by P3 and P5 (consumed here, not re-decided):**
   - P3 Task 13 pins the gallery JSON: `automations templates --json` → an array of `{"name", "title", "description", "scope": "personal"|"workbench", "trigger_text", "permissions", "outputs"}`; `automations install-template <name> [--workbench N] --json` → `{"automation_id", "path"}`; a placeholder such as `<PROJECT>` is installed as written and surfaces as the parse error the form asks the owner to fix. P6 emits those keys (and may add keys; Swift decoding ignores extras).
   - P5 header note 5 writes `pr-review-rounds`, `release`, `deploy-test`, `deploy-stage` as fixtures in `internal/automations/testdata/workbench/` with end-to-end tests, and `automationstest.FakeShell` / `FakeSessionDesk`. P6 **moves** those four files byte-for-byte into the embedded templates (no rewrite) and repoints P5's `workbench_e2e_test.go` at the embedded copies without changing an assertion.
@@ -56,7 +56,6 @@
 | `internal/automations/sdk_mcp.go` | `MCPModule` |
 | `internal/automations/sdk_agent.go`, `agent_toolset.go` | `AgentModule`, effective set, budget carving |
 | `internal/agentloop/client.go` | `Options` (tool allowlist, gate, iterations, model-call hooks) |
-| `internal/tools/registry.go` | S8 `Binding.AutomationAgent` |
 | `cmd/mcp.go`, `internal/mcp/actions.go`, `internal/mcp/server.go` | `--surface automation --automation-run N --automation-tools`, tool filter, call gate |
 | `internal/ai/client.go`, `internal/codex/client.go` | opt-in child env, process group, allowed watchtower tools, max turns |
 | `internal/automations/templates/*.md`, `templates/index.json`, `templates.go` | embedded gallery |
@@ -90,7 +89,7 @@
 
 **Files:**
 - Create: `cmd/automations_backends.go`, `cmd/automations_backends_test.go`
-- Modify: `internal/automations/sdk.go` or wherever `Backends` lives (`MCP MCPCaller` field)
+- Modify: `internal/automations/backends.go` (`MCP MCPCaller` field and the interface)
 
 **Interfaces:**
 - Consumes: `db.ListEnabledExternalConnections`, `connectionServer(cfg, database, c)` (secret + OAuth refresh, existing), `externalmcp.ResolveTools`, `externalmcp.CallTool`.
@@ -125,16 +124,16 @@
 - [ ] **Step 4:** Step 2 command → PASS.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): mcp() over Quick Connections`.
 
-### Task 4: Runtime-B options and `Binding.AutomationAgent` (S8, S9)
+### Task 4: Runtime-B options and the effective tool set
 
 **Files:**
-- Modify: `internal/agentloop/client.go`, `internal/agentloop/loop_test.go`, `internal/tools/registry.go`, `internal/tools/registry_automation_test.go`, `internal/automations/sdk_tool.go` (export `ClampListLimit`)
+- Modify: `internal/agentloop/client.go`, `internal/agentloop/loop_test.go`
+- Create: `internal/automations/agent_toolset.go`, `internal/automations/agent_toolset_test.go`
 
 **Interfaces:**
-- Consumes: P2's automation trust branch; P1's limit injection.
+- Consumes: P2's `Binding.AutomationAgent` and automation trust branch (S8); P1's `ClampListLimit` (S9) — both already exist, this task adds neither; P2's `(*Manifest).AdmitsTool`.
 - Produces:
-  - `tools.Binding.AutomationAgent bool` — on the `automation` surface `resolveTrust` returns `ask` when set (order: AlwaysAsk → **AutomationAgent** → grant → External → `tool_trust`); not persisted (a later `Apply` does not need it).
-  - `automations.ClampListLimit(t *tools.Tool, args json.RawMessage) json.RawMessage` (S9; P1's `tool()` now calls it).
+  - `func EffectiveAgentTools(reg ToolRegistry, m *Manifest, requested []string, dryRun bool) []string` — `requested` nil/omitted = every tool the manifest admits by name; ∩ `m.AdmitsTool(t)` (P2's single by-name rule, which already requires `VisibleOn("automation")`); minus `AccessWrite` tools in a dry run; sorted; unknown names dropped (listed in the step args). Task 5's MCP server and Task 7's `AgentModule` call this one function (no second intersection).
   - `agentloop.Options struct { Tools []string /* nil = every surface tool */; Gate func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error) /* returns the args to dispatch, or an error fed back to the model */; MaxIterations int /* 0 = defaultMaxIterations */; BeforeModelCall func() error /* error stops the loop and is returned */; AfterModelCall func(inputTokens, outputTokens int) }`; `func NewClientWithOptions(model, baseURL string, reg *tools.Registry, b tools.Binding, opts Options) *Client`; `NewClient` unchanged (zero `Options`). `buildTools` advertises only `Options.Tools ∩ List(surface)`; `dispatch` refuses a name outside that set before `Get`'s surface check, then runs `Gate`.
 - Depends on: P2 merged.
 
@@ -142,12 +141,13 @@
   - `TestAgentLoop_AdvertisesOnlyAllowedTools`; `TestAgentLoop_GateRefusesUnofferedAndOutOfScope` (a fake OpenAI server whose model calls an unoffered tool, then an offered one with an out-of-scope arg → both get `{"error": …}` results, the registry sees zero calls).
   - `TestAgentLoop_MaxIterationsOption` — 12 → the 13th model call never happens.
   - `TestAgentLoop_ModelCallHooks` — `BeforeModelCall` error on the 3rd call stops with that error; `AfterModelCall` receives each response's usage.
-  - `TestAgent_WritesStayProposals` (registry level) — automation binding with `AutomationAgent: true`: active grant → `pending`; `tool_trust(create_idea,'automation')='execute'` → `pending`; `Receipt.Auto` false.
   - `TestRuntimeB_WriteToolRecordsProposalOnly` (existing AGENT-01 guard) unchanged and green.
-- [ ] **Step 2:** `go test ./internal/agentloop` and `go test ./internal/tools -run 'TestAgent_WritesStayProposals|TestTrustOrder'` → FAIL (new ones).
+  - `TestAgent_ToolSetIsIntersection` — manifest `jira:read@PAY`, `targets:read`, `outputs:[target]`; requested `list_jira_issues, list_targets, create_target, get_confluence_page, send_slack_message, bogus` → `create_target, list_jira_issues, list_targets`; requested omitted → every admitted tool; dry run → `create_target` removed.
+- [ ] **Step 2:** `go test ./internal/agentloop` and `go test ./internal/automations -run TestAgent_ToolSetIsIntersection` → FAIL (new ones).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Step 2 commands → PASS.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(agentloop): tool allowlist, call gate, iteration cap and token hooks`.
+- Note: the registry-level half of `TestAgent_WritesStayProposals` that an earlier draft put here is P2's `TestTrustOrder_AutomationSurface` (`AutomationAgent` rows); the spec §18 guard `TestAgent_WritesStayProposals` itself lives in Task 7 (runner level, grant and trust sub-cases).
 
 ### Task 5: Chat-mode MCP bound to an automation run
 
@@ -156,10 +156,10 @@
 - Create: `cmd/mcp_automation_test.go`
 
 **Interfaces:**
-- Consumes: `db.GetAutomationRun`, `db.GetAutomation`, `automations.ParseRecipe` (on `recipe_snapshot`), `ParseManifest`, `(*Manifest).AllowTool`, `ClampListLimit`, `automations.RunEnvMarker`, Task 4's binding field.
+- Consumes: `db.GetAutomationRun`, `db.GetAutomation`, `automations.ParseRecipe` (on `recipe_snapshot`), `ParseManifest`, `(*Manifest).AllowTool(ctx, d, t, args)`, `(*Manifest).AdmitsTool` (P2), `ClampListLimit` (P1), `automations.RunEnvMarker`, P2's `Binding.AutomationAgent`.
 - Produces:
   - `internalmcp.WithToolFilter(func(t *tools.Tool) bool) ServerOption` (unmounted tools are never listed); `internalmcp.WithCallGate(func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)) ServerOption` (run before `CallRead`/`Propose`; an error becomes the tool's error result). Neither changes the dev-mode server (AGENT-02).
-  - `watchtower mcp --chat --surface automation --automation-run N --automation-tools a,b,c`: refused unless `os.Getenv(RunEnvMarker) == strconv(N)`; run N exists and is `running`; the effective set is recomputed here = `flag list ∩ manifest-admitted ∩ visible on automation`, minus write tools when `run.trigger = 'dry_run'`; binding `{Surface: "automation", ContextType: "automation_run", ContextID: N, AutomationRunID: N, WorkbenchID: <automation's project id>, AutomationAgent: true}`; the gate re-reads the run status per call (not `running` → error "the automation run has ended"), runs `AllowTool(ctx, db, t, args)` (denied → error text `PermissionDenied: needs <permission>`), clamps `limit`, and refuses a result over 256 KiB with `ResultTooLarge`; `get_action` mounts as in chat mode. `--surface automation` without `--automation-run` → error; `--automation-run` with another surface → error; `main`/`target` behave exactly as today.
+  - `watchtower mcp --chat --surface automation --automation-run N --automation-tools a,b,c`: refused unless `os.Getenv(RunEnvMarker) == strconv(N)`; run N exists and is `running`; the effective set is recomputed here with `EffectiveAgentTools` (Task 4) = `flag list ∩ manifest-admitted (AdmitsTool) ∩ visible on automation`, minus write tools when `run.trigger = 'dry_run'`; binding `{Surface: "automation", ContextType: "automation_run", ContextID: N, AutomationRunID: N, WorkbenchID: <automation's project id>, AutomationAgent: true}`; the gate re-reads the run status per call (not `running` → error "the automation run has ended"), runs `AllowTool(ctx, db, t, args)` (denied → error text `PermissionDenied: needs <permission>`), clamps `limit`, and refuses a result over 256 KiB with `ResultTooLarge`; `get_action` mounts as in chat mode. `--surface automation` without `--automation-run` → error; `--automation-run` with another surface → error; `main`/`target` behave exactly as today.
 - Depends on: Task 4.
 
 - [ ] **Step 1: Failing tests** (in-process MCP client over the server, file DB, seeded running run):
@@ -202,21 +202,20 @@
 ### Task 7: `AgentModule` and the agent runners
 
 **Files:**
-- Create: `internal/automations/sdk_agent.go`, `internal/automations/agent_toolset.go`, `internal/automations/sdk_agent_test.go`
+- Create: `internal/automations/sdk_agent.go`, `internal/automations/sdk_agent_test.go`
 - Modify: `cmd/automations_backends.go` (+ tests), `internal/automations/modules.go`, `internal/automations/automationstest/fakes.go` (`FakeAgent`), the daemon/CLI wiring that builds `Backends` (P1's `cmd/sync.go` and `automations dry-run`), `internal/db/agent_actions.go` (two read helpers)
 
 **Interfaces:**
 - Consumes: Tasks 4–6; `providers.ResolveModelsFor(cfg, provider) (light, strong string)`; `Meter.BeforeCall|Debit|Remaining|Deadline`; `SourceLLMLight`/`SourceLLMStrong`; `RunEnvMarker`.
 - Produces:
   - `automations`: `type AgentRequest struct { Instruction string; Tools []string /* effective set */; DryRun bool; Tier string; Budget Budget /* carved */; Deadline time.Time; Binding tools.Binding; RunID int64; BeforeModelCall func() error; AfterModelCall func(in, out int) }`; `type AgentResult struct { Text string; InputTokens, OutputTokens int64; Estimated bool; ReportedCostUSD *float64 }`; `type AgentRunner interface { Run(ctx context.Context, req AgentRequest) (AgentResult, error) }`; `Backends.Agent AgentRunner`.
-  - `func EffectiveAgentTools(reg ToolRegistry, m *Manifest, requested []string, dryRun bool) []string` — `requested` nil/omitted = every tool the manifest admits by name; ∩ admitted by name (`tool:<name>`, a capability entry of the tool's capability+verb at any scope, or `outputs` for `create_target`/`send_slack_message`) ∩ `VisibleOn("automation")`; minus `AccessWrite` tools in a dry run; sorted; unknown names dropped (listed in the step args).
+  - Uses Task 4's `EffectiveAgentTools` for the set it hands the runner.
   - `func AgentModule(b Backends) Module` — `agent(instruction, opts?)`: `AllowCapability("agent","run","")` and `AllowLLM(tier)` (either missing → `PermissionDenied`, runner untouched); `opts.wait` → `ValidationError` ("wait is not available inside agent()"); budget carve: `tokens = min(opts.budget.tokens || remaining, remaining.tokens)`, `minutes = min(opts.budget.minutes || remaining, remaining.minutes)` (a larger request is clamped, the clamped value recorded in the step args); remaining tokens ≤ 0 → `BudgetExceeded`; agent-local budget spent mid-loop → the loop stops and `agent()` throws `BudgetExceeded` (catchable — the run may still have budget); the **run's** budget crossed → handled exactly as P1's `llm` module handles a crossing `Debit` (run interrupted, `budget_exceeded`); one step `kind='agent'`, `name` = `claude`|`codex`|`runtime-b`, args `{instruction (clipped), tools, budget, tier}`, result `{text (clipped), actions}`, tokens on the step; returns `{text, actions}` where `actions` = ids of `agent_actions` rows with `context_type='automation_run'`, `context_id=<run>` and `id >` the max id read before the call.
   - `db`: `func (d *DB) MaxAgentActionID() (int64, error)`; `func (d *DB) AgentActionIDsAfter(contextType, contextID string, afterID int64) ([]int64, error)`.
   - `cmd`: `func newAutomationAgentRunner(cfg *config.Config, dbPath string, database *db.DB) automations.AgentRunner` — provider `claude`/`codex` → CLI runner: model by tier from `ResolveModelsFor`; `ai.Client`/`codex.Client` with `SetMCPArgs([--chat --surface automation --automation-run N --automation-tools <set>])`, `SetWatchtowerTools(set + "get_action")` (claude), `SetMaxTurns(12)` (claude), `SetChildEnv([PATH, HOME, LANG, USER from the daemon, WATCHTOWER_AUTOMATION_RUN_ID=N])`, `SetProcessGroup(true)`, no `SetExternalMCPServers`; ctx deadline = `req.Deadline`; `BeforeModelCall` once before start; usage debited once after (provider usage, else `ceil(len(instruction+text)/4)` with `Estimated`); any other provider → runtime B: `agentloop.NewClientWithOptions(model, cfg.AI.OllamaURL, buildToolRegistry(cfg, database), req.Binding /* AutomationAgent: true */, Options{Tools: set, Gate: <AllowTool + ClampListLimit + 256 KiB>, MaxIterations: 12, BeforeModelCall, AfterModelCall})`.
 - Depends on: Tasks 3–6.
 
 - [ ] **Step 1: Failing tests** (`FakeAgent` for module tests; for runner tests a stub CLI and a fake OpenAI server, reaped in cleanup):
-  - `TestAgent_ToolSetIsIntersection` — manifest `jira:read@PAY`, `targets:read`, `outputs:[target]`; requested `list_jira_issues, list_targets, create_target, get_confluence_page, send_slack_message, bogus` → `create_target, list_jira_issues, list_targets`; requested omitted → every admitted tool; dry run → `create_target` removed.
   - `TestAgent_PermissionNeedsAgentRunAndLLMTier` — `agent:run` without `llm:strong` and `{tier:"strong"}` → `PermissionDenied` (`needed` `llm:strong`); without `agent:run` → `needed` `agent:run`; runner never called.
   - `TestAgent_BudgetCarvedFromRun` — run budget 50000 with 20000 spent: `{budget:{tokens:100000}}` → runner sees 30000 and the step args record 30000; omitted → 30000; remaining 0 → `BudgetExceeded`, runner not called; minutes clamped to the run's deadline.
   - `TestAgent_LocalBudgetSpentThrowsCatchable` — runtime B fake usage exceeds the carved 5000 but not the run → script catches `BudgetExceeded`, run `succeeded`.
@@ -240,7 +239,7 @@
 - Move (`git mv`, byte-for-byte, P5 header note 5): `internal/automations/testdata/workbench/{pr-review-rounds,release,deploy-test,deploy-stage}.md` → `internal/automations/templates/`; repoint P5's `internal/automations/workbench_e2e_test.go` at the embedded copies (no assertion changes).
 
 **Interfaces:**
-- Consumes: `ParseRecipe`, `PersonalDir`, `WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, P1's atomic write used by `automations save` (temp + rename), `db.GetWorkbench`; P3 Task 13's JSON contract.
+- Consumes: `ParseRecipe`, `PersonalDir`, `WorkbenchDir`, `(*Indexer).RescanPersonal|RescanFolder`, `fsutil.WriteFileAtomic(path, data, 0o644)` (P1's `automations save` helper), `db.GetWorkbench`; P3 Task 13's JSON contract.
 - Produces:
   - `type TemplateParam struct { Key, Label, Example string }`; `type Template struct { Name, Title, Description, TriggerText string; Scope ScopeKind; Files []string /* slugs */; Params []TemplateParam }`; `func Templates() []Template` (index order); `func RenderTemplate(name string, params map[string]string) (map[string][]byte /* slug → recipe bytes */, error)` — replaces each given `<KEY>` placeholder (spec §15 spelling, e.g. `<PROJECT>`); a param the template does not declare, an empty value, or a value with whitespace, a newline, `"`, `@` or `<`/`>` → error naming it; a declared param left out keeps its literal placeholder.
   - Gallery = **five** templates; the fifth (`release-buttons`, workbench) installs three recipes. Index and frontmatter, exactly spec §15:
@@ -271,9 +270,9 @@
 - Create: `internal/automations/templates_e2e_test.go`, `internal/automations/testdata/template_fixtures/` (seeded rows: one Gmail account `work` with three messages, Jira project `PAY` with five issues, two people, Slack messages in `#releases`)
 
 **Interfaces:**
-- Consumes: Tasks 7–8; `automationstest.FakeGenerator`; P5's `SessionModule`/`ShellModule` and `automationstest.FakeShell`/`FakeSessionDesk`; P4's `trigger.events` (S5).
+- Consumes: Tasks 7–8; `automationstest.FakeGenerator`; P5's `SessionModule`/`ShellModule` and `automationstest.FakeShell`/`FakeSessionDesk`; P1's `trigger.events` decoding of `event_json` (S5; the test seeds the row's `event_json` as a `db.AutomationEventPayload`).
 - Produces: nothing new — pins each template's dry-run journal.
-- Depends on: Task 8, P5 merged, P4 Task 3 merged.
+- Depends on: Task 8, P5 merged.
 
 - [ ] **Step 1: Failing test `TestTemplates_DryRunE2E`** — for each of the seven recipes, installed + `ExecuteInline` on a `dry_run` row (event recipe: `trigger.events` seeded on the row), FakeGenerator replies scripted; pinned step kinds in order and final outputs:
   - `new-mail-summary`: `tool(list_emails)` `ok` → `llm` `ok` → `output` (`inbox`) `dry_run` → `state` `dry_run`; no `automation_outputs` row.
@@ -311,7 +310,7 @@
 - Consumes: guard names from Tasks 1–10.
 - Produces:
   - **automations.md** — no status flips (AUTO-01/07/08/11/12 are Enforced since P1); added guards: AUTO-01 `TestMCP_OnlyQC02AllowedTools`, `TestMCPModule_ManifestFirst`, `TestAgent_ToolSetIsIntersection`, `TestAgentMCPServer_GatesEachCallByManifest`, `TestAgentLoop_GateRefusesUnofferedAndOutOfScope`; AUTO-07 `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets`, `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`; AUTO-08 `TestAgent_BudgetCarvedFromRun`, `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_IterationsCapped12`, `TestAgent_CancelKillsCLIChild`; AUTO-11 `TestMCPModule_OneStepPerCall`; AUTO-12 `TestAgent_DryRunRemovesWriteTools`, `TestTemplates_DryRunE2E`. Changelog: "P6 — mcp(), agent(), templates; inner tool calls of agent() are summarised in its one step (AUTO-11 counts SDK calls)".
-  - **agent-actions.md** — AGENT-01 Observable gains "an `agent()` loop of an automation (runtime B or the CLI's `--surface automation` MCP server) is the same path: proposals only"; guard `TestAgent_WritesStayProposals`; AGENT-03 changelog: "the automation auto grant never covers a call made inside `agent()` (`Binding.AutomationAgent`, spec §6.5 'proposals stay pending') — a narrowing; no guard relaxed"; AGENT-02: `--surface automation` is a chat-mode server, the dev server unchanged.
+  - **agent-actions.md** — AGENT-01 Observable gains "an `agent()` loop of an automation (runtime B or the CLI's `--surface automation` MCP server) is the same path: proposals only"; guard `TestAgent_WritesStayProposals`; AGENT-03 guard list gains `TestAgent_WritesStayProposals` and `TestAgentMCPServer_WriteIsPendingProposalWithRunContext` (the `AutomationAgent` narrowing itself and its changelog entry are P2's, Task 9 — not repeated here); AGENT-02: `--surface automation` is a chat-mode server, the dev server unchanged.
   - **quick-connections.md** — QC-02 Observable gains: "Automations' `mcp()` (spec §5) is a second, Go-side consumer: it calls only tools in `externalmcp.ResolveTools`' allowed list of an enabled, listed connection, through `externalmcp.CallTool`, never through the registry; it never lists a connection itself" with guard `TestMCP_OnlyQC02AllowedTools`; QC-03 guard `TestCallTool_SecretsTravelInEnvNotArgv`. Changelog dated with the PR. (Flag for the owner's review in the PR: QC-02's text change is an extension of the approved design §5, not listed in spec §14.)
   - `docs/features/automations.md` P6 section: mcp(), agent() (both runtimes, effective set, budget carving, the `--surface automation` server, env, process group, v1 limits: a CLI agent's tokens are known only when the child exits, so one `agent()` call can overshoot its carved budget before the run is interrupted; codex has no turn cap, only time and tokens), templates and params.
 - Depends on: Task 10.

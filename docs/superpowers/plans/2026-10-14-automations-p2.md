@@ -13,12 +13,14 @@
 **Branch:** `feature/automations-p2` → PR into `feature/automations`. Never `main`. Depends on P1 merged into `feature/automations`. May run as a parallel lane with P4 (P2 touches the registry, P4 the sync phases).
 
 **Header notes (seams):**
-- This plan consumes P1's seam names exactly (`db.EnqueueAutomationRun`, `automations.Env`, `Module`/`Definer`/`SDKFunc`, `DefaultModules`, `RegisterOutputKind`, `Waiter`, `Journal`/`Step`, `ToolRegistry`, `ToolCapabilities`, `(*Manifest).AllowTool`, `db.ConfirmAutomation`, `automationstest.*`).
-- **Seam changes needed** (P1 owns these names; the controller applies them in P1 if P1 is not merged yet, otherwise P2 Task 1/5/6 make them in place and update P1's "Seams for later phases" in the same commit — never a parallel name):
-  - **S1 `ToolCapabilities` scope arguments do not match the real tool args.** P1 lists `create_jira_issue` with scope arg `project` (real arg: `project_key`), `send_slack_message` with `account` (real arg: `account_id`, an optional integer; the manifest scope is an account label), and `get_jira_issue`/`get_jira_status_history`/`get_jira_time_in_status` with `project` (real arg: `key`). `ToolCapability` gains `ScopeOf func(ctx context.Context, d *db.DB, args json.RawMessage) (scope string, present bool, err error)` (nil = read `ScopeArg` verbatim), and `(*Manifest).AllowTool` becomes `AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args json.RawMessage) (string, error)`.
-  - **S2 `RegisterOutputKind` needs the backends.** P1 declares `func RegisterOutputKind(kind string, fn SDKFunc)` "on the module", but `OutputModule()` returns the `Module` interface and `SDKFunc`'s `Env` carries no `Backends`, so `output.target`/`output.slack` cannot reach the registry. P2 assumes `OutputModule()` returns `*OutputMod` (which implements `Module`) with method `RegisterOutputKind(kind string, fn SDKFunc)`, and `DefaultModules(b)` registers the P2 kinds with closures over `b`.
-  - **S3 `ToolWriteModule` and the `tool` path.** P1 says `ToolWriteModule` (P2) "replaces `tool`'s write branch", but two modules defining the path `tool` is undefined in P1's `Definer`. P2 assumes `Definer.Define` on an already-defined path replaces it (last wins, `DefaultModules` order), pinned by `TestDefiner_LaterModuleReplacesPath`; `ToolWriteModule`'s `tool` handles reads by delegating to the P1 read function.
-  - **S4 A step that waits needs a non-final update — reconcile with P5's header note 2.** `Journal`/`Step` only have final `OK|Fail|Denied|Finish`. P5 proposes `func (s *Step) ID() int64` and `func (s *Step) Mark(status string)` (non-final, `finished_at` stays NULL); P2 consumes those names. A `{wait:true}` write also needs its `action_id` on the open step before the run pauses (so the run view links the pending card), so the reconciled form is `func (s *Step) Mark(status string, link db.StepFinish) error` (only `ActionID|AskID|SessionID` of `link` are read; P5 passes a zero link). The controller settles the final signature once, in P1's seam section, before P2 Task 5 and P5 Tasks 5–6 run.
+- This plan consumes P1's seam names exactly as P1's "Seams for later phases" settles them (`db.EnqueueAutomationRun`, `automations.Env`, `Module`/`Definer`/`SDKFunc`, `DefaultModules`, `Waiter`, `Journal`/`Step`, `ToolRegistry`, `Backends`, `db.ConfirmAutomation`, `automationstest.*`).
+- **Seam changes settled in P1** (P2 consumes them, adds no parallel name):
+  - **S1** `ToolCapability.ScopeOf(ctx, d, args) ([]CallScope, error)` and `(*Manifest).AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args json.RawMessage) (string, error)`; P1's `ToolCapabilities` already lists the ten write tools with their real argument names (`project_key`, `key`, `account_id` resolved to a label) and P1 Task 4 pins their scope tests.
+  - **S2** `OutputModule()` returns `*OutputMod` with `RegisterOutputKind(kind string, fn SDKFunc)`; P2 registers `briefing`/`target`/`slack` in `DefaultModules(b)` with closures over `b`.
+  - **S3** a later `Define` of the same path replaces the earlier one (`TestDefiner_LaterModuleReplacesPath`, P1 Task 6); `ToolWriteModule` replaces `tool` this way and delegates reads to P1's read function.
+  - **S4** `(*Step).ID() int64` and `(*Step).Mark(status string, link db.StepFinish) error` (non-final; P2 passes `db.StepFinish{ActionID: id}`).
+- **Owned by P2 (S8, asked for by P6):** `tools.Binding.AutomationAgent bool`, added together with `AutomationRunID` in Task 3: on the `automation` surface a binding with `AutomationAgent` always resolves to `ask`, so a write made inside P6's `agent()` stays a pending proposal even under an active grant or an `execute` trust row (spec §6.5). A narrowing of the AGENT-03 exception, never a widening.
+- **Owned by P2, consumed by P6:** `(*Manifest).AdmitsTool(t *tools.Tool) bool` — the single "admitted by name" rule (Task 1); `AdmitsWrite` is built on it and P6's `EffectiveAgentTools` uses it instead of a second copy.
 
 ## Global Constraints
 
@@ -28,9 +30,9 @@
 - Transactions `BEGIN IMMEDIATE`; never hold a write tx across a tool `Execute`, an LLM call or script execution.
 - Migration **00114** (`automation_tool_grants`). Before merging, re-check `internal/db/migrations` on `origin/main`; if taken, renumber and verify by table presence, not goose version.
 - Pinned values (spec, do not change without the spec):
-  - Surface `"automation"`, context type `"automation_run"`; `Binding.AutomationRunID int64`; `DirectApply` is never set for an automation binding.
+  - Surface `"automation"`, context type `"automation_run"`; `Binding.AutomationRunID int64`, `Binding.AutomationAgent bool` (S8); `DirectApply` is never set for an automation binding.
   - Write tools that gain `"automation"` in `Surfaces`: `create_target`, `create_idea`, `create_track`, `remind_me`, `create_jira_issue`, `add_jira_comment`, `transition_jira_issue`, `assign_jira_issue`, `update_jira_issue`, `send_slack_message`. **Not** offered: `connect_jira_board`, `dismiss_tracks`, `edit_confluence_page`, `brief_context`, every workbench tool.
-  - Trust order on the `automation` surface, first match wins: (1) `AlwaysAsk` → `ask`; (2) an active grant (`grant_hash = automations.approval_hash = automation_runs.recipe_hash`) → `execute` (External included); (3) `External` → `ask`; (4) `tool_trust(tool, 'automation')`, `ask` when absent. Every other surface keeps today's order unchanged.
+  - Trust order on the `automation` surface, first match wins: (1) `AlwaysAsk` → `ask`; (1a) `Binding.AutomationAgent` → `ask` (S8, spec §6.5: `agent()` proposals stay pending); (2) an active grant (`grant_hash = automations.approval_hash = automation_runs.recipe_hash`) → `execute` (External included); (3) `External` → `ask`; (4) `tool_trust(tool, 'automation')`, `ask` when absent. Every other surface keeps today's order unchanged.
   - An auto write = one `agent_actions` row, `trust_at_create='execute'`, `context_type='automation_run'`, `context_id=<run id>`, applied through `Apply`'s claim, plus an `auto=1` step with `status='applied'`.
   - `automations auto <id> <tool> on --hash <sha>`: refused under AGENT-07 markers (incl. `WATCHTOWER_AUTOMATION_RUN_ID`), refused when `<sha>` ≠ current `approval_hash`, refused for an `AlwaysAsk` tool, refused for a tool the manifest does not admit as a write. `… off` is open to anyone. A save never carries grants over (D5: only script/permissions/outputs/scope change the hash).
   - `{wait:true}` → `waiting_reason='approval'`; resolves `applied` → `{status:"applied", id, result}`, `rejected` → `{status:"rejected", id}`, `failed` → `{status:"failed", id, error}`; waiting time is excluded from active time; past `pause_timeout_hours` → run `expired`; Cancel → run `cancelled`, the proposal stays pending.
@@ -54,10 +56,10 @@
 
 | Path | Responsibility |
 |---|---|
-| `internal/automations/capabilities.go`, `manifest.go` | S1 scope resolution, `AdmitsWrite` |
+| `internal/automations/manifest.go` | `AdmitsTool`, `AdmitsWrite` (scope resolution is P1's) |
 | `internal/db/migrations/00114_automation_tool_grants.sql`, `internal/db/schema.sql` | grants table |
 | `internal/db/automation_grants.go` | grant store + active-grant join |
-| `internal/tools/registry.go` | `Binding.AutomationRunID`, `bindingOf`, `newProposalRow`, automation trust branch, `Receipt.Auto` |
+| `internal/tools/registry.go` | `Binding.AutomationRunID`, `Binding.AutomationAgent`, `bindingOf`, `newProposalRow`, automation trust branch, `Receipt.Auto` |
 | `internal/tools/{targets,ideas,tracks,remind,jira,jira_write,slack_send}.go` | `"automation"` in `Surfaces` |
 | `cmd/actions_registry_test.go` (wherever `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` lives) | pin update |
 | `internal/automations/sdk_tool_write.go`, `sdk_output_p2.go`, `modules.go` | `ToolWriteModule`, output kinds |
@@ -68,32 +70,26 @@
 
 ---
 
-### Task 1: Manifest — write-tool scopes (S1) and `AdmitsWrite`
+### Task 1: Manifest — `AdmitsTool` and `AdmitsWrite`
 
 **Files:**
-- Modify: `internal/automations/capabilities.go`, `internal/automations/manifest.go`, `internal/automations/manifest_test.go`; P1 callers of `AllowTool` (`sdk_tool.go`)
-- Modify (if P1 merged): `docs/superpowers/plans/2026-10-14-automations-p1.md` "Seams for later phases" line for `AllowTool`/`ToolCapabilities`
+- Modify: `internal/automations/manifest.go`, `internal/automations/manifest_test.go`
 
 **Interfaces:**
-- Consumes: P1 `ToolCapability`, `ToolCapabilities`, `(*Manifest).AllowTool`, `PermissionDenied`; `db.GetSlackAccount`, the sendable-account rule of `send_slack_message` (`account_id` given → that account only).
+- Consumes: P1 `ToolCapability`, `ToolCapabilities` (the write-tool entries and their `ScopeOf` already exist, S1), `(*Manifest).AllowTool(ctx, d, t, args)`, `PermissionDenied`.
 - Produces:
-  - `type ToolCapability struct { Capability, Verb, ScopeArg string; ScopeOf func(ctx context.Context, d *db.DB, args json.RawMessage) (scope string, present bool, err error) }` (S1).
-  - `func (m *Manifest) AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args json.RawMessage) (string, error)` (S1).
-  - Entries: `create_jira_issue → jira write`, scope = upper(`project_key`); `add_jira_comment|transition_jira_issue|assign_jira_issue|update_jira_issue → jira write`, scope = the project prefix of `key` (`ABC-123` → `ABC`; a key without `-` → absent); `get_jira_issue|get_jira_status_history|get_jira_time_in_status → jira read` with the same `key` rule; `send_slack_message → slack write`, scope = the label of `slack_accounts.id = account_id`; with no `account_id`, the label of the only enabled Slack account when exactly one exists, else absent (only `slack:write@*` covers it); `create_target|remind_me → targets write`, `create_idea → ideas write`, `create_track → tracks write` (no scope).
-  - `func (m *Manifest) AdmitsWrite(t *tools.Tool) bool` — true when `t.Access == AccessWrite`, `t.VisibleOn("automation")`, `!t.AlwaysAsk`, and the manifest has `tool:<name>`, or a `<capability>:write[@any scope]` entry for the tool's capability, or (for `create_target`/`send_slack_message`) `outputs` contains `target`/`slack`. Used by `automations auto … on` (Task 8).
+  - `func (m *Manifest) AdmitsTool(t *tools.Tool) bool` — the single "admitted by name" rule: `t.VisibleOn("automation")` and the manifest has `tool:<name>`, or a `<capability>:<verb>[@any scope]` entry for the tool's `ToolCapabilities` capability+verb, or (for `create_target`/`send_slack_message`) `outputs` contains `target`/`slack`. It ignores call arguments (scope is checked per call by `AllowTool`). P6's `EffectiveAgentTools` consumes it.
+  - `func (m *Manifest) AdmitsWrite(t *tools.Tool) bool` — `t.Access == AccessWrite && !t.AlwaysAsk && m.AdmitsTool(t)`. Used by `automations auto … on` (Task 8).
 - Depends on: none (P1 merged).
 
-- [ ] **Step 1: Failing tests** in `manifest_test.go`:
-  - `TestManifest_JiraWriteScopeFromProjectKeyAndIssueKey` — `jira:write@PAY` admits `create_jira_issue{project_key:"pay"}` and `add_jira_comment{key:"PAY-7"}`; denies `{project_key:"OPS"}` and `{key:"OPS-1"}` with `needed` = `jira:write@OPS`; `{key:"nodash"}` → needs `jira:write@*`.
-  - `TestManifest_JiraReadByKeyUsesPrefix` — `jira:read@PAY` admits `get_jira_issue{key:"PAY-1"}`, denies `{key:"OPS-1"}`.
-  - `TestManifest_SlackWriteScopeByAccountLabel` — seeded Slack accounts `work` (id 1) and `home` (id 2): `slack:write@work` admits `{account_id:1}`, denies `{account_id:2}` (`needed` `slack:write@home`); no `account_id` with two enabled accounts → only `slack:write@*` admits; with one enabled account `work` → `slack:write@work` admits.
-  - `TestManifest_ScopeOfErrorIsADeniedNotAPanic` — `account_id` of a missing account → `*PermissionDenied` naming `slack:write@*`.
+- [ ] **Step 1: Failing tests** in `manifest_test.go` (the write-tool scope tests — `TestManifest_JiraScopeFromRealArgs`, `TestManifest_SlackWriteScopeByAccountLabel`, `TestManifest_ScopeOfErrorIsADeniedNotAPanic` — are P1 Task 4's; they stay green here unmodified):
+  - `TestManifest_AdmitsTool` — table: `jira:read@PAY` → true for `list_jira_issues` and `get_jira_issue`, false for `create_jira_issue`; `targets:read` → true for `list_targets`; `tool:get_confluence_page` → false (not on the surface); `outputs:[slack]` → true for `send_slack_message`.
   - `TestManifest_AdmitsWrite` — table: `tool:create_target` → true; `outputs:[target]` → true for `create_target`; `jira:write@PAY` → true for `create_jira_issue`; `jira:read@*` → false; `dismiss_tracks` with `tool:dismiss_tracks` → false (AlwaysAsk, not on the surface); a read tool → false.
-  - `TestToolCapabilities_CoversEveryAutomationTool` extended to the ten P2 write tools.
+  - `TestToolCapabilities_CoversEveryAutomationTool` extended to the ten P2 write tools (now visible on `automation` in the real registry, Task 4 — run this sub-test after Task 4 lands).
 - [ ] **Step 2:** `go test ./internal/automations -run 'TestManifest|TestToolCapabilities'` → FAIL.
-- [ ] **Step 3:** Implement; update `sdk_tool.go`'s call site (P1 read path keeps its behaviour).
+- [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Step 2 command and `go test ./internal/automations` → PASS.
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): write-tool scopes and AdmitsWrite in the manifest`.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): AdmitsTool and AdmitsWrite in the manifest`.
 
 ### Task 2: Migration 00114 and the grant store
 
@@ -132,17 +128,17 @@
 **Interfaces:**
 - Consumes: `db.ActiveAutomationToolGrant` (Task 2); `AutomationSurface`, `AutomationContextType` (P1).
 - Produces:
-  - `Binding` gains `AutomationRunID int64` (doc comment: set only by the automations executor; never with `DirectApply`).
+  - `Binding` gains `AutomationRunID int64` (doc comment: set only by the automations executor; never with `DirectApply`) and `AutomationAgent bool` (S8, doc comment: set only for calls made inside an automation's `agent()` — P6's runtime B and its `--surface automation` MCP server; not persisted, a later `Apply` does not need it).
   - `Receipt` gains `Auto bool \`json:"auto,omitempty"\`` — true only when the automation grant decided `execute` (not for a `tool_trust` execute).
   - `newProposalRow`: when `b.AutomationRunID != 0`, `context_type='automation_run'`, `context_id=<run id>` **even when `b.WorkbenchID != 0`** (the workbench context is not written for automation rows).
   - `bindingOf`: `context_type='automation_run'` → `AutomationRunID` parsed from `context_id` (malformed → 0).
-  - `resolveTrust(t, b)`: on `b.Surface == AutomationSurface` the §6.2 order; returns `(Trust, auto bool, error)` internally; every other surface byte-unchanged.
+  - `resolveTrust(t, b)`: on `b.Surface == AutomationSurface` the §6.2 order with the `AutomationAgent` step after AlwaysAsk (Global Constraints); returns `(Trust, auto bool, error)` internally; every other surface byte-unchanged.
   - `admitProposal`: a binding with `Surface == AutomationSurface` and `DirectApply` → `*ValidationError` ("automations never apply directly").
   - Grant path readiness: when the grant decided `execute` and the tool has `Ready` that rejects the normalized args, the row is recorded `pending` with `trust_at_create='ask'` and `Receipt.Auto=false`.
 - Depends on: Task 2.
 
 - [ ] **Step 1: Failing tests** (`registry_automation_test.go`, a file DB, a fake External write tool `ext_write`, a fake local tool `local_write`, a fake AlwaysAsk tool `bulk_write`, all with `Surfaces` incl. `automation`; automations and runs seeded via `automationstest.SeedAutomation` + `db.EnqueueAutomationRun` + `db.ClaimAutomationRun`):
-  - `TestTrustOrder_AutomationSurface` — table over (AlwaysAsk, grant, External, tool_trust): AlwaysAsk + grant → `ask`; External + active grant → `execute`, `Auto=true`; External, no grant → `ask`; local + `tool_trust(local_write,'automation')='execute'` → `execute`, `Auto=false`; local, no row → `ask`; local + execute on `main` only → `ask`.
+  - `TestTrustOrder_AutomationSurface` — table over (AlwaysAsk, AutomationAgent, grant, External, tool_trust): AlwaysAsk + grant → `ask`; External + active grant → `execute`, `Auto=true`; External, no grant → `ask`; local + `tool_trust(local_write,'automation')='execute'` → `execute`, `Auto=false`; local, no row → `ask`; local + execute on `main` only → `ask`; `AutomationAgent: true` + active grant → `ask`; `AutomationAgent: true` + `tool_trust` execute → `ask` (S8).
   - `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash` — grant active → one row `applied`, `trust_at_create='execute'`, `context_type='automation_run'`, `context_id=<run>`, `Execute` called once through `Apply`'s claim (`executing` seen by a hooking fake).
   - `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface` — grant for automation A: a run of B → pending; the same tool on `main` with B's run id in the binding → pending; on `target` → pending.
   - `TestAgent03_RecipeEditMakesAutoGrantInactive` — rescan with a changed script (new `approval_hash`) → pending; owner re-confirms + re-grants with the new hash, but the run claimed before still carries the old `recipe_hash` → pending; a new run → applied.
@@ -181,10 +177,10 @@
 
 **Files:**
 - Create: `internal/automations/sdk_tool_write.go`, `internal/automations/sdk_tool_write_test.go`
-- Modify: `internal/automations/modules.go` (`DefaultModules` appends `ToolWriteModule`), `internal/automations/sandbox.go` (S3 last-wins `Define`, if P1 refuses duplicates), `internal/automations/journal.go` (S4 `Step.Mark`), `internal/automations/sandbox.go`'s `(*Env).Binding()` (sets `AutomationRunID`), `internal/automations/automationstest/fakes.go` (`FakeRegistry` records `Propose` with a configurable `Receipt`)
+- Modify: `internal/automations/modules.go` (`DefaultModules` appends `ToolWriteModule`), `internal/automations/sandbox.go`'s `(*Env).Binding()` (sets `AutomationRunID`), `internal/automations/automationstest/fakes.go` (`FakeRegistry` records `Propose` with a configurable `Receipt`)
 
 **Interfaces:**
-- Consumes: `ToolRegistry.Propose` (P1 interface), `Waiter.Wait(ctx, db.WaitApproval, ready)`, `db.GetAgentAction`, `(*Manifest).AllowTool` (Task 1), `Meter`, `Journal`.
+- Consumes: `ToolRegistry.Propose` (P1 interface), `Waiter.Wait(ctx, db.WaitApproval, ready)`, `db.GetAgentAction`, `(*Manifest).AllowTool(ctx, Backends.DB, t, args)` (P1, S1), the S3 last-wins `Define` and S4 `(*Step).Mark` (P1), `Meter`, `Journal`.
 - Produces:
   - `func ToolWriteModule(b Backends) Module` — defines `tool(name, args, opts?)`; reads delegate to P1's read function unchanged; writes: manifest check → (dry run: step `dry_run`, `{status:"dry_run"}`, registry untouched) → default `reason` when the args have none or a blank one: `"⚙ <automation name> · run #<run id>"` → `Registry.Propose(ctx, name, args, env.Binding())` → step `proposed` with `action_id` (or `applied` + `auto=1` when `Receipt.Auto`, or `applied` without auto for a `tool_trust` execute, or `failed` for an inline apply that failed) → return `{status:"proposed", id}` / `{status:"applied", id, result}` / `{status:"failed", id, error}`.
   - `opts.wait === true` on a `pending` receipt: `step.Mark("waiting", db.StepFinish{ActionID: id})`, then `env.Wait.Wait(ctx, db.WaitApproval, ready)` where `ready` reads `agent_actions.status` ∈ {`applied`,`rejected`,`failed`}; resumes and finishes the step with that status → `{status:"applied", id, result}` / `{status:"rejected", id}` / `{status:"failed", id, error}`. `wait` on an already applied receipt returns at once. `opts` other than `wait` → `ValidationError`.
@@ -193,7 +189,6 @@
 - Depends on: Tasks 1, 3, 4.
 
 - [ ] **Step 1: Failing tests** (`sdk_tool_write_test.go`; executor-level ones use a real `tools.Registry` over a file DB with fake tool factories; `automationstest.FakeClock`):
-  - `TestDefiner_LaterModuleReplacesPath` (S3).
   - `TestAuto02_ToolWriteGoesThroughPropose` — `tool("create_target", {...})` with `tool:create_target` → one `agent_actions` row `pending`, `context_type='automation_run'`; `targets` row count unchanged; returns `{status:"proposed", id}`; step `proposed` with `action_id`.
   - `TestToolWrite_PermissionDeniedTouchesNothing` — `jira:write@PAY`, `create_jira_issue{project_key:"OPS"}` → `PermissionDenied`, zero rows.
   - `TestToolWrite_AutoGrantStepIsAppliedAuto` — active grant → `{status:"applied", id, result}`, step `applied`, `auto=1`.
@@ -206,8 +201,8 @@
   - `TestToolWait_ApproveAfterRunEndedChangesNoRun` — after `expired`, approve + apply the row → `automation_runs` row byte-identical.
   - `TestAuto12_DryRunWriteNeverReachesRegistry` — dry run: `tool("create_target")` and `{wait:true}` → `{status:"dry_run"}` at once, zero `agent_actions`, step `dry_run` with the would-be args.
   - `TestToolWrite_UnknownOptionIsValidationError`.
-- [ ] **Step 2:** `go test ./internal/automations -run 'TestDefiner|TestAuto02|TestToolWrite|TestToolWait|TestAuto12_DryRunWrite'` → FAIL.
-- [ ] **Step 3:** Implement (S3/S4 seam edits included; P1's `TestTool_WriteNotAvailableInP1` is retired in this commit and replaced by `TestAuto02_ToolWriteGoesThroughPropose` — it pinned P1's interim branch, not a contract; note it in the AUTO-02 changelog).
+- [ ] **Step 2:** `go test ./internal/automations -run 'TestAuto02|TestToolWrite|TestToolWait|TestAuto12_DryRunWrite'` → FAIL (P1's `TestDefiner_LaterModuleReplacesPath` stays green).
+- [ ] **Step 3:** Implement (P1's `TestTool_WriteNotAvailableInP1` is retired in this commit and replaced by `TestAuto02_ToolWriteGoesThroughPropose` — it pinned P1's interim branch, not a contract; note it in the AUTO-02 changelog).
 - [ ] **Step 4:** Step 2 command → PASS; `go test -race ./internal/automations -run 'TestToolWait'` once.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): tool writes as proposals with wait`.
 
@@ -215,10 +210,10 @@
 
 **Files:**
 - Create: `internal/automations/sdk_output_p2.go`, `internal/automations/sdk_output_p2_test.go`
-- Modify: `internal/automations/sdk_output.go` (S2: `OutputModule()` returns `*OutputMod` with `RegisterOutputKind`), `internal/automations/modules.go`
+- Modify: `internal/automations/modules.go` (`DefaultModules` registers the three kinds on P1's `*OutputMod`)
 
 **Interfaces:**
-- Consumes: `(*OutputMod).RegisterOutputKind(kind string, fn SDKFunc)` (S2), `(*Manifest).AllowOutput`, `(*CommitBuffer).AddOutput`, Task 5's write function.
+- Consumes: `(*OutputMod).RegisterOutputKind(kind string, fn SDKFunc)` (P1, S2), `(*Manifest).AllowOutput`, `(*CommitBuffer).AddOutput`, Task 5's write function.
 - Produces:
   - `output.briefing({title, body})` — gate `outputs:[briefing]`; buffered `automation_outputs` row `kind='briefing'` committed only on `succeeded` (AUTO-04); body ≤ 64 KiB.
   - `output.target({...create_target args})` — gate `outputs:[target]` only (no `tool:create_target` needed); the Task 5 write path with tool `create_target`; one argument, never waits; step `kind='output'`, `name='target'`, status/`action_id`/`auto` as a tool write; `permission='outputs:target'`.
@@ -241,11 +236,11 @@
 
 **Files:**
 - Create: `internal/briefing/automations.go`, `internal/briefing/automations_test.go`
-- Modify: `internal/briefing/pipeline.go` (`RunForDate`: gather, `hasAnyData`, one more `Sprintf` argument), `internal/prompts/defaults.go` (`defaultBriefingDaily` gains one `%s` block; version bump 11 → 12 with a changelog comment), `internal/prompts/defaults_extra_test.go` if it pins verb counts, `internal/db/automation_runs.go` (a read helper if P1's `ListAutomationOutputs` cannot filter by time)
+- Modify: `internal/briefing/pipeline.go` (`RunForDate`: gather, `hasAnyData`, one more `Sprintf` argument), `internal/prompts/defaults.go` (`defaultBriefingDaily` gains one `%s` block; version bump 11 → 12 with a changelog comment), `internal/prompts/defaults_extra_test.go` if it pins verb counts, `internal/db/automation_runs.go` (`ListAutomationOutputsSince`, a P2 read helper — P1's `ListAutomationOutputs(kind, limit)` has no time filter and no automation name)
 - Use the project skill `add-ai-prompt` for the template change.
 
 **Interfaces:**
-- Consumes: `db.ListAutomationOutputs(kind, limit)` (P1) or the new `func (d *DB) ListAutomationOutputsSince(kind string, since time.Time) ([]AutomationOutput, error)` (ascending `created_at`, joined automation name); `(*Pipeline).revisionWindowStart(userID, date)` — already "the previous day's briefing generation time, else 24 h".
+- Consumes: the new `func (d *DB) ListAutomationOutputsSince(kind string, since time.Time) ([]NamedAutomationOutput, error)` with `type NamedAutomationOutput struct { AutomationOutput; AutomationName string }` (ascending `created_at`, joined automation name; added by this task); `(*Pipeline).revisionWindowStart(userID, date)` — already "the previous day's briefing generation time, else 24 h".
 - Produces: `func (p *Pipeline) gatherAutomationOutputs(since time.Time) (string, bool)` — block titled `From your automations`, one entry per output `⚙ <automation name>: <title>\n<body>`; total ≤ 4096 bytes: while over, drop the **oldest** entry and end with `+N more` (N = dropped count); no outputs → the placeholder `No automation output since the last briefing.` and `false`. `hasAnyData` counts it as real material. Prompt v12 tells the model to fold these items into `what_happened` (or `attention` when their priority is high) and never invent ids for them.
 - Depends on: Task 6.
 
@@ -292,7 +287,7 @@
   - **AGENT-03**: Observable replaced by spec §14.2's text **verbatim** (incl. "owner-approved 2026-10-14 in ask #265; in code with Automations P2"); the Why gains §14.2's added sentence; Test guards append `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`, `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`, `TestAgent03_AlwaysAskIsNeverAuto` (`internal/tools/registry_automation_test.go`), `TestAgent03_AutoGrantRefusedUnderAgentMarkers` (`cmd/automations_auto_test.go`); existing guards unchanged.
   - **AGENT-01** (strengthening): names the `automation` surface and "a dry run never reaches `Propose`"; guard `TestAgent01_AutomationWriteRecordsProposalOnly`, plus `TestAuto12_DryRunWriteNeverReachesRegistry`.
   - **AGENT-07** (strengthening): `automations auto … on` joins the refused commands (with `automations confirm` and `automations save --confirm-hash` from P1); guard `TestAgent03_AutoGrantRefusedUnderAgentMarkers`.
-  - Changelog entry dated 2026-10-14 "Automations P2 — AGENT-03 amended per spec §14.2 (owner-approved, ask #265); AGENT-01/07 strengthened; no guard relaxed".
+  - Changelog entry dated 2026-10-14 "Automations P2 — AGENT-03 amended per spec §14.2 (owner-approved, ask #265); the automation auto grant and `tool_trust` never cover a call made inside an automation's `agent()` (`Binding.AutomationAgent`, spec §6.5 'proposals stay pending') — a narrowing; AGENT-01/07 strengthened; no guard relaxed". AGENT-03's guard list also gains `TestTrustOrder_AutomationSurface` (its `AutomationAgent` rows).
   - **automations.md**: **AUTO-02** Planned → **Enforced** (write side: `TestAuto02_ToolWriteGoesThroughPropose`, `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`; changelog notes the retirement of P1's interim `TestTool_WriteNotAvailableInP1`); **AUTO-03** Planned → **Enforced** (`TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash` + the five AGENT-03 guards); AUTO-04/12 gain the output and dry-run guards of Tasks 5–6.
   - **reaction-commands.md** changelog: "Automations P2: `agent_actions` rows with `context_type='automation_run'` reach the strip through `Registry.Propose` from a recipe the owner confirmed (AUTO-06), per the approved design §6.3; the STRIP-01 three-table amendment (spec §14.4, `automation_outputs`) lands with P3". STRIP-01's Observable text itself is not edited in P2.
   - `docs/features/agent-actions.md`: the automation surface, trust order and auto grants. `docs/features/automations.md`: P2 section.
