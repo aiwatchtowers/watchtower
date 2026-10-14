@@ -863,3 +863,42 @@ func TestListAutomationRuns_NewestFirstNeverNil(t *testing.T) {
 		t.Errorf("runs of a missing automation = %v, %v; want empty non-nil", runs, err)
 	}
 }
+
+func TestMarkStaleDryRuns_EndsOnlyDryRunsPastDeadline(t *testing.T) {
+	d := openTestDB(t)
+	live := claimDryRunAt(t, d, seedRunAutomation(t, d, "live", 1), runTestNow.Add(-2*time.Minute), 5)
+	stale := claimDryRunAt(t, d, seedRunAutomation(t, d, "stale", 1), runTestNow.Add(-7*time.Minute), 5)
+	_, running := seedRunningAutomationRun(t, d) // a non-dry run is never the sweep's
+	if _, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: stale, Seq: 1, Kind: "llm", Name: "light",
+		Status: "ok", StartedAt: runTestNow.Add(-6 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := d.MarkStaleDryRuns(runTestNow); err != nil || n != 1 {
+		t.Fatalf("MarkStaleDryRuns = (%d, %v); want 1", n, err)
+	}
+	wantAutomationRun(t, d, live, RunRunning, "")
+	wantAutomationRun(t, d, running, RunRunning, "")
+	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
+	steps, err := d.ListAutomationRunSteps(stale)
+	if err != nil || len(steps) != 1 || steps[0].FinishedAt == nil || steps[0].Status != "error" {
+		t.Fatalf("stale run steps = %+v, %v; want one closed error step", steps, err)
+	}
+	if n, err := d.MarkStaleDryRuns(runTestNow); err != nil || n != 0 {
+		t.Fatalf("second MarkStaleDryRuns = (%d, %v); want 0", n, err)
+	}
+	if _, err := d.MarkStaleDryRuns(time.Time{}); err == nil {
+		t.Fatal("MarkStaleDryRuns(zero time) succeeded; want a refusal")
+	}
+}
+
+func TestFinish_AddsActiveMS(t *testing.T) {
+	d := openTestDB(t)
+	_, run := seedRunningAutomationRun(t, d)
+	if err := d.AddAutomationRunUsage(run, RunUsage{ActiveMS: 100}); err != nil {
+		t.Fatal(err)
+	}
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunFailed, ErrorKind: ErrKindScript, ActiveMS: 2500}, nil)
+	if got := mustGetAutomationRun(t, d, run).ActiveMS; got != 2600 {
+		t.Fatalf("active_ms = %d; want 2600", got)
+	}
+}

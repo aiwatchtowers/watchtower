@@ -580,7 +580,10 @@ func (db *DB) AddAutomationRunUsage(runID int64, u RunUsage) error {
 // RunFinish is a run's terminal status.
 type RunFinish struct {
 	Status, ErrorKind, Error, Summary string
-	Now                               time.Time
+	// ActiveMS is added to the run's active_ms in the same transaction (the
+	// active time the executor measured; pauses excluded).
+	ActiveMS int64
+	Now      time.Time
 }
 
 // RunCommit is what a succeeded run commits: the new state (nil = unchanged)
@@ -612,8 +615,8 @@ func (db *DB) FinishAutomationRun(runID int64, f RunFinish, c *RunCommit) error 
 	}
 	var automationID int64
 	err = tx.QueryRow(`UPDATE automation_runs SET status = ?, error_kind = ?, error = ?, summary = ?,
-		waiting_reason = '', finished_at = ? WHERE `+active+` RETURNING automation_id`,
-		f.Status, f.ErrorKind, f.Error, f.Summary, stamp, runID).Scan(&automationID)
+		active_ms = active_ms + ?, waiting_reason = '', finished_at = ? WHERE `+active+` RETURNING automation_id`,
+		f.Status, f.ErrorKind, f.Error, f.Summary, max(f.ActiveMS, 0), stamp, runID).Scan(&automationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := runExistsTx(tx, runID); err != nil {
 			return err
@@ -680,47 +683,74 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 	return nil
 }
 
-// interruptedRunSQL selects the runs a daemon start ends as interrupted:
-// every running/waiting run except a dry run still inside its deadline —
-// started_at + budget minutes (the run's snapshot, else the automation's) +
-// a 1-minute grace. That dry run belongs to a live CLI process
-// (ExecuteInline), not to the previous daemon. The one argument is now.
-const interruptedRunSQL = `status IN ('running','waiting') AND NOT (trigger = 'dry_run'
+// liveDryRunSQL matches a dry run still inside its deadline: started_at +
+// budget minutes (the run's snapshot, else the automation's) + a 1-minute
+// grace is after now. Such a dry run belongs to a live CLI process
+// (ExecuteInline), not to a previous daemon. The one argument is now.
+const liveDryRunSQL = `trigger = 'dry_run'
 	AND started_at IS NOT NULL
 	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
 		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
-	    > julianday(?))`
+	    > julianday(?)`
+
+// interruptedRunSQL selects the runs a daemon start ends as interrupted:
+// every running/waiting run except a live dry run (liveDryRunSQL). The one
+// argument is now.
+const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryRunSQL + `)`
+
+// staleDryRunSQL selects the running/waiting dry runs past their deadline: the
+// CLI process that claimed one was killed before it could finish the row. The
+// one argument is now.
+const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
 // MarkInterruptedAutomationRuns ends every running/waiting run as failed with
 // error_kind='interrupted' (a daemon restart; goja state is not resumable),
 // closes their open steps in the same transaction, and returns how many runs
 // it ended. Queued runs are untouched, and so is a dry run still within its
-// deadline (see interruptedRunSQL).
+// deadline (see liveDryRunSQL).
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	if err := requireRunTime(now, "marking interrupted automation runs"); err != nil {
+	return db.endRunsInterrupted(now, interruptedRunSQL, "interrupted by a daemon restart",
+		"marking interrupted automation runs")
+}
+
+// MarkStaleDryRuns ends every running/waiting dry run past its deadline as
+// failed with error_kind='interrupted' and closes its open steps in the same
+// transaction; it returns how many it ended. The daemon's executor calls it on
+// every poll: a dry run's CLI process that was killed leaves its row running,
+// where it would hold a concurrency slot until the next daemon start. A dry
+// run still inside its deadline is untouched.
+func (db *DB) MarkStaleDryRuns(now time.Time) (int, error) {
+	return db.endRunsInterrupted(now, staleDryRunSQL, "the dry run's process stopped before it finished the run",
+		"ending stale automation dry runs")
+}
+
+// endRunsInterrupted ends the runs matching predicate (whose one argument is
+// now) as failed/interrupted with errText.
+func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string) (int, error) {
+	if err := requireRunTime(now, what); err != nil {
 		return 0, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	stamp := formatAutomationTime(now)
-	if err := closeOpenStepsTx(tx, RunFailed, stamp, interruptedRunSQL, stamp); err != nil {
+	if err := closeOpenStepsTx(tx, RunFailed, stamp, predicate, stamp); err != nil {
 		return 0, err
 	}
 	res, err := tx.Exec(`UPDATE automation_runs SET status = 'failed', error_kind = 'interrupted',
-		error = 'interrupted by a daemon restart', waiting_reason = '', finished_at = ?
-		WHERE `+interruptedRunSQL, stamp, stamp)
+		error = ?, waiting_reason = '', finished_at = ?
+		WHERE `+predicate, errText, stamp, stamp)
 	if err != nil {
-		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("marking interrupted automation runs: %w", err)
+		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	return int(n), nil
 }
