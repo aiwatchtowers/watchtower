@@ -191,7 +191,7 @@ func (p *Pipeline) HasData() (bool, error) {
 	if !p.ForceRegenerate {
 		sits, err := p.db.GetSituationsForWindow(from, to)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("checking situations: %w", err)
 		}
 		if len(sits) == 0 {
 			return false, nil
@@ -199,7 +199,7 @@ func (p *Pipeline) HasData() (bool, error) {
 	}
 	stats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("computing user stats: %w", err)
 	}
 	return len(stats) > 0, nil
 }
