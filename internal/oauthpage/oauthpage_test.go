@@ -69,6 +69,11 @@ func TestError_EscapesReasonAndLinksBack(t *testing.T) {
 	assert.NotContains(t, page, "window.close()")
 }
 
+func TestError_EscapesOnce(t *testing.T) {
+	assert.Contains(t, Error("a&b", false), "<p>a&amp;b</p>")
+	assert.Contains(t, Success("R&D", false), "<p>R&amp;D is connected")
+}
+
 func TestError_EmptyReason(t *testing.T) {
 	page := Error("", false)
 	assert.Contains(t, page, "Authorization failed")
