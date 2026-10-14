@@ -626,6 +626,10 @@ func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
 		if errors.Is(err, oauthpage.ErrLoginTimedOut) {
 			t.Errorf("Login: err = %v, must not wrap ErrLoginTimedOut once the callback came", err)
 		}
+		// The handler's own outcome, the same one its error page shows.
+		if !strings.Contains(err.Error(), "exchanging code for token") {
+			t.Errorf("Login: err = %v, want the handler's exchange failure", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Login did not return after the context ended")
 	}
