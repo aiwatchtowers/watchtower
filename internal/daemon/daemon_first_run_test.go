@@ -257,7 +257,9 @@ func TestShouldRunBriefingAt_FreshButBudgetExhaustedFalse(t *testing.T) {
 
 // The fresh-install bypass adds no run: a first briefing with nothing to
 // summarise yet is a benign skip that keeps the budget and the stamp clear,
-// so the next cycle tries again.
+// so the next cycle tries again. phaseBriefing reads time.Now(), so after
+// briefing.hour this covers the no-data path only; the bypass itself is pinned
+// by the shouldRunBriefingAt tests above.
 func TestDaemon_FirstBriefingNoDataKeepsBudget(t *testing.T) {
 	d, database := briefingFirstRunSetup(t)
 	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
