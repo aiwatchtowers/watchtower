@@ -26,35 +26,43 @@ var abandonedRuns atomic.Int64
 func AbandonedRuns() int { return int(abandonedRuns.Load()) }
 
 const (
-	wrapPrefix       = returnFuncName + `((function () {"use strict";`
-	wrapSuffix       = "\n})());"
+	wrapPrefix = "(function (" + returnHookParam + ") { " + returnHookParam +
+		"((function (" + returnHookParam + `) {"use strict";`
+	wrapSuffix       = "\n})()); })"
 	errWrapperBroken = "the script closes the function it runs in (an unbalanced `}`)"
 )
 
 // wrapScript makes the script a strict function body (so it may `return`)
-// without moving its lines: the prefix sits on the script's first line. Its
-// return value goes to returnFuncName inside the program.
+// without moving its lines: the prefix sits on the script's first line. The
+// program evaluates to an outer function that Run calls with the native
+// return hook; the script's function shadows the hook's parameter with its
+// own (never passed, so undefined), so the script cannot reach the hook.
 func wrapScript(script string) string {
 	return wrapPrefix + script + wrapSuffix
 }
 
 // wrapperIntact reports that the parsed program is exactly the wrapper with
-// the whole script inside the function body: one statement, the call to
-// returnFuncName of an immediately called, parameterless function whose
-// braces are the wrapper's own. A script with an unbalanced `}` that breaks
-// out of the function fails it.
+// the whole script inside the inner function's body. A script with an
+// unbalanced `}` that breaks out of the function fails it.
 func wrapperIntact(prog *ast.Program, src string) bool {
 	fn := wrappedFunction(prog)
-	if fn == nil || fn.Body == nil || fn.Async || fn.Generator {
+	if fn == nil || fn.Body == nil || fn.Async || fn.Generator || paramCount(fn) != 1 {
 		return false
 	}
-	open := file.Idx(strings.Index(src, "{") + 1)
+	open := file.Idx(strings.Index(src, `{"use strict";`) + 1)
 	closing := file.Idx(len(src) - len(wrapSuffix) + 2) // the "}" after the suffix's newline
 	return fn.Body.LeftBrace == open && fn.Body.RightBrace == closing
 }
 
+func paramCount(fn *ast.FunctionLiteral) int {
+	if fn.ParameterList == nil {
+		return 0
+	}
+	return len(fn.ParameterList.List)
+}
+
 // wrappedFunction returns F of a program that is exactly
-// `returnFuncName((F)())`, or nil.
+// `(function (hook) { hook((F)()); })`, or nil.
 func wrappedFunction(prog *ast.Program) *ast.FunctionLiteral {
 	if len(prog.Body) != 1 {
 		return nil
@@ -63,11 +71,24 @@ func wrappedFunction(prog *ast.Program) *ast.FunctionLiteral {
 	if !ok {
 		return nil
 	}
+	outerFn, ok := stmt.Expression.(*ast.FunctionLiteral)
+	if !ok || outerFn.Body == nil || paramCount(outerFn) != 1 || len(outerFn.Body.List) != 1 {
+		return nil
+	}
+	return hookCallArgument(outerFn.Body.List[0])
+}
+
+// hookCallArgument returns F of the statement `hook((F)())`, or nil.
+func hookCallArgument(st ast.Statement) *ast.FunctionLiteral {
+	stmt, ok := st.(*ast.ExpressionStatement)
+	if !ok {
+		return nil
+	}
 	outer, ok := stmt.Expression.(*ast.CallExpression)
 	if !ok || len(outer.ArgumentList) != 1 {
 		return nil
 	}
-	if callee, ok := outer.Callee.(*ast.Identifier); !ok || callee.Name.String() != returnFuncName {
+	if callee, ok := outer.Callee.(*ast.Identifier); !ok || callee.Name.String() != returnHookParam {
 		return nil
 	}
 	inner, ok := outer.ArgumentList[0].(*ast.CallExpression)
@@ -146,7 +167,15 @@ func (s *Sandbox) execute() (r runResult) {
 			r = runResult{err: fmt.Errorf("%w: %v", ErrSDKPanic, p)}
 		}
 	}()
-	v, err := s.rt.RunProgram(s.prog)
+	outer, err := s.rt.RunProgram(s.prog)
+	if err != nil {
+		return runResult{err: err}
+	}
+	run, ok := goja.AssertFunction(outer)
+	if !ok {
+		return runResult{err: fmt.Errorf("%w: the wrapped program is not a function", ErrSDKContract)}
+	}
+	v, err := run(goja.Undefined(), s.rt.ToValue(s.scriptReturned))
 	return runResult{v: v, err: err}
 }
 

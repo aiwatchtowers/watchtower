@@ -8,38 +8,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja"
 	"github.com/dop251/goja/parser"
 )
 
-// RegexpMatchTimeout bounds one backtracking regular-expression match (goja
-// runs lookaround/backreference patterns on regexp2, which a pattern such as
-// /(a+)+b(?=c)/ can keep busy for ever, out of the interrupt's reach). A
-// timed-out match reports no match and the run's deadline then ends it.
-const RegexpMatchTimeout = 2 * time.Second
-
-// MaxRepeatBytes caps one String.prototype.repeat result, a cheap memory
-// amplifier.
-const MaxRepeatBytes = 16 * 1024 * 1024
-
-// MaxJSONDepth caps the nesting JSON.stringify accepts: goja's native
-// stringify is quadratic in depth (a 200k-deep object takes about a minute,
-// out of the interrupt's reach), so an interruptible JS walk checks the depth
-// first.
-const MaxJSONDepth = 1000
-
-func init() {
-	// regexp2/v2 is used by goja only (go mod why), so the default is ours to
-	// set; every pattern goja compiles reads it.
-	regexp2.DefaultMatchTimeout = RegexpMatchTimeout
-}
-
-// returnFuncName is the native function the wrapped program hands the
-// script's return value to (see wrapScript).
-const returnFuncName = "__automationReturn"
+// returnHookParam is the parameter through which the wrapped program gets
+// the native return hook (see wrapScript); the script's own function
+// shadows it, so the script cannot reach the hook.
+const returnHookParam = "$__automationReturn"
 
 // deepFreezeJS freezes an object graph (the trigger, SDK namespaces).
 const deepFreezeJS = `(function f(o) {
@@ -48,73 +25,6 @@ const deepFreezeJS = `(function f(o) {
 		if (v !== null && typeof v === "object" && !Object.isFrozen(v)) { f(v); }
 	});
 	return Object.freeze(o);
-})`
-
-// lockdownJS removes every way to compile code from a string at run time
-// (eval, the Function constructor reached by name or through any function's
-// .constructor), removes Promise, and caps String.prototype.repeat. It
-// returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxRepeat, maxDepth) {
-	"use strict";
-	function refuse() { throw new EvalError("code generation from strings is not available to automation scripts"); }
-	function neutralise(proto) {
-		Object.defineProperty(proto, "constructor", { value: refuse, writable: false, enumerable: false, configurable: false });
-	}
-	neutralise(Function.prototype);
-	neutralise(Object.getPrototypeOf(function* () {}));
-	delete g.eval;
-	delete g.Function;
-	delete g.Promise;
-	var repeat = String.prototype.repeat;
-	Object.defineProperty(String.prototype, "repeat", { writable: true, configurable: true, enumerable: false,
-		value: function (count) {
-			var n = Math.floor(Number(count));
-			if (String(this).length * n > maxRepeat) { throw new RangeError("repeat: the result would exceed " + maxRepeat + " characters"); }
-			return repeat.call(this, count);
-		} });
-	var stringify = JSON.stringify, keys = Object.keys, SetCtor = Set;
-	function tooDeep(v) {
-		var stack = [v, 1], seen = new SetCtor();
-		while (stack.length > 0) {
-			var d = stack.pop(), o = stack.pop();
-			if (o === null || typeof o !== "object" || seen.has(o)) { continue; }
-			if (d > maxDepth) { return true; }
-			seen.add(o);
-			var ks = keys(o);
-			for (var i = 0; i < ks.length; i++) { stack.push(o[ks[i]], d + 1); }
-		}
-		return false;
-	}
-	Object.defineProperty(JSON, "stringify", { writable: true, configurable: true, enumerable: false,
-		value: function stringify_(value, replacer, space) {
-			if (tooDeep(value)) { throw new RangeError("JSON.stringify: nesting deeper than " + maxDepth); }
-			return stringify(value, replacer, space);
-		} });
-	return neutralise;
-})`
-
-// asyncProtoSources reach the async function prototype (scripts cannot
-// write async, but its constructor compiles strings too). The pinned goja
-// has no async generators (a syntax error), so there is no fourth one.
-var asyncProtoSources = []string{
-	`Object.getPrototypeOf(async function () {})`,
-}
-
-// returnJSONJS serialises the script's return value with the depth-checked
-// JSON.stringify captured before the script ran; a function, symbol or BigInt anywhere is a
-// ValidationError.
-const returnJSONJS = `(function (stringify, ErrorCtor) {
-	"use strict";
-	function replacer(key, value) {
-		var t = typeof value;
-		if (t === "function" || t === "symbol" || t === "bigint") {
-			var e = new ErrorCtor("the script returned a " + t + (key === "" ? "" : " under " + stringify(String(key))) + "; return JSON values only");
-			e.name = "ValidationError";
-			throw e;
-		}
-		return value;
-	}
-	return function (v) { return v === undefined ? undefined : stringify(v, replacer); };
 })`
 
 // Sandbox is one run's goja runtime. Its only world is the ECMAScript
@@ -202,14 +112,11 @@ func (s *Sandbox) setup(modules []Module) error {
 	if err != nil {
 		return err
 	}
-	rj, err := makeReturnJSON(goja.Undefined(), rt.Get("JSON").ToObject(rt).Get("stringify"), s.errorCtor)
+	rj, err := makeReturnJSON(goja.Undefined(), rt.Get("JSON").ToObject(rt).Get("stringify"), s.errorCtor, rt.Get("String"))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: building the return serialiser: %w", err)
 	}
 	if s.returnJSON, err = asCallable(rj, "the return serialiser"); err != nil {
-		return err
-	}
-	if err := s.defineGlobal(rt.GlobalObject(), returnFuncName, rt.ToValue(s.scriptReturned)); err != nil {
 		return err
 	}
 	if err := s.installTrigger(); err != nil {
@@ -233,31 +140,6 @@ func asCallable(v goja.Value, what string) (goja.Callable, error) {
 		return nil, fmt.Errorf("automation sandbox: %.40s is not callable", what)
 	}
 	return fn, nil
-}
-
-func (s *Sandbox) lockdown() error {
-	lock, err := s.callable(lockdownJS)
-	if err != nil {
-		return err
-	}
-	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxRepeatBytes), s.rt.ToValue(MaxJSONDepth))
-	if err != nil {
-		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
-	}
-	neutralise, err := asCallable(nv, "neutralise")
-	if err != nil {
-		return err
-	}
-	for _, src := range asyncProtoSources {
-		proto, err := s.rt.RunString(src)
-		if err != nil {
-			return fmt.Errorf("automation sandbox: reaching %s: %w", src, err)
-		}
-		if _, err := neutralise(goja.Undefined(), proto); err != nil {
-			return fmt.Errorf("automation sandbox: neutralising %s: %w", src, err)
-		}
-	}
-	return nil
 }
 
 func (s *Sandbox) installTrigger() error {
@@ -347,7 +229,10 @@ func (s *Sandbox) installPath(path string, fn SDKFunc) ([]goja.Value, error) {
 func (s *Sandbox) wrap(path string, fn SDKFunc) func(goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
 		if s.isFinished() {
-			s.abort(fmt.Errorf("%w: %s was called after the script returned", ErrSDKContract, path))
+			// Only the script's own code (a getter or toJSON run while its
+			// return value is serialised) can call here: a script error.
+			s.abort(&ScriptError{Name: ErrNameValidation,
+				Message: path + "() was called while the script's return value was being serialised"})
 			return goja.Undefined()
 		}
 		v, err := s.invoke(path, fn, call)

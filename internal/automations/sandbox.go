@@ -91,6 +91,28 @@ func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)
 	return v, err
 }
 
+// ModelUsage is what one model call reports.
+type ModelUsage struct {
+	InputTokens, OutputTokens int64
+	Estimated                 bool
+	ReportedUSD               *float64 // nil = the provider reported no cost
+}
+
+// MeteredModelCall runs one model call under the meter in the one order the
+// live daily total is correct in: Meter.BeforeCall → call → Meter.Debit →
+// step.Usage (Debit must read the day's total before this call's tokens are
+// recorded on the run). The usage call reports is debited even when it also
+// returns an error.
+func (e *Env) MeteredModelCall(step *Step, call func(ctx context.Context) (ModelUsage, error)) error {
+	if err := e.Meter.BeforeCall(); err != nil {
+		return err
+	}
+	u, err := call(e.Ctx)
+	e.Meter.Debit(u.InputTokens, u.OutputTokens)
+	step.Usage(u.InputTokens, u.OutputTokens, u.Estimated, u.ReportedUSD)
+	return err
+}
+
 // deniedEntry reports whether err is a permission denial and what it needed.
 func deniedEntry(err error) (string, bool) {
 	var pd *PermissionDenied

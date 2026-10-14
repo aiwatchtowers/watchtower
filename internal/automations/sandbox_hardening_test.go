@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,7 +116,7 @@ func TestSandbox_StuckNativeIsAbandonedAfterGrace(t *testing.T) {
 
 func TestSandbox_HugeJoinEndsWithinDeadlinePlusGrace(t *testing.T) {
 	clock := newSBClock()
-	sb, _ := newTestSandbox(t, `var a = new Array(2e7); while (true) { a.join("abc") }`,
+	sb, _ := newTestSandbox(t, `var a = new Array(16e6); while (true) { a.join("") }`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
 	clock.Advance(59*time.Second + 700*time.Millisecond)
 	start := time.Now()
@@ -183,10 +184,15 @@ func TestSandbox_ReturnValueIsJSON(t *testing.T) {
 	}
 }
 
-func TestSandbox_SDKCallAfterReturnEndsTheRun(t *testing.T) {
-	_, err := runScript(t, returnFuncName+`(1); echo(2)`, sbOpts{})
-	if !errors.Is(err, ErrSDKContract) {
-		t.Fatalf("Run = %v; want ErrSDKContract", err)
+func TestSandbox_ReturnHookIsHiddenAndPostReturnCallsAreScriptErrors(t *testing.T) {
+	got := mustRun(t, `return [typeof `+returnHookParam+`, typeof globalThis.`+returnHookParam+`, arguments.length].join(",")`, sbOpts{})
+	if got != "undefined,undefined,0" {
+		t.Fatalf("hook visibility = %v", got)
+	}
+	_, err := runScript(t, `return { get x() { echo(1); return 1 } }`, sbOpts{})
+	var se *ScriptError
+	if !errors.As(err, &se) || se.Name != ErrNameValidation || !strings.Contains(se.Message, "echo") {
+		t.Fatalf("Run = %v; want a ValidationError naming echo", err)
 	}
 }
 
@@ -223,9 +229,9 @@ func TestSandbox_SDKResultsArePlainJSValues(t *testing.T) {
 
 func TestSandbox_WrapperBreakoutRefused(t *testing.T) {
 	for _, script := range []string{
-		"})); globalThis.x = 1; " + returnFuncName + "((function () {",
-		"})(), (function () {\n",
-		"return 1 }).call(null), (function () {", // one statement, two arguments
+		"}).call(null), (function () {", // one statement, two hook arguments
+		"})()); globalThis.x = 1; " + returnHookParam + "((function () {",
+		"})()); }); globalThis.x = 1; (function (" + returnHookParam + ") { " + returnHookParam + "((function () {",
 	} {
 		env := &Env{Ctx: context.Background(), Recipe: &Recipe{Script: script}, Journal: NewMemoryJournal(),
 			Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, math.MaxInt64, nil)}
@@ -334,5 +340,171 @@ func TestJournal_MarkWrapsErrors(t *testing.T) {
 	err := s.Mark(StepWaiting, db.StepFinish{ActionID: 1})
 	if !errors.Is(err, db.ErrAutomationRunStepNotFound) || !strings.Contains(err.Error(), "marking automation run") {
 		t.Fatalf("Mark = %v; want a wrapped not-found error", err)
+	}
+}
+
+const deepJS = `function deep(n) { var o = {}, c = o; for (var i = 0; i < n; i++) { c.a = {}; c = c.a } return o }
+`
+
+// wantQuickRangeError runs script (which returns e.name or "ran") and wants
+// a RangeError within 5 s and no abandoned goroutine.
+func wantQuickRangeError(t *testing.T, name, script string) {
+	t.Helper()
+	start := time.Now()
+	got := mustRun(t, deepJS+script, sbOpts{})
+	if got != "RangeError" || time.Since(start) > 5*time.Second || AbandonedRuns() != 0 {
+		t.Errorf("%s: got %v after %v (abandoned %d); want a quick RangeError", name, got, time.Since(start), AbandonedRuns())
+	}
+}
+
+func TestSandbox_JSONDepthCannotBeBypassed(t *testing.T) {
+	waitNoAbandonedRuns(t)
+	wrap := func(body string) string {
+		return "try { " + body + "; return 'ran' } catch (e) { return e.name }"
+	}
+	cases := map[string]string{
+		"toJSON":        wrap(`JSON.stringify({ toJSON: function () { return deep(200000) } })`),
+		"nested toJSON": wrap(`JSON.stringify({ a: { toJSON: function () { return deep(200000) } } })`),
+		"getter changes": wrap(`var n = 0; var x = { get v() { n++; return n === 1 ? {} : deep(200000) } };
+			JSON.stringify(x); JSON.stringify(x)`),
+		"Set.has override": "Set.prototype.has = function () { return true }; Set.prototype.add = function () { return this };\n" +
+			wrap(`JSON.stringify(deep(200000))`),
+		"intrinsics overridden": `WeakMap.prototype.get = function () { return 0 }; WeakMap.prototype.set = function () {};
+			var FP = Object.getPrototypeOf(function () {});
+			FP.call = function () { return 0 }; FP.apply = function () { return 0 }; FP.bind = function () { return 0 };
+			Reflect.apply = function () { return 0 }; Math.floor = function () { return 0 }; Array.isArray = function () { return false };
+			Object.keys = function () { return [] }; Array.prototype.includes = function () { return true };` + "\n" +
+			wrap(`JSON.stringify(deep(200000))`),
+		"user replacer":  wrap(`JSON.stringify(deep(200000), function (k, v) { return v })`),
+		"array replacer": wrap(`JSON.stringify(deep(200000), ["a"])`),
+	}
+	for name, script := range cases {
+		wantQuickRangeError(t, name, script)
+	}
+	_, err := runScript(t, deepJS+"return deep(2000)", sbOpts{})
+	var se *ScriptError
+	if !errors.As(err, &se) || se.Name != "RangeError" {
+		t.Errorf("deep return value = %v; want a RangeError", err)
+	}
+}
+
+func TestSandbox_JSONStringifyStillWorks(t *testing.T) {
+	got := mustRun(t, `return [
+		JSON.stringify({ a: 1, b: 2, c: { a: 3, d: 4 } }, ["a", "c"]),
+		JSON.stringify({ a: 1, b: [1, 2] }, function (k, v) { return k === "a" ? 10 : v }),
+		JSON.stringify({ a: [1] }, null, 1),
+		JSON.stringify({ d: new Date(0) }),
+		String(JSON.stringify(undefined))
+	].join("|")`, sbOpts{})
+	want := `{"a":1,"c":{"a":3}}|{"a":10,"b":[1,2]}|{` + "\n" + ` "a": [` + "\n" + `  1` + "\n" + ` ]` + "\n" + `}|{"d":"1970-01-01T00:00:00.000Z"}|undefined`
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+func TestSandbox_RegexTimeoutThrows(t *testing.T) {
+	start := time.Now()
+	_, err := runScript(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`, sbOpts{}) // deadline 5 min
+	var se *ScriptError
+	if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too long") {
+		t.Fatalf("Run = %v; want an uncaught RangeError, never false", err)
+	}
+	if took := time.Since(start); took > RegexpMatchTimeout+2*time.Second {
+		t.Fatalf("took %v", took)
+	}
+	got := mustRun(t, `var out = [];
+		try { delete RegExp.prototype.exec } catch (e) { out.push(e.name) }
+		try { RegExp.prototype[Symbol.replace] = function () { return "fake" } } catch (e) { out.push(e.name) }
+		try { "a".repeat(33).replace(/(a+)+b(?=c)/, "x"); out.push("ran") } catch (e) { out.push(e.name) }
+		return out.join(",")`, sbOpts{})
+	if got != "TypeError,TypeError,RangeError" {
+		t.Fatalf("got %v; want TypeError,TypeError,RangeError", got)
+	}
+}
+
+func TestSandbox_RegexMethodsStillWork(t *testing.T) {
+	got := mustRun(t, `var re = /(\w)(\d)(?=x)/g, s = "a1x b2x c3";
+		return [
+			/b(?=c)/.test("abc"), JSON.stringify(/(\d+)/.exec("ab12")), JSON.stringify(s.match(re)),
+			Array.from(s.matchAll(re), function (m) { return m[0] }).join("+"), s.replace(re, "#"),
+			s.search(/c/), "a,b;c".split(/[,;]/).join("|"), "x".replace(/x/, function () { return "y" })
+		].join(" ")`, sbOpts{})
+	if got != `true ["12","12"] ["a1","b2"] a1+b2 #x #x c3 8 a|b|c y` {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSandbox_AllocationCaps(t *testing.T) {
+	refused := []string{
+		`"x".repeat(32 * 1024 * 1024)`,
+		`Math.floor = function () { return 0 }; String = function () { return "" }; "x".repeat(32 * 1024 * 1024)`,
+		`"x".padStart(32 * 1024 * 1024)`,
+		`"x".padEnd(32 * 1024 * 1024, "y")`,
+		`Array.prototype.join.call({ length: 1e9 }, "")`,
+		`new Array(1e9)`,
+		`Array(1e9)`,
+		`[].constructor(1e9)`,
+		`Array.from({ length: 1e9 })`,
+		`Array.prototype.fill.call({ length: 1e9 }, 0)`,
+		`String.raw({ raw: { length: 1e9 } })`,
+	}
+	for _, expr := range refused {
+		got := mustRun(t, "try { "+expr+"; return 'ran' } catch (e) { return e.name }", sbOpts{})
+		if got != "RangeError" {
+			t.Errorf("%s → %v; want RangeError", expr, got)
+		}
+	}
+	got := mustRun(t, `return [
+		"ab".repeat(3), "7".padStart(3, "0"), [1, 2].join("-"), Array(3).length, new Array(1, 2).length,
+		Array.isArray(new Array(2)), [] instanceof Array, Array.from([1, 2]).length, Array.from({ length: 2 }).length,
+		JSON.stringify([0, 0, 0].fill(1, 1)), JSON.stringify([0, 0, 0].fill(2, -1)), String.raw`+"`a${1}b`"+`,
+		Array.of(4).length, [1, [2]].toString(), Array.name, (function () { class L extends Array {} return new L(2) instanceof L })(),
+		[1, 2, 3].map(function (x) { return x * 2 }).join("")
+	].join("|")`, sbOpts{})
+	if got != "ababab|007|1-2|3|2|true|true|2|2|[0,1,1]|[0,0,2]|a1b|1|1,2|Array|true|246" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEnv_MeteredModelCallOrder(t *testing.T) {
+	d, run := seedJournalRun(t)
+	var seq []string
+	tokensOnRun := func() int64 {
+		r, err := d.GetAutomationRun(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.InputTokens + r.OutputTokens
+	}
+	meter := NewMeter(Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, nil)
+	meter.UseDailyTotal(1000, func() (int64, error) {
+		n := tokensOnRun()
+		seq = append(seq, "daily="+strconv.FormatInt(n, 10))
+		return n, nil
+	})
+	env := &Env{Ctx: context.Background(), Journal: NewJournal(d, run, false), Meter: meter}
+	step := env.Journal.Begin("llm", "light", "p")
+	err := env.MeteredModelCall(step, func(context.Context) (ModelUsage, error) {
+		seq = append(seq, "generate")
+		return ModelUsage{InputTokens: 600, OutputTokens: 500}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// BeforeCall reads 0, the generator runs, Debit reads 0 (the usage is
+	// not on the run yet) and crosses the cap with this call's 1100, then
+	// Usage writes the run row.
+	if got := strings.Join(seq, ","); got != "daily=0,generate,daily=0" {
+		t.Fatalf("order = %s", got)
+	}
+	if meter.Crossed() != InterruptDailyCap || tokensOnRun() != 1100 {
+		t.Fatalf("crossed %q, run tokens %d; want daily_cap, 1100", meter.Crossed(), tokensOnRun())
+	}
+	called := false
+	if err := env.MeteredModelCall(env.Journal.Begin("llm", "light", "p"), func(context.Context) (ModelUsage, error) {
+		called = true
+		return ModelUsage{}, nil
+	}); err == nil || called {
+		t.Fatalf("a call over the cap = %v (generator called %v); want a refusal before the generator", err, called)
 	}
 }
