@@ -482,6 +482,9 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(try echoes(of: future.recordName).map(\.status), [.expired])
         XCTAssertEqual(try echoes(of: future.recordName).first?.errorMessage, RelayProcessor.clockAheadMessage)
+        XCTAssertEqual(RelayProcessor.clockAheadMessage,
+                       "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both.")
+        XCTAssertEqual(RelayProcessor.maxClockSkew, 5 * 60, "the message names the bound")
         XCTAssertEqual(try echoes(of: skewed.recordName).map(\.status), [.applied])
     }
 
