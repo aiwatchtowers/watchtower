@@ -225,8 +225,8 @@ func NewMemoryRecall(vaultPath string, shadowDB *db.DB) *Tool {
 			switch {
 			case limit <= 0:
 				limit = defaultRecallLimit
-			case limit > maxListLimit:
-				limit = maxListLimit
+			case limit > MaxListLimit:
+				limit = MaxListLimit
 			}
 
 			// An exact alias match (case-insensitive) ranks first: aliases are

@@ -12,9 +12,9 @@ import (
 	"watchtower/internal/db"
 )
 
-// maxEmailBodyBytes caps get_email's body (spec 2026-10-14-automations-design
-// Global Constraints: email body clipped 32 KiB).
-const maxEmailBodyBytes = 32 * 1024
+// MaxEmailBodyBytes caps get_email's body (spec 2026-10-14-automations-design
+// Global Constraints: email body clipped 32 KiB). The one copy of the value.
+const MaxEmailBodyBytes = 32 * 1024
 
 type listEmailsArgs struct {
 	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
@@ -128,7 +128,7 @@ func NewGetEmail() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("reading the Cc list of email %s: %w", m.ID, err)
 			}
-			body, truncated := clipUTF8Bytes(m.BodyText, maxEmailBodyBytes)
+			body, truncated := clipUTF8Bytes(m.BodyText, MaxEmailBodyBytes)
 			return emailDetail{
 				Account: acct.name, emailSummary: summarizeEmail(m),
 				To: to, Cc: cc, Body: body, Truncated: truncated,
