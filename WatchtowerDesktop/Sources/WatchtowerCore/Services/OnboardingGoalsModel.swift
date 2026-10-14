@@ -108,8 +108,8 @@ package final class OnboardingGoalsModel {
     }
 
     /// The route the indicator and a relaunch follow.
-    package func route(hasSlackAccount: Bool) -> OnboardingRoute {
-        OnboardingRoute(goals: savedGoals, hasSlackAccount: hasSlackAccount)
+    package var route: OnboardingRoute {
+        OnboardingRoute(goals: savedGoals)
     }
 
     package var canContinue: Bool {
@@ -241,6 +241,6 @@ package final class OnboardingGoalsModel {
         }
         savedGoals = selection.goals
         defaults.set(selection.goals.map(\.rawValue).sorted(), forKey: Self.goalsKey)
-        return route(hasSlackAccount: hasSlackAccount)
+        return route
     }
 }

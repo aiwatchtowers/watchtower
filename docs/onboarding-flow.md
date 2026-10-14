@@ -1,7 +1,8 @@
 # Onboarding Flow — Watchtower Desktop
 
-Onboarding v2 (2026-10): three steps, no LLM, nothing required.
-**Goals → Connect → About you**, then straight into the app. There is no
+Onboarding v2 (2026-10): two steps, no LLM, nothing required.
+**Goals → Connect**, then straight into the app (the third step, About you,
+was removed on 2026-10-14, #758). There is no
 "all done" screen. Contracts and the reasoning behind them are in
 [`docs/features/onboarding-v2.md`](features/onboarding-v2.md).
 
@@ -16,12 +17,11 @@ Onboarding v2 (2026-10): three steps, no LLM, nothing required.
 | Assistant language picker | `Views/Components/AssistantLanguagePicker.swift` + `WatchtowerCore/Services/AssistantLanguage.swift` |
 | Connect step | `Views/Onboarding/OnboardingConnectStepView.swift` + `WatchtowerCore/Services/OnboardingConnectPlan.swift` |
 | People load (users-only sync) | `WatchtowerCore/Services/PeopleRosterLoad.swift` |
-| About you step | `Views/Onboarding/OnboardingAboutYouStepView.swift` + `WatchtowerCore/Services/OnboardingAboutYouModel.swift` |
 | Profile writes (OWNER-01) | `WatchtowerCore/Services/OnboardingProfileWriter.swift` |
 | Finish: daemon, landing, first sync | `App/OnboardingCompletion.swift`, `WatchtowerCore/Services/OnboardingFinishPlan.swift`, `AppState.leaveOnboardingStep` |
 
 Everything stateful lives in `AppState` (`onboarding`, `onboardingGoals`,
-`onboardingAboutYou`, `peopleRoster`), so a step re-rendering, Back, or the
+`peopleRoster`), so a step re-rendering, Back, or the
 Customize screen never loses what was picked.
 
 ## Steps and the route
@@ -51,18 +51,12 @@ Customize screen never loses what was picked.
  │  Back · Continue always allowed                                 │
  └───────────────┬──────────────────────────────────────────────────┘
                  ▼
- ┌──────────────────────────────────────────────────────────────────┐
- │ 3. ABOUT YOU      skipped when no Slack account is connected    │
- │  role and team · manager · reports · peers (from synced users)  │
- │  Done → profile answers + onboarding_done · Later → flag only   │
- └───────────────┬──────────────────────────────────────────────────┘
-                 ▼
             FINISH (the last step the route runs)
    onboarding_done written → daemon started (or restarted once) in
    the background → `.complete` → landing tab
 ```
 
-`OnboardingRoute(goals:, hasSlackAccount:)` decides the skips. The goals it
+`OnboardingRoute(goals:)` decides the skips. The goals it
 reads are the ones saved by the last successful Goals Continue
 (`onboarding_v2_goals`), never the live checkboxes, so the step dots do not
 move while the owner is still picking. Zero goals behave like Development
@@ -71,7 +65,8 @@ only.
 ## Persistence and the legacy migration
 
 - `onboarding_v2_step` (UserDefaults) holds the step as a string:
-  `purpose`, `connect`, `aboutYou`, `complete`.
+  `purpose`, `connect`, `complete`. A stored `aboutYou` (the removed step)
+  resumes at `connect`, whose Continue finishes.
 - On first use the machine reads the old flow's `onboarding_current_step`
   integer once: `7` (complete) → `complete`, anything else → `purpose`
   (someone mid-way through the old eight-step flow starts over). The legacy
@@ -100,23 +95,23 @@ behind the Connect sheets. The rest of the app's database wiring (watchers
 that ask for notification permission, reminders, polling, the chat pool)
 waits for completion, so no system dialog appears during onboarding.
 
-## People for About you
+## People load
 
 When a Slack account appears during onboarding (or one is already
 connected after a relaunch), `PeopleRosterLoad` runs
 `watchtower sync --users-only --progress-json --account <id>`: the team,
 the current user and the full `users.list` roster, no messages, no AI, no
 sync lock (it runs beside a daemon). The load survives leaving the step and
-is stopped (SIGTERM) on quit. The Slack card shows "Loading people… N";
-About you shows "Still loading people — N" and re-reads the users every
-~2 s until it ends.
+is stopped (SIGTERM) on quit. The Slack card shows "Loading people… N"
+(then "N of M" while saving). A Slack account connected later from
+Settings starts no load.
 
 ## Finish
 
 `AppState.leaveOnboardingStep` from the last step the route runs:
 
-1. `onboarding_done = 1` through `OnboardingProfileWriter` (`done` with the
-   About you answers, `later` otherwise), inside one `pool.write`. A failed
+1. `onboarding_done = 1` through `OnboardingProfileWriter.later` (the flag
+   alone), inside one `pool.write`. A failed
    write stops here; the step stays and its button retries.
 2. The daemon, in the background: started if none runs, restarted once if
    one does (a setup re-run with a new feature set). One
@@ -137,8 +132,7 @@ Settings → Profile → **Run Setup Again** (and the chat's profile button)
 reads the current feature set and config first; a failure shows instead of
 starting. The flow then starts at Goals seeded from what is in effect —
 goals mapped back from the enabled features (or "Features customized"),
-the configured language (English when none), About you prefilled from the
-profile. **Cancel** (top right, every step) returns to the main window
+the configured language (English when none). **Cancel** (top right, every step) returns to the main window
 without writing anything more; if a step's Continue already changed
 something (a feature, the language, an account), Cancel restarts the
 daemon once so it picks that up. A re-run that changed nothing does not
@@ -146,10 +140,6 @@ restart the daemon and does not change the tab the owner was on.
 
 ## After onboarding
 
-- **About you once after a later Slack connect** — the first Slack account
-  connected from Settings (say after a Development-only setup) offers the
-  About you step as a sheet in the Settings window, once ever, unless the
-  profile already names people or onboarding's About you step was left.
 - **Related features** — a source connected from Settings offers to turn on
   the features its goal would have enabled and that are off now; nothing is
   enabled without the owner's Turn on.

@@ -1,9 +1,11 @@
 import Foundation
 import GRDB
 
-/// What onboarding's "About you" step collects. People are namespaced Slack
-/// ids (`<acct>:<id>`); `role` is free text (role and team in the owner's
-/// own words).
+/// The profile answers `OnboardingProfileWriter.done` writes — what the
+/// About you step collected until it was removed (2026-10-14, #758); kept
+/// because the onboarding OWNER-01 guards write through it. People are
+/// namespaced Slack ids (`<acct>:<id>`); `role` is free text (role and team
+/// in the owner's own words).
 package struct OnboardingAboutYou: Equatable, Sendable {
     package var role: String
     package var manager: String
@@ -18,8 +20,9 @@ package struct OnboardingAboutYou: Equatable, Sendable {
     }
 }
 
-/// Onboarding's profile writes — no LLM. Both exits set `onboarding_done`:
-/// Done also writes the About-you answers, Later writes the flag alone.
+/// Onboarding's profile writes — no LLM. Both set `onboarding_done`: `done`
+/// also writes the answers, `later` writes the flag alone (what finishing
+/// onboarding writes since About you was removed).
 /// `custom_prompt_context` and every other column are carried over from the
 /// existing row, never touched.
 ///
@@ -49,22 +52,9 @@ package enum OnboardingProfileWriter {
         try write(db) { _ in }
     }
 
-    /// The row `done`/`later` would write over — what About you prefills
-    /// from, so an untouched field writes back what was there.
+    /// The row `done`/`later` would write over.
     package static func current(_ db: Database) throws -> UserProfile? {
         try target(db).existing
-    }
-
-    /// The answers `current(db)` holds, people ids decoded (a malformed list
-    /// reads as empty).
-    package static func currentAnswers(_ db: Database) throws -> OnboardingAboutYou {
-        guard let profile = try current(db) else { return OnboardingAboutYou() }
-        return OnboardingAboutYou(
-            role: profile.role,
-            manager: profile.manager,
-            reports: decode(profile.reports),
-            peers: decode(profile.peers)
-        )
     }
 
     private static func target(_ db: Database) throws -> (owner: Owner, key: String, existing: UserProfile?) {
@@ -74,10 +64,6 @@ package enum OnboardingProfileWriter {
             ? try ProfileQueries.fetchOwnerProfile(db, owner: owner)
             : try ProfileQueries.fetchProfile(db, slackUserID: key)
         return (owner, key, existing)
-    }
-
-    private static func decode(_ json: String) -> [String] {
-        (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
     }
 
     private static func write(_ db: Database, edit: (inout UserProfile) -> Void) throws {

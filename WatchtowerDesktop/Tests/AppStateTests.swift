@@ -431,9 +431,11 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(screen(appState), .onboarding)
     }
 
-    /// A relaunch on Connect after the saved goals became Development only
-    /// moves on to About you when Slack is connected.
-    func testLaunchSettlesASkippedStep() async throws {
+    /// A relaunch on Connect after the saved goals became Development only:
+    /// nothing is left after the skipped step, so launch goes back to Goals
+    /// rather than to `.complete` — Goals' Continue runs the completion
+    /// sequence that writes `onboarding_done`.
+    func testLaunchNeverSettlesPastTheCompletionSequence() async throws {
         let (defaults, suiteName) = try onboardingSuite()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(OnboardingV2Step.connect.rawValue, forKey: OnboardingStateMachineV2.stepKey)
@@ -442,21 +444,34 @@ final class AppStateTests: XCTestCase {
 
         let appState = await launch(defaults, db: dbManager)
 
-        XCTAssertEqual(appState.onboarding.currentStep, .aboutYou)
-    }
-
-    /// With nothing left after the skipped step, launch goes back to Goals
-    /// rather than to `.complete`: Goals' Continue runs the completion
-    /// sequence that writes `onboarding_done`.
-    func testLaunchNeverSettlesPastTheCompletionSequence() async throws {
-        let (defaults, suiteName) = try onboardingSuite()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(OnboardingV2Step.aboutYou.rawValue, forKey: OnboardingStateMachineV2.stepKey)
-
-        let appState = await launch(defaults, db: dbManager)
-
         XCTAssertEqual(appState.onboarding.currentStep, .purpose)
         XCTAssertEqual(screen(appState), .onboarding)
+    }
+
+    /// About you was removed (#758): an install parked on it on upgrade
+    /// resumes at Connect, and Connect's Continue finishes onboarding.
+    func testLaunchOnTheRemovedAboutYouStepResumesAtConnectAndFinishes() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("aboutYou", forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["workCommunication"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager)
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertEqual(screen(appState), .onboarding)
+
+        appState.daemonControlOverride = FakeDaemon()
+        await appState.leaveOnboardingStep(.connect, route: appState.onboardingRoute) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertFalse(appState.needsOnboarding)
+        XCTAssertNil(appState.onboardingStepError)
+        let done = try await dbManager.dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
+        }
+        XCTAssertEqual(done, true)
     }
 
     /// Run setup again: back to Goals; finish brings the daemon up again.
@@ -650,7 +665,7 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
 
         // Goals → Connect: no daemon.
-        let route = OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)
+        let route = OnboardingRoute(goals: [.tasksAndJira])
         await appState.leaveOnboardingStep(.purpose, route: route) {}
         XCTAssertEqual(appState.onboarding.currentStep, .connect)
         XCTAssertEqual(daemon.starts + daemon.restarts, 0, "no step before finish touches the daemon")
@@ -674,7 +689,8 @@ final class AppStateTests: XCTestCase {
     }
 
     /// "Run setup again" with a live daemon: finish restarts it once so the
-    /// new feature set reaches it.
+    /// new feature set reaches it. Goals is the last step for Development
+    /// only, and leaving it writes `onboarding_done`.
     func testFinishRestartsARunningDaemonOnce() async throws {
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
@@ -685,11 +701,16 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.onboardingDaemonStart?.value
 
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(daemon.starts, 0)
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        let done = try await dbManager.dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
+        }
+        XCTAssertEqual(done, true)
     }
 
     /// The DB flag lands before the daemon starts: a failed write starts
@@ -704,7 +725,7 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
 
         XCTAssertEqual(daemon.starts + daemon.restarts, 0)
         XCTAssertTrue(appState.needsOnboarding)
@@ -739,18 +760,19 @@ final class AppStateTests: XCTestCase {
             appState.featureVisibility.disabledFeatureIDs = disabled
             appState.needsOnboarding = true
             _ = await appState.openDatabaseForOnboarding()
-            appState.onboarding.goTo(.aboutYou)
+            appState.onboarding.goTo(.connect)
 
-            let route = OnboardingRoute(goals: goals, hasSlackAccount: slack)
-            await appState.leaveOnboardingStep(.aboutYou, route: route) {}
+            await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: goals)) {}
 
             XCTAssertEqual(appState.selectedDestination, expected, "\(goals) slack=\(slack) disabled=\(disabled)")
         }
     }
 
-    // MARK: - About you exits
+    // MARK: - Finish writes the flag alone
 
-    private func finishFromAboutYou(_ about: OnboardingAboutYou?) async throws -> UserProfile? {
+    /// Leaving the last step writes `onboarding_done` and nothing else: the
+    /// profile's role and people are left as they were.
+    func testFinishWritesOnlyTheFlag() async throws {
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -761,26 +783,11 @@ final class AppStateTests: XCTestCase {
             )
         }
         appState.needsOnboarding = true
-        appState.onboarding.goTo(.aboutYou)
-        let route = OnboardingRoute(goals: [.workCommunication], hasSlackAccount: true)
-        await appState.leaveOnboardingStep(.aboutYou, route: route, about: about) {}
+        appState.onboarding.goTo(.connect)
+        await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.workCommunication])) {}
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
-        return try await dbManager.dbPool.read { db in try ProfileQueries.fetchCurrentProfile(db) }
-    }
 
-    func testDoneWritesTheAnswers() async throws {
-        let about = OnboardingAboutYou(role: "EM, Platform", manager: "1:U_ANNA", reports: ["1:U_OLEG"], peers: [])
-        let written = try await finishFromAboutYou(about)
-        let profile = try XCTUnwrap(written)
-        XCTAssertTrue(profile.onboardingDone)
-        XCTAssertEqual(profile.role, "EM, Platform")
-        XCTAssertEqual(profile.manager, "1:U_ANNA")
-        XCTAssertEqual(profile.reports, #"["1:U_OLEG"]"#)
-        XCTAssertEqual(profile.peers, "[]")
-    }
-
-    func testLaterWritesOnlyTheFlag() async throws {
-        let written = try await finishFromAboutYou(nil)
+        let written = try await dbManager.dbPool.read { db in try ProfileQueries.fetchCurrentProfile(db) }
         let profile = try XCTUnwrap(written)
         XCTAssertTrue(profile.onboardingDone)
         XCTAssertEqual(profile.role, "old role")
@@ -788,7 +795,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(profile.reports, #"["1:U_OLD"]"#)
     }
 
-    // MARK: - About you after a later Slack connect
+    // MARK: - Slack connected after onboarding
 
     /// A finished install (no onboarding pending) with its Slack accounts
     /// VM; returns the state and the launches the people load made.
@@ -802,162 +809,18 @@ final class AppStateTests: XCTestCase {
         return (appState, launches, vm)
     }
 
-    private func connectSlack(_ vm: SlackAccountsViewModel, team: String, appState: AppState) async throws {
-        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: team) }
-        await vm.refreshAsync()
-        await appState.lateAboutYouCheck?.value
-    }
-
-    /// The pending offer turns into the sheet (no Add sheet up) and the
-    /// sheet's appearance marks it shown.
-    private func presented(_ appState: AppState) -> Bool {
-        appState.presentLateAboutYouIfReady()
-        guard appState.showsLateAboutYou else { return false }
-        appState.markAboutYouShown()
-        return true
-    }
-
-    func testFirstLateSlackConnectOffersAboutYouOnce() async throws {
+    /// The people load is onboarding's: a first or a second workspace
+    /// connected from Settings later starts none.
+    func testSlackConnectAfterOnboardingStartsNoPeopleLoad() async throws {
         let (appState, launches, vm) = try await finishedInstall()
 
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertTrue(presented(appState))
-        await waitUntil { launches.accounts.count == 1 }
-        appState.showsLateAboutYou = false
-        await appState.peopleRoster.waitForCompletion()
-
-        // Removing the workspace and connecting one again is a first
-        // connect too, but About you was shown already.
-        try await dbManager.dbPool.write { db in try db.execute(sql: "UPDATE slack_accounts SET status = 'removed'") }
-        await vm.refreshAsync()
-        try await connectSlack(vm, team: "T2", appState: appState)
-        XCTAssertFalse(presented(appState), "offered once, ever")
-        XCTAssertEqual(launches.accounts.count, 1)
-    }
-
-    /// A second workspace is not "connecting Slack": nothing is offered and
-    /// no load starts.
-    func testSecondSlackWorkspaceOffersNothing() async throws {
         try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
-        let (appState, launches, vm) = try await finishedInstall()
-
-        try await connectSlack(vm, team: "T2", appState: appState)
-
-        XCTAssertFalse(presented(appState))
-        XCTAssertEqual(launches.accounts, [])
-    }
-
-    func testLateSlackConnectSkipsAProfileThatNamesPeople() async throws {
-        let (appState, launches, vm) = try await finishedInstall()
-        try await dbManager.dbPool.write { db in
-            try OnboardingProfileWriter.done(db, about: OnboardingAboutYou(role: "EM", manager: "1:U_BOSS"))
-        }
-
-        try await connectSlack(vm, team: "T1", appState: appState)
-
-        XCTAssertFalse(presented(appState))
-        XCTAssertEqual(launches.accounts, [], "no offer, no load")
-    }
-
-    func testLateSlackConnectAfterTheOnboardingStepOffersNothing() async throws {
-        let (appState, launches, vm) = try await finishedInstall()
-        appState.markAboutYouShown()
-
-        try await connectSlack(vm, team: "T1", appState: appState)
-
-        XCTAssertFalse(presented(appState))
-        XCTAssertEqual(launches.accounts, [])
-    }
-
-    /// Leaving onboarding's About you (Done or Later) counts as shown.
-    func testLeavingTheOnboardingStepMarksAboutYouShown() async throws {
-        let manager = try XCTUnwrap(dbManager)
-        let open: @Sendable () throws -> DatabaseManager = { manager }
-        let appState = AppState.isolated(openDatabase: open)
-        appState.needsOnboarding = true
-        appState.onboarding.goTo(.aboutYou)
-
-        await appState.leaveOnboardingStep(.aboutYou, route: OnboardingRoute(goals: [.workCommunication], hasSlackAccount: true)) {}
-        await appState.onboardingDaemonStart?.value
-
-        appState.needsOnboarding = false
-        appState.initSlackAccounts(dbPool: dbManager.dbPool)
-        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
         await vm.refreshAsync()
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertFalse(presented(appState))
-    }
-
-    /// The Add Slack sheet is still up when the connect lands: the offer
-    /// waits for it to go.
-    func testOfferWaitsForTheAddSheet() async throws {
-        let (appState, _, vm) = try await finishedInstall()
-        appState.isAddingAccount = true
-
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertFalse(appState.showsLateAboutYou)
-        XCTAssertTrue(appState.lateAboutYouPending)
-
-        appState.isAddingAccount = false
-        XCTAssertTrue(appState.showsLateAboutYou)
-        XCTAssertFalse(appState.lateAboutYouPending)
-    }
-
-    func testAlreadyConnectedSlackOnLaunchOffersNothing() async throws {
-        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
-        let (appState, launches, vm) = try await finishedInstall()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T2") }
         await vm.refreshAsync()
-        await appState.lateAboutYouCheck?.value
 
-        XCTAssertFalse(presented(appState))
         XCTAssertEqual(launches.accounts, [])
-    }
-
-    /// Done writes the profile and closes the sheet; nothing else moves —
-    /// no daemon, no onboarding step.
-    func testLateAboutYouDoneWritesOnlyTheProfile() async throws {
-        let (appState, _, vm) = try await finishedInstall()
-        let daemon = FakeDaemon()
-        appState.daemonControlOverride = daemon
-        appState.onboarding.goTo(.complete)
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertTrue(presented(appState))
-
-        let about = OnboardingAboutYou(role: "EM", manager: "1:U_ANNA", reports: ["1:U_OLEG"], peers: [])
-        await appState.finishLateAboutYou(about)
-
-        XCTAssertFalse(appState.showsLateAboutYou)
-        XCTAssertNil(appState.lateAboutYouError)
-        let saved = try await dbManager.dbPool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
-        XCTAssertEqual(saved, about)
-        XCTAssertEqual(daemon.starts + daemon.restarts + daemon.stops, 0)
-        XCTAssertEqual(appState.onboarding.currentStep, .complete)
-        XCTAssertFalse(appState.needsOnboarding)
-    }
-
-    /// Later only closes: the profile is not written.
-    func testLateAboutYouLaterWritesNothing() async throws {
-        let (appState, _, vm) = try await finishedInstall()
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertTrue(presented(appState))
-
-        await appState.finishLateAboutYou(nil)
-
-        XCTAssertFalse(appState.showsLateAboutYou)
-        let profile = try await dbManager.dbPool.read { db in try OnboardingProfileWriter.current(db) }
-        XCTAssertNil(profile)
-    }
-
-    func testLateAboutYouFailedDoneKeepsTheSheet() async throws {
-        let (appState, _, vm) = try await finishedInstall()
-        try await connectSlack(vm, team: "T1", appState: appState)
-        XCTAssertTrue(presented(appState))
-        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE user_profile") }
-
-        await appState.finishLateAboutYou(OnboardingAboutYou(role: "EM"))
-
-        XCTAssertTrue(appState.showsLateAboutYou)
-        XCTAssertNotNil(appState.lateAboutYouError)
+        XCTAssertEqual(appState.peopleRoster.state, .idle)
     }
 
     // MARK: - Finish in the background, Reset LLM data
@@ -975,7 +838,7 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(appState.needsOnboarding)
@@ -997,7 +860,7 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.onboardingDaemonStart?.value
 
         XCTAssertEqual(daemon.starts, 1)
@@ -1154,7 +1017,7 @@ final class AppStateTests: XCTestCase {
         daemon.running = true
         daemon.holdRestart = true
         appState.daemonControlOverride = daemon
-        let route = OnboardingRoute(goals: [.development], hasSlackAccount: false)
+        let route = OnboardingRoute(goals: [.development])
 
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
@@ -1216,7 +1079,7 @@ final class AppStateTests: XCTestCase {
         appState.selectedDestination = .targets
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.onboardingDaemonStart?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
@@ -1234,7 +1097,7 @@ final class AppStateTests: XCTestCase {
         appState.daemonControlOverride = daemon
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.onboardingDaemonStart?.value
 
         XCTAssertEqual(daemon.starts, 1)
@@ -1348,8 +1211,8 @@ final class AppStateTests: XCTestCase {
     }
 
     /// The first read is a baseline, onboarding's own connects offer
-    /// nothing, and the offer waits for the late About you sheet.
-    func testNoOfferOnLaunchOrDuringOnboardingAndAfterAboutYou() async throws {
+    /// nothing, and the offer never shows over an Add account sheet.
+    func testNoOfferOnLaunchOrDuringOnboardingOrOverAnAddSheet() async throws {
         let runner = featuresRunner(disabled: ["stream-digests", "next-step", "tracks"])
         let appState = AppState.isolated(featuresRunner: runner)
         appState.databaseManager = dbManager
@@ -1364,12 +1227,9 @@ final class AppStateTests: XCTestCase {
 
         appState.needsOnboarding = false
         try await dbManager.dbPool.write { db in _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com", gmailEnabled: true) }
-        appState.showsLateAboutYou = true
         await appState.refreshConnectedSources()
         await appState.featureSuggestionCheck?.value
         XCTAssertFalse(appState.featureSuggestion.isEmpty)
-        XCTAssertFalse(appState.showsFeatureSuggestion, "About you shows first")
-        appState.showsLateAboutYou = false
         XCTAssertTrue(appState.showsFeatureSuggestion)
         appState.isAddingAccount = true
         XCTAssertFalse(appState.showsFeatureSuggestion, "and never over an Add account sheet")
@@ -1438,8 +1298,9 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(runner.calls.filter { $0.dropFirst().first == "enable" }.count, 2, "each feature enabled once")
     }
 
-    /// The feature check finishing first never takes About you's place.
-    func testAboutYouShowsBeforeTheFeatureOffer() async throws {
+    /// A Slack connect from Settings: the offer waits for the Add sheet to
+    /// go, then shows alone.
+    func testFeatureOfferWaitsForTheAddSheet() async throws {
         let runner = LiveFeaturesRunner(disabled: ["tracks", "people-cards"])
         let appState = AppState.isolated(featuresRunner: runner)
         appState.databaseManager = dbManager
@@ -1452,16 +1313,11 @@ final class AppStateTests: XCTestCase {
         try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
         await vm.refreshAsync()
         await appState.featureSuggestionCheck?.value
-        await appState.lateAboutYouCheck?.value
         XCTAssertFalse(appState.featureSuggestion.isEmpty)
-        XCTAssertNil(appState.settingsSheet, "nothing over the Add sheet")
+        XCTAssertFalse(appState.showsFeatureSuggestion, "nothing over the Add sheet")
 
         appState.isAddingAccount = false
-        XCTAssertEqual(appState.settingsSheet, .aboutYou)
-        appState.settingsSheetDismissed(.aboutYou)
-        XCTAssertEqual(appState.settingsSheet, .featureSuggestion)
-        appState.settingsSheetDismissed(.featureSuggestion)
-        XCTAssertEqual(appState.settingsSheet, .featureSuggestion, "only its buttons close the offer")
+        XCTAssertTrue(appState.showsFeatureSuggestion)
     }
 
     /// A second source while the first offer is up adds to it.
@@ -1763,7 +1619,7 @@ final class AppStateTests: XCTestCase {
         appState.onboarding.goTo(.purpose)
 
         await appState.leaveOnboardingStep(
-            .purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false),
+            .purpose, route: OnboardingRoute(goals: [.development]),
             onRetry: appState.reinitializeAfterOnboarding
         )
         await appState.onboardingDaemonStart?.value
@@ -1793,7 +1649,7 @@ final class AppStateTests: XCTestCase {
         }
         // No refresh before finish: its own reads must not count as new.
 
-        await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.tasksAndJira])) {}
         await appState.onboardingDaemonStart?.value
         await appState.connectedSourcesRefresh?.value
         await appState.featureSuggestionCheck?.value
@@ -1831,7 +1687,7 @@ final class AppStateTests: XCTestCase {
         appState.daemonControlOverride = daemon
         appState.needsOnboarding = true
         appState.onboarding.goTo(.purpose)
-        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development])) {}
         await appState.onboardingDaemonStart?.value
         XCTAssertNotNil(appState.daemonStartFailure)
 

@@ -143,7 +143,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(spy.calls, ["workspace init", "language Polish", "features"])
         XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs,
                        OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira, .meetings, .development]))
-        XCTAssertEqual(route, OnboardingRoute(goals: [.workCommunication, .tasksAndJira, .meetings, .development], hasSlackAccount: false))
+        XCTAssertEqual(route, OnboardingRoute(goals: [.workCommunication, .tasksAndJira, .meetings, .development]))
         XCTAssertNil(model.continueError)
     }
 
@@ -227,14 +227,14 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let relaunched = makeModel()
         XCTAssertEqual(relaunched.savedGoals, [.development])
         XCTAssertEqual(relaunched.selection.goals, [.development])
-        XCTAssertTrue(relaunched.route(hasSlackAccount: false).skips(.connect))
+        XCTAssertTrue(relaunched.route.skips(.connect))
     }
 
     func testIndicatorRouteDoesNotFollowLiveCheckboxes() {
         let model = makeModel()
-        let before = model.route(hasSlackAccount: true)
+        let before = model.route
         model.selection.goals = [.development]
-        XCTAssertEqual(model.route(hasSlackAccount: true), before)
+        XCTAssertEqual(model.route, before)
     }
 
     func testUnknownPersistedGoalIsIgnored() {
