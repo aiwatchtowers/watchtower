@@ -32,6 +32,7 @@ final class MobileLinkPairingCodeTests: XCTestCase {
     override func tearDown() async throws {
         await center?.closeAfterLink?.value
         await center?.closeLink(reason: .sheetClosed)
+        center?.cancelSweepRetry()
         center = nil
         keyring = nil
         sidecar = nil

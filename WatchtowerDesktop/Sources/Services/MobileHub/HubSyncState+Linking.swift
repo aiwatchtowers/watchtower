@@ -105,6 +105,17 @@ extension HubSyncState {
         }
     }
 
+    /// Retires one code at `retiredAt` (its `exp` set just before it) unless it is used or already past: a hello
+    /// under it is refused from then on.
+    func retireLinkCode(_ nonce: String, at retiredAt: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE link_codes SET exp = ? WHERE nonce = ? AND used_by_device IS NULL AND exp >= ?",
+                arguments: [retiredAt.timeIntervalSince1970 - 1, nonce, retiredAt.timeIntervalSince1970 - 1]
+            )
+        }
+    }
+
     func linkCode(_ nonce: String) throws -> LinkCode? {
         try queue.read { try Self.fetchLinkCode(nonce, $0) }
     }

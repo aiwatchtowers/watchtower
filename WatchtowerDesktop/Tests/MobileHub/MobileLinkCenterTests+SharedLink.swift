@@ -73,4 +73,100 @@ extension MobileLinkCenterTests {
         XCTAssertTrue(try grants().isEmpty, "no grant, not even a refusal")
         XCTAssertTrue(nudges.isEmpty)
     }
+
+    // MARK: - Review round 1: the closed code, the grace sweep and a new code
+
+    /// A sheet close retires its code: a hello under it during the grace is refused `not_confirmed` (the phone reads
+    /// it in DataZone, still a participant), never kept waiting for the owner.
+    func testALateHelloAfterASheetCloseIsRefusedNotConfirmed() async throws {
+        center = try makeCenter(answerGrace: MobileLinkCenter.answerGrace)
+        let code = try await center.issueCode()
+        shares.join("_colleague-b")
+        await center.closeLink(reason: .sheetClosed)
+
+        try await handle(try hello(identityB, nonce: code.nonce, scope: .shared, user: "_colleague-b", creator: "_colleague-b"))
+
+        XCTAssertTrue(center.pendingLinks.isEmpty, "no request waits under a closed code")
+        XCTAssertTrue(try sidecar.pendingDevices().isEmpty)
+        let keybox = try await openedKeybox(identityB)
+        XCTAssertEqual(keybox.grant.linkRefused, .notConfirmed)
+        XCTAssertEqual(shares.participantNames(in: .data), ["_colleague-b"], "the grace still runs")
+    }
+
+    /// An expiry close (the sheet's own timer may close in the code's last second) retires the code too: the late
+    /// hello reads `expired_code`.
+    func testALateHelloAfterAnExpiryCloseIsRefusedExpired() async throws {
+        center = try makeCenter(answerGrace: MobileLinkCenter.answerGrace)
+        let code = try await center.issueCode()
+        shares.join("_colleague-b")
+        await center.closeLink(reason: .expired)
+
+        try await handle(try hello(identityB, nonce: code.nonce, scope: .shared, user: "_colleague-b", creator: "_colleague-b"))
+
+        XCTAssertTrue(center.pendingLinks.isEmpty)
+        XCTAssertTrue(try sidecar.pendingDevices().isEmpty)
+        let keybox = try await openedKeybox(identityB)
+        XCTAssertEqual(keybox.grant.linkRefused, .expiredCode)
+    }
+
+    /// A new code cancels the grace sweep still waiting: the new public link stays open and its phone is kept.
+    func testANewCodeCancelsAPendingGraceSweep() async throws {
+        center = try makeCenter(answerGrace: MobileLinkCenter.answerGrace)
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .sheetClosed)
+        let grace = try XCTUnwrap(center.sweepRetry, "the grace sweep waits")
+
+        _ = try await center.issueCode()
+        shares.join("_colleague-c")
+        await grace.value
+
+        XCTAssertTrue(grace.isCancelled)
+        XCTAssertTrue(shares.isLinkOpen)
+        XCTAssertEqual(shares.participantNames(in: .relay), ["_colleague-c"])
+    }
+
+    /// A deferred sweep that fires while a code is being issued (after the new link's mark, before the code is
+    /// stored) stands down: it neither closes the new link nor sweeps a phone on it.
+    func testAGraceSweepFiringMidIssueStandsDown() async throws {
+        let opening = SaveGate()
+        _ = try await center.issueCode()
+        await center.closeLink(reason: .sheetClosed)
+        await settleSweep()
+        shares.gate("setPublicLink", on: opening)
+        let issue = Task { try await center.issueCode() }
+        await fulfillment(of: [opening.arrived], timeout: 5)
+        shares.join("_colleague-c")
+
+        // A close lands while the issue opens the link: its (zero) grace sweep fires at once.
+        await center.closeLink(reason: .sheetClosed)
+        await settleSweep()
+        opening.release()
+        _ = try await issue.value
+
+        XCTAssertTrue(shares.isLinkOpen)
+        XCTAssertEqual(shares.participantNames(in: .relay), ["_colleague-c"], "not swept mid-issue")
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1", "the new code's close sweeps")
+    }
+
+    /// A failed public-link close of an answering close is retried on its own short schedule, well within the
+    /// grace; the participants stay for the grace.
+    func testAFailedLinkCloseIsRetriedBeforeTheGraceEnds() async throws {
+        let waits = WaitLog()
+        center = try makeCenter(sleep: { duration in
+            waits.append(duration)
+            // The link close's retries return at once; the grace parks.
+            if !MobileLinkCenter.linkCloseRetryDelays.contains(duration) { try? await Task.sleep(for: .seconds(3600)) }
+        }, answerGrace: MobileLinkCenter.answerGrace)
+        _ = try await center.issueCode()
+        shares.join("_colleague-b")
+        shares.failNext("setPublicLink", times: 1)
+
+        await center.closeLink(reason: .sheetClosed)
+        XCTAssertTrue(shares.isLinkOpen, "the first close failed")
+        await center.linkCloseRetry?.value
+
+        XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertTrue(waits.all.contains(MobileLinkCenter.linkCloseRetryDelays[0]))
+        XCTAssertEqual(shares.participantNames(in: .data), ["_colleague-b"], "the sweep still waits for the grace")
+    }
 }
