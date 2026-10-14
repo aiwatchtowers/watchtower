@@ -24,13 +24,13 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let folderPath = folder.path
         projectID = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folderPath) }
-        appState = AppState()
+        appState = AppState(workbenchDefaults: AppState.isolatedDefaults)
         // pid 0: nothing here ever signals a real process group.
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
         appState.terminalCenter.transcriptExists = { _ in true }
-        // The VM keeps layouts in `UserDefaults.standard`: none left from
-        // an earlier run of this workbench id.
-        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
+        // The VM keeps layouts in its defaults: none left from an earlier run
+        // of this workbench id.
+        appState.workbenchDefaults.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         appState.initWorkbenches(
             dbPool: pool, cliRunner: nil, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
@@ -40,7 +40,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
     override func tearDown() async throws {
         appState.workbenchNotificationCenter?.stop()
         appState.sessionAgentStateCenter?.stop()
-        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
+        appState.workbenchDefaults.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
         appState = nil
