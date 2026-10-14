@@ -49,7 +49,8 @@ type ClaudeOptions struct {
 	// provider session — never on a --resume, whose history already holds
 	// them (spec §6.1).
 	ProjectAttachments []Attachment
-	// Warn receives the name of a project file skipped at turn time
+	// Warn receives the name of a project file skipped at turn time and
+	// the note that a group-writable work dir was narrowed to 0700
 	// (default os.Stderr).
 	Warn           io.Writer
 	InterruptGrace time.Duration // default 5 s: kill if no result after an interrupt
@@ -910,33 +911,64 @@ func NeutralWorkDir() string {
 func (b *claudeBackend) workDir() (string, error) {
 	dir := b.opts.WorkDir
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if info, lerr := os.Lstat(dir); lerr == nil && !info.IsDir() {
+			return "", &WorkDirError{Dir: dir, Reason: "it is not a folder"}
+		}
 		return "", fmt.Errorf("chat work dir %s: %w", dir, err)
 	}
-	if err := checkPrivateDir(dir); err != nil {
-		return "", fmt.Errorf("chat work dir: %w", err)
+	if err := checkPrivateDir(dir, b.warn()); err != nil {
+		return "", err
 	}
 	return dir, nil
 }
 
+// WorkDirError is a chat work dir that is not private and that Watchtower
+// will not repair itself (a symlink, a file, another user's directory). The
+// session maps it to the protocol error code "workdir_unsafe" (not
+// retryable: retrying meets the same directory until the owner deletes it).
+type WorkDirError struct {
+	Dir    string
+	Reason string
+}
+
+func (e *WorkDirError) Error() string {
+	return fmt.Sprintf("Watchtower's chat folder %s isn't private (%s); delete it and try again.", e.Dir, e.Reason)
+}
+
+// workDirErrorEvent maps a *WorkDirError to the protocol error event.
+func workDirErrorEvent(turnID string, err error) (Event, bool) {
+	var we *WorkDirError
+	if !errors.As(err, &we) {
+		return Event{}, false
+	}
+	return errorEvent(turnID, CodeWorkDirUnsafe, we.Error(), false), true
+}
+
 // checkPrivateDir accepts dir only as a real directory (not a symlink) owned
-// by this user that nobody else can write to.
-func checkPrivateDir(dir string) error {
+// by this user that nobody else can write to. A directory of ours that is
+// merely group/other-writable (an old umask, a manual chmod) is narrowed to
+// 0700 in place, with one line on warn — nobody else owns it, so nothing
+// else could have planted it; anything else is a *WorkDirError.
+func checkPrivateDir(dir string, warn io.Writer) error {
 	info, err := os.Lstat(dir)
 	if err != nil {
-		return fmt.Errorf("inspecting %s: %w", dir, err)
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory (a symlink or a file); remove it", dir)
+		return &WorkDirError{Dir: dir, Reason: "it is a symlink, not a folder"}
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("%s: owner unknown", dir)
+		return &WorkDirError{Dir: dir, Reason: "its owner is unknown"}
 	}
 	if int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("%s is owned by another user (uid %d); remove it", dir, st.Uid)
+		return &WorkDirError{Dir: dir, Reason: fmt.Sprintf("it belongs to another user, uid %d", st.Uid)}
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("%s is writable by other users (mode %v); remove it", dir, info.Mode().Perm())
+	if perm := info.Mode().Perm(); perm&0o022 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("narrowing chat work dir %s (mode %v) to 0700: %w", dir, perm, err)
+		}
+		_, _ = fmt.Fprintf(warn, "chat work dir %s was writable by other users (mode %v); narrowed it to 0700\n", dir, perm)
 	}
 	return nil
 }
