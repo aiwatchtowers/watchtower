@@ -31,7 +31,7 @@ func NewGenerator(modelLight, modelStrong, baseURL string) *Generator {
 		modelLight:  modelLight,
 		modelStrong: modelStrong,
 		baseURL:     strings.TrimRight(baseURL, "/"),
-		http:        &http.Client{},
+		http:        NewHTTPClient(),
 	}
 }
 

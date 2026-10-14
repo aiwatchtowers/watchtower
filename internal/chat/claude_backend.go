@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,8 @@ type ClaudeOptions struct {
 	// provider session — never on a --resume, whose history already holds
 	// them (spec §6.1).
 	ProjectAttachments []Attachment
-	// Warn receives the name of a project file skipped at turn time
+	// Warn receives the name of a project file skipped at turn time and
+	// the note that a group-writable work dir was narrowed to 0700
 	// (default os.Stderr).
 	Warn           io.Writer
 	InterruptGrace time.Duration // default 5 s: kill if no result after an interrupt
@@ -449,10 +451,14 @@ func (b *claudeBackend) warn() io.Writer {
 
 func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	resume := b.resumeLocked() // before b.proc is replaced: the dead child's id counts
+	dir, err := b.workDir()
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)...)
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
-	cmd.Dir = b.workDir()
+	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH()), b.opts.Env...)
 	// Own process group, so Close can reap the MCP servers claude spawns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -898,13 +904,144 @@ func NeutralWorkDir() string {
 }
 
 // workDir (re)creates the child's working directory — macOS sweeps unused
-// temp entries — and falls back to the temp dir itself if it cannot.
-func (b *claudeBackend) workDir() string {
-	if err := os.MkdirAll(b.opts.WorkDir, 0o700); err != nil {
-		fmt.Fprintf(b.warn(), "chat work dir %s unavailable, using the temp dir: %v\n", b.opts.WorkDir, err)
-		return os.TempDir()
+// temp entries — and checks it is private before the child runs in it: the
+// child loads that directory's .claude settings (--setting-sources
+// project,local), and with TMPDIR unset the temp dir is the shared /tmp,
+// where another user could have planted it with hooks. Never falls back to
+// the temp dir itself, which is just as shared.
+func (b *claudeBackend) workDir() (string, error) {
+	dir := b.opts.WorkDir
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if info, lerr := os.Lstat(dir); lerr == nil && !info.IsDir() {
+			return "", &WorkDirError{Dir: dir, Reason: "it is not a folder"}
+		}
+		return "", fmt.Errorf("chat work dir %s: %w", dir, err)
 	}
-	return b.opts.WorkDir
+	if err := checkPrivateDir(dir, b.warn()); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// WorkDirError is a chat work dir that is not private and that Watchtower
+// will not repair itself (a symlink, a file, another user's directory). The
+// session maps it to the protocol error code "workdir_unsafe" (not
+// retryable: retrying meets the same directory until the owner deletes it).
+type WorkDirError struct {
+	Dir    string
+	Reason string
+}
+
+func (e *WorkDirError) Error() string {
+	return fmt.Sprintf("Watchtower's chat folder %s isn't private (%s); delete it and try again.", e.Dir, e.Reason)
+}
+
+// workDirErrorEvent maps a *WorkDirError to the protocol error event.
+func workDirErrorEvent(turnID string, err error) (Event, bool) {
+	var we *WorkDirError
+	if !errors.As(err, &we) {
+		return Event{}, false
+	}
+	return errorEvent(turnID, CodeWorkDirUnsafe, we.Error(), false), true
+}
+
+// checkPrivateDir accepts dir only as a real directory (not a symlink) owned
+// by this user that nobody else can write to. A directory of ours that is
+// group/other-writable (an old umask, a manual chmod) may already hold what
+// another user planted there — a .claude/settings.json with hooks, a
+// CLAUDE.md — so it is narrowed to 0700 first (closing the door) and then
+// kept only if everything in it is ours, private and no symlink
+// (narrowWorkDir); anything else is a *WorkDirError.
+func checkPrivateDir(dir string, warn io.Writer) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return &WorkDirError{Dir: dir, Reason: "it is a symlink, not a folder"}
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return &WorkDirError{Dir: dir, Reason: "its owner is unknown"}
+	}
+	if int(st.Uid) != os.Getuid() {
+		return &WorkDirError{Dir: dir, Reason: fmt.Sprintf("it belongs to another user, uid %d", st.Uid)}
+	}
+	if perm := info.Mode().Perm(); perm&0o022 != 0 {
+		if err := narrowWorkDir(dir); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(warn, "chat work dir %s was writable by other users (mode %v); narrowed it to 0700\n", dir, perm)
+	}
+	return nil
+}
+
+// narrowWorkDir sets dir to 0700 through a descriptor opened without
+// following a link (fchmod, so a directory swapped for a symlink since the
+// Lstat is never what gets changed), then walks its contents without
+// following links: every entry must be ours and not group/other-writable,
+// and none may be a symlink. Finally the path must still name the directory
+// it narrowed.
+func narrowWorkDir(dir string) error {
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+			return &WorkDirError{Dir: dir, Reason: "it is a symlink, not a folder"}
+		}
+		return fmt.Errorf("opening chat work dir %s: %w", dir, err)
+	}
+	defer func() { _ = syscall.Close(fd) }()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+	}
+	if int(st.Uid) != os.Getuid() {
+		return &WorkDirError{Dir: dir, Reason: fmt.Sprintf("it belongs to another user, uid %d", st.Uid)}
+	}
+	if err := syscall.Fchmod(fd, 0o700); err != nil {
+		return fmt.Errorf("narrowing chat work dir %s to 0700: %w", dir, err)
+	}
+	if err := checkWorkDirEntries(dir); err != nil {
+		return err
+	}
+	var now syscall.Stat_t
+	if err := syscall.Lstat(dir, &now); err != nil {
+		return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+	}
+	if now.Dev != st.Dev || now.Ino != st.Ino {
+		return &WorkDirError{Dir: dir, Reason: "it was replaced while being checked"}
+	}
+	return nil
+}
+
+// checkWorkDirEntries refuses dir when anything under it is a symlink,
+// belongs to another user, or is group/other-writable: it was open to other
+// users, so such an entry may be theirs to control.
+func checkWorkDirEntries(dir string) error {
+	uid := os.Getuid()
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("inspecting chat work dir %s: %w", dir, err)
+		}
+		if path == dir {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if d.Type()&fs.ModeSymlink != 0 {
+			return &WorkDirError{Dir: dir, Reason: "it holds a symlink, " + rel}
+		}
+		info, err := d.Info() // Lstat: WalkDir never follows links
+		if err != nil {
+			return fmt.Errorf("inspecting chat work dir entry %s: %w", path, err)
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
+			return &WorkDirError{Dir: dir, Reason: "it holds " + rel + ", which belongs to another user"}
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			return &WorkDirError{Dir: dir, Reason: "it holds " + rel + ", which other users can write to"}
+		}
+		return nil
+	})
 }
 
 // Close ends the child (stdin EOF → SIGTERM → SIGKILL, CloseGrace apart),

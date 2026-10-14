@@ -45,6 +45,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var cancellationAware = false
     /// Call names that park on their gate until the test releases it.
     private var gates: [String: SaveGate] = [:]
+    /// Call names that throw for their next N calls.
+    private var failCounts: [String: Int] = [:]
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -67,6 +69,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     /// Every call throws `CancellationError` when its task is cancelled
     /// (like a cancellation-aware CloudKit await).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
+    /// The next `times` calls named `call` throw.
+    func failNext(_ call: String, times: Int) { lock.withLock { failCounts[call] = times } }
 
     /// A participant (a phone, or a stranger who opened the URL) joins both shares.
     func join(_ userRecordName: String, accepted: Bool = true, zones: [CloudZoneID] = [.data, .relay]) {
@@ -85,8 +89,10 @@ final class FakeShareService: ShareService, @unchecked Sendable {
         let name = String(call.prefix { $0 != ":" })
         let (fails, hangs, aware, gate) = lock.withLock {
             log.append(call)
+            let counted = (failCounts[name] ?? 0) > 0
+            if counted { failCounts[name, default: 0] -= 1 }
             return (
-                failing || failingCalls.contains(name), hangingCalls.contains(name), cancellationAware,
+                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), cancellationAware,
                 gates.removeValue(forKey: name)
             )
         }
@@ -161,6 +167,7 @@ final class MobileLinkCenterTests: XCTestCase {
         // Ends the expiry timer of an open code.
         await center?.closeAfterLink?.value
         await center?.closeLink(reason: .sheetClosed)
+        center?.cancelSweepRetry()
         center = nil
         keyring = nil
         sidecar = nil
@@ -595,7 +602,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         let pass = try await processor.processOnce()
 
-        XCTAssertEqual(pass, .init(handled: 0, remaining: 0), "unbudgeted, like a device record")
+        XCTAssertEqual(pass, .init(handled: 1, remaining: 0), "budgeted (target 168), unlike a device record")
         XCTAssertEqual(center.pendingLinks.map(\.id), [phoneA])
         XCTAssertNotNil(processor.lastActivityAt)
     }

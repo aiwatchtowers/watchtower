@@ -1025,11 +1025,12 @@ package enum TestDatabase {
         _ db: Database,
         tool: String,
         trust: String,
+        surface: String = "reaction",
         updatedAt: String = "2026-09-05T00:00:00Z"
     ) throws {
         try db.execute(sql: """
-            INSERT INTO tool_trust (tool, trust, updated_at) VALUES (?, ?, ?)
-            """, arguments: [tool, trust, updatedAt])
+            INSERT INTO tool_trust (tool, surface, trust, updated_at) VALUES (?, ?, ?, ?)
+            """, arguments: [tool, surface, trust, updatedAt])
     }
 
     package static func insertGoogleAccount(

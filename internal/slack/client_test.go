@@ -778,7 +778,10 @@ func TestNewHTTPClientBounds(t *testing.T) {
 	tr, ok := c.Transport.(*http.Transport)
 	require.True(t, ok, "transport should be an *http.Transport")
 	assert.Equal(t, responseHeaderTimeout, tr.ResponseHeaderTimeout, "HTTP/1.1 header wait")
-	assert.Contains(t, tr.TLSNextProto, "h2", "HTTP/2 keepalive must be configured")
+	assert.True(t, tr.ForceAttemptHTTP2, "HTTP/2 must stay negotiable")
+	require.NotNil(t, tr.HTTP2, "HTTP/2 keepalive must be configured")
+	assert.Equal(t, h2ReadIdleTimeout, tr.HTTP2.SendPingTimeout, "HTTP/2 idle ping")
+	assert.Equal(t, h2PingTimeout, tr.HTTP2.PingTimeout, "HTTP/2 ping deadline")
 }
 
 func TestPostMessage_SendsTextAndThread(t *testing.T) {

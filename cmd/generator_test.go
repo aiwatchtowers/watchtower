@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -520,4 +522,45 @@ func TestLoadExternalMCPServers_OAuth_SaveFailureFromOKRecordsRevoked(t *testing
 	require.NoError(t, err)
 	require.Equal(t, "revoked", conn.Status)
 	require.Contains(t, conn.Error, "temp secret file")
+}
+
+// A connection stored before add refused it — static headers on plain http
+// to a remote host — is not mounted: the headers never leave, and the row
+// says why.
+func TestLoadExternalMCPServers_StaticHeadersOverRemoteHTTPNotMounted(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "plain", Kind: "http", URL: "http://mcp.example.com/mcp", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Save(&externalmcp.Secret{
+		Headers: map[string]string{"X-Api-Key": "static-key"},
+	}))
+
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.True(t, strings.HasPrefix(conn.Error, transportReasonPrefix), conn.Error)
+	require.Equal(t, transportReasonPrefix+insecureTransportReason, conn.Error)
+	require.Contains(t, conn.Error, "add it again with an https URL")
+
+	// A tool-policy change never clears it, and a listing says why it
+	// failed rather than "sign in again".
+	idArg := strconv.FormatInt(id, 10)
+	_, err = runConnections(t, "", "tools", idArg, "--default")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.True(t, strings.HasPrefix(conn.Error, transportReasonPrefix), conn.Error)
+	out, err := runConnections(t, "", "tools", idArg, "--refresh")
+	require.Error(t, err, out)
+	require.Contains(t, err.Error(), "must use https")
+	require.NotContains(t, err.Error(), "sign in again")
 }

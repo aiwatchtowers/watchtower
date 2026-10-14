@@ -24,6 +24,93 @@ import (
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
+// ErrSymlinkOutsideFolder means a file the installer writes in the workbench
+// folder is a symlink whose target lies outside that folder (a link to
+// ~/.claude/settings.json would make our hooks global). Install and removal
+// refuse it before any write (PROJ-04, owner decision 2026-10-14, ask #109):
+// the owner replaces the link with a regular file or points it inside the
+// folder. The Desktop matches "outside the workbench folder" in the CLI's
+// message (WorkbenchesViewModel.createInstallNote); keep it in every such
+// message (TestInstallErrorTextsTheDesktopMatches).
+var ErrSymlinkOutsideFolder = errors.New("symlink leads outside the workbench folder")
+
+// What an OutsideFolderError left in place outside the folder.
+const (
+	leftoverHooks = "hooks"
+	leftoverSkill = "skill"
+)
+
+// OutsideFolderError is an ErrSymlinkOutsideFolder refusal, naming the link
+// in the folder and Outside, the path outside it the write or removal would
+// have reached — where, on a removal, Watchtower's hooks or skill stay for
+// the owner to remove by hand (Hint).
+type OutsideFolderError struct {
+	Link, Outside string
+	leftover      string // leftoverHooks or leftoverSkill
+	msg           string
+}
+
+func (e *OutsideFolderError) Error() string { return e.msg }
+func (e *OutsideFolderError) Unwrap() error { return ErrSymlinkOutsideFolder }
+
+// Hint tells the owner what a refused removal left outside the folder and
+// what to remove by hand (ask #118).
+func (e *OutsideFolderError) Hint() string {
+	if e.leftover == leftoverSkill {
+		return fmt.Sprintf("Watchtower's skill stays in %s — remove it by hand", e.Outside)
+	}
+	return fmt.Sprintf("Watchtower's hooks stay in %s — remove the entries marked watchtower by hand", e.Outside)
+}
+
+// OutsideFolderHints is the Hint of every OutsideFolderError in err (a
+// joined error included) whose outside path exists, each once, in order.
+func OutsideFolderHints(err error) []string {
+	var hints []string
+	var walk func(error)
+	walk = func(err error) {
+		if err == nil {
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		var oe *OutsideFolderError
+		if !errors.As(err, &oe) {
+			return
+		}
+		if _, statErr := os.Lstat(oe.Outside); statErr == nil && !slices.Contains(hints, oe.Hint()) {
+			hints = append(hints, oe.Hint())
+		}
+	}
+	walk(err)
+	return hints
+}
+
+// WithoutHinted is err minus every OutsideFolderError OutsideFolderHints
+// names (a joined error is filtered part by part), or nil when nothing else
+// failed: a caller that shows the hints reports only the rest.
+func WithoutHinted(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var rest []error
+		for _, e := range joined.Unwrap() {
+			if r := WithoutHinted(e); r != nil {
+				rest = append(rest, r)
+			}
+		}
+		return errors.Join(rest...)
+	}
+	if len(OutsideFolderHints(err)) > 0 {
+		return nil
+	}
+	return err
+}
+
 // hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
 // workbench (after the watchtower binary), and the entry's timeout.
@@ -198,6 +285,10 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 // fresh one takes the prompt's over its defaults (PROJ-04).
 func installHook(dir string, spec hookSpec, command string, workbenchID int64) (bool, error) {
 	file := settingsLocalPath(dir)
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
 		return false, err
@@ -222,7 +313,7 @@ func installHook(dir string, spec hookSpec, command string, workbenchID int64) (
 	}
 	hooks[spec.event] = updated
 	settings["hooks"] = hooks
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // RemoveSessionStartHook removes every hook object recognised as ours for
@@ -272,6 +363,10 @@ func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	if err != nil || !existed {
 		return false, err
 	}
+	target, err := resolveSymlinkInside(file, dir)
+	if err != nil {
+		return false, err
+	}
 	hooks, groups, err := eventGroupsOf(settings, file, spec.event)
 	if err != nil {
 		return false, err
@@ -285,17 +380,13 @@ func removeHook(dir string, spec hookSpec, workbenchID int64) (bool, error) {
 	pruneEmpty(settings, hooks, spec.event, kept)
 	// A symlinked file (dotfiles-managed) is never removed: that would drop
 	// the link and leave our hook in its target. Its target gets {} instead.
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return false, err
-	}
 	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
 		return true, nil
 	}
-	return true, writeSettings(file, settings, mode)
+	return true, writeSettings(target, settings, mode)
 }
 
 // HasSessionStartHook reports whether a hook recognised as ours for
@@ -800,9 +891,9 @@ func pruneEmpty(settings, hooks map[string]any, event string, kept []any) {
 }
 
 // writeSettings replaces file atomically, keeping its mode. Keys come out
-// sorted (encoding/json), HTML characters unescaped, two-space indented. When
-// file is a symlink (e.g. dotfiles-managed), the write lands on its resolved
-// target so the link itself survives.
+// sorted (encoding/json), HTML characters unescaped, two-space indented. file
+// is already resolved past a symlink (resolveSymlinkInside), so a link
+// (e.g. dotfiles-managed) keeps pointing at the target the write lands on.
 func writeSettings(file string, settings map[string]any, mode os.FileMode) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -811,11 +902,7 @@ func writeSettings(file string, settings map[string]any, mode os.FileMode) error
 	if err := enc.Encode(settings); err != nil {
 		return fmt.Errorf("encoding %s: %w", file, err)
 	}
-	target, err := resolveSymlink(file)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(target, buf.Bytes(), mode)
+	return atomicWriteFile(file, buf.Bytes(), mode)
 }
 
 // resolveSymlink returns the path an atomic write to file should target:
@@ -839,6 +926,70 @@ func resolveSymlink(file string) (string, error) {
 		return "", fmt.Errorf("%s is a symlink to a missing file: %w", file, err)
 	}
 	return target, nil
+}
+
+// resolveSymlinkInside is resolveSymlink for a file of the workbench folder
+// root: a symlink whose resolved target lies outside root is refused with
+// ErrSymlinkOutsideFolder, naming the link, its target and the fix first (the
+// Desktop shows the start of the CLI's stderr), so the caller writes nothing
+// anywhere. The same holds for a directory between root and file (.claude,
+// .codex) that is a symlink leaving root. A link that stays inside root is
+// followed as before.
+func resolveSymlinkInside(file, root string) (string, error) {
+	realRoot, err := dirInside(filepath.Dir(file), file, root, leftoverHooks)
+	if err != nil {
+		return "", err
+	}
+	target, err := resolveSymlink(file)
+	if err != nil || target == file {
+		return target, err
+	}
+	if outsideRoot(realRoot, target) {
+		return "", &OutsideFolderError{Link: file, Outside: target, leftover: leftoverHooks,
+			msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular file, or point it at a file inside the folder (%v)",
+				file, target, ErrSymlinkOutsideFolder)}
+	}
+	return target, nil
+}
+
+// dirInside refuses with an OutsideFolderError (ErrSymlinkOutsideFolder)
+// when the nearest existing directory at or above start, below root,
+// resolves outside root — a write or removal of path (start or below it)
+// would land there (a .claude, .claude/skills or skill directory linked
+// elsewhere). leftover names what path holds. It returns root resolved.
+func dirInside(start, path, root, leftover string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", root, err)
+	}
+	// The nearest existing directory decides where a write lands; one not
+	// yet created is made under it.
+	for dir := start; dir != filepath.Clean(root) && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("inspecting %s: %w", dir, err)
+		}
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
+		if outsideRoot(realRoot, realDir) {
+			rel, _ := filepath.Rel(dir, path)
+			return "", &OutsideFolderError{Link: dir, Outside: filepath.Join(realDir, rel), leftover: leftover,
+				msg: fmt.Sprintf("%s links to %s, outside the workbench folder: replace the link with a regular directory, or point it at one inside the folder (%v)",
+					dir, realDir, ErrSymlinkOutsideFolder)}
+		}
+		break
+	}
+	return realRoot, nil
+}
+
+// outsideRoot reports whether the resolved path target lies outside the
+// resolved directory realRoot.
+func outsideRoot(realRoot, target string) bool {
+	rel, err := filepath.Rel(realRoot, target)
+	return err != nil || !filepath.IsLocal(rel)
 }
 
 // atomicWriteFile replaces path with data via a temp file in the same
@@ -1061,7 +1212,10 @@ func readExclude(file string) (excludeDoc, error) {
 // writeExclude writes the owner's lines first, verbatim and in order, then
 // our block — or no block at all once it is empty. Like writeSettings, a
 // symlinked exclude file is written through to its target, atomically, and
-// its existing permission bits (or 0o644 for a brand-new file) are kept.
+// its existing permission bits (or 0o644 for a brand-new file) are kept. It
+// is not held to the folder (resolveSymlinkInside): info/exclude lives in the
+// git dir, often outside the folder anyway, and only our marked block of
+// ignore lines is ever written there.
 func writeExclude(file string, d excludeDoc) error {
 	out := slices.Clone(d.outside)
 	if len(d.block) > 0 {

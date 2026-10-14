@@ -101,6 +101,15 @@ struct QuickConnectionsDetail: View {
         }
     }
 
+    /// The row error without Go's bookkeeping prefix ("tools: " from the
+    /// tool policy, "transport: " from the plain-http refusal).
+    static func reason(_ error: String) -> String {
+        for prefix in ["tools: ", CleartextRefusal.statusPrefix] where error.hasPrefix(prefix) {
+            return String(error.dropFirst(prefix.count))
+        }
+        return error
+    }
+
     private func connectionRow(_ connection: ExternalConnection, vm: ExternalConnectionsViewModel) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -108,6 +117,12 @@ struct QuickConnectionsDetail: View {
                 Text(connection.kind)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if connection.status == "error", !connection.error.isEmpty {
+                    Text(Self.reason(connection.error))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Circle()

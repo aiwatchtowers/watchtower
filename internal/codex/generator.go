@@ -147,7 +147,8 @@ func execArgs(model string) []string {
 // buildArgs builds the `codex exec` CLI args; when userMessage exceeds
 // digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
 // prompt from stdin) and the message is returned as stdin content instead,
-// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
+// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts),
+// and likewise when it begins with '-' (promptPositionalOrStdin).
 // A system prompt above the same threshold cannot ride -c
 // developer_instructions (codex has no file form of it), so the whole turn
 // moves to stdin as codexStdinContent — the CHAT-04 stdin-only layout.
@@ -159,14 +160,13 @@ func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]strin
 	if systemPrompt != "" {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}
-	stdin := ""
-	if stdinOnly || len(userMessage) > digest.StdinThreshold {
-		stdin = userMessage
-		args = append(args, "-")
-	} else {
-		args = append(args, userMessage)
+	if stdinOnly {
+		return append(args, "-"), userMessage
 	}
-	return args, stdin
+	// Large or '-'-leading messages go through stdin (a leading '-' would be
+	// parsed as a flag, e.g. -c as a config override).
+	positional, stdin := promptPositionalOrStdin(userMessage)
+	return append(args, positional), stdin
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

@@ -39,6 +39,9 @@ const (
 	CodeAttachmentUnsupported = "attachment_unsupported"
 	CodeInterrupted           = "interrupted"
 	CodeInternal              = "internal"
+	// CodeWorkDirUnsafe: the chat's working folder is not private (a symlink
+	// or another user's directory) — the owner must delete it.
+	CodeWorkDirUnsafe = "workdir_unsafe"
 )
 
 // Commands read from stdin.

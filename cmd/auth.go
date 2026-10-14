@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -30,20 +29,6 @@ var authLoginCmd = &cobra.Command{
 Uses the built-in Watchtower Slack app by default. Override with
 WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET env vars.`,
 	RunE: runAuthLogin,
-}
-
-var authPrepareCmd = &cobra.Command{
-	Use:   "prepare",
-	Short: "Generate OAuth authorization URL for in-app login",
-	Long:  `Outputs a JSON object with authorize_url, redirect_uri, and state for the desktop app to use in a WKWebView-based OAuth flow.`,
-	RunE:  runAuthPrepare,
-}
-
-var authCompleteCmd = &cobra.Command{
-	Use:   "complete",
-	Short: "Exchange OAuth authorization code for token",
-	Long:  `Exchanges an OAuth code (obtained from the in-app WKWebView callback) for a Slack user token and saves it to config.`,
-	RunE:  runAuthComplete,
 }
 
 var authLogoutCmd = &cobra.Command{
@@ -76,17 +61,8 @@ func init() {
 	rootCmd.AddCommand(authCmd)
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
-	authCmd.AddCommand(authPrepareCmd)
-	authCmd.AddCommand(authCompleteCmd)
 	authCmd.AddCommand(authTrustCertCmd)
 	authCmd.AddCommand(authCheckCertCmd)
-
-	authCompleteCmd.Flags().String("code", "", "OAuth authorization code from Slack callback")
-	authCompleteCmd.Flags().String("redirect-uri", "", "Redirect URI used in the authorize request")
-	_ = authCompleteCmd.MarkFlagRequired("code")
-	_ = authCompleteCmd.MarkFlagRequired("redirect-uri")
-
-	authPrepareCmd.Flags().String("redirect-uri", "", "Custom redirect URI (e.g. watchtower-auth://callback for desktop app)")
 
 	authLoginCmd.Flags().Bool("no-open", false, "Don't open the browser automatically (print the URL instead)")
 }
@@ -115,21 +91,6 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Run 'watchtower sync' to start syncing.\n")
 
 	return nil
-}
-
-func runAuthPrepare(cmd *cobra.Command, _ []string) error {
-	cfg, err := resolveOAuthConfig()
-	if err != nil {
-		return err
-	}
-
-	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
-	result, err := auth.Prepare(cfg, redirectURI)
-	if err != nil {
-		return fmt.Errorf("auth prepare: %w", err)
-	}
-
-	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
 func runAuthTrustCert(_ *cobra.Command, _ []string) error {
@@ -161,27 +122,6 @@ func runAuthCheckCert(_ *cobra.Command, _ []string) error {
 		fmt.Println("untrusted")
 	}
 	return nil
-}
-
-func runAuthComplete(cmd *cobra.Command, _ []string) error {
-	cfg, err := resolveOAuthConfig()
-	if err != nil {
-		return err
-	}
-
-	code, _ := cmd.Flags().GetString("code")
-	redirectURI, _ := cmd.Flags().GetString("redirect-uri")
-	result, err := auth.Complete(cmd.Context(), cfg, code, redirectURI)
-	if err != nil {
-		return fmt.Errorf("auth complete: %w", err)
-	}
-
-	// H1: auth complete outputs JSON for the desktop app to parse
-	info, err := saveAuthResult(cmd, result)
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(info)
 }
 
 // runAuthLogout is the legacy single-account alias for `slack remove 1`: it

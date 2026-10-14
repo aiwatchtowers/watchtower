@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +153,34 @@ func TestResolveMCPScopeMCPOnlySkipsSkillsAndForcesMCP(t *testing.T) {
 func TestResolveMCPScopeRejectsBothOnlyFlags(t *testing.T) {
 	if _, err := resolveMCPScope("user", "", true, true); err == nil {
 		t.Fatalf("expected an error when --skills-only and --mcp-only are both set")
+	}
+}
+
+// The MCP registration runs the claude CLI claude.FindBinary resolves, not
+// whatever "claude" names on PATH: a GUI-app launch has a minimal PATH, and
+// a bare name is a PATH lookup any earlier PATH dir can shadow.
+func TestRegisterMCPWithClaudeCode_RunsTheResolvedClaude(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	fake := filepath.Join(dir, "claude-resolved")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"$*\" > '"+argsFile+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := claudeFindBinary
+	t.Cleanup(func() { claudeFindBinary = prev })
+	claudeFindBinary = func() string { return fake }
+	t.Setenv("PATH", t.TempDir()) // no claude on PATH
+
+	captureStdout(t, func() {
+		if err := registerMCPWithClaudeCode(); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	})
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("the resolved claude did not run: %v", err)
+	}
+	if !strings.HasPrefix(string(got), "mcp add watchtower -- ") {
+		t.Fatalf("claude ran with %q", got)
 	}
 }

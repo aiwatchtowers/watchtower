@@ -58,7 +58,15 @@ struct AddExternalConnectionView: View {
         if kind == "stdio" {
             return !command.trimmingCharacters(in: .whitespaces).isEmpty
         }
-        return !url.trimmingCharacters(in: .whitespaces).isEmpty
+        return !url.trimmingCharacters(in: .whitespaces).isEmpty && !headersInCleartext
+    }
+
+    /// Manual headers (the rows the secret builder keeps) bound for a plain
+    /// http remote host: the CLI refuses the add, so the sheet does too.
+    private var headersInCleartext: Bool {
+        isHTTP && !useOAuth
+            && secretPairs.contains { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            && ExternalConnectionTransportRule.sendsSecretInCleartext(url: url)
     }
 
     var body: some View {
@@ -218,6 +226,11 @@ struct AddExternalConnectionView: View {
             Text("Stored in a 0600 file, never on the command line.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if headersInCleartext {
+                Text(ExternalConnectionTransportRule.caption)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 

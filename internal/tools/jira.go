@@ -233,7 +233,8 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 		InputSchema: schema,
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target"},
+		// "reaction": the seeded :ticket: reaction command proposes it.
+		Surfaces: []string{"main", "target", "reaction"},
 		Validate: func(_ context.Context, d *db.DB, raw json.RawMessage) error {
 			var a createJiraIssueArgs
 			if err := decodeStrict(raw, &a); err != nil {

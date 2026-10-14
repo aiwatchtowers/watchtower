@@ -15,6 +15,9 @@ package enum ChatErrorPresentation {
         case "provider_unavailable": "The AI provider couldn't be started."
         case "session_lost": "The previous session couldn't be resumed."
         case "attachment_unsupported": "An attachment isn't supported by this provider."
+        // The session's message names the folder and why; Retry would meet
+        // the same folder, so the card asks for the one fix instead.
+        case "workdir_unsafe": "Watchtower's chat folder isn't private. Delete it, then send your message again."
         default: "Something went wrong while answering."
         }
     }
@@ -29,7 +32,7 @@ package enum ChatErrorPresentation {
     }
 
     package static func isRetryable(_ code: String?) -> Bool {
-        code != "auth" && code != "attachment_unsupported"
+        code != "auth" && code != "attachment_unsupported" && code != "workdir_unsafe"
     }
 
     private static func signInHint(provider: String?) -> String {

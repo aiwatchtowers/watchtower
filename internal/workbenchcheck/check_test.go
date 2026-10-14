@@ -548,8 +548,9 @@ func TestProj07_GitUnavailableIsANote(t *testing.T) {
 	}
 }
 
-// ExecRunner runs the git gitbin located, not whatever "git" PATH names, and
-// with the inherited repository variables dropped.
+// ExecRunner runs the git gitbin located, not whatever "git" PATH names,
+// with the inherited repository variables dropped and the folder's
+// fsmonitor command, hooks and signature checks off.
 func TestExecRunner_RunsTheLocatedGit(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "located-git")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"located $* ${GIT_DIR-unset}\"\n"), 0o755); err != nil {
@@ -561,7 +562,63 @@ func TestExecRunner_RunsTheLocatedGit(t *testing.T) {
 	t.Setenv("GIT_DIR", "/elsewhere/.git")
 
 	out, code, err := ExecRunner(context.Background(), t.TempDir(), nil, "git", "rev-parse")
-	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "located rev-parse unset" {
+	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "located -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false rev-parse unset" {
 		t.Fatalf("want the located git without GIT_DIR, got out=%q code=%d err=%v", out, code, err)
+	}
+}
+
+// A planted .git/config never runs a command during a check: the squash
+// rule's diffs run no textconv driver, and a status-like read through
+// ExecRunner no fsmonitor command and no filter driver (on an edited file);
+// the findings are what they were.
+func TestCheck_UntrustedConfigRunsNoCommand(t *testing.T) {
+	dir := newRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "planted")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\ncat \"$1\" 2>/dev/null\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "config", "diff.planted.textconv", script)
+	gitRun(t, dir, "config", "core.fsmonitor", script)
+	gitRun(t, dir, "config", "filter.planted.clean", script)
+	gitRun(t, dir, "config", "filter.planted.required", "true")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("HELLO\n"), 0o644); err != nil { // same size: content is hashed
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "attributes"), []byte("* diff=planted filter=planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := Check(context.Background(), 1, []db.BoardNode{node(2, "in_review", "squash", time.Hour)}, Options{Folder: dir, Now: testNow})
+	if got := kinds(r); strings.Join(got[2], ",") != KindMergedOpen {
+		t.Fatalf("the squash is still merged work, got %v (notes %v)", got, r.Notes)
+	}
+	if _, _, err := ExecRunner(context.Background(), dir, nil, "git", "status", "--porcelain"); err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("a command from the folder's git config ran")
+	}
+}
+
+// A filter driver key git -c cannot blank (it holds a '=') refuses the
+// squash check's diff reads: the check names it once in Notes rather than
+// silently reading the squash as unknown (target 155).
+func TestCheck_FilterGuardFailureIsANote(t *testing.T) {
+	dir := newRepo(t)
+	gitRun(t, dir, "config", "filter.a=b.clean", "cat")
+	board := []db.BoardNode{node(2, "in_review", "squash", time.Hour), node(22, "in_progress", "nearsquash", time.Hour)}
+	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
+	var guard []string
+	for _, n := range r.Notes {
+		if strings.Contains(n, "squash-merge checks skipped") {
+			guard = append(guard, n)
+		}
+	}
+	if len(guard) != 1 || !strings.Contains(guard[0], "cannot override") {
+		t.Fatalf("want one filter-guard note, got notes %v", r.Notes)
+	}
+	if got := kinds(r); len(got[2]) != 0 {
+		t.Fatalf("an unread squash is never a finding, got %v", got)
 	}
 }
