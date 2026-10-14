@@ -1,0 +1,447 @@
+# Automations P3 (authoring + UI) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Let the owner create, inspect, run and edit automations: the `create-automation` skill with `draft_automation` / `save_automation` (Save = approve) in the main chat, the Desktop **Automations** tab (list, card, run history with steps, Run now / Dry run / Enable), the edit form, the recipe in Monaco, "change it in words" through `EmbeddedChatEngine` on the `automation_editor` surface, the widening and confirmation sheets, the template gallery, automation labels and output cards in the Inbox, the feature gate, and the app guide.
+
+**Architecture:** Go owns every automation write. Two new registry tools live in a new package `internal/automations/authoring` (it imports both `internal/tools` and `internal/automations`; putting them in `internal/tools` would be an import cycle): `draft_automation` (read, validates and dry-runs in memory, writes nothing — AGENT-06) and `save_automation` (write, `AlwaysAsk`, `Execute` = the equivalent of `automations save --confirm-hash <pinned>`). The Desktop reads the automation tables through GRDB (`AutomationQueries`, WatchtowerCore) and writes only through the CLI (`automations run|dry-run|validate|save|confirm|enable|disable|auto|delete|cancel|wake|templates|install-template`), except `automation_outputs.read_at`/`dismissed_at` (spec §9.6). One AppState-owned `AutomationsViewModel` (WatchtowerCore) holds the list, the badge, run/dry-run operations and history so they survive navigation; one AppState-owned `AutomationEditorCenter` holds edit drafts and saves. The "change it in words" chat is an `EmbeddedChatEngine` chat with `ChatSurfaceSpec.toolAccess = .actions(surface: "automation_editor")` (AGENT-04 as amended, spec §14.5).
+
+**Tech Stack:** Go 1.26 (cobra, `modernc.org/sqlite`), the P1 `internal/automations` package; SwiftUI + GRDB (WatchtowerCore for models/queries/view models, the app target for views), the bundled Monaco page `CodeEditorWeb/index.html` served by `CodeEditorSchemeHandler`.
+
+**Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` §2.4–2.5, §3.3, §6.3, §6.4, §10, §11, §12.1–12.3, §12.5, §14.3–14.5, §17 (P3 row), §18 (P3 tests), §20 (D4, D5, D10, D11, D12). Business spec: `docs/superpowers/specs/2026-10-14-automations-business.md`. P1 plan (seams consumed by name): `docs/superpowers/plans/2026-10-14-automations-p1.md` § "Seams for later phases".
+
+**Branch:** `feature/automations-p3` → one PR into `feature/automations`. Never `main`.
+
+**Depends on:** P1 merged (all seams below), P2 merged (migration 00114 `automation_tool_grants`, `automations auto … on|off --hash`, the `automation` surface rows in `agent_actions` with `context_type='automation_run'`).
+
+## Header notes — seam changes needed (not invented here; see the report)
+
+1. **In-memory journal / dry run (P1).** `automations.NewJournal(d, runID, dryRun)` always writes `automation_run_steps` rows and `ExecuteInline` needs a `queued` run row; `draft_automation` must write nothing (AGENT-06, spec §11). P3 needs, in P1's package, `func NewMemoryJournal() *Journal` + `func (j *Journal) Steps() []db.AutomationRunStep` (same type, no DB) and `func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptions) (*DryRunReport, error)` (`DryRunOptions{Budget Budget; Modules func(Backends) []Module}`; `DryRunReport{Steps []db.AutomationRunStep; Outputs []db.AutomationOutput; InputTokens, OutputTokens int64; Estimated bool; Status, Error string}`). If P1 lands without them, Task 1 adds exactly these names to `internal/automations` (an addition, nothing renamed) and the P1 seam list is amended in the same PR.
+2. **CLI JSON shapes (P1).** P1 Task 12 names the commands but not the `--json` keys the Desktop decodes. P3 consumes the keys pinned in Task 5 (`show`, `validate`, `dry-run`, `run`, `save`); P1's implementation must emit them (Task 5 asserts them in `cmd` and fixes them if they differ).
+3. **`automations wake` (P1 seam text "P3 adds `automations wake` if the Desktop needs a bare wake").** P3 adds it (Task 5); the Desktop sends it after an Approve/Reject of a `context_type='automation_run'` row (spec §7.4).
+4. **Grants in `show --json` (P2).** The spec pins `automation_tool_grants` and `automations auto`, not `show --json`'s grant keys. P3 reads grants through GRDB from `automation_tool_grants` (spec §9.4, pinned) and needs nothing else from P2's JSON.
+5. **Templates CLI (P6).** The gallery consumes `automations templates --json` and `automations install-template <name> [--workbench N] --json`; their keys are pinned in Task 13 as P6's contract. Until P6 merges, the gallery shows its empty state.
+6. **Open owner question (not a seam).** `draft_automation` returns dry-run step summaries to the main-chat model. A draft that reads `list_emails`/`get_email` (automation surface only, never offered to the main chat) therefore shows clipped mail data to the main chat before the owner confirmed anything. The spec allows it (§11, the purpose of a dry run, D2's posture); P3 implements the spec and flags it for the owner in the report.
+
+## Global Constraints
+
+- All repo text English; UI strings English; the repo is public — fixtures use `acme`, `example.com`, `owner@example.com`; no real ids, no absolute local paths (tests use `t.TempDir()` / `TestDatabase.createDatabaseManager()`).
+- Inner loop only: `go test ./internal/<pkg>`, `go test ./cmd -run '<Name>'` (never the whole `./cmd` per task), `make test-swift FILTER=<Class>` (prefer `Tests/Core`), `make lint-diff`. The full gate runs once per phase (controller).
+- **Swift tasks run one at a time** (Tasks 6–13 are marked **Heavy Swift — serial**); Go Tasks 1–5 may run as parallel lanes in separate worktrees per their `Depends on`.
+- Async state (run, dry run, save, delete, install, chat) lives in `AppState`-owned `AutomationsViewModel` / `AutomationEditorCenter`, never in a view-local model; each ships a "started → navigated away → came back" test. Every new `@Observable` ships its own test suite.
+- Cross-process writes never fire GRDB `ValueObservation`: the list is refreshed by a poll (`AutomationsPollPolicy`) plus refresh on appear and after every CLI call.
+- Go slices that reach Swift are `[]T{}`, never nil (`errors`, `widening`, `permissions`, `outputs`, `steps`); each JSON command gets an empty-state wire test on both sides.
+- The approval-hash function exists only in Go (spec §9.6); the Desktop never computes or guesses a hash — it passes back exactly the `approval_hash` the CLI returned for the bytes it saves.
+- `--confirm-hash`, `confirm`, `auto … on` are owner gestures: the Desktop calls them only from an explicit button in a sheet that showed the permissions (AGENT-07 refuses them under agent markers anyway).
+- Exact values (do not change without the spec):
+  - `draft_automation`: read tool, surfaces `main`, `automation_editor`; not in `tools.ReadTools()`; dry run bounded by `min(budget.tokens, 50000)` tokens and `min(budget.minutes, 5)` minutes; writes nothing; its tokens do not count toward the daily cap (stated v1 limit). Result `{ok, errors[], manifest, widening[], dry_run: {steps[], outputs[], tokens}}`.
+  - `save_automation`: write tool, `AlwaysAsk: true`, never execute trust, never auto; surfaces `main`, `automation_editor`; args `{recipe_text, slug, workbench_id?, reason}`; `Normalize` pins `approval_hash`, `widening`, `content_hash` of the file at propose; `Execute` refuses when the file changed since propose; grants are not carried over.
+  - Surface id `automation_editor` (`tools.AutomationEditorSurface`); the editor chat carries only `draft_automation`, `save_automation` and read tools (AGENT-04 amended, D11).
+  - List row badge colours: succeeded green, running/waiting blue, failed/timed_out/expired red, budget_exceeded orange, cancelled grey. Badges **Needs your confirmation**, **Auto paused**, **Disabled**, **Parse error**. Sidebar badge = automations needing confirmation + runs waiting on the owner.
+  - Feature id `automations` (D12): off → the tab is hidden.
+  - Inbox: `automation_outputs` `kind='inbox'` are a third strip source; Done writes `read_at`, Dismiss writes `dismissed_at`, nothing else (STRIP-01 amended, D10).
+  - Card label for `context_type='automation_run'` rows: `⚙ <automation name> · run #<n>`.
+
+## Review Focus
+
+1. **The confirmation binds to the bytes the owner saw.** The Desktop saves with `--confirm-hash` = the `approval_hash` `validate` returned for the very file it then saves, and with `--expect-content-hash` of the file it loaded; a recipe changed on disk between load and save is refused, not overwritten. Pinned: Task 5 `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, Task 10 `testSaveConfirmsTheValidatedHashOnly`.
+2. **`save_automation` cannot confirm code the owner did not see.** `Execute` refuses when the file's content hash changed since propose, when a file appeared at the slug of a "new" proposal, and when the re-parsed text's `approval_hash` differs from the pinned one. Pinned: Task 2 `TestSaveAutomation_RefusesWhenFileChangedSincePropose`, `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug`, `TestSaveAutomation_RefusesHashDrift`.
+3. **The editor surface is narrow.** On `automation_editor` the only write tool mounted is `save_automation`; no other write tool (including any tool with empty `Surfaces`) leaks onto it. Pinned: Task 3 `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads`.
+4. **Auto grants are never kept by default.** A save that changes `approval_hash` lists the grants it pauses with every "Keep auto for …" box unchecked; no `auto … on` runs unless the owner checks one. Pinned: Task 10 `testAuto03_KeepAutoBoxesUncheckedByDefault`, `testNoAutoOnWithoutACheckedBox`.
+5. **Draft writes nothing, even for a script that calls `output.*`/`state.set`/a write tool.** Pinned: Task 1 `TestDraftAutomation_WritesNothing` (also in the AGENT-06 chat-mode guard, Task 3).
+6. **Wire shapes with empty arrays** decode on the Swift side. Pinned: Task 5 `TestAutomationsCLI_JSONEmptyArraysNotNull`, Task 6 `testDecodesEmptyStateJSON`.
+7. **Async state survives navigation** for Run now, Dry run, Save and the editor chat. Pinned: Task 7 `testDryRunSurvivesNavigation`, Task 10 `testSaveSurvivesNavigation`.
+
+---
+
+## File structure
+
+| Path | Responsibility |
+|---|---|
+| `internal/automations/authoring/{deps.go,draft.go,save.go,authoring_test.go}` | `draft_automation`, `save_automation` |
+| `internal/automations/{journal.go,dryrun_memory.go}` | seam additions (header note 1) |
+| `internal/tools/registry.go` | `AutomationEditorSurface` constant |
+| `cmd/actions_registry.go`, `cmd/mcp.go`, `cmd/ai.go` | registration; `--surface automation_editor` |
+| `internal/mcp/actions_test.go` | AGENT-06 chat-only call list gains `draft_automation` |
+| `internal/chat/prompt_sections.go` (`ActionsContract`) + golden, Swift `AgentToolsContract` | main-chat actions contract names the two tools |
+| `internal/skills/shipped/create-automation.md`, `internal/skills/skills_test.go` | the skill |
+| `cmd/automations.go`, `cmd/automations_wake.go`, `cmd/automations_test.go` | `wake`, `validate --against`, `save --expect-content-hash`, pinned JSON |
+| `WatchtowerDesktop/Sources/WatchtowerCore/Models/AutomationModels.swift` | rows, statuses, badges |
+| `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/AutomationQueries.swift` | reads + the two output writes |
+| `WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/` | `AutomationsCLI`, `AutomationTriggerText`, `AutomationsPollPolicy`, `DryRunPresentation`, `AutomationsViewModel`, `RecipeFrontmatter`, `AutomationFormModel`, `AutomationSavePlan`, `AutomationEditorCenter`, `RecipeBufferModel`, `AutomationTemplate` |
+| `WatchtowerDesktop/Sources/Views/Automations/` | tab, list, card, history, form, sheets, `RecipeEditorView`, gallery, editor chat |
+| `WatchtowerDesktop/Sources/Services/ChatSurfaces/AutomationEditorChatSurface.swift` | the "change it in words" spec |
+| `WatchtowerDesktop/Sources/CodeEditorWeb/index.html` | `setReadOnly` message (additive) |
+| `WatchtowerDesktop/Sources/App/{SidebarDestination,Navigation,AppState}.swift`, `Sources/Views/Sidebar/SidebarView.swift`, `Sources/ViewModels/SidebarCountsViewModel.swift` | tab, gate, badge |
+| `WatchtowerDesktop/Sources/Views/Chat/AgentActionCardView.swift`, `Sources/WatchtowerCore/Services/Actions/{AgentActionFeed,ActionStripViewModel}.swift`, `Sources/Views/Inbox/ActionStripView.swift`, `Sources/WatchtowerCore/Models/AssistantToolSurface.swift` | Inbox label, wake, output cards, surface label |
+| `docs/app-guide.md`, `docs/features/automations.md`, `docs/inventory/{automations,agent-actions,reaction-commands}.md` | docs and contracts |
+
+---
+
+### Task 1: `draft_automation` and the in-memory dry run
+
+**Files:**
+- Create: `internal/automations/authoring/deps.go`, `internal/automations/authoring/draft.go`, `internal/automations/authoring/draft_test.go`
+- Create or modify (header note 1): `internal/automations/dryrun_memory.go`, `internal/automations/journal.go`, `internal/automations/dryrun_memory_test.go`
+
+**Interfaces:**
+- Consumes: `automations.ParseRecipe`, `automations.Scope{Kind, WorkbenchID}`, `automations.ScopePersonal|ScopeWorkbench`, `automations.ApprovalHash`, `automations.ParseManifest`, `(*Manifest).Normalized()`, `(*Manifest).Outputs()`, `automations.Covers`, `automations.Backends{Generator, Registry, Clock}`, `automations.DefaultModules`, `automations.Budget`, `db.GetAutomationBySlug`, `db.Automation`, `db.AutomationRunStep`, `db.AutomationOutput`, `tools.Tool`, `tools.AccessRead`, `tools.ValidationError`, `cfg.Automations.Enabled`.
+- Produces:
+  - (seam, header note 1) `func NewMemoryJournal() *Journal`; `func (j *Journal) Steps() []db.AutomationRunStep`; `type DryRunOptions struct { Budget Budget; Modules func(Backends) []Module }`; `type DryRunReport struct { Steps []db.AutomationRunStep; Outputs []db.AutomationOutput; InputTokens, OutputTokens int64; Estimated bool; Status, Error string }`; `func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptions) (*DryRunReport, error)` — `Env.DryRun = true`, `Env.Run` a synthetic `&db.AutomationRun{ID: 0, Trigger: db.TriggerDryRun}`, `Env.Wait` nil (a wait-capable call returns `{status:"dry_run"}` before waiting), daily remainder unbounded (not counted, v1 limit), commit buffer never committed.
+  - `package authoring`: `type Deps struct { DB *db.DB; WorkspaceDir string; WorkbenchFolder func(id int64) (string, error); Backends func() automations.Backends; Enabled func() bool; Clock automations.Clock }`.
+  - `func NewDraftAutomation(d Deps) *tools.Tool` — `Name: "draft_automation"`, `Access: tools.AccessRead`, `Surfaces: []string{"main", tools.AutomationEditorSurface}`; args `{recipe_text: string (required), slug?: string, workbench_id?: int}`.
+  - `type DraftResult struct { OK bool `json:"ok"`; Errors []string `json:"errors"`; Manifest DraftManifest `json:"manifest"`; Widening []string `json:"widening"`; DryRun *DraftDryRun `json:"dry_run"` }`; `type DraftManifest struct { Name, Slug, Scope, TriggerKind, Trigger string; Permissions, Outputs []string; BudgetTokens, BudgetMinutes int; ApprovalHash string }`; `type DraftDryRun struct { Steps []DraftStep `json:"steps"`; Outputs []DraftOutput `json:"outputs"`; Tokens int64 `json:"tokens"`; Status, Error string }`; `type DraftStep struct { Seq int; Kind, Name, Status, Args, Result, Permission, Error string; Tokens int64 }` (args/result clipped 4 KiB as the journal does).
+  - **My ruling R-P3-1 (not in the spec):** `draft_automation` takes an optional `slug`; when an automation with that `(scope, slug)` exists, `widening = Covers(saved permissions, new permissions)`, else `widening` = every normalised permission (a new recipe widens from nothing). The spec's arg list has no way to say "editing".
+  - Feature off (`Enabled()` false) → `ValidationError` "Automations are turned off in Settings → Features" (my ruling R-P3-2).
+  - A parse error → `{ok:false, errors:[…], dry_run: null}` with no model call (the dry run needs a valid recipe).
+- Depends on: none (P1 merged).
+
+- [ ] **Step 1: Failing tests** (`automationstest.FakeGenerator`, `FakeRegistry`, `FakeClock`, temp file DB):
+  - `TestDryRunInMemory_WritesNoRows` — script calls `llm`, a read `tool`, `state.set`, `output.inbox`, `log` → report has 5 steps, `output`/`state` steps `dry_run`; `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`, `agent_actions` row counts unchanged.
+  - `TestDryRunInMemory_BudgetBound` — `opts.Budget{Tokens: 50000, Minutes: 5}`, FakeGenerator 30000 tokens per call, script calls `llm` 3× → `Status == "budget_exceeded"`, third call never reaches the generator.
+  - `TestDraftAutomation_WritesNothing` — same guard-table row counts before/after a draft whose script also calls `tool("create_target", …)` with `tool:create_target` (write → `{status:"dry_run"}`, no `agent_actions` row).
+  - `TestDraftAutomation_BoundsMinOfRecipeAnd50k5min` — recipe `budget {tokens: 2000000, minutes: 60}` → the dry run runs with 50000 / 5; recipe `{tokens: 1000, minutes: 1}` → 1000 / 1.
+  - `TestDraftAutomation_ParseErrorNoModelCall` — two js blocks → `ok:false`, `errors` names "exactly one", generator calls 0, `dry_run` null.
+  - `TestDraftAutomation_WideningAgainstSaved` — saved `jira:read@PAY`, draft `jira:read@*` with `slug` → `widening == ["jira:read@*"]`; draft narrowing to `jira:read@PAY` → `[]`; no `slug` → every permission.
+  - `TestDraftAutomation_EmptyArraysNotNull` — valid recipe with no permissions, no outputs → JSON has `"errors":[]`, `"widening":[]`, `"permissions":[]`, `"outputs":[]`.
+  - `TestDraftAutomation_ApprovalHashMatchesParser` — `manifest.approval_hash == automations.ApprovalHash(parsed)`.
+  - `TestDraftAutomation_FeatureOffRefused`.
+  - `TestDraftAutomation_NotInReadTools` — not in `tools.ReadTools()`; `VisibleOn("main")`, `VisibleOn("automation_editor")` true; `VisibleOn("automation")` false.
+- [ ] **Step 2:** `go test ./internal/automations/... -run 'TestDryRunInMemory|TestDraftAutomation'` → FAIL.
+- [ ] **Step 3:** Implement (seam additions first if absent).
+- [ ] **Step 4:** Step 2 command → PASS; `go test ./internal/automations/...` → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): draft_automation with an in-memory dry run`.
+
+### Task 2: `save_automation`
+
+**Files:**
+- Create: `internal/automations/authoring/save.go`, `internal/automations/authoring/save_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 `Deps`; `automations.ParseRecipe`, `ApprovalHash`, `ContentHash`, `Covers`, `PersonalDir`, `NewIndexer` + `(*Indexer).RescanPersonal`; `db.GetAutomationBySlug`, `db.ConfirmAutomation`, `db.ErrHashMismatch`; `internal/fsutil` atomic write (`fsutil.WriteFileAtomic` or the helper P1's `automations save` uses — reuse it, do not write a second one); `tools.Tool{AlwaysAsk: true}`, `Normalize`, `Execute`.
+- Produces:
+  - `func NewSaveAutomation(d Deps) *tools.Tool` — `Name: "save_automation"`, `Access: tools.AccessWrite`, `AlwaysAsk: true`, `External: false`, `Surfaces: []string{"main", tools.AutomationEditorSurface}`.
+  - Args in: `{recipe_text (required), slug (required, ValidSlug), workbench_id?, reason (required), dry_run_summary?}`.
+  - `Normalize` pins into the stored args: `scope` ("personal" | "workbench:<id>"), `path` (absolute recipe path), `name`, `trigger_kind`, `trigger_spec` (JSON), `permissions[]`, `outputs[]`, `budget_tokens`, `budget_minutes`, `approval_hash`, `widening[]` (`Covers(saved confirmed-or-current permissions, new)`; all permissions when new), `existing_content_hash` (`ContentHash` of the file now; `""` when no file), `previous_recipe_text` (the file's text now, `""` when new; clipped to 256 KiB = `MaxRecipeBytes`), `is_new` bool. A recipe that fails `ParseRecipe` → `ValidationError` with the parse message (no row).
+  - **My ruling R-P3-3:** `previous_recipe_text` is pinned so the card renders the diff in Swift (`OwnerAskSnapshotDiff`, existing) — no Go diff dependency, no dual diff path.
+  - **My ruling R-P3-4:** "the last dry-run summary" on the card comes from the optional `dry_run_summary` (≤ 2 KiB, clipped) the model copies from its `draft_automation` result; the card labels it "Assistant's dry-run summary". `Normalize` does not re-run a dry run (it would block the tool call for minutes and spend tokens at propose).
+  - **My ruling R-P3-5:** in P3, `workbench_id` set → `ValidationError` "Workbench automations are saved from the workbench (arrives with a later update)"; P5 Task 9 lifts this together with the PROJ-03 amendment.
+  - `Execute` (only from `Apply`, after the owner's Approve — AGENT-07): re-parse `recipe_text` → refuse if `ApprovalHash != pinned approval_hash` ("the recipe text no longer matches the reviewed one"); refuse if `ContentHash(file now) != existing_content_hash` ("the recipe file changed since this was proposed — ask the assistant to draft it again"), including a file that appeared for `is_new` and a file that vanished for an edit; write atomically (temp + rename, 0644 like the owner's own files), rescan the personal folder, `ConfirmAutomation(id, pinned hash)`; result `{automation_id, path, approval_hash, confirmed: true}`. Never writes `automation_tool_grants`.
+- Depends on: Task 1.
+
+- [ ] **Step 1: Failing tests:**
+  - `TestSaveAutomation_AlwaysAskAndPinsHash` — propose with trust row `execute` present for (`save_automation`, `main`) in `tool_trust` → still `pending`; `SetTrust(save_automation, execute)` → `ErrAlwaysAsk`; stored args carry `approval_hash` equal to `ApprovalHash(parse(recipe_text))`, `widening`, `existing_content_hash`.
+  - `TestSaveAutomation_ApplyWritesIndexesConfirms` — Apply → file at `<ws>/automations/<slug>.md` byte-equal to `recipe_text`, no temp file left, index row `confirmed_hash == approval_hash`, `Runnable()` false until enabled (save does not enable).
+  - `TestSaveAutomation_RefusesWhenFileChangedSincePropose` — propose an edit, rewrite the file on disk, Apply → `failed` with the message, file keeps the on-disk bytes, `confirmed_hash` unchanged.
+  - `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug` — propose new `foo`, create `foo.md` by hand, Apply → failed, hand file untouched.
+  - `TestSaveAutomation_RefusesWhenFileVanishedForEdit` — propose an edit, delete the file, Apply → failed, nothing written.
+  - `TestSaveAutomation_RefusesHashDrift` — tamper the stored `approval_hash` in `args_json` (simulating a stale pin) → Apply failed, nothing written.
+  - `TestSaveAutomation_GrantsNotCarriedOver` — automation with an active grant (00114 row, `grant_hash = old hash`), save changing the script → grant row still holds the old hash (inactive), no new grant row.
+  - `TestSaveAutomation_PinsPreviousTextAndWideningForEdit` — `previous_recipe_text` equals the old file; `is_new` false; `widening` lists only the added entry.
+  - `TestSaveAutomation_ParseErrorNoRow` — invalid recipe → `ValidationError`, zero `agent_actions` rows.
+  - `TestSaveAutomation_WorkbenchRefusedInP3` (R-P3-5).
+  - `TestSaveAutomation_DryRunSummaryClipped` — 3 KiB summary → 2 KiB stored.
+- [ ] **Step 2:** `go test ./internal/automations/authoring -run TestSaveAutomation` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): save_automation behind Approve`.
+
+### Task 3: Register both tools; the `automation_editor` surface; AGENT-06 guard; main-chat actions contract
+
+**Files:**
+- Modify: `internal/tools/registry.go` (`const AutomationEditorSurface = "automation_editor"`), `cmd/actions_registry.go` (`buildToolRegistry` registers `authoring.NewDraftAutomation`/`NewSaveAutomation` with real `Deps`), `cmd/mcp.go` and `cmd/ai.go` (`--surface` accepts `automation_editor`; usage text `main|target|automation_editor`), `cmd/actions_registry_test.go` (`TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces`), `internal/mcp/actions_test.go` (chat-only guard call list), `internal/chat/prompt_sections.go` (`ActionsContract`) + `internal/chat/testdata/system_prompt_main.golden`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/AgentToolsContract.swift` (`mainTools` + new `AgentSurface.automationEditor`), its fixture tests, `WatchtowerDesktop/Sources/WatchtowerCore/Models/AssistantToolSurface.swift` (label "Automation editor")
+
+**Interfaces:**
+- Consumes: Tasks 1–2; P1 `buildToolRegistry`, the generator constructor the daemon wiring uses (P1 Task 11), `config.WorkspaceDir()`.
+- Produces:
+  - `tools.AutomationEditorSurface`.
+  - `watchtower mcp --chat --surface automation_editor --conversation N --turn T --context-type automation --context-id <automation id>` and the same through `ai query --tools chat --surface automation_editor …`. Any other new value still refused.
+  - `buildToolRegistry` `Deps.Backends` builds a generator whose child process environment carries none of `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `WATCHTOWER_TERMINAL_SESSION_ID` (the chat MCP server runs under `claude`, so it inherits `CLAUDECODE`; reuse the existing strip helper if one exists — do not add a second list).
+  - Swift: `package enum AgentSurface { case main, target, automationEditor = "automation_editor" }`; `AgentToolsContract.promptBlock(surface: .automationEditor)` names exactly `draft_automation` and `save_automation` and says "draft and dry-run first; Save is the owner's Approve on the card".
+- Depends on: Tasks 1, 2.
+
+- [ ] **Step 1: Failing tests:**
+  - `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` updated: `save_automation` write `["main","automation_editor"]` AlwaysAsk; `draft_automation` read `["main","automation_editor"]`; `ReadTools()` unchanged.
+  - `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads` — `reg.List("automation_editor")`: the only `AccessWrite` tool is `save_automation`; every other listed tool is `AccessRead`; includes `draft_automation`, `load_skill`.
+  - `TestMCP_SurfaceFlagAcceptsAutomationEditor` / `TestMCP_SurfaceFlagRejectsUnknown` (`--surface automation`, `--surface x` → error).
+  - `TestAiQuery_PassesAutomationEditorSurfaceAndContext` — args contain `--surface automation_editor --context-type automation --context-id 7`.
+  - `TestAgent06_ChatModeReadToolsDoNotWrite` gains a chat-only call list `chatOnlyReadGuardCalls = {draft_automation (FakeGenerator via the test seam)}`; `readOnlyGuardCalls` (shared with DEV-01) is NOT changed (draft is not on the dev surface).
+  - `TestAutomationsGenerator_ChildEnvHasNoAgentMarkers` — with `CLAUDECODE=1` set in the test env, the generator command's env has none of the four markers.
+  - Go golden `system_prompt_main.golden` regenerated; Swift `AgentToolsContractTests` fixture updated in lock-step (the Go/Swift dual path stays byte-equal); new `testAutomationEditorBlockNamesOnlyDraftAndSave`.
+  - `AssistantToolSurfaceTests.testAutomationEditorLabel`.
+- [ ] **Step 2:** `go test ./cmd -run 'TestBuildToolRegistry|TestMCP_SurfaceFlag|TestAiQuery_PassesAutomationEditor|TestAutomationsGenerator'`, `go test ./internal/mcp -run TestAgent06`, `go test ./internal/chat`, `go test ./internal/tools`, `make test-swift FILTER='AgentToolsContractTests|AssistantToolSurfaceTests'` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 commands → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): register draft/save tools and the automation_editor surface`.
+
+### Task 4: The `create-automation` shipped skill
+
+**Files:**
+- Create: `internal/skills/shipped/create-automation.md`
+- Modify: `internal/skills/skills_test.go` (`TestShippedPack` expects four skills), new `internal/automations/authoring/skill_examples_test.go`
+
+**Interfaces:**
+- Consumes: `skills.Shipped()`, `skills.Parse`; `automations.ParseRecipe`.
+- Produces: skill `create-automation` (frontmatter `description`, `enabled: true`, `x-watchtower-shipped: v1`). Body, in this order: when to use (the owner describes recurring work or a workbench procedure); the interview (trigger, data and accounts, what to produce and where, budget, auto is the owner's Desktop decision — never promise it); the recipe format (spec §2.2–2.3 keys with defaults and bounds, tokens not dollars, `workbench:` key forbidden — the folder binds it, D15; `shell:`/`session:`/`ask:` only in workbench recipes, D7); the permission grammar table (§3.1) and the scope rules (§3.2: absent scope arg needs `@*`); the SDK (§5) with the synchronous rule; the five templates (§15) as examples, each a complete recipe in a fenced `markdown` block; the procedure "always `draft_automation` and read its dry run with the owner before `save_automation`; pass `slug` when editing; copy the dry run's summary into `dry_run_summary`; never call `save_automation` with text you did not draft"; what Save does (the owner's Approve; the recipe is saved disabled — the owner enables it in the Automations tab).
+- Depends on: none.
+
+- [ ] **Step 1: Failing tests:**
+  - `TestShippedPack` — four skills incl. `create-automation`, enabled, shipped marker, non-empty body.
+  - `TestCreateAutomationSkill_ExamplesParse` — every fenced `markdown` block in the skill body parses with `ParseRecipe` (personal examples as `ScopePersonal`; examples whose frontmatter declares `shell:`/`session:`/`ask:` as `ScopeWorkbench{WorkbenchID: 1}`), using a placeholder-substituted copy for `<PROJECT>` → `ACME`.
+  - `TestCreateAutomationSkill_NamesBothTools` — body contains `draft_automation` and `save_automation` and the phrase "before `save_automation`".
+- [ ] **Step 2:** `go test ./internal/skills ./internal/automations/authoring -run 'TestShippedPack|TestCreateAutomationSkill'` → FAIL.
+- [ ] **Step 3:** Write the skill.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): create-automation skill`.
+
+### Task 5: CLI additions for the Desktop and the pinned JSON
+
+**Files:**
+- Modify: `cmd/automations.go`, `cmd/automations_wake.go`, `cmd/automations_test.go`
+
+**Interfaces:**
+- Consumes: P1 CLI and `wakeAutomations(cfg)`; `automations.Covers`, `ApprovalHash`, `ContentHash`.
+- Produces (P3-owned additions; nothing renamed):
+  - `automations wake` — sends `SIGUSR2` through `wakeAutomations`; no daemon → prints `daemon not running`, exit 0; open under agent markers (it changes nothing).
+  - `automations validate <file> [--against <id>] [--workbench N] --json` → `{"ok": bool, "errors": [string], "slug": string, "name": string, "scope": string, "approval_hash": string, "content_hash": string, "permissions": [string], "outputs": [string], "widening": [string]}`. `--against` takes scope from that automation and computes `widening = Covers(its current permissions_json, new)`; without it `widening` = all permissions. Exit 1 only on a usage error; a parse error is `ok:false` with exit 0 under `--json` (the Desktop decodes it).
+  - `automations save … --expect-content-hash <sha>` — refuses (exit 1, "the recipe changed on disk since you opened it") when the target file's current content hash differs; `""` means "the file must not exist".
+  - Pinned JSON the Desktop decodes (P1 emits; this task asserts and fixes): `show <id> --json` → `{"id", "slug", "scope", "project_id", "path", "name", "description", "script", "recipe_text", "trigger_kind", "trigger_spec", "permissions": [], "outputs": [], "budget_tokens", "budget_minutes", "concurrency", "missed_policy", "pause_timeout_hours", "enabled", "runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening": []}`; `run <id> --json` → `{"run_id", "coalesced", "daemon_running"}`; `dry-run <id> --json` → `{"run_id", "status", "error", "input_tokens", "output_tokens"}` (the Desktop reads the steps from the DB by `run_id`); `save … --json` → `{"automation_id", "path", "approval_hash", "confirmed"}`.
+- Depends on: none (P1 CLI merged).
+
+- [ ] **Step 1: Failing tests:**
+  - `TestAutomationsCLI_WakeWithoutDaemonExitsZero`; `TestAutomationsCLI_WakeAllowedUnderAgentMarkers`.
+  - `TestAutomationsCLI_ValidateAgainstComputesWidening` — saved `jira:read@PAY`, file with `jira:read@*` → `widening ["jira:read@*"]`, `approval_hash` equals the one `show` reports after saving that file.
+  - `TestAutomationsCLI_ValidateParseErrorIsOkFalse` — exit 0, `ok:false`, `errors` non-empty.
+  - `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad` — `--expect-content-hash <old>` after the file was rewritten → exit 1, file keeps the rewritten bytes, `confirmed_hash` unchanged; `--expect-content-hash ""` when the file exists → refused.
+  - `TestAutomationsCLI_JSONEmptyArraysNotNull` — `show` and `validate` of a recipe with no permissions/outputs → `[]` not `null` for `permissions`, `outputs`, `widening`, `errors`.
+  - `TestAutomationsCLI_ShowJSONKeys` / `TestAutomationsCLI_DryRunJSONKeys` — exact key sets above.
+- [ ] **Step 2:** `go test ./cmd -run 'TestAutomationsCLI_(Wake|Validate|Save|JSON|Show|DryRun)'` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): wake, validate --against, save --expect-content-hash, pinned JSON`.
+
+### Task 6: Swift Core — models, queries, CLI client, trigger text — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/WatchtowerCore/Models/AutomationModels.swift`, `Sources/WatchtowerCore/Database/Queries/AutomationQueries.swift`, `Sources/WatchtowerCore/Services/Automations/{AutomationsCLI.swift,AutomationTriggerText.swift,AutomationsPollPolicy.swift,DryRunPresentation.swift}`, `Tests/Core/{AutomationQueriesTests,AutomationsCLITests,AutomationTriggerTextTests,DryRunPresentationTests}.swift` (paths under `WatchtowerDesktop/`)
+
+**Interfaces:**
+- Consumes: the 00113/00114 tables (in `TestDatabase+Schema.swift`, regenerated by P1/P2), `CLIRunnerProtocol`, Task 5 JSON.
+- Produces (all `package`):
+  - `struct Automation: FetchableRecord, Identifiable, Equatable, Sendable { id: Int64; slug: String; scope: Scope; projectID: Int64?; path, name, triggerKind, triggerSpecJSON, missedPolicy: String; concurrency, budgetTokens, budgetMinutes, pauseTimeoutHours: Int; permissions, outputs: [String]; recipeText, contentHash, approvalHash, confirmedHash, parseError: String; enabled: Bool; lastScheduledFor, nextRunAt, removedAt: Date?; enum Scope: String { case personal, workbench }; var needsConfirmation: Bool /* parseError.isEmpty && removedAt == nil && confirmedHash != approvalHash */; var isRunnable: Bool /* the Go Runnable() rule */ }` — JSON columns decode with `?? []`; dates parsed as UTC RFC 3339 (explicit timezone).
+  - `enum AutomationRunStatus: String { case queued, running, waiting, succeeded, failed, budgetExceeded = "budget_exceeded", timedOut = "timed_out", cancelled, expired; var isActive: Bool; var badge: StatusBadge }`; `enum StatusBadge { case green, blue, red, orange, grey }` (the spec's mapping).
+  - `struct AutomationRun`, `struct AutomationRunStep`, `struct AutomationOutput`, `struct AutomationToolGrant { automationID: Int64; tool, grantHash: String; grantedAt: Date; func isActive(approvalHash: String) -> Bool }` mirroring §9.2–9.4.
+  - `enum AutomationRowBadge: Equatable { case needsConfirmation, autoPaused, disabled, parseError }`.
+  - `struct AutomationListItem: Identifiable, Equatable { automation: Automation; lastRun: AutomationRun?; activeRun: AutomationRun?; tokens7d: Int64; badges: [AutomationRowBadge]; triggerText: String }`.
+  - `enum AutomationQueries { static func fetchList(_ db: Database, now: Date) throws -> [AutomationListItem]` (excludes `removed_at IS NOT NULL`; name order; `tokens7d` = Σ input+output over runs with `started_at ≥ now − 7 days`, dry runs included — my ruling R-P3-6: "tokens this week" is the CLI's rolling 7 days); `fetchRuns(_ db: Database, automationID: Int64, limit: Int) throws -> [AutomationRun]`; `fetchSteps(_ db: Database, runID: Int64) throws -> [AutomationRunStep]`; `fetchGrants(_ db: Database, automationID: Int64) throws -> [AutomationToolGrant]`; `fetchReports(_ db: Database, automationID: Int64, limit: Int) throws -> [AutomationOutput]` (`kind='report'`); `attentionCount(_ db: Database) throws -> Int` (needs confirmation + runs `waiting` with `waiting_reason IN ('approval','ask')` — my reading of "waiting on the owner", R-P3-7); `fetchInboxOutputs(_ db: Database) throws -> [AutomationOutputCard]` (`kind='inbox' AND read_at IS NULL AND dismissed_at IS NULL`, newest first, with automation name and run id); `inboxOutputCount(_ db: Database) throws -> Int`; `markOutputRead(_ db: Database, id: Int64, now: Date) throws`; `dismissOutput(_ db: Database, id: Int64, now: Date) throws` (both guarded `AND read_at IS NULL AND dismissed_at IS NULL`, the only Swift writes, §9.6); `runLabels(_ db: Database, runIDs: [Int64]) throws -> [Int64: String]` (`"⚙ <name> · run #<run id>"`) }`.
+  - `struct AutomationsCLI { init(runner: CLIRunnerProtocol); static func args(_ op: Op) -> [String]; func run(_ id: Int64) async throws -> RunResult; func dryRun(_ id: Int64) async throws -> DryRunResult; func show(_ id: Int64) async throws -> AutomationDetail; func validate(file: URL, against: Int64?) async throws -> ValidateResult; func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws -> SaveResult; func confirm(_ id: Int64, hash: String) async throws; func setEnabled(_ id: Int64, _ on: Bool) async throws; func setAuto(_ id: Int64, tool: String, on: Bool, hash: String?) async throws; func delete(_ id: Int64) async throws; func cancel(runID: Int64) async throws; func wake() async throws; func templates() async throws -> [AutomationTemplate]; func installTemplate(_ name: String, workbenchID: Int64?) async throws -> InstallResult }`; result structs decode Task 5's keys (arrays default to `[]`).
+  - `enum AutomationTriggerText { static func describe(kind: String, specJSON: String) -> String }`; `enum CronText { static func describe(_ expr: String) -> String }`.
+  - `enum AutomationsPollPolicy { static func interval(hasActiveRuns: Bool, tabVisible: Bool) -> Duration }` — my ruling R-P3-8: active run → 2 s, tab visible → 10 s, otherwise 60 s (badge only).
+  - `enum DryRunPresentation { static func lines(steps: [AutomationRunStep]) -> [String] }`.
+- Depends on: Task 5 (JSON keys).
+
+- [ ] **Step 1: Failing tests:**
+  - `AutomationQueriesTests`: `testListExcludesRemovedAndOrdersByName`; `testBadges` (table: unconfirmed → needsConfirmation; confirmed + grant with old hash → autoPaused; `enabled=0` → disabled; parse error → parseError only); `testTokens7dRollingWindowIncludesDryRuns` (runs at now−6d23h and now−7d1h); `testAttentionCountCountsConfirmationAndOwnerWaits` (waiting `approval` and `ask` count; `app`/`session` do not); `testInboxOutputsOnlyUnreadInboxKind` (`report`, `briefing`, read, dismissed excluded); `testOutputWritesTouchOnlyReadAndDismissed` (every other column byte-identical); `testRunLabels`; `testDatesDecodeAsUTC`.
+  - `AutomationsCLITests` (fake runner records args): `testRunArgs` → `["automations","run","7","--json"]`; `testDryRunArgs`; `testSaveArgs` → `["automations","save","--file",F,"--path",P,"--confirm-hash",H,"--expect-content-hash",C,"--json"]`; `testAutoOnArgs` / `testAutoOffArgs` (no `--hash` on off); `testValidateAgainstArgs`; `testDecodesEmptyStateJSON` (Task 5's empty-array payloads); `testNonZeroExitSurfacesStderr`.
+  - `AutomationTriggerTextTests` (table): `0 9 * * 1-5` → "Weekdays 09:00"; `0 9 * * *` → "Daily 09:00"; `0 10,16 * * 1-5` → "Weekdays 10:00, 16:00"; `0 9 * * 1` → "Mondays 09:00"; `0 17 * * 5` → "Fridays 17:00"; `*/15 * * * *` → "Cron: */15 * * * *"; button `{label:"Release"}` → "Button: Release"; event `gmail.new_messages` where `{account:"work"}` → "On new Gmail (work)"; event without `where` → "On new Gmail"; `slack.new_messages` → "On new Slack messages"; `jira.issue_changed` → "On Jira change"; `calendar.event_changed` → "On calendar change"; `confluence.page_changed` → "On Confluence change"; manual → "Manual"; `''` → "—".
+  - `DryRunPresentationTests`: tool write `dry_run` → "Would propose create_jira_issue {…}" (args clipped 200 chars); output inbox `dry_run` → "Would post to Inbox: <title>"; output report → "Would add a report: <title>"; state `dry_run` → "Would save state"; llm ok → "Asked the assistant · 1,234 tokens"; denied → "Denied — needs jira:read@OPS"; read ok → "Read list_jira_issues".
+  - `AutomationsPollPolicyTests`: the three intervals.
+- [ ] **Step 2:** `make test-swift FILTER='AutomationQueriesTests|AutomationsCLITests|AutomationTriggerTextTests|DryRunPresentationTests|AutomationsPollPolicyTests'` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): Desktop models, queries and CLI client`.
+
+### Task 7: `AutomationsViewModel`, sidebar tab, feature gate, badge — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/WatchtowerCore/Services/Automations/AutomationsViewModel.swift`, `Tests/Core/AutomationsViewModelTests.swift`
+- Modify: `Sources/App/SidebarDestination.swift` (`case automations`, title "Automations", icon `gearshape.2`, in `mainItems` after `.workbench`, `requiredFeatures` `["automations"]`), `Sources/App/Navigation.swift`, `Sources/App/AppState.swift` (`private(set) var automationsViewModel: AutomationsViewModel?`, constructed on every path that shows the sidebar — `!needsOnboarding` and `completeOnboarding()`; `openAutomationRun(automationID:runID:)`), `Sources/ViewModels/SidebarCountsViewModel.swift` + `Sources/Views/Sidebar/SidebarView.swift` (badge), `Tests/SidebarAutomationsVisibilityTests.swift` (app target: `SidebarDestination` lives there)
+
+**Interfaces:**
+- Consumes: Task 6.
+- Produces:
+  - `@MainActor @Observable package final class AutomationsViewModel { package private(set) var items: [AutomationListItem]; package private(set) var attentionCount: Int; package var selectedID: Int64?; package private(set) var expandedRuns: Set<Int64>; package private(set) var runs: [Int64: [AutomationRun]]; package private(set) var steps: [Int64: [AutomationRunStep]]; package private(set) var reports: [Int64: [AutomationOutput]]; package private(set) var grants: [Int64: [AutomationToolGrant]]; package private(set) var dryRuns: [Int64: DryRunState]; package private(set) var busy: [Int64: Operation]; package var lastError: String?; package init(dbPool: DatabasePool, cli: AutomationsCLI, now: @escaping () -> Date = Date.init, sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }); package func start(); package func stop(); package func refresh(); package func setTabVisible(_ visible: Bool); package func select(_ id: Int64?); package func toggleRun(_ runID: Int64); package func runNow(_ id: Int64) async; package func dryRun(_ id: Int64) async; package func setEnabled(_ id: Int64, _ on: Bool) async; package func delete(_ id: Int64) async; package func cancel(runID: Int64) async; package func open(automationID: Int64, runID: Int64?) }`.
+  - `enum DryRunState: Equatable { case running, done(runID: Int64, lines: [String], tokens: Int64, status: String), failed(String) }`; `enum Operation: Equatable { case running, dryRunning, enabling, deleting, cancelling }`.
+  - Poll: one stored `Task` loops `refresh()` at `AutomationsPollPolicy.interval(...)`; `stop()` cancels it (called on quit).
+  - Feature gate: `SidebarDestination.automations.isVisible(disabledFeatures:connected:)` false when `automations` is disabled; `fallbackDestination` moves a selection off it.
+- Depends on: Task 6.
+
+- [ ] **Step 1: Failing tests** (`AutomationsViewModelTests`, file-based `TestDatabase`, fake runner):
+  - `testListAndBadgesFromDatabase`.
+  - `testRunNowPassesCLIArgsAndRefreshes` — args `["automations","run","<id>","--json"]`, `busy[id]` cleared after, refresh called.
+  - `testDryRunRendersLinesFromStepsOfReturnedRun` — fake `dry-run` returns `run_id` 12; seeded steps of run 12 → `.done(lines: …)` per `DryRunPresentation`.
+  - `testDryRunSurvivesNavigation` — start a dry run with a suspended fake runner, drop the view (no view is involved; call `setTabVisible(false)`, then `select(nil)`), resume the runner, `setTabVisible(true)` → `dryRuns[id]` is `.done`.
+  - `testRunNowFailureShowsErrorAndKeepsList` — non-zero exit → `lastError` holds stderr, `items` unchanged.
+  - `testDeleteRemovesAfterSuccessOnly` — failing delete keeps the row.
+  - `testPollIntervalFollowsActiveRuns` — injected `sleep` records 2 s while a run is `running`, 60 s after it ends with the tab hidden.
+  - `testAttentionCountFeedsBadge`.
+  - `SidebarAutomationsVisibilityTests.testAutomationsHiddenWhenFeatureDisabled` and `testFallbackLeavesAutomationsWhenDisabled`.
+  - `testViewModelConstructedOnCompleteOnboardingPath` (AppState test seam the existing badge VMs use).
+- [ ] **Step 2:** `make test-swift FILTER='AutomationsViewModelTests|SidebarAutomationsVisibilityTests'` → FAIL.
+- [ ] **Step 3:** Implement and wire.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): Automations view model, tab and feature gate`.
+
+### Task 8: The Automations tab — list, card, history with steps — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/Views/Automations/{AutomationsView.swift,AutomationListRow.swift,AutomationCardView.swift,AutomationRunHistoryView.swift,AutomationStepRow.swift,AutomationStatusBadgeView.swift}`
+- Modify: `Sources/App/Navigation.swift`
+
+**Interfaces:**
+- Consumes: Task 7 VM; `RecipeEditorView` read-only mode (Task 9 — until then the card shows the recipe as monospaced text; Task 9 swaps it).
+- Produces: `AutomationsView(vm:)` — `HSplitView`: list (name, trigger text, next run as relative time, last status badge, "N tokens (7 days)", row badges) + card. Card: name, description (Markdown), recipe (read-only), permissions (each entry; entries in `show --json`'s `widening` marked "new since your confirmation"), outputs with the latest reports, history (runs newest first: trigger, status badge, started, duration, tokens with "≈" when `tokens_estimated`, `reported_cost_usd` shown as "$x.xx reported" only when non-NULL — display only, D4; a run expands into its steps: kind, name, status, tokens, duration, error; a step with `action_id` links to its Inbox card, `session_id`/`ask_id` render as plain text in P3 — P5 makes them links), buttons **Run now**, **Dry run**, **Enable/Disable**, **Edit**, **Change in words**, **Delete** (confirmation dialog). Dry run result renders as a list of `DryRunPresentation` lines under the buttons. A run in `waiting` shows its reason ("Waiting for your approval", "Waiting for your answer", "Waiting for the app", "Waiting for a session"). Header button **New automation** opens AI Chat with the composer prefilled "Create an automation that " (my ruling R-P3-9) and **Templates** opens the gallery (Task 13). Rerun: a `failed`/`interrupted` run shows **Rerun** → `automations run <id> --rerun-of <run>`.
+- Depends on: Task 7.
+
+- [ ] **Step 1: Failing tests** (presentation logic kept in Core and tested there):
+  - `AutomationCardPresentationTests` (Core): `testWaitingReasonCaptions` (four captions above); `testTokensShowEstimateMark`; `testReportedCostOnlyWhenPresent`; `testButtonsForStates` (unconfirmed → Run now disabled with help "Needs your confirmation", Dry run enabled; parse error → Run now and Dry run disabled; disabled → Run now enabled (Run now works on any confirmed automation, §7.1), Enable shown); `testRerunOnlyForFailedRuns`.
+  - `AutomationsCLITests.testRerunArgs` → `["automations","run","7","--rerun-of","3","--json"]`.
+- [ ] **Step 2:** `make test-swift FILTER='AutomationCardPresentationTests|AutomationsCLITests'` → FAIL.
+- [ ] **Step 3:** Implement views and the presentation type.
+- [ ] **Step 4:** Step 2 command → PASS; `swift build` (the views compile).
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): Automations tab, card and run history`.
+
+### Task 9: The recipe in Monaco (`RecipeEditorView`) — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/Views/Automations/RecipeEditorView.swift`, `Sources/WatchtowerCore/Services/Automations/RecipeBufferModel.swift`, `Tests/Core/RecipeBufferModelTests.swift`, `Tests/Core/CodeEditorPageProtocolTests.swift` (or extend the existing page-protocol scan test if one exists)
+- Modify: `Sources/CodeEditorWeb/index.html` (additive `setReadOnly(bool)` message, documented in the header comment), `Sources/Views/Workbench/CodeFilesPaneView.swift` (only if `CodeEditorSchemeHandler` must become reusable — no behaviour change)
+
+**Interfaces:**
+- Consumes: `CodeEditorSchemeHandler.shared`, `CodeEditorSchemeHandler.pageURL`, the page protocol (`show({id, path, text, rev})`, `text {id, text, base, now, explicit}`, `ready`).
+- Produces:
+  - `struct RecipeEditorView: NSViewRepresentable { init(buffer: RecipeBufferModel, readOnly: Bool) }` — one Monaco page, one model id `automation-<id>`, path `<slug>.md` (Markdown highlighting for the whole recipe file; the script block keeps its fence), `setReadOnly(readOnly)` after `ready`. No `CodeFilesCenter`, no disk access from the view.
+  - `@MainActor @Observable package final class RecipeBufferModel { package let automationID: Int64; package private(set) var text: String; package private(set) var baseContentHash: String; package var isDirty: Bool { text != original }; package init(automationID: Int64, text: String, contentHash: String); package func pageSent(text: String, base: Int); package func reset(text: String, contentHash: String) }` — `base` revisions follow the page protocol (edits typed on an older revision are kept, never dropped).
+  - **My ruling R-P3-10:** Monaco edits the whole recipe file (frontmatter + description + script) rather than only the js block, so a Monaco save is byte-lossless; the form (Task 10) edits only the frontmatter.
+- Depends on: Task 8.
+
+- [ ] **Step 1: Failing tests:**
+  - `RecipeBufferModelTests`: `testDirtyAfterEdit`; `testResetClearsDirty`; `testEditOnOlderBaseIsKept`.
+  - `CodeEditorPageProtocolTests.testSetReadOnlyIsDocumentedAndHandled` — `index.html` header lists `setReadOnly` and the script defines `window.wt.setReadOnly`.
+- [ ] **Step 2:** `make test-swift FILTER='RecipeBufferModelTests|CodeEditorPageProtocolTests'` → FAIL.
+- [ ] **Step 3:** Implement; swap the card's recipe text for `RecipeEditorView(readOnly: true)`.
+- [ ] **Step 4:** Step 2 command → PASS; manual: the Files pane still opens and saves a file (no regression in the code viewer).
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): recipe editor on the bundled Monaco page`.
+
+### Task 10: Edit form, widening and grant sheet, confirmation sheet — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/WatchtowerCore/Services/Automations/{RecipeFrontmatter.swift,AutomationFormModel.swift,AutomationSavePlan.swift,AutomationEditorCenter.swift}`, `Sources/Views/Automations/{AutomationFormView.swift,AutomationSaveSheet.swift,AutomationConfirmSheet.swift}`, `Tests/Core/{RecipeFrontmatterTests,AutomationFormTests,AutomationEditorCenterTests}.swift`, `internal/automations/testdata/recipes/swift_written.md` (fixture written by the Swift test, parsed by Go)
+- Modify: `internal/automations/recipe_test.go` (`TestRecipe_ParsesSwiftWrittenFrontmatter`), `Sources/App/AppState.swift` (`automationEditorCenter`)
+
+**Interfaces:**
+- Consumes: Tasks 5–9; `automations auto … on|off --hash` (P2); `automation_tool_grants` (P2).
+- Produces:
+  - `struct RecipeFrontmatter: Equatable { var name: String; var trigger: Trigger; var missed: String; var concurrency: Int; var permissions: [String]; var outputs: [String]; var budgetTokens: Int; var budgetMinutes: Int; var pauseTimeoutHours: Int; enum Trigger: Equatable { case schedule(String), button(label: String, confirm: Bool), event(type: String, where: [String: String]), manual }; static func render(_ f: Self) -> String; static func splice(_ f: Self, into recipeText: String) -> String }` — `render` writes only the spec keys (strict parser), quotes every string as a YAML double-quoted scalar; `splice` replaces the leading `---…---` block and keeps the rest byte-identical. Comments inside the old frontmatter are not kept (v1 limit, stated in the form's footer).
+  - `@MainActor @Observable package final class AutomationFormModel { package var fields: RecipeFrontmatter; package let detail: AutomationDetail; package init(detail: AutomationDetail); package var isEditable: Bool /* false for workbench scope in P3 (R-P3-5) */ ; package func renderedText() -> String }`.
+  - `struct AutomationSavePlan: Equatable { let validated: ValidateResult; let wasConfirmed: Bool; let pausedGrants: [String]; var keepAuto: Set<String> = []; var needsSheet: Bool /* !validated.widening.isEmpty || !pausedGrants.isEmpty || !wasConfirmed */; static func make(validated: ValidateResult, current: AutomationDetail, grants: [AutomationToolGrant]) -> Self }` — `pausedGrants` = grants active under the current `approval_hash` when `validated.approvalHash != current.approvalHash`; empty when the hash is unchanged (D5: trigger/budget/name edits keep confirmation and grants).
+  - `@MainActor @Observable package final class AutomationEditorCenter { package private(set) var drafts: [Int64: EditDraft]; package private(set) var saving: [Int64: SaveState]; package func beginEdit(_ id: Int64) async; package func prepareSave(_ id: Int64, text: String) async -> AutomationSavePlan?; package func commit(_ id: Int64, plan: AutomationSavePlan) async; package func discard(_ id: Int64); package func confirmForeign(_ id: Int64, shownHash: String) async }` — `prepareSave` writes the text to a private temp file (0600) and runs `validate --against`; `commit` runs `save --confirm-hash <plan.validated.approvalHash> --expect-content-hash <draft's loaded content hash>`, then `auto <id> <tool> on --hash <new>` for exactly `plan.keepAuto`, then `refresh`; the temp file is removed on every path.
+  - Sheets: **Save** sheet — "This change lets the automation also: …" (each widening entry), "Auto paused by this change" list with unchecked "Keep auto for <tool>" boxes, primary "Save and confirm"; shown only when `needsSheet`; otherwise the owner's Save click saves and re-confirms in the same gesture (spec §3.3). **Needs your confirmation** sheet (foreign/changed recipe, AUTO-06) — the recipe read-only, permissions with `widening`, outputs, the approval hash's first 12 hex chars; "Confirm" → `confirm --hash <shown hash>`; a disabled recipe offers "Confirm and enable" (my ruling R-P3-11); a stale hash (`ErrHashMismatch`) reloads the sheet with "The recipe changed again — review it once more."
+  - Form fields: trigger (kind picker; schedule cron field with the live `CronText` preview; button label 1–24 chars + confirm toggle; event type picker of the five types + `where` key/value rows; manual), missed (`run_once`/`skip`, schedule only), concurrency 1–4, permissions (list editor, one entry per row), outputs (five checkboxes), budget tokens 1000–2000000 and minutes 1–60, pause timeout 1–168 h, **Enabled** toggle (separate: `enable`/`disable` CLI, no save), **Auto** per write tool the manifest admits (toggle → `auto on --hash <current approval_hash>` / `off`; AlwaysAsk tools listed disabled "Always asks"). Out-of-range values are blocked in the form before `validate`.
+- Depends on: Tasks 5, 8, 9.
+
+- [ ] **Step 1: Failing tests:**
+  - `RecipeFrontmatterTests`: `testRenderOnlySpecKeys`; `testSpliceKeepsDescriptionAndScriptByteIdentical`; `testQuotesSpecialCharacters` (`name: "a: b # c"`, cron with `*`); `testRenderMatchesSharedFixture` (`render(sample)` is byte-equal to the committed `internal/automations/testdata/recipes/swift_written.md`, read via `#filePath`; Go `TestRecipe_ParsesSwiftWrittenFrontmatter` parses the same file to the same fields — the dual path pinned on both sides).
+  - `AutomationFormTests`: `testWideningSheetShownOnlyOnWidening` (widening `[]` + confirmed + no paused grants → `needsSheet == false`; widening `["jira:read@*"]` → true); `testUnconfirmedRecipeAlwaysShowsSheet`; `testAuto03_KeepAutoBoxesUncheckedByDefault` (two active grants + hash change → `pausedGrants` has both, `keepAuto` empty); `testTriggerOnlyEditPausesNoGrants` (same hash → `pausedGrants` empty, D5); `testWorkbenchScopeNotEditableInP3`.
+  - `AutomationEditorCenterTests`: `testSaveConfirmsTheValidatedHashOnly` (save args carry exactly `validate`'s `approval_hash` and the loaded content hash); `testNoAutoOnWithoutACheckedBox` (no `auto … on` call when `keepAuto` empty; one call per checked box with the NEW hash); `testSaveSurvivesNavigation` (suspended runner; the form view is gone; center finishes and `saving[id]` ends `.done`); `testTempFileRemovedOnFailure`; `testChangedOnDiskSurfacesMessage` (save exit 1 → the message "The recipe changed on disk since you opened it" and the draft kept); `testAuto06_ConfirmSheetPassesTheShownHash`; `testStaleConfirmReloads`.
+  - Go: `go test ./internal/automations -run TestRecipe_ParsesSwiftWrittenFrontmatter`.
+- [ ] **Step 2:** `make test-swift FILTER='RecipeFrontmatterTests|AutomationFormTests|AutomationEditorCenterTests'` → FAIL.
+- [ ] **Step 3:** Implement; then run the Go test against the written fixture.
+- [ ] **Step 4:** Step 2 command and the Go test → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): edit form, widening and confirmation sheets`.
+
+### Task 11: "Change it in words" and the `save_automation` card — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/Services/ChatSurfaces/AutomationEditorChatSurface.swift`, `Sources/Views/Automations/AutomationEditorChatView.swift`, `Sources/WatchtowerCore/Services/Automations/SaveAutomationCardModel.swift`, `Tests/Core/SaveAutomationCardModelTests.swift`, `Tests/AutomationEditorChatSurfaceTests.swift`
+- Modify: `Sources/Views/Chat/AgentActionCardView.swift` (`save_automation` summary + diff disclosure), `Sources/App/AppState.swift` (engine from `embeddedChatCenter`)
+
+**Interfaces:**
+- Consumes: `ChatSurfaceSpec`, `ChatSurfaceSpec.ToolAccess.actions(surface:)`, `EmbeddedChatKey`, `EmbeddedChatCenter.engine(for:)`, `EmbeddedChatView` with `accessory(for:)`, `AgentActionFeed(dbPool:cliRunner:)` + its per-turn cards, `AgentToolsContract.promptBlock(surface: .automationEditor)`, the embedded chats' skills block (as `TrackChatSkillsPromptTests` pins), `OwnerAskSnapshotDiff(previous:current:)`.
+- Produces:
+  - `enum AutomationEditorChatSurface { static func spec(automation: Automation, provider: String?) -> ChatSurfaceSpec }` — key `EmbeddedChatKey(contextType: "automation", contextID: String(automation.id), conversationID: <created lazily>)`, persistence `.database`, `toolAccess = .actions(surface: "automation_editor")` (`.draftOnly` under ollama — then the card's **Change in words** button is disabled with help "Needs Claude or Codex", my ruling R-P3-12, mirroring the target chat); system prompt: who the assistant is, the automation's slug/scope, the `automation_editor` contract block, "load the `create-automation` skill with `load_skill` before drafting", "always pass `slug: <slug>` to `draft_automation`"; per-turn prompt: the current `recipe_text` from the index (re-read every turn, since the file may change between turns).
+  - The editor conversation is not listed in the main AI Chat history (context-typed conversations are excluded there already; assert it).
+  - `struct SaveAutomationCardModel { init(action: AgentAction); var title: String /* "Save automation <name>" */; var lines: [String] /* trigger text, permissions with "+" on widening entries, outputs, "Budget: 40,000 tokens · 5 min" */; var dryRunSummary: String? /* labelled "Assistant's dry-run summary" (R-P3-4) */; var diff: OwnerAskSnapshotDiff? /* nil when is_new */ }`.
+  - After a `save_automation` row in the editor chat is applied, `AutomationsViewModel.refresh()` runs (the feed's decision callback).
+- Depends on: Tasks 3, 7, 8.
+
+- [ ] **Step 1: Failing tests:**
+  - `AutomationEditorChatSurfaceTests` (AGENT-04 amended): `testSpecIsActionsAutomationEditor`; `testToolModeCarriesAutomationEditorSurfaceAndContext` (the engine's `ai query` args contain `--tools chat --surface automation_editor --context-type automation --context-id <id>`); `testOllamaIsDraftOnly` (`toolModes == [nil]`); `testPerTurnPromptCarriesCurrentRecipeText` (index row changed between turns → second turn's prompt has the new text); `testConversationNotInMainChatHistory`.
+  - `SaveAutomationCardModelTests`: `testWideningEntriesMarked`; `testDiffForEditNilForNew`; `testDryRunSummaryLabelled`; `testBudgetLine`.
+  - `testEditorChatSurvivesNavigation` — a turn streaming through a fake `WatchtowerAIService`, the sheet closed and reopened → the same engine (from `embeddedChatCenter`) with the live turn.
+- [ ] **Step 2:** `make test-swift FILTER='AutomationEditorChatSurfaceTests|SaveAutomationCardModelTests'` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): change-in-words editor chat and the save card`.
+
+### Task 12: Inbox — automation labels, wake after a decision, output cards (STRIP-01 amended) — **Heavy Swift — serial**
+
+**Files:**
+- Modify: `Sources/Views/Chat/AgentActionCardView.swift` (`var contextLabel: String?`, `var onOpenContext: (() -> Void)?`), `Sources/WatchtowerCore/Services/Actions/AgentActionFeed.swift` (wake after approve/reject of an `automation_run` row), `Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift` (`outputRows`, `markOutputDone`, `dismissOutput`, labels), `Sources/Views/Inbox/ActionStripView.swift` (output cards), `Sources/ViewModels/SidebarCountsViewModel.swift` (Inbox badge adds unread inbox outputs — my ruling R-P3-13)
+- Create: `Tests/Core/{AgentActionCardLabelTests,ActionStripAutomationOutputTests,AgentActionFeedAutomationWakeTests}.swift`
+
+**Interfaces:**
+- Consumes: `AutomationQueries.runLabels`, `fetchInboxOutputs`, `inboxOutputCount`, `markOutputRead`, `dismissOutput`; `AutomationsCLI.wake()`; `AgentAction.contextType`/`contextID`.
+- Produces:
+  - `struct AutomationOutputCard: Identifiable, Equatable { id: Int64; automationID: Int64; automationName: String; runID: Int64; title, body, priority: String; createdAt: Date }`.
+  - `ActionStripViewModel`: `package private(set) var outputRows: [AutomationOutputCard]`; `package private(set) var actionLabels: [Int64: String]` (action id → label); `package func markOutputDone(_ id: Int64)`; `package func dismissOutput(_ id: Int64)` — do/catch, the row leaves the list only after the write succeeded. `refresh()` stays a pure read (STRIP-02): three SELECTs + the label lookup.
+  - `AgentActionFeed`: `init(dbPool:cliRunner:automationsWake:)` with `automationsWake: (() async -> Void)?`; after a successful approve, reject or retry of a row whose `contextType == "automation_run"`, it calls the wake once (spec §7.4); a wake failure is logged, never shown as the decision failing.
+- Depends on: Task 6.
+
+- [ ] **Step 1: Failing tests:**
+  - `AgentActionCardLabelTests`: `testAutomationRowGetsLabel` (`context_type='automation_run'`, `context_id='12'`, automation "Mail summary" → "⚙ Mail summary · run #12"); `testOtherRowsHaveNoLabel`; `testDeletedAutomationFallsBackToRunOnly` ("⚙ automation · run #12").
+  - `ActionStripAutomationOutputTests`: `testStripListsUnreadInboxOutputs`; `testDoneWritesOnlyReadAt`; `testDismissWritesOnlyDismissedAt`; `testFailedWriteKeepsCard`; `testRefreshIsAPureRead` (row counts and `updated_at`s of every strip table unchanged by `refresh()`); `testReportAndBriefingOutputsNotOnStrip`; `testInboxBadgeCountsOutputs`.
+  - `AgentActionFeedAutomationWakeTests`: `testApproveOfAutomationRowWakes`; `testRejectOfAutomationRowWakes`; `testMainChatRowDoesNotWake`; `testWakeFailureDoesNotFailApprove`.
+- [ ] **Step 2:** `make test-swift FILTER='AgentActionCardLabelTests|ActionStripAutomationOutputTests|AgentActionFeedAutomationWakeTests|ActionStripViewModelTests|AgentActionFeedTests'` → FAIL on the new ones, existing ones green.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): Inbox labels, decision wake and output cards`.
+
+### Task 13: Template gallery — **Heavy Swift — serial**
+
+**Files:**
+- Create: `Sources/WatchtowerCore/Services/Automations/AutomationTemplate.swift`, `Sources/Views/Automations/AutomationTemplateGalleryView.swift`, `Tests/Core/AutomationTemplateGalleryTests.swift`
+
+**Interfaces:**
+- Consumes (P6's contract, pinned here — header note 5): `automations templates --json` → `[{"name": string, "title": string, "description": string, "scope": "personal"|"workbench", "trigger_text": string, "permissions": [string], "outputs": [string]}]` (always an array); `automations install-template <name> [--workbench N] --json` → `{"automation_id": int, "path": string}` (installed unconfirmed and disabled, spec §15).
+- Produces: `struct AutomationTemplate: Decodable, Identifiable, Equatable`; a gallery sheet of cards (title, description, trigger, permissions, outputs, scope tag); **Install** — personal → `install-template <name>`; workbench → a workbench picker (`WorkbenchQueries` list) then `--workbench N`; on success the Automations tab selects the new automation and opens the edit form unconfirmed (Save confirms, §12.3); a parse error in the installed copy (a template placeholder such as `<PROJECT>`) shows in the form as the parse error to fix. With no templates (P6 not merged, or the CLI fails with "unknown command") the gallery shows "No templates yet." Install runs in `AutomationsViewModel` (`installTemplate(_:workbenchID:) async`) so it survives navigation.
+- Depends on: Tasks 7, 10.
+
+- [ ] **Step 1: Failing tests:**
+  - `testDecodesTemplatesAndEmptyArray`; `testInstallPersonalArgs` → `["automations","install-template","new-mail-summary","--json"]`; `testInstallWorkbenchArgs` → `[…,"--workbench","3","--json"]`; `testInstallSelectsAndOpensForm`; `testUnknownCommandShowsEmptyState`; `testInstallSurvivesNavigation`.
+- [ ] **Step 2:** `make test-swift FILTER=AutomationTemplateGalleryTests` → FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Step 2 command → PASS.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): template gallery`.
+
+### Task 14: Docs, app guide and contracts
+
+**Files:**
+- Modify: `docs/app-guide.md` (new `### Automations` under "Tabs & Features" after Workbench; Inbox section gains automation labels and output cards; AI Chat section gains "Create an automation"; Settings → Features mentions the gate), `docs/features/automations.md` (P3 section), `docs/inventory/agent-actions.md` (AGENT-04 Observable amended per spec §14.5 — `automation_editor` joins main and target as a tool-mode surface carrying only `draft_automation`, `save_automation` and read tools; new guards from Task 11 + Task 3; AGENT-06 changelog: `draft_automation` in the chat-only guard list; changelog entries dated, "approved, ask #270, D11"), `docs/inventory/reaction-commands.md` (STRIP-01 amended per spec §14.4 with `ActionStripAutomationOutputTests` as its new guard; STRIP-02 changelog line "outputs are backing rows, not a strip store"), `docs/inventory/automations.md` (AUTO-03 guard list + `testAuto03_KeepAutoBoxesUncheckedByDefault`, `TestSaveAutomation_GrantsNotCarriedOver`; AUTO-06 guard list + `testAuto06_ConfirmSheetPassesTheShownHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose`; no status flips — every AUTO entry P3 touches is already Enforced by P1/P2), `CLAUDE.md` (the Automations Feature Notes line gains "P3: authoring, tab, editor chat, Inbox")
+- Depends on: Tasks 1–13.
+
+- [ ] **Step 1:** Write the docs; every UI string quoted exactly as the views show it; the assistant is "the assistant" (review rules).
+- [ ] **Step 2:** For every test name added to an inventory file: `grep -rn '<name>' internal cmd WatchtowerDesktop/Tests` finds it.
+- [ ] **Step 3:** `git add` then `bash scripts/leak-check.sh --staged` → clean.
+- [ ] **Step 4:** Commit `docs(automations): P3 app guide, feature note and contract amendments`.
+
+### Phase gate (controller, once)
+
+- [ ] `bash scripts/dev-health.sh` → not overloaded.
+- [ ] `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...` (logs to files, explicit exit codes).
+- [ ] Manual: install the "new mail summary" template (if P6 merged) or create an automation through the main chat; Dry run; Save from the card; Edit (trigger only → no sheet; add a permission → widening sheet); Change in words; Run now; the Inbox shows the output card and Done clears it; feature off hides the tab.
+- [ ] local-review, then one PR `feature/automations-p3 → feature/automations`.
+
+---
+
+## Self-review against the spec
+
+- §11 skill, `draft_automation` (read, `main` + `automation_editor`, min(budget, 50000 tokens / 5 min), writes nothing, not in the daily cap), `save_automation` (AlwaysAsk, pins hash + widening + content hash, refuses a changed file, grants not carried) → Tasks 1, 2, 4. Editing form + Monaco + change-in-words → Tasks 9–11.
+- §12.1 list columns, badge colours, four badges, sidebar badge → Tasks 6–8. §12.2 card, history with steps, the six buttons, dry-run rendering → Task 8. §12.3 gallery → Task 13 (data from P6). §12.5 Inbox → Task 12.
+- §3.3 widening confirm and silent re-confirm on narrowing → Task 10. §2.5/AUTO-06 confirmation of foreign/changed recipes → Task 10. §6.4 grants paused with unchecked boxes → Task 10.
+- §7.4 wake after approval → Tasks 5, 12. §14.3 AGENT-06 → Task 3. §14.4 STRIP-01, §14.5 AGENT-04 → Tasks 11, 12, 14. D12 gate → Task 7. §18 P3 tests: `TestDraftAutomation_WritesNothing` (T1), `TestSaveAutomation_AlwaysAskAndPinsHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose` (T2), `AutomationsViewModelTests` (T7), `AutomationQueriesTests` (T6), `AutomationFormTests` (T10), `AgentActionCardLabelTests`, `ActionStripAutomationOutputTests` (T12) — all present by those names.
+- §19: app guide and feature note → Task 14.
+
+## Rulings made in this plan (mine, not the owner's)
+
+R-P3-1 `draft_automation` optional `slug`; R-P3-2 feature-off refusal in both tools; R-P3-3 `previous_recipe_text` pinned for a Swift-side diff; R-P3-4 model-supplied `dry_run_summary`, labelled as such; R-P3-5 workbench saves refused until P5; R-P3-6 "tokens this week" = rolling 7 days; R-P3-7 sidebar badge counts waits on `approval` and `ask` only; R-P3-8 poll 2 s / 10 s / 60 s; R-P3-9 **New automation** opens AI Chat prefilled; R-P3-10 Monaco edits the whole recipe file, the form only the frontmatter; R-P3-11 "Confirm and enable" for a disabled recipe; R-P3-12 editor chat unavailable under ollama; R-P3-13 Inbox badge counts unread inbox outputs.
