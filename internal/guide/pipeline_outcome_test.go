@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,13 +14,6 @@ import (
 // outcomeBatchReply is a batch-shaped AI reply naming U1, so a run stores a
 // real AI card (only an AI card covers the window).
 const outcomeBatchReply = `[{"user_id":"U1","summary":"s","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`
-
-// outcomeWindow is a 7-day window ending at the start of today.
-func outcomeWindow() (from, to float64) {
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	return float64(dayStart.AddDate(0, 0, -DefaultWindowDays).Unix()), float64(dayStart.Unix())
-}
 
 // seedOutcomeUser seeds U1 with enough messages inside the window to count as
 // an active user.
@@ -45,7 +37,7 @@ func TestRunForWindow_NoActiveUsersReportsNoData(t *testing.T) {
 	database := db.OpenTestDB(t)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 
 	n, err := pipe.RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
@@ -55,7 +47,7 @@ func TestRunForWindow_NoActiveUsersReportsNoData(t *testing.T) {
 
 func TestRunForWindow_NoSituationsReportsNoData(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 	seedOutcomeUser(t, database, from)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -69,7 +61,7 @@ func TestRunForWindow_NoSituationsReportsNoData(t *testing.T) {
 
 func TestRunForWindow_AllCoveredReportsCovered(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 	seedOutcomeUser(t, database, from)
 	seedOutcomeSituation(t, database, from, to)
 	gen := &mockGenerator{response: outcomeBatchReply}
@@ -88,7 +80,7 @@ func TestRunForWindow_AllCoveredReportsCovered(t *testing.T) {
 
 func TestRunForWindow_GeneratesReportsGenerated(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 	seedOutcomeUser(t, database, from)
 	seedOutcomeSituation(t, database, from, to)
 	gen := &mockGenerator{response: outcomeBatchReply}
@@ -102,7 +94,7 @@ func TestRunForWindow_GeneratesReportsGenerated(t *testing.T) {
 
 func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 	database := db.OpenTestDB(t)
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 	seedOutcomeUser(t, database, from)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
@@ -118,7 +110,7 @@ func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 func TestHasData_MatchesNoDataOutcome(t *testing.T) {
 	database := db.OpenTestDB(t)
 	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
-	from, to := outcomeWindow()
+	from, to := currentWindow()
 
 	has, err := pipe.HasData()
 	require.NoError(t, err)
