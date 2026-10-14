@@ -175,8 +175,9 @@ by anything; a workbench delete runs no sweep of the repository (only the placed
 *2026-10-14 (board #229, asks #122/#124):* deleting a workbench
 first runs the session cleanup (PROJ-18) for every placed session's
 worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
-and is listed in `kept_worktrees`; a removed one's local MCP entry is
-unregistered.
+and is listed in `kept_worktrees`; every placed session's local MCP entry
+is unregistered — a removed worktree's and a kept one's alike (a kept
+worktree's files stay).
 
 **Exception (owner approved 2026-10-14, ask #118, target 156):** a file or
 directory the removal would write or remove through that is a symlink
@@ -201,6 +202,7 @@ must be able to undo the whole feature for a folder in one step.
 **Test guards:**
 - `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives — assertions added, none relaxed)
 - `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes` (2026-10-14, board #229)
+- `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList` (2026-10-14, board #229: a kept worktree stays on disk, is listed in `kept_worktrees`, and its local MCP entry is unregistered)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
