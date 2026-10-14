@@ -2,6 +2,7 @@ package automations
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -95,7 +96,8 @@ type Budget struct {
 }
 
 // Recipe is a parsed recipe file (spec §2). Permissions are kept as written;
-// the manifest parser validates and normalises them.
+// ParseRecipe validates them with ParseManifest, and ApprovalHash and
+// ParseManifest normalise them.
 type Recipe struct {
 	Slug              string
 	Name              string
@@ -357,7 +359,23 @@ func applyLists(f map[string]*yaml.Node, r *Recipe) error {
 			return err
 		}
 	}
-	return nil
+	return validateManifest(f, r)
+}
+
+// validateManifest runs ParseManifest over the decoded lists and turns its
+// refusal into a *ParseError on the offending entry's line.
+func validateManifest(f map[string]*yaml.Node, r *Recipe) error {
+	_, err := ParseManifest(r.Permissions, r.Outputs, r.Scope)
+	var me *ManifestError
+	if !errors.As(err, &me) {
+		return err
+	}
+	n := f[me.Field]
+	line := fileLine(n)
+	if n.Kind == yaml.SequenceNode && me.Index < len(n.Content) {
+		line = fileLine(n.Content[me.Index])
+	}
+	return &ParseError{Line: line, Msg: me.Field + ": " + me.Msg}
 }
 
 func applyBudget(n *yaml.Node, r *Recipe) error {

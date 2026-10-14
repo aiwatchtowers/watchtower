@@ -19,7 +19,7 @@ func ContentHash(data []byte) string {
 // ApprovalHash is "what this code may do" (spec §2.4, §20 D5): the hex sha256
 // of the canonical JSON
 //
-//	{"permissions":[sorted],"outputs":[sorted],"scope":"<scope>","script":"<js>"}
+//	{"permissions":[sorted normalised],"outputs":[sorted],"scope":"<scope>","script":"<js>"}
 //
 // with the keys in that order and no HTML escaping. Owner confirmations and
 // auto grants bind to it, so name, description, trigger, missed, budget,
@@ -32,7 +32,7 @@ func ApprovalHash(r *Recipe) string {
 func approvalCanonical(r *Recipe) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(`{"permissions":`)
-	writeCanonical(&buf, sortedCopy(r.Permissions))
+	writeCanonical(&buf, normalizedPermissions(r.Permissions))
 	buf.WriteString(`,"outputs":`)
 	writeCanonical(&buf, sortedCopy(r.Outputs))
 	buf.WriteString(`,"scope":`)
