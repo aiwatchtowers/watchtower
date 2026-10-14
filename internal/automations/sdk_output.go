@@ -18,12 +18,18 @@ type OutputMod struct {
 	kinds map[string]SDKFunc
 }
 
+// The output kinds P1 registers (automation_outputs.kind).
+const (
+	outputKindInbox  = "inbox"
+	outputKindReport = "report"
+)
+
 // OutputModule returns the output module with output.inbox and
 // output.report registered.
 func OutputModule() *OutputMod {
 	m := &OutputMod{kinds: map[string]SDKFunc{}}
-	m.RegisterOutputKind("inbox", bufferedOutput("inbox", true))
-	m.RegisterOutputKind("report", bufferedOutput("report", false))
+	m.RegisterOutputKind(outputKindInbox, bufferedOutput(outputKindInbox, true))
+	m.RegisterOutputKind(outputKindReport, bufferedOutput(outputKindReport, false))
 	return m
 }
 
