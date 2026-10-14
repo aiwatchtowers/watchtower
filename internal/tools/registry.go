@@ -453,7 +453,7 @@ func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMess
 			return false, err
 		}
 	}
-	return r.approveEdited(row, args)
+	return r.approveWithArgs(row, args)
 }
 
 // revisedArgs is a pending row's args after the owner's patch (unchanged
@@ -476,12 +476,12 @@ func (r *Registry) revisedArgs(ctx context.Context, row *db.AgentAction, t *Tool
 	return args, nil
 }
 
-// approveEdited lands the (possibly edited) args and the approval in one
+// approveWithArgs lands the (possibly edited) args and the approval in one
 // conditional update; a lost race on a still-pending row means another edit
 // landed after this one read the row — refused rather than approving what the
 // owner did not see. Without a patch args are the row's own, so the update
 // only pins them.
-func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (bool, error) {
+func (r *Registry) approveWithArgs(row *db.AgentAction, args json.RawMessage) (bool, error) {
 	ok, err := r.db.ApproveAgentActionWithArgs(row.ID, row.ArgsJSON, string(args))
 	if err != nil || ok {
 		return ok, err
