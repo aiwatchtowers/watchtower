@@ -12,8 +12,10 @@ final class WorkbenchBranchViewsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var project: Workbench!
+    private var suiteName = ""
 
     override func setUpWithError() throws {
+        suiteName = "WorkbenchBranchViewsTests-\(UUID().uuidString)"
         (pool, path) = try TestDatabase.createPool()
         project = try pool.write { d in
             let id = try TestDatabase.insertWorkbench(d)
@@ -22,12 +24,13 @@ final class WorkbenchBranchViewsTests: XCTestCase {
     }
 
     override func tearDown() {
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
         TestDatabase.cleanup(path: path)
         super.tearDown()
     }
 
     private func makeVM() -> WorkbenchesViewModel {
-        WorkbenchesViewModel(dbPool: pool, cli: nil)
+        WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: UserDefaults(suiteName: suiteName) ?? .standard)
     }
 
     // MARK: - Crumb

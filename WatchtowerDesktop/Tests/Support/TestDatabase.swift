@@ -16,8 +16,14 @@ package enum TestDatabase {
     /// `DatabaseManager` itself stays app-side (Sources/Database), so this returns the
     /// pool directly; app-side callers that need the `DatabaseManager` wrapper use
     /// `TestDatabase.createDatabaseManager()` (Tests/Helpers/TestDatabase+DatabaseManager.swift).
+    ///
+    /// Each pool lives alone in its own directory: app code that derives a
+    /// workspace from the database path (`<dir>/memory/`, sidecars) then gets
+    /// one per test, not the shared temp dir another test process is using.
     package static func createPool() throws -> (DatabasePool, String) {
-        let path = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString).db"
+        let dir = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/watchtower.db"
         let pool = try DatabasePool(path: path)
         try pool.write { db in
             try db.execute(sql: schema)
@@ -31,6 +37,11 @@ package enum TestDatabase {
         let fm = FileManager.default
         for suffix in ["", "-wal", "-shm"] {
             try? fm.removeItem(atPath: path + suffix)
+        }
+        // The pool's own directory from createPool, with whatever the test left in it.
+        let dir = (path as NSString).deletingLastPathComponent
+        if (dir as NSString).lastPathComponent.hasPrefix("watchtower_test_") {
+            try? fm.removeItem(atPath: dir)
         }
     }
 
