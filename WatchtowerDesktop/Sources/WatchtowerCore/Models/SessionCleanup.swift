@@ -91,6 +91,14 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         items.filter { $0.isPendingRemoval && $0.kind.isKnown }.map(\.key)
     }
 
+    /// The items among `ticked` an apply of this plan may name: pending
+    /// removals of a known kind, in plan order. A kept item, an unknown
+    /// kind or a stray key never goes, whatever the ticks say.
+    package func removableItems(among ticked: Set<String>) -> [SessionCleanupItem] {
+        let removable = Set(knownRemovableKeys)
+        return items.filter { ticked.contains($0.key) && removable.contains($0.key) }
+    }
+
     /// What a cleanup sheet ticks when this plan arrives: nothing for a
     /// sweep — the owner picks by hand (spec §9) — else every pending
     /// removal of a known kind.

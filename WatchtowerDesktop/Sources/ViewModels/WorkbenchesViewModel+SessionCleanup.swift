@@ -145,8 +145,7 @@ extension WorkbenchesViewModel {
     /// empty in any other phase.
     func sheetCleanupChoice(_ session: TerminalSession, ticked: Set<String>) -> [SessionCleanupItem] {
         guard case let .ready(plan) = deleteCleanupPhase(session) else { return [] }
-        let removable = Set(plan.knownRemovableKeys)
-        return plan.items.filter { ticked.contains($0.key) && removable.contains($0.key) }
+        return plan.removableItems(among: ticked)
     }
 
     /// The Undo bar's line for the sessions waiting in it whose Delete and

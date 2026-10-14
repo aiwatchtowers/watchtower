@@ -41,8 +41,7 @@ extension WorkbenchesViewModel {
     /// applied); empty in any other phase.
     func sweepCleanupChoice(projectID: Int64, ticked: Set<String>) -> [SessionCleanupItem] {
         guard case let .ready(plan) = sweepPhase(projectID: projectID) else { return [] }
-        let removable = Set(plan.knownRemovableKeys)
-        return plan.items.filter { ticked.contains($0.key) && removable.contains($0.key) }
+        return plan.removableItems(among: ticked)
     }
 
     /// The sheet's **Clean Up**: applies exactly the ticked pending removals
