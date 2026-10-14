@@ -261,6 +261,184 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertTrue(window.performKeyEquivalent(with: try key(window, .command)))
         XCTAssertEqual(keys, [false], "a fresh press still answers")
     }
+
+    // MARK: - After a click in the drawer (board #536)
+
+    /// A drawer beside a terminal holding the keyboard, as on the workbench
+    /// page: the terminal on the left, the drawer on the right.
+    private struct Page {
+        let window: NSWindow
+        let terminal: TerminalLike
+        let drawer: NSView
+        let catcher: OwnerAskKeyCatcher.CatcherView
+    }
+
+    private func page(_ vm: WorkbenchesViewModel, _ ask: OwnerAsk) throws -> Page {
+        let terminal = TerminalLike(frame: NSRect(x: 0, y: 0, width: 200, height: 400))
+        let drawer = NSHostingView(rootView: OwnerAskDrawer(vm: vm, ask: ask).frame(width: 320, height: 400))
+        drawer.frame = NSRect(x: 200, y: 0, width: 320, height: 400)
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 400))
+        content.addSubview(terminal)
+        content.addSubview(drawer)
+        let window = NSWindow(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = content
+        drawer.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let catcher = try XCTUnwrap(catchers(in: drawer).first)
+        XCTAssertTrue(window.makeFirstResponder(terminal))
+        return Page(window: window, terminal: terminal, drawer: drawer, catcher: catcher)
+    }
+
+    private func catchers(in view: NSView) -> [OwnerAskKeyCatcher.CatcherView] {
+        if let catcher = view as? OwnerAskKeyCatcher.CatcherView { return [catcher] }
+        return view.subviews.flatMap { catchers(in: $0) }
+    }
+
+    /// The catcher's click monitor seeing a left click at `point`, then the
+    /// main queue's next turn — which comes before any key the owner presses.
+    /// A sleep, not a run loop spin: this test runs on the main queue,
+    /// which a nested run loop does not drain.
+    private func click(_ page: Page, at point: NSPoint) async throws {
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                                                     timestamp: ProcessInfo.processInfo.systemUptime,
+                                                     windowNumber: page.window.windowNumber, context: nil,
+                                                     eventNumber: 0, clickCount: 1, pressure: 1))
+        page.catcher.clicked(event)
+        try await Task.sleep(for: .milliseconds(50))
+    }
+
+    private static let inDrawer = NSPoint(x: 360, y: 200)
+    private static let onTerminal = NSPoint(x: 100, y: 200)
+
+    /// The owner's case: the terminal has the keyboard, a click picks an
+    /// option (AppKit leaves the keyboard with the terminal: the option
+    /// takes no focus), and ⌘↩ right after answers — no click in a field.
+    func testAClickOnAnOptionThenCommandReturnAnswers() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        XCTAssertFalse(page.window.performKeyEquivalent(with: try key(page.window, .command)), "the terminal's ⌘↩")
+
+        try await click(page, at: Self.inDrawer)
+        vm.asks.editDraft(ask.id) { $0.picks["a"] = .init(labels: ["Yes"]) }  // what the option's button does
+        XCTAssertTrue(page.window.firstResponder === page.window, "the click took the keyboard to the drawer")
+        XCTAssertTrue(page.window.performKeyEquivalent(with: try key(page.window, .command)))
+
+        let stored = try await answered(vm, ask)
+        XCTAssertEqual(stored?.answer?.answers.first?.labels, ["Yes"])
+    }
+
+    /// Marking a check's step with the mouse, then ⌘↩: sent.
+    func testAClickOnAStepThenCommandReturnSendsTheCheck() async throws {
+        let (vm, ask) = try await makeVM("check", payload: Self.checklist)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.inDrawer)
+        vm.asks.editDraft(ask.id) { $0.checks["1"] = .ok }
+        XCTAssertTrue(page.window.performKeyEquivalent(with: try key(page.window, .command)))
+
+        let stored = try await answered(vm, ask)
+        XCTAssertEqual(stored?.answer?.checklist.first?.state, .ok)
+    }
+
+    /// The button still off after the click (nothing picked): the key
+    /// presses nothing.
+    func testAClickLeavesADisabledButtonOff() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.inDrawer)
+        _ = page.window.performKeyEquivalent(with: try key(page.window, .command))
+        try await assertNothingSent(vm, ask)
+    }
+
+    /// A click on the terminal leaves it the keyboard and its ⌘↩.
+    func testAClickOnTheTerminalKeepsItsCommandReturn() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        vm.asks.editDraft(ask.id) { $0.picks["a"] = .init(labels: ["Yes"]) }
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.onTerminal)
+        XCTAssertTrue(page.window.firstResponder === page.terminal)
+        XCTAssertFalse(page.window.performKeyEquivalent(with: try key(page.window, .command)))
+        try await assertNothingSent(vm, ask)
+    }
+
+    /// A click in the drawer that put the keyboard in its own field (or
+    /// the document) leaves it there; the field's ⌘↩ is its own.
+    func testAClickInTheDrawerLeavesItsFieldTheKeyboard() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let field = try XCTUnwrap(textViews(in: page.drawer).first { $0.isEditable })
+
+        XCTAssertTrue(page.window.makeFirstResponder(field))
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === field)
+    }
+
+    /// A control in the drawer that took the keyboard on the click (Full
+    /// Keyboard Access) lets go of it too.
+    func testAControlInTheDrawerHoldingTheKeyboardLetsGo() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let control = TerminalLike(frame: NSRect(x: 340, y: 190, width: 40, height: 20))
+        page.window.contentView?.addSubview(control)
+
+        XCTAssertTrue(page.window.makeFirstResponder(control))
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === page.window)
+    }
+
+    /// A field beside the drawer (a target comment) holding the keyboard:
+    /// the click in the drawer takes it, so ⌘↩ answers, not sends that comment.
+    func testAClickInTheDrawerTakesTheKeyboardFromAFieldBesideIt() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let comment = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+        page.window.contentView?.addSubview(comment)
+
+        XCTAssertTrue(page.window.makeFirstResponder(comment))
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === page.window)
+    }
+
+    /// The drawer going hands the keyboard back to the terminal a click in
+    /// it took it from — unless the owner put it somewhere since.
+    func testTheDrawerGoingHandsTheKeyboardBack() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === page.window)
+        page.catcher.handBackKeyboard()
+        XCTAssertTrue(page.window.firstResponder === page.terminal, "handed back")
+
+        try await click(page, at: Self.inDrawer)
+        let other = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        page.window.contentView?.addSubview(other)
+        XCTAssertTrue(page.window.makeFirstResponder(other))
+        page.catcher.handBackKeyboard()
+        XCTAssertTrue(page.window.firstResponder === other, "taken since: left alone")
+
+        XCTAssertTrue(page.window.makeFirstResponder(page.terminal))
+        try await click(page, at: Self.inDrawer)
+        try await click(page, at: Self.onTerminal)  // a click elsewhere ends the loan
+        page.catcher.handBackKeyboard()
+        XCTAssertTrue(page.window.firstResponder === page.window, "nothing handed back after a click elsewhere")
+    }
+}
+
+/// Takes the keyboard and nothing else, as a terminal does.
+private final class TerminalLike: NSView {
+    override var acceptsFirstResponder: Bool { true }
 }
 
 /// Selectable, not editable: a review document's text view.

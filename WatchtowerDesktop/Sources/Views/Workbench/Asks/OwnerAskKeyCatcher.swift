@@ -19,7 +19,9 @@ import WatchtowerCore
 /// to be the key window with no sheet: AppKit offers key equivalents to
 /// the main window too while a panel (Open Quickly) is key. With
 /// `onMouseDown` it reports each click in its window and whether it fell
-/// inside its own frame (the drawer's active state, board #412).
+/// inside its own frame (the drawer's active state, board #412), and a
+/// click inside takes the keyboard to the drawer (`takeKeyboard`, board
+/// #536), handed back when the drawer goes.
 struct OwnerAskKeyCatcher: NSViewRepresentable {
     /// A bare key while no field has the keyboard; true when it acted.
     var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
@@ -41,6 +43,8 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
 
     static func dismantleNSView(_ view: CatcherView, coordinator: ()) {
         view.stopWatchingClicks()
+        // Once SwiftUI has finished taking the drawer down.
+        DispatchQueue.main.async { view.handBackKeyboard() }
     }
 
     private func update(_ view: CatcherView) {
@@ -93,6 +97,9 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// windows only: in the app only a visible key window gets keys.
         var isKey: @MainActor (NSWindow) -> Bool = { $0.isKeyWindow || !$0.isVisible }
         private var clickMonitor: Any?
+        /// What a click inside took the keyboard from, until a click
+        /// outside or `handBackKeyboard`.
+        private weak var keyboardLender: NSView?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -112,9 +119,43 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
             }
         }
 
-        private func clicked(_ event: NSEvent) {
+        /// Not private: tests call it with the event the monitor would see.
+        func clicked(_ event: NSEvent) {
             guard let window, event.window === window else { return }
-            onMouseDown?(isInside(event.locationInWindow))
+            let inside = isInside(event.locationInWindow)
+            onMouseDown?(inside)
+            guard inside else {
+                keyboardLender = nil
+                return
+            }
+            // After AppKit has handled the click: it may have put the
+            // keyboard in a field of the drawer.
+            DispatchQueue.main.async { [weak self] in self?.takeKeyboard(in: window) }
+        }
+
+        /// A click inside moves the keyboard here, as a click into any
+        /// other pane does (board #536): AppKit leaves it where it was —
+        /// the terminal, Monaco, a field beside — when the click lands on
+        /// a control that takes no focus (an option, a step's mark), or
+        /// gives it to the control itself under Full Keyboard Access. Only
+        /// the drawer's own text keeps it (a field the click hit, the
+        /// document); anything else lets go, so ⌘↩ and the bare keys work
+        /// as with nothing focused, while a terminal or Monaco that still
+        /// has the keyboard — clicked last — keeps every key.
+        func takeKeyboard(in window: NSWindow) {
+            guard let responder = window.firstResponder, responder !== window, !isOwnText(responder) else { return }
+            guard window.makeFirstResponder(nil) else { return }
+            // A text field lends the keyboard, not the editor it borrowed.
+            let editor = responder as? NSText
+            keyboardLender = editor?.isFieldEditor == true ? editor?.delegate as? NSView : responder as? NSView
+        }
+
+        /// The drawer going: the keyboard back to what a click in it took
+        /// it from, unless the owner put it somewhere since.
+        func handBackKeyboard() {
+            guard let lender = keyboardLender, let window = lender.window, window.firstResponder === window else { return }
+            keyboardLender = nil
+            window.makeFirstResponder(lender)
         }
 
         func stopWatchingClicks() {
@@ -139,14 +180,21 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
 
         /// In the key window with no sheet up: nothing has the keyboard
         /// (the terminal, Monaco, any field or other view keeps every key),
-        /// or read-only text inside the drawer —
-        /// told by where its visible part's middle is. Clipped to its own
-        /// bounds: outside a scroll view a text view's `visibleRect` can
-        /// reach past them, over the drawer.
+        /// or read-only text inside the drawer. A click in the drawer gets
+        /// here by letting go of the keyboard (`takeKeyboard`).
         func takesKeys(in window: NSWindow) -> Bool {
             guard window.attachedSheet == nil, isKey(window) else { return false }
             guard let responder = window.firstResponder, responder !== window else { return true }
             guard let text = responder as? NSTextView, !text.isEditable else { return false }
+            return isOwnText(text)
+        }
+
+        /// Text inside the drawer, editable or not — told by where its
+        /// visible part's middle is. Clipped to its own bounds: outside a
+        /// scroll view a text view's `visibleRect` can reach past them,
+        /// over the drawer.
+        private func isOwnText(_ responder: NSResponder) -> Bool {
+            guard let text = responder as? NSTextView else { return false }
             let visible = text.convert(text.visibleRect.intersection(text.bounds), to: nil)
             return isInside(NSPoint(x: visible.midX, y: visible.midY))
         }
