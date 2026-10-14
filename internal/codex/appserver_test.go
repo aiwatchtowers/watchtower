@@ -23,6 +23,7 @@ const (
 	fakeLogEnv   = "WT_FAKE_APPSERVER_LOG"   // every request received, one JSON line each
 	fakeHooksEnv = "WT_FAKE_APPSERVER_HOOKS" // hooks/list's hooks, a JSON array
 	fakePIDsEnv  = "WT_FAKE_APPSERVER_PIDS"  // hang: "<server pid> <child pid>"
+	fakePGIDEnv  = "WT_FAKE_APPSERVER_PGID"  // the server's pid (its process group), written first thing
 )
 
 func TestMain(m *testing.M) {
@@ -33,6 +34,10 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeAppServer(mode string) int {
+	// Before anything is spawned, so the test's cleanup always knows the group.
+	if err := os.WriteFile(os.Getenv(fakePGIDEnv), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return 2
+	}
 	if mode == "hang" || mode == "ok-child" {
 		child := exec.Command("sleep", "30")
 		if err := child.Start(); err != nil {
@@ -87,8 +92,8 @@ func fakeAnswer(mode string, id int, method string) map[string]any {
 }
 
 type fakeServer struct {
-	log, pids string
-	env       []string
+	log, pids, pgid string
+	env             []string
 }
 
 func newFakeServer(t *testing.T, mode string, hooks []map[string]any) fakeServer {
@@ -98,10 +103,41 @@ func newFakeServer(t *testing.T, mode string, hooks []map[string]any) fakeServer
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := fakeServer{log: filepath.Join(dir, "requests.jsonl"), pids: filepath.Join(dir, "pids")}
+	f := fakeServer{log: filepath.Join(dir, "requests.jsonl"), pids: filepath.Join(dir, "pids"), pgid: filepath.Join(dir, "pgid")}
 	f.env = append(os.Environ(),
-		fakeModeEnv+"="+mode, fakeLogEnv+"="+f.log, fakeHooksEnv+"="+string(hooksJSON), fakePIDsEnv+"="+f.pids)
+		fakeModeEnv+"="+mode, fakeLogEnv+"="+f.log, fakeHooksEnv+"="+string(hooksJSON),
+		fakePIDsEnv+"="+f.pids, fakePGIDEnv+"="+f.pgid)
+	t.Cleanup(func() { reapFakeGroup(t, f) })
 	return f
+}
+
+// reapFakeGroup is the backstop for a test that fails before the code under
+// test kills the stub: the server leads its own process group (Setpgid), so
+// killing the group takes its sleep child too, and the cleanup waits until
+// the group is gone. StartAppServer owns and waits the server; the child is
+// reparented and reaped by init. No pgid file: the stub never started.
+func reapFakeGroup(t *testing.T, f fakeServer) {
+	b, err := os.ReadFile(f.pgid)
+	if err != nil {
+		return
+	}
+	pgid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pgid <= 1 {
+		return
+	}
+	alive := func() bool { return !errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) }
+	if !alive() {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	deadline := time.Now().Add(5 * time.Second)
+	for alive() {
+		if time.Now().After(deadline) {
+			t.Errorf("fake app-server group %d still alive after SIGKILL", pgid)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (f fakeServer) start(t *testing.T) AppServer {
@@ -257,18 +293,37 @@ func TestAppServer_ListEmptyIsNoHooks(t *testing.T) {
 
 func TestAppServer_TimeoutKillsAndReturnsUnavailable(t *testing.T) {
 	old := appServerBudget
-	appServerBudget = 500 * time.Millisecond
 	t.Cleanup(func() { appServerBudget = old })
-	f := newFakeServer(t, "hang", nil)
-	start := time.Now()
-	_, err := StartAppServer(context.Background(), os.Args[0], nil, f.env)
-	if !errors.Is(err, ErrCodexTrustUnavailable) {
-		t.Fatalf("err = %v, want ErrCodexTrustUnavailable", err)
+	// The budget starts with StartAppServer, before the stub (this test binary
+	// re-run) has spawned its child and written the pids; a slow start (-race)
+	// can spend the whole budget first. The group kill is then still
+	// unobservable — no pids to check — so such a run proves nothing and is
+	// retried with a longer budget. Every conclusive run asserts everything.
+	for _, budget := range []time.Duration{500 * time.Millisecond, 2 * time.Second, 5 * time.Second} {
+		appServerBudget = budget
+		f := newFakeServer(t, "hang", nil)
+		start := time.Now()
+		_, err := StartAppServer(context.Background(), os.Args[0], nil, f.env)
+		if !errors.Is(err, ErrCodexTrustUnavailable) {
+			t.Fatalf("err = %v, want ErrCodexTrustUnavailable", err)
+		}
+		if d := time.Since(start); d > budget+4500*time.Millisecond {
+			t.Fatalf("took %s, want about the budget (%s)", d, budget)
+		}
+		if _, err := os.Stat(f.pids); errors.Is(err, os.ErrNotExist) {
+			// SIGKILLed before the write: a dead stub never writes later —
+			// so a pids file showing up now means it survived the kill.
+			time.Sleep(300 * time.Millisecond)
+			if _, err := os.Stat(f.pids); err == nil {
+				t.Fatalf("budget %s: the pids appeared after the kill — the stub survived it", budget)
+			}
+			t.Logf("budget %s spent before the stub wrote its pids; retrying longer", budget)
+			continue
+		}
+		waitPIDsGone(t, f)
+		return
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %s, want about the budget", d)
-	}
-	waitPIDsGone(t, f)
+	t.Fatal("the stub never wrote its pids within any budget")
 }
 
 // waitGone fails unless pid exits (and is reaped by whoever owns it) soon.
@@ -296,16 +351,43 @@ func zombie(pid int) bool {
 // group at once, the budget notwithstanding: nothing it spawned survives.
 func TestAppServer_CallerCancelKillsTheGroup(t *testing.T) {
 	t.Run("while starting", func(t *testing.T) {
+		// A budget far past the test's own bounds: the cancel, not the
+		// budget, is what ends the start.
+		old := appServerBudget
+		appServerBudget = time.Minute
+		t.Cleanup(func() { appServerBudget = old })
 		f := newFakeServer(t, "hang", nil)
 		ctx, cancel := context.WithCancel(context.Background())
-		time.AfterFunc(300*time.Millisecond, cancel)
-		start := time.Now()
+		defer cancel()
+		// Cancel once the stub has spawned its child and written the pids —
+		// a fixed delay raced the stub's own start-up (a -race test binary
+		// re-exec can take longer than the delay), and a group killed before
+		// the write leaves no pids to check. The "hang" stub never answers
+		// initialize, so the cancel still lands while StartAppServer waits.
+		cancelled := make(chan time.Time, 1)
+		stop, done := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() { close(stop); <-done }) // the poller never outlives the subtest
+		go func() {
+			defer close(done)
+			defer func() { cancelled <- time.Now(); cancel() }()
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				if b, err := os.ReadFile(f.pids); err == nil && len(strings.Fields(string(b))) == 2 {
+					return
+				}
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		}()
 		_, err := StartAppServer(ctx, os.Args[0], nil, f.env)
 		if !errors.Is(err, ErrCodexTrustUnavailable) {
 			t.Fatalf("err = %v", err)
 		}
-		if d := time.Since(start); d > 5*time.Second {
-			t.Fatalf("took %s: the cancel did not end the wait", d)
+		if d := time.Since(<-cancelled); d > 5*time.Second {
+			t.Fatalf("took %s after the cancel: the cancel did not end the wait", d)
 		}
 		waitPIDsGone(t, f)
 	})
