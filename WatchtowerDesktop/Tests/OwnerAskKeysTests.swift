@@ -444,6 +444,29 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertTrue(page.window.firstResponder === covered)
     }
 
+    /// A text field beside the drawer (a target's title, the board search)
+    /// holding the keyboard: the click lends it, and the drawer going hands
+    /// it back to the field — not its editor — with the caret where it was,
+    /// not the whole text selected.
+    func testATextFieldGetsTheKeyboardBackWithItsCaret() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
+        field.stringValue = "Draft title"
+        page.window.contentView?.addSubview(field)
+        XCTAssertTrue(page.window.makeFirstResponder(field))
+        let caret = NSRange(location: 3, length: 2)
+        try XCTUnwrap(field.currentEditor()).selectedRange = caret
+
+        try await click(page, at: Self.inDrawer)
+        XCTAssertTrue(page.window.firstResponder === page.window)
+        try await removeDrawer(page)
+        let editor = try XCTUnwrap(page.window.firstResponder as? NSText)
+        XCTAssertTrue(editor.delegate === field, "the field has the keyboard again")
+        XCTAssertEqual(editor.selectedRange, caret)
+    }
+
     /// A field beside the drawer (a target comment) holding the keyboard:
     /// the click in the drawer takes it, so ⌘↩ answers, not sends that comment.
     func testAClickInTheDrawerTakesTheKeyboardFromAFieldBesideIt() async throws {

@@ -120,10 +120,7 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         private var clickMonitor: Any?
         /// What a click inside took the keyboard from, until
         /// `handBackKeyboard` or a later click takes it from something else.
-        private var keyboardLender: NSView? {
-            get { (loan ?? ownLoan).lender }
-            set { (loan ?? ownLoan).lender = newValue }
-        }
+        private var currentLoan: OwnerAskKeyboardLoan { loan ?? ownLoan }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -172,22 +169,34 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         func takeKeyboard(in window: NSWindow, before: NSResponder?) {
             guard let responder = window.firstResponder, responder !== window, !isOwnText(responder) else { return }
             guard responder === before || liesInside(responder) else { return }
+            // A text field lends the keyboard, not the editor it borrowed —
+            // with its caret. Both read before the editor lets go of them.
+            let editor = (before as? NSText).flatMap { $0.isFieldEditor ? $0 : nil }
+            let field = editor?.delegate as? NSView
+            let selection = editor?.selectedRange
             guard window.makeFirstResponder(nil) else { return }
             guard let before, before !== window, isWorkspace(before) || !liesInside(before) else { return }
-            // A text field lends the keyboard, not the editor it borrowed.
-            let editor = before as? NSText
-            keyboardLender = editor?.isFieldEditor == true ? editor?.delegate as? NSView : before as? NSView
+            currentLoan.lender = editor == nil ? before as? NSView : field
+            currentLoan.selection = selection
         }
 
         /// The drawer going: the keyboard back to what a click in it took
         /// it from, unless the owner put it somewhere since. The loan ends
         /// either way: a refused one must not reach a later drawer's close.
         func handBackKeyboard() {
-            let lender = keyboardLender
-            keyboardLender = nil
+            let (lender, selection) = (currentLoan.lender, currentLoan.selection)
+            currentLoan.lender = nil
+            currentLoan.selection = nil
             guard let lender, !lender.isHiddenOrHasHiddenAncestor,
-                  let window = lender.window, window.firstResponder === window else { return }
-            window.makeFirstResponder(lender)
+                  let window = lender.window, window.firstResponder === window,
+                  window.makeFirstResponder(lender) else { return }
+            // Becoming first responder selects a text field's whole text:
+            // its caret back instead, so the next key edits the draft.
+            if let selection, let editor = (lender as? NSTextField)?.currentEditor() {
+                let length = (editor.string as NSString).length
+                let location = min(selection.location, length)
+                editor.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+            }
         }
 
         func stopWatchingClicks() {
@@ -253,4 +262,6 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
 @MainActor
 final class OwnerAskKeyboardLoan {
     weak var lender: NSView?
+    /// A text field lender's caret.
+    var selection: NSRange?
 }
