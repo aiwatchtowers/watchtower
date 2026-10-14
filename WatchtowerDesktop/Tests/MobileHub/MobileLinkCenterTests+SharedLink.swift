@@ -221,11 +221,11 @@ extension MobileLinkCenterTests {
         shares.failNext("setPublicLink", times: 1)
         late.release()
 
-        await awaitHubCondition("the failed close is handed to a new retry") {
-            center.linkCloseRetry.map { $0 != callersRetry } == true
+        await awaitHubCondition("the failed close marks the sweep again") {
+            (try? sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey)) == "1"
         }
-        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1")
         XCTAssertTrue(shares.isLinkOpen, "the reconciling close failed")
+        XCTAssertEqual(center.linkCloseRetry, callersRetry, "the running retry chain keeps the close; it is not restarted")
     }
 
     /// #262: however the opens and closes overlap, only one public-link call runs at a time.

@@ -460,6 +460,8 @@ final class MobileLinkCenter {
     @ObservationIgnored private var sweepRetryGeneration = 0
     /// The retry of an answering close's failed public-link close; cancelled with `sweepRetry`.
     @ObservationIgnored private(set) var linkCloseRetry: Task<Void, Never>?
+    /// Counts `scheduleLinkCloseRetry` calls; a retry clears `linkCloseRetry` on exit only if no newer one replaced it.
+    @ObservationIgnored private var linkCloseRetryGeneration = 0
 
     /// Closes the public link while the sweep is pending and leaves the participants to the sweep. false: no sweep
     /// is pending (no link was opened). A failure is logged; the sweep closes the link again.
@@ -484,7 +486,12 @@ final class MobileLinkCenter {
     /// longer pending, or a code is being issued or on screen (its link stays open). The grace's sweep closes it too.
     private func scheduleLinkCloseRetry(reason: CloseReason) {
         linkCloseRetry?.cancel()
+        linkCloseRetryGeneration += 1
+        let generation = linkCloseRetryGeneration
         linkCloseRetry = Task { [weak self, sleep] in
+            defer {
+                if let self, self.linkCloseRetryGeneration == generation { self.linkCloseRetry = nil }
+            }
             for delay in Self.linkCloseRetryDelays {
                 await sleep(delay)
                 guard !Task.isCancelled, let self, !self.yieldsToIssue else { return }
@@ -641,7 +648,9 @@ final class MobileLinkCenter {
         } catch {
             logger.error("share sweep mark not set (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
         }
-        guard linkCloseWaiters == 0, !linkRetriesHeld else { return }
+        // A running retry chain owns the close: restarting it would reset its delays (a stuck call that later
+        // fails would turn the bounded retries into an open-ended loop).
+        guard linkCloseWaiters == 0, !linkRetriesHeld, linkCloseRetry == nil else { return }
         scheduleLinkCloseRetry(reason: reason)
     }
 
