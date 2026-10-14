@@ -53,3 +53,34 @@ func TestGetLocalEmail_MissingAndMalformed(t *testing.T) {
 	_, _, err = d.GetLocalEmail(ctx, "pop3", 1, "x")
 	require.Error(t, err)
 }
+
+// list_emails pages one account's mail by date: both stores carry an
+// (account_id, internal_date) index (migration 00113).
+func TestLocalEmails_AccountDateIndexes(t *testing.T) {
+	d := OpenTestDB(t)
+	for table, index := range map[string]string{
+		"gmail_messages": "idx_gmail_messages_account_date",
+		"imap_messages":  "idx_imap_messages_account_date",
+	} {
+		assert.Equal(t, []string{"account_id", "internal_date"}, localEmailIndexColumns(t, d, index), table)
+
+		var owner string
+		require.NoError(t, d.QueryRow(`SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&owner))
+		assert.Equal(t, table, owner)
+	}
+}
+
+func localEmailIndexColumns(t *testing.T, d *DB, index string) []string {
+	t.Helper()
+	rows, err := d.Query(`SELECT name FROM pragma_index_info(?)`, index)
+	require.NoError(t, err)
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var c string
+		require.NoError(t, rows.Scan(&c))
+		cols = append(cols, c)
+	}
+	require.NoError(t, rows.Err())
+	return cols
+}

@@ -133,7 +133,14 @@ CREATE INDEX idx_automation_outputs_kind ON automation_outputs(kind, created_at)
 CREATE INDEX idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX idx_automation_outputs_run ON automation_outputs(run_id);
 
+-- The automation email reads (list_emails) page one account's mail newest
+-- first, optionally from a `since` instant.
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
+CREATE INDEX IF NOT EXISTS idx_imap_messages_account_date ON imap_messages(account_id, internal_date);
+
 -- +goose Down
+DROP INDEX IF EXISTS idx_imap_messages_account_date;
+DROP INDEX IF EXISTS idx_gmail_messages_account_date;
 DROP TABLE IF EXISTS automation_outputs;
 DROP TABLE IF EXISTS automation_state;
 DROP TABLE IF EXISTS automation_run_steps;
