@@ -288,7 +288,12 @@ func TestAppServer_TimeoutKillsAndReturnsUnavailable(t *testing.T) {
 			t.Fatalf("took %s, want about the budget (%s)", d, budget)
 		}
 		if _, err := os.Stat(f.pids); errors.Is(err, os.ErrNotExist) {
-			// SIGKILLed before the write: a dead stub never writes later.
+			// SIGKILLed before the write: a dead stub never writes later —
+			// so a pids file showing up now means it survived the kill.
+			time.Sleep(300 * time.Millisecond)
+			if _, err := os.Stat(f.pids); err == nil {
+				t.Fatalf("budget %s: the pids appeared after the kill — the stub survived it", budget)
+			}
 			t.Logf("budget %s spent before the stub wrote its pids; retrying longer", budget)
 			continue
 		}
