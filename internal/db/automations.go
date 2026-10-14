@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// ErrNotFound is what the automation getters and setters wrap when no row
+// ErrAutomationNotFound is what the automation getters and setters wrap when no row
 // matches, so a caller can tell a missing automation from a failed lookup.
-var ErrNotFound = errors.New("not found")
+var ErrAutomationNotFound = errors.New("automation not found")
 
 // ErrHashMismatch refuses a confirmation whose hash is not the row's current
 // approval_hash: the recipe changed after the owner looked at it.
@@ -200,11 +200,11 @@ func (db *DB) UpsertAutomationIndex(a Automation) (int64, error) {
 	return id, nil
 }
 
-// GetAutomation returns automation id; ErrNotFound when there is none.
+// GetAutomation returns automation id; ErrAutomationNotFound when there is none.
 func (db *DB) GetAutomation(id int64) (*Automation, error) {
 	a, err := scanAutomation(db.QueryRow(`SELECT `+automationCols+` FROM automations WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("automation %d: %w", id, ErrNotFound)
+		return nil, fmt.Errorf("automation %d: %w", id, ErrAutomationNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading automation %d: %w", id, err)
@@ -213,12 +213,12 @@ func (db *DB) GetAutomation(id int64) (*Automation, error) {
 }
 
 // GetAutomationBySlug returns the automation of slug in a scope (projectID 0
-// for personal), removed rows included; ErrNotFound when there is none.
+// for personal), removed rows included; ErrAutomationNotFound when there is none.
 func (db *DB) GetAutomationBySlug(scope string, projectID int64, slug string) (*Automation, error) {
 	a, err := scanAutomation(db.QueryRow(`SELECT `+automationCols+` FROM automations
 		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND slug = ?`, scope, projectID, slug))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("automation %s/%d/%s: %w", scope, projectID, slug, ErrNotFound)
+		return nil, fmt.Errorf("automation %s/%d/%s: %w", scope, projectID, slug, ErrAutomationNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading automation %s/%d/%s: %w", scope, projectID, slug, err)
@@ -324,7 +324,7 @@ func (db *DB) SetAutomationEnabled(id int64, enabled bool, now time.Time) error 
 
 // ConfirmAutomation records the owner's confirmation of hash. A hash that is
 // empty or not the row's current approval_hash fails with ErrHashMismatch and
-// leaves the row unchanged; a missing row fails with ErrNotFound.
+// leaves the row unchanged; a missing row fails with ErrAutomationNotFound.
 func (db *DB) ConfirmAutomation(id int64, hash string) error {
 	if hash == "" {
 		return fmt.Errorf("automation %d: empty hash: %w", id, ErrHashMismatch)
@@ -359,7 +359,7 @@ func (db *DB) SetAutomationSchedule(id int64, lastScheduledFor, nextRunAt *time.
 }
 
 // DeleteAutomation deletes automation id with its runs, steps, state and
-// outputs (FK cascade); ErrNotFound when there is none.
+// outputs (FK cascade); ErrAutomationNotFound when there is none.
 func (db *DB) DeleteAutomation(id int64) error {
 	res, err := db.Exec(`DELETE FROM automations WHERE id = ?`, id)
 	if err != nil {
@@ -374,7 +374,7 @@ func requireAutomationRow(res sql.Result, id int64) error {
 		return fmt.Errorf("automation %d: %w", id, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("automation %d: %w", id, ErrNotFound)
+		return fmt.Errorf("automation %d: %w", id, ErrAutomationNotFound)
 	}
 	return nil
 }

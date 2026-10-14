@@ -133,8 +133,8 @@ func TestAutomationIndex_ConfirmRefusesStaleHash(t *testing.T) {
 	if got := mustGetAutomation(t, d, id).ConfirmedHash; got != "" {
 		t.Errorf("confirmed_hash = %q after refused confirms, want ''", got)
 	}
-	if err := d.ConfirmAutomation(id+100, "h1"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("ConfirmAutomation(missing) = %v, want ErrNotFound", err)
+	if err := d.ConfirmAutomation(id+100, "h1"); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("ConfirmAutomation(missing) = %v, want ErrAutomationNotFound", err)
 	}
 }
 
@@ -223,8 +223,8 @@ func TestAutomationIndex_EnableSetsLastScheduledForNow(t *testing.T) {
 	if a = mustGetAutomation(t, d, id); !a.LastScheduledFor.Equal(later) {
 		t.Errorf("enable after disable: last=%v, want %v", a.LastScheduledFor, later)
 	}
-	if err := d.SetAutomationEnabled(id+100, true, now); !errors.Is(err, ErrNotFound) {
-		t.Errorf("SetAutomationEnabled(missing) = %v, want ErrNotFound", err)
+	if err := d.SetAutomationEnabled(id+100, true, now); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("SetAutomationEnabled(missing) = %v, want ErrAutomationNotFound", err)
 	}
 }
 
@@ -321,8 +321,8 @@ func TestAutomationIndex_SlugUniquePerScope(t *testing.T) {
 	if got, err = d.GetAutomationBySlug("personal", 0, "triage"); err != nil || got.ProjectID != 0 {
 		t.Errorf("GetAutomationBySlug(personal) = %+v, %v", got, err)
 	}
-	if _, err = d.GetAutomationBySlug("personal", 0, "nope"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("GetAutomationBySlug(missing) = %v, want ErrNotFound", err)
+	if _, err = d.GetAutomationBySlug("personal", 0, "nope"); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("GetAutomationBySlug(missing) = %v, want ErrAutomationNotFound", err)
 	}
 	list, err := d.ListAutomations(AutomationFilter{Scope: "workbench", ProjectID: wb1})
 	if err != nil || len(list) != 1 || list[0].ProjectID != wb1 {
@@ -332,14 +332,14 @@ func TestAutomationIndex_SlugUniquePerScope(t *testing.T) {
 
 func TestAutomationIndex_GetMissingIsNotFound(t *testing.T) {
 	d := openTestDB(t)
-	if _, err := d.GetAutomation(42); !errors.Is(err, ErrNotFound) {
-		t.Errorf("GetAutomation(missing) = %v, want ErrNotFound", err)
+	if _, err := d.GetAutomation(42); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("GetAutomation(missing) = %v, want ErrAutomationNotFound", err)
 	}
-	if err := d.DeleteAutomation(42); !errors.Is(err, ErrNotFound) {
-		t.Errorf("DeleteAutomation(missing) = %v, want ErrNotFound", err)
+	if err := d.DeleteAutomation(42); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("DeleteAutomation(missing) = %v, want ErrAutomationNotFound", err)
 	}
-	if err := d.SetAutomationSchedule(42, nil, nil); !errors.Is(err, ErrNotFound) {
-		t.Errorf("SetAutomationSchedule(missing) = %v, want ErrNotFound", err)
+	if err := d.SetAutomationSchedule(42, nil, nil); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("SetAutomationSchedule(missing) = %v, want ErrAutomationNotFound", err)
 	}
 }
 
