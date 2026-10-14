@@ -901,8 +901,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // stash a durable copy and point the event at that. A failed
             // stash keeps the temporary URL — best-effort, the consumer's
             // validation surfaces a vanished file as a failed ingest. An
-            // asset over the stash cap is not copied (its consumer refuses
-            // it by size).
+            // asset over the stash cap is not copied either: the event keeps
+            // CloudKit's temporary URL, so the hub refuses it by size only
+            // while that file is still there; once CloudKit purged it, the
+            // hub reports the audio as missing, not as too large (the phone's
+            // own uploader cap keeps a real recording under the stash cap).
             guard let assetURL = record.assetFileURL,
                   let stashed = store.stashAsset(from: assetURL, recordName: record.recordName, zone: record.zone) else {
                 return record
