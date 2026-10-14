@@ -311,6 +311,32 @@ struct ConfigServiceTests {
         #expect(svc.briefingHour == 9)
     }
 
+    /// Go's defaults since 2026-10-14 (#757): an absent `enabled` key, or a
+    /// missing section, reads as on; an explicit false is kept.
+    @Test("Absent calendar.enabled and gmail.enabled read as Go's true")
+    func loadCalendarAndGmailEnabledDefaults() {
+        let absent = ConfigService(configPath: makeTempConfig("active_workspace: x\n"))
+        #expect(absent.calendarEnabled == true)
+        #expect(absent.gmailEnabled == true)
+
+        let noKey = ConfigService(configPath: makeTempConfig("""
+        calendar:
+          sync_days_ahead: 5
+        gmail: {}
+        """))
+        #expect(noKey.calendarEnabled == true)
+        #expect(noKey.gmailEnabled == true)
+
+        let off = ConfigService(configPath: makeTempConfig("""
+        calendar:
+          enabled: false
+        gmail:
+          enabled: false
+        """))
+        #expect(off.calendarEnabled == false)
+        #expect(off.gmailEnabled == false)
+    }
+
     @Test("Load parses calendar settings")
     func loadCalendar() {
         let path = makeTempConfig("""

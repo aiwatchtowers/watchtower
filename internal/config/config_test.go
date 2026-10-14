@@ -150,6 +150,22 @@ func TestLoad_ReactionCommandsDefaults(t *testing.T) {
 	assert.Equal(t, 0, cfg.ReactionCommands.IntervalHours, "absent interval = every cycle")
 }
 
+// TestLoad_CalendarAndGmailDefaults pins the owner's 2026-10-14 call (#757):
+// a config with no calendar/gmail block syncs both (the per-account
+// google_accounts flags still decide which accounts), and an explicit false
+// is honored.
+func TestLoad_CalendarAndGmailDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, cfg.Calendar.Enabled, "absent calendar.enabled = on")
+	assert.True(t, cfg.Gmail.Enabled, "absent gmail.enabled = on")
+
+	off, err := Load(writeTestConfig(t, "calendar:\n  enabled: false\ngmail:\n  enabled: false\n"))
+	require.NoError(t, err)
+	assert.False(t, off.Calendar.Enabled)
+	assert.False(t, off.Gmail.Enabled)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",

@@ -38,7 +38,14 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   `knowledge-connectors` (Confluence in search) and the core entries.
   `OnboardingFeaturePlanTests` parses `internal/features/registry.go` and
   fails on a toggleable feature that is in none of these sets.
-- Default goals: all but Meetings. Zero goals = Development only.
+- Default goals: all four (owner decision 2026-10-14, #756 — Meetings was
+  off before). Zero goals = Development only.
+- Calendar and Gmail sync default on (`calendar.enabled`/`gmail.enabled`
+  are `true` in Go's defaults and Swift's `ConfigService` fallbacks, owner
+  decision 2026-10-14, #757): a Google account connected with the calendar
+  or mail ticked syncs it without a config edit; the per-account
+  `google_accounts` flags still decide which accounts sync what, and an
+  explicit `false` in the config is kept.
 - `OnboardingFeatureSelection` follows the goals until a switch is flipped
   on the Customize screen (`FeatureCustomizeView`), then stays frozen until
   "Reset to goals". It is applied by `FeatureManagerService.applySelection`

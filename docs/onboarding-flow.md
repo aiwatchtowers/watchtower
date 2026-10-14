@@ -35,7 +35,7 @@ Customize screen never loses what was picked.
  ┌──────────────────────────────────────────────────────────────────┐
  │ 1. GOALS (purpose)                                               │
  │  goals: Work communication · Tasks & Jira · Meetings ·           │
- │         Development in Workbench   (default: all but Meetings)   │
+ │         Development in Workbench   (default: all four)           │
  │  "Customize features →"  · assistant language row · AI CLI check │
  │  Continue blocked until `watchtower ai test` passes              │
  │  Continue: workspace init (no Slack yet) → history depth (unset) │
