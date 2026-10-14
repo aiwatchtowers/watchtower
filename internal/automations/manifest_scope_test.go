@@ -27,6 +27,9 @@ func TestManifest_JiraLinkedIssuesWidenScope(t *testing.T) {
 	seedJiraIssue(t, d, acct, "PAY-2", "PAY",
 		`{"key":"PAY-2","fields":{"issuelinks":[{"id":"2","inwardIssue":{"key":"PAY-1"}}],"parent":{"key":"EPC-3"}}}`)
 	seedJiraIssue(t, d, acct, "PAY-3", "PAY", `not json`)
+	seedJiraIssue(t, d, acct, "PAY-4", "PAY", ``)
+	seedJiraIssue(t, d, acct, "PAY-5", "PAY", `{"key":"PAY-5","fields":{}}`)
+	mustExec(t, d, `UPDATE jira_issues SET custom_fields_json = '{"customfield_1":{"key":"RSK-4"}}' WHERE key = 'PAY-5'`)
 
 	pay := mustManifest(t, []string{"jira:read@PAY"})
 	payOps := mustManifest(t, []string{"jira:read@PAY", "jira:read@OPS"})
@@ -36,12 +39,20 @@ func TestManifest_JiraLinkedIssuesWidenScope(t *testing.T) {
 	expectDeny(t, d, pay, get, `{"key":"PAY-1"}`, "jira:read@OPS")
 	expectAdmit(t, d, payOps, get, `{"key":"PAY-1"}`)
 	expectDeny(t, d, payOps, get, `{"key":"PAY-2"}`, "jira:read@EPC")
-	expectAdmit(t, d, pay, get, `{"key":"PAY-3"}`) // unreadable raw JSON references nothing
+	// Unreadable or empty raw JSON fails closed: only @* admits.
+	star := mustManifest(t, []string{"jira:read@*"})
+	for _, k := range []string{"PAY-3", "PAY-4"} {
+		expectDeny(t, d, payOps, get, `{"key":"`+k+`"}`, "jira:read@*")
+		expectAdmit(t, d, star, get, `{"key":"`+k+`"}`)
+	}
+	// An issue key in the custom fields needs its project too.
+	expectDeny(t, d, payOps, get, `{"key":"PAY-5"}`, "jira:read@RSK")
+	expectAdmit(t, d, mustManifest(t, []string{"jira:read@PAY", "jira:read@RSK"}), get, `{"key":"pay-5"}`)
 
 	// list_jira_issues: every project its issues reference.
-	expectDeny(t, d, pay, list, `{"project":"PAY"}`, "jira:read@EPC") // referenced projects in key order
-	expectDeny(t, d, payOps, list, `{"project":"PAY"}`, "jira:read@EPC")
-	expectAdmit(t, d, mustManifest(t, []string{"jira:read@PAY", "jira:read@OPS", "jira:read@EPC"}), list, `{"project":"pay"}`)
+	// The project holds an unreadable row, so only @* admits the list.
+	expectDeny(t, d, mustManifest(t, []string{"jira:read@PAY", "jira:read@OPS", "jira:read@EPC", "jira:read@RSK"}), list, `{"project":"PAY"}`, "jira:read@*")
+	expectAdmit(t, d, star, list, `{"project":"pay"}`)
 
 	// get_jira_time_in_status adds linked issues of any project unless include_linked is false.
 	tis := tools.NewGetJiraTimeInStatus()
@@ -52,6 +63,18 @@ func TestManifest_JiraLinkedIssuesWidenScope(t *testing.T) {
 
 	// get_jira_status_history returns only its keys' issues, never their links.
 	expectAdmit(t, d, pay, tools.NewGetJiraStatusHistory(), `{"keys":["PAY-1"]}`)
+}
+
+func TestManifest_ListJiraIssuesReferencedProjectsInKeyOrder(t *testing.T) {
+	d := openManifestTestDB(t)
+	acct := db.SeedTestJiraAccount(t, d)
+	seedJiraIssue(t, d, acct, "PAY-1", "PAY",
+		`{"key":"PAY-1","fields":{"issuelinks":[{"id":"1","outwardIssue":{"key":"OPS-9"}}]}}`)
+	seedJiraIssue(t, d, acct, "PAY-2", "PAY", `{"key":"PAY-2","fields":{"parent":{"key":"EPC-3"}}}`)
+	list := tools.NewListJiraIssues()
+	expectDeny(t, d, mustManifest(t, []string{"jira:read@PAY"}), list, `{"project":"PAY"}`, "jira:read@EPC")
+	expectDeny(t, d, mustManifest(t, []string{"jira:read@PAY", "jira:read@EPC"}), list, `{"project":"PAY"}`, "jira:read@OPS")
+	expectAdmit(t, d, mustManifest(t, []string{"jira:read@PAY", "jira:read@OPS", "jira:read@EPC"}), list, `{"project":"pay"}`)
 }
 
 func TestManifest_CaseVariantScopeArgRefused(t *testing.T) {
