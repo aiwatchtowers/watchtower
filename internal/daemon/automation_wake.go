@@ -103,13 +103,22 @@ func (d *Daemon) SetAutomations(scheduler, executor AutomationRunner) {
 // AutomationWakeSignal received — the WatchTrigger contract: non-blocking
 // sends, so a burst collapses into the one wake already queued, and the
 // channel is closed once ctx is done.
+//
+// At ctx.Done the signal is ignored (signal.Ignore), not handed back to its
+// default disposition (signal.Stop): the daemon's capabilities file still
+// advertises the wake until Run's deferred cleanup removes it, and a CLI
+// that read it in that window must find the signal harmless to a daemon that
+// is shutting down. It stays ignored until process exit, or until a later
+// WatchAutomationWake re-enables it.
 func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 	ch := make(chan struct{}, 1)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, AutomationWakeSignal)
 	go func() {
-		defer signal.Stop(sigCh)
+		// Deferred last so it runs first: the signal is ignored before the
+		// close tells a reader the watcher is done.
 		defer close(ch)
+		defer signal.Ignore(AutomationWakeSignal)
 		for {
 			select {
 			case <-ctx.Done():

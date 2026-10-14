@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -53,6 +54,29 @@ func TestWatchAutomationWake_CoalescesAndCloses(t *testing.T) {
 	receiveWithin(t, ch, "forwarder stopped serving after a burst")
 
 	cancel()
+	drainUntilClosed(t, ch)
+}
+
+// After ctx is done the watcher leaves the signal ignored instead of
+// handing it back to its default disposition: a CLI that read the
+// capabilities file just before the daemon removed it must not reach a
+// shutting-down daemon with an unhandled SIGUSR2. signal.Ignored pins the
+// disposition (signal.Stop would leave it false); the self-signal below must
+// not end the test process either.
+func TestWatchAutomationWake_ShutdownKeepsSignalIgnored(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := WatchAutomationWake(ctx)
+	require.False(t, signal.Ignored(AutomationWakeSignal), "handled while watching")
+	cancel()
+	drainUntilClosed(t, ch)
+
+	assert.True(t, signal.Ignored(AutomationWakeSignal), "the wake signal must stay ignored after shutdown")
+	require.NoError(t, syscall.Kill(os.Getpid(), AutomationWakeSignal))
+	time.Sleep(200 * time.Millisecond)
+}
+
+func drainUntilClosed(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
