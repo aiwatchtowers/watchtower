@@ -82,7 +82,7 @@ func init() {
 	calendarEventsCmd.Flags().BoolVar(&calendarFlagJSON, "json", false, "output as JSON")
 
 	calendarLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
-	calendarLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	calendarLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	calendarSyncCmd.Flags().Int64Var(&calendarSyncFlagAccount, "account", 0, "sync only this account id")
 }
 

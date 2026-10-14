@@ -71,9 +71,9 @@ final class GoogleAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `google add` args — always `--app-return` (the OAuth success
-    /// page redirects to watchtower-auth:// so macOS brings the app back to
-    /// the foreground), the selected services, an optional `--label`, and
+    /// Builds the `google add` args — always `--app-return` (the CLI opens
+    /// watchtower-auth:// once consent is done, so macOS brings the app back
+    /// to the foreground), the selected services, an optional `--label`, and
     /// `--client-id`/`--client-secret-stdin` when the account brings its own
     /// Google Cloud OAuth client instead of Watchtower's build-time default.
     /// Pure and side-effect-free so the flag assembly is directly testable
