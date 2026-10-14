@@ -109,7 +109,7 @@ struct WorkbenchesView: View {
         if let project = vm.drilledWorkbench {
             WorkbenchSessionsPanel(
                 vm: vm, project: project, actions: sessionActions,
-                switcherActions: switcherActions
+                switcherActions: switcherActions, paletteOpen: goToOpen
             )
         } else {
             workbenchList
@@ -393,6 +393,8 @@ struct WorkbenchTitleRow: View {
         }))
     }
 
+    static let backShortcutID = "workbench.back-shortcut"
+
     /// A bare key the page's catcher offers (board #412): A opens the stack,
     /// never under the open palette; anything else stays the window's.
     static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
@@ -408,6 +410,7 @@ struct WorkbenchTitleRow: View {
             Button("") { switcherActions.showAll() }
                 .keyboardShortcut("[", modifiers: .command)
                 .disabled(!vm.canShowAllWorkbenches)
+                .accessibilityIdentifier(Self.backShortcutID)
             Group {
                 Button("") { Task { await vm.newSessionOnPage() } }
                     .keyboardShortcut("t", modifiers: .command)

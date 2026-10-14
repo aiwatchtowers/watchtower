@@ -3,21 +3,24 @@ import SwiftUI
 
 /// The sessions panel's swipe back to the workbench list (board #743), laid
 /// behind the panel. A local monitor takes a swipe over the panel's frame in
-/// this window, with no sheet up: a three-finger swipe right (`.swipe`), or —
-/// with "Swipe between pages" on two fingers — a horizontal two-finger
-/// scroll tracked the way Safari tracks Back (`trackSwipeEvent`). A
-/// horizontal scroll over something that scrolls sideways (a long FILES
-/// row) stays that view's.
+/// this window, with no sheet and no Go to… palette up (⌘['s gates): a
+/// three-finger swipe right (`.swipe`), or — with "Swipe between pages" on
+/// two fingers — a clearly sideways two-finger scroll, tracked the way
+/// Safari tracks Back (`trackSwipeEvent`). The panel scrolls only up and
+/// down, so a sideways scroll over it has no other owner.
 struct WorkbenchBackSwipeCatcher: NSViewRepresentable {
+    /// Off under the Go to… palette, an overlay rather than a sheet.
+    let isEnabled: Bool
     let onBack: () -> Void
 
     func makeNSView(context: Context) -> CatcherView {
         let view = CatcherView()
-        view.onBack = onBack
+        updateNSView(view, context: context)
         return view
     }
 
     func updateNSView(_ view: CatcherView, context: Context) {
+        view.isEnabled = isEnabled
         view.onBack = onBack
     }
 
@@ -32,12 +35,13 @@ struct WorkbenchBackSwipeCatcher: NSViewRepresentable {
     }
 
     /// A two-finger scroll that may start a tracked back swipe: its first
-    /// event (`.began`), more sideways than up or down, with swipe tracking
-    /// from scroll events on in System Settings.
+    /// event (`.began`), at least twice as sideways as up or down — a
+    /// scroll of the list that merely leans stays the list's — with swipe
+    /// tracking from scroll events on in System Settings.
     static func startsTrackedSwipe(
         phase: NSEvent.Phase, deltaX: CGFloat, deltaY: CGFloat, trackingEnabled: Bool
     ) -> Bool {
-        trackingEnabled && phase == .began && deltaX != 0 && abs(deltaX) > abs(deltaY)
+        trackingEnabled && phase == .began && deltaX != 0 && abs(deltaX) >= 2 * abs(deltaY)
     }
 
     /// The tracked swipe went back: it ended (not cancelled short of the
@@ -47,6 +51,7 @@ struct WorkbenchBackSwipeCatcher: NSViewRepresentable {
     }
 
     final class CatcherView: NSView {
+        var isEnabled = true
         var onBack: (() -> Void)?
         /// Whether a sheet is up; a seam for tests.
         var hasSheet: @MainActor (NSWindow) -> Bool = { $0.attachedSheet != nil }
@@ -94,7 +99,7 @@ struct WorkbenchBackSwipeCatcher: NSViewRepresentable {
                 guard WorkbenchBackSwipeCatcher.startsTrackedSwipe(
                     phase: event.phase, deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY,
                     trackingEnabled: NSEvent.isSwipeTrackingFromScrollEventsEnabled
-                ), !scrollsSideways(event) else { return false }
+                ) else { return false }
                 trackBackSwipe(event)
                 return true
             default:
@@ -118,25 +123,11 @@ struct WorkbenchBackSwipeCatcher: NSViewRepresentable {
             }
         }
 
-        /// An event in this window, inside this view's frame, no sheet up.
+        /// An event in this window, inside this view's frame, the catcher
+        /// on and no sheet up.
         func isOverPanel(_ event: NSEvent) -> Bool {
-            guard let window, event.window === window, !hasSheet(window) else { return false }
+            guard isEnabled, let window, event.window === window, !hasSheet(window) else { return false }
             return convert(bounds, to: nil).contains(event.locationInWindow)
-        }
-
-        /// The view under the event sits in a scroll view whose content is
-        /// wider than it: the scroll is that view's.
-        private func scrollsSideways(_ event: NSEvent) -> Bool {
-            var current = window?.contentView?.hitTest(event.locationInWindow)
-            while let candidate = current {
-                if let scroll = candidate as? NSScrollView,
-                   let document = scroll.documentView,
-                   document.frame.width > scroll.contentView.bounds.width + 1 {
-                    return true
-                }
-                current = candidate.superview
-            }
-            return false
         }
     }
 }

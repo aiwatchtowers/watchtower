@@ -13,6 +13,8 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
+    /// The Go to… palette is up: the swipe back is off, as ⌘[ is.
+    var paletteOpen = false
     /// View-local: it is only this list's scroll. The view keeps its identity
     /// when another workbench is opened, so `project.id` resets it.
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
@@ -90,7 +92,7 @@ struct WorkbenchSessionsPanel: View {
             WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
         // A swipe right over the panel goes back to the list (board #743).
-        .background(WorkbenchBackSwipeCatcher(onBack: switcherActions.showAll))
+        .background(WorkbenchBackSwipeCatcher(isEnabled: !paletteOpen, onBack: switcherActions.showAll))
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
     }
 

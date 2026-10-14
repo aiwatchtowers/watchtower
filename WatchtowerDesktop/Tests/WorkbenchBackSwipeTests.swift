@@ -30,6 +30,12 @@ final class WorkbenchBackSwipeTests: XCTestCase {
             phase: .began, deltaX: 1, deltaY: 4, trackingEnabled: true
         ), "a vertical scroll stays the list's")
         XCTAssertFalse(WorkbenchBackSwipeCatcher.startsTrackedSwipe(
+            phase: .began, deltaX: 3, deltaY: 2, trackingEnabled: true
+        ), "a scroll that merely leans sideways stays the list's")
+        XCTAssertTrue(WorkbenchBackSwipeCatcher.startsTrackedSwipe(
+            phase: .began, deltaX: 4, deltaY: 2, trackingEnabled: true
+        ), "twice as sideways: the boundary counts")
+        XCTAssertFalse(WorkbenchBackSwipeCatcher.startsTrackedSwipe(
             phase: .began, deltaX: 0, deltaY: 0, trackingEnabled: true
         ))
         XCTAssertFalse(WorkbenchBackSwipeCatcher.startsTrackedSwipe(
@@ -51,6 +57,7 @@ final class WorkbenchBackSwipeTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        defer { window.close() }
         window.contentView?.addSubview(view)
         XCTAssertTrue(view.isWatchingSwipes)
         XCTAssertNil(view.hitTest(NSPoint(x: 10, y: 10)), "clicks fall through to the panel")
@@ -64,7 +71,10 @@ final class WorkbenchBackSwipeTests: XCTestCase {
         window.isReleasedWhenClosed = false
         let view = WorkbenchBackSwipeCatcher.CatcherView(frame: NSRect(x: 0, y: 0, width: 200, height: 300))
         window.contentView?.addSubview(view)
-        defer { view.removeFromSuperview() }
+        defer {
+            view.removeFromSuperview()
+            window.close()
+        }
         func event(at point: NSPoint, in window: NSWindow) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(
                 with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
@@ -77,7 +87,12 @@ final class WorkbenchBackSwipeTests: XCTestCase {
 
         let other = NSWindow(contentRect: window.frame, styleMask: [.titled], backing: .buffered, defer: false)
         other.isReleasedWhenClosed = false
+        defer { other.close() }
         XCTAssertFalse(view.isOverPanel(try event(at: NSPoint(x: 50, y: 50), in: other)), "another window")
+
+        view.isEnabled = false
+        XCTAssertFalse(view.isOverPanel(try event(at: NSPoint(x: 50, y: 50), in: window)), "the Go to… palette is up")
+        view.isEnabled = true
 
         view.hasSheet = { _ in true }
         XCTAssertFalse(view.isOverPanel(try event(at: NSPoint(x: 50, y: 50), in: window)), "a sheet is up")

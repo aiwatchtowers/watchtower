@@ -352,6 +352,32 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         )
     }
 
+    /// ⌘[ (board #743): a hidden title-row button, on while the list is
+    /// off screen, off under the Go to… palette.
+    func testCommandBracketGoesBackWhileTheListIsOffScreen() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        vm.panelVisible = true
+        let actions = WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
+        // A hidden button cannot be tapped in ViewInspector: its action is
+        // `showAll`, the same as the visible ‹ the test above taps.
+        func back(paletteOpen: Bool = false) throws -> InspectableView<ViewType.Button> {
+            try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: paletteOpen) {}
+                .inspect().find(viewWithAccessibilityIdentifier: WorkbenchTitleRow.backShortcutID).button()
+        }
+
+        XCTAssertTrue(try back().isDisabled(), "level 1 on screen")
+
+        vm.drill(into: a)
+        XCTAssertFalse(try back().isDisabled())
+        XCTAssertTrue(try back(paletteOpen: true).isDisabled(), "nothing changes the page behind the palette")
+
+        vm.showAllWorkbenches()
+        vm.panelVisible = false
+        XCTAssertFalse(try back().isDisabled(), "a hidden panel hides the list")
+    }
+
     func testAShownPanelKeepsThePlainTitle() async throws {
         let a = try await workbench("alpha")
         let vm = makeVM()
