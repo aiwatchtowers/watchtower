@@ -245,8 +245,8 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         let usages = appState.codeUsagesCenter
         XCTAssertEqual(usages.workspace, pool.path, "the inspector state is this workspace's")
-        // AppState's center writes to the standard defaults: drop this run's
-        // workspace entries afterwards.
+        // AppState's center writes to the isolated suite, shared by this
+        // shard's isolated() instances: drop this run's workspace entries.
         defer { Self.dropInspectorState(of: pool.path) }
         usages.setInspectorShown(true, workbenchID: id)
         usages.selectInspectorTab(.questions, workbenchID: id)

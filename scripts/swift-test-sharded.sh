@@ -50,11 +50,13 @@ fi
 
 # WATCHTOWER_TEST_SHARD: preferences are shared across processes, so the
 # test helpers' fixed defaults suites (AppState.isolated) get one per process.
+# NSUnbufferedIO: what swift test sets for xctest — a shard that crashes
+# still leaves its last "Test Case ... started" line in its log.
 names=()
 pids=()
 for ((i = 0; i < SHARDS; i++)); do
     classes="$(awk -v n="$SHARDS" -v i="$i" 'NR % n == i' "$WORK/classes" | paste -sd, -)"
-    WATCHTOWER_TEST_SHARD="$i" xcrun xctest -XCTest "$classes" "$BUNDLE" > "$WORK/log$i" 2>&1 &
+    WATCHTOWER_TEST_SHARD="$i" NSUnbufferedIO=YES xcrun xctest -XCTest "$classes" "$BUNDLE" > "$WORK/log$i" 2>&1 &
     names+=("XCTest shard $((i + 1))/$SHARDS")
     pids+=($!)
 done
