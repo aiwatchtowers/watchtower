@@ -526,6 +526,13 @@ final class OwnerAskKeysTests: XCTestCase {
         try await removeDrawer(page)
         XCTAssertTrue(page.window.firstResponder === page.window, "moved: nothing handed back")
 
+        try await nextDrawerCloses(page, vm, ask)
+        XCTAssertTrue(page.window.firstResponder === page.terminal)
+    }
+
+    /// Another drawer of the workbench comes up in a new host, takes no
+    /// click, and really closes.
+    private func nextDrawerCloses(_ page: Page, _ vm: WorkbenchesViewModel, _ ask: OwnerAsk) async throws {
         let nextShown = DrawerShown()
         let next = NSHostingView(rootView: RemovableDrawer(shown: nextShown, vm: vm, ask: ask).frame(width: 320, height: 400))
         next.frame = page.drawer.frame
@@ -538,7 +545,41 @@ final class OwnerAskKeysTests: XCTestCase {
         nextShown.isOn = false
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertTrue(catchers(in: next).isEmpty, "the next host's catcher is gone")
-        XCTAssertTrue(page.window.firstResponder === page.terminal)
+    }
+
+    /// A hand-back refused (the owner moved the keyboard since) ends the
+    /// loan: a later drawer closing with nothing focused hands nothing back.
+    func testARefusedHandBackDoesNotCarryOver() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+        let monaco = TerminalLike(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        page.window.contentView?.addSubview(monaco)
+
+        try await click(page, at: Self.inDrawer)
+        try await click(page, at: Self.onTerminal, taker: monaco)
+        try await removeDrawer(page)
+        XCTAssertTrue(page.window.firstResponder === monaco, "refused")
+
+        page.window.makeFirstResponder(nil)  // Files closed
+        try await nextDrawerCloses(page, vm, ask)
+        XCTAssertTrue(page.window.firstResponder === page.window, "the old loan is over")
+    }
+
+    /// The same for a hand-back refused because the lender was hidden.
+    func testAHandBackRefusedToAHiddenLenderDoesNotCarryOver() async throws {
+        let (vm, ask) = try await makeVM("question", payload: Self.questions)
+        let page = try page(vm, ask)
+        defer { page.window.close() }
+
+        try await click(page, at: Self.inDrawer)
+        page.terminal.isHidden = true
+        try await removeDrawer(page)
+        XCTAssertTrue(page.window.firstResponder === page.window, "refused")
+
+        page.terminal.isHidden = false
+        try await nextDrawerCloses(page, vm, ask)
+        XCTAssertTrue(page.window.firstResponder === page.window, "the old loan is over")
     }
 
     /// The owner put the keyboard somewhere since: left alone.

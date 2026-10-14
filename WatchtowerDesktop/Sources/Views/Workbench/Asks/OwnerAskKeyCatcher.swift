@@ -180,11 +180,13 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         }
 
         /// The drawer going: the keyboard back to what a click in it took
-        /// it from, unless the owner put it somewhere since.
+        /// it from, unless the owner put it somewhere since. The loan ends
+        /// either way: a refused one must not reach a later drawer's close.
         func handBackKeyboard() {
-            guard let lender = keyboardLender, !lender.isHiddenOrHasHiddenAncestor,
-                  let window = lender.window, window.firstResponder === window else { return }
+            let lender = keyboardLender
             keyboardLender = nil
+            guard let lender, !lender.isHiddenOrHasHiddenAncestor,
+                  let window = lender.window, window.firstResponder === window else { return }
             window.makeFirstResponder(lender)
         }
 
