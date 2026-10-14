@@ -31,8 +31,10 @@ type ExecutorOptions struct {
 	// automation (waiting runs do not count); ≤ 0 = MaxConcurrentRuns.
 	MaxConcurrent int
 	// DailyBudgetTokens is the per-local-day token cap over every run (dry
-	// runs included); ≤ 0 = DefaultDailyBudgetTokens.
-	DailyBudgetTokens int64
+	// runs included): nil (unset) or negative = DefaultDailyBudgetTokens; 0
+	// = automations may spend nothing, so every run ends budget_exceeded/
+	// daily_cap before its script starts.
+	DailyBudgetTokens *int64
 	// Modules builds each run's SDK; nil = DefaultModules.
 	Modules func(b Backends) []Module
 	// Logger receives the executor's errors and notices; nil = log.Default().
@@ -79,15 +81,15 @@ func NewExecutor(d *db.DB, b Backends, opts ExecutorOptions) *Executor {
 		b.DB = d
 	}
 	e := &Executor{
-		db: d, b: b, clock: b.Clock, maxConcurrent: opts.MaxConcurrent, dailyCap: opts.DailyBudgetTokens,
+		db: d, b: b, clock: b.Clock, maxConcurrent: opts.MaxConcurrent, dailyCap: DefaultDailyBudgetTokens,
 		modules: opts.Modules, logger: opts.Logger, zone: systemZone, abandoned: AbandonedRuns,
 		wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
 	}
 	if e.maxConcurrent <= 0 {
 		e.maxConcurrent = MaxConcurrentRuns
 	}
-	if e.dailyCap <= 0 {
-		e.dailyCap = DefaultDailyBudgetTokens
+	if c := opts.DailyBudgetTokens; c != nil && *c >= 0 {
+		e.dailyCap = *c
 	}
 	if e.modules == nil {
 		e.modules = DefaultModules

@@ -13,9 +13,10 @@ import (
 // wireAutomations attaches the automations scheduler and executor to the
 // daemon when automations.enabled is on (spec 2026-10-14 §7, §20 D12); the
 // daemon runs them beside the sync loop and wakes them on SIGUSR2. Off, it
-// builds nothing (FEAT-01).
+// builds nothing (FEAT-01) and logs that.
 func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) {
 	if !cfg.Automations.Enabled {
+		logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
 		return
 	}
 	d.SetAutomations(newDaemonAutomations(cfg, database, gen, logger))
@@ -34,7 +35,7 @@ func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Genera
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     clock,
 	}, automations.ExecutorOptions{
-		DailyBudgetTokens: cfg.Automations.DailyBudgetTokens,
+		DailyBudgetTokens: &cfg.Automations.DailyBudgetTokens,
 		Logger:            logger,
 	})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
