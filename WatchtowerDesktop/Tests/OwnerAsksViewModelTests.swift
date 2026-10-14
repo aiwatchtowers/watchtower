@@ -1403,6 +1403,176 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [askID])
     }
 
+    // MARK: - An ask whose session was deleted (board #542)
+
+    /// A session delete unbinds its asks (ON DELETE SET NULL) and moves no
+    /// count or stamp: the binding itself is in the fingerprint.
+    func testThePollReloadsWhenASessionDeleteUnbindsAnAsk() async throws {
+        let (p, s, askID) = try await seed()
+        try await pool.write { d in
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, title: "Old check")
+            try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [id])
+        }
+        let vm = makeVM()
+        await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertEqual(vm.asks.openAsks[p]?.first?.sessionID, s.id)
+        XCTAssertEqual(vm.asks.closedCounts[p]?[s.id], 1)
+
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+        let changed = await vm.asks.refreshIfChanged(projectID: p)
+
+        XCTAssertTrue(changed, "the unbinding alone moves the fingerprint")
+        XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [askID])
+        XCTAssertNil(vm.asks.openAsks[p]?.first?.sessionID)
+        XCTAssertEqual(vm.asks.closedCounts[p]?[nil], 1, "the closed ask moved to the session-less list")
+    }
+
+    /// Start → the session is deleted behind the cached asks → click: the
+    /// ask is read again and its drawer opens at the page's trailing edge;
+    /// no other session comes on screen in its place.
+    func testShowAskOfADeletedSessionOpensTheDrawerAtThePageEdge() async throws {
+        let (p, s, askID) = try await seed()
+        let acme = folder.path
+        let other = try await pool.write { d in
+            try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "Other", folderPath: acme))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.openAsks[p]?.first?.sessionID, s.id)
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+
+        let shown = await vm.showAsk(askID, projectID: p)
+
+        XCTAssertTrue(shown)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "the drawer opens, never silently not")
+        let drawerAsk = try XCTUnwrap(vm.asks.drawerAsk(projectID: p))
+        XCTAssertNil(drawerAsk.sessionID, "the page-edge drawer (WorkbenchPageView) shows it")
+        XCTAssertFalse(vm.layout(projectID: p).visiblePanes.contains(.session(other.id)), "no other session put on screen")
+        XCTAssertFalse(vm.layout(projectID: p).visiblePanes.contains(.session(s.id)))
+        XCTAssertNil(vm.sessionErrors[p])
+        XCTAssertEqual(vm.askSessionTitle(drawerAsk), OwnerAskStack.sessionDeletedTitle)
+        vm.asks.drawerExpanded = true
+        XCTAssertTrue(vm.isObscured(sessionID: other.id, projectID: p), "expanded, it covers every terminal of the page")
+    }
+
+    /// The page-edge drawer of a deleted session's ask answers and
+    /// dismisses: nothing is typed anywhere, the brief delivers (PROJ-12).
+    func testADeletedSessionsAskAnswersAndDismissesFromItsDrawer() async throws {
+        let (p, s, askID) = try await seed()
+        let second = try await fileAnotherAsk(project: p, sessionID: s.id)
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.asks.load(projectID: p)
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+        await vm.showAsk(askID, projectID: p)
+
+        let ask = try XCTUnwrap(vm.asks.drawerAsk(projectID: p))
+        pick(vm, askID)
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .noSession)
+        let answered = try await status(askID)
+        XCTAssertEqual(answered.status, "answered")
+
+        await vm.showAsk(second, projectID: p)
+        let next = try XCTUnwrap(vm.asks.drawerAsk(projectID: p))
+        XCTAssertEqual(next.id, second)
+        XCTAssertNil(next.sessionID)
+        await vm.asks.dismiss(next)?.value
+        let dismissed = try await status(second)
+        XCTAssertEqual(dismissed.status, "answered", "Dismiss answers it as dismissed")
+        XCTAssertTrue(processes.isEmpty, "no terminal was started for either")
+    }
+
+    /// Only an ask the app saw bound to a session reads "Session deleted";
+    /// one filed outside the app keeps its own caption.
+    func testAnAskWhoseSessionWasDeletedSaysSoInTheStack() async throws {
+        let (p, s, askID) = try await seed()
+        let outside = try await fileAnotherAsk(project: p, sessionID: nil)
+        let vm = makeVM()
+        await vm.reload()
+        await vm.loadSessions(projectID: p)
+        await vm.asks.load(projectID: p)
+        let bound = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == askID })
+        XCTAssertEqual(vm.askSessionTitle(bound), "zsh")
+
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+        await vm.asks.refreshIfChanged(projectID: p)
+
+        let unbound = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == askID })
+        let elsewhere = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == outside })
+        XCTAssertEqual(vm.askSessionTitle(unbound), OwnerAskStack.sessionDeletedTitle)
+        XCTAssertEqual(vm.askSessionTitle(elsewhere), OwnerAskStack.outsideTheAppTitle)
+    }
+
+    /// "Session deleted" survives later reads that move the fingerprint
+    /// for other reasons, and leaves with the ask once it is answered.
+    func testSessionDeletedSurvivesLaterReadsUntilTheAskCloses() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        await vm.reload()
+        await vm.asks.load(projectID: p)
+        try await pool.write { try TerminalSessionQueries.delete($0, id: s.id) }
+        await vm.asks.refreshIfChanged(projectID: p)
+
+        _ = try await fileAnotherAsk(project: p, sessionID: nil)
+        let moved = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertTrue(moved, "a new ask moves the fingerprint")
+        let ask = try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == askID })
+        XCTAssertNil(ask.sessionID)
+        XCTAssertEqual(vm.askSessionTitle(ask), OwnerAskStack.sessionDeletedTitle, "kept across a read that unbinds nothing")
+
+        pick(vm, askID)
+        await vm.asks.answer(ask)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.sessionDeletedAskIDs[p], "pruned once the ask is no longer open")
+    }
+
+    /// Two quick stack clicks (board #187): the first click's switch is
+    /// taken before its read, so a later click wins even when the first
+    /// click's read finishes last.
+    func testTheLaterAskClickWinsWhileTheFirstClicksReadIsParked() async throws {
+        let (p, first, firstAsk) = try await seed()
+        let acme = folder.path
+        let (second, secondAsk) = try await pool.write { d -> (TerminalSession, Int64) in
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "Other", folderPath: acme))
+            return (s, try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.asks.load(projectID: p)
+        let read = vm.asks.readFingerprint
+        let (parked, park) = AsyncStream<Void>.makeStream()
+        let (released, release) = AsyncStream<Void>.makeStream()
+        var parkNext = true
+        vm.asks.readFingerprint = { projectID in
+            if parkNext {
+                parkNext = false
+                park.yield()
+                var waiting = released.makeAsyncIterator()
+                _ = await waiting.next()
+            }
+            return try await read(projectID)
+        }
+
+        let firstClick = Task { await vm.showAsk(firstAsk, projectID: p) }
+        var parkedIterator = parked.makeAsyncIterator()
+        _ = await parkedIterator.next()
+        await vm.showAsk(secondAsk, projectID: p)
+        release.yield()
+        await firstClick.value
+
+        let visible = vm.layout(projectID: p).visiblePanes
+        XCTAssertTrue(visible.contains(.session(second.id)))
+        XCTAssertFalse(visible.contains(.session(first.id)), "the superseded click puts nothing on screen")
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], secondAsk)
+    }
+
     // MARK: - A new ask opens by itself (board #364)
 
     /// A second open ask filed from `sessionID`, newer than the seeded one.

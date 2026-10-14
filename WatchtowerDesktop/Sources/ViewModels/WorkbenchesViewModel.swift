@@ -653,9 +653,11 @@ final class WorkbenchesViewModel {
     /// banner never launches an agent; its pane offers Resume. Without one, or when
     /// it names no session of the workbench (deleted meanwhile), the live
     /// session, else the most recent one (its pane offers Resume) — read
-    /// first, since a project just selected has no list yet.
-    func revealTerminal(projectID: Int64, sessionID: Int64? = nil) async {
-        let ticket = beginSwitch(projectID: projectID)
+    /// first, since a project just selected has no list yet. `ticket`: the
+    /// switch a caller already took at its own entry, before its first await
+    /// (`showAsk`); nil takes one here.
+    func revealTerminal(projectID: Int64, sessionID: Int64? = nil, ticket: Int? = nil) async {
+        let ticket = ticket ?? beginSwitch(projectID: projectID)
         // A session created since the last read is not in the list yet.
         let listed = terminalSessions[projectID]
         let unlisted = sessionID.map { id in !(listed ?? []).contains { $0.id == id } } ?? false
