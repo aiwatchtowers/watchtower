@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/kb"
+	"watchtower/internal/sessioncleanup"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchfiles"
 )
@@ -483,6 +484,7 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	kept := cleanPlacedWorktrees(cmd.Context(), cmd.ErrOrStderr(), database, id)
 	rerr := workbenchRemoveInstall(cmd.Context(), cfg, p)
 	// A file or directory linked outside the folder is never written through
 	// (PROJ-04), so what Watchtower put there stays: name it and what to
@@ -506,7 +508,7 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the workbench's stored images failed: %v (the workbench is deleted anyway)\n", ferr)
 	}
 	if workbenchFlagJSON {
-		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, RemovalHints: hints, FilesOK: ferr == nil}
+		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, RemovalHints: hints, FilesOK: ferr == nil, KeptWorktrees: kept}
 		// The hints already say what the link refusals left; the error
 		// carries every other failure, so none is hidden behind them.
 		if rest := devpack.WithoutHinted(rerr); rest != nil {
@@ -550,4 +552,76 @@ type workbenchDeleteJSON struct {
 	RemovalHints []string `json:"removal_hints,omitempty"`
 	FilesOK      bool     `json:"files_ok"` // the target images' stored copies were removed
 	FilesError   string   `json:"files_error"`
+	// KeptWorktrees are the placed sessions' worktrees the session cleanup
+	// kept (uncommitted or unpushed work, in use, or a cleanup error): they
+	// stay on disk. Never null.
+	KeptWorktrees []string `json:"kept_worktrees"`
+}
+
+// cleanPlacedWorktrees runs the session cleanup (PROJ-18) for every placed
+// session of the workbench before it is deleted, on exactly the session's
+// worktree and wt/ branch, and returns the worktree paths it kept. A removed
+// worktree's local MCP entry is unregistered (best effort). Nothing here
+// stops the delete: a failure is a warning and the path is kept.
+func cleanPlacedWorktrees(ctx context.Context, stderr io.Writer, database *db.DB, id int64) []string {
+	kept := []string{}
+	placed, err := database.PlacedSessions(id)
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: listing the workbench's session worktrees failed: %v (the workbench is deleted anyway)\n", err)
+		return kept
+	}
+	for _, s := range placed {
+		root, removed, err := cleanPlacedSession(ctx, database, id, s)
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: cleaning up session %d's worktree %s failed: %v (the workbench is deleted anyway)\n", s.ID, s.FolderPath, err)
+		}
+		if err != nil || !removed {
+			if root == "" {
+				root = s.FolderPath
+			}
+			kept = append(kept, root)
+			continue
+		}
+		o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: s.FolderPath})
+		if err == nil {
+			err = devpack.UnregisterWorkbenchMCP(ctx, o)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: unregistering the MCP server of %s failed: %v\n", s.FolderPath, err)
+		}
+	}
+	return kept
+}
+
+// cleanPlacedSession plans the session's cleanup, finds its worktree (the
+// longest listed root containing the row's folder) and applies just that
+// worktree and the row's branch. root is "" when the plan lists no worktree
+// of the row; removed is whether the worktree is gone (or was already).
+func cleanPlacedSession(ctx context.Context, database *db.DB, workbenchID int64, s db.PlacedSession) (root string, removed bool, err error) {
+	deps := cleanupDeps(database)
+	req := sessioncleanup.Request{WorkbenchID: workbenchID, SessionID: s.ID, NoSize: true}
+	plan, err := sessioncleanup.PlanResult(ctx, deps, req)
+	if err != nil {
+		return "", false, err
+	}
+	var wtKey string
+	for _, it := range plan.Items {
+		r, ok := strings.CutPrefix(it.Key, "worktree:")
+		if ok && len(r) > len(root) && (s.FolderPath == r || strings.HasPrefix(s.FolderPath, r+string(filepath.Separator))) {
+			root, wtKey = r, it.Key
+		}
+	}
+	if wtKey == "" {
+		return "", true, nil // the worktree is already gone
+	}
+	res, err := sessioncleanup.Apply(ctx, deps, req, []string{wtKey, "branch:" + s.Branch})
+	if err != nil {
+		return root, false, err
+	}
+	for _, it := range res.Items {
+		if it.Key == wtKey {
+			return root, it.Done, nil
+		}
+	}
+	return root, false, nil
 }
