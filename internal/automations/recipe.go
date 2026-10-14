@@ -143,11 +143,25 @@ func ValidSlug(s string) bool {
 
 var utf8BOM = []byte("\xef\xbb\xbf")
 
-// normaliseRecipeBytes strips a UTF-8 BOM and turns CRLF into LF, so a recipe
-// saved on another platform parses (and hashes) like its LF twin.
+// normaliseRecipeBytes strips a UTF-8 BOM and turns CRLF (and a lone CR) into
+// LF, so a recipe saved on another platform parses (and hashes) like its LF
+// twin. Line numbers in errors count lines of the normalised text.
 func normaliseRecipeBytes(data []byte) []byte {
 	data = bytes.TrimPrefix(data, utf8BOM)
-	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
+}
+
+// validateScope refuses a scope that is neither personal nor a workbench with
+// an id: a zero Scope is a caller bug, never a silent "personal".
+func validateScope(s Scope) error {
+	switch {
+	case s.Kind == ScopePersonal && s.WorkbenchID == 0:
+		return nil
+	case s.Kind == ScopeWorkbench && s.WorkbenchID > 0:
+		return nil
+	}
+	return &ParseError{Msg: fmt.Sprintf("invalid recipe scope %+v: want personal, or workbench with an id > 0", s)}
 }
 
 // ParseRecipe parses a recipe file. slug is the file stem; scope is the folder
@@ -155,6 +169,9 @@ func normaliseRecipeBytes(data []byte) []byte {
 func ParseRecipe(slug string, data []byte, scope Scope) (*Recipe, error) {
 	if !ValidSlug(slug) {
 		return nil, &ParseError{Msg: fmt.Sprintf("invalid slug %q: want %s", slug, slugPattern.String())}
+	}
+	if err := validateScope(scope); err != nil {
+		return nil, err
 	}
 	if len(data) > MaxRecipeBytes {
 		return nil, &ParseError{Msg: fmt.Sprintf("%s.md is %d bytes; the limit is %d", slug, len(data), MaxRecipeBytes)}
@@ -191,7 +208,7 @@ func checkUTF8(slug string, text []byte) error {
 		off += size
 	}
 	line := bytes.Count(text[:off], []byte("\n")) + 1
-	return &ParseError{Line: line, Msg: fmt.Sprintf("%s.md: invalid UTF-8 at byte %d", slug, off)}
+	return &ParseError{Line: line, Msg: slug + ".md: invalid UTF-8"}
 }
 
 // splitFrontmatter returns the frontmatter lines and the index of the first
@@ -367,7 +384,12 @@ func boundedInt(n *yaml.Node, key string, def, lo, hi int) (int, error) {
 	if n == nil {
 		return def, nil
 	}
+	// yaml.v3 truncates a float into an int field (1.9 → 1), so only a plain
+	// integer scalar is accepted.
 	var v int
+	if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!int" {
+		return 0, &ParseError{Line: fileLine(n), Msg: key + " must be an integer"}
+	}
 	if err := decodeField(n, key, "an integer", &v); err != nil {
 		return 0, err
 	}
@@ -410,14 +432,15 @@ func applyTrigger(n *yaml.Node, r *Recipe) error {
 }
 
 // parseSchedule accepts a 5-field cron expression in the local time zone
-// (robfig/cron's standard parser); descriptors and TZ prefixes are refused.
+// (robfig/cron's standard parser); descriptors ("@daily") are refused, and a
+// TZ= prefix leaves too few fields for the parser.
 func parseSchedule(n *yaml.Node) (string, error) {
 	var s string
 	if err := decodeField(n, "trigger.schedule", "a cron string", &s); err != nil {
 		return "", err
 	}
 	s = strings.TrimSpace(s)
-	if len(strings.Fields(s)) != 5 || strings.Contains(s, "TZ=") {
+	if len(strings.Fields(s)) != 5 {
 		return "", &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("trigger.schedule %q must be a 5-field cron expression (minute hour day month weekday)", s)}
 	}
 	if _, err := cron.ParseStandard(s); err != nil {
@@ -440,6 +463,7 @@ func parseButton(n *yaml.Node) (*ButtonTrigger, error) {
 			return nil, err
 		}
 	}
+	b.Label = strings.TrimSpace(b.Label)
 	if c := utf8.RuneCountInString(b.Label); c < 1 || c > maxButtonLabelRunes {
 		return nil, &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("trigger.button.label must be 1-%d characters", maxButtonLabelRunes)}
 	}
@@ -563,8 +587,11 @@ func parseBody(lines []string, start int, r *Recipe) error {
 		if end < 0 {
 			return &ParseError{Line: i + 1, Msg: "the ```js block is not closed"}
 		}
-		found = true
 		script = lines[i+1 : end]
+		if strings.TrimSpace(strings.Join(script, "\n")) == "" {
+			return &ParseError{Line: i + 1, Msg: "the ```js block is empty: the script is empty"}
+		}
+		found = true
 		r.ScriptLine = i + 2
 		i = end
 	}

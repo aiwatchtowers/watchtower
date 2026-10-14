@@ -163,24 +163,47 @@ func TestRecipe_RejectsUSDBudget(t *testing.T) {
 	wantParseError(t, recipeWith(baseFrontmatter+"budget: {tokens: 5000, usd: 1}\n", "x\n"), "usd")
 }
 
-func TestRecipe_BudgetBounds(t *testing.T) {
-	bad := []string{
-		"budget: {tokens: 999}\n",
-		"budget: {tokens: 2000001}\n",
-		"budget: {minutes: 0}\n",
-		"budget: {minutes: 61}\n",
-		"concurrency: 0\n",
-		"concurrency: 5\n",
-		"pause_timeout_hours: 0\n",
-		"pause_timeout_hours: 169\n",
-		"budget: {tokens: lots}\n",
-		"missed: sometimes\n",
-	}
-	for _, fm := range bad {
-		if _, err := ParseRecipe("ok", recipeWith(baseFrontmatter+fm, "x\n"), Scope{Kind: ScopePersonal}); err == nil {
-			t.Errorf("%q: want error", strings.TrimSpace(fm))
+// badCase is a recipe the parser must refuse with a *ParseError whose message
+// names contains and whose line is line.
+type badCase struct {
+	label, frontmatter, contains string
+	line                         int
+}
+
+func assertBadCases(t *testing.T, cases []badCase) {
+	t.Helper()
+	for _, c := range cases {
+		_, err := ParseRecipe("ok", recipeWith(c.frontmatter, "x\n"), Scope{Kind: ScopePersonal})
+		var pe *ParseError
+		if !errors.As(err, &pe) {
+			t.Errorf("%s: want *ParseError, got %T: %v", c.label, err, err)
+			continue
+		}
+		if !strings.Contains(pe.Msg, c.contains) || pe.Line != c.line {
+			t.Errorf("%s: got %q (line %d), want it to name %q on line %d", c.label, pe.Msg, pe.Line, c.contains, c.line)
 		}
 	}
+}
+
+func TestRecipe_BudgetBounds(t *testing.T) {
+	b := baseFrontmatter // keys added after it start on line 5
+	assertBadCases(t, []badCase{
+		{"tokens low", b + "budget: {tokens: 999}\n", "budget.tokens", 5},
+		{"tokens high", b + "budget: {tokens: 2000001}\n", "budget.tokens", 5},
+		{"minutes low", b + "budget: {minutes: 0}\n", "budget.minutes", 5},
+		{"minutes high", b + "budget: {minutes: 61}\n", "budget.minutes", 5},
+		{"concurrency low", b + "concurrency: 0\n", "concurrency", 5},
+		{"concurrency high", b + "concurrency: 5\n", "concurrency", 5},
+		{"pause low", b + "pause_timeout_hours: 0\n", "pause_timeout_hours", 5},
+		{"pause high", b + "pause_timeout_hours: 169\n", "pause_timeout_hours", 5},
+		{"tokens word", b + "budget: {tokens: lots}\n", "budget.tokens must be an integer", 5},
+		{"tokens float", b + "budget: {tokens: 1000.7}\n", "budget.tokens must be an integer", 5},
+		{"tokens quoted", b + "budget: {tokens: \"2000\"}\n", "budget.tokens must be an integer", 5},
+		{"concurrency float", b + "concurrency: 1.9\n", "concurrency must be an integer", 5},
+		{"minutes on its own line", b + "budget:\n  minutes: 2.0\n", "budget.minutes must be an integer", 6},
+		{"budget list", b + "budget: [1, 2]\n", "budget must be a map", 5},
+		{"missed", b + "missed: sometimes\n", "missed", 5},
+	})
 
 	r := mustParse(t, recipeWith(baseFrontmatter+"budget: {tokens: 1000, minutes: 1}\nconcurrency: 1\npause_timeout_hours: 1\nmissed: skip\n", "x\n"), Scope{Kind: ScopePersonal})
 	if r.Budget != (Budget{Tokens: 1000, Minutes: 1}) || r.Concurrency != 1 || r.PauseTimeoutHours != 1 || r.Missed != MissedSkip {
@@ -195,38 +218,44 @@ func TestRecipe_BudgetBounds(t *testing.T) {
 	if r.Budget != (Budget{Tokens: DefaultBudgetTokens, Minutes: 10}) {
 		t.Errorf("partial budget = %+v", r.Budget)
 	}
+	// An empty budget map keeps both defaults.
+	r = mustParse(t, recipeWith(baseFrontmatter+"budget: {}\n", "x\n"), Scope{Kind: ScopePersonal})
+	if r.Budget != (Budget{Tokens: DefaultBudgetTokens, Minutes: DefaultBudgetMinutes}) {
+		t.Errorf("empty budget = %+v", r.Budget)
+	}
 }
 
 func TestRecipe_TriggerExactlyOne(t *testing.T) {
-	bad := map[string]string{
-		"none":          "name: T\n",
-		"empty map":     "name: T\ntrigger: {}\n",
-		"two kinds":     "name: T\ntrigger:\n  manual: true\n  schedule: \"0 9 * * *\"\n",
-		"bad cron":      "name: T\ntrigger:\n  schedule: \"61 * * * *\"\n",
-		"six fields":    "name: T\ntrigger:\n  schedule: \"0 0 9 * * *\"\n",
-		"descriptor":    "name: T\ntrigger:\n  schedule: \"@daily\"\n",
-		"tz prefix":     "name: T\ntrigger:\n  schedule: \"CRON_TZ=UTC 0 9 * * *\"\n",
-		"bad event":     "name: T\ntrigger:\n  event: {type: foo.bar}\n",
-		"no event type": "name: T\ntrigger:\n  event: {where: {channel: x}}\n",
-		"empty label":   "name: T\ntrigger:\n  button: {label: \"\"}\n",
-		"long label":    "name: T\ntrigger:\n  button: {label: \"" + strings.Repeat("x", 25) + "\"}\n",
-		"manual false":  "name: T\ntrigger:\n  manual: false\n",
-		"no name":       "trigger:\n  manual: true\n",
-		"long name":     "name: " + strings.Repeat("n", 81) + "\ntrigger:\n  manual: true\n",
-	}
-	for label, fm := range bad {
-		if _, err := ParseRecipe("ok", recipeWith(fm, "x\n"), Scope{Kind: ScopePersonal}); err == nil {
-			t.Errorf("%s: want error", label)
-		}
-	}
+	// name is line 2, trigger line 3, its first entry line 4.
+	assertBadCases(t, []badCase{
+		{"none", "name: T\n", "trigger", 2},
+		{"empty map", "name: T\ntrigger: {}\n", "exactly one", 3},
+		{"two kinds", "name: T\ntrigger:\n  manual: true\n  schedule: \"0 9 * * *\"\n", "exactly one", 4},
+		{"not a map", "name: T\ntrigger: manual\n", "trigger must be a map", 3},
+		{"bad cron", "name: T\ntrigger:\n  schedule: \"61 * * * *\"\n", "trigger.schedule", 4},
+		{"six fields", "name: T\ntrigger:\n  schedule: \"0 0 9 * * *\"\n", "5-field", 4},
+		{"descriptor", "name: T\ntrigger:\n  schedule: \"@daily\"\n", "5-field", 4},
+		{"cron tz prefix", "name: T\ntrigger:\n  schedule: \"CRON_TZ=UTC 0 9 * * *\"\n", "5-field", 4},
+		{"tz prefix", "name: T\ntrigger:\n  schedule: \"TZ=UTC 0 9 * *\"\n", "trigger.schedule", 4},
+		{"bad event", "name: T\ntrigger:\n  event: {type: foo.bar}\n", "trigger.event.type", 4},
+		{"no event type", "name: T\ntrigger:\n  event: {where: {channel: x}}\n", "trigger.event.type", 4},
+		{"empty label", "name: T\ntrigger:\n  button: {label: \"\"}\n", "trigger.button.label", 4},
+		{"blank label", "name: T\ntrigger:\n  button: {label: \"   \"}\n", "trigger.button.label", 4},
+		{"long label", "name: T\ntrigger:\n  button: {label: \"" + strings.Repeat("x", 25) + "\"}\n", "trigger.button.label", 4},
+		{"manual false", "name: T\ntrigger:\n  manual: false\n", "trigger.manual", 4},
+		{"no name", "trigger:\n  manual: true\n", "name", 2},
+		{"long name", "name: " + strings.Repeat("n", 81) + "\ntrigger:\n  manual: true\n", "name", 2},
+		{"long multibyte name", "name: " + strings.Repeat("я", 81) + "\ntrigger:\n  manual: true\n", "name", 2},
+		{"blank name", "name: \"   \"\ntrigger:\n  manual: true\n", "name", 2},
+	})
 
 	r := mustParse(t, recipeWith("name: T\ntrigger:\n  button: {label: \""+strings.Repeat("x", 24)+"\", confirm: true}\n", "x\n"), Scope{Kind: ScopePersonal})
 	if r.Trigger.Kind != TriggerButton || r.Trigger.Button == nil || !r.Trigger.Button.Confirm || len(r.Trigger.Button.Label) != 24 {
 		t.Errorf("button = %+v", r.Trigger)
 	}
-	r = mustParse(t, recipeWith("name: T\ntrigger:\n  button: {label: Ship}\n", "x\n"), Scope{Kind: ScopePersonal})
-	if r.Trigger.Button.Confirm {
-		t.Error("button.confirm default must be false")
+	r = mustParse(t, recipeWith("name: T\ntrigger:\n  button: {label: \"  Ship  \"}\n", "x\n"), Scope{Kind: ScopePersonal})
+	if r.Trigger.Button.Confirm || r.Trigger.Button.Label != "Ship" {
+		t.Errorf("button = %+v (confirm default false, label trimmed)", r.Trigger.Button)
 	}
 	for _, typ := range EventTypes {
 		r = mustParse(t, recipeWith("name: T\ntrigger:\n  event:\n    type: "+typ+"\n    where: {channel: \"rel*\"}\n", "x\n"), Scope{Kind: ScopePersonal})
@@ -237,6 +266,12 @@ func TestRecipe_TriggerExactlyOne(t *testing.T) {
 	r = mustParse(t, recipeWith(baseFrontmatter, "x\n"), Scope{Kind: ScopePersonal})
 	if r.Trigger.Kind != TriggerManual {
 		t.Errorf("manual = %+v", r.Trigger)
+	}
+	for _, name := range []string{strings.Repeat("n", 80), strings.Repeat("я", 80)} {
+		r = mustParse(t, recipeWith("name: "+name+"\ntrigger:\n  manual: true\n", "x\n"), Scope{Kind: ScopePersonal})
+		if r.Name != name {
+			t.Errorf("80-rune name = %q", r.Name)
+		}
 	}
 }
 
@@ -410,5 +445,57 @@ func TestRecipe_TildeAndCaseInsensitiveScriptFences(t *testing.T) {
 	mixed := []byte("---\n" + baseFrontmatter + "---\n```js\nlog(1);\n```\n~~~JS\nlog(2);\n~~~\n")
 	if line, _ := wantParseError(t, mixed, "second"); line != 9 {
 		t.Errorf("mixed second block line = %d, want 9", line)
+	}
+}
+
+func TestRecipe_ScopeValidated(t *testing.T) {
+	data := readFixture(t, "ok.md")
+	for _, s := range []Scope{{}, {Kind: "team"}, {Kind: ScopeWorkbench}, {Kind: ScopeWorkbench, WorkbenchID: -1}, {Kind: ScopePersonal, WorkbenchID: 2}} {
+		_, err := ParseRecipe("ok", data, s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "scope") {
+			t.Errorf("scope %+v: want a scope *ParseError, got %v", s, err)
+		}
+	}
+	if r := mustParse(t, data, Scope{Kind: ScopeWorkbench, WorkbenchID: 1}); r.Scope.String() != "workbench:1" {
+		t.Errorf("scope = %s", r.Scope)
+	}
+}
+
+func TestRecipe_DegenerateFiles(t *testing.T) {
+	cases := []struct {
+		label    string
+		data     string
+		contains string
+		line     int
+	}{
+		{"empty file", "", "frontmatter", 1},
+		{"only a newline", "\n", "frontmatter", 1},
+		{"empty frontmatter", "---\n---\n```js\nx\n```\n", "mapping", 2},
+		{"blank frontmatter", "---\n\n\n---\n```js\nx\n```\n", "mapping", 2},
+		{"empty js block", "---\n" + baseFrontmatter + "---\n```js\n```\n", "script is empty", 6},
+		{"blank js block", "---\n" + baseFrontmatter + "---\n```js\n  \n\n```\n", "script is empty", 6},
+		{"frontmatter only", "---\n" + baseFrontmatter + "---\n", "found none", 6},
+	}
+	for _, c := range cases {
+		_, err := ParseRecipe("ok", []byte(c.data), Scope{Kind: ScopePersonal})
+		var pe *ParseError
+		if !errors.As(err, &pe) {
+			t.Errorf("%s: want *ParseError, got %T: %v", c.label, err, err)
+			continue
+		}
+		if !strings.Contains(pe.Msg, c.contains) || pe.Line != c.line {
+			t.Errorf("%s: got %q (line %d), want %q on line %d", c.label, pe.Msg, pe.Line, c.contains, c.line)
+		}
+	}
+}
+
+func TestRecipe_LoneCRNormalised(t *testing.T) {
+	lf := readFixture(t, "ok.md")
+	cr := bytes.ReplaceAll(lf, []byte("\n"), []byte("\r"))
+	scope := Scope{Kind: ScopePersonal}
+	a, b := mustParse(t, lf, scope), mustParse(t, cr, scope)
+	if !reflect.DeepEqual(a, b) || ApprovalHash(a) != ApprovalHash(b) {
+		t.Errorf("lone-CR twin parses differently:\nlf: %+v\ncr: %+v", a, b)
 	}
 }
