@@ -130,6 +130,28 @@ final class WorkbenchesViewModel {
     /// the dialog showed: told on the Undo bar while the row waits there,
     /// dropped once it leaves the batch (Undo or the commit).
     var cleanupKeptNotices: [Int64: String] = [:]
+    /// The sweep applies this view model owns (Clean Up Old Worktrees…),
+    /// per workbench: closing the sheet or leaving the page cancels none.
+    @ObservationIgnored var sweepRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The workbenches whose sweep sheet is on screen.
+    @ObservationIgnored var openSweepSheets: Set<Int64> = []
+    /// Per workbench, the one-time "old worktrees use ~N GB" hint while it
+    /// is up (open question 2 of the cleanup spec, owner approved).
+    var cleanupHints: [Int64: String] = [:]
+    /// The workbenches whose hint plan finished this launch, whatever it
+    /// found (a failed one is not retried on every visit).
+    @ObservationIgnored var cleanupHintChecked: Set<Int64> = []
+    /// The workbench whose hint plan runs: one at a time, app-wide.
+    @ObservationIgnored var cleanupHintRunning: Int64?
+    /// How long a page stays on screen before its hint plan starts.
+    @ObservationIgnored var cleanupHintDelay: Duration = .seconds(30)
+    /// The hint's wait; throws once its page goes away. A seam for tests.
+    @ObservationIgnored var cleanupHintSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// The longest a hint plan may run before it is stopped and the slot
+    /// freed.
+    @ObservationIgnored var cleanupHintTimeLimit: Duration = .seconds(5 * 60)
+    /// The hint's clock (the 7-day re-check). A seam for tests.
+    @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter

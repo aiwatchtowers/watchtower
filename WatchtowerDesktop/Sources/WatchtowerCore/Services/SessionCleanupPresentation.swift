@@ -172,6 +172,36 @@ package enum SessionCleanupPresentation {
         return name + " · active " + (age == "just now" ? age : age + " ago")
     }
 
+    // MARK: Sweep hint
+
+    /// Above this many removable bytes a sweep plan raises the one-time
+    /// hint (1 GB, decimal as `byteText`).
+    package static let sweepHintThresholdBytes: Int64 = 1_000_000_000
+
+    /// The known sizes of the worktrees a sweep plan could remove — pending
+    /// removals only: a kept worktree (a recent session's, uncommitted
+    /// work) is not space the owner can free here.
+    package static func sweepRemovableBytes(_ plan: SessionCleanupPlan) -> Int64 {
+        plan.items
+            .filter { $0.kind == .worktree && $0.isPendingRemoval && $0.bytesKnown }
+            .reduce(Int64(0)) { $0 + $1.bytes }
+    }
+
+    /// True when every worktree a sweep plan could remove was measured: a
+    /// plan with an unmeasured one (over Go's size budget, a read error)
+    /// cannot tell that the workbench holds 1 GB or less.
+    package static func sweepSizesKnown(_ plan: SessionCleanupPlan) -> Bool {
+        !plan.items.contains { $0.kind == .worktree && $0.isPendingRemoval && !$0.bytesKnown }
+    }
+
+    /// The workbench's one-time hint: "Old worktrees use ~38 GB." Nil when
+    /// the plan's removable worktrees hold no more than 1 GB.
+    package static func sweepHint(_ plan: SessionCleanupPlan) -> String? {
+        let bytes = sweepRemovableBytes(plan)
+        guard bytes > sweepHintThresholdBytes else { return nil }
+        return "Old worktrees use ~\(byteText(bytes))."
+    }
+
     // MARK: Session report
 
     /// The session report's "Cleanup" line: Go's stored summary; a neutral
