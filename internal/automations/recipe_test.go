@@ -56,43 +56,47 @@ func wantParseError(t *testing.T, data []byte, contains string) (line int, msg s
 func TestRecipe_ParsesFrontmatterDescriptionAndOneJSBlock(t *testing.T) {
 	r := mustParse(t, readFixture(t, "ok.md"), Scope{Kind: ScopePersonal})
 
-	if r.Slug != "ok" || r.Name != "New mail summary" {
-		t.Errorf("slug/name = %q/%q", r.Slug, r.Name)
+	// Every field but the description, compared whole: slug, name, a schedule
+	// trigger with no button/event, permissions, outputs, the defaults
+	// (tokens 50000, minutes 5, concurrency 1, missed run_once, pause 72),
+	// ScriptLine = the line after the fence, the exact script and the scope.
+	want := Recipe{
+		Slug:              "ok",
+		Name:              "New mail summary",
+		Trigger:           Trigger{Kind: TriggerSchedule, Schedule: "0 9 * * 1-5"},
+		Missed:            MissedRunOnce,
+		Concurrency:       1,
+		Permissions:       []string{"gmail:read@work", "llm:light"},
+		Outputs:           []string{"inbox"},
+		Budget:            Budget{Tokens: 50000, Minutes: 5},
+		PauseTimeoutHours: 72,
+		Script: "const mail = tool(\"list_emails\", { account: \"work\" });\n" +
+			"output.inbox({ title: \"Mail\", body: llm(\"Summarise\", mail) });\n",
+		ScriptLine: 13,
+		Scope:      Scope{Kind: ScopePersonal},
 	}
-	if r.Trigger.Kind != TriggerSchedule || r.Trigger.Schedule != "0 9 * * 1-5" {
-		t.Errorf("trigger = %+v", r.Trigger)
+	got := *r
+	got.Description = ""
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("recipe:\n got: %+v\nwant: %+v", got, want)
 	}
-	if r.Trigger.Button != nil || r.Trigger.Event != nil {
-		t.Errorf("unexpected button/event: %+v", r.Trigger)
+	assertDescription(t, r.Description,
+		[]string{"Summarises new mail", "Shown on the card"}, // text on both sides of the block
+		[]string{"```", "tool("})                             // the block itself is not description
+}
+
+// assertDescription checks that desc contains every want and none of reject.
+func assertDescription(t *testing.T, desc string, want, reject []string) {
+	t.Helper()
+	for _, s := range want {
+		if !strings.Contains(desc, s) {
+			t.Errorf("description %q lacks %q", desc, s)
+		}
 	}
-	if !reflect.DeepEqual(r.Permissions, []string{"gmail:read@work", "llm:light"}) {
-		t.Errorf("permissions = %v", r.Permissions)
-	}
-	if !reflect.DeepEqual(r.Outputs, []string{"inbox"}) {
-		t.Errorf("outputs = %v", r.Outputs)
-	}
-	if r.Budget != (Budget{Tokens: 50000, Minutes: 5}) {
-		t.Errorf("budget = %+v", r.Budget)
-	}
-	if r.Concurrency != 1 || r.Missed != MissedRunOnce || r.PauseTimeoutHours != 72 {
-		t.Errorf("defaults: concurrency=%d missed=%q pause=%d", r.Concurrency, r.Missed, r.PauseTimeoutHours)
-	}
-	if r.ScriptLine != 13 {
-		t.Errorf("ScriptLine = %d, want 13", r.ScriptLine)
-	}
-	wantScript := "const mail = tool(\"list_emails\", { account: \"work\" });\n" +
-		"output.inbox({ title: \"Mail\", body: llm(\"Summarise\", mail) });\n"
-	if r.Script != wantScript {
-		t.Errorf("script = %q", r.Script)
-	}
-	if strings.Contains(r.Description, "```") || strings.Contains(r.Description, "tool(") {
-		t.Errorf("description contains the block: %q", r.Description)
-	}
-	if !strings.Contains(r.Description, "Summarises new mail") || !strings.Contains(r.Description, "Shown on the card") {
-		t.Errorf("description = %q", r.Description)
-	}
-	if r.Scope != (Scope{Kind: ScopePersonal}) {
-		t.Errorf("scope = %+v", r.Scope)
+	for _, s := range reject {
+		if strings.Contains(desc, s) {
+			t.Errorf("description %q contains %q", desc, s)
+		}
 	}
 }
 
@@ -225,6 +229,12 @@ func TestRecipe_BudgetBounds(t *testing.T) {
 	}
 }
 
+// acceptedTrigger is a recipe that must parse to name and trigger.
+type acceptedTrigger struct {
+	label, frontmatter, name string
+	trigger                  Trigger
+}
+
 func TestRecipe_TriggerExactlyOne(t *testing.T) {
 	// name is line 2, trigger line 3, its first entry line 4.
 	assertBadCases(t, []badCase{
@@ -249,28 +259,26 @@ func TestRecipe_TriggerExactlyOne(t *testing.T) {
 		{"blank name", "name: \"   \"\ntrigger:\n  manual: true\n", "name", 2},
 	})
 
-	r := mustParse(t, recipeWith("name: T\ntrigger:\n  button: {label: \""+strings.Repeat("x", 24)+"\", confirm: true}\n", "x\n"), Scope{Kind: ScopePersonal})
-	if r.Trigger.Kind != TriggerButton || r.Trigger.Button == nil || !r.Trigger.Button.Confirm || len(r.Trigger.Button.Label) != 24 {
-		t.Errorf("button = %+v", r.Trigger)
-	}
-	r = mustParse(t, recipeWith("name: T\ntrigger:\n  button: {label: \"  Ship  \"}\n", "x\n"), Scope{Kind: ScopePersonal})
-	if r.Trigger.Button.Confirm || r.Trigger.Button.Label != "Ship" {
-		t.Errorf("button = %+v (confirm default false, label trimmed)", r.Trigger.Button)
+	// Accepted triggers, each compared whole: a 24-char button with confirm,
+	// a trimmed label with confirm defaulting to false, every event type with
+	// its where map, manual; plus names of exactly 80 runes.
+	good := []acceptedTrigger{
+		{"24-char button", "name: T\ntrigger:\n  button: {label: \"" + strings.Repeat("x", 24) + "\", confirm: true}\n", "T",
+			Trigger{Kind: TriggerButton, Button: &ButtonTrigger{Label: strings.Repeat("x", 24), Confirm: true}}},
+		{"trimmed label", "name: T\ntrigger:\n  button: {label: \"  Ship  \"}\n", "T",
+			Trigger{Kind: TriggerButton, Button: &ButtonTrigger{Label: "Ship"}}},
+		{"manual", baseFrontmatter, "Test", Trigger{Kind: TriggerManual}},
+		{"80-rune name", "name: " + strings.Repeat("n", 80) + "\ntrigger:\n  manual: true\n", strings.Repeat("n", 80), Trigger{Kind: TriggerManual}},
+		{"80-rune multibyte name", "name: " + strings.Repeat("я", 80) + "\ntrigger:\n  manual: true\n", strings.Repeat("я", 80), Trigger{Kind: TriggerManual}},
 	}
 	for _, typ := range EventTypes {
-		r = mustParse(t, recipeWith("name: T\ntrigger:\n  event:\n    type: "+typ+"\n    where: {channel: \"rel*\"}\n", "x\n"), Scope{Kind: ScopePersonal})
-		if r.Trigger.Kind != TriggerEvent || r.Trigger.Event.Type != typ || r.Trigger.Event.Where["channel"] != "rel*" {
-			t.Errorf("event %s = %+v", typ, r.Trigger.Event)
-		}
+		good = append(good, acceptedTrigger{"event " + typ, "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: {channel: \"rel*\"}\n", "T",
+			Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: typ, Where: map[string]string{"channel": "rel*"}}}})
 	}
-	r = mustParse(t, recipeWith(baseFrontmatter, "x\n"), Scope{Kind: ScopePersonal})
-	if r.Trigger.Kind != TriggerManual {
-		t.Errorf("manual = %+v", r.Trigger)
-	}
-	for _, name := range []string{strings.Repeat("n", 80), strings.Repeat("я", 80)} {
-		r = mustParse(t, recipeWith("name: "+name+"\ntrigger:\n  manual: true\n", "x\n"), Scope{Kind: ScopePersonal})
-		if r.Name != name {
-			t.Errorf("80-rune name = %q", r.Name)
+	for _, c := range good {
+		r := mustParse(t, recipeWith(c.frontmatter, "x\n"), Scope{Kind: ScopePersonal})
+		if r.Name != c.name || !reflect.DeepEqual(r.Trigger, c.trigger) {
+			t.Errorf("%s: name %q trigger %+v, want %q %+v", c.label, r.Name, r.Trigger, c.name, c.trigger)
 		}
 	}
 }
