@@ -36,6 +36,9 @@ struct WorkbenchDeleted: Decodable, Equatable {
     let removalHints: [String]
     let filesOK: Bool
     let filesError: String
+    /// Worktrees of the workbench's placed sessions that held work and were
+    /// left on disk (`workbench delete`, board #229).
+    let keptWorktrees: [String]
 
     init(
         id: Int64,
@@ -44,7 +47,8 @@ struct WorkbenchDeleted: Decodable, Equatable {
         removalError: String,
         removalHints: [String] = [],
         filesOK: Bool = true,
-        filesError: String = ""
+        filesError: String = "",
+        keptWorktrees: [String] = []
     ) {
         self.id = id
         self.deleted = deleted
@@ -53,6 +57,7 @@ struct WorkbenchDeleted: Decodable, Equatable {
         self.removalHints = removalHints
         self.filesOK = filesOK
         self.filesError = filesError
+        self.keptWorktrees = keptWorktrees
     }
 
     init(from decoder: Decoder) throws {
@@ -64,6 +69,7 @@ struct WorkbenchDeleted: Decodable, Equatable {
         removalHints = try c.decodeIfPresent([String].self, forKey: .removalHints) ?? []
         filesOK = try c.decodeIfPresent(Bool.self, forKey: .filesOK) ?? true
         filesError = try c.decodeIfPresent(String.self, forKey: .filesError) ?? ""
+        keptWorktrees = try c.decodeIfPresent([String].self, forKey: .keptWorktrees) ?? []
     }
 
     enum CodingKeys: String, CodingKey {
@@ -73,6 +79,16 @@ struct WorkbenchDeleted: Decodable, Equatable {
         case removalHints = "removal_hints"
         case filesOK = "files_ok"
         case filesError = "files_error"
+        case keptWorktrees = "kept_worktrees"
+    }
+
+    /// One line naming the worktrees the delete kept because work was in
+    /// them, or nil when it kept none.
+    var keptWorktreesNotice: String? {
+        guard !keptWorktrees.isEmpty else { return nil }
+        let n = keptWorktrees.count
+        return "Kept \(n) worktree\(n == 1 ? "" : "s") with work in \(n == 1 ? "it" : "them"): "
+            + keptWorktrees.joined(separator: ", ")
     }
 
     /// The non-blocking warning for a delete whose cleanup partly failed, or

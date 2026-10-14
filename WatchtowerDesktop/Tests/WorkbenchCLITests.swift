@@ -217,6 +217,27 @@ final class WorkbenchCLITests: XCTestCase {
         )
     }
 
+    /// `kept_worktrees` (board #229): worktrees with work in them that the
+    /// delete left on disk; an envelope without the key keeps none.
+    func testDeleteDecodesKeptWorktrees() async throws {
+        let runner = FakeCLIRunner(stdout: Data(
+            #"{"id":3,"deleted":true,"removal_ok":true,"removal_error":"","kept_worktrees":["/tmp/a/wt1","/tmp/a/wt2"]}"#.utf8
+        ))
+        let result = try await WorkbenchCLI(runner: runner).delete(projectID: 3)
+        XCTAssertEqual(result.keptWorktrees, ["/tmp/a/wt1", "/tmp/a/wt2"])
+        XCTAssertEqual(result.keptWorktreesNotice, "Kept 2 worktrees with work in them: /tmp/a/wt1, /tmp/a/wt2")
+        XCTAssertEqual(
+            WorkbenchDeleted(id: 3, deleted: true, removalOK: true, removalError: "", keptWorktrees: ["/tmp/a/wt1"])
+                .keptWorktreesNotice,
+            "Kept 1 worktree with work in it: /tmp/a/wt1"
+        )
+        let bare = try JSONDecoder().decode(
+            WorkbenchDeleted.self, from: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8)
+        )
+        XCTAssertEqual(bare.keptWorktrees, [])
+        XCTAssertNil(bare.keptWorktreesNotice)
+    }
+
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)

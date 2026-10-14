@@ -59,6 +59,8 @@ final class WorkbenchesViewModel {
     /// Why the last "Archive Closed Targets After" write failed, per
     /// workbench; the next successful write clears it.
     private(set) var archiveSettingErrors: [Int64: String] = [:]
+    /// A failed save of the worktree setup command, per workbench.
+    private(set) var worktreeSetupErrors: [Int64: String] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -604,9 +606,8 @@ final class WorkbenchesViewModel {
         onWorkbenchRemoved?(id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
-        if let warning = result.cleanupWarning {
-            errorMessage = warning
-        }
+        let notices = [result.cleanupWarning, result.keptWorktreesNotice].compactMap { $0 }
+        if !notices.isEmpty { errorMessage = notices.joined(separator: " ") }
         if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         await reload()
         return true
@@ -921,6 +922,22 @@ final class WorkbenchesViewModel {
             return
         }
         await reload()
+    }
+
+    /// The header menu's "Worktree Setup Command…" (board #229): the command
+    /// a new session's worktree runs before the agent starts; empty = none.
+    /// Returns whether it was saved, so the sheet stays open on a failure.
+    @discardableResult
+    func setWorktreeSetup(_ command: String, projectID: Int64) async -> Bool {
+        do {
+            try await dbPool.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: projectID, command: command) }
+            worktreeSetupErrors[projectID] = nil
+        } catch {
+            worktreeSetupErrors[projectID] = "Could not save the worktree setup command: \(error.localizedDescription)"
+            return false
+        }
+        await reload()
+        return true
     }
 
     /// The header menu's "Archive Closed Targets Now" (board #415): every

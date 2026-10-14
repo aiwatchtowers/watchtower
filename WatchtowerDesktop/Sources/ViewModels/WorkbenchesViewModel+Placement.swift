@@ -57,6 +57,13 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Why "In Its Own Worktree" is disabled, from the header's last git
+    /// status (no new read); nil when one can be made or none was read yet
+    /// (the start then reads it and says why on `startNotice`).
+    func worktreeUnavailableReason(projectID: Int64) -> String? {
+        gitStatus[projectID].flatMap(SessionStartPlacement.unavailableReason)
+    }
+
     /// Runs `body` as the workbench's placement turn: after every earlier
     /// start's turn ended. Main actor only, so the queue needs no lock.
     func inPlacementTurn<T>(_ projectID: Int64, _ body: () async throws -> T) async rethrows -> T {

@@ -263,6 +263,20 @@ struct WorkbenchTargetMenu: View {
                 WorkOnTargetButton.start(target, vm: sessions)
             }
             .disabled(sessions == nil)
+            // A new session's place, by hand (board #229): an existing
+            // session is simply opened, so these only start one.
+            if !existing {
+                let reason = target.workbenchID.flatMap { sessions?.worktreeUnavailableReason(projectID: $0) }
+                Button("Work on It " + SessionStartPlacementPresentation.menuTitle(.folder)) {
+                    WorkOnTargetButton.start(target, vm: sessions, worktree: .folder)
+                }
+                .disabled(sessions == nil)
+                Button("Work on It " + SessionStartPlacementPresentation.menuTitle(.worktree)) {
+                    WorkOnTargetButton.start(target, vm: sessions, worktree: .worktree)
+                }
+                .disabled(sessions == nil || reason != nil)
+                .help(reason.map(SessionStartPlacementPresentation.disabledHelp) ?? "")
+            }
         }
         // The other agents' Work on It, also in the side panel's ⋯ menu
         // (the panel's own button runs the default agent).
