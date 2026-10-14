@@ -1,0 +1,239 @@
+import XCTest
+import WatchtowerCore
+
+final class SessionCleanupPresentationTests: XCTestCase {
+    private typealias Presentation = SessionCleanupPresentation
+    private typealias Item = SessionCleanupItem
+
+    // MARK: - Reasons in step with Go
+
+    /// Every reason code Go's `internal/sessioncleanup` emits, with the
+    /// phrase Go's `ReasonPhrase` gives it (its `reasonPhrases` map, or the
+    /// code with spaces where Go has none). A code Go adds must be added
+    /// here and to `SessionCleanupReason.Code` with its phrase.
+    private static let goPhrases: [String: String] = [
+        "main_folder": "the main folder",
+        "workbench_folder": "a workbench folder",
+        "locked": "locked",
+        "uncommitted_changes": "uncommitted changes",
+        "process_running": "a process is running in it",
+        "process_unknown": "a process could not be checked",
+        "session_in_it": "another session works in it",
+        "you_are_in_it": "you are in it",
+        "unpushed_commits": "unpushed commits",
+        "operation_in_progress": "an operation in progress",
+        "default_branch": "the default branch",
+        "default_branch_unknown": "default branch unknown",
+        "checked_out": "checked out",
+        "claude_home": "under ~/.claude",
+        "not_a_worktree": "not a worktree",
+        "not_a_branch": "not a branch",
+        "session_recent": "its session was active recently",
+        "check_failed": "could not be checked",
+        "contains_worktree": "another worktree is inside",
+        "not_this_session": "not this session's",
+        "existed_before_session": "existed before the session",
+        "created_unknown": "creation time unknown",
+        "git_refused": "git refused",
+        "moved": "moved since the check",
+        "not_selected": "not selected",
+        "not_in_plan": "not in the plan",
+        "not_attempted": "not attempted after a failure",
+        "worktree_kept": "worktree kept",
+        "bundle_exists": "bundle exists",
+        "bundle_unreadable": "its bundle could not be checked"
+    ]
+
+    func testEveryGoReasonCodeHasItsGoPhrase() {
+        for (code, phrase) in Self.goPhrases {
+            XCTAssertNotNil(SessionCleanupReason.Code(rawValue: code), "\(code) is not a SessionCleanupReason.Code")
+            XCTAssertEqual(Presentation.reasonText(SessionCleanupReason(code: code)), phrase, code)
+        }
+        XCTAssertEqual(Set(SessionCleanupReason.Code.allCases.map(\.rawValue)), Set(Self.goPhrases.keys),
+                       "the Swift codes and the Go list differ")
+    }
+
+    func testAnUnknownReasonReadsAsItsCodeInWords() {
+        XCTAssertEqual(Presentation.reasonText(.unknown("cosmic_rays_hit")), "cosmic rays hit")
+    }
+
+    /// The Go sources themselves, both ways: Go's `Reason* = "…"` constants
+    /// in `internal/sessioncleanup` are exactly the Swift codes, and every
+    /// Swift code reads as Go's `ReasonPhrase` does (its `reasonPhrases`
+    /// entry, or the code with spaces) — so a reason or phrase changed on
+    /// either side fails here.
+    func testTheGoSourcesAgreeWithSwift() throws {
+        let constants = try Self.goReasonConstants()
+        let swiftCodes = Set(SessionCleanupReason.Code.allCases.map(\.rawValue))
+        XCTAssertEqual(constants.count, swiftCodes.count, "the Go reason parse found a different number of constants")
+        XCTAssertEqual(Set(constants.values), swiftCodes, "the Go constants and the Swift codes differ")
+        let goPhrases = try Self.goPhraseMap()
+        XCTAssertFalse(goPhrases.isEmpty, "Go's reasonPhrases map was not found or parsed to nothing")
+        var phraseByCode: [String: String] = [:]
+        for (name, phrase) in goPhrases {
+            let code = try XCTUnwrap(constants[name], "reasonPhrases names an unknown constant \(name)")
+            phraseByCode[code] = phrase
+        }
+        for code in swiftCodes {
+            let goText = phraseByCode[code] ?? code.replacingOccurrences(of: "_", with: " ")
+            XCTAssertEqual(Presentation.reasonText(SessionCleanupReason(code: code)), goText, code)
+        }
+    }
+
+    private static let goPackage = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // Core
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // WatchtowerDesktop
+        .deletingLastPathComponent() // repo root
+        .appendingPathComponent("internal/sessioncleanup")
+
+    private static func goSources() throws -> [String] {
+        let files = try FileManager.default.contentsOfDirectory(at: goPackage, includingPropertiesForKeys: nil)
+        return try files
+            .filter { $0.pathExtension == "go" && !$0.lastPathComponent.hasSuffix("_test.go") }
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+    }
+
+    private static func matches(_ pattern: String, in source: String) throws -> [(String, String)] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        let text = source as NSString
+        return regex.matches(in: source, range: NSRange(location: 0, length: text.length)).map {
+            (text.substring(with: $0.range(at: 1)), text.substring(with: $0.range(at: 2)))
+        }
+    }
+
+    /// Constant name → code.
+    private static func goReasonConstants() throws -> [String: String] {
+        var out: [String: String] = [:]
+        for source in try goSources() {
+            for (name, code) in try matches(#"\b(Reason[A-Z]\w*)\s*=\s*"([a-z_]+)""#, in: source) {
+                out[name] = code
+            }
+        }
+        return out
+    }
+
+    /// Constant name → phrase, from Go's `reasonPhrases` map; fails the
+    /// test when the map is missing or parses to nothing.
+    private static func goPhraseMap() throws -> [String: String] {
+        var out: [String: String] = [:]
+        var mapSeen = false
+        for source in try goSources() where source.contains("reasonPhrases = map[string]string{") {
+            mapSeen = true
+            for (name, phrase) in try matches(#"(?m)^\s*(Reason[A-Z]\w*):\s*"([^"]*)","#, in: source) {
+                out[name] = phrase
+            }
+        }
+        if !mapSeen { XCTFail("Go's reasonPhrases map is not in internal/sessioncleanup") }
+        if mapSeen, out.isEmpty { XCTFail("Go's reasonPhrases map is there but parsed to nothing") }
+        return out
+    }
+
+    // MARK: - Sizes
+
+    func testByteTextMirrorsGoSizeText() {
+        XCTAssertEqual(Presentation.byteText(0), "0 B")
+        XCTAssertEqual(Presentation.byteText(512), "512 B")
+        XCTAssertEqual(Presentation.byteText(1_500), "1.5 KB")
+        XCTAssertEqual(Presentation.byteText(12_000_000_000), "12 GB")
+        XCTAssertEqual(Presentation.byteText(1_540_000_000), "1.5 GB")
+        XCTAssertEqual(Presentation.byteText(999_000_000), "999 MB")
+        XCTAssertEqual(Presentation.byteText(3_000_000_000_000_000), "3000 TB")
+    }
+
+    func testSizeText() {
+        XCTAssertEqual(Presentation.sizeText(bytes: 12_000_000_000, known: true), "~12 GB")
+        XCTAssertEqual(Presentation.sizeText(bytes: 12_000_000_000, known: false), "size unknown")
+    }
+
+    // MARK: - Offer line and totals
+
+    private func worktreeItem(_ key: String, _ bytes: Int64, known: Bool = true, keep reason: String? = nil) -> Item {
+        Item(key: key, kind: .worktree, bytes: bytes, bytesKnown: known, action: reason == nil ? .remove : .keep,
+             reason: reason.map(SessionCleanupReason.init(code:)))
+    }
+
+    private func branchItem(_ key: String, keep reason: String? = nil) -> Item {
+        Item(key: key, kind: .branch, action: reason == nil ? .remove : .keep,
+             reason: reason.map(SessionCleanupReason.init(code:)))
+    }
+
+    func testOfferLineWithKeptItems() {
+        let plan = SessionCleanupPlan(items: [
+            worktreeItem("a", 7_000_000_000), worktreeItem("b", 5_000_000_000),
+            branchItem("x"), branchItem("y"), branchItem("z"),
+            worktreeItem("c", 1_000, keep: "uncommitted_changes")
+        ])
+        XCTAssertEqual(Presentation.offerLine(plan),
+                       "Also clean up: 2 worktrees, 3 branches (~12 GB). Kept: 1 worktree — uncommitted changes.")
+    }
+
+    func testOfferLineWithoutKeptItems() {
+        let plan = SessionCleanupPlan(items: [branchItem("x")])
+        XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 branch.")
+    }
+
+    func testOfferLineIsNilWhenNothingIsRemovable() {
+        XCTAssertNil(Presentation.offerLine(SessionCleanupPlan()))
+        let keptOnly = SessionCleanupPlan(items: [worktreeItem("a", 1, keep: "locked"), branchItem("b", keep: "default_branch")])
+        XCTAssertNil(Presentation.offerLine(keptOnly))
+    }
+
+    func testOfferLineSizeVariants() {
+        let unknown = SessionCleanupPlan(items: [worktreeItem("a", 0, known: false)])
+        XCTAssertEqual(Presentation.offerLine(unknown), "Also clean up: 1 worktree (size unknown).")
+        let some = SessionCleanupPlan(items: [worktreeItem("a", 2_000_000_000), worktreeItem("b", 0, known: false)])
+        XCTAssertEqual(Presentation.offerLine(some), "Also clean up: 2 worktrees (~2.0 GB, some sizes unknown).")
+    }
+
+    func testKeptReasonsAreListedOnceInFirstSeenOrder() {
+        let items = [
+            branchItem("a", keep: "checked_out"), worktreeItem("b", 1, keep: "uncommitted_changes"),
+            branchItem("c", keep: "checked_out"),
+            Item(key: "p", kind: .process, action: .keep, reason: .known(.processRunning))
+        ]
+        XCTAssertEqual(Presentation.keptText(items), "1 worktree, 2 branches — checked out, uncommitted changes")
+    }
+
+    func testTotalTextCountsEveryKnownKind() {
+        let items = [
+            Item(key: "p", kind: .process, action: .remove),
+            Item(key: "l1", kind: .lsreg, action: .remove), Item(key: "l2", kind: .lsreg, action: .remove),
+            Item(key: "u", kind: .unknown("volume"), action: .remove)
+        ]
+        XCTAssertEqual(Presentation.totalText(items), "1 process, 2 LaunchServices entries")
+        XCTAssertNil(Presentation.totalText([]))
+    }
+
+    // MARK: - Sweep owner and report
+
+    func testOwnerText() throws {
+        let now = try XCTUnwrap(TimeFormatting.parseISO("2026-10-12T12:00:00Z"))
+        let owner = SessionCleanupOwner(sessionID: 7, title: "Fix the login form", lastActive: "2026-10-10T12:00:00Z")
+        XCTAssertEqual(Presentation.ownerText(owner, now: now), "Fix the login form · active 2d ago")
+        let fresh = SessionCleanupOwner(sessionID: 7, title: "", lastActive: "2026-10-12T11:59:30Z")
+        XCTAssertEqual(Presentation.ownerText(fresh, now: now), "Session 7 · active just now")
+        XCTAssertEqual(Presentation.ownerText(SessionCleanupOwner(sessionID: 7, title: "T"), now: now), "T")
+        XCTAssertEqual(Presentation.ownerText(SessionCleanupOwner(isUnknown: true), now: now), "Owner unknown")
+        XCTAssertEqual(Presentation.ownerText(SessionCleanupOwner(), now: now), "Owner unknown")
+    }
+
+    func testReportLine() {
+        let done = SessionCleanupRecord(result: SessionCleanupPlan(summary: "2 worktrees removed (~3.0 GB)"), at: "")
+        XCTAssertEqual(Presentation.reportLine(done), "2 worktrees removed (~3.0 GB)")
+        XCTAssertNil(Presentation.reportLine(SessionCleanupRecord(result: SessionCleanupPlan(), at: "")))
+    }
+
+    /// A stored result that does not decode still says a cleanup ran.
+    func testReportLineForAnUnreadableResult() {
+        let unreadable = SessionCleanupRecord(result: nil, at: "2026-10-12T10:00:00Z")
+        XCTAssertEqual(Presentation.reportLine(unreadable), "Cleanup ran — result unreadable")
+    }
+
+    /// Decoded JSON without `bytes_known`: the size is unknown, not "~0 B".
+    func testOfferLineFromDecodedJSONWithoutBytesKnown() throws {
+        let json = #"{"items":[{"key":"a","kind":"worktree","action":"remove","bytes":0}]}"#
+        let plan = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
+        XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 worktree (size unknown).")
+    }
+}

@@ -599,7 +599,7 @@ final class AppState {
         // Launch catch-up: the one full retro pass (spec §4.1), skipped with
         // "Voice recognition" off (spec §6).
         let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
-        Task { await voiceRegistryCenter.catchUp(voiceRecognition: voiceRecognition) }
+        voiceRegistryCenter.startCatchUp(voiceRecognition: voiceRecognition)
         observeVoiceRegistryCatchUp()
     }
 
@@ -1832,6 +1832,7 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.asks.stop()
         workbenchesViewModel = vm
         workbenchNotificationCenter = notices

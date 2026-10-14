@@ -16,6 +16,8 @@ extension WorkbenchesViewModel {
         case quick
         /// Its agent may be working: the page asks first.
         case confirm(TerminalSession)
+        /// A Delete and Clean Up runs on it (board #535): nothing happens.
+        case busy
     }
 
     /// Whether `session` is deleted with one ✕ or ⌘⌫, without a dialog.
@@ -72,6 +74,7 @@ extension WorkbenchesViewModel {
     /// have turned busy since the ✕ showed — else asks for the
     /// confirmation.
     func deleteQuicklyOrConfirm(_ session: TerminalSession) async -> PanelDeleteIntent {
+        guard !cleaningUpSessions.contains(session.id) else { return .busy }
         guard isQuickDelete(session) else { return .confirm(session) }
         await delete(session)
         return .quick

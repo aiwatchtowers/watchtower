@@ -352,6 +352,16 @@ final class VoiceRegistryCenter {
         await open(.queue(transcriptID: transcriptID))
     }
 
+    /// The launch catch-up `startCatchUp` starts without awaiting. Its queue
+    /// housekeeping closes a task whose cluster is gone, so a test that
+    /// queues one awaits this first instead of racing it.
+    @ObservationIgnored private(set) var launchCatchUp: Task<Void, Never>?
+
+    /// Starts `catchUp` without waiting for it (the launch path).
+    func startCatchUp(voiceRecognition: Bool) {
+        launchCatchUp = Task { await catchUp(voiceRecognition: voiceRecognition) }
+    }
+
     /// Launch catch-up (spec §4.1): skips every queued task whose recording
     /// lost its audio, then runs a FULL retro relabel pass over the whole
     /// registry. Retro's three triggers are deliberately narrow — an owner

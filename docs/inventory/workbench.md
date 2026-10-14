@@ -1038,7 +1038,7 @@ it again once it was cleared; only Go writes it.
 - `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner; since 2026-10-12, board #534: ready to check posts nothing and withdraws a stopped banner, a check filed then `finish_session` posts no finished notice, ready to check → stopped posts once)
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the ten kinds in the order above, live and not live; since 2026-10-12, board #534, the rows before Ready to check keep their expectation because the fixture's asks are questions — the `row` helper's `questions` defaults to `openAsks`, stated in the test)
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_TurnEndWithoutAskIsStoppedNotWaiting`
-- Board #534, Ready to check (2026-10-12, ask #195) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_ReadyToCheckNeedsOnlyCheckOrReviewAsks` (checks only, reviews only, both → ready; no open ask → not), `testProj11_OneQuestionKeepsWaitingForYou` (two checks and a question → Waiting for you, `openQuestionAsks == 1`), `testProj11_ReadyToCheckIsAtPrompt` (live over this run's turn end → at the prompt; not live → a ring, never at the prompt); supporting: `TerminalSessionQueriesTests.testAgentStatesCountQuestionAndReviewAsks`, `SessionStatePresentationTests` (`testReadyToCheckIsPurpleWithChecklist`, `testWorkingWithOnlyChecksShowsChecklistGlyph`), `OwnerAsksViewModelTests.testProj12_AnAnswerIntoAReadyToCheckSessionGetsTheReturn`; the ask notice wording in `WatchtowerDesktop/Tests/Core/WorkbenchNotificationPolicyTests.swift`: `testCheckAskNoticeSaysReadyToCheck` (check → "Ready to check: T", review → "Ready for review: T", question or no kind → "Agent asks: T"), `testCoalescedChecksSayReadyToCheck` (only checks → "Ready to check (N)", with a question → "Waiting for you (N)"); every existing PROJ-11 guard above unchanged
+- Board #534, Ready to check (2026-10-12, ask #195) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_ReadyToCheckNeedsOnlyCheckOrReviewAsks` (checks only, reviews only, both → ready; no open ask → not), `testProj11_OneQuestionKeepsWaitingForYou` (two checks and a question → Waiting for you, `openQuestionAsks == 1`), `testProj11_ReadyToCheckIsAtPrompt` (live over this run's turn end → at the prompt; not live → a ring, never at the prompt); supporting: `TerminalSessionQueriesTests.testAgentStatesCountQuestionAndReviewAsks`, `SessionStatePresentationTests` (`testReadyToCheckIsPurpleWithChecklist`, `testWorkingWithOnlyChecksShowsChecklistGlyph`), `OwnerAsksViewModelTests.testProj12_AnAnswerIntoAReadyToCheckSessionGetsTheReturn`; the ask notice wording in `WatchtowerDesktop/Tests/Core/WorkbenchNotificationPolicyTests.swift`: `testCheckAskNoticeSaysReadyToCheck` (check → "Ready to check: T", review → "Ready for review: T", question or no kind → "Agent asks: T"), `testCoalescedChecksSayReadyToCheck` (only checks, or checks and reviews → "Ready to check (N)", only reviews → "Ready for review (N)", with a question → "Waiting for you (N)"); every existing PROJ-11 guard above unchanged
 - `internal/db/session_report_test.go::TestProj11_WorkingClearsFinishedAndError`
 - `internal/db/session_report_test.go::TestProj11_WorkingOverWorkingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_WorkingOverWorkingClearsFinished` (finish, an Esc interrupt and a new prompt: the UserPromptSubmit's `working` over `working` clears `finished_at`; a plain `working` repeat stays a no-op)
 - `internal/db/session_report_test.go::TestProj11_ToolRunWorkingOverWorkingKeepsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseOverWorkingKeepsFinished` (finish, then a PostToolUse `working` over `working`: still finished)
@@ -1526,8 +1526,8 @@ meanwhile cascades it and the batch forgets it. Until then **Undo** (`undoPendin
 session of the batch with its row, links and asks byte-identical, not
 running (a click or Restart resumes it). A failed delete brings the row back
 with an error, never keeps it hidden. A live session that is working, at a
-permission prompt, running without a reported state, waiting on an ask or
-ready to check is deleted only after a confirmation
+permission prompt, running without a reported state, with agents working,
+waiting on an ask or ready to check is deleted only after a confirmation
 (`SessionDeletePolicy.isQuick`); a standalone terminal always asks.
 
 **Why locked:** Owner decision (#480, variants 5 + 1 + 2): one-gesture delete
@@ -1778,6 +1778,36 @@ asks would be worse than the dialog it replaces.
   keeps its target and every ancestor out of the archive, so an archived
   target's whole subtree stays archived (guard
   `TestProj15_UnparseableCloseTimeKeepsTheChain`).
+
+- **Sessions panel (board #480/#534, PROJ-11/17; owner decisions in asks
+  #194/#195).** Not contracts — the panel's layout and keys, written down so
+  a change is a decision, not a drift. (a) *Finished group:* a session that
+  is finished with no open ask (live or not) folds into "▸ N finished" at the
+  bottom of SESSIONS, most recently finished first; Ready to check, a
+  finished session with an open question and every other state stay in the
+  main list in the saved drag order (`SessionPanelSections`). The fold is
+  remembered per workbench. The session on screen never jumps: one that
+  finishes in front of the owner keeps its main-list slot until another
+  session is shown, and one shown from a folded group appears as a pinned
+  row under the header without opening the fold; a session resumed from the
+  group returns to the main list. (b) *Numbers:* ⌘1…⌘9 follow the main list,
+  then the group's rows only while it is open (a pinned row gets no
+  number); the session switcher and Go to… list every group row after the
+  main rows. (c) *Quick delete:* the ✕ and ⌘⌫ without a dialog only for a
+  session whose agent is not working (PROJ-17's list); standalone terminals
+  get no ✕ and always confirm, then get the same Undo. (d) *Keyboard (ask
+  #195):* a row click keeps sending the keyboard into the session's
+  terminal; the panel takes it on a click on its empty space, the SESSIONS
+  label, the group header, a ✕ or the Undo button, and then owns ⌘⌫, ↑ ↓,
+  Return, Esc (back to the terminal), ⌘Z and Tab — only in the key window
+  with no sheet up; elsewhere those keys belong to the terminal or the
+  editor. (e) *Undo bar:* "Session deleted — Undo" / "N sessions deleted —
+  Undo" in its own bar under the session list (over the page while the
+  panel is hidden). (f) *Limits:* a crash or `kill -9` inside the 5 s window
+  keeps the row (listed again on the next launch); the phone's session list
+  follows the hub's 30 s full tick, so it may still list a hidden row and
+  shows an undone one again only on the next tick; a late async hook of the
+  killed process may still write the row's state, which Undo then shows.
 
 ## Changelog
 
