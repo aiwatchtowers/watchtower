@@ -1,8 +1,8 @@
 # Automations — design
 
-**Status:** Draft, 2026-10-14. Owner-approved shape: asks #259–#267 (2026-10-14). The AGENT-03 amendment (§14.2)
-is owner-approved (ask #265). The STRIP-01 and AGENT-04 amendments (§14.4, §14.5) and every item of §20 still
-need the owner.
+**Status:** Approved, 2026-10-14. Owner-approved shape: asks #259–#267; business spec approved in ask #269; the
+open questions decided in ask #270 (§20). The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01
+and AGENT-04 amendments (§14.4, §14.5) are approved with §20 (ask #270).
 **Business spec:** `2026-10-14-automations-business.md`. **Plans:** one per phase,
 `docs/superpowers/plans/2026-10-14-automations-p1.md` … `-p6.md`.
 **Branch:** `feature/automations`; each phase is its own plan and PR into it; `main` only by one PR with the
@@ -34,7 +34,8 @@ tab, `AgentActionCardView` label, Inbox strip (P3), workbench header buttons and
 ### 2.1 Location (ask #266)
 
 - Personal: `<workspace dir>/automations/*.md` — `config.WorkspaceDir()` (`~/.local/share/watchtower/<workspace>/`),
-  beside `skills/`. See §20 Q8 on "app support folder".
+  beside `skills/`. Decided in ask #270 (§20 D8): the workspace dir, not
+  `~/Library/Application Support`.
 - Workbench: `<workbench folder>/.watchtower/automations/*.md`. **Renamed** from the ask's `.watchtower/actions/`
   so the folder matches the feature name. Nothing else lives under `.watchtower/` today.
 - The filename stem is the automation's **slug** (`^[a-z0-9][a-z0-9-]{0,63}$`, the skills name rule); a file
@@ -53,7 +54,7 @@ permissions:
   - gmail:read@work
   - llm:light
 outputs: [inbox]
-budget: { usd: 0.20, minutes: 5 }
+budget: { tokens: 40000, minutes: 5 }
 ---
 Free Markdown description for humans (shown on the card).
 
@@ -77,8 +78,8 @@ must not silently grant nothing or everything).
 | `concurrency` | int | 1 | 1–4; max active runs of this automation (AUTO-05) |
 | `permissions` | list of strings | `[]` | grammar §3 |
 | `outputs` | list of `inbox`, `briefing`, `report`, `target`, `slack` | `[]` | the only gate for `output.*` (§5) |
-| `budget` | `{usd: float, minutes: int}` | `{usd: 0.25, minutes: 5}` | `0 < usd ≤ 5.00`, `1 ≤ minutes ≤ 60` |
-| `workbench` | — | — | **not allowed in the file**: the binding is the folder the file lives in (§20 Q15) |
+| `budget` | `{tokens: int, minutes: int}` | `{tokens: 50000, minutes: 5}` | `1000 ≤ tokens ≤ 2000000` (input + output tokens across `llm`/`agent` calls), `1 ≤ minutes ≤ 60`; a `usd` key is a parse error |
+| `workbench` | — | — | **not allowed in the file**: the binding is the folder the file lives in (§20 D15) |
 | `pause_timeout_hours` | int | 72 | 1–168; a run waiting longer ends `expired` |
 
 `trigger.button` = `{label: string (1–24 chars), confirm: bool = false}`; `button` in a personal recipe shows
@@ -92,7 +93,7 @@ on the Automations card only, in a workbench recipe also in the workbench header
 - `approval_hash` — sha256 of the canonical JSON `{"permissions": [sorted, normalised], "outputs": [sorted],
   "scope": "personal"|"workbench:<id>", "script": "<exact js block text>"}`. "What this code may do." Owner
   confirmations and auto grants bind to it (§6.4, §2.5). Edits to `name`, description, `trigger`, `missed`,
-  `budget`, `concurrency`, `pause_timeout_hours` do not change it (see §20 Q5).
+  `budget`, `concurrency`, `pause_timeout_hours` do not change it (§20 D5).
 
 ### 2.5 Index and confirmation
 
@@ -199,11 +200,11 @@ and `agent()` processes get the environment of §13.2, never the secret files' c
 
 ## 5. SDK
 
-Every call writes one step row (§9.3) — start, result summary, cost, duration, error (AUTO-11).
+Every call writes one step row (§9.3) — start, result summary, tokens, duration, error (AUTO-11).
 
 | Call | Phase | Permission | Behaviour |
 |---|---|---|---|
-| `llm(prompt, {input?, schema?, tier?})` | P1 | `llm:<tier>` (default `light`) | One `digest.Generator.Generate` through the resolved provider (`providers.ResolveModelsFor`). Source tag `automation.llm` (light) or `automation.llm.strong` (strong; added to `allowedStrongSources` with reason "the owner chose tier: strong in the recipe"). `input` is JSON-serialised after the prompt. With `schema` (JSON Schema object) the reply must parse and validate (`jsonschema-go`); one retry with the validation error, then `ValidationError`. Returns string, or the parsed object with `schema`. Cost debited (§7.5). |
+| `llm(prompt, {input?, schema?, tier?})` | P1 | `llm:<tier>` (default `light`) | One `digest.Generator.Generate` through the resolved provider (`providers.ResolveModelsFor`). Source tag `automation.llm` (light) or `automation.llm.strong` (strong; added to `allowedStrongSources` with reason "the owner chose tier: strong in the recipe"). `input` is JSON-serialised after the prompt. With `schema` (JSON Schema object) the reply must parse and validate (`jsonschema-go`); one retry with the validation error, then `ValidationError`. Returns string, or the parsed object with `schema`. Tokens debited (§7.5). |
 | `tool(name, args, {wait?})` | P1 reads, P2 writes | §3.2 | Read: `Registry.CallRead(ctx, name, args, binding)`. Write: `Registry.Propose(ctx, name, args, binding)` → `{status:"proposed", id}`, or `{status:"applied", id, result}` when trust/auto applied it inline. With `{wait:true}` a proposed write pauses the run (`waiting_reason='approval'`) until the row is `applied` → `{status:"applied", id, result}`, `rejected` → `{status:"rejected", id}`, or `failed` → `{status:"failed", id, error}`. Dry run: a write never reaches the registry → `{status:"dry_run"}` (AUTO-12). |
 | `state.get(key)` / `state.set(key, value)` / `state.all()` | P1 | none | Per-automation JSON object. Reads see the committed state plus this run's own sets; sets are buffered and committed **only** when the run ends `succeeded` (AUTO-04). |
 | `output.inbox({title, body, priority?})` | P1 | `outputs: [inbox]` | Buffered; committed with state on success as an `automation_outputs` row `kind='inbox'`. |
@@ -215,7 +216,7 @@ Every call writes one step row (§9.3) — start, result summary, cost, duration
 | `session({prompt, agent?, title?, wait?})` | P5 | `session:start[@kind]` | Workbench only (§13.1). Returns `{session_id, status, summary}` (`wait:"finish"`, default) or `{session_id}` (`wait:"none"`). |
 | `shell(cmd)` | P5 | `shell:"<cmd>"` | Workbench only (§13.2). Returns `{exit_code, stdout, stderr}`. |
 | `mcp(server, tool, args)` | P6 | `mcp:<server>/<glob>` | Go-side MCP client call (`internal/externalmcp`, the go-sdk client already used by `ListTools`) on an enabled Quick Connection; only tools QC-02 allows; 30 s bound per call. |
-| `agent(instruction, {tools?, budget?, tier?})` | P6 | `agent:run` + `llm:<tier>` | A bounded tool loop (§6.5). `tools` = names; the effective set is `tools ∩ (tools the manifest admits) ∩ (visible on automation)`. `budget` = `{usd, minutes}` ≤ the run's remainder. Returns `{text, actions: [ids]}`. |
+| `agent(instruction, {tools?, budget?, tier?})` | P6 | `agent:run` + `llm:<tier>` | A bounded tool loop (§6.5). `tools` = names; the effective set is `tools ∩ (tools the manifest admits) ∩ (visible on automation)`. `budget` = `{tokens, minutes}` ≤ the run's remainder. Returns `{text, actions: [ids]}`. |
 
 ## 6. Writes, trust and auto
 
@@ -234,7 +235,11 @@ Every call writes one step row (§9.3) — start, result summary, cost, duration
 - New read tools for automations in P1, registered in `buildToolRegistry` but **not** in `tools.ReadTools()` (so
   dev-mode MCP never mounts them, DEV-01) and with `Surfaces: ["automation"]`: `list_emails` (Gmail + IMAP
   messages of one account, newest first, `since`, `limit`, `unread_only`; scope arg `account`) and `get_email`
-  (one message, body clipped 32 KiB). Gated by §20 Q2.
+  (one message, body clipped 32 KiB). Both read **only the locally synced store** (`gmail_messages`,
+  `imap_messages`) — never the live Gmail/IMAP API — for Gmail and IMAP accounts alike, with no per-build or
+  per-provider gating (§20 D2). They carry the same Google Limited Use posture as the inbox, memory and briefing,
+  which already feed synced mail to the model; the product-wide decision governs all of them
+  (`docs/security-audit-2026-07-31.md`).
 
 ### 6.2 Trust order (`resolveTrust`)
 
@@ -271,9 +276,11 @@ carries `status='applied'` and `auto=1`. Approve/Reject stay the existing owner-
 
 `agent()` runs a bounded tool loop with the run's binding: with an OpenAI-compatible provider, the runtime-B
 loop (`agentloop.NewClient(model, baseURL, reg, binding)` restricted to the effective tool set); with the
-`claude`/`codex` CLI providers there is no in-process loop today — see §20 Q3. Writes inside the loop go through
+`claude`/`codex` CLI providers there is no in-process loop, so (§20 D3) the SDK runs a headless `ai query`-style
+process with the chat-mode MCP server bound to `--surface automation --automation-run N`, `--allowedTools` = the
+effective tool set, and `WATCHTOWER_AUTOMATION_RUN_ID` in its environment. Writes inside the loop go through
 `Registry.Propose` with the automation binding (AGENT-01 holds); `wait` is not available inside `agent()`
-(proposals stay pending; their ids are returned). Iterations ≤ 12; cost debited per model call.
+(proposals stay pending; their ids are returned). Iterations ≤ 12; tokens debited per model call.
 
 ## 7. Triggers, scheduler, executor
 
@@ -328,21 +335,24 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
 `daemon.AutomationWakeSignal = syscall.SIGUSR2` with its own watcher (`WatchAutomationWake`), feeding the
 scheduler/executor only. `automations run`, the Desktop after an approval/ask answer on an automation row, and
 the Desktop after launching a requested session send it. **Not** the existing `SIGUSR1` trigger channel: that
-one starts a full sync cycle (`TriggerSignal`, `cmd/sync.go`), which would make every Run now cost a sync — see
-§20 Q1. With no daemon running, `run` still queues and prints `daemon not running; the run starts when it does`
+one starts a full sync cycle (`TriggerSignal`, `cmd/sync.go`), which would make every Run now cost a sync (§20
+D1). With no daemon running, `run` still queues and prints `daemon not running; the run starts when it does`
 (exit 0); the Desktop respawns the daemon anyway.
 
 ### 7.5 Budgets
 
-- Per run: `budget.usd` and `budget.minutes` from the recipe (snapshotted on the run row). Every `llm`/`agent`
-  model call debits `cost_usd`; before each such call the executor checks the remainder and refuses the call
+Budgets are in **tokens**, not dollars (§20 D4, ask #270).
+- Per run: `budget.tokens` and `budget.minutes` from the recipe (snapshotted on the run row). Every `llm`/`agent`
+  model call debits its `input_tokens + output_tokens` (`digest.Usage.InputTokens + OutputTokens`, the same
+  numbers `pipeline_runs` records); before each such call the executor checks the remainder and refuses the call
   with `BudgetExceeded` when it is ≤ 0; after a call that crosses it the run is interrupted. End status
-  `budget_exceeded`.
-- Cost of one call: the provider-reported cost when the CLI reports one (claude's `total_cost_usd`, today parsed
-  and dropped — `digest.Usage.CostUSD` is deprecated and always 0), else an estimate from tokens × a per-model
-  rate table (`internal/automations/pricing.go`, code constants), `cost_estimated = 1`; `ollama` = 0. See §20 Q4.
-- Global daily cap: config `automations.daily_budget_usd` (default `5.00`), summed over `automation_runs.cost_usd`
-  whose `started_at` falls on the local calendar day, dry runs included. A run claimed while the cap is spent ends
+  `budget_exceeded`. A call whose provider reports no usage debits an estimate of `ceil(len(prompt+input+reply)
+  / 4)` tokens, so a provider without usage numbers cannot run unbounded.
+- Display only: when the provider reports a dollar cost (claude's `total_cost_usd`), it is stored in
+  `reported_cost_usd`; nothing compares against it, and it is never estimated.
+- Global daily cap: config `automations.daily_budget_tokens` (default `2000000`), summed over
+  `automation_runs.input_tokens + output_tokens` whose `started_at` falls on the local calendar day, dry runs
+  included. A run claimed while the cap is spent ends
   at once `budget_exceeded` with `error_kind='daily_cap'`; a running run that crosses it is interrupted the same
   way. The scheduler keeps inserting rows (they end as above), so the history shows what was skipped.
 
@@ -359,7 +369,7 @@ it `cancelled` (a pending proposal it made stays pending in the Inbox; a request
 A daemon exit interrupts every `running`/`waiting` run (goja state is not serialisable): on start the executor
 marks them `failed` with `error_kind='interrupted'`. State and outputs were not committed (AUTO-04), so a rerun is
 safe for Watchtower's own data; proposals and applied writes made before the interruption stay, listed in the
-journal. Replay-based resume is §20 Q6.
+journal. No replay-based resume in v1 (§20 D6).
 
 ### 7.8 Statuses
 
@@ -408,7 +418,7 @@ and check by table presence, not goose version.
 | `trigger_spec` | TEXT NOT NULL DEFAULT '{}' | JSON of `trigger` |
 | `missed_policy` | TEXT NOT NULL DEFAULT 'run_once' CHECK IN ('run_once','skip') | |
 | `concurrency` | INTEGER NOT NULL DEFAULT 1 CHECK BETWEEN 1 AND 4 | |
-| `budget_usd` | REAL NOT NULL DEFAULT 0.25 | |
+| `budget_tokens` | INTEGER NOT NULL DEFAULT 50000 | |
 | `budget_minutes` | INTEGER NOT NULL DEFAULT 5 | |
 | `pause_timeout_hours` | INTEGER NOT NULL DEFAULT 72 | |
 | `permissions_json` | TEXT NOT NULL DEFAULT '[]' | normalised |
@@ -433,8 +443,9 @@ Unique index `(scope, COALESCE(project_id, 0), slug)`.
 REFERENCES automation_runs(id) ON DELETE SET NULL; `status` CHECK IN ('queued','running','waiting','succeeded',
 'failed','budget_exceeded','timed_out','cancelled','expired'); `waiting_reason` CHECK IN ('','approval','ask',
 'session','app'); `recipe_hash` (approval_hash at claim); `recipe_snapshot` (recipe_text at claim);
-`budget_usd`, `budget_minutes` (snapshotted); `cost_usd` REAL DEFAULT 0; `cost_estimated` INTEGER DEFAULT 0;
-`input_tokens`, `output_tokens` INTEGER DEFAULT 0; `active_ms` INTEGER DEFAULT 0; `error` TEXT DEFAULT '';
+`budget_tokens`, `budget_minutes` (snapshotted); `input_tokens`, `output_tokens` INTEGER DEFAULT 0;
+`tokens_estimated` INTEGER DEFAULT 0 (1 when any call's usage was estimated); `reported_cost_usd` REAL NULL
+(display only, sum of provider-reported costs; NULL when none reported); `active_ms` INTEGER DEFAULT 0; `error` TEXT DEFAULT '';
 `error_kind` CHECK IN ('','script','permission','budget','daily_cap','timeout','interrupted','not_runnable',
 'expired','cancelled','backend'); `summary` TEXT DEFAULT '' (last `output.report` title or the script's return
 value, clipped 1 KiB); `queued_at`, `started_at` NULL, `finished_at` NULL.
@@ -448,8 +459,8 @@ IS NOT NULL`, partial unique `(automation_id, trigger) WHERE status='queued'` (c
 4 KiB, secrets never present by §3.4); `result_summary` TEXT (clipped 4 KiB); `status` CHECK IN ('ok','error',
 'denied','proposed','applied','rejected','failed','waiting','dry_run'); `auto` INTEGER DEFAULT 0;
 `permission` TEXT DEFAULT '' (the entry that admitted it, or the one it lacked); `action_id` INTEGER NULL
-(agent_actions id, no FK); `ask_id`, `session_id` INTEGER NULL (no FK, P5); `cost_usd` REAL DEFAULT 0;
-`input_tokens`, `output_tokens`; `duration_ms`; `error` TEXT DEFAULT ''; `started_at`, `finished_at`.
+(agent_actions id, no FK); `ask_id`, `session_id` INTEGER NULL (no FK, P5); `input_tokens`, `output_tokens`
+INTEGER DEFAULT 0; `tokens_estimated` INTEGER DEFAULT 0; `reported_cost_usd` REAL NULL (display only); `duration_ms`; `error` TEXT DEFAULT ''; `started_at`, `finished_at`.
 
 ### 9.4 `automation_state`, `automation_outputs` (00113); `automation_tool_grants` (00114, P2)
 
@@ -465,8 +476,8 @@ IS NOT NULL`, partial unique `(automation_id, trigger) WHERE status='queued'` (c
 
 `ALTER TABLE owner_asks ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`;
 `ALTER TABLE terminal_sessions ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET
-NULL`. Session requests are step rows (`kind='session'`, `status='waiting'`), not a table (§13.1). Headless
-`ask()` would need `owner_asks.project_id` nullable — §20 Q7.
+NULL`. Session requests are step rows (`kind='session'`, `status='waiting'`), not a table (§13.1). `ask()` is
+workbench-only in v1 (§20 D7), so `owner_asks.project_id` stays NOT NULL.
 
 ### 9.6 Dual paths
 
@@ -479,12 +490,12 @@ through the CLI. The approval-hash function exists only in Go; the Desktop gets 
 
 | Command | Notes |
 |---|---|
-| `automations list [--json] [--workbench N]` | index rows + next run, last status, 7-day cost |
+| `automations list [--json] [--workbench N]` | index rows + next run, last status, 7-day tokens |
 | `automations show <id\|slug> [--json]` | row, parsed recipe, hashes, grants (active/inactive), widening vs confirmed |
 | `automations validate <file> [--json]` | parse + manifest + script pre-parse, no DB write |
 | `automations rescan [--workbench N] [--json]` | index personal folder (+ one workbench); Desktop runs it for protected folders |
 | `automations run <id> [--rerun-of R] [--json]` | queue + SIGUSR2; Run now and buttons |
-| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` cost counted |
+| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted |
 | `automations cancel <run-id>` | |
 | `automations runs <id> [--limit N] [--json]`, `automations steps <run-id> [--json]` | history |
 | `automations enable\|disable <id>` | |
@@ -504,10 +515,10 @@ AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell
   the recipe format, the grammar, the five templates as examples, "always draft and dry-run before save".
 - `draft_automation` — **read** tool, surfaces `main` and `automation_editor` (§14.5). Args `{recipe_text,
   workbench_id?}`. Validates; computes the widening against the saved version (when editing); dry-runs in memory
-  bounded by `min(budget, $0.50, 5 min)` with writes as `{status:"dry_run"}`. Writes **nothing** to the database
-  (AGENT-06: its dry-run journal is returned in the result, not persisted; its LLM cost is not counted in the
-  daily cap — a stated v1 limit). Result: `{ok, errors[], manifest, widening[], dry_run: {steps[], outputs[],
-  cost_usd}}`.
+  bounded by `min(budget.tokens, 50000 tokens)` and `min(budget.minutes, 5)` with writes as `{status:"dry_run"}`.
+  Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted; its
+  tokens are not counted in the daily cap — a stated v1 limit). Result: `{ok, errors[], manifest, widening[],
+  dry_run: {steps[], outputs[], tokens}}`.
 - `save_automation` — **write** tool, `AlwaysAsk: true` (never execute trust, never auto), surfaces `main` and
   `automation_editor`. Args `{recipe_text, slug, workbench_id?, reason}`. `Normalize` re-validates and pins
   `approval_hash` and the widening list into the stored args; the card shows trigger, permissions (widening
@@ -528,14 +539,14 @@ AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell
 `AutomationsViewModel` (owned by `AppState`, survives navigation) over `AutomationQueries` (WatchtowerCore,
 ValueObservation on `automations`/`automation_runs`). List rows: name, trigger text ("Weekdays 09:00", "Button:
 Release", "On new Gmail (work)"), next run, last status (badge colours: succeeded green, running/waiting blue,
-failed/timed_out/expired red, budget_exceeded orange, cancelled grey), cost this week; badges for **Needs your
+failed/timed_out/expired red, budget_exceeded orange, cancelled grey), tokens this week; badges for **Needs your
 confirmation**, **Auto paused**, **Disabled**, **Parse error**. Sidebar badge = automations needing
 confirmation + runs waiting on the owner.
 
 ### 12.2 Automation card
 
 Description, recipe (read-only, Monaco), permissions with widening vs confirmed, outputs (latest reports),
-history (runs, each expands into its steps: kind, name, status, cost, duration, error; proposals link to their
+history (runs, each expands into its steps: kind, name, status, tokens, duration, error; proposals link to their
 Inbox card, sessions to the session, asks to the ask), buttons **Run now**, **Dry run**, **Enable/Disable**,
 **Edit**, **Change in words**, **Delete**. Dry run renders the would-be writes and outputs as a list ("would
 propose create_jira_issue {…}").
@@ -586,7 +597,9 @@ Runs `/bin/sh -c <cmd>` with `cwd` = the workbench folder, its own process group
 interrupt and in tests' cleanup), timeout = remaining active budget, stdout/stderr each capped at 256 KiB (tail
 kept, `truncated: true`). Environment: `PATH`, `HOME`, `LANG`, `USER` from the daemon plus
 `WATCHTOWER_AUTOMATION_RUN_ID=<run>`; nothing else (no tokens, no `WATCHTOWER_TERMINAL_SESSION_ID`). Only exact
-manifest commands (AUTO-13). In a privacy-protected folder (`privacyProtected`, see §13.4) — §20 Q9.
+manifest commands (AUTO-13). In a privacy-protected folder (`privacyProtected`, see §13.4) `shell()` is refused with `NotAvailable`
+("this workbench is in a protected folder; use session() or move the folder") — §20 D9; the folder is never
+touched.
 
 ### 13.3 `ask()`
 
@@ -601,7 +614,7 @@ The daemon's scheduler rescans unprotected workbench folders by mtime of `.watch
 reads a folder `privacyProtected` lists (the knowledge phase's rule). For those, the Desktop runs `automations
 rescan --workbench N` when the workbench page opens and when its file watcher sees a change under
 `.watchtower/automations/`. Because the executor runs the indexed copy (§2.5), a protected-folder recipe runs on
-schedule without the daemon touching the folder — except `shell()` (§20 Q9).
+schedule without the daemon touching the folder — except `shell()`, refused there (§20 D9).
 
 ## 14. Contracts
 
@@ -616,10 +629,10 @@ schedule without the daemon touching the folder — except `shell()` (§20 Q9).
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
 | AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. | P1 |
 | AUTO-07 | The script sees the world only through the SDK | No `require`, filesystem, network, timers or promises in the sandbox; no SDK result carries a secret. | P1 |
-| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, cost ≤ `budget.usd`, the daily cap holds, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
+| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, the daily token cap holds, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
 | AUTO-09 | Triggers only queue | Scheduler, event bus, CLI `run` and Desktop buttons only insert `queued` rows; only the daemon's executor runs them (dry run excepted, which writes nothing outside its journal). | P1, P4 |
 | AUTO-10 | Missed schedules | After a gap covering N ≥ 1 missed due times: `run_once` inserts exactly one `catch_up` run, `skip` none; a restart never repeats it. | P1 |
-| AUTO-11 | Complete journal | Every SDK call, denied ones included, has exactly one step row with its status, cost and duration. | P1 |
+| AUTO-11 | Complete journal | Every SDK call, denied ones included, has exactly one step row with its status, tokens and duration. | P1 |
 | AUTO-12 | Dry run writes nothing outside its journal | A dry run makes no `agent_actions` row, no output, no state change, starts no session and runs no `shell()`. | P1, P5 |
 | AUTO-13 | Exact shell commands, workbench only | `shell()` runs only a command byte-equal to a `shell:` entry, only in a workbench automation, in the workbench folder, with the §13.2 environment. | P5 |
 
@@ -666,16 +679,16 @@ unchanged.
   `automations save --confirm-hash` join the refused commands. Desktop `Constants.agentEnvMarkers` gains the
   variable.
 
-### 14.4 STRIP-01 amendment — **needs the owner** (§20 Q10)
+### 14.4 STRIP-01 amendment — approved (ask #270, §20 D10)
 
-Proposed: "…over three tables — `agent_actions`, `reminders` and `automation_outputs` (`kind='inbox'`)… An
+Amended text: "…over three tables — `agent_actions`, `reminders` and `automation_outputs` (`kind='inbox'`)… An
 automation output is gesture-gated by construction: it exists only because the owner confirmed a recipe that
 declares `outputs: [inbox]` (AUTO-06)." STRIP-02 is unaffected (outputs are the backing rows, not a strip
 store).
 
-### 14.5 AGENT-04 amendment — **needs the owner** (§20 Q11)
+### 14.5 AGENT-04 amendment — approved (ask #270, §20 D11)
 
-Proposed: the automation's "change it in words" chat joins main and target as a tool-mode surface
+Amended: the automation's "change it in words" chat joins main and target as a tool-mode surface
 (`.actions(surface: "automation_editor")`) carrying only `draft_automation`, `save_automation` and read tools.
 
 ## 15. Templates (P6)
@@ -700,19 +713,19 @@ Embedded in `internal/automations/templates/*.md`; installed unconfirmed and dis
 
 Reaction commands on the bus; async JS, npm packages, network or files for scripts; external MCP writes (QC-02);
 running when the daemon is not running or on another machine; replay/resume of an interrupted run; mobile
-authoring (the phone may later show runs through a slice — not in v1); per-call cost limits finer than the run;
+authoring (the phone may later show runs through a slice — not in v1); per-call token limits finer than the run; dollar budgets;
 sharing personal recipes; a visual flow editor; parameterised `shell` commands; headless `session()`.
 
 ## 17. Phases
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; budgets + daily cap + pricing table; CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (gated by Q2); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
-| **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; STRIP-01 / AGENT-04 amendments if approved. |
+| **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
 | **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13. |
-| **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (per Q3), five templates + gallery (`templates`, `install-template`), e2e over the templates. |
+| **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates. |
 
 P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases, P2 the registry). Swift work
 (P3, P5) is one lane at a time.
@@ -727,7 +740,8 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
   (prefix/suffix/whitespace variants refused), `TestManifest_CoversWidening`, `TestToolCapabilities_CoversEveryAutomationTool`.
 - Hashes: `TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions`.
 - Sandbox: `TestAuto07_NoRequireFsNetTimers`, `TestAuto08_InterruptOnTimeout` (busy loop stops within 1 s of the
-  deadline), `TestAuto08_InterruptOnBudget` (fake generator charging per call), `TestAuto08_DailyCap`,
+  deadline), `TestAuto08_InterruptOnBudget` (fake generator reporting 30k tokens per call, budget 50k: second call
+  crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_DailyCap`,
   `TestSandbox_ResultTooLargeIsAnErrorNotATruncation`, `TestSandbox_StateTooLarge`, `TestSandbox_ErrorLineMapsToFile`.
 - Permissions: `TestAuto01_DeniedCallThrowsAndWritesDeniedStep` (backend fake records zero calls).
 - State: `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed_out, budget_exceeded, cancelled
@@ -754,8 +768,8 @@ updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces`.
 `TestSaveAutomation_RefusesWhenFileChangedSincePropose`. Swift (`make test-swift FILTER=…`) —
 `AutomationsViewModelTests` (list, badges, Run now → CLI args, Dry run rendering, state survives navigation),
 `AutomationQueriesTests`, `AutomationFormTests` (widening sheet shown only on widening; grant boxes unchecked by
-default), `AgentActionCardLabelTests` (automation label), `ActionStripAutomationOutputTests` (only if STRIP-01
-amendment approved).
+default), `AgentActionCardLabelTests` (automation label), `ActionStripAutomationOutputTests` (output cards on the
+strip, Done/Dismiss write only `automation_outputs`).
 
 **P4:** `TestBus_OneRunPerAutomationPerCycle`, `TestBus_WhereFilterAndGlob`, `TestBus_EventsCarryNoContent`,
 `TestBus_TruncatesAt100`, one publisher test per sync phase (`TestPhaseGmailSync_PublishesNewMessages`, …),
@@ -778,57 +792,38 @@ P1 creates `docs/features/automations.md` (linked from CLAUDE.md's Feature Notes
 and the README row. P2 updates `docs/inventory/agent-actions.md` (AGENT-03 text, changelog) and
 `docs/features/agent-actions.md`. P3 and P5 update `docs/app-guide.md`. Each phase appends to the feature note.
 
-## 20. Open questions (recommendation first)
+## 20. Decisions (ask #270)
 
-1. **Wake signal.** The brief says buttons wake the daemon "via the existing trigger channel", but that channel
-   (`SIGUSR1`, `daemon.TriggerSignal`) starts a full sync cycle and is drained by the sequential sync loop, so a
-   Run now would cost a sync and start only after it. **Rec:** a separate `SIGUSR2` watcher feeding only the
-   automations goroutines (§7.4). Alt: reuse SIGUSR1 and accept a sync per Run now.
-2. **Gmail content to automations (Google Limited Use).** No email read tool exists today; template 1 needs
-   `list_emails`/`get_email`, which put email bodies into the `claude`/`codex` CLI under a consumer
-   subscription — the Limited Use point 4 concern recorded in `docs/security-audit-2026-07-31.md`. **Rec:** ship
-   the tools on the `automation` surface only, IMAP accounts unrestricted, Gmail accounts only when the owner's
-   build is the internal/corporate-app flavour or the provider is an API-key/ollama one; otherwise
-   `gmail:read` validates but the call fails `NotAvailable` with the reason. Alt: no Gmail in v1.
-3. **`agent()` with CLI providers.** `internal/agentloop` (runtime B) drives only OpenAI-compatible HTTP
-   providers; the default `claude`/`codex` providers have no in-process tool loop. **Rec:** for CLI providers run
-   a headless `ai query`-style process with the chat-mode MCP server bound to `--surface automation --automation-run
-   N` and `--allowedTools` = the effective tool set, the run marker in its environment; runtime B for ollama.
-   Alt: `agent()` available only with an HTTP provider in v1.
-4. **How dollars are counted.** `digest.Usage.CostUSD` is deprecated (always 0); claude reports
-   `total_cost_usd`, codex does not; on a subscription the owner pays no per-call dollars. **Rec:** reported cost
-   when present, else a token-based estimate from a code-constant rate table, flagged `cost_estimated`; budgets
-   compare against that. Alt: budgets in tokens instead of USD.
-5. **What drops a confirmation/auto.** The brief says auto is bound to "script + permissions" and also that "any
-   edit" drops it. **Rec:** `approval_hash` = script + permissions + outputs + scope; trigger, budget, name and
-   description edits keep confirmation and grants (they cannot widen what the code may do; spend stays under the
-   per-run max and daily cap). Alt: hash the whole file (any edit, even a typo in the description, pauses auto).
-6. **Resume after a daemon restart.** **Rec:** v1 fails interrupted runs (`interrupted`, state uncommitted) and
-   offers Rerun. Alt: replay-resume — re-execute the script feeding recorded step results back (needs
-   deterministic Date/random stubs; doubles the executor's complexity).
-7. **`ask()` in personal automations.** `owner_asks.project_id` is NOT NULL and every ask surface is a workbench
-   surface. **Rec:** v1 `ask()` in workbench automations only (`ask:owner` refused in a personal recipe). Alt:
-   recreate `owner_asks` with a nullable `project_id` and show headless asks on the Automations tab and Inbox.
-8. **Personal recipe folder.** The brief says "the app support folder"; Watchtower's Go data lives in
-   `~/.local/share/watchtower/<workspace>/` (skills are there). **Rec:** `<workspace dir>/automations/`.
-   Alt: `~/Library/Application Support/Watchtower/automations/` (shared across workspaces, Desktop-owned).
-9. **`shell()` in a privacy-protected workbench folder** (`~/Documents`, `~/Desktop`, …): the daemon running a
-   command there can raise a TCC prompt (a P0 by house rule). **Rec:** refuse with `NotAvailable` ("this
-   workbench is in a protected folder; use session() or move the folder") in v1; scheduled/indexed copies still
-   run everything else. Alt: run `shell()` through the Desktop (the app holds the access) as a hidden helper,
-   which then needs the app open like `session()`.
-10. **STRIP-01 amendment** (§14.4) so `output.inbox` can appear in the Inbox. **Rec:** approve. Alt: show inbox
-    outputs only on the Automations tab and rename the output to `output.feed`.
-11. **AGENT-04 amendment** (§14.5) for the "change it in words" chat. **Rec:** approve with the narrow tool set.
-    Alt: the edit chat is draft-only and hands its draft to the main chat for saving.
-12. **Feature Manager gate.** **Rec:** feature `automations`, default ON (with no confirmed recipe nothing
-    runs); turning it off stops the scheduler/executor and hides the tab. Alt: default OFF until the first save.
-13. **PR comments as an external write.** The owner named "PR comment" among auto-able writes; there is no
-    registry tool for it and QC-02 keeps MCP read-only. **Rec:** v1 posts PR comments through `session()` (the
-    visible agent does it) — template 2 does so; a registry tool `add_pr_comment` (External) is a follow-up.
-14. **`AlwaysAsk` and auto.** The owner's decision (#265) names external writes; it does not mention bulk local
-    writes. **Rec:** AlwaysAsk tools are never auto (pinned in §14.2). Alt: allow auto for them too.
-15. **Workbench binding in the frontmatter.** The brief lists a "workbench binding" frontmatter key; this spec
-    binds by location instead (a recipe under a workbench's `.watchtower/automations/` is that workbench's).
-    **Rec:** location only — one source of truth, and a repo recipe cannot point at another workbench. Alt: an
-    optional `workbench: <name>` key in personal recipes, binding a recipe kept outside the repo to a workbench.
+The owner answered every open question of the draft in ask #270 (2026-10-14). Each is pinned below and in the
+section it governs; nothing remains open.
+
+1. **D1 Wake signal.** A separate `SIGUSR2` watcher (`daemon.AutomationWakeSignal`, `WatchAutomationWake`)
+   feeds only the automations goroutines; `SIGUSR1` keeps meaning "run a sync" (§7.4).
+2. **D2 Email reads.** `list_emails`/`get_email` read only the locally synced store (`gmail_messages`,
+   `imap_messages`), never the live API, for Gmail and IMAP alike (owner: "I imagine it reads from the local
+   index"). No per-flavour or per-provider gating: automations carry the same Google Limited Use posture as the
+   inbox, memory and briefing, and the product-wide decision governs them all (`docs/security-audit-2026-07-31.md`)
+   (§6.1).
+3. **D3 `agent()` with CLI providers.** A headless `ai query`-style process with the chat-mode MCP server bound to
+   `--surface automation --automation-run N`, `--allowedTools` = the effective tool set, the run marker in its
+   environment; runtime B (`internal/agentloop`) for ollama (§6.5).
+4. **D4 Budgets in tokens.** `budget.tokens` (input + output across `llm`/`agent` calls) and `budget.minutes` per
+   run; the global daily cap `automations.daily_budget_tokens` is in tokens too. No dollar budget anywhere; a
+   provider-reported dollar cost is kept in `reported_cost_usd` for display only (§2.3, §7.5, §9.2, §9.3, §12).
+5. **D5 What drops a confirmation/auto.** `approval_hash` = script + permissions + outputs + scope; trigger,
+   budget, name and description edits keep confirmation and grants (§2.4).
+6. **D6 Restart.** Interrupted runs end `failed` / `interrupted` with state uncommitted; Rerun is offered; no
+   replay-resume in v1 (§7.7).
+7. **D7 `ask()`** only in workbench automations in v1; a personal recipe declaring `ask:owner` fails validation;
+   `owner_asks.project_id` stays NOT NULL (§3.1, §5, §9.5).
+8. **D8 Personal recipe folder** = `<workspace dir>/automations/` (§2.1).
+9. **D9 `shell()` in a privacy-protected workbench folder** is refused with `NotAvailable` ("this workbench is in
+   a protected folder; use session() or move the folder"); the folder is never touched by the daemon (§13.2, §13.4).
+10. **D10 STRIP-01 amended** so `output.inbox` appears in the Inbox (§14.4).
+11. **D11 AGENT-04 amended** for the "change it in words" chat with the narrow tool set (§14.5).
+12. **D12 Feature Manager gate.** Feature `automations`, default ON (with no confirmed recipe nothing runs);
+    turning it off stops the scheduler/executor and hides the tab (P1 registers it; P3 hides the tab).
+13. **D13 PR comments** go through `session()` in v1 (template 2 does so); an External `add_pr_comment` registry
+    tool is a follow-up (§15).
+14. **D14 AlwaysAsk tools are never auto** (§14.2).
+15. **D15 Workbench binding** is by location only; a `workbench:` frontmatter key is a parse error (§2.3).

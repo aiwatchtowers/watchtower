@@ -16,7 +16,7 @@ under `docs/superpowers/plans/` (`2026-10-14-automations-p1.md` … `-p6.md`).
 ## What you will see and do
 
 **An automation is one Markdown file** (a recipe): a short header that says when it runs, what it may touch, how
-much it may spend and where it reports; a plain description; and one JavaScript script. The script reaches the
+how many tokens it may spend and where it reports; a plain description; and one JavaScript script. The script reaches the
 world only through Watchtower: read your synced data, call the assistant (`llm`, `agent`), use the assistant's
 tools, ask you a question, keep a small memory between runs, and write its results to your inbox, the briefing, a
 report, a target or Slack. In a workbench it can also open a visible agent session and run the exact commands you
@@ -29,15 +29,15 @@ approval. You can also start from the **template gallery**, seeded with your fiv
 summary; workbench PR review rounds with you twice a day; a Jira state report; a team performance report;
 workbench Release / Deploy to test / Deploy to stage buttons.
 
-**The Automations tab.** A list (name, trigger, next run, last result, cost this week). An automation's card shows
-the recipe, its run history (each run opens into its steps: every call, what it returned, what it cost, how long
+**The Automations tab.** A list (name, trigger, next run, last result, tokens spent this week). An automation's card shows
+the recipe, its run history (each run opens into its steps: every call, what it returned, how many tokens it spent, how long
 it took), and **Run now**, **Dry run** and **Enable**. Editing: a form for the trigger, permissions, budget, auto
 grants and on/off; the script in the code editor you already know from the workbench; or **change it in words**
 in a small chat attached to the automation, which shows the diff before you save.
 
 **When it runs.** On a schedule, from a button, or when new data arrives (new mail, a Jira issue changed, new
 Slack messages, calendar or Confluence changes). If the Mac was asleep or off at the scheduled time, it runs once
-when the Mac is back (or skips, if you chose so). Each run has its own spending and time limit; a daily cap
+when the Mac is back (or skips, if you chose so). Each run has its own token and time limit; a daily token cap
 covers all automations together. A run that hits a limit stops and says so.
 
 **Writes stay yours.** Anything that changes the world (create a target, a Jira issue, a Slack message) is a
@@ -71,12 +71,11 @@ opens a normal, visible session you can watch and answer; if the app is closed, 
 - Authoring (asks #259, #266): chat + skill, Save = approve; form, code editor and "change in words" for edits.
 - All six phases ship in the first release (ask #267), on one shared branch; main only with your approval.
 
-## What you need to decide
+## Decided after review
 
-1. The **open questions** at the end of the tech spec (§20) — among them: how dollars are counted when your
-   assistant runs on a subscription, whether Gmail content may go to automations (the Google Limited Use concern),
-   whether automation results may appear in the Inbox (an Inbox rule change), whether the automation's own chat
-   may carry the save tool (an assistant-tools rule change), and the default on/off of the feature.
+Approved in ask #269; the tech spec's open questions were answered in ask #270 and are pinned in its §20
+(budgets are in tokens, not dollars; email is read from the local synced store; results may appear in the Inbox;
+the automation's own chat may save; the feature is on by default).
 
 ## Out of scope (v1)
 
@@ -92,4 +91,4 @@ automations.
 - A run that exceeds its budget or time stops with that status; a failed run changes nothing in the
   automation's memory; a Mac asleep through two scheduled times produces exactly one catch-up run.
 - An edit to a recipe with auto stops auto until you confirm; a recipe changed in git does not run until you confirm.
-- Every call of every run is visible in the history with its cost, and the week's cost per automation is shown.
+- Every call of every run is visible in the history with its token spend, and the week's token spend per automation is shown.
