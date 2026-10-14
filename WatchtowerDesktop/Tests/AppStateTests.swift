@@ -99,7 +99,7 @@ final class AppStateTests: XCTestCase {
         appState.wireMeetingRecorderLoaders(dbPool: dbManager.dbPool)
         // The launch catch-up closes a task whose transcript has no such
         // cluster (this one's has none): let it finish before queueing.
-        await appState.voiceCatchUp?.value
+        await appState.voiceRegistryCenter.launchCatchUp?.value
         let (transcriptID, personID) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             try TestDatabase.insertMeetingTranscript(db, title: "Sync")
             let tid = db.lastInsertedRowID

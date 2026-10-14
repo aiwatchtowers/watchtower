@@ -323,7 +323,7 @@ jobs:
       # older main entries: one ~2 GB entry against the repo's 10 GB cache.
       # Pull requests read main's entries but never write their own.
       - name: Save SPM build
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'ci/swift-build-cache'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: WatchtowerDesktop/.build
