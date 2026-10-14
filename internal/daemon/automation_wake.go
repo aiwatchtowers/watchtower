@@ -22,10 +22,13 @@ import (
 // sync — TriggerSignal (SIGUSR1) keeps meaning that.
 const AutomationWakeSignal = syscall.SIGUSR2
 
-// AutomationWakeCapability is the line a daemon that handles
-// AutomationWakeSignal writes into its capabilities file. A daemon built
-// before automations has no SIGUSR2 handler, and SIGUSR2's default action
-// would terminate it, so the CLI signals only a daemon that advertises this.
+// AutomationWakeCapability is the line a daemon whose scheduler and executor
+// serve AutomationWakeSignal writes into its capabilities file: it tells the
+// CLI whether this daemon actually runs the automations wake. A daemon built
+// before automations, or one running with automations off, silently ignores
+// SIGUSR2 (the Go runtime catches it and does nothing), so a run would just
+// wait for the next poll; the CLI signals only a daemon that advertises this
+// and otherwise says so.
 const AutomationWakeCapability = "automations-wake"
 
 // CapsPath is the capabilities file beside a daemon's PID file: its first
@@ -49,9 +52,13 @@ func removeCaps(pidPath string) {
 }
 
 // advertiseCaps writes the capabilities file beside the PID file and returns
-// its removal. A failed write is logged, not fatal: the daemon runs, the CLI
-// just never wakes it.
+// its removal — only while automationsActive; otherwise it writes nothing
+// and the CLI never signals this daemon. A failed write is logged, not
+// fatal: the daemon runs, the CLI just never wakes it.
 func (d *Daemon) advertiseCaps() (remove func()) {
+	if !d.automationsActive() {
+		return func() {}
+	}
 	if err := writeCaps(d.pidPath); err != nil {
 		d.logger.Printf("automations: %v (the CLI will not wake this daemon)", err)
 		return func() {}
@@ -103,13 +110,23 @@ func (d *Daemon) SetAutomations(scheduler, executor AutomationRunner) {
 // AutomationWakeSignal received — the WatchTrigger contract: non-blocking
 // sends, so a burst collapses into the one wake already queued, and the
 // channel is closed once ctx is done.
+//
+// At ctx.Done the signal is ignored (signal.Ignore), not handed back to its
+// default disposition (signal.Stop): the daemon's capabilities file still
+// advertises the wake until Run's deferred cleanup removes it, and a CLI
+// that read it in that window gets an explicit no-op from a daemon that is
+// shutting down (a Go process ignores an unwatched SIGUSR2 anyway; this keeps
+// that from depending on the runtime's default). It stays ignored until process exit, or until a later
+// WatchAutomationWake re-enables it.
 func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 	ch := make(chan struct{}, 1)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, AutomationWakeSignal)
 	go func() {
-		defer signal.Stop(sigCh)
+		// Deferred last so it runs first: the signal is ignored before the
+		// close tells a reader the watcher is done.
 		defer close(ch)
+		defer signal.Ignore(AutomationWakeSignal)
 		for {
 			select {
 			case <-ctx.Done():
@@ -126,12 +143,21 @@ func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 }
 
 // watchAutomationWake installs the AutomationWakeSignal watcher unless a test
-// injected its own channel. It is installed even with automations off (a wake
-// is then dropped): SIGUSR2's default action would terminate the daemon.
+// injected its own channel. It is installed even with automations off; a
+// wake is then dropped (and the daemon does not advertise it, see
+// advertiseCaps).
 func (d *Daemon) watchAutomationWake(ctx context.Context) {
 	if d.automationWakeCh == nil {
 		d.automationWakeCh = WatchAutomationWake(ctx)
 	}
+}
+
+// automationsActive reports whether Run starts the scheduler and executor:
+// both wired and automations.enabled on. Only then does the daemon advertise
+// AutomationWakeCapability — a wake to a daemon with neither would be
+// dropped, and the CLI should say so instead of claiming it woke something.
+func (d *Daemon) automationsActive() bool {
+	return d.automationScheduler != nil && d.automationExecutor != nil && d.config.Automations.Enabled
 }
 
 // startAutomations starts the scheduler, the executor and the wake forwarder
@@ -141,11 +167,10 @@ func (d *Daemon) watchAutomationWake(ctx context.Context) {
 // them and waits until all three have returned (the executor finishes or
 // interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
-	if d.automationScheduler == nil || d.automationExecutor == nil {
-		return func() {}
-	}
-	if !d.config.Automations.Enabled {
-		d.logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
+	if !d.automationsActive() {
+		if d.automationScheduler != nil && !d.config.Automations.Enabled {
+			d.logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
+		}
 		return func() {}
 	}
 	runCtx, cancel := context.WithCancel(ctx)

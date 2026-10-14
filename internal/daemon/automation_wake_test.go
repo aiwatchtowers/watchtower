@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -53,6 +54,29 @@ func TestWatchAutomationWake_CoalescesAndCloses(t *testing.T) {
 	receiveWithin(t, ch, "forwarder stopped serving after a burst")
 
 	cancel()
+	drainUntilClosed(t, ch)
+}
+
+// After ctx is done the watcher leaves the signal ignored instead of
+// handing it back to its default disposition: a CLI that read the
+// capabilities file just before the daemon removed it gets an explicit no-op
+// from a shutting-down daemon. signal.Ignored pins the
+// disposition (signal.Stop would leave it false); the self-signal below must
+// not end the test process either.
+func TestWatchAutomationWake_ShutdownKeepsSignalIgnored(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := WatchAutomationWake(ctx)
+	require.False(t, signal.Ignored(AutomationWakeSignal), "handled while watching")
+	cancel()
+	drainUntilClosed(t, ch)
+
+	assert.True(t, signal.Ignored(AutomationWakeSignal), "the wake signal must stay ignored after shutdown")
+	require.NoError(t, syscall.Kill(os.Getpid(), AutomationWakeSignal))
+	time.Sleep(200 * time.Millisecond)
+}
+
+func drainUntilClosed(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
@@ -157,9 +181,10 @@ func TestDaemon_AutomationsUnwiredStartsNothing(t *testing.T) {
 	require.NoError(t, runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 1 }))
 }
 
-// A running daemon advertises its SIGUSR2 handler beside its PID file, under
+// A running daemon advertises its automations wake beside its PID file, under
 // its own pid, and removes the advertisement when it stops — the CLI signals
-// only a daemon that advertises it (an older one would die of SIGUSR2).
+// only a daemon that advertises it (an older one ignores SIGUSR2, so the run
+// would just wait for its next poll).
 func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	var syncCount atomic.Int32
 	d, _, _, _ := newAutomationTestDaemon(t, true, &syncCount)
@@ -176,6 +201,39 @@ func TestDaemon_AdvertisesAutomationWakeCapability(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, advertised)
 	assert.NoFileExists(t, CapsPath(pidPath), "removed with the PID file")
+}
+
+// With automations off, or the scheduler/executor never wired, the daemon
+// starts neither and advertises no wake: the CLI then says it could not wake
+// it instead of signalling a daemon that would drop the wake.
+func TestDaemon_InactiveAutomationsAdvertiseNoWake(t *testing.T) {
+	for name, mk := range map[string]func(t *testing.T, syncCount *atomic.Int32) *Daemon{
+		"disabled": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
+			d, _, _, _ := newAutomationTestDaemon(t, false, syncCount)
+			return d
+		},
+		"unwired": func(t *testing.T, syncCount *atomic.Int32) *Daemon {
+			d, _, _, _ := newAutomationTestDaemon(t, true, syncCount)
+			d.SetAutomations(nil, nil)
+			return d
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var syncCount atomic.Int32
+			d := mk(t, &syncCount)
+			pidPath := t.TempDir() + "/daemon.pid"
+			d.SetPIDPath(pidPath)
+			err := runDaemonUntil(t, d, func() bool {
+				if syncCount.Load() < 1 {
+					return false
+				}
+				assert.FileExists(t, pidPath, "the daemon is running")
+				assert.NoFileExists(t, CapsPath(pidPath), "no wake advertised")
+				return true
+			})
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestHasCapability_StaleOrMissingFileAdvertisesNothing(t *testing.T) {

@@ -430,8 +430,9 @@ one starts a full sync cycle (`TriggerSignal`, `cmd/sync.go`), which would make 
 D1). With no daemon running, `run` still queues and prints `daemon not running; the run starts when it does`
 (exit 0); the Desktop respawns the daemon anyway. The daemon advertises the signal in `<pidfile>.caps` (its pid, then
 `automations-wake`, written right after the PID file and removed with it); the CLI signals only a daemon that lists it —
-an older daemon (no SIGUSR2 handler, the signal would kill it) is never signalled, and `run`/`wake` print a restart
-hint (exit 0). `automations wake` ships in P1.
+the caps file tells the CLI whether this daemon actually runs the automations wake. An older daemon, or one with
+automations off, silently ignores SIGUSR2 (a Go process catches it and does nothing), so the run would just wait for its
+next poll; such a daemon is not signalled, and `run`/`wake` print a restart hint (exit 0). `automations wake` ships in P1.
 
 ### 7.5 Budgets
 

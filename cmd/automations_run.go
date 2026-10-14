@@ -49,6 +49,11 @@ type dryRunJSON struct {
 	OutputTokens int64  `json:"output_tokens"`
 }
 
+// automationsOffRunHint ends run's refusal with automations.enabled off: no
+// daemon executor would ever claim the run, and enabling the feature would
+// cancel it (FEAT-03 hook), so nothing is queued.
+const automationsOffRunHint = "automations are turned off in Settings → Features; turn them on, then run it again"
+
 // notRunnableReason says why a is not runnable ("" when it is).
 func notRunnableReason(a *db.Automation) string {
 	switch {
@@ -77,6 +82,9 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
+	if !cfg.Automations.Enabled {
+		return fmt.Errorf("automation %d cannot run: %s", id, automationsOffRunHint)
+	}
 	a, err := database.GetAutomation(id)
 	if err != nil {
 		return err
@@ -247,6 +255,11 @@ func runAutomationsCancel(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	fmt.Fprintf(w, "Run #%d cancelled.\n", runID)
+	// With automations off the daemon runs no executor and advertises no
+	// wake: the cancel is complete as written, there is nothing to wake.
+	if !cfg.Automations.Enabled {
+		return nil
+	}
 	// The executor notices a cancelled running run on its next status poll;
 	// a wake makes that now. Not woken is fine: the run is cancelled.
 	if running, err := wakeAutomations(cfg); err != nil {
