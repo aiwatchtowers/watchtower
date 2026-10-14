@@ -1232,7 +1232,9 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	// without data writes no empty "people" row every cycle (the
 	// phaseCustomTrackScan precedent). A failed check falls through so Run
 	// reports the error in a tracked row.
-	if has, err := d.peoplePipe.HasData(); err == nil && !has {
+	if has, err := d.peoplePipe.HasData(); err != nil {
+		d.logger.Printf("people: data check failed, running anyway: %v", err)
+	} else if !has {
 		return
 	}
 
