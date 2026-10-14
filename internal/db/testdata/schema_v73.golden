@@ -145,7 +145,7 @@ index	idx_gmail_messages_synced
 CREATE INDEX idx_gmail_messages_synced ON gmail_messages(synced_at)
 
 index	idx_gmail_messages_thread
-CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id)
+CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id, account_id, internal_date)
 
 index	idx_idea_mentions_idea
 CREATE INDEX idx_idea_mentions_idea ON idea_mentions(idea_id)

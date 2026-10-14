@@ -298,7 +298,7 @@ func calendarEventOf(e db.CalendarRangeEvent) (calendarEventResult, error) {
 	if err != nil {
 		return calendarEventResult{}, err
 	}
-	desc, truncated := clipUTF8Bytes(e.Description, maxAutomationDescriptionBytes)
+	desc, truncated := ClipUTF8Bytes(e.Description, maxAutomationDescriptionBytes)
 	return calendarEventResult{
 		ID: e.ID, CalendarID: e.CalendarID, Calendar: e.CalendarName, Account: e.Account, Title: e.Title,
 		Start: e.StartTime, End: e.EndTime, AllDay: e.IsAllDay, Location: e.Location, Organizer: e.OrganizerEmail,
@@ -405,7 +405,7 @@ func NewGetMeetingRecap() *Tool {
 				return nil, err
 			}
 			recap, recapTruncated := recapValue(r.RecapJSON)
-			source, sourceTruncated := clipUTF8Bytes(r.SourceText, maxMeetingRecapBytes)
+			source, sourceTruncated := ClipUTF8Bytes(r.SourceText, maxMeetingRecapBytes)
 			return meetingRecapDetail{
 				meetingRecapSummary: summarizeMeetingRecap(*r), Recap: recap, RecapTruncated: recapTruncated,
 				SourceText: source, SourceTruncated: sourceTruncated,
@@ -446,7 +446,7 @@ func recapValue(raw string) (any, bool) {
 	if len(raw) <= maxMeetingRecapBytes && json.Valid([]byte(raw)) {
 		return json.RawMessage(raw), false
 	}
-	return clipUTF8Bytes(raw, maxMeetingRecapBytes)
+	return ClipUTF8Bytes(raw, maxMeetingRecapBytes)
 }
 
 type listMeetingNotesArgs struct {
@@ -850,7 +850,7 @@ func NewListJiraReleases() *Tool {
 			}
 			out := make([]jiraReleaseResult, 0, len(rows))
 			for _, r := range rows {
-				desc, truncated := clipUTF8Bytes(r.Description, maxAutomationDescriptionBytes)
+				desc, truncated := ClipUTF8Bytes(r.Description, maxAutomationDescriptionBytes)
 				out = append(out, jiraReleaseResult{
 					AccountID: r.AccountID, ID: r.ID, ProjectKey: r.ProjectKey, Name: r.Name, Description: desc,
 					DescriptionTruncated: truncated, ReleaseDate: r.ReleaseDate, Released: r.Released, Archived: r.Archived,

@@ -2,10 +2,15 @@
 // automation recipes (docs/superpowers/specs/2026-10-14-automations-design.md).
 package automations
 
-import "time"
+import (
+	"time"
 
-// Every exact value of the spec's limits lives here; do not change one
-// without the spec changing first.
+	"watchtower/internal/tools"
+)
+
+// Every exact value of the spec's limits lives here — except the list limits
+// and the get_email body clip (tools.MaxEmailBodyBytes), which the tools
+// package owns; do not change one without the spec changing first.
 
 // Recipe file.
 const (
@@ -18,16 +23,20 @@ const (
 	// MaxSDKResultBytes caps one SDK call's serialised result; a larger result
 	// is a ResultTooLarge error, never truncated.
 	MaxSDKResultBytes = 256 * 1024
-	// DefaultListLimit is injected into a list tool call without a limit.
-	DefaultListLimit = 50
-	// MaxListLimit clamps a list tool call's limit.
-	MaxListLimit = 200
+	// DefaultListLimit is injected into a list tool call without a limit; the
+	// value is the tools package's, so the registry and the sandbox agree.
+	DefaultListLimit = tools.DefaultListLimit
+	// MaxListLimit clamps a list tool call's limit (tools.MaxListLimit).
+	MaxListLimit = tools.MaxListLimit
 	// MaxLLMInputBytes caps the input of one llm() call.
 	MaxLLMInputBytes = 200 * 1024
 	// MaxStateBytes caps an automation's serialised state (StateTooLarge).
 	MaxStateBytes = 64 * 1024
 	// MaxOutputBodyBytes caps the body of one output.* call.
 	MaxOutputBodyBytes = 64 * 1024
+	// MaxOutputTitleChars caps the title of one output.* call, in characters
+	// (Task 7 review decision; not in the spec's list — Task 13 docs).
+	MaxOutputTitleChars = 200
 	// MaxLogBytes caps one log() call.
 	MaxLogBytes = 4 * 1024
 	// MaxLogCalls caps log() calls per run.
@@ -36,8 +45,6 @@ const (
 	StepClipBytes = 4 * 1024
 	// SummaryClipBytes clips a run's summary.
 	SummaryClipBytes = 1024
-	// EmailBodyClipBytes clips an email body returned by get_email.
-	EmailBodyClipBytes = 32 * 1024
 	// MaxEventsPerRun caps the events carried by one event run (spec §8).
 	MaxEventsPerRun = 100
 )

@@ -1220,7 +1220,7 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (account_id, id)
 );
-CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_gmail_messages_thread ON gmail_messages(thread_id, account_id, internal_date);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_synced ON gmail_messages(synced_at);
 CREATE INDEX IF NOT EXISTS idx_gmail_messages_account_date ON gmail_messages(account_id, internal_date);
 

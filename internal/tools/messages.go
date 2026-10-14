@@ -81,8 +81,8 @@ func messageLimit(n int) int {
 	if n <= 0 {
 		return 30
 	}
-	if n > maxListLimit {
-		return maxListLimit
+	if n > MaxListLimit {
+		return MaxListLimit
 	}
 	return n
 }

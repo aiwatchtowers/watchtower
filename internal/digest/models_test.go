@@ -9,7 +9,7 @@ import (
 )
 
 func TestTierForSource(t *testing.T) {
-	light := []string{SourceLight, "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "catchup.learn"}
+	light := []string{SourceLight, "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "catchup.learn", "automation.llm"}
 	for _, src := range light {
 		if got := TierForSource(src); got != TierLight {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)
@@ -27,6 +27,8 @@ func TestTierForSource(t *testing.T) {
 		// meeting.chapters routes strong by absence from the light-tier
 		// switch (only the followup drafts are light).
 		prompts.MeetingChapters,
+		// An automation's llm() with tier: strong.
+		"automation.llm.strong",
 	}
 	for _, src := range strong {
 		if got := TierForSource(src); got != TierStrong {
