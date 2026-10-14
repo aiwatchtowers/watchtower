@@ -67,6 +67,6 @@ adds the cleanup permission and removing the workbench takes it away); DEV-04 ch
 
 ## Open questions
 
-1. Should **Delete and Clean Up** be the default button of the delete dialog? *Recommended: yes.*
+1. Should **Delete and Clean Up** be the default button of the delete dialog? *Recommended: yes.* Answered (ask #193): yes, Delete and Clean Up is the default.
 2. Should the workbench show a one-time hint ("Old worktrees use ~38 GB — Clean Up…") when the sweep finds over
-   1 GB, or only the menu item? *Recommended: the one-time hint.*
+   1 GB, or only the menu item? *Recommended: the one-time hint.* Answered (ask #193): the one-time hint ships.

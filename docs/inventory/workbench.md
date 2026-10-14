@@ -9,10 +9,12 @@
 > the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
 > `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`,
 > `internal/gitbin/`, `internal/workbenchgit/`, `internal/sessionreport/`,
-`internal/sessioncleanup/`, or
+> `internal/sessioncleanup/`, or
 > `WatchtowerDesktop/Sources/**/Workbench*`,
 > `WatchtowerDesktop/Sources/WatchtowerCore/Services/{PendingSessionDeletes,SessionDeletePolicy}.swift`,
-`WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`, read this file first. Any proposed change that would break a guard test or
+> `WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`,
+> `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionCleanup,Services/SessionCleanupPresentation,Services/SessionDeleteCleanupChoice}.swift`,
+> `WatchtowerDesktop/Sources/Views/Workbench/{SessionCleanupSheet,SessionDeleteConfirmSheet,SessionReportCleanupSection}.swift`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
 A workbench is a folder with a board of targets, owner↔agent target
@@ -401,7 +403,8 @@ bin)`, run by `integrate claude-code --workbench N`, `workbench resync`,
 Re-run Setup and Repair), so the session's agent may run the cleanup command
 in auto mode — that command only. `<bin>` is the same absolute binary the
 hooks name, quoted the same way: single-quoted only when it holds a
-character outside `[A-Za-z0-9/._-+:@%,=]`, so the rule matches the brief's
+character other than an ASCII letter, a digit or one of `/ . _ + : @ % , = -`
+(`devpack.shellQuote`), so the rule matches the brief's
 `Cleanup:` command text (`devpack.CleanupCommand`). The rule is added only
 when no rule of ours is there; a rule of ours naming another binary (a stale
 bin) is replaced in place and a duplicate of ours dropped; an exact match is
@@ -1633,7 +1636,7 @@ PROJ-17 guards above unchanged.
 
 ## PROJ-18 — session cleanup never removes unsaved, unpushed, in-use or someone else's work
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13 — open questions 1 and 2 answered there: **Delete and Clean Up** is the default button, and the one-time sweep hint ships)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13; the spec's open questions were answered in ask #193: **Delete and Clean Up** is the default button, and the one-time sweep hint ships)
 
 **Observable:** `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 repository and local branches, and only after every catch passes, checked again immediately before the removal:
@@ -2000,7 +2003,7 @@ loses uncommitted work for good, so every doubt keeps the item.
   target's branch, a declared candidate or the sweep; sizes are allocated
   blocks with a 20 s walk budget per worktree ("size unknown" past it) and
   APFS clones share blocks, so the space actually freed can be less than the
-  "~" figure; the sweep never signals processes; the one-time sweep hint plans in the background only after the Workbench page stayed on screen 30 s, one hint plan app-wide at a time, stopped after 5 minutes or when the page is left; at or below 1 GB it is snoozed for 7 days (`projects.cleanupHintCheckedAt.<id>`, stored only when every removable worktree was measured; a future stamp counts as due), a failed or timed-out plan waits for the next launch, and once the banner went up or the sweep sheet was opened (`projects.cleanupHintShown.<id>`) it never runs for that workbench again.
+  "~" figure; the sweep never signals processes; the one-time sweep hint plans in the background only after the Workbench page stayed on screen 30 s, one hint plan app-wide at a time, stopped after 5 minutes or when the page is left; when the worktrees take 1 GB or less it is snoozed for 7 days (`projects.cleanupHintCheckedAt.<id>`), and only when every worktree was measured — otherwise it checks again at the next launch; a future stamp counts as due, a failed or timed-out plan waits for the next launch, and once the banner went up or the sweep sheet was opened (`projects.cleanupHintShown.<id>`) it never runs for that workbench again.
 
 ## Changelog
 

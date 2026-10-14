@@ -360,7 +360,9 @@ the report only reads it.
 ## 15. Open questions
 
 1. Delete dialog default button: **Delete and Clean Up** (recommended) or **Delete Only**.
+   Answered (ask #193): **Delete and Clean Up** is the default.
 2. A one-time hint on the workbench when the sweep finds over 1 GB (recommended) or the menu item only.
+   Answered (ask #193): the one-time hint ships.
 
 ## Appendix: Observed (Claude Code 2.1.296, 2026-10-12)
 
