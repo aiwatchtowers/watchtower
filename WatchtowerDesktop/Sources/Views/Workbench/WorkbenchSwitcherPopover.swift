@@ -3,12 +3,12 @@ import WatchtowerCore
 
 /// The workbench switcher's popover (board #250, variant F): find a
 /// workbench by name or folder, most recently worked on first, the current
-/// one checked; a new workbench; back to the list of all of them.
+/// one checked; Open Folder… for another one; back to the list of all of them.
 struct WorkbenchSwitcherPopover: View {
     @Bindable var vm: WorkbenchesViewModel
     let currentID: Int64
     let onSelect: (Int64) -> Void
-    let onNewWorkbench: () -> Void
+    let onOpenFolder: () -> Void
     let onShowAll: () -> Void
     @State private var query = ""
     @FocusState private var searchFocused: Bool
@@ -24,8 +24,8 @@ struct WorkbenchSwitcherPopover: View {
                 .accessibilityAddTraits(.isHeader)
             list
             Divider()
-            Button(action: onNewWorkbench) {
-                Label("New Workbench…", systemImage: "plus")
+            Button(action: onOpenFolder) {
+                Label("Open Folder…", systemImage: "plus")
             }
             .buttonStyle(.borderless)
             .disabled(vm.isCreating)

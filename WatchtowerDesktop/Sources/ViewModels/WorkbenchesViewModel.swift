@@ -691,7 +691,29 @@ final class WorkbenchesViewModel {
         return "The workbench was created, but installing into the folder failed — use Repair. " + detail
     }
 
-    /// New Workbench… → `workbench create`, then the folder install. A failed
+    /// Open Folder… (board #778): a folder some workbench is already bound to
+    /// opens that workbench, as the switcher's pick does — `workbench create`
+    /// would refuse it. Any other folder becomes a new workbench; the list,
+    /// which carries the create's progress and errors, comes on screen first
+    /// (the switcher runs this at level 2, or with the panel hidden).
+    func openFolder(_ folder: URL) async {
+        guard !isCreating else { return }
+        await reload()
+        if let bound = workbenchID(boundTo: folder) {
+            await switchTo(workbenchID: bound)
+            return
+        }
+        showAllWorkbenches()
+        await createWorkbench(folder: folder, name: nil)
+    }
+
+    /// The listed workbench bound to `folder`, as `workbench create` compares
+    /// folders: APFS is case-insensitive, so any spelling of it.
+    func workbenchID(boundTo folder: URL) -> Int64? {
+        summaries.first { $0.project.folderPath.caseInsensitiveCompare(folder.path) == .orderedSame }?.id
+    }
+
+    /// Open Folder… → `workbench create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
     /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
     func createWorkbench(folder: URL, name: String?) async {

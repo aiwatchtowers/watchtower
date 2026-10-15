@@ -237,6 +237,44 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertFalse(announced)
     }
 
+    /// Open Folder… on a folder a workbench is already bound to (board #778)
+    /// opens that workbench — any spelling of it, APFS being case-insensitive
+    /// — and runs no `workbench create`, which would refuse it.
+    func testOpenFolderOnABoundFolderOpensItsWorkbenchWithoutCreating() async throws {
+        let (acme, beta) = try await pool.write { d in
+            (try TestDatabase.insertWorkbench(d), try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta"))
+        }
+        let runner = FakeCLIRunner()
+        let vm = makeVM(runner)
+        vm.drill(into: acme)
+        vm.panelVisible = false
+
+        await vm.openFolder(URL(fileURLWithPath: "/tmp/Beta"))
+
+        XCTAssertTrue(runner.invocations.isEmpty, "\(runner.invocations)")
+        XCTAssertEqual(vm.selectedWorkbenchID, beta)
+        XCTAssertEqual(vm.drilledWorkbenchID, beta)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// Open Folder… on any other folder creates the workbench, bringing the
+    /// list (and with it the create's progress and errors) on screen first.
+    func testOpenFolderOnANewFolderShowsTheListAndCreates() async throws {
+        let acme = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "no such folder"))
+        let vm = makeVM(runner)
+        vm.drill(into: acme)
+        vm.panelVisible = false
+
+        await vm.openFolder(URL(fileURLWithPath: "/tmp/gamma"))
+
+        XCTAssertEqual(runner.invocations.first.map { Array($0.prefix(2)) }, ["workbench", "create"])
+        XCTAssertTrue(runner.invocations.first?.contains("/tmp/gamma") == true, "\(runner.invocations)")
+        XCTAssertTrue(vm.panelVisible)
+        XCTAssertNil(vm.drilledWorkbenchID, "the list is on screen")
+        XCTAssertTrue(vm.errorMessage?.contains("no such folder") == true)
+    }
+
     func testRepairRunsIntegrateAndRefreshesTheStatus() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))

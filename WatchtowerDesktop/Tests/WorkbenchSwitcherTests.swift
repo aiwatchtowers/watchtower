@@ -291,7 +291,7 @@ final class WorkbenchSwitcherTests: XCTestCase {
         let view = WorkbenchSessionsPanel(
             vm: vm, project: project,
             actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
-            switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: { shown += 1 })
+            switcherActions: WorkbenchSwitcherActions(openFolder: {}, showAll: { shown += 1 })
         )
 
         let back = try view.inspect().find(viewWithAccessibilityLabel: "Back to Workbenches")
