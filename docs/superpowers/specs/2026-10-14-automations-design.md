@@ -101,9 +101,14 @@ on the Automations card only, in a workbench recipe also in the workbench header
 
 - `content_hash` — sha256 of the file bytes. Change detection only.
 - `approval_hash` — sha256 of the canonical JSON `{"permissions": [sorted, normalised], "outputs": [sorted],
-  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>"}`. "What this code may do." Owner
-  confirmations and auto grants bind to it (§6.4, §2.5). Edits to `name`, description, `trigger`, `missed`,
-  `budget`, `concurrency`, `pause_timeout_hours` do not change it (§20 D5).
+  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>", "trigger": <trigger_spec>,
+  "budget": {"tokens": N, "minutes": M}, "concurrency": N}` (keys in that order, no whitespace, no HTML escaping;
+  `trigger` in the `trigger_spec` shape of §9.1 with a `where` map's keys sorted; the budget and concurrency are the
+  effective values after defaults). "What this code may do, when and how much." Owner confirmations and auto
+  grants bind to it (§6.4, §2.5), so a schedule, budget or concurrency edit needs the owner's confirmation again
+  (§20.3 D26, amending D5). Edits to `name`, description, `missed` and `pause_timeout_hours` do not change it.
+  Upgrading to D26 re-hashes every recipe once: every recipe confirmed before it shows **Needs your
+  confirmation** until the owner confirms it again.
 
 ### 2.5 Index and confirmation
 
@@ -115,7 +120,7 @@ A recipe is **runnable** iff: parsed without error, `enabled = 1`, and `confirme
 `confirmed_hash` is set only by (a) the apply of an owner-approved `save_automation` (§11), (b) a Desktop save
 carrying `--confirm-hash` (§10), or (c) `automations confirm <id> --hash <sha>` — (b) and (c) refuse under an AI
 agent's environment markers (AGENT-07). A recipe new to the index, or one whose `approval_hash` changed by any
-other way (a git pull, a hand edit, another tool), is indexed with its old `confirmed_hash` and therefore not
+other way (a git pull, a hand edit, another tool — a schedule, budget or concurrency edit included, §20.3 D26), is indexed with its old `confirmed_hash` and therefore not
 runnable; the Automations tab and the workbench header show it as **Needs your confirmation** (AUTO-06).
 The store call is `db.ConfirmAutomation(id, hash, now)` (refuses any hash but the current `approval_hash`,
 `ErrHashMismatch`; a missing row `ErrAutomationNotFound`); an insert never sets `confirmed_hash` or `enabled`.
@@ -735,7 +740,7 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 | AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change makes it inactive until re-granted; every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
 | AUTO-04 | State commits only on success | `state.set` and `output.*` (local) are buffered and committed in one transaction with `status='succeeded'`; any other terminal status leaves `automation_state` and `automation_outputs` byte-identical. | P1 |
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
-| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
+| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed (a schedule, budget or concurrency change included, §20.3 D26). Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
 | AUTO-07 | The script sees the world only through the SDK | No `require`, filesystem, network, timers or promises in the sandbox; no SDK result carries a secret. | P1 |
 | AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
 | AUTO-09 | Triggers only queue | Scheduler, event bus, CLI `run` and Desktop buttons only insert `queued` rows; only the daemon's executor runs them (dry run excepted, which writes nothing outside its journal). | P1, P4 |
@@ -865,7 +870,7 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
 - Manifest: `TestManifest_GrammarTable` (valid/invalid strings incl. quoting), `TestManifest_ScopeMatching`
   (exact, case, `*`, absent scope arg needs `@*`), `TestManifest_MCPGlob`, `TestManifest_ShellExactOnly`
   (prefix/suffix/whitespace variants refused), `TestManifest_CoversWidening`, `TestToolCapabilities_CoversEveryAutomationTool`.
-- Hashes: `TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions`.
+- Hashes: `TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget`, `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
 - Sandbox: `TestAuto07_NoRequireFsNetTimers`, `TestAuto08_InterruptOnTimeout` (busy loop stops within 1 s of the
   deadline), `TestAuto08_InterruptOnBudget` (fake generator reporting 30k tokens per call, budget 50k: second call
   crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_NoDailyCapAcrossRuns`,
@@ -947,7 +952,8 @@ section it governs; nothing remains open.
    run (no global daily cap since §20.3 D25, ask #294). No dollar budget anywhere; a
    provider-reported dollar cost is kept in `reported_cost_usd` for display only (§2.3, §7.5, §9.2, §9.3, §12).
 5. **D5 What drops a confirmation/auto.** `approval_hash` = script + permissions + outputs + scope; trigger,
-   budget, name and description edits keep confirmation and grants (§2.4).
+   budget, name and description edits keep confirmation and grants (§2.4). *Amended by §20.3 D26 (ask #294): the
+   trigger, budget and concurrency are in the hash too.*
 6. **D6 Restart.** Interrupted runs end `failed` / `interrupted` with state uncommitted; Rerun is offered; no
    replay-resume in v1 (§7.7).
 7. **D7 `ask()`** only in workbench automations in v1; a personal recipe declaring `ask:owner` fails validation;
@@ -1030,3 +1036,9 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
     Each run stays bounded by its own `budget.tokens` and `budget.minutes` (§7.5, AUTO-08). `error_kind='daily_cap'`
     stays in the CHECK (no migration) but is no longer produced. The `TestAuto08_DailyCap*` guards are retired with
     the owner's approval; `TestAuto08_NoDailyCapAcrossRuns` pins the new rule.
+26. **D26 (ask #294, amends D5): a schedule or budget change needs the owner's confirmation.** `approval_hash` also
+    covers the whole trigger (`trigger_spec`), the budget (tokens and minutes) and `concurrency` (§2.4), so editing
+    any of them drops a confirmation and auto grants like a script or permission edit does; name, description,
+    `missed` and `pause_timeout_hours` still keep it. The change re-hashes every recipe once: after the upgrade
+    every existing recipe is unconfirmed until the owner confirms it again. Guards
+    `TestApprovalHash_GoldenCanonicalBytes` (new bytes and hex), `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.

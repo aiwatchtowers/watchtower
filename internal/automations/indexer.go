@@ -392,20 +392,12 @@ type triggerSpecEvent struct {
 }
 
 func triggerSpecJSON(t Trigger) (string, error) {
-	var spec triggerSpec
 	switch t.Kind {
-	case TriggerSchedule:
-		spec.Schedule = t.Schedule
-	case TriggerButton:
-		spec.Button = &triggerSpecButton{Label: t.Button.Label, Confirm: t.Button.Confirm}
-	case TriggerEvent:
-		spec.Event = &triggerSpecEvent{Type: t.Event.Type, Where: t.Event.Where}
-	case TriggerManual:
-		spec.Manual = true
+	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual:
 	default:
 		return "", fmt.Errorf("encoding trigger: unknown kind %q", t.Kind)
 	}
-	b, err := json.Marshal(spec)
+	b, err := json.Marshal(canonicalTrigger(t))
 	if err != nil {
 		return "", fmt.Errorf("encoding trigger: %w", err)
 	}
