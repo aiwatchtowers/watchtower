@@ -264,7 +264,7 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
 | `output.report({title, body})` | P1 | `outputs: [report]` | Same, `kind='report'`; shown on the automation card and in the run. Every `output.*` title is ≤ 200 characters (P1 review decision). |
 | `output.briefing({title, body})` | P2 | `outputs: [briefing]` | Same, `kind='briefing'`; the next daily briefing includes outputs created since the previous briefing (§12.6). |
 | `output.target({...create_target args})` | P2 | `outputs: [target]` | Sugar for `tool("create_target", args)` — a registry write (manifest needs no `tool:create_target`; `outputs` is the gate). |
-| `output.slack({...send_slack_message args})` | P2 | `outputs: [slack]` | Sugar for `tool("send_slack_message", args)` — External, a proposal unless auto (§6). |
+| `output.slack({...send_slack_message args})` | P2 | `outputs: [slack]` **and** `slack:write@<account>` covering the call (§20.3 D28) | Sugar for `tool("send_slack_message", args)` — External, a proposal unless auto (§6). `outputs: [slack]` alone sends nothing and admits no auto grant (D28). |
 | `ask({kind, title, summary?, questions?, checklist?})` | P5 | `ask:owner` | Workbench automations only (§13.3). Creates an `owner_asks` row; pauses (`waiting_reason='ask'`) until answered; returns the answer JSON. |
 | `session({prompt, agent?, title?, wait?})` | P5 | `session:start[@kind]` | Workbench only (§13.1). Returns `{session_id, status, summary}` (`wait:"finish"`, default) or `{session_id}` (`wait:"none"`). |
 | `shell(cmd)` | P5 | `shell:"<cmd>"` | Workbench only (§13.2). Returns `{exit_code, stdout, stderr}`. |
@@ -1119,7 +1119,7 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
   `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
   stays under `people:read`; neither is `tool:`-only.
 
-### 20.3 Rulings after P1 (asks #293, #294, #295)
+### 20.3 Rulings after P1 (asks #293, #294, #295, #315)
 
 24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
     under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
@@ -1154,3 +1154,11 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
     accepted the confirm sheet's author-line limit (§12.2: only the assistant's saves are attributed). Both call `automations run <id> --json` like the
     card's Run now and respect the feature-off refusal (§12.7). No Go change beyond P3's `show --json` additions
     (§12.2): the CLI already returns `run_id`/`coalesced`, and runs carry `summary`/`error` for the notice.
+28. **D28 (ask #315): `output.slack` writes only where the recipe has the right.** `output.slack` needs both
+    `outputs: [slack]` and the manifest's `slack:write@<account>` covering the call (the same scope check a
+    `tool("send_slack_message")` call passes, `AllowTool`); a denial's `needed` names the `slack:write` scope
+    (`slack:write@*` when no account resolves). The output shortcut therefore admits an auto grant on
+    `send_slack_message` only together with a `slack:write` entry (`AdmitsWrite`), so a grant never exceeds the
+    recipe's scope. `output.target` is unchanged: `outputs: [target]` is its whole gate. Guards
+    `TestOutput_SlackNeedsSlackWriteScope`, `TestManifest_AllowOutputToolSlackNeedsWriteScope`,
+    `TestManifest_AdmitsWrite`.

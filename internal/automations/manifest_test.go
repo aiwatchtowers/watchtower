@@ -190,6 +190,42 @@ func TestManifest_SlackWriteScopeByAccountLabel(t *testing.T) {
 	expectAdmit(t, d, work, send, `{}`)
 }
 
+func TestManifest_AllowOutputToolSlackNeedsWriteScope(t *testing.T) {
+	d := openManifestTestDB(t)
+	mustExec(t, d, `INSERT INTO slack_accounts (id, label, team_domain) VALUES (1, 'work', 'acme-work'), (2, 'home', 'acme-home')`)
+	send, target := autoWriteTool("send_slack_message"), autoWriteTool("create_target")
+	cases := []struct {
+		name, args, wantEntry, wantNeeded string
+		entries, outputs                  []string
+	}{
+		{"no outputs slack", `{"account_id":1}`, "", "output:slack", []string{"slack:write@work"}, nil},
+		{"outputs slack, no slack:write, no account", `{}`, "", "slack:write@*", nil, []string{"slack"}},
+		{"outputs slack, no slack:write", `{"account_id":1}`, "", "slack:write@work", nil, []string{"slack"}},
+		{"outputs slack, slack:write@work, work", `{"account_id":1}`, "output:slack, slack:write@work", "", []string{"slack:write@work"}, []string{"slack"}},
+		{"outputs slack, slack:write@work, home", `{"account_id":2}`, "", "slack:write@home", []string{"slack:write@work"}, []string{"slack"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mustManifest(t, c.entries, c.outputs...)
+			checkAllowOutputTool(t, d, m, "slack", send, c.args, c.wantEntry, c.wantNeeded)
+		})
+	}
+	// outputs is the whole gate of output.target.
+	checkAllowOutputTool(t, d, mustManifest(t, nil, "target"), "target", target, `{"text":"x"}`, "output:target", "")
+}
+
+func checkAllowOutputTool(t *testing.T, d *db.DB, m *Manifest, kind string, tl *tools.Tool, args, wantEntry, wantNeeded string) {
+	t.Helper()
+	entry, err := m.AllowOutputTool(context.Background(), d, kind, tl, json.RawMessage(args))
+	var pd *PermissionDenied
+	switch {
+	case wantNeeded == "" && (err != nil || entry != wantEntry):
+		t.Fatalf("AllowOutputTool = %q, %v; want %q", entry, err, wantEntry)
+	case wantNeeded != "" && (!errors.As(err, &pd) || pd.Needed != wantNeeded):
+		t.Fatalf("AllowOutputTool = %q, %v; want PermissionDenied needing %s", entry, err, wantNeeded)
+	}
+}
+
 func TestManifest_ScopeOfErrorIsADeniedNotAPanic(t *testing.T) {
 	d := openManifestTestDB(t)
 	m := mustManifest(t, []string{"slack:write@work"})
@@ -596,7 +632,9 @@ func TestManifest_AdmitsWrite(t *testing.T) {
 	cases := []admitsCase{
 		{"tool:create_target", []string{"tool:create_target"}, nil, autoWriteTool("create_target"), true},
 		{"outputs target", nil, []string{"target"}, autoWriteTool("create_target"), true},
-		{"outputs slack", nil, []string{"slack"}, autoWriteTool("send_slack_message"), true},
+		{"outputs slack alone admits no grant (D28)", nil, []string{"slack"}, autoWriteTool("send_slack_message"), false},
+		{"outputs slack with slack:write", []string{"slack:write@work"}, []string{"slack"}, autoWriteTool("send_slack_message"), true},
+		{"slack:write without outputs slack", []string{"slack:write@work"}, nil, autoWriteTool("send_slack_message"), true},
 		{"outputs slack does not cover create_target", nil, []string{"slack"}, autoWriteTool("create_target"), false},
 		{"outputs inbox report briefing cover no tool", nil, []string{"inbox", "report", "briefing"}, autoWriteTool("create_target"), false},
 		{"outputs target, tool off the surface", nil, []string{"target"}, &tools.Tool{Name: "create_target", Access: tools.AccessWrite, Surfaces: []string{"chat"}}, false},
