@@ -356,7 +356,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         let vm = makeVM()
         var opened = 0
         let row = WorkbenchTitleRow(
-            vm: vm, switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
+            vm: vm, switcherActions: WorkbenchSwitcherActions(openFolder: {}, showAll: {})
         ) { opened += 1 }
 
         try row.inspect().find(viewWithAccessibilityLabel: "Go to…").button().tap()
@@ -366,7 +366,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
 
     func testTheTitleRowShortcutsAreOffUnderThePalette() async throws {
         let vm = makeVM()
-        let actions = WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
+        let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: {})
 
         let open = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: true) {}
             .inspect().findAll(ViewType.Button.self)

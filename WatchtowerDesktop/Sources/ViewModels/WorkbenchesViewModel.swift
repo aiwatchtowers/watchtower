@@ -544,14 +544,16 @@ final class WorkbenchesViewModel {
         installStatus[projectID]?.agentFound(agent) ?? true
     }
 
-    func reload() async {
+    /// false = the read failed and its error is in `errorMessage`.
+    @discardableResult
+    func reload() async -> Bool {
         _ = currentDefaultAgent()
         let previousIDs = summaries.map(\.id)
         do {
             summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
         } catch {
             errorMessage = "Could not load workbenches: \(error.localizedDescription)"
-            return
+            return false
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
@@ -566,6 +568,7 @@ final class WorkbenchesViewModel {
         }
         if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
+        return true
     }
 
     /// The switcher popover's read. A failure keeps the rows of the last
@@ -713,10 +716,87 @@ final class WorkbenchesViewModel {
         return "The workbench was created, but installing into the folder failed — use Repair. " + detail
     }
 
-    /// New Workbench… → `workbench create`, then the folder install. A failed
+    /// What Open Folder… did with the picked folder (board #778).
+    enum OpenFolderOutcome: Equatable {
+        /// The workbench bound to the folder is open.
+        case opened
+        /// `workbench create` ran; its progress and errors are in the list.
+        case created
+        /// The folder lies under this TCC-sensitive `~/…` location: the
+        /// owner confirms first, then `createFromOpenedFolder`.
+        case confirmLocation(String)
+        /// Nothing done: a create is in flight, or the reload failed (its
+        /// error is in `errorMessage`, the list on screen).
+        case stopped
+    }
+
+    /// Open Folder… (board #778), decided on a fresh list: a folder some
+    /// workbench is already bound to opens that workbench, as the switcher's
+    /// pick does, with no location warning (owner decision #778) —
+    /// `workbench create` would refuse it. Any other folder becomes a new
+    /// workbench, after the owner confirms a TCC-sensitive location.
+    @discardableResult
+    func openFolder(
+        _ folder: URL,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
+    ) async -> OpenFolderOutcome {
+        guard !isCreating else { return .stopped }
+        guard await reload() else {
+            showAllWorkbenches()
+            return .stopped
+        }
+        if let bound = workbenchID(boundTo: folder) {
+            await switchTo(workbenchID: bound)
+            return .opened
+        }
+        if let location = WorkbenchFolderPolicy.tccSensitiveLocation(path: folder.path, home: home) {
+            return .confirmLocation(location)
+        }
+        await createFromOpenedFolder(folder)
+        return .created
+    }
+
+    /// Open Folder…'s create: the list, which carries the create's progress
+    /// and errors, comes on screen first (the switcher runs this at level 2,
+    /// or with the panel hidden).
+    func createFromOpenedFolder(_ folder: URL) async {
+        showAllWorkbenches()
+        await createWorkbench(folder: folder)
+    }
+
+    /// The listed workbench bound to `folder`, as `workbench create` compares
+    /// folders: APFS is case-insensitive, so any spelling of it, with or
+    /// without the `/private` of /tmp and /var (`comparableFolder`).
+    func workbenchID(boundTo folder: URL) -> Int64? {
+        let path = Self.comparableFolder(folder.path)
+        return summaries.first {
+            Self.comparableFolder($0.project.folderPath).caseInsensitiveCompare(path) == .orderedSame
+        }?.id
+    }
+
+    /// Go's `EvalSymlinks` keeps the `/private` of /tmp and /var in a bound
+    /// folder; Foundation's `resolvingSymlinksInPath` strips it from the
+    /// picked one. Both sides drop it, and a trailing slash, before comparing.
+    static func comparableFolder(_ path: String) -> String {
+        var path = path
+        if path.hasPrefix("/private/") { path.removeFirst("/private".count) }
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path
+    }
+
+    /// `workbench create`'s refusal of a folder already bound to a
+    /// workbench (Go's `db.ErrWorkbenchFolderTaken`).
+    static func isFolderTaken(_ error: Error) -> Bool {
+        guard case let CLIRunnerError.nonZeroExit(_, stderr) = error else { return false }
+        return stderr.contains("folder is already bound to a workbench")
+    }
+
+    /// Open Folder… → `workbench create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
     /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
-    func createWorkbench(folder: URL, name: String?) async {
+    /// A folder bound since the list was read (another window, the CLI)
+    /// opens its workbench instead of the refusal.
+    func createWorkbench(folder: URL) async {
         guard !isCreating else { return }
         guard let cli else {
             errorMessage = "The watchtower CLI was not found."
@@ -728,8 +808,12 @@ final class WorkbenchesViewModel {
 
         let created: WorkbenchCreated
         do {
-            created = try await cli.create(folder: folder.path, name: name)
+            created = try await cli.create(folder: folder.path, name: nil)
         } catch {
+            if Self.isFolderTaken(error), await reload(), let bound = workbenchID(boundTo: folder) {
+                await switchTo(workbenchID: bound)
+                return
+            }
             errorMessage = "Could not create the workbench: \(error.localizedDescription)"
             return
         }

@@ -2,7 +2,6 @@ package automations_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"watchtower/internal/automations"
@@ -35,11 +34,7 @@ func tableCounts(t *testing.T, d *db.DB) map[string]int {
 }
 
 func TestDryRunInMemory_WritesNoRows(t *testing.T) {
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	d := db.OpenTestDB(t)
 	gen := usageGen(10, 5)
 	b := automations.Backends{DB: d, Generator: gen, Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart)}
 	before := tableCounts(t, d)

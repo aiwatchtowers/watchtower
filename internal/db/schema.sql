@@ -2445,7 +2445,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
     WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
-CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at); -- daily token cap window
+CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at); -- per-automation token stats window
 
 -- One row per SDK call of a run (the journal).
 CREATE TABLE IF NOT EXISTS automation_run_steps (

@@ -349,7 +349,7 @@ func TestApplyLegacyDigestOff_FlipsTenGatesAndNothingElse(t *testing.T) {
 		Briefing:        BriefingConfig{Enabled: true, Hour: 9},
 		DayPlan:         DayPlanConfig{Enabled: true, Hour: 8},
 		Targets:         TargetsConfig{NextStep: TargetsNextStepConfig{Enabled: true}},
-		Automations:     AutomationsConfig{Enabled: true, DailyBudgetTokens: 1234},
+		Automations:     AutomationsConfig{Enabled: true},
 		Calendar:        CalendarConfig{Enabled: true},
 		Gmail:           GmailConfig{Enabled: true},
 		Jira:            JiraConfig{Enabled: true},

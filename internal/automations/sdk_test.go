@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -102,7 +101,7 @@ func runSDK(t *testing.T, script string, c sdkCase) sdkRun {
 		Manifest:   m,
 		DryRun:     c.dryRun,
 		Journal:    c.journal,
-		Meter:      automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, clock),
+		Meter:      automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock),
 		Buffer:     automations.NewCommitBuffer(json.RawMessage(c.committed)),
 	}
 	sb, err := automations.NewSandbox(env, c.modules)
@@ -272,14 +271,10 @@ func TestLLM_SchemaNullReplyIsNull(t *testing.T) {
 		sdkCase{perms: []string{"llm:light"}, gen: gen}, "true")
 }
 
-// openRunDB opens a file DB with a claimed run of a seeded automation.
+// openRunDB opens a test DB with a claimed run of a seeded automation.
 func openRunDB(t *testing.T) (*db.DB, *db.AutomationRun) {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	d := db.OpenTestDB(t)
 	now := time.Now().UTC()
 	a := automationstest.SeedAutomation(t, d, sdkRecipe, automationstest.SeedOptions{Now: now})
 	id, _, err := d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: now})

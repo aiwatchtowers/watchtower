@@ -173,7 +173,12 @@ queued run of a non-runnable automation ends `cancelled`/`not_runnable`. The
 executor runs the indexed copy (`recipe_text`, snapshotted on the run as
 `recipe_snapshot` at claim), never the file; an edit on disk during a run
 does not touch that run, and the next rescan makes the automation
-non-runnable when `approval_hash` changed. A recipe new to the index, or
+non-runnable when `approval_hash` changed. `approval_hash` covers the script,
+permissions, outputs, scope, the trigger (without a button's cosmetic label;
+its `confirm` counts), the `missed` policy, the budget (tokens and minutes)
+and `concurrency` (ask #294), so a schedule, missed-policy, budget or
+concurrency edit waits for the owner like a script edit; a name, description
+or button-label edit does not. A recipe new to the index, or
 changed outside an owner save, is indexed unconfirmed (an insert never sets
 `confirmed_hash`/`enabled`; an upsert never touches them). `confirmed_hash`
 is set only by `db.ConfirmAutomation(id, hash, now)`, which refuses any hash
@@ -187,6 +192,9 @@ the `approval_hash` its gate checked (`ExecuteInlinePinned`), so a recipe
 changed between the check and the claim is cancelled, never run. P3 adds the
 same refusal to `draft_automation` (a draft whose `approval_hash` is an
 indexed unconfirmed recipe's, owner-confirmed reading in ask #280).
+Switching a recipe on and deleting an automation are owner gestures too
+(ask #293): `automations enable` and `automations delete` refuse under every
+marker before anything is read or written (AGENT-07); `disable` stays open.
 
 **Why locked:** "What was confirmed is exactly what runs" is the whole
 security model: a git pull, a hand edit or an agent's edit must never run
@@ -194,9 +202,9 @@ code or permissions the owner did not see.
 
 **Test guards:**
 - `internal/automations/executor_test.go` — `TestAuto06_UnconfirmedRecipeIsCancelledNotRun`, `TestAuto06_DryRunOfUnconfirmedRecipeRuns`, `TestAuto06_ExecutorRunsIndexedCopyNotFile`, `TestAuto06_EditDuringRunDoesNotAffectRunningSnapshot`, `TestExecutor_ExecuteInlinePinnedRefusesChangedRecipe`
-- `internal/automations/indexer_test.go` — `TestRescan_IndexesNewRecipeUnconfirmedAndDisabled`, `TestRescan_ChangedOutsideWatchtowerNeedsConfirmation`
+- `internal/automations/indexer_test.go` — `TestRescan_IndexesNewRecipeUnconfirmedAndDisabled`, `TestRescan_ChangedOutsideWatchtowerNeedsConfirmation`, `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`, `TestApprovalHash_GoldenCanonicalBytes`, `TestApprovalHash_ButtonLabelIsCosmetic`
 - `internal/db/automations_test.go` — `TestAutomationIndex_RunnableTable`, `TestAutomationIndex_ConfirmRefusesStaleHash`, `TestAutomationIndex_UpsertKeepsOwnerColumns`, `TestAutomationIndex_InsertNeverSetsOwnerColumns`, `TestAutomationIndex_UpsertChangedApprovalHashNeedsConfirmation`
-- `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`
+- `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`, `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`
 - P3 adds the `draft_automation` guard (plan `2026-10-14-automations-p3.md`) and flips that half.
 
 **Locked since:** 2026-10-14
@@ -230,10 +238,9 @@ the script outside it.
 
 **Observable:** Active time ≤ `budget.minutes` (time spent waiting is
 excluded), tokens ≤ `budget.tokens` (input + output per model call; a call
-without provider usage debits `ceil(len/4)` and marks the run estimated), the
-daily token cap `automations.daily_budget_tokens` holds over the local day of
-the run's start (dry runs included; `0` = spend nothing), and waits ≤
-`pause_timeout_hours` (→ `expired`). The deadline, budget, daily-cap and
+without provider usage debits `ceil(len/4)` and marks the run estimated), and
+waits ≤ `pause_timeout_hours` (→ `expired`). There is no token cap across runs
+(ask #294): what other runs spent never stops a run. The deadline, budget and
 cancel interrupts cannot be caught by the script's `catch`. A script stuck in
 a native builtin past `AbandonGrace` (2 s) after an interrupt is abandoned:
 its run ends, and its automation is disabled ("runaway script — check and
@@ -248,9 +255,9 @@ concurrency slot forever, and one that never stops spending burns the owner's
 model quota.
 
 **Test guards:**
-- `internal/automations/sandbox_test.go` — `TestAuto08_InterruptOnTimeout`, `TestSandbox_InterruptIsNotCatchable`, `TestSandbox_DailyCapInterruptsUncatchably`
+- `internal/automations/sandbox_test.go` — `TestAuto08_InterruptOnTimeout`, `TestSandbox_InterruptIsNotCatchable`
 - `internal/automations/sandbox_hardening_test.go` — `TestSandbox_CatastrophicRegexEndsWithinDeadline`, `TestSandbox_StuckNativeIsAbandonedAfterGrace`
-- `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_DailyCap`, `TestAuto08_DailyCapSeesConcurrentSpend`, `TestAuto08_DailyCapDayFollowsTheExecutorZone`, `TestAuto08_DailyCapWindowIsTheRunStartDay`, `TestAuto08_RestartMarksInterrupted`, `TestExecutor_DailyCapZeroSpendsNothing`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
+- `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_NoDailyCapAcrossRuns`, `TestAuto08_RestartMarksInterrupted`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - `internal/db/automation_runs_test.go` — `TestAuto08_RestartMarksInterrupted`, `TestAuto08_RestartSparesLiveDryRun`, `TestRunEnd_ClosesOpenSteps`
 
@@ -342,8 +349,7 @@ change) · Planned (P5: no session, no `shell()`)
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
-tools run for real and their tokens count on the run (and toward the daily
-cap). The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
+tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
 writes no row of any table, not even a run row.
 
 **Why locked:** Dry run is how the owner (and, for a confirmed recipe, the
@@ -380,4 +386,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-15 (**owner decision, ask #294**; spec §20.3 D26, amending D5): strengthening, no guard relaxed. AUTO-06's `approval_hash` now also binds the trigger (without a button's cosmetic label; `confirm` counts), the `missed` policy, the budget (tokens and minutes) and `concurrency`, so a schedule or budget edit needs the owner's confirmation again. `TestApprovalHash_GoldenCanonicalBytes` gets new canonical bytes and hex (computed outside Go); guards `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`, `TestApprovalHash_ButtonLabelIsCosmetic` added. Upgrade effect: every recipe is re-hashed once, so every recipe confirmed before this change is unconfirmed until the owner confirms it again.
+- 2026-10-15 (**owner decision, ask #294**; spec §20.3 D25): **AUTO-08 amended — the daily-cap clause is removed** (owner-approved in ask #294). `automations.daily_budget_tokens`, `ExecutorOptions.DailyBudgetTokens`, the meter's live daily total and `InterruptDailyCap` are gone; `error_kind='daily_cap'` stays in the CHECK but is no longer produced. Guards retired with that approval: `TestAuto08_DailyCap`, `TestAuto08_DailyCapSeesConcurrentSpend`, `TestAuto08_DailyCapDayFollowsTheExecutorZone`, `TestAuto08_DailyCapWindowIsTheRunStartDay`, `TestExecutor_DailyCapZeroSpendsNothing`, `TestSandbox_DailyCapInterruptsUncatchably` (plus the meter unit tests `TestMeter_DailyRemainderInterrupts`, `TestMeter_LiveDailyTotalAcrossRuns`, `TestMeter_DailyTotalReadErrorRefusesCall`). Added `TestAuto08_NoDailyCapAcrossRuns`. The per-run token budget, time budget, pause timeout and terminal-status guards are unchanged.
+- 2026-10-15 (**owner decision, ask #293**; spec §20.3 D24): strengthening, no guard relaxed. AUTO-06 notes that `automations enable` and `automations delete` are owner-only (refused under AGENT-07 markers before anything is read or written); guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers` added.
 - 2026-10-15 (Automations P1, board #753): file created with AUTO-01..13 from spec §14.1. Enforced: AUTO-01, 04, 05, 07, 08, 10, 11; AUTO-02 (read side), AUTO-06 (executor, indexer, CLI — ask #271), AUTO-09 (scheduler and CLI), AUTO-12 (P1 half). Planned: AUTO-03 (P2), AUTO-13 (P5), the write side of AUTO-02 (P2), the `draft_automation` half of AUTO-06 (P3), the event half of AUTO-09 (P4), the session/shell half of AUTO-12 (P5). Owner rulings recorded: ask #280 (D16 draft refusal keyed by `approval_hash`; D22 `slack:read@*` or `tool:list_messages`), ask #287 (a Jira project grant covers linked data; `digests:read` and `find_experts` under `people:read` kept). Related strengthening elsewhere: AGENT-07 marker and refused commands (`agent-actions.md`), the DEV-01/AGENT-06 telemetry narrowing (`dev-surface.md`, `agent-actions.md`), the FEAT-03 `automations` fast-forward hook (`features.md`).

@@ -289,12 +289,12 @@ var registry = []Feature{
 	{
 		ID:          "automations",
 		Title:       "Automations",
-		Description: "Preview: small recipes you write — a schedule or a button plus a short script — that read your workspace, ask the AI and leave results in your inbox or as reports. Until the Automations tab arrives, recipes are managed with `watchtower automations` in the terminal. A recipe runs only after you confirm it, within its own token budget and a daily cap. Medium AI use, only for the recipes you turn on.",
+		Description: "Preview: small recipes you write — a schedule or a button plus a short script — that read your workspace, ask the AI and leave results in your inbox or as reports. Until the Automations tab arrives, recipes are managed with `watchtower automations` in the terminal. A recipe runs only after you confirm it, within its own token and time budget. Medium AI use, only for the recipes you turn on.",
 		Tagline:     "Your routine checks, done for you",
 		Benefits: []string{
 			"Recurring checks and summaries run on your schedule",
 			"Nothing runs until you confirm the recipe",
-			"Every run has a token budget and a daily cap",
+			"Every run has its own token and time budget",
 		},
 		Icon:      "gearshape.2",
 		ConfigKey: "automations.enabled",

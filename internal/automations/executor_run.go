@@ -46,8 +46,7 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 
 // prepare re-parses the run's snapshot (never the file) and builds its
 // sandbox. A non-nil runEnd ends the run before any script code runs: a
-// snapshot that does not parse (failed/not_runnable), a spent daily cap
-// (budget_exceeded/daily_cap), a malformed event payload or an unreadable
+// snapshot that does not parse (failed/not_runnable), a malformed event payload or an unreadable
 // store (failed/backend), a script that does not compile (failed/script).
 func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Automation) (*Env, *Sandbox, *runEnd) {
 	scope := Scope{Kind: ScopeKind(a.Scope), WorkbenchID: a.ProjectID}
@@ -63,10 +62,7 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindBackend, err)
 	}
-	meter, end := e.newMeter(run, r)
-	if end != nil {
-		return nil, nil, end
-	}
+	meter := e.newMeter(run, r)
 	state, err := e.db.GetAutomationState(a.ID)
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindBackend, err)
@@ -85,29 +81,10 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 	return env, sb, nil
 }
 
-// newMeter starts the run's meter on its snapshotted budgets with the live
-// daily total of the local calendar day the run started on (its claim's
-// started_at — the day its tokens count toward — in the scheduler's per-run
-// zone). A day already spent ends the run budget_exceeded/daily_cap at once.
-func (e *Executor) newMeter(run *db.AutomationRun, r *Recipe) (*Meter, *runEnd) {
-	started := e.clock.Now()
-	if run.StartedAt != nil {
-		started = *run.StartedAt
-	}
-	from, to := localDay(started, e.zone())
-	spent := func() (int64, error) { return e.db.AutomationTokensBetween(from, to) }
-	used, err := spent()
-	if err != nil {
-		return nil, failedEnd(db.ErrKindBackend, err)
-	}
-	if e.dailyCap == 0 {
-		return nil, &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindDailyCap,
-			msg: "automations.daily_budget_tokens is 0: automations may spend no tokens"}
-	}
-	if e.dailyCap-used <= 0 {
-		return nil, &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindDailyCap,
-			msg: fmt.Sprintf("today's automation token cap of %d is spent (%d used)", e.dailyCap, used)}
-	}
+// newMeter starts the run's meter on its snapshotted budgets (the recipe's
+// when the run carries none). There is no daily cap across runs (D25, ask
+// #294).
+func (e *Executor) newMeter(run *db.AutomationRun, r *Recipe) *Meter {
 	budget := Budget{Tokens: run.BudgetTokens, Minutes: run.BudgetMinutes}
 	if budget.Tokens <= 0 {
 		budget.Tokens = r.Budget.Tokens
@@ -115,16 +92,7 @@ func (e *Executor) newMeter(run *db.AutomationRun, r *Recipe) (*Meter, *runEnd) 
 	if budget.Minutes <= 0 {
 		budget.Minutes = r.Budget.Minutes
 	}
-	m := NewMeter(budget, e.dailyCap-used, e.clock)
-	m.UseDailyTotal(e.dailyCap, spent)
-	return m, nil
-}
-
-// localDay is the [start, end) of now's calendar day in loc.
-func localDay(now time.Time, loc *time.Location) (time.Time, time.Time) {
-	t := now.In(loc)
-	start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
-	return start, start.AddDate(0, 0, 1)
+	return NewMeter(budget, e.clock)
 }
 
 func pauseTimeout(r *Recipe) time.Duration {
@@ -272,8 +240,6 @@ func interruptEnd(r InterruptReason) *runEnd {
 		return &runEnd{status: db.RunTimedOut, kind: db.ErrKindTimeout}
 	case InterruptBudget:
 		return &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindBudget}
-	case InterruptDailyCap:
-		return &runEnd{status: db.RunBudgetExceeded, kind: db.ErrKindDailyCap}
 	case InterruptExpired:
 		return &runEnd{status: db.RunExpired, kind: db.ErrKindExpired}
 	default:

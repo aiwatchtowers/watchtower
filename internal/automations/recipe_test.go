@@ -343,7 +343,11 @@ func TestRecipe_FrontmatterShape(t *testing.T) {
 	wantParseError(t, []byte("---\nname: [\n---\n```js\nx\n```\n"), "frontmatter")
 }
 
-func TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions(t *testing.T) {
+// TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget: the
+// approval hash binds the script, permissions, outputs, scope, trigger, missed
+// policy, budget and concurrency (D26, ask #294), not the name, description,
+// a button's label or the pause timeout.
+func TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget(t *testing.T) {
 	personal := Scope{Kind: ScopePersonal}
 	baseFM := "name: A\ntrigger:\n  manual: true\npermissions: [llm:light, gmail:read@work]\noutputs: [inbox]\n"
 	baseScript := "log(1);\n"
@@ -355,10 +359,6 @@ func TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions(t *t
 	same := map[string][]byte{
 		"name":        recipeWith(strings.Replace(baseFM, "name: A", "name: B", 1), baseScript),
 		"description": []byte("---\n" + baseFM + "---\nOther words.\n\n```js\n" + baseScript + "```\nMore.\n"),
-		"trigger":     recipeWith(strings.Replace(baseFM, "manual: true", "schedule: \"0 9 * * *\"", 1), baseScript),
-		"missed":      recipeWith(baseFM+"missed: skip\n", baseScript),
-		"budget":      recipeWith(baseFM+"budget: {tokens: 9000, minutes: 9}\n", baseScript),
-		"concurrency": recipeWith(baseFM+"concurrency: 3\n", baseScript),
 		"pause":       recipeWith(baseFM+"pause_timeout_hours: 9\n", baseScript),
 		"perm order":  recipeWith(strings.Replace(baseFM, "[llm:light, gmail:read@work]", "[gmail:read@work, llm:light]", 1), baseScript),
 	}
@@ -372,6 +372,12 @@ func TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions(t *t
 		"script byte": recipeWith(baseFM, "log(2);\n"),
 		"permission":  recipeWith(strings.Replace(baseFM, "gmail:read@work]", "gmail:read@work, llm:strong]", 1), baseScript),
 		"output":      recipeWith(strings.Replace(baseFM, "[inbox]", "[inbox, report]", 1), baseScript),
+		"trigger":     recipeWith(strings.Replace(baseFM, "manual: true", "schedule: \"0 9 * * *\"", 1), baseScript),
+		"budget":      recipeWith(baseFM+"budget: {tokens: 9000, minutes: 9}\n", baseScript),
+		"tokens only": recipeWith(baseFM+"budget: {tokens: 9000}\n", baseScript),
+		"concurrency": recipeWith(baseFM+"concurrency: 3\n", baseScript),
+		"missed":      recipeWith(baseFM+"missed: skip\n", baseScript),
+		"button":      recipeWith(strings.Replace(baseFM, "manual: true", "button: {label: Go}", 1), baseScript),
 	}
 	for label, data := range differ {
 		if got := ApprovalHash(mustParse(t, data, personal)); got == base {
@@ -415,15 +421,42 @@ func TestApprovalHash_GoldenCanonicalBytes(t *testing.T) {
 		Permissions: []string{"llm:light", "gmail:read@work", "llm:light"},
 		Outputs:     []string{"report", "inbox", "inbox"},
 		Script:      "if (a < b && c > d) { log(\"Привет — ok\"); }\n",
+		Trigger: Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: "jira.issue_changed",
+			Where: map[string]string{"status": "<Done>", "project": "ACME"}}},
+		Missed:      MissedSkip,
+		Budget:      Budget{Tokens: 20000, Minutes: 5},
+		Concurrency: 2,
 	}
+	// The hex below was computed outside Go (Python hashlib over these bytes).
 	const wantCanonical = `{"permissions":["gmail:read@work","llm:light"],"outputs":["inbox","report"],` +
-		`"scope":"workbench:3","script":"if (a < b && c > d) { log(\"Привет — ok\"); }\n"}`
+		`"scope":"workbench:3","script":"if (a < b && c > d) { log(\"Привет — ok\"); }\n",` +
+		`"trigger":{"event":{"type":"jira.issue_changed","where":{"project":"ACME","status":"<Done>"}}},` +
+		`"missed":"skip","budget":{"tokens":20000,"minutes":5},"concurrency":2}`
 	if got := string(approvalCanonical(r)); got != wantCanonical {
 		t.Fatalf("canonical bytes:\n got: %s\nwant: %s", got, wantCanonical)
 	}
-	const wantHex = "0613533506afa87f9d2365a0cd7636764f552f46c4db2a40c7214e01f446815c"
+	const wantHex = "15702e51b067d78bef2920774371c170660138f734f370941487d1829b1b3451"
 	if got := ApprovalHash(r); got != wantHex {
 		t.Fatalf("ApprovalHash = %s, want %s", got, wantHex)
+	}
+}
+
+// TestApprovalHash_ButtonLabelIsCosmetic: renaming a button keeps the hash;
+// its confirm flag changes it (D26, ask #294).
+func TestApprovalHash_ButtonLabelIsCosmetic(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	fm := func(button string) []byte {
+		return recipeWith("name: A\ntrigger:\n  button: "+button+"\npermissions: [llm:light]\n", "log(1);\n")
+	}
+	base := ApprovalHash(mustParse(t, fm("{label: Go}"), personal))
+	if got := ApprovalHash(mustParse(t, fm("{label: Run it now}"), personal)); got != base {
+		t.Error("a label rename changed the hash")
+	}
+	if got := ApprovalHash(mustParse(t, fm("{label: Go, confirm: true}"), personal)); got == base {
+		t.Error("turning confirm on did not change the hash")
+	}
+	if got := string(approvalCanonical(mustParse(t, fm("{label: Go, confirm: true}"), personal))); !strings.Contains(got, `"trigger":{"button":{"confirm":true}}`) {
+		t.Errorf("canonical bytes carry the label or lose confirm: %s", got)
 	}
 }
 
