@@ -103,6 +103,11 @@ type Daemon struct {
 	memoryOpen          func() (*memory.Pipeline, error)
 	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
 	memoryNow           func() time.Time  // its clock, nil = time.Now; a seam for tests
+	// backfillResume is where a held Gmail/Jira history-backfill chunk's
+	// stage-1 drain got to, so its retry starts there (backfillStreams).
+	// In memory only: a restart re-drains the chunk once. Touched only by
+	// the sequential history-backfill phase.
+	backfillResume map[backfillResumeKey]time.Time
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline

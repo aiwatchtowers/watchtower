@@ -334,9 +334,10 @@ func (g gmailSource) Fetch(ctx context.Context, from, to time.Time) error {
 }
 
 func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
-	return g.d.backfillStreams("gmail", func() (bool, error) {
-		return g.d.ideasPipe.BackfillEmail(ctx, g.id, from, to)
-	})
+	return g.d.backfillStreams(backfillResumeKey{"gmail", g.id, from.Unix()}, from,
+		func(start time.Time) (time.Time, bool, error) {
+			return g.d.ideasPipe.BackfillEmail(ctx, g.id, start, to)
+		})
 }
 
 // jiraSource backfills one Jira account's stream digests (R29). Fetch is a
@@ -351,28 +352,55 @@ func (j jiraSource) AccountID() int64                                { return j.
 func (jiraSource) Fetch(context.Context, time.Time, time.Time) error { return nil }
 
 func (j jiraSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
-	return j.d.backfillStreams("jira", func() (bool, error) {
-		return j.d.ideasPipe.BackfillJira(ctx, j.id, from, to)
-	})
+	return j.d.backfillStreams(backfillResumeKey{"jira", j.id, from.Unix()}, from,
+		func(start time.Time) (time.Time, bool, error) {
+			return j.d.ideasPipe.BackfillJira(ctx, j.id, start, to)
+		})
+}
+
+// backfillResumeKey names one chunk of one account's stage-1 drain: the
+// source kind, the account and the chunk's start (unix seconds).
+type backfillResumeKey struct {
+	kind    string
+	account int64
+	from    int64
 }
 
 // backfillStreams runs one account's stage-1 stream drain under the ideas
 // backfill lock, gated on streams.enabled. A held lock is not an error: the
-// chunk is retried next cycle.
-func (d *Daemon) backfillStreams(kind string, drain func() (bool, error)) (bool, error) {
+// chunk is retried next cycle. The drain starts at the chunk's resume point
+// when an earlier attempt was held or failed part-way (F2), so a chunk cut by
+// the budget deadline or the drain's cycle cap does not re-pay the stage-1
+// calls it already made; the point is dropped once the chunk completes.
+func (d *Daemon) backfillStreams(key backfillResumeKey, from time.Time, drain func(start time.Time) (time.Time, bool, error)) (bool, error) {
 	if d.ideasPipe == nil || !d.config.Streams.Enabled {
 		return true, nil
 	}
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon history backfill")
 	if errors.Is(err, ideas.ErrBackfillLockHeld) {
-		d.logger.Printf("history backfill: %s chunk waits — %v", kind, err)
+		d.logger.Printf("history backfill: %s chunk waits — %v", key.kind, err)
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	defer release()
-	return drain()
+	start := from
+	if r, ok := d.backfillResume[key]; ok {
+		start = r
+	}
+	reached, complete, err := drain(start)
+	if complete {
+		delete(d.backfillResume, key)
+		return true, err
+	}
+	if reached.After(start) {
+		if d.backfillResume == nil {
+			d.backfillResume = map[backfillResumeKey]time.Time{}
+		}
+		d.backfillResume[key] = reached
+	}
+	return false, err
 }
 
 // imapSource backfills one IMAP mailbox: fetch only (no AI step).

@@ -583,6 +583,70 @@ func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
 	}
 }
 
+// cuttingStageGen answers stage-1 calls, counts the ones that succeeded, and
+// cancels the chunk's ctx after cutAfter of them (0 = never) — the budget
+// deadline passing mid-drain.
+type cuttingStageGen struct {
+	cutAfter int
+	cancel   context.CancelFunc
+	ok       int
+}
+
+func (g *cuttingStageGen) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, "", err
+	}
+	g.ok++
+	if g.cutAfter > 0 && g.ok == g.cutAfter {
+		g.cancel()
+	}
+	return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, &digest.Usage{}, "", nil
+}
+
+// F2: a Gmail chunk held mid-drain resumes where it got to on the next
+// attempt, so the two attempts together pay the stage-1 calls of one
+// uninterrupted drain; the resume point is dropped once the chunk completes.
+func TestHistoryBackfill_GmailChunkResumesWhereItStopped(t *testing.T) {
+	from := time.Now().AddDate(0, 0, -20).Truncate(time.Second)
+	to := from.Add(48 * time.Hour)
+	setup := func(t *testing.T, gen digest.Generator) (*Daemon, int64) {
+		d, database, _ := newBackfillDaemon(t)
+		d.config.Streams.Enabled = true
+		d.config.Ideas.MaxPromptChars = 1 // one thread per stage-1 window
+		d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+		acct := seedGmailAccountForIdeas(t, database, "a@example.com")
+		for i := range 4 {
+			seedGmailMail(t, database, acct, fmt.Sprintf("m%d", i), fmt.Sprintf("mail %d", i),
+				from.Add(time.Duration(i+1)*time.Hour))
+		}
+		return d, acct
+	}
+
+	whole := &cuttingStageGen{}
+	d, acct := setup(t, whole)
+	complete, err := gmailSource{id: acct, d: d}.Process(context.Background(), from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Greater(t, whole.ok, 2, "the chunk takes several passes")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cut := &cuttingStageGen{cutAfter: 2, cancel: cancel}
+	d, acct = setup(t, cut)
+	src := gmailSource{id: acct, d: d}
+	complete, err = src.Process(ctx, from, to)
+	require.Error(t, err)
+	assert.False(t, complete)
+	assert.Len(t, d.backfillResume, 1, "the held chunk keeps its resume point")
+
+	cut.cutAfter = 0
+	complete, err = src.Process(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Equal(t, whole.ok, cut.ok, "the retry pays no stage-1 call twice")
+	assert.Empty(t, d.backfillResume, "a completed chunk drops its resume point")
+}
+
 // fetchingGmail is the daemon's gmailSource with a scripted Fetch, so a test
 // can make an account's mail arrive only with its own row's fetch.
 type fetchingGmail struct {
