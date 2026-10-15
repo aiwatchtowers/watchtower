@@ -304,8 +304,7 @@ func TestEscalateAtTheOpenCapKeepsTheQuestion(t *testing.T) {
 
 // The envelope: one JSON object and exit 0 always; not_found for a missing
 // workbench or session or one of another workbench, bad_args for bad flags,
-// busy for a locked database, internal for a broken config; the legacy
-// --project spelling works.
+// busy for a locked database, internal for a broken config.
 func TestEscalateEnvelopeShape(t *testing.T) {
 	f := newEscalateFixture(t, twoOptions())
 	pid, row := strconv.FormatInt(f.pid, 10), strconv.FormatInt(f.row, 10)
@@ -334,7 +333,6 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 		{"an unknown flag", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason", "timeout", "--force"}, escalateErrBadArgs},
 		{"a flag without its value", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason"}, escalateErrBadArgs},
 		{"a positional argument", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason", "timeout", "extra"}, escalateErrBadArgs},
-		{"both workbench flags", []string{"--workbench", pid, "--project", pid, "--session", row, "--at", f.at, "--reason", "timeout"}, escalateErrBadArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := runEscalate(t, tc.args...)
@@ -346,11 +344,6 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 	}
 	assert.Zero(t, countAsks(t, f.database, f.pid), "no failure wrote")
 
-	t.Run("the legacy --project spelling", func(t *testing.T) {
-		res := runEscalate(t, "--project", pid, "--session", row, "--at", f.at, "--reason", "timeout")
-		assert.True(t, res.OK)
-		assert.Equal(t, escalateFiled, res.Outcome)
-	})
 	t.Run("a locked database is busy", func(t *testing.T) {
 		g := newEscalateFixture(t, twoOptions())
 		lockDatabase(t, g.database)

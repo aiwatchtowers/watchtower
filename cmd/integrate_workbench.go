@@ -214,26 +214,22 @@ func runCodexRemove(ctx context.Context, w io.Writer, p *db.Workbench) error {
 	return rmErr
 }
 
-// checkWorkbenchFlags refuses the global-pack flags next to --workbench (flag
-// is the spelling the caller used): the workbench install always targets
-// the workbench's own folder.
-func checkWorkbenchFlags(flag string, scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
+// checkWorkbenchFlags refuses the global-pack flags next to --workbench: the
+// workbench install always targets the workbench's own folder.
+func checkWorkbenchFlags(scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
 	if scopeChanged || explicitPath != "" || skillsOnly || mcpOnly {
-		return fmt.Errorf("%s installs into the workbench's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only", flag)
+		return fmt.Errorf("--%s installs into the workbench's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only", workbenchFlag)
 	}
 	return nil
 }
 
 type workbenchIntegrateFunc func(ctx context.Context, w io.Writer, p *db.Workbench) error
 
-// runIntegrateForWorkbench runs fn for --workbench N. The hidden --project N a
-// pre-rename Desktop passes acts the same: an install or resync through
-// either spelling sets the folder up in the current vocabulary (that is the
-// migration, spec 2026-10-02 §5.4); the spelling is only named back in
-// messages.
+// runIntegrateForWorkbench runs fn for --workbench N. An install or resync
+// of a folder set up before the Workbench rename migrates it to the current
+// vocabulary (spec 2026-10-02 §5.4).
 func runIntegrateForWorkbench(cmd *cobra.Command, fn workbenchIntegrateFunc) error {
-	flag := workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag))
-	if err := checkWorkbenchFlags(flag, cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
+	if err := checkWorkbenchFlags(cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
 		return err
 	}
 	p, err := loadIntegrateWorkbench(integrateWorkbenchID)

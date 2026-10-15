@@ -24,19 +24,30 @@ import (
 )
 
 // runWorkbench executes the real command tree via rootCmd (the runActions
-// precedent) under the pre-rename "project" alias — what every Desktop build
-// and legacy hook before the rename runs — with stdout and stderr captured
-// separately.
+// precedent) under `workbench`, with stdout and stderr captured separately.
 func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	return runWorkbenchAs(t, "project", args...)
+	return runWorkbenchAs(t, "workbench", args...)
+}
+
+// runRootCmd runs rootCmd with args and resets every flag the run set on cmds
+// afterwards (rootCmd is shared across tests).
+func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs(args)
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	resetSetFlags(append(cmds, rootCmd)...)
+	return out.String(), errOut.String(), err
 }
 
 // resetSetFlags puts every flag a run set on cmds — local, persistent or
 // inherited — back to its default value and clears its Changed mark.
 // rootCmd is shared across tests: a leftover --help would make every later
-// run print usage, a leftover --project would collide with the next run's
-// --workbench. Flags no run set are left alone (flagConfig, for one, is
+// run print usage. Flags no run set are left alone (flagConfig, for one, is
 // assigned by the tests, never parsed).
 //
 // A slice flag is restored through Replace: Set appends, and its "[]"
@@ -64,8 +75,7 @@ func resetSetFlags(cmds ...*cobra.Command) {
 	}
 }
 
-// runWorkbenchAs is runWorkbench run as the command called name ("workbench"
-// or its alias "project").
+// runWorkbenchAs is runWorkbench run as the top-level command called name.
 func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -80,6 +90,28 @@ func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr s
 	workbenchCreateFlagName = ""
 	workbenchBriefFlagWorkbench = ""
 	return out.String(), errOut.String(), err
+}
+
+// The pre-rename `project` command and --project flag are gone (spec
+// 2026-10-02 §10): only the workbench vocabulary is served.
+func TestWorkbench_NoPreRenameCommandOrFlag(t *testing.T) {
+	assert.Empty(t, workbenchCmd.Aliases)
+	_, _, err := runRootCmd(t, nil, "project", "brief", "--workbench", "1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown command "project"`)
+
+	cmds := []*cobra.Command{mcpCmd, integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd, integrateCodexCmd}
+	var walk func(*cobra.Command)
+	walk = func(c *cobra.Command) {
+		cmds = append(cmds, c)
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(workbenchCmd)
+	for _, c := range cmds {
+		assert.Nil(t, c.Flags().Lookup("project"), "%s still takes --project", c.CommandPath())
+	}
 }
 
 func TestProject_CreateStoresTheResolvedFolderAndDefaultsTheName(t *testing.T) {

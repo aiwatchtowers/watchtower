@@ -200,7 +200,6 @@ func TestCodexHook_FlagRule(t *testing.T) {
 	for _, hook := range codexHookCommands {
 		for _, bad := range [][]string{
 			append(append([]string{}, hook.args...), "--workbench", id),
-			append(append([]string{}, hook.args...), "--project", id),
 			replaceArg(hook.args, "codex", "claude"),
 			replaceArg(hook.args, "codex", ""),
 		} {

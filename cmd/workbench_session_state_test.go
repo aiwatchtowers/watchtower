@@ -519,21 +519,6 @@ func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
 	}
 }
 
-// A folder still on the legacy Stop entry (`project check --project N`)
-// records the state like the new one once it has the state hooks.
-func TestSessionState_LegacyStopHookRecordsWaiting(t *testing.T) {
-	database, pid, row := stopStateFixture(t, "open")
-	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	var out, errOut bytes.Buffer
-
-	runStopHook(context.Background(), strings.NewReader(statePayload("Stop", briefLaunchID, "")), &out, &errOut,
-		strconv.FormatInt(pid, 10), legacyWorkbenchVocabulary)
-
-	assert.Empty(t, out.String())
-	assert.Empty(t, errOut.String())
-	assert.Equal(t, "waiting", storedAgentState(t, database, row))
-}
-
 // A failed state write on the Stop path is one stderr line; stdout stays
 // empty and the drift decision is unchanged.
 func TestSessionState_StopHookStateFailureIsOneLine(t *testing.T) {

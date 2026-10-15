@@ -27,7 +27,10 @@ func TestWorkbenchSkill_NamesOnlyCurrentToolsAndServer(t *testing.T) {
 			t.Errorf("the skill still says %q", old)
 		}
 	}
-	for _, old := range tools.LegacyWorkbenchToolNames {
+	for _, old := range []string{"project_info", "project_board", "update_project", "add_project_source", "remove_project_source"} {
+		if tools.CanonicalToolName(old) == old {
+			t.Fatalf("%s is not a pre-rename workbench tool name", old)
+		}
 		if strings.Contains(content, old) {
 			t.Errorf("the skill still names the old tool %s", old)
 		}

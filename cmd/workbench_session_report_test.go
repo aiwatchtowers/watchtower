@@ -244,27 +244,6 @@ func TestWorkbenchSessionReport_TextPrintsTheSectionsInOrder(t *testing.T) {
 	assert.Contains(t, out, "#340 Phase C: desktop view  1/2  since 2026-10-01T09:00:00Z")
 }
 
-func TestWorkbenchSessionReport_LegacyProjectSpelling(t *testing.T) {
-	sessionReportWorkbench(t, t.TempDir())
-
-	out, _, err := runWorkbenchAs(t, "project", "session-report", "--project", "1", "--summary", "--json")
-	require.NoError(t, err, out)
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(out), &rows), out)
-	assert.Len(t, rows, 1)
-
-	out, _, err = runWorkbenchAs(t, "project", "session-report", "--project", "1", "--session", "1", "--json")
-	require.NoError(t, err, out)
-	assert.EqualValues(t, 1, decodeSessionReport(t, out)["session"].(map[string]any)["id"])
-
-	_, _, err = runWorkbenchAs(t, "project", "session-report", "--project", "0", "--summary")
-	require.ErrorContains(t, err, "--project: a positive workbench id is required")
-
-	help, _, err := runWorkbenchAs(t, "workbench", "session-report", "--help")
-	require.NoError(t, err)
-	assert.Contains(t, help, "`project session-report --project N`")
-}
-
 // A never-checked branch reads "not checked", like the Desktop's PR line;
 // "no PR yet" is kept for a checked, unmerged branch without a PR.
 func TestWorkbenchSessionReport_UnknownBranchReadsNotChecked(t *testing.T) {

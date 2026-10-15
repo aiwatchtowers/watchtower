@@ -61,10 +61,6 @@ var (
 	// mcpFlagAutomationReadyFile is touched once the automation server
 	// accepted its binding and serves (the agent() runner's startup record).
 	mcpFlagAutomationReadyFile string
-	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
-	// registration a pre-rename install wrote, whose session lists the
-	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
-	mcpFlagWorkbenchLegacy func() bool
 )
 
 func init() {
@@ -82,7 +78,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagAutomationReadyFile, "automation-ready-file", "", "--surface automation: a file created once the server accepted the run's binding and serves")
 	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
 	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
-	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
+	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, workbenchFlag, 0, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
 // mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
@@ -121,7 +117,7 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 		return nil, err
 	}
 	if mcpFlagWorkbench != 0 {
-		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench, mcpFlagWorkbenchLegacy())
+		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench)
 	}
 	// Chat mode: the connection stays writable ONLY so the registry can
 	// record proposals (agent_actions) — the tools themselves still never
@@ -256,15 +252,12 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 // (send_slack_message) is recorded pending for the owner's Approve (DEV-06).
 // The workbench must exist when the server starts; if it is deleted later,
 // every tool answers "workbench N no longer exists".
-// legacy is the pre-rename `--project N` spelling: the same session, listing
-// the renamed tools under their old names (Binding.LegacyNames).
-func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64, legacy bool) ([]internalmcp.ServerOption, error) {
-	flag := workbenchFlagName(legacy)
+func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChat {
-		return nil, fmt.Errorf("%s and --chat are mutually exclusive", flag)
+		return nil, errors.New("--workbench and --chat are mutually exclusive")
 	}
 	if workbenchID < 0 {
-		return nil, fmt.Errorf("%s must be a workbench id, got %d", flag, workbenchID)
+		return nil, fmt.Errorf("--workbench must be a workbench id, got %d", workbenchID)
 	}
 	agent, err := mcpAgent(mcpFlagAgent)
 	if err != nil {
@@ -274,8 +267,7 @@ func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64,
 		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
-		Agent: agent,
+		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, Agent: agent,
 	})}, nil
 }
 
@@ -293,9 +285,6 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

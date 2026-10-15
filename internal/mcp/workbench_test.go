@@ -19,25 +19,13 @@ import (
 // with DirectApply.
 func newWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
 	t.Helper()
-	return newBoundWorkbenchSession(t, database, workbenchID, false)
-}
-
-// newLegacyWorkbenchSession is the pre-rename `mcp --project N` wiring: the
-// same session, listing the renamed tools under their old names.
-func newLegacyWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
-	t.Helper()
-	return newBoundWorkbenchSession(t, database, workbenchID, true)
-}
-
-func newBoundWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64, legacy bool) *mcpsdk.ClientSession {
-	t.Helper()
 	reg := tools.New(database)
 	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir())), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return newChatSession(t, database, reg, tools.Binding{Surface: "project", WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy})
+	return newChatSession(t, database, reg, tools.Binding{Surface: "project", WorkbenchID: workbenchID, DirectApply: true})
 }
 
 func seedMCPWorkbench(t *testing.T, database *db.DB) int64 {
@@ -167,102 +155,92 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 	return out
 }
 
-// Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
-// new names, `mcp --project N` only the old ones — sixteen workbench tools
-// either way, with no description or input schema pointing at a tool the
-// session lacks.
-func TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames(t *testing.T) {
+// Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists the
+// sixteen workbench tools under their current names only, with no
+// description or input schema pointing at a pre-rename name.
+func TestWorkbenchMode_ListsSixteenToolsUnderTheCurrentNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
-	for _, legacy := range []bool{false, true} {
-		listed := workbenchToolsListed(t, newBoundWorkbenchSession(t, database, pid, legacy))
-		if len(listed) != 16 {
-			t.Errorf("legacy=%v: want 16 workbench tools, got %d: %v", legacy, len(listed), listed)
+	listed := workbenchToolsListed(t, newWorkbenchSession(t, database, pid))
+	if len(listed) != 16 {
+		t.Errorf("want 16 workbench tools, got %d: %v", len(listed), listed)
+	}
+	renamed := map[string]string{
+		"project_info": tools.WorkbenchInfoTool, "project_board": tools.WorkbenchBoardTool,
+		"update_project": tools.UpdateWorkbenchTool, "add_project_source": tools.AddWorkbenchSourceTool,
+		"remove_project_source": tools.RemoveWorkbenchSourceTool,
+	}
+	for oldName, newName := range renamed {
+		if _, ok := listed[newName]; !ok {
+			t.Errorf("%s is not listed", newName)
 		}
-		for newName, oldName := range tools.LegacyWorkbenchToolNames {
-			want, unwanted := newName, oldName
-			if legacy {
-				want, unwanted = oldName, newName
-			}
-			if _, ok := listed[want]; !ok {
-				t.Errorf("legacy=%v: %s is not listed", legacy, want)
-			}
-			if _, ok := listed[unwanted]; ok {
-				t.Errorf("legacy=%v: %s must not be listed", legacy, unwanted)
-			}
-			for name, desc := range listed {
-				if strings.Contains(desc, unwanted) {
-					t.Errorf("legacy=%v: %s's description or input schema names %s", legacy, name, unwanted)
-				}
+		if _, ok := listed[oldName]; ok {
+			t.Errorf("%s must not be listed", oldName)
+		}
+		for name, desc := range listed {
+			if strings.Contains(desc, oldName) {
+				t.Errorf("%s's description or input schema names %s", name, oldName)
 			}
 		}
-		// The argument descriptions are spelled too, not only the tool's own.
-		want := map[bool]string{false: "the source id from workbench_info", true: "the source id from project_info"}[legacy]
-		remove := tools.Binding{LegacyNames: legacy}.Spell(tools.RemoveWorkbenchSourceTool)
-		if !strings.Contains(listed[remove], want) {
-			t.Errorf("legacy=%v: %s's schema lacks %q: %s", legacy, remove, want, listed[remove])
-		}
+	}
+	if want := "the source id from workbench_info"; !strings.Contains(listed[tools.RemoveWorkbenchSourceTool], want) {
+		t.Errorf("%s's schema lacks %q: %s", tools.RemoveWorkbenchSourceTool, want, listed[tools.RemoveWorkbenchSourceTool])
 	}
 }
 
-// Spec 2026-10-03 §4: the ask tools have no legacy spelling — both
-// vocabularies serve them under the same names, and an ask filed through one
-// applies directly with its audit row.
-func TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies(t *testing.T) {
+// Spec 2026-10-03 §4: the workbench session serves the ask tools, and an ask
+// filed through it applies directly with its audit row.
+func TestWorkbenchMode_ServesTheAskTools(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
-	for _, legacy := range []bool{false, true} {
-		cs := newBoundWorkbenchSession(t, database, pid, legacy)
-		listed := workbenchToolsListed(t, cs)
-		for _, name := range []string{"ask_owner", "get_ask", "list_asks", "withdraw_ask"} {
-			if _, ok := listed[name]; !ok {
-				t.Errorf("legacy=%v: %s is not listed", legacy, name)
-			}
+	cs := newWorkbenchSession(t, database, pid)
+	listed := workbenchToolsListed(t, cs)
+	for _, name := range []string{"ask_owner", "get_ask", "list_asks", "withdraw_ask"} {
+		if _, ok := listed[name]; !ok {
+			t.Errorf("%s is not listed", name)
 		}
-		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "ask_owner",
-			Arguments: map[string]any{"kind": "check", "title": "Run it", "reason": "r",
-				"checklist": []any{map[string]any{"text": "Open the app"}}}})
-		if err != nil || res.IsError {
-			t.Fatalf("legacy=%v: ask_owner: %v %v", legacy, err, res)
-		}
-		var rc tools.Receipt
-		if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
-			t.Fatal(err)
-		}
-		if rc.Status != "applied" || rc.Tool != "ask_owner" {
-			t.Errorf("legacy=%v: want an applied ask_owner receipt, got %+v", legacy, rc)
-		}
+	}
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "ask_owner",
+		Arguments: map[string]any{"kind": "check", "title": "Run it", "reason": "r",
+			"checklist": []any{map[string]any{"text": "Open the app"}}}})
+	if err != nil || res.IsError {
+		t.Fatalf("ask_owner: %v %v", err, res)
+	}
+	var rc tools.Receipt
+	if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
+		t.Fatal(err)
+	}
+	if rc.Status != "applied" || rc.Tool != "ask_owner" {
+		t.Errorf("want an applied ask_owner receipt, got %+v", rc)
 	}
 	asks, err := database.ListOwnerAsks(pid, db.OwnerAskFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(asks) != 2 {
-		t.Errorf("want 2 open asks, got %d", len(asks))
+	if len(asks) != 1 {
+		t.Errorf("want 1 open ask, got %d", len(asks))
 	}
 }
 
-// Spec 2026-10-03 §4: attach_document is gone — neither vocabulary lists it,
-// and a call to it is an unknown tool, not a workbench write.
+// Spec 2026-10-03 §4: attach_document is gone — the session does not list
+// it, and a call to it is an unknown tool, not a workbench write.
 func TestWorkbenchMode_AttachDocumentIsUnknown(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
-	for _, legacy := range []bool{false, true} {
-		cs := newBoundWorkbenchSession(t, database, pid, legacy)
-		res, err := cs.ListTools(context.Background(), nil)
-		if err != nil {
-			t.Fatal(err)
+	cs := newWorkbenchSession(t, database, pid)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "attach_document" {
+			t.Errorf("attach_document is listed")
 		}
-		for _, tool := range res.Tools {
-			if tool.Name == "attach_document" {
-				t.Errorf("legacy=%v: attach_document is listed", legacy)
-			}
-		}
-		_, err = cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "attach_document",
-			Arguments: map[string]any{"rel_path": "a.md", "kind": "doc", "reason": "r"}})
-		if err == nil || !strings.Contains(err.Error(), "unknown tool") {
-			t.Errorf("legacy=%v: attach_document call: want an unknown-tool error, got %v", legacy, err)
-		}
+	}
+	_, err = cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "attach_document",
+		Arguments: map[string]any{"rel_path": "a.md", "kind": "doc", "reason": "r"}})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Errorf("attach_document call: want an unknown-tool error, got %v", err)
 	}
 	var n int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&n); err != nil {
@@ -273,26 +251,18 @@ func TestWorkbenchMode_AttachDocumentIsUnknown(t *testing.T) {
 	}
 }
 
-// A write through a legacy name records the canonical name; get_action names
-// a row's tool in the asking session's vocabulary, whether the row was
-// recorded under the new name or (before the rename) the old one; a refusal
-// names the tools the legacy session lists.
-func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) {
+// A pre-rename name is not served: a call to it is an unknown tool. A row
+// recorded before the rename under the old name still reads, through
+// get_action, under the tool's current name.
+func TestWorkbenchMode_OldNamesAreUnknownAndOldRowsResolve(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
-	cs := newLegacyWorkbenchSession(t, database, pid)
+	cs := newWorkbenchSession(t, database, pid)
 
-	rc := applyLegacyUpdateProject(t, cs)
-	row, err := database.GetAgentAction(rc.ActionID)
-	if err != nil || row == nil {
-		t.Fatalf("action row: %v", err)
-	}
-	if row.Tool != tools.UpdateWorkbenchTool {
-		t.Errorf("agent_actions.tool = %q, want the canonical %q", row.Tool, tools.UpdateWorkbenchTool)
-	}
-	p, err := database.GetWorkbench(pid)
-	if err != nil || p.Description != "Set up before the rename." {
-		t.Fatalf("description not applied: %+v %v", p, err)
+	_, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "update_project",
+		Arguments: map[string]any{"description": "Set up before the rename.", "reason": "setup"}})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Errorf("update_project call: want an unknown-tool error, got %v", err)
 	}
 
 	oldRow, err := database.InsertAgentAction(db.AgentAction{Tool: "add_project_source", ArgsJSON: `{}`, Reason: "r",
@@ -301,53 +271,9 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// get_action names a row's tool the way the asking session lists it,
-	// whichever spelling the row was recorded under.
-	current := newWorkbenchSession(t, database, pid)
-	for _, c := range []struct {
-		session  *mcpsdk.ClientSession
-		legacy   bool
-		id       int64
-		wantTool string
-	}{
-		{cs, true, rc.ActionID, "update_project"}, // recorded as update_workbench
-		{cs, true, oldRow, "add_project_source"},  // recorded before the rename
-		{current, false, rc.ActionID, "update_workbench"},
-		{current, false, oldRow, "add_workbench_source"},
-	} {
-		if got := getActionTool(t, c.session, c.id); got != c.wantTool {
-			t.Errorf("get_action #%d (legacy=%v) names %q, want %q", c.id, c.legacy, got, c.wantTool)
-		}
+	if got := getActionTool(t, cs, oldRow); got != tools.AddWorkbenchSourceTool {
+		t.Errorf("get_action #%d names %q, want %q", oldRow, got, tools.AddWorkbenchSourceTool)
 	}
-
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "search_knowledge",
-		Arguments: map[string]any{"queries": []any{"x"}, "project_scope": "only"}})
-	if err != nil || !res.IsError {
-		t.Fatalf("a scope with no sources must be refused: %v", err)
-	}
-	if got := textContent(t, res); !strings.Contains(got, "add one with add_project_source") || strings.Contains(got, "add_workbench_source") {
-		t.Errorf("the legacy session's refusal must name its own tools: %s", got)
-	}
-}
-
-// applyLegacyUpdateProject sets the description through the legacy
-// update_project name and returns the receipt, which names the tool the
-// session called.
-func applyLegacyUpdateProject(t *testing.T, cs *mcpsdk.ClientSession) tools.Receipt {
-	t.Helper()
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "update_project",
-		Arguments: map[string]any{"description": "Set up before the rename.", "reason": "setup"}})
-	if err != nil || res.IsError {
-		t.Fatalf("update_project: %v %s", err, textContent(t, res))
-	}
-	var rc tools.Receipt
-	if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
-		t.Fatal(err)
-	}
-	if rc.Status != "applied" || rc.Tool != "update_project" {
-		t.Fatalf("the legacy session's receipt names the tool it called: %+v", rc)
-	}
-	return rc
 }
 
 // getActionTool returns the tool get_action names for action id in session.

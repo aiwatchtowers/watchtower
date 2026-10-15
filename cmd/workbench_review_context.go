@@ -32,7 +32,7 @@ var (
 const maxPlanBytes = 1 << 20
 
 func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}

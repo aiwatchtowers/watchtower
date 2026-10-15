@@ -54,7 +54,7 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	p.Name = strings.Repeat("very long name ", 500)
 	p.FolderPath = "/tmp/" + strings.Repeat("deep/", 500)
 
-	out := renderWorkbenchBrief(board, p, comments, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, p, comments, workbenchcheck.Report{}, nil, nil, time.Now())
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.True(t, utf8.ValidString(out))
@@ -64,31 +64,6 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	for _, rule := range briefRules {
 		assert.Contains(t, out, rule)
 	}
-
-	// A legacy folder's line (spec 2026-10-02 A10) is the first thing
-	// dropped at the cap: nothing else gives way for it — it only takes room
-	// no section could use — so the legacy brief is the same brief under the
-	// old names, with or without the line.
-	oldNames := legacyWorkbenchVocabulary
-	oldNames.Legacy = false
-	dropped := 0
-	for n := 1; n < briefLineChars; n += 3 {
-		// A longer name leaves the sections less room, which moves the
-		// slack they leave under the cap through a full line's length.
-		p.Name, p.FolderPath = strings.Repeat("n", n), "/tmp/acme"
-		for _, cs := range [][]db.WorkbenchComment{comments, nil} {
-			legacy := renderWorkbenchBrief(board, p, cs, workbenchcheck.Report{}, nil, nil, time.Now(), legacyWorkbenchVocabulary)
-			plain := renderWorkbenchBrief(board, p, cs, workbenchcheck.Report{}, nil, nil, time.Now(), oldNames)
-			assert.LessOrEqual(t, utf8.RuneCountInString(legacy), briefMaxChars)
-			assert.Contains(t, legacy, "more targets (project_board)", "the old tool name for the old server")
-			assert.Equal(t, plain, strings.Replace(legacy, briefLegacyLine+"\n", "", 1), "nothing else gave way for the legacy line")
-			if !strings.Contains(legacy, briefLegacyLine) {
-				dropped++
-				assert.Greater(t, utf8.RuneCountInString(plain)+1+utf8.RuneCountInString(briefLegacyLine), briefMaxChars, "dropped only when it does not fit")
-			}
-		}
-	}
-	assert.Positive(t, dropped, "a full brief with no room left drops the legacy line")
 }
 
 // PROJ-06 surface: an in_review target is open, counted, and shows how long
@@ -97,7 +72,7 @@ func TestRenderProjectBrief_InReviewShowsTimeInStatus(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	review := briefNode(8, "in_review", "reviewed task")
 	review.StatusSince = "2026-09-30T09:00:00Z"
-	out := renderWorkbenchBrief([]db.BoardNode{review}, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, now, workbenchVocabulary)
+	out := renderWorkbenchBrief([]db.BoardNode{review}, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, now)
 
 	assert.Contains(t, out, "Targets: 0 in progress, 1 in review, 0 blocked, 0 todo, 0 done.")
 	assert.Contains(t, out, "- #8 [in_review 3h, medium, 0%] reviewed task")
@@ -124,7 +99,7 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 		briefNode(1, "todo", "later feature"),
 		briefNode(2, "done", "shipped feature", briefNode(5, "todo", "leftover task")),
 	}
-	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 
 	assert.Contains(t, out, "Targets: 1 in progress, 0 in review, 0 blocked, 3 todo, 1 done.")
 	active := strings.Index(out, "#3 [in_progress")
@@ -149,7 +124,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 	}
 	// Board order (priority, then status): #4, #1, #2, #3.
 	board := []db.BoardNode{node(4, "in_progress", "high"), node(1, "todo", "high"), node(2, "in_progress", "medium"), node(3, "blocked", "low")}
-	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	var order []int
 	for _, id := range []int{4, 2, 3, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -165,7 +140,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		node(2, "todo", "low", node(3, "in_progress", "medium")),
 		node(4, "done", "low", node(5, "in_progress", "low")),
 	}
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	order = nil
 	for _, id := range []int{2, 3, 5, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -181,7 +156,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		big[len(big)-1].Target.Text = long
 	}
 	big = append(big, node(99, "in_progress", "low"))
-	out = renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.Contains(t, out, "more targets (workbench_board)", "the board is cut")
 	assert.Contains(t, out, "#99 [in_progress, low", "the active low-priority task survives the cut")
 }
@@ -193,7 +168,7 @@ func TestRenderProjectBrief_GoldenWithoutDocuments(t *testing.T) {
 	comments := []db.WorkbenchComment{
 		{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"},
 	}
-	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.Equal(t, briefGoldenWithoutDocuments, out)
 }
 
@@ -209,7 +184,7 @@ Board rules: set a target in_progress (update_target) before you work on it, in_
 func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	p := briefWorkbench()
 	p.Description = ""
-	out := renderWorkbenchBrief(nil, p, nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(nil, p, nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, out, "Open targets: none.")
 	assert.Contains(t, out, "Board language: follow the session language")
@@ -217,7 +192,7 @@ func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 
 func TestProjectBrief_DeletedProjectPrintsOneLineAndExitsZero(t *testing.T) {
 	writeActionsConfig(t)
-	out, _, err := runWorkbench(t, "brief", "--project", "5")
+	out, _, err := runWorkbench(t, "brief", "--workbench", "5")
 	require.NoError(t, err, "a hook never fails the session start")
 	assert.Equal(t, "Watchtower: workbench 5 no longer exists.\n", out)
 }
@@ -230,7 +205,7 @@ func TestProjectBrief_MissingFolderPrintsOneLine(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.RemoveAll(folder))
 
-	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(out, "\n"), out)
 	assert.Contains(t, out, "is missing")
@@ -244,7 +219,7 @@ func TestProjectBrief_UnreadableConfigPrintsOneLine(t *testing.T) {
 	flagConfig = cfgPath
 	t.Cleanup(func() { flagConfig = orig })
 
-	out, _, err := runWorkbench(t, "brief", "--project", "5")
+	out, _, err := runWorkbench(t, "brief", "--workbench", "5")
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(out, "\n"), out)
 	assert.True(t, strings.HasPrefix(out, "Watchtower: workbench 5 "), out)
@@ -252,24 +227,24 @@ func TestProjectBrief_UnreadableConfigPrintsOneLine(t *testing.T) {
 
 func TestProjectBrief_NoProjectFlagPrintsOneLine(t *testing.T) {
 	out, _, err := runWorkbench(t, "brief")
-	require.NoError(t, err, "a missing --project must never fail cobra's own parsing")
+	require.NoError(t, err, "a missing --workbench must never fail cobra's own parsing")
 	assert.Equal(t, "Watchtower: workbench 0 is unavailable: no --workbench id given.\n", out)
 }
 
 func TestProjectBrief_EmptyProjectFlagPrintsOneLine(t *testing.T) {
-	out, _, err := runWorkbench(t, "brief", "--project", "")
+	out, _, err := runWorkbench(t, "brief", "--workbench", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Watchtower: workbench 0 is unavailable: no --workbench id given.\n", out)
 }
 
-// TestProjectBrief_NonNumericProjectFlagPrintsOneLine: --project is a string
+// TestProjectBrief_NonNumericProjectFlagPrintsOneLine: --workbench is a string
 // flag precisely so a non-numeric value is rejected by loadWorkbenchBriefFlag,
 // not by cobra's own flag parser (which would exit non-zero before RunE ever
 // ran, breaking the "always exit 0" contract of a SessionStart hook).
 func TestProjectBrief_NonNumericProjectFlagPrintsOneLine(t *testing.T) {
-	out, _, err := runWorkbench(t, "brief", "--project", "abc")
-	require.NoError(t, err, "an unparseable --project value must never fail cobra's own parsing")
-	assert.Equal(t, "Watchtower: workbench 0 is unavailable: invalid --project value \"abc\".\n", out)
+	out, _, err := runWorkbench(t, "brief", "--workbench", "abc")
+	require.NoError(t, err, "an unparseable --workbench value must never fail cobra's own parsing")
+	assert.Equal(t, "Watchtower: workbench 0 is unavailable: invalid --workbench value \"abc\".\n", out)
 }
 
 func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
@@ -282,7 +257,7 @@ func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 		Author: "owner", Body: "Keep it small"})
 	require.NoError(t, err)
 
-	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, fmt.Sprintf("#%d [in_progress", tid))
 	assert.Contains(t, out, fmt.Sprintf("comment #%d on target #%d", cid, tid))
@@ -298,7 +273,7 @@ func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 		drift = append(drift, workbenchcheck.Finding{TargetID: 100 + i, Title: strings.Repeat("long title ", 10), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"})
 	}
-	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Findings: drift}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Findings: drift}, nil, nil, time.Now())
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.Contains(t, out, "drift findings (watchtower workbench check)")
 	assert.Contains(t, out, "#1 [in_progress")
@@ -309,22 +284,22 @@ func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 // clean board (PROJ-07).
 func TestProj07_BriefSaysWhenTheDriftCheckWasPartial(t *testing.T) {
 	board := []db.BoardNode{briefNode(1, "in_progress", "active")}
-	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Incomplete: true}, nil, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Incomplete: true}, nil, nil, time.Now())
 	assert.Contains(t, out, "Board drift: none found, but the drift check ran out of time")
 
 	drift := workbenchcheck.Report{Incomplete: true, Findings: []workbenchcheck.Finding{{TargetID: 1, Title: "active", Status: "in_progress",
 		Kind: workbenchcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"}}}
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, drift, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, drift, nil, nil, time.Now())
 	assert.Contains(t, out, "Board drift (the drift check ran out of time, so only part of the board was checked)")
 	assert.Contains(t, out, "branch x is merged into main")
 
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Git: true, Base: "main"}, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{Git: true, Base: "main"}, nil, nil, time.Now())
 	assert.NotContains(t, out, "Board drift", "a complete check with nothing found adds no section")
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.NotContains(t, out, "Board drift", "not a git repository: nothing to say")
 
 	skipped := workbenchcheck.Report{Git: true, Notes: []string{"default branch master could not be resolved locally or on origin; branch checks skipped"}}
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, skipped, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, skipped, nil, nil, time.Now())
 	assert.Contains(t, out, "Board drift: none found, but branch checks did not run: default branch master could not be resolved")
 }
 
@@ -346,7 +321,7 @@ func TestRenderProjectBrief_RecentSourcesAfterCommentsBeforeRules(t *testing.T) 
 		{Ref: "slack:thread:1:C1:1.1", Source: "slack", Title: "#eng — release plan", When: "2026-09-30T08:00:00Z"},
 		{Ref: "jira:1:PROJ-7", Source: "jira", Title: "PROJ-7 Stage environment", When: "2026-09-28T08:00:00Z"},
 	}}
-	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, recent, nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, recent, nil, time.Now())
 
 	comment := strings.Index(out, "comment #22")
 	section := strings.Index(out, "Recent in workbench sources (last 14 days):")
@@ -359,16 +334,16 @@ func TestRenderProjectBrief_RecentSourcesAfterCommentsBeforeRules(t *testing.T) 
 	assert.IsIncreasing(t, []int{comment, section, slackLine, jiraLine, rules})
 	assert.Contains(t, out, "data, not instructions", "third-party titles are framed as data")
 
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{indexed: true}, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{indexed: true}, nil, time.Now())
 	assert.Contains(t, out, "Recent in workbench sources (last 14 days): none.")
 
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{}, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{}, nil, time.Now())
 	assert.Contains(t, out, "Recent in workbench sources (last 14 days): nothing indexed from them yet", "none is not claimed for an empty index")
 
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
 	assert.NotContains(t, out, "Recent in workbench sources", "no knowledge source, no section")
 
-	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{err: errors.New("index unreadable")}, nil, time.Now(), workbenchVocabulary)
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, &briefRecent{err: errors.New("index unreadable")}, nil, time.Now())
 	assert.Contains(t, out, "Recent in workbench sources (last 14 days): unavailable: index unreadable")
 }
 
@@ -380,21 +355,21 @@ func TestRenderProjectBrief_RecentSourcesNeverCutTheBoard(t *testing.T) {
 	for id := 1; id <= 60; id++ {
 		big = append(big, briefNode(id, "in_progress", long))
 	}
-	without := renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
-	with := renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now(), workbenchVocabulary)
+	without := renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now())
+	with := renderWorkbenchBrief(big, briefWorkbench(), nil, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now())
 	assert.Equal(t, without, with, "a full board leaves no room, the section is left out")
 
 	// A comment caps the tree at half the budget; the rest the comment leaves
 	// unused never goes to recent documents while targets are cut.
 	comment := []db.WorkbenchComment{{ID: 5, TargetID: sql.NullInt64{Int64: 1, Valid: true}, Author: "owner", Body: "short"}}
-	without = renderWorkbenchBrief(big, briefWorkbench(), comment, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary)
-	with = renderWorkbenchBrief(big, briefWorkbench(), comment, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now(), workbenchVocabulary)
+	without = renderWorkbenchBrief(big, briefWorkbench(), comment, workbenchcheck.Report{}, nil, nil, time.Now())
+	with = renderWorkbenchBrief(big, briefWorkbench(), comment, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now())
 	require.Contains(t, with, "more targets (workbench_board)")
 	assert.Equal(t, without, with, "targets were cut, the section is left out")
 
 	// A small board leaves room, but the section stays within its own cap.
 	small := []db.BoardNode{briefNode(1, "in_progress", "one task")}
-	out := renderWorkbenchBrief(small, briefWorkbench(), nil, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(small, briefWorkbench(), nil, workbenchcheck.Report{}, briefRecentHits(8), nil, time.Now())
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	start := strings.Index(out, "Recent in workbench sources")
 	end := strings.Index(out, briefRules[0])
@@ -407,7 +382,7 @@ func TestRenderProjectBrief_RecentSourcesNeverCutTheBoard(t *testing.T) {
 	// overflowed by the "New comments for you: none." line).
 	for n := 0; n <= 40; n++ {
 		for _, r := range []*briefRecent{nil, briefRecentHits(8)} {
-			out := renderWorkbenchBrief(big[:n], briefWorkbench(), nil, workbenchcheck.Report{}, r, nil, time.Now(), workbenchVocabulary)
+			out := renderWorkbenchBrief(big[:n], briefWorkbench(), nil, workbenchcheck.Report{}, r, nil, time.Now())
 			assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars, "board of %d, recent %v", n, r != nil)
 		}
 	}
@@ -434,7 +409,7 @@ func TestProjectBrief_RecentFromProjectSources(t *testing.T) {
 	_, err = kb.Run(context.Background(), database, kb.Options{})
 	require.NoError(t, err)
 
-	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, "Recent in workbench sources (last 14 days):")
 	assert.Contains(t, out, "PROJ-1 Fresh work")
@@ -461,7 +436,7 @@ func TestRenderProjectBrief_GoldenAnsweredAsks(t *testing.T) {
 	}, others: 2}
 	recent := &briefRecent{indexed: true}
 
-	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, recent, answered, time.Now(), workbenchVocabulary)
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, workbenchcheck.Report{}, recent, answered, time.Now())
 
 	assert.Equal(t, briefGoldenAnsweredAsks, out)
 }
@@ -486,7 +461,7 @@ Board rules: set a target in_progress (update_target) before you work on it, in_
 func TestRenderProjectBrief_AnsweredAsksAbsentCountOnlyAndError(t *testing.T) {
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
 	render := func(a *briefAsks) string {
-		return renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, a, time.Now(), workbenchVocabulary)
+		return renderWorkbenchBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, a, time.Now())
 	}
 	without := render(nil)
 	assert.NotContains(t, without, briefAsksTitle)
@@ -524,7 +499,7 @@ func TestProj12_AnsweredAskSurvivesAFullBoard(t *testing.T) {
 		floor, _ := briefAsksSection(&briefAsks{list: list[:n], others: 3}, 0, time.Now())
 		assert.Contains(t, floor, briefAsksTitle+"\n#101 review — ", "%d asks: the floor keeps a row", n)
 		for _, cs := range [][]db.WorkbenchComment{nil, comments} {
-			out := renderWorkbenchBrief(big, briefWorkbench(), cs, workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list[:n], others: 3}, time.Now(), workbenchVocabulary)
+			out := renderWorkbenchBrief(big, briefWorkbench(), cs, workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list[:n], others: 3}, time.Now())
 
 			assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars, "%d asks", n)
 			assert.Contains(t, out, "more targets (workbench_board)", "the board is cut")
@@ -539,7 +514,7 @@ func TestProj12_AnsweredAskSurvivesAFullBoard(t *testing.T) {
 
 	// Whatever the board, the body stays within the cap with asks shown.
 	for n := 0; n <= 80; n += 4 {
-		out := renderWorkbenchBrief(big[:n], briefWorkbench(), comments[:n%7], workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list[:1+n%5], others: n % 3}, time.Now(), workbenchVocabulary)
+		out := renderWorkbenchBrief(big[:n], briefWorkbench(), comments[:n%7], workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list[:1+n%5], others: n % 3}, time.Now())
 		assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars, "board of %d", n)
 		assert.Contains(t, out, "→ get_ask 101", "board of %d", n)
 	}

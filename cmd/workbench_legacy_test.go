@@ -136,8 +136,8 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 
 // A resync whose `mcp add` failed leaves a legacy folder entirely on its old
 // setup (old skill, hooks and registration): mcp and hook still read true
-// (the session keeps working), current_mcp says the new registration is
-// missing. A later install that registers it migrates the folder.
+// (the old entries are there), legacy stays true and current_mcp says the
+// new registration is missing. A later install that registers it migrates the folder.
 func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -163,10 +163,10 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	assert.False(t, got.Legacy)
 }
 
-// The resync's suggestions name the skill and tools the folder's session
-// actually has: the new ones once the new server is registered, the old ones
-// when a pre-rename folder was left on its old setup, and no tool at all
-// when no server of ours is known to serve the folder.
+// The resync's suggestions name the new skill and tools once the new server
+// is registered, and no tool at all when it is not: a pre-rename folder left
+// on its old setup has no server that still runs (the `mcp --project N`
+// alias is gone), and neither has a fresh folder without a registration.
 func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 	sourcesLine := func(t *testing.T, res workbenchResyncJSON) string {
 		t.Helper()
@@ -202,10 +202,12 @@ func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 	t.Run("legacy folder kept on its old setup", func(t *testing.T) {
 		res := resync(t, true, true)
 		require.False(t, res.MCPRegistered)
-		assert.Contains(t, sourcesLine(t, res), "(add_project_source)")
+		line := sourcesLine(t, res)
+		assert.NotContains(t, line, "add_workbench_source")
+		assert.NotContains(t, line, "add_project_source")
 		joined := strings.Join(res.Suggestions, "\n")
-		assert.Contains(t, joined, "run the watchtower-project skill's setup")
-		assert.NotContains(t, joined, "add_workbench_source")
+		assert.Contains(t, joined, "run the watchtower-workbench skill's setup")
+		assert.NotContains(t, joined, "watchtower-project skill's setup")
 	})
 	t.Run("fresh folder without a registration", func(t *testing.T) {
 		res := resync(t, false, true)

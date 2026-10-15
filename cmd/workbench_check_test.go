@@ -84,7 +84,7 @@ func stopHook(t *testing.T, id int64, input string) string {
 func stopHookIO(t *testing.T, rawID, input string) (stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID, workbenchVocabulary)
+	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID)
 	return out.String(), errOut.String()
 }
 
@@ -169,7 +169,7 @@ func TestProjectCheck_JSONReportsTheDrift(t *testing.T) {
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
 
-	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
 	require.NoError(t, err)
 	var rep workbenchcheck.Report
 	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
@@ -178,7 +178,7 @@ func TestProjectCheck_JSONReportsTheDrift(t *testing.T) {
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 	assert.Equal(t, "main", rep.Base)
 
-	_, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", "999", "--no-network")
+	_, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", "999", "--no-network")
 	assert.Error(t, err, "outside the hook an unknown project is an error")
 }
 
@@ -186,7 +186,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid, workbenchVocabulary)
+	brief := loadWorkbenchBrief(pid)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -238,7 +238,7 @@ func TestStopHookReason_CapsAndClips(t *testing.T) {
 		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}
-	reason := stopHookReason(3, findings, workbenchVocabulary)
+	reason := stopHookReason(3, findings)
 	lines := strings.Split(reason, "\n")
 	require.Len(t, lines, 1+stopHookMaxFindings+1, "header, the capped findings, one overflow line")
 	assert.Equal(t, "- … 5 more (watchtower workbench check --workbench 3)", lines[len(lines)-1])

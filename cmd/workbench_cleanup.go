@@ -46,7 +46,7 @@ var workbenchCleanupFlags cleanupFlags
 func init() {
 	c := workbenchCleanupCmd
 	f := &workbenchCleanupFlags
-	addWorkbenchIDFlag(c, &f.workbench, "workbench id: required with --sweep; the session must belong to it")
+	c.Flags().Int64Var(&f.workbench, workbenchFlag, 0, "workbench id: required with --sweep; the session must belong to it")
 	fs := c.Flags()
 	fs.Int64Var(&f.session, "session", 0, "terminal session id (default $"+terminalSessionEnv+")")
 	fs.BoolVar(&f.sweep, "sweep", false, "list every worktree and branch of the workbench repository")
@@ -74,9 +74,6 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 }
 
 func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return usageError("%v", err)
-	}
 	f := workbenchCleanupFlags
 	req, err := cleanupRequest(f, cmd.Flags().Changed("session"), os.LookupEnv)
 	if err != nil {

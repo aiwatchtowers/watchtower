@@ -42,7 +42,7 @@ var (
 func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewDiffCmd, workbenchReviewFileCmd,
 		workbenchReviewSendCmd, workbenchReviewContextCmd} {
-		addWorkbenchIDFlag(c, &reviewFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 		workbenchReviewCmd.AddCommand(c)
 	}
@@ -91,10 +91,7 @@ type reviewEnvelope struct {
 
 // reviewTarget resolves --workbench to its row and an open DB; a bad id or a
 // missing workbench is a command error (non-zero exit).
-func reviewTarget(cmd *cobra.Command) (*db.DB, *db.Workbench, error) {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return nil, nil, err
-	}
+func reviewTarget() (*db.DB, *db.Workbench, error) {
 	if reviewFlagWorkbench <= 0 {
 		return nil, nil, fmt.Errorf("--workbench is required")
 	}
@@ -183,7 +180,7 @@ func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessio
 }
 
 func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}
@@ -268,7 +265,7 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 }
 
 func loadRound(cmd *cobra.Command) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -329,7 +326,7 @@ func runWorkbenchReviewFile(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}

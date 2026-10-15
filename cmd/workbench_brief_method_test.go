@@ -31,7 +31,7 @@ func TestRenderSessionBrief_GoldenFolderRules(t *testing.T) {
 	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardSoft}, f)
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
 
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), briefRules,
 		briefMethodSection(e, ""), "")
 
 	assert.Equal(t, briefGoldenFolderRules, out)
@@ -87,7 +87,7 @@ func TestBriefMethodSection_CapsHold(t *testing.T) {
 	for i := 1; i <= 200; i++ {
 		board = append(board, briefNode(i, "todo", strings.Repeat("Implement the next part of the plan ", 8)))
 	}
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), briefRules,
 		section, "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3")
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.Contains(t, out, body, "the board never cuts the folder rules")
@@ -169,7 +169,7 @@ func TestBriefRulesFor_PresetNoneDropsTheMethodologyClauses(t *testing.T) {
 		assert.NotContains(t, rules, dropped)
 	}
 
-	out := renderSessionBrief(nil, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary,
+	out := renderSessionBrief(nil, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(),
 		briefRulesFor(workbenchmethod.PresetNone), "", "")
 	assert.True(t, strings.HasSuffix(out, rules))
 	assert.NotContains(t, out, "in_review")

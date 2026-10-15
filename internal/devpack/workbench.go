@@ -122,8 +122,9 @@ type WorkbenchInstallReport struct {
 }
 
 // WorkbenchStatus is what is installed in a workbench folder right now.
-// Hook, StopHook and MCP count the pre-rename entries too — a folder not yet
-// resynced keeps working through them (spec 2026-10-02 §5.2). Legacy is set
+// Hook, StopHook and MCP count the pre-rename entries too (spec 2026-10-02
+// §5.2), although they no longer run since the legacy aliases were removed
+// (§10): Legacy tells such a folder apart. Legacy is set
 // while anything a resync would migrate is still there: the old
 // registration, an old hook command, or the old skill as we shipped it.
 // LegacySkill is the old skill's state: StateMissing, StateUnchanged (ours,
@@ -254,8 +255,9 @@ func mcpRemoveCommand(o WorkbenchInstallOptions, server string) string {
 // touched (PROJ-04). The registration goes first because the new skill and
 // hooks name tools only the new server serves: when it cannot be registered
 // (a failed `mcp add`, no claude CLI), a pre-rename folder is left entirely
-// on its old skill, hooks and registration — one vocabulary, still working
-// through the legacy aliases — rather than half-migrated, and the error says
+// on its old skill, hooks and registration — one vocabulary, which no longer
+// runs since the legacy aliases were removed (spec §10), but which the next
+// install migrates whole — rather than half-migrated, and the error says
 // so (the report's LegacySkill is then StateUnchanged when the old skill is
 // there).
 func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchInstallReport, error) {
@@ -338,8 +340,8 @@ func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallRepor
 // was therefore left on its old setup (InstallWorkbench).
 func keptLegacySetup(regErr error) error {
 	return fmt.Errorf("%w — this folder was set up before the Workbench rename and was left on that setup "+
-		"(the old %s skill, hooks and MCP registration kept; nothing of the new setup installed), so it keeps working; "+
-		"run the setup again once the %s registration can succeed",
+		"(the old %s skill, hooks and MCP registration kept; nothing of the new setup installed), which no longer runs "+
+		"with this Watchtower; run the setup again once the %s registration can succeed",
 		regErr, LegacySkillName, WorkbenchMCPServerName)
 }
 
@@ -566,7 +568,7 @@ func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacy
 		return false, false, err
 	case err != nil:
 		if kept, _ := mcpRegistered(ctx, o, LegacyMCPServerName); kept {
-			err = fmt.Errorf("%w (the old %s registration was kept, so this folder keeps working until the registration succeeds)",
+			err = fmt.Errorf("%w (the old %s registration was kept; it no longer runs with this Watchtower, so run the setup again once the registration can succeed)",
 				err, LegacyMCPServerName)
 		}
 		return false, false, err
