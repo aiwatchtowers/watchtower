@@ -267,6 +267,46 @@ func TestRunner_PlanGateClearsWaitingBeforeFailedProcess(t *testing.T) {
 	assert.Equal(t, "", st.rows[0].Waiting)
 }
 
+// F6: waiting=plan_limit means "the plan gate holds this row"; a row that is
+// paused, has no source wired, or whose fetch failed never reached the gate,
+// so it must not keep claiming that.
+func TestRunner_WaitingClearedWhenTheGateIsNotWhatHolds(t *testing.T) {
+	waitingRow := func(id int64, kind string) db.HistoryBackfill {
+		r := running(id, kind, id, 30*day, 0)
+		r.Waiting = "plan_limit"
+		return r
+	}
+	t.Run("revoked", func(t *testing.T) {
+		st := &fakeStore{rows: []db.HistoryBackfill{waitingRow(1, "gmail")}}
+		r := newRunner(st, &fakeSource{kind: "gmail", id: 1})
+		r.Account = func(string, int64) AccountState { return AccountRevoked }
+		require.NoError(t, r.Step(context.Background()))
+		assert.Equal(t, "paused", st.rows[0].Status)
+		assert.Equal(t, "", st.rows[0].Waiting)
+	})
+	t.Run("already paused", func(t *testing.T) {
+		row := waitingRow(1, "gmail")
+		row.Status = "paused"
+		st := &fakeStore{rows: []db.HistoryBackfill{row}}
+		r := newRunner(st, &fakeSource{kind: "gmail", id: 1})
+		r.Account = func(string, int64) AccountState { return AccountRevoked }
+		require.NoError(t, r.Step(context.Background()))
+		assert.Equal(t, "", st.rows[0].Waiting)
+	})
+	t.Run("no source", func(t *testing.T) {
+		st := &fakeStore{rows: []db.HistoryBackfill{waitingRow(1, "imap")}}
+		require.NoError(t, newRunner(st).Step(context.Background()))
+		assert.Equal(t, "", st.rows[0].Waiting)
+	})
+	t.Run("fetch fails", func(t *testing.T) {
+		st := &fakeStore{rows: []db.HistoryBackfill{waitingRow(1, "imap")}}
+		src := &fakeSource{kind: "imap", id: 1, fetchErr: errors.New("net")}
+		require.NoError(t, newRunner(st, src).Step(context.Background()))
+		assert.Equal(t, 1, st.rows[0].ChunkFailures)
+		assert.Equal(t, "", st.rows[0].Waiting)
+	})
+}
+
 func TestRunner_IncompleteProcessHolds(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)}}
 	a := &fakeSource{kind: "slack", id: 1, incomplete: true}

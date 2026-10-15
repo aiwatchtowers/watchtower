@@ -108,9 +108,11 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 		return false, r.setStatus(row, "off")
 	case AccountRevoked:
 		if row.Status != "paused" {
-			return false, r.setStatus(row, "paused")
+			if err := r.setStatus(row, "paused"); err != nil {
+				return false, err
+			}
 		}
-		return false, nil
+		return false, r.clearWaiting(row)
 	case AccountOK:
 	}
 	if row.Status == "paused" {
@@ -121,7 +123,8 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 
 	src := r.source(row.SourceKind, row.AccountID)
 	if src == nil {
-		return false, nil // feature off or wiring failed: wait for a later cycle
+		// Feature off or wiring failed: wait for a later cycle.
+		return false, r.clearWaiting(row)
 	}
 
 	fromTS, toTS, ok := NextChunk(row.ReachedTS, row.FloorTS)
@@ -131,6 +134,9 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 	from, to := unixTime(fromTS), unixTime(toTS)
 
 	if err := src.Fetch(bctx, from, to); err != nil {
+		if cErr := r.clearWaiting(row); cErr != nil {
+			return true, cErr
+		}
 		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("fetch: %w", err))
 	}
 
@@ -144,11 +150,8 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 		}
 		return true, nil
 	}
-	if row.Waiting != "" {
-		if err := r.Store.SetHistoryBackfillWaiting(row.ID, "", r.Now()); err != nil {
-			return true, err
-		}
-		row.Waiting = ""
+	if err := r.clearWaiting(row); err != nil {
+		return true, err
 	}
 
 	complete, err := src.Process(bctx, from, to)
@@ -213,6 +216,20 @@ func (r *Runner) advance(row *db.HistoryBackfill, reachedTS float64) error {
 	if reachedTS <= row.FloorTS {
 		row.Status = "done"
 	}
+	return nil
+}
+
+// clearWaiting drops waiting=plan_limit. It means "the plan gate holds this
+// row" and is only true while the gate holds it: a row that passed the gate,
+// is paused, has no source wired or failed its fetch clears it (F6).
+func (r *Runner) clearWaiting(row *db.HistoryBackfill) error {
+	if row.Waiting == "" {
+		return nil
+	}
+	if err := r.Store.SetHistoryBackfillWaiting(row.ID, "", r.Now()); err != nil {
+		return err
+	}
+	row.Waiting = ""
 	return nil
 }
 
