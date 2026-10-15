@@ -15,7 +15,8 @@ final class PlanUsageCenter {
 
     private(set) var status: PlanUsageStatus?
     private(set) var isRefreshing = false
-    /// After every successful read; the notifier hooks in here.
+    /// After every successful read, not only when the status changed, so a
+    /// consumer (the notifier) dedupes itself.
     @ObservationIgnored var onStatus: ((PlanUsageStatus) -> Void)?
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -33,7 +34,8 @@ final class PlanUsageCenter {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.reload()
+                guard let self else { return }
+                await self.reload()
                 try? await Task.sleep(for: Self.pollInterval)
             }
         }
@@ -47,6 +49,8 @@ final class PlanUsageCenter {
     func reload() async {
         do {
             let fresh = try await dbPool.read { try PlanUsageQueries.status($0) }
+            // Stopped while the read ran: drop the result.
+            guard !Task.isCancelled else { return }
             status = fresh
             if let fresh { onStatus?(fresh) }
         } catch {

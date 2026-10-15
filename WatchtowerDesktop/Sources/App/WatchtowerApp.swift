@@ -532,35 +532,36 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .environment(\.dictationCenter, appState.dictationCenter)
         } label: {
+            let usageText = appState.planUsageCenter?.menuBarLabel(showText: showPlanUsageInMenuBar)
             HStack(spacing: 4) {
                 Image(nsImage: Self.trayIcon)
-                if let text = appState.planUsageCenter?.menuBarLabel(showText: showPlanUsageInMenuBar) {
-                    Text(text).monospacedDigit()
+                if let usageText {
+                    Text(usageText).monospacedDigit()
                 }
             }
-            .accessibilityLabel("Watchtower")
-                // The tray label is always mounted — window-independent — so
-                // a login launch that never mounts `rootContent` still wires
-                // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
-                // with rootContent's own assignment.
-                .onAppear {
-                    appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
-                    appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
-                    appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
-                    appState.openSettingsWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        openSettings()
-                    }
-                    appState.voiceRegistryCenter.openWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        appState.openVoicesWindow?()
-                    }
-                    appState.updateService.presentUpdateWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        openWindow(id: UpdateAvailableView.sceneID)
-                        return true
-                    }
+            .accessibilityLabel(usageText.map { "Watchtower, \($0)" } ?? "Watchtower")
+            // The tray label is always mounted — window-independent — so
+            // a login launch that never mounts `rootContent` still wires
+            // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
+            // with rootContent's own assignment.
+            .onAppear {
+                appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
+                appState.openSettingsWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openSettings()
                 }
+                appState.voiceRegistryCenter.openWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    appState.openVoicesWindow?()
+                }
+                appState.updateService.presentUpdateWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openWindow(id: UpdateAvailableView.sceneID)
+                    return true
+                }
+            }
         }
     }
 }

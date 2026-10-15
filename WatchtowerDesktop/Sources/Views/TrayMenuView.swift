@@ -140,10 +140,9 @@ struct TrayMenuContent: View {
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
             }
-            if !planUsageLines.isEmpty {
-                Button(action: planUsageAction) {
-                    ForEach(planUsageLines, id: \.self) { Text($0).font(.caption) }
-                }
+            // One item per line: an NSMenu item carries a single title.
+            ForEach(Array(planUsageLines.enumerated()), id: \.offset) { _, line in
+                Button(line, action: planUsageAction)
             }
             ForEach(modelDownloads) { download in
                 Text(Self.modelDownloadText(download))
