@@ -180,7 +180,7 @@ final class HomeCenterTests: XCTestCase {
         environment.firstSync = line
         await waitUntil(center) { $0?.firstSync == line }
         environment.allowedTodayCards = [.agentsWaiting]
-        await waitUntil(center) { $0?.today == [] }
+        await waitUntil(center) { $0?.today.isEmpty == true }
         XCTAssertEqual(center.todayReads, reads)
     }
 
