@@ -30,8 +30,8 @@ func TestRenderSessionBrief_GoldenFolderRules(t *testing.T) {
 	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardSoft}, f)
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
 
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary,
-		briefMethodSection(e), "")
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
+		briefMethodSection(e, ""), "")
 
 	assert.Equal(t, briefGoldenFolderRules, out)
 }
@@ -68,7 +68,7 @@ func TestBriefMethodSection_Lines(t *testing.T) {
 		{"finish check off only", workbenchmethod.Combine(db.WorkbenchMethodology{FinishCheck: workbenchmethod.FinishOff}, workbenchmethod.File{}),
 			"Checks: finish check off (personal)."},
 	} {
-		assert.Equal(t, tc.want, briefMethodSection(tc.e), tc.name)
+		assert.Equal(t, tc.want, briefMethodSection(tc.e, ""), tc.name)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestBriefMethodSection_CapsHold(t *testing.T) {
 	body := strings.Repeat("я", briefFolderRulesInline)
 	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff},
 		methodFile(body))
-	section := briefMethodSection(e)
+	section := briefMethodSection(e, "")
 	assert.LessOrEqual(t, utf8.RuneCountInString(section), briefMethodChars)
 	assert.Contains(t, section, body, "1200 runes and the Checks line fit inline")
 
@@ -86,7 +86,7 @@ func TestBriefMethodSection_CapsHold(t *testing.T) {
 	for i := 1; i <= 200; i++ {
 		board = append(board, briefNode(i, "todo", strings.Repeat("Implement the next part of the plan ", 8)))
 	}
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary,
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules,
 		section, "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3")
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.Contains(t, out, body, "the board never cuts the folder rules")
@@ -116,4 +116,53 @@ func TestWorkbenchBrief_FolderRulesFromTheSessionsFolder(t *testing.T) {
 	out, _ = runBriefHook(t, pid, "")
 	assert.Contains(t, out, "Worktree rules.")
 	assert.NotContains(t, out, "Main folder rules.")
+}
+
+// The mismatch line shares the 1400-rune slot: with it, a 1200-rune body
+// no longer fits inline and becomes the pointer.
+func TestBriefMethodSection_MismatchStaysWithinTheSlot(t *testing.T) {
+	body := strings.Repeat("я", briefFolderRulesInline)
+	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff},
+		methodFile(body))
+	const mismatch = "Methodology preset: none is set, but watchtower-flow is still installed — run 'watchtower workbench resync 7'."
+
+	section := briefMethodSection(e, mismatch)
+
+	assert.LessOrEqual(t, utf8.RuneCountInString(section), briefMethodChars)
+	assert.Contains(t, section, mismatch)
+	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars) — read it before you start working.")
+}
+
+// F15: with the preset none the fixed board rules drop the review step and
+// the comment convention (watchtower-flow's), keeping the status, ask_owner
+// and plain-text question clauses; watchtower-flow keeps today's sentence.
+func TestBriefRulesFor_PresetNoneDropsTheMethodologyClauses(t *testing.T) {
+	assert.Equal(t, briefRules, briefRulesFor(workbenchmethod.PresetFlow))
+	rules := strings.Join(briefRulesFor(workbenchmethod.PresetNone), "\n")
+	for _, kept := range []string{"in_progress (update_target)", "done", "ask_owner", "plain text"} {
+		assert.Contains(t, rules, kept)
+	}
+	for _, dropped := range []string{"in_review", "comments are for blockers and done summaries"} {
+		assert.NotContains(t, rules, dropped)
+	}
+
+	out := renderSessionBrief(nil, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary,
+		briefRulesFor(workbenchmethod.PresetNone), "", "")
+	assert.True(t, strings.HasSuffix(out, rules))
+	assert.NotContains(t, out, "in_review")
+}
+
+// F15 through the hook: the owner's preset none reaches the brief's rules.
+func TestWorkbenchBrief_PresetNoneRules(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	unsetTerminalEnv(t)
+	out, _ := runBriefHook(t, pid, "")
+	assert.Contains(t, out, briefRules[0])
+
+	require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{Preset: workbenchmethod.PresetNone}))
+	out, _ = runBriefHook(t, pid, "")
+	assert.Contains(t, out, briefRulesNoPreset[0])
+	assert.NotContains(t, out, "in_review")
 }

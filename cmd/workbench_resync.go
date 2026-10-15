@@ -47,6 +47,13 @@ type workbenchResyncJSON struct {
 	IntegrationOK    bool   `json:"integration_ok"`
 	IntegrationError string `json:"integration_error"`
 	Skill            string `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign; "" = not installed
+	// Flow is the watchtower-flow preset's devpack state (spec 2026-10-15
+	// §4.3): installed, updated, unchanged, removed (preset none), drifted
+	// or foreign (kept), missing (beside a single-file core); "" = not
+	// reached. SingleFileLayout: the core is an owner-edited pre-v9 single
+	// file, kept with no preset. Both additive.
+	Flow             string `json:"flow"`
+	SingleFileLayout bool   `json:"single_file_layout"`
 	HooksAdded       bool   `json:"hooks_added"`
 	// CleanupPermissionAdded: the cleanup allow rule was added or repaired
 	// (session cleanup §10); reported apart from hooks_added. Additive.
@@ -93,6 +100,7 @@ type resyncCodexJSON struct {
 	Error             string `json:"error"`
 	Found             bool   `json:"found"`
 	Skill             string `json:"skill"`
+	Flow              string `json:"flow"`
 	HooksTrusted      *bool  `json:"hooks_trusted"`
 	DuplicatesRemoved bool   `json:"duplicates_removed"`
 }
@@ -160,6 +168,9 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 	if note := legacyPermissionNote(res.install); note != "" {
 		suggestions = append(suggestions, note)
 	}
+	if res.SingleFileLayout {
+		suggestions = append(suggestions, singleFileLayoutNote)
+	}
 	res.Suggestions = suggestions
 	if err != nil {
 		res.SuggestionsError = err.Error()
@@ -169,13 +180,15 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 }
 
 func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
-	o, err := workbenchInstallOptions(p)
+	o, err := workbenchSetupOptions(p)
 	if err != nil {
 		return err
 	}
 	rep, err := devpack.InstallWorkbench(ctx, o)
 	res.install = rep
 	res.Skill = string(rep.Skill.State)
+	res.Flow = string(rep.Flow.State)
+	res.SingleFileLayout = rep.SingleFileLayout
 	res.HooksAdded = rep.HookChanged
 	res.CleanupPermissionAdded = rep.CleanupPermissionChanged
 	if rep.Excluded != nil {
@@ -200,7 +213,7 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	if !isExistingDir(p.FolderPath) {
 		return nil
 	}
-	o, err := workbenchInstallOptions(p)
+	o, err := workbenchSetupOptions(p)
 	if err != nil {
 		return err
 	}
@@ -224,8 +237,9 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))
 	err = errors.Join(cfgErr, err)
 	res.codex, res.codexErr = st, err
-	res.Codex = &resyncCodexJSON{OK: err == nil, Found: st.Found, Skill: string(st.SkillState),
+	res.Codex = &resyncCodexJSON{OK: err == nil, Found: st.Found, Skill: string(st.SkillState), Flow: string(st.FlowState),
 		HooksTrusted: st.HooksTrusted, DuplicatesRemoved: st.DuplicatesRemoved}
+	res.SingleFileLayout = res.SingleFileLayout || st.SingleFileLayout
 	if err != nil {
 		res.Codex.Error = err.Error()
 	}

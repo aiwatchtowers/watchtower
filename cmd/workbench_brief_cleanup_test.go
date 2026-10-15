@@ -67,7 +67,7 @@ func TestRenderSessionBrief_CleanupLineSurvivesAFullBoard(t *testing.T) {
 		board = append(board, briefNode(i, "todo", long))
 	}
 	const line = "Cleanup: /usr/local/bin/watchtower workbench cleanup --session 3"
-	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, "", line)
+	out := renderSessionBrief(board, briefWorkbench(), nil, workbenchcheck.Report{}, nil, nil, time.Now(), workbenchVocabulary, briefRules, "", line)
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.True(t, strings.HasSuffix(out, "\n"+line), "the line closes the brief, after the rules")
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchmethod"
 )
 
@@ -158,6 +159,7 @@ func methodologyChanges(cmd *cobra.Command) (map[string]string, error) {
 func applyWorkbenchMethodology(database *db.DB, p *db.Workbench, changes map[string]string, createFile bool) (workbenchMethodologyJSON, error) {
 	res := workbenchMethodologyJSON{ID: p.ID, OK: true, InstallOK: true}
 	var errs []error
+	before := workbenchmethod.Resolve(database, p.ID, p.FolderPath).Preset
 	if len(changes) > 0 {
 		if err := writeMethodology(database, p.ID, changes); err != nil {
 			res.OK, res.Error = false, err.Error()
@@ -177,8 +179,30 @@ func applyWorkbenchMethodology(database *db.DB, p *db.Workbench, changes map[str
 		res.OK, res.Error = false, err.Error()
 		return res, errors.Join(append(errs, err)...)
 	}
-	fillMethodology(&res, personal, workbenchmethod.Combine(personal, workbenchmethod.ReadFile(p.FolderPath)))
+	e := workbenchmethod.Combine(personal, workbenchmethod.ReadFile(p.FolderPath))
+	fillMethodology(&res, personal, e)
+	if e.Preset != before {
+		res.InstallRan = true
+		if err := syncWorkbenchMethodology(p, e.Preset); err != nil {
+			res.InstallOK, res.InstallError = false, err.Error()
+			errs = append(errs, fmt.Errorf("updating the folder's skills: %w", err))
+		}
+	}
 	return res, errors.Join(errs...)
+}
+
+// syncWorkbenchMethodology is the install a preset change runs (spec §8):
+// the watchtower-flow preset written or removed beside each core skill copy
+// in the workbench folder, nothing else touched. Session worktrees take the
+// setting on their next install.
+func syncWorkbenchMethodology(p *db.Workbench, preset string) error {
+	o, err := workbenchInstallOptions(p)
+	if err != nil {
+		return err
+	}
+	o.PresetNone = preset == workbenchmethod.PresetNone
+	_, err = devpack.SyncMethodology(o)
+	return err
 }
 
 // writeMethodology applies changes over the stored settings.
