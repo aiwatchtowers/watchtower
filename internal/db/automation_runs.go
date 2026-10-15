@@ -810,18 +810,6 @@ func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string)
 	return int(n), nil
 }
 
-// AutomationTokensBetween sums input+output tokens of the runs whose
-// started_at is in [from, to) — the caller passes the local day's bounds.
-func (db *DB) AutomationTokensBetween(from, to time.Time) (int64, error) {
-	var n int64
-	err := db.QueryRow(`SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM automation_runs
-		WHERE started_at >= ? AND started_at < ?`, formatAutomationTime(from), formatAutomationTime(to)).Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("summing automation tokens: %w", err)
-	}
-	return n, nil
-}
-
 // AutomationRunStep is one row of automation_run_steps (one SDK call).
 type AutomationRunStep struct {
 	ID, RunID                  int64
