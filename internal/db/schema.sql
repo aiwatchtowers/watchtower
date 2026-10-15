@@ -2521,3 +2521,13 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
 );
+
+-- The owner's per-(automation, tool) auto grant (00116, Automations P2). Active
+-- only while grant_hash = automations.approval_hash = the run's recipe_hash.
+CREATE TABLE IF NOT EXISTS automation_tool_grants (
+    automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    tool          TEXT NOT NULL,
+    grant_hash    TEXT NOT NULL,                             -- approval_hash the owner granted
+    granted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (automation_id, tool)
+);

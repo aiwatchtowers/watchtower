@@ -35,7 +35,7 @@ P1 ships the core: recipe + manifest parser and hashes, the goja sandbox with th
 
 ## Data model (00113)
 
-`automations` (index), `automation_runs` (queue + history; `recipe_hash`/`recipe_snapshot`/budgets snapshotted at claim; `event_json` = `''` or the `db.AutomationEventPayload` shape `{"cycles","events" ≤ 100,"count","truncated"}`), `automation_run_steps` (journal, dense `seq`), `automation_state`, `automation_outputs` (`inbox`, `briefing`, `report`). Unique `(scope, COALESCE(project_id,0), slug)`, partial unique `(automation_id, trigger) WHERE status='queued'` (coalescing), unique `(automation_id, event_cycle)`. P2 adds 00114 (`automation_tool_grants`), P5 00115.
+`automations` (index), `automation_runs` (queue + history; `recipe_hash`/`recipe_snapshot`/budgets snapshotted at claim; `event_json` = `''` or the `db.AutomationEventPayload` shape `{"cycles","events" ≤ 100,"count","truncated"}`), `automation_run_steps` (journal, dense `seq`), `automation_state`, `automation_outputs` (`inbox`, `briefing`, `report`). Unique `(scope, COALESCE(project_id,0), slug)`, partial unique `(automation_id, trigger) WHERE status='queued'` (coalescing), unique `(automation_id, event_cycle)`. P2 adds 00116 (`automation_tool_grants`), P5 00117.
 
 ## Scheduler, executor, wake
 
@@ -106,9 +106,9 @@ Swift reads the automation tables through GRDB only from P3 (`AutomationQueries`
 
 ## P2–P6 pending
 
-- **P2 writes:** `automation` surface on the §6.1 write tools, `Binding.AutomationRunID`/`AutomationAgent`, trust order §6.2, `tool` writes + `{wait}`, `output.target/slack/briefing` + the briefing section, 00114 grants, `automations auto`, the AGENT-03 amendment; flips AUTO-02 (write side) and AUTO-03.
+- **P2 writes:** `automation` surface on the §6.1 write tools, `Binding.AutomationRunID`/`AutomationAgent`, trust order §6.2, `tool` writes + `{wait}`, `output.target/slack/briefing` + the briefing section, 00116 grants, `automations auto`, the AGENT-03 amendment; flips AUTO-02 (write side) and AUTO-03.
 - **P3 authoring + UI:** `create-automation` skill, `draft_automation`/`save_automation`, the Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, Inbox labels and output cards, STRIP-01/AGENT-04 amendments, `validate --against`, `save --expect-content-hash`; flips the `draft_automation` half of AUTO-06.
 - **P3 quick run (ask #295, D27; UI mockups approved 2026-10-15):** "Run Automation…" on its own app-wide shortcut ⌃⌘R (owner ruling: ⌘K is not reused) and the tray's "Run automation ▸" submenu run manual/button recipes through `automations run <id> --json` (confirm-first for `confirm: true`, unconfirmed/disabled/unparsable rows dimmed and never run, feature-off refusal honoured), plus a macOS notice when such a run ends; `show --json` gains `changes`/`changes_known`/`changed_by`/`changed_at` for the confirm sheet's **Changed** block (spec §12.2, §12.7; plan Tasks 5, 10, 14, 15).
 - **P4 events:** bus, publishers in the sync phases, `Flush` per cycle, `where` matching, `db.MergeQueuedAutomationRunEvents`; flips the event half of AUTO-09.
-- **P5 workbench:** workbench scope and rescans, header buttons, `session()`, `shell()`, `ask()`, 00115, `session-launched`/`session-ended`, the PROJ-03 amendment; flips the session/shell half of AUTO-12 and AUTO-13.
+- **P5 workbench:** workbench scope and rescans, header buttons, `session()`, `shell()`, `ask()`, 00117, `session-launched`/`session-ended`, the PROJ-03 amendment; flips the session/shell half of AUTO-12 and AUTO-13.
 - **P6:** `mcp()`, `agent()`, templates + gallery (`templates`, `install-template`), the QC-02 amendment.

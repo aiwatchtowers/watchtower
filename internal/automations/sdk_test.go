@@ -396,14 +396,6 @@ func TestTool_NullResultIsNull(t *testing.T) {
 	mustReturn(t, `return String(tool("list_targets") === null)`, sdkCase{perms: []string{"targets:read"}, reg: reg}, "true")
 }
 
-func TestTool_WriteNotAvailableInP1(t *testing.T) {
-	r := mustReturn(t, `try { tool("create_target", {title: "x"}); return "called" } catch (e) { return e.name }`,
-		sdkCase{perms: []string{"tool:create_target"}}, "NotAvailable")
-	if p := r.reg.ProposedCalls(); len(p) != 0 {
-		t.Fatalf("proposals = %+v; want none", p)
-	}
-}
-
 func TestTool_BadCallsAreValidationErrors(t *testing.T) {
 	for _, call := range []string{`tool(1)`, `tool("list_targets", [1])`, `tool("no_such_tool", {})`} {
 		t.Run(call, func(t *testing.T) {

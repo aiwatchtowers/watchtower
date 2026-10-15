@@ -17,11 +17,12 @@ const (
 )
 
 // DefaultModules is the SDK every run gets, in install order: llm, tool,
-// state, output, log. Later phases append their modules here (a later
-// Define of the same path replaces the earlier one) and register further
-// output kinds on the *OutputMod with closures over b.
+// state, output, log, then the P2 tool with writes (ToolWriteModule replaces
+// P1's tool path: a later Define of the same path replaces the earlier one).
+// Later phases append their modules here and register further output kinds
+// on the *OutputMod with closures over b.
 func DefaultModules(b Backends) []Module {
-	return []Module{LLMModule(b), ToolModule(b), StateModule(), OutputModule(), LogModule()}
+	return []Module{LLMModule(b), ToolModule(b), StateModule(), OutputModule(), LogModule(), ToolWriteModule(b)}
 }
 
 // sdkModule is a Module defining a fixed set of paths.

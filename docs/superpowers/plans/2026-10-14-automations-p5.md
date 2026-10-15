@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Workbench automations: recipes in `<folder>/.watchtower/automations/` with hash trust, `trigger: button` automations as buttons in the workbench header, a visible `session()` (the Desktop opens a normal workbench session; with the app closed the run waits — `WaitApp` → `WaitSession`), `ask()` for workbench automations only (D7) on migration 00115, `shell(cmd)` with exact commands and refused in privacy-protected folders (D9), the run marker on every child, and the PR-review (comments through `session()`, D13) and Release / Deploy recipes working end to end.
+**Goal:** Workbench automations: recipes in `<folder>/.watchtower/automations/` with hash trust, `trigger: button` automations as buttons in the workbench header, a visible `session()` (the Desktop opens a normal workbench session; with the app closed the run waits — `WaitApp` → `WaitSession`), `ask()` for workbench automations only (D7) on migration 00117, `shell(cmd)` with exact commands and refused in privacy-protected folders (D9), the run marker on every child, and the PR-review (comments through `session()`, D13) and Release / Deploy recipes working end to end.
 
 **Architecture:** The daemon's scheduler also indexes unprotected workbench folders (P1's `Indexer.RescanFolder` with `ScopeWorkbench`); the Desktop runs `automations rescan --workbench N` for every workbench page it opens and on folder-watcher changes under `.watchtower/automations/`, so protected folders are indexed without the daemon touching them. Three new SDK modules join `DefaultModules`: `ShellModule` (a `/bin/sh -c` child in its own process group, exact-match only), `SessionModule` (writes a `waiting` session step; the Desktop's `AutomationSessionCenter` launches a normal session and attaches it through the CLI; the executor's `Waiter` resumes the run on Finished / Error / Stopped / deleted) and `AskModule` (an `owner_asks` row with `automation_run_id`, delivered back to the run, never into a terminal). The header buttons read the P3 `AutomationsViewModel` and only queue runs through `automations run`.
 
-**Tech Stack:** Go 1.26 (goose migration 00115, `os/exec` with `Setpgid`, the P1 `internal/automations` seams), SwiftUI + GRDB (`TerminalCenter`, `WorkbenchesViewModel`, `OwnerAsksViewModel`, `FolderWatcher`, `TerminalLaunch`).
+**Tech Stack:** Go 1.26 (goose migration 00117, `os/exec` with `Setpgid`, the P1 `internal/automations` seams), SwiftUI + GRDB (`TerminalCenter`, `WorkbenchesViewModel`, `OwnerAsksViewModel`, `FolderWatcher`, `TerminalLaunch`).
 
 **Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` §2.1, §2.4–2.5, §3.1, §5 (`ask`, `session`, `shell`), §7.6, §9.5, §12.4, §13, §14.1 (AUTO-09, AUTO-12, AUTO-13), §15 (templates 2 and 5), §17 (P5 row), §18 (P5 tests), §20 (D7, D9, D13, D15), §14.6 (PROJ-03 amendment), §20.1 (D16, D17, D19 — asks #271, #272). P1 seams: `docs/superpowers/plans/2026-10-14-automations-p1.md` § "Seams for later phases". P3 plan: `docs/superpowers/plans/2026-10-14-automations-p3.md`.
 
@@ -38,7 +38,7 @@
   - `ask({kind, title, summary?, questions?, checklist?})`: permission `ask:owner`; workbench only (D7; personal declaring `ask:owner` fails validation); `owner_asks` row with `session_id` NULL, `automation_run_id` set, `origin='agent'`, level by `asks.Level`; waits `ask`; `answered` → `delivered` and the answer JSON returned; Cancel/expiry → withdrawn with `withdrawn_reason='agent'`; `owner_asks.project_id` stays NOT NULL.
   - Header: one button per workbench automation with `trigger.button`, slug order, max 4 visible + overflow menu; `confirm: true` → confirmation dialog; active run → spinner, click opens the run; not runnable → disabled with "Needs your confirmation" (click opens the confirm sheet).
   - Env marker `WATCHTOWER_AUTOMATION_RUN_ID` on every `shell()` and `session()` child (AGENT-07 already refuses approvals under it).
-  - Migration **00115** exactly as §9.5 (two `ALTER TABLE … ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`); renumber if `main` took it, verify by column presence.
+  - Migration **00117** exactly as §9.5 (two `ALTER TABLE … ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`); renumber if `main` took it, verify by column presence.
 
 ## Review Focus
 
@@ -55,7 +55,7 @@
 
 | Path | Responsibility |
 |---|---|
-| `internal/db/migrations/00115_automation_workbench.sql`, `internal/db/schema.sql`, golden + Swift test schema | 00115 |
+| `internal/db/migrations/00117_automation_workbench.sql`, `internal/db/schema.sql`, golden + Swift test schema | 00117 |
 | `internal/db/owner_asks.go`, `internal/db/terminal_sessions.go`, `internal/db/automation_runs.go` | new columns, session-step helpers, ask exclusions |
 | `internal/fsutil/privacy.go` (+ `internal/kb/source_workbench.go`) | `PrivacyProtected`, moved from `kb` |
 | `internal/automations/workbench.go` | `NewWorkbenchResolver` (the interface is P1's), scheduler workbench rescan |
@@ -72,10 +72,10 @@
 
 ---
 
-### Task 1: Migration 00115 and the Go/Swift row fields
+### Task 1: Migration 00117 and the Go/Swift row fields
 
 **Files:**
-- Create: `internal/db/migrations/00115_automation_workbench.sql`, `internal/db/automation_workbench_migration_test.go`
+- Create: `internal/db/migrations/00117_automation_workbench.sql`, `internal/db/automation_workbench_migration_test.go`
 - Modify: `internal/db/schema.sql`, `internal/db/owner_asks.go` (`OwnerAsk.AutomationRunID sql.NullInt64`, insert + scans), `internal/db/terminal_sessions.go` (the Go struct + scans), golden snapshot, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated), `WatchtowerDesktop/Sources/WatchtowerCore/Models/OwnerAsk.swift` (`automationRunID: Int64?`), the Swift `TerminalSession` model (`automationRunID: Int64?`), `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift` (`NewSession.automationRunID: Int64? = nil`, inserted by `create`)
 
 **Interfaces:**
@@ -83,11 +83,11 @@
 - Produces: columns `owner_asks.automation_run_id`, `terminal_sessions.automation_run_id` (`INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`); `db.OwnerAsk.AutomationRunID`; `InsertOwnerAsk` writes it; Swift `TerminalSessionQueries.create` writes it (a dual path: Swift already owns `terminal_sessions` inserts).
 - Depends on: none.
 
-- [ ] **Step 1: Failing tests:** `TestMigration00115_AutomationRunColumns` (columns exist, nullable, deleting the run sets both NULL, Down drops them); `TestInsertOwnerAsk_StoresAutomationRunID`; Swift `TerminalSessionQueriesTests.testCreateStoresAutomationRunID` and `testCreateWithoutRunLeavesNull`; Swift `OwnerAskQueriesTests.testDecodesAutomationRunID`.
-- [ ] **Step 2:** `go test ./internal/db -run 'TestMigration00115|TestInsertOwnerAsk_Stores'`, `make test-swift FILTER='TerminalSessionQueriesTests|OwnerAskQueriesTests'` → FAIL.
+- [ ] **Step 1: Failing tests:** `TestMigration00117_AutomationRunColumns` (columns exist, nullable, deleting the run sets both NULL, Down drops them); `TestInsertOwnerAsk_StoresAutomationRunID`; Swift `TerminalSessionQueriesTests.testCreateStoresAutomationRunID` and `testCreateWithoutRunLeavesNull`; Swift `OwnerAskQueriesTests.testDecodesAutomationRunID`.
+- [ ] **Step 2:** `go test ./internal/db -run 'TestMigration00117|TestInsertOwnerAsk_Stores'`, `make test-swift FILTER='TerminalSessionQueriesTests|OwnerAskQueriesTests'` → FAIL.
 - [ ] **Step 3:** Migration (Up + Down), mirror, fields; `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - [ ] **Step 4:** Step 2 commands and `go test ./internal/db` → PASS.
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): migration 00115 links asks and sessions to runs`.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): migration 00117 links asks and sessions to runs`.
 
 ### Task 2: `fsutil.PrivacyProtected`
 
@@ -377,10 +377,10 @@
 - §2.1 workbench folder and slug; §2.5/AUTO-06 git-pulled recipe needs confirmation → Task 3. §13.4 daemon rescans unprotected folders, the Desktop rescans the rest → Tasks 3, 12. D15 location binding → Task 3 (P1 parser guard referenced).
 - §12.4 header buttons (slug order, 4 + overflow, confirm dialog, spinner/open run, disabled "Needs your confirmation" → confirm sheet) → Task 11.
 - §13.1 `session()` steps 1–4, `WaitApp` → `WaitSession`, resume on Finished/Error/Stopped/deleted, `wait:"none"` → Tasks 5, 9, 10.
-- §13.2 `shell()` (exact, cwd, process group, timeout, 256 KiB tails, oversized output truncated never failing — D19, env, D9) → Task 4. §14.6 PROJ-03 amendment (D17, ask #272) → Tasks 8, 13. §13.3 `ask()` (D7, 00115, delivered, withdrawn on cancel/expiry) → Tasks 1, 6.
-- §9.5 migration 00115 → Task 1. Env marker on `shell()`/`session()` children → Tasks 4, 9.
+- §13.2 `shell()` (exact, cwd, process group, timeout, 256 KiB tails, oversized output truncated never failing — D19, env, D9) → Task 4. §14.6 PROJ-03 amendment (D17, ask #272) → Tasks 8, 13. §13.3 `ask()` (D7, 00117, delivered, withdrawn on cancel/expiry) → Tasks 1, 6.
+- §9.5 migration 00117 → Task 1. Env marker on `shell()`/`session()` children → Tasks 4, 9.
 - §15 templates 2 (D13: comments through the session) and 5 → Task 7 (fixtures; P6 embeds them, header note 5).
-- §18 P5 tests: `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails` (T4); `TestSaveAutomation_WorkbenchWritesIntoItsFolder` (T8); `TestSession_WaitsForAppThenSessionThenFinish` (T5); `TestAsk_WaitsAndDelivers` (T6); `TestAuto12_DryRunStartsNoSessionOrShell` (T7); `TestRescan_WorkbenchRecipeNeedsConfirmation` (T3); migration test for 00115 (T1); `WorkbenchHeaderAutomationButtonsTests` (T11); `AutomationSessionCenterTests` (T10) — all present by those names.
+- §18 P5 tests: `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails` (T4); `TestSaveAutomation_WorkbenchWritesIntoItsFolder` (T8); `TestSession_WaitsForAppThenSessionThenFinish` (T5); `TestAsk_WaitsAndDelivers` (T6); `TestAuto12_DryRunStartsNoSessionOrShell` (T7); `TestRescan_WorkbenchRecipeNeedsConfirmation` (T3); migration test for 00117 (T1); `WorkbenchHeaderAutomationButtonsTests` (T11); `AutomationSessionCenterTests` (T10) — all present by those names.
 - Inventory: AUTO-13 → Enforced (Task 4); AUTO-12 → Enforced in full (Task 7); AUTO-09 gains the Desktop guard (Task 11; its P4 half stays with P4); PROJ-02/12/13 strengthened, PROJ-03 amended — owner-approved in ask #272 (Tasks 6, 8, 13).
 
 ## Rulings made in this plan (mine, not the owner's)

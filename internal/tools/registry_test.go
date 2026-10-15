@@ -717,10 +717,11 @@ func TestSetTrust_RefusesTheWorkbenchSurface(t *testing.T) {
 }
 
 // Trust is a write-tool setting: a read tool never proposes, so SetTrust
-// refuses one, and TrustSurfaces offers it no surface. The automation surface
-// takes no trust either — P1 automations get no grants (P2 adds them), so a
-// tool_trust row there would be a switch nothing reads.
-func TestSetTrust_RefusesReadToolsAndTheAutomationSurface(t *testing.T) {
+// refuses one, and TrustSurfaces offers it no surface — on every surface, the
+// automation surface included. Since Automations P2 the automation surface is
+// a trust place for a write tool on it (spec 2026-10-14-automations-design
+// §6.2 step 4; TestSetTrust_AutomationSurfaceIsATrustPlace).
+func TestSetTrust_RefusesReadToolsAndAcceptsAutomation(t *testing.T) {
 	database := openDB(t)
 	var executed, peeked []Call
 	reg := New(database)
@@ -736,17 +737,46 @@ func TestSetTrust_RefusesReadToolsAndTheAutomationSurface(t *testing.T) {
 		require.ErrorIs(t, err, ErrNotWritable, s)
 		assert.Contains(t, err.Error(), "trust applies only to write tools")
 	}
-	err := reg.SetTrust("echo", AutomationSurface, TrustAsk)
-	require.ErrorIs(t, err, ErrSurfaceNotOffered)
-	assert.Contains(t, err.Error(), "automation surface takes no trust")
 	assert.Empty(t, TrustSurfaces(read), "a read tool has no trust surface")
-	assert.Equal(t, []string{"main"}, TrustSurfaces(write), "the automation surface is no trust place")
+	assert.Equal(t, []string{"main", AutomationSurface}, TrustSurfaces(write), "the automation surface is a trust place since P2")
+	write.Surfaces = []string{"main"}
+	err := reg.SetTrust("echo", AutomationSurface, TrustAsk)
+	require.ErrorIs(t, err, ErrSurfaceNotOffered, "a write tool not on the automation surface takes no trust there")
 
 	var rows int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust WHERE tool IN ('echo', 'peek')`).Scan(&rows))
 	assert.Zero(t, rows, "a refused SetTrust writes no tool_trust row")
 	assert.Empty(t, executed)
 	assert.Empty(t, peeked)
+}
+
+// The automation surface on the real tools (Automations P2, spec 2026-10-14
+// §6.1/§6.2 step 4): a local write tool offered to automations takes execute
+// there, an External one stays refused, and a tool never offered to
+// automations takes no trust there at all.
+func TestSetTrust_AutomationSurface(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	require.NoError(t, reg.Register(NewCreateIdea()))
+	require.NoError(t, reg.Register(NewSendSlackMessage(nil)))
+	require.NoError(t, reg.Register(NewConnectJiraBoard(nil)))
+
+	require.NoError(t, reg.SetTrust("create_idea", "main", TrustAsk))
+	require.NoError(t, reg.SetTrust("create_idea", AutomationSurface, TrustExecute))
+	got, err := reg.Trust("create_idea", AutomationSurface)
+	require.NoError(t, err)
+	assert.Equal(t, TrustExecute, got)
+	main, err := reg.Trust("create_idea", "main")
+	require.NoError(t, err)
+	assert.Equal(t, TrustAsk, main, "an execute on the automation surface never covers the main chat")
+
+	require.ErrorIs(t, reg.SetTrust("send_slack_message", AutomationSurface, TrustExecute), ErrExternalExecute)
+	require.ErrorIs(t, reg.SetTrust("connect_jira_board", AutomationSurface, TrustAsk), ErrSurfaceNotOffered)
+
+	var rows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
+		WHERE tool IN ('send_slack_message', 'connect_jira_board')`).Scan(&rows))
+	assert.Zero(t, rows, "a refused SetTrust writes no tool_trust row")
 }
 
 func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {

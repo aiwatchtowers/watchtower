@@ -221,7 +221,7 @@ func NewAddJiraComment(factory JiraWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[addJiraCommentArgs]("add_jira_comment"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target"},
+		Surfaces:    []string{"main", "target", AutomationSurface},
 		Validate: func(_ context.Context, d *db.DB, raw json.RawMessage) error {
 			var a addJiraCommentArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -296,7 +296,7 @@ func NewTransitionJiraIssue(factory JiraWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[transitionJiraIssueArgs]("transition_jira_issue"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target"},
+		Surfaces:    []string{"main", "target", AutomationSurface},
 		Validate: func(ctx context.Context, d *db.DB, raw json.RawMessage) error {
 			var a transitionJiraIssueArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -481,7 +481,7 @@ func NewAssignJiraIssue(factory JiraWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[assignJiraIssueArgs]("assign_jira_issue"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target"},
+		Surfaces:    []string{"main", "target", AutomationSurface},
 		Validate: func(ctx context.Context, d *db.DB, raw json.RawMessage) error {
 			var a assignJiraIssueArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -624,7 +624,7 @@ func NewUpdateJiraIssue(factory JiraWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[updateJiraIssueArgs]("update_jira_issue"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target"},
+		Surfaces:    []string{"main", "target", AutomationSurface},
 		Validate: func(_ context.Context, d *db.DB, raw json.RawMessage) error {
 			var a updateJiraIssueArgs
 			if err := decodeStrict(raw, &a); err != nil {
