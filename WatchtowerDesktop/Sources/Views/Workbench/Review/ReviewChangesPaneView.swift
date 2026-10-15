@@ -33,7 +33,8 @@ struct ReviewChangesPaneView: View {
             }
             .onDisappear { onScreen = false }
             .onChange(of: agentStateKind) { old, new in
-                if let new, old != new, Self.turnOver.contains(new) { autoRefresh() }
+                // Into a turn-over kind only: .finished → .stopped is the same turn's end.
+                if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
             }
             .sheet(item: $newComment) { draft in
                 ReviewNewCommentSheet(draft: draft) { body in
@@ -89,12 +90,12 @@ struct ReviewChangesPaneView: View {
     }
 
     @ViewBuilder private func diff(path: String) -> some View {
-        if let sides = model.sides {
+        if let sides = model.currentSides {
             if sides.old.binary || sides.new.binary {
                 placeholder("Binary file")
             } else if sides.old.tooLarge || sides.new.tooLarge {
                 VStack(spacing: 8) {
-                    Text("Too large to show — open in Files").foregroundStyle(.secondary)
+                    Text("Too large to show").foregroundStyle(.secondary)
                     if let root = model.round?.folderRoot {
                         Button("Show in Finder") {
                             let url = URL(fileURLWithPath: root).appendingPathComponent(path)
@@ -118,7 +119,7 @@ struct ReviewChangesPaneView: View {
     }
 
     /// The new side's open comments go into the diff, each under its last line.
-    private func payload(path: String, sides: (old: ReviewFileSide, new: ReviewFileSide)) -> MonacoDiffView.Payload {
+    private func payload(path: String, sides: ReviewChangesModel.LoadedSides) -> MonacoDiffView.Payload {
         let shown = model.comments.filter {
             $0.path == path && $0.side == "new" && [.draft, .sent, .carried].contains($0.status)
         }
@@ -149,9 +150,9 @@ struct ReviewChangesPaneView: View {
     }
 
     /// The window became key or the turn ended: re-read an open round on
-    /// screen, never during a Send.
+    /// screen, never during a Send or another refresh.
     private func autoRefresh() {
-        guard onScreen, model.load == .ready, model.round?.status == "open", !model.sending else { return }
+        guard onScreen, model.load == .ready, model.round?.status == "open", !model.sending, !model.refreshing else { return }
         Task { await model.refresh() }
     }
 }

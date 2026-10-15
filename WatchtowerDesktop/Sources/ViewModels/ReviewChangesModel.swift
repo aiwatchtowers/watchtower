@@ -56,8 +56,13 @@ final class ReviewChangesModel {
     private(set) var viewed: [String: String] = [:]
     var selectedPath: String?
     var view: View = .all
-    private(set) var sides: (old: ReviewFileSide, new: ReviewFileSide)?
+    /// The last sides loaded, with the file, tree and view they belong to;
+    /// read `currentSides` to show or anchor on them.
+    private(set) var sides: LoadedSides?
     private(set) var sending = false
+    /// A refresh is running; another one asked for meanwhile runs once after it.
+    private(set) var refreshing = false
+    private var refreshAgain = false
     private(set) var lastSend: SessionLineDelivery.Delivery?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
@@ -80,6 +85,22 @@ final class ReviewChangesModel {
         self.cli = cli
         self.db = db
         self.lineDelivery = lineDelivery
+    }
+
+    /// A file's two sides as `review file` returned them for `path` on `treeSHA` in `view`.
+    struct LoadedSides: Equatable {
+        let path: String
+        let treeSHA: String
+        let view: View
+        let old: ReviewFileSide
+        let new: ReviewFileSide
+    }
+
+    /// The sides of the selected file on the round's current tree and view;
+    /// nil while they load (another file, tree or view picked since).
+    var currentSides: LoadedSides? {
+        guard let sides, sides.path == selectedPath, sides.treeSHA == round?.treeSha, sides.view == view else { return nil }
+        return sides
     }
 
     var draftCount: Int { comments.filter { $0.status == .draft }.count }
@@ -129,9 +150,24 @@ final class ReviewChangesModel {
     }
 
     /// Re-reads the folder's tree: new diff, and this round's drafts and
-    /// carried comments re-placed on it (moved, or outdated when lost).
+    /// carried comments re-placed on it (moved, or outdated when lost). One
+    /// runs at a time: a call while one runs makes exactly one more run after
+    /// it, so the last tree read always wins.
     func refresh() async {
         guard load == .ready, !sending else { return }
+        guard !refreshing else {
+            refreshAgain = true
+            return
+        }
+        refreshing = true
+        defer { refreshing = false }
+        repeat {
+            refreshAgain = false
+            await refreshOnce()
+        } while refreshAgain && load == .ready
+    }
+
+    private func refreshOnce() async {
         lastError = nil
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
@@ -191,7 +227,7 @@ final class ReviewChangesModel {
             guard let info = round else { throw ModelError.noRound }
             // Old-side lines of the since view belong to the previous tree, not to base.
             guard !(side == "old" && view == .sinceLastRound) else { throw ModelError.oldSideInSinceView }
-            guard selectedPath == path, let sides else { throw ModelError.fileNotLoaded(path) }
+            guard selectedPath == path, let sides = currentSides else { throw ModelError.fileNotLoaded(path) }
             let text = side == "old" ? sides.old.text : sides.new.text
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
             _ = try db.write {
@@ -238,9 +274,10 @@ final class ReviewChangesModel {
     // MARK: - Send
 
     /// Sends the round once: Go marks the drafts sent, and only the call that
-    /// did it types the line. A second call while one runs does nothing.
+    /// did it types the line. A second call while one runs does nothing; nor
+    /// does one during a refresh (the drafts may be re-placed).
     func send() async {
-        guard !sending, let info = round else { return }
+        guard !sending, !refreshing, let info = round else { return }
         sending = true
         defer { sending = false }
         lastError = nil
@@ -302,8 +339,8 @@ final class ReviewChangesModel {
         let since = view == .sinceLastRound
         do {
             let loaded = try await fetchSides(path: path, round: info, since: since)
-            guard selectedPath == path, since == (view == .sinceLastRound) else { return }
-            sides = loaded
+            guard selectedPath == path, since == (view == .sinceLastRound), round?.treeSha == info.treeSha else { return }
+            sides = LoadedSides(path: path, treeSHA: info.treeSha, view: view, old: loaded.old, new: loaded.new)
         } catch {
             guard selectedPath == path else { return }
             sides = nil

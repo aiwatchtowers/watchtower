@@ -37,7 +37,7 @@ struct ReviewChangesHeader: View {
                     .toggleStyle(.checkbox)
                     .help("One column instead of side by side")
                 Button("Refresh", action: refresh)
-                    .disabled(model.load != .ready || model.sending)
+                    .disabled(model.load != .ready || model.sending || model.refreshing)
                 Button("Send review (\(model.draftCount))") { Task { await model.send() } }
                     .disabled(!canSend)
                     .help("Send the drafts (and the comments carried from the last round) to the agent")
@@ -52,7 +52,7 @@ struct ReviewChangesHeader: View {
 
     private var canSend: Bool {
         let carried = model.comments.contains { $0.status == .carried }
-        return model.load == .ready && !model.sending && (model.draftCount > 0 || carried)
+        return model.load == .ready && !model.sending && !model.refreshing && (model.draftCount > 0 || carried)
     }
 
     @ViewBuilder private var banners: some View {

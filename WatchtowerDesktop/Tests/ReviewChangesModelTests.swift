@@ -27,6 +27,27 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     var calls: [[String]] { lock.withLock { seen } }
     func calls(_ sub: String) -> [[String]] { calls.filter { $0.count > 2 && $0[2] == sub } }
 
+    // Held subcommands: a call waits (its answer already picked) until `release`.
+    private var holding: Set<String> = []
+    private var held: [String: [CheckedContinuation<Void, Never>]] = [:]
+    func hold(_ sub: String) { lock.withLock { _ = holding.insert(sub) } }
+    func pending(_ sub: String) -> Int { lock.withLock { held[sub]?.count ?? 0 } }
+    func release(_ sub: String) {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            holding.remove(sub)
+            defer { held[sub] = nil }
+            return held[sub] ?? []
+        }
+        waiting.forEach { $0.resume() }
+    }
+
+    /// Waits (bounded) until `count` calls of `sub` are held.
+    func waitPending(_ sub: String, count: Int = 1) async {
+        for _ in 0..<2000 where pending(sub) < count {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
     func run(args: [String]) async throws -> Data {
         let sub = args[2]
         let answer: String = lock.withLock {
@@ -36,6 +57,14 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
             let n = served[key, default: 0]
             served[key] = n + 1
             return list[min(n, list.count - 1)]
+        }
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let wait = lock.withLock { () -> Bool in
+                guard holding.contains(sub) else { return false }
+                held[sub, default: []].append(c)
+                return true
+            }
+            if !wait { c.resume() }
         }
         if sub == "start" { try seedRound(answer) }
         return Data(answer.utf8)
@@ -369,6 +398,83 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.comments.first?.body, "why not?")
         try h.model.deleteComment(id: row.id)
         XCTAssertEqual(h.model.comments, [])
+    }
+
+    func testSwitchingFilesNeverShowsTheOldSidesForTheNewPath() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["a.go", "b.go"])
+        h.cli.script("file", [fileJSON(old: "a\n", new: "a2\n"), fileJSON(old: "b\n", new: "b2\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        XCTAssertEqual(h.model.currentSides?.new.text, "a2\n")
+        h.cli.hold("file")
+        let switching = Task { await h.model.select("b.go") }
+        await h.cli.waitPending("file")
+        XCTAssertEqual(h.model.selectedPath, "b.go")
+        XCTAssertNil(h.model.currentSides, "a.go's text must not show as b.go")
+        XCTAssertThrowsError(try h.model.addComment(path: "b.go", side: "new", startLine: 1, endLine: 1, body: "x")) {
+            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .fileNotLoaded("b.go"))
+        }
+        XCTAssertNotNil(h.model.lastError)
+        let written = try await h.comments()
+        XCTAssertEqual(written, [])
+        h.cli.release("file")
+        await switching.value
+        XCTAssertEqual(h.model.currentSides?.path, "b.go")
+        XCTAssertEqual(h.model.currentSides?.new.text, "b2\n")
+    }
+
+    func testSidesOfTheOldTreeAreNotCurrentDuringARefresh() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("file", [fileJSON(old: "x\n", new: "old\n"), fileJSON(old: "x\n", new: "new\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        h.cli.hold("file")
+        let refresh = Task { await h.model.refresh() }
+        await h.cli.waitPending("file")
+        XCTAssertEqual(h.model.round?.treeSha, "u7")
+        XCTAssertNil(h.model.currentSides)
+        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "x"))
+        h.cli.release("file")
+        await refresh.value
+        XCTAssertEqual(h.model.currentSides?.new.text, "new\n")
+        XCTAssertEqual(h.model.currentSides?.treeSHA, "u7")
+    }
+
+    func testOverlappingRefreshesRunInSequenceAndTheLastTreeWins() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "v")])
+        await h.model.open()
+        h.cli.hold("start")
+        let first = Task { await h.model.refresh() }
+        await h.cli.waitPending("start")
+        XCTAssertTrue(h.model.refreshing)
+        await h.model.refresh()
+        await h.model.refresh()
+        XCTAssertEqual(h.cli.calls("start").count, 2, "the calls made meanwhile start nothing")
+        h.cli.release("start")
+        await first.value
+        XCTAssertEqual(h.cli.calls("start").count, 3, "open, the refresh, and exactly one more")
+        XCTAssertEqual(h.model.round?.treeSha, "v7")
+        XCTAssertFalse(h.model.refreshing)
+    }
+
+    func testSendDuringARefreshTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["send": #"{"ok":true,"sent":true,"comments":1,"line":"review 7"}"#])
+        await h.model.open()
+        h.cli.hold("start")
+        let refresh = Task { await h.model.refresh() }
+        await h.cli.waitPending("start")
+        await h.model.send()
+        XCTAssertEqual(h.cli.calls("send"), [])
+        XCTAssertEqual(h.sink.lines, [])
+        h.cli.release("start")
+        await refresh.value
     }
 
     func testAddCommentOnAFileNotOpenThrows() async throws {
