@@ -4,10 +4,12 @@ import WatchtowerCore
 
 struct UsageView: View {
     @Environment(AppState.self) private var appState
-    @State private var selectedTab: Tab = .progress
+    static let selectedTabKey = "usage.selectedTab"
+    @AppStorage(Self.selectedTabKey) private var selectedTab: Tab = .plan
     @State private var viewModel = PipelineHistoryViewModel()
 
     enum Tab: String, CaseIterable {
+        case plan = "Claude plan"
         case progress = "Progress"
         case usage = "Usage"
     }
@@ -25,6 +27,8 @@ struct UsageView: View {
             .padding(.bottom, 8)
 
             switch selectedTab {
+            case .plan:
+                Text("Claude plan")
             case .progress:
                 ScrollView {
                     ProgressDetailContent()

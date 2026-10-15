@@ -282,6 +282,8 @@ struct WatchtowerApp: App {
     /// Bottom space the recorder pills need, handed to every composer so the
     /// pills never cover what the owner is typing.
     @State private var recordingIndicatorInset: CGFloat = 0
+    /// Settings → Claude plan toggle for the menu bar text; absent = on.
+    @AppStorage(PlanUsageCenter.menuBarKey) private var showPlanUsageInMenuBar = true
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
     /// tray button — so the global hotkey's plain C callback (no SwiftUI
     /// environment of its own) has something to call through `AppState`.
@@ -530,8 +532,13 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .environment(\.dictationCenter, appState.dictationCenter)
         } label: {
-            Image(nsImage: Self.trayIcon)
-                .accessibilityLabel("Watchtower")
+            HStack(spacing: 4) {
+                Image(nsImage: Self.trayIcon)
+                if let text = appState.planUsageCenter?.menuBarLabel(showText: showPlanUsageInMenuBar) {
+                    Text(text).monospacedDigit()
+                }
+            }
+            .accessibilityLabel("Watchtower")
                 // The tray label is always mounted — window-independent — so
                 // a login launch that never mounts `rootContent` still wires
                 // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
