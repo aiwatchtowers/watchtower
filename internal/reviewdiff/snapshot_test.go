@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestSnapshot_IncludesUntrackedAndLeavesIndexAndRefsAlone(t *testing.T) {
+func TestReview01_SnapshotWritesNoRefNoIndex(t *testing.T) {
 	dir := newRepo(t)
 	writeFile(t, dir, "a.go", "package a\n\nfunc A() int { return 2 }\n")
 	writeFile(t, dir, "new/b.go", "package new\n")
