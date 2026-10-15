@@ -98,7 +98,22 @@ func TestAutomationsAuto_RefusesStaleHashAlwaysAskAndNotAdmitted(t *testing.T) {
 
 	broken := c.indexRecipe(t, "broken", "broken")
 	_, err = runAutomations(t, "auto", idArg(broken.ID), "create_idea", "on", "--hash", "x")
-	require.ErrorContains(t, err, "does not parse")
+	require.ErrorIs(t, err, db.ErrHashMismatch, "the hash is compared before the recipe is parsed")
+	_, err = c.d.Exec(`UPDATE automations SET approval_hash = 'x' WHERE id = ?`, broken.ID)
+	require.NoError(t, err)
+	_, err = runAutomations(t, "auto", idArg(broken.ID), "create_idea", "on", "--hash", "x")
+	require.ErrorContains(t, err, "does not parse", "a parse-error row admits nothing")
+	assert.Empty(t, c.grantRows(t, broken.ID))
+}
+
+// Without outputs:[target] and without targets:write, create_target is not
+// a write the manifest admits, so its grant is refused.
+func TestAutomationsAuto_CreateTargetNeedsOutputOrPermission(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "plain", autoCLIRecipeText(`return 1`))
+	_, err := runAutomations(t, "auto", idArg(a.ID), "create_target", "on", "--hash", a.ApprovalHash)
+	require.ErrorContains(t, err, "do not admit create_target as a write")
+	assert.Empty(t, c.grantRows(t, a.ID))
 }
 
 // grantsOf reads the grants array of show --json as tool → active.

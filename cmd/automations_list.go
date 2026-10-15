@@ -57,15 +57,19 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	ids := make([]int64, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+	}
+	grants, err := database.ListAutomationToolGrantsFor(ids)
+	if err != nil {
+		return err
+	}
 	items := make([]automationListItem, 0, len(rows))
 	for i := range rows {
 		a := &rows[i]
 		s := stats[a.ID]
-		grants, err := database.ListAutomationToolGrants(a.ID)
-		if err != nil {
-			return err
-		}
-		gj := newAutomationGrantsJSON(grants)
+		gj := newAutomationGrantsJSON(grants[a.ID])
 		items = append(items, automationListItem{
 			ID: a.ID, Slug: a.Slug, Scope: a.Scope, ProjectID: a.ProjectID, Name: a.Name,
 			TriggerKind: a.TriggerKind, TriggerSpec: a.TriggerSpec, Enabled: a.Enabled, Runnable: a.Runnable(),

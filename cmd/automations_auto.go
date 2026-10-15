@@ -62,7 +62,7 @@ func runAutomationsAuto(cmd *cobra.Command, args []string) error {
 }
 
 // automationsAutoOn checks, in order: AGENT-07 markers → --hash given →
-// the automation exists and parses → the tool exists → not AlwaysAsk (D14)
+// the automation exists → --hash is its current approval hash → it parses → the tool exists → not AlwaysAsk (D14)
 // → the manifest admits it as a write → the store's hash check.
 func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 	if err := refuseUnderAgent("turn on auto for an automation's tool"); err != nil {
@@ -79,6 +79,13 @@ func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 	a, err := resolveAutomation(database, arg, autoFlags.Workbench)
 	if err != nil {
 		return err
+	}
+	// The manifest checked below must be the one --hash pins: a recipe
+	// edited since the owner reviewed it is refused before it is parsed.
+	// SetAutomationToolGrant re-checks the hash in its own transaction.
+	if a.ApprovalHash != autoFlags.Hash {
+		return fmt.Errorf("the recipe changed; reload and confirm again (`watchtower automations show %d`): %w",
+			a.ID, db.ErrHashMismatch)
 	}
 	m, err := automationManifest(a)
 	if err != nil {

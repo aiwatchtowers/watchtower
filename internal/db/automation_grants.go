@@ -83,34 +83,67 @@ func (db *DB) DeleteAutomationToolGrant(automationID int64, tool string) (bool, 
 	return n > 0, nil
 }
 
+// automationGrantColumns selects a grant row with Active computed against
+// the automation's current approval_hash.
+const automationGrantColumns = `SELECT g.automation_id, g.tool, g.grant_hash, g.granted_at,
+		g.grant_hash = a.approval_hash AND a.approval_hash <> ''
+		FROM automation_tool_grants g JOIN automations a ON a.id = g.automation_id`
+
 // ListAutomationToolGrants returns automation automationID's grants in tool
 // order, inactive ones included (Active computed against approval_hash); an
 // empty, non-nil slice when there are none.
 func (db *DB) ListAutomationToolGrants(automationID int64) ([]AutomationToolGrant, error) {
-	rows, err := db.Query(`SELECT g.automation_id, g.tool, g.grant_hash, g.granted_at,
-		g.grant_hash = a.approval_hash AND a.approval_hash <> ''
-		FROM automation_tool_grants g JOIN automations a ON a.id = g.automation_id
-		WHERE g.automation_id = ? ORDER BY g.tool`, automationID)
+	out := []AutomationToolGrant{}
+	err := db.scanAutomationToolGrants(func(g AutomationToolGrant) { out = append(out, g) },
+		automationGrantColumns+` WHERE g.automation_id = ? ORDER BY g.tool`, automationID)
 	if err != nil {
 		return nil, fmt.Errorf("listing the grants of automation %d: %w", automationID, err)
 	}
+	return out, nil
+}
+
+// ListAutomationToolGrantsFor returns the grants of every automation in ids
+// in one query, keyed by automation id, each in tool order. Every id gets an
+// entry, an empty non-nil slice when it has no grant.
+func (db *DB) ListAutomationToolGrantsFor(ids []int64) (map[int64][]AutomationToolGrant, error) {
+	out := make(map[int64][]AutomationToolGrant, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		out[id] = []AutomationToolGrant{}
+		args[i] = id
+	}
+	err := db.scanAutomationToolGrants(func(g AutomationToolGrant) { out[g.AutomationID] = append(out[g.AutomationID], g) },
+		automationGrantColumns+` WHERE g.automation_id IN (`+placeholders(len(ids))+`) ORDER BY g.automation_id, g.tool`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing the grants of %d automations: %w", len(ids), err)
+	}
+	return out, nil
+}
+
+// scanAutomationToolGrants runs a query selecting automationGrantColumns and
+// hands each row to add.
+func (db *DB) scanAutomationToolGrants(add func(AutomationToolGrant), query string, args ...any) error {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return err
+	}
 	defer func() { _ = rows.Close() }()
-	out := []AutomationToolGrant{}
 	for rows.Next() {
 		var g AutomationToolGrant
 		var grantedAt string
 		if err := rows.Scan(&g.AutomationID, &g.Tool, &g.GrantHash, &grantedAt, &g.Active); err != nil {
-			return nil, fmt.Errorf("listing the grants of automation %d: %w", automationID, err)
+			return err
 		}
 		if g.GrantedAt, err = time.Parse(automationTimeLayout, grantedAt); err != nil {
-			return nil, fmt.Errorf("automation %d grant %s granted_at %q: %w", automationID, g.Tool, grantedAt, err)
+			return fmt.Errorf("automation %d grant %s granted_at %q: %w", g.AutomationID, g.Tool, grantedAt, err)
 		}
-		out = append(out, g)
+		add(g)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing the grants of automation %d: %w", automationID, err)
-	}
-	return out, nil
+	return rows.Err()
 }
 
 // ActiveAutomationToolGrant reports whether run runID's automation holds an
