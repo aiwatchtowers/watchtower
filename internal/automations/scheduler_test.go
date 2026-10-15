@@ -59,11 +59,7 @@ func newSchedFixture(t *testing.T, start time.Time) *schedFixture {
 	t.Helper()
 	loc := loadZone(t, "Europe/Berlin")
 	ws := t.TempDir()
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	d := db.OpenTestDB(t)
 	clock := automationstest.NewFakeClock(start)
 	f := &schedFixture{d: d, clock: clock, dir: automations.PersonalDir(ws), loc: loc}
 	f.ix = automations.NewIndexer(d, ws, clock)
