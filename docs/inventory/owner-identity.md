@@ -60,6 +60,8 @@ Amended 2026-10-15: Linear rung (ask #162).
 
 **Locked since:** 2026-09-25
 
+Amended 2026-10-15: no-owner copy names Linear (ruling R5).
+
 ## Changelog
 
 - 2026-09-25: feature shipped (owner decision 15 of the 2026-09-13 feature audit, finding H27). `db.GetCurrentUserID()` removed; all Go and Swift owner reads move to the resolver (OWNER-01); every user-triggered command and the daemon's benign skip get the visible-or-logged-once behavior (OWNER-02). Migration 00071 adds `jira_accounts.owner_account_id`/`owner_email`/`owner_display_name`, filled via `jira.Client.GetMyself` (`GET /rest/api/3/myself`) at connect (best-effort) and lazily once per daemon start for an enabled account still missing them. Design: `docs/superpowers/specs/2026-09-25-no-slack-owner-identity-design.md`.
