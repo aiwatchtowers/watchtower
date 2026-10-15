@@ -31,11 +31,12 @@ package enum GettingReadyPolicy {
         let (cards, sourceRows) = entries(
             readiness: readiness, ownerKnown: ownerKnown, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
         // The zone opens on a card that reads a source, or on a Connect row a
-        // switched-on feature waits for (goals picked, Connect skipped). A
-        // Development-only install — the knowledge-index card, Connect rows for
-        // the bare sources — stays hidden.
+        // feature the owner's goals switched on waits for (goals picked,
+        // Connect skipped). Always-on features (Inbox) do not count, so a
+        // Development-only install — the knowledge-index card, Connect rows
+        // for the bare sources and Inbox — stays hidden.
         let sourcedCards = cards.contains { $0.feature.source != .none }
-        let rowsUnlockFeatures = sourceRows.contains { $0.features.contains { $0.featureID != nil } }
+        let rowsUnlockFeatures = sourceRows.contains { $0.features.contains(where: isGoalSwitched) }
         guard sourcedCards || rowsUnlockFeatures else { return hidden }
 
         var next = memory
@@ -47,6 +48,13 @@ package enum GettingReadyPolicy {
         }
         next.firstShownAt = memory.firstShownAt ?? now
         return GettingReadyStep(zone: .shown(cards: cards, sourceRows: sourceRows), memory: next, sawUnready: true)
+    }
+
+    /// Whether the feature has a switch the onboarding goals turn on (not a
+    /// bare source, not always on).
+    private static func isGoalSwitched(_ feature: ReadinessFeature) -> Bool {
+        guard let id = feature.featureID else { return false }
+        return !OnboardingFeaturePlan.alwaysOnFeatureIDs.contains(id)
     }
 
     /// The cards (every feature on and not waiting on a source) and the

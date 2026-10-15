@@ -139,6 +139,29 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertFalse(result.sawUnready)
     }
 
+    /// The readiness a fresh install with nothing connected gets from
+    /// onboarding's real feature set for `goals` (always-on features included).
+    private func freshInstall(goals: Set<OnboardingGoal>) -> [ReadinessFeature: Readiness] {
+        let disabled = OnboardingFeaturePlan.managedFeatureIDs
+            .subtracting(OnboardingFeaturePlan.enabledFeatureIDs(for: goals))
+        return FeatureReadiness.evaluate(ReadinessInputs(now: now, disabledFeatureIDs: disabled))
+    }
+
+    /// Spec §3.1: Development only never shows the zone — the always-on
+    /// Inbox waiting on a source is not a goal-switched feature.
+    func testDevelopmentOnlyFreshInstallShowsNothing() {
+        let result = step(freshInstall(goals: [.development]))
+        XCTAssertEqual(result.zone, .hidden)
+        XCTAssertNil(result.memory.firstShownAt)
+        XCTAssertFalse(result.sawUnready)
+    }
+
+    func testWorkCommunicationFreshInstallShowsConnectRows() {
+        let result = step(freshInstall(goals: [.workCommunication]))
+        XCTAssertTrue(sourceRows(result.zone).contains { $0.source == .slack })
+        XCTAssertNil(result.memory.completedAt)
+    }
+
     /// Goals picked, Connect skipped: every switched-on feature waits on a
     /// source, so there is no card — the Connect rows still open the zone,
     /// and a rows-only zone is not complete.
