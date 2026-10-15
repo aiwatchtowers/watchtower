@@ -3,8 +3,9 @@
 Board #779. Spec `docs/superpowers/specs/2026-10-14-first-run-home-design.md`
 (§1 readiness + empty states = P1, §2 first cycle = P4); plan
 `docs/superpowers/plans/2026-10-14-first-run-p1-p4.md`, whose "Spec corrections
-found while planning" are folded in below. **P2 (Home) and P3 (Try this) are not
-built:** they wait for the Home mockup (#784).
+found while planning" are folded in below. **P2 (Home: Getting ready + Today,
+board #783)** is built from `docs/superpowers/plans/2026-10-15-first-run-p2-home.md`
+(section "Home (P2)" below). **P3 (Try this → Recent work) is not built** (#785).
 
 The problem it closes: right after onboarding most tabs were a blank page or "No
 data", with no word on whether anything would ever land there, and the daemon's
@@ -204,9 +205,180 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - `docs/daemon-pipeline.md` (people first-cycle note, briefing throttling,
   cadence table) carries the same rules.
 
+## Home (Desktop, P2)
+
+Board #783, spec §3. Home is the page the app opens on: a **Getting ready**
+zone while the install is still filling up, then **Today** — what needs the
+owner now. It composes nothing: no AI call, no CLI call, no DB write; every
+Today card reads an existing table, and Getting ready reads P1's readiness.
+
+### Destination and landing
+
+- `SidebarDestination.home` (`WatchtowerDesktop/Sources/App/SidebarDestination.swift:5`)
+  is the first root item (`rootItems`, `:93`), has no feature or source gate
+  and so shows on every install, and is exempt from the shared empty state
+  (`EmptyStateCopyTable.exempt`, `EmptyStateCopy.swift:75`).
+- **Launch default** — `AppState.selectedDestination` starts at `.home`
+  (`AppState.swift:19`).
+- **Fallback** — `SidebarDestination.fallbackDestination` (`:162`) returns
+  Home for any tab that is no longer visible (it was Inbox, else Workbench).
+  A Home link to a tab hidden right now is left to that fallback, so a stale
+  link lands back on Home.
+- **Onboarding** — a first run lands on Home for every goal set
+  (`landOnHome`, `AppState.swift:1237`, called at `:875`); a setup re-run keeps
+  the current tab. `OnboardingFinishPlan.landing` (Catch-Up / Workbench / AI
+  Chat by goal) is gone.
+- Existing deep links are unchanged: notifications, the mobile hub and Quick
+  Capture land where they did.
+- The first sync's line moved to `AppState.firstSyncLine`
+  (`WatchtowerDesktop/Sources/App/AppState+Home.swift:18`), shared by
+  Catch-Up's empty pane and Home's Getting ready.
+
+### `HomeCenter`
+
+`HomeCenter` (`WatchtowerDesktop/Sources/Services/HomeCenter.swift:70`) holds
+the `HomeSnapshot` on `AppState` (`AppState.swift:65`), so a read survives tab
+switches (`HomeCenterSurvivesNavigationTests`); `HomeView` only binds it and
+never reads on its own. It is started with the main app's DB wiring right
+after `ReadinessCenter` (`AppState.swift:1466`), which both launch and
+`completeOnboarding()` reach, and stopped on quit.
+
+- **Inputs.** The Today read (`HomeQueries.today`), `ReadinessCenter`'s map and
+  hours, and `HomeEnvironment` (`HomeCenter.swift:8`): `now`, `calendar`,
+  `ownerKnown`, `firstSync` (`AppState.firstSyncLine`) and `allowedTodayCards`
+  (`AppState.homeTodayCardsAllowed`, `AppState+Home.swift:33`).
+- **When it reads.** A GRDB `ValueObservation` over the Today tables that exist
+  (`HomeQueries.observedTables`; a table missing mid-migration is left out of
+  the region) sees this process' writes; a 30 s tick re-reads for the daemon's
+  writes (another process) and keeps the meeting eyebrow's minutes current. A
+  readiness, owner, first-sync or visibility change rebuilds from the last read
+  without touching the DB (`withObservationTracking`). A failed pool read keeps
+  the last snapshot and is logged; the next tick tries again. Before the first
+  read the snapshot is nil and Home shows a spinner.
+- **Getting ready memory** — `GettingReadyStore` (`HomeCenter.swift:23`), per
+  install in `UserDefaults`; `HomeCenter` is its only writer:
+
+  | Key | Type | Meaning |
+  |---|---|---|
+  | `home.gettingReady.hidden` | Bool | the owner's × — the zone is gone for good |
+  | `home.gettingReady.firstShownAt` | Double, unix s | first time the zone was shown (the 3-day fold anchor) |
+  | `home.gettingReady.completedAt` | Double, unix s | every card reached ready/error |
+
+  A missing key, or a value of another type, reads as false/nil.
+
+### Getting ready — `GettingReadyPolicy`
+
+`GettingReadyPolicy.step`
+(`WatchtowerDesktop/Sources/WatchtowerCore/Services/GettingReadyPolicy.swift:13`)
+is pure: readiness, owner, memory, `sawUnready` (launch-scoped) and `now` in;
+the zone and the memory to persist out. Rules, first match wins:
+
+1. Readiness not evaluated yet (empty map) → hidden; no flicker before P1's
+   first evaluation.
+2. The owner's × (`hidden`) → hidden.
+3. `completedAt` set → "Everything's ready" if the zone showed unready cards
+   during this launch, else hidden (gone on the next launch).
+4. `firstShownAt` more than 3 days ago (`foldAfter`) → hidden, whatever is
+   still scheduled or failing.
+5. Cards = the features whose readiness (through
+   `FeatureReadiness.honoringOwner`, OWNER-02) is neither `off` nor
+   `needsSource`, in `ReadinessFeature.allCases` order. Each `needsSource`
+   feature goes into one row per missing source ("Connect Jira to get Boards,
+   Workload, Blockers, Project Map and Releases", with **Connect Jira**). No
+   card with a source (`source != .none`) → hidden: a Development-only
+   install's lone knowledge-index card does not open the zone.
+6. Every card terminal (ready or error) → `completedAt = now`; "Everything's
+   ready" if the zone showed unready cards during this launch, else hidden.
+7. Otherwise → shown, `firstShownAt` set once.
+
+A ready card stays in the zone with **Ready** + **Open** until every card is
+terminal (owner, ask #304); other cards show P1's `FeatureReadiness.line` —
+no new ETA phrase, no countdown, no counters. `off` features are not cards
+(they are P3's). Card text is `EmptyStateCopyTable.featureCard`
+(`EmptyStateCopy.swift:147`). **Open** goes to the feature's tab
+(`AppState.homeDestination`, `AppState+Home.swift:61`; Slack sync →
+Statistics, knowledge index → Search, Jira → Boards); **Connect** runs the
+empty states' `performEmptyStateAction(.connect)`. While the first sync runs,
+its line (Catch-Up's) shows on top of the cards.
+
+### Today — `HomeQueries.today` + `HomeTodayBuilder`
+
+`HomeQueries.today`
+(`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeQueries.swift:18`)
+reads every card's source in one pass, each card on its own: a missing table
+is that card having no content; a thrown error is logged (`NSLog`, card kind
++ message) and marks only that card `failed`. `HomeTodayBuilder.cards`
+(`WatchtowerDesktop/Sources/WatchtowerCore/Services/HomeTodayBuilder.swift:12`)
+is pure: each card shows only with content, in this fixed order, and only
+while its tab is visible (`homeTodayCardsAllowed`; My targets and Agents
+waiting have no tab gate).
+
+| Card | Source | Shows when | Click |
+|---|---|---|---|
+| Waiting on you · N | `AgentActionQueries.awaitingOwnerCount` + `awaitingOwner(limit: 3)` (pending/failed, not workbench rows) and `ReminderQueries.fetchDue`; N = the badge's count | N > 0; top 3 items, newest first, chips Proposal / Failed / Reminder | Inbox (follows the Inbox tab) |
+| Next meeting | `CalendarQueries.fetchNextEvent` + `hasPrep` | the event starts within 24 h; eyebrow "IN N MIN", "HH:MM" or "TOMORROW HH:MM"; line = time range · up to two attendees +N · "Prep ready" | the event in Calendar (`navigateToCalendarEvent`) |
+| Briefing | `BriefingQueries.fetchByDate(today)` | today's briefing has an item; body = the first item of the first non-empty section | that briefing (`navigateToBriefing`) |
+| My targets | `TargetQueries.homeSummary` (limit 5) | any row; detail "Overdue · Oct 12", "Due today", "Due HH:MM" or "In progress" | the target (`navigateToTarget`); header → Targets |
+| Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`, unreadable rows named and left out) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
+| Since you were away | `CatchUpQueries.fetchRecaps(limit: 1)` | the newest recap is ready and not acknowledged (the Catch-Up badge); eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
+
+- `TargetQueries.homeSummary` (`TargetQueries.swift:237`): `project_id IS
+  NULL` (PROJ-01 — workbench targets stay on their board), ownership `mine`,
+  status todo/in_progress/in_review/blocked, and due on or before today or
+  `in_progress`; due/overdue first by due date, then in-progress by
+  `updated_at DESC`.
+- **Read errors.** `HomeSnapshot.showsReadError` (`Home.swift:241`): no card
+  to show and at least one allowed card failed → "Couldn't read today's items
+  — see the log." `nothingNeedsYou` (`:247`) — "Nothing needs you right now."
+  — only with no card, no failed read and no Getting ready zone shown. One
+  failed card never hides the others and is never read as the all-clear.
+
+### Resolutions made while planning
+
+1. **Feature card text.** `EmptyStateCopy` is keyed by tab and several tabs
+   share a feature, so `featureCard` is keyed by feature: it reuses the tab's
+   `landsHere` where one tab owns the feature and has its own sentence for
+   Slack sync, stream digests, knowledge index and Jira.
+2. **Development-only installs** show no zone (rule 5), keeping spec §3.1.
+3. **Existing installs** (decision 2) whose cards are all ready at the first
+   look never see "Everything's ready"; it shows only when the zone completed
+   during this launch.
+4. **3-day fold anchor** is `firstShownAt`: onboarding completion has no
+   stored time.
+5. **`needsSource` rows** — one row per missing source, listing the tabs it
+   unlocks.
+6. **Briefing summary** (decision 3) — a briefing has no prose field; the
+   first item of the first non-empty section in the detail view's order
+   (attention, your day, what happened, team pulse, coaching), two lines.
+7. **Since you were away** uses the unacknowledged recap's own window; no
+   `CatchUpQueries.autoWindowStart`.
+8. **Next meeting** — 24 h horizon; "Prep ready" from a non-empty
+   `meeting_prep_cache` row (`CalendarQueries.hasPrep`), no prep text decoded.
+9. **Waiting on you** items are what the badge counts (pending/failed
+   proposals, due reminders), not the strip's 24 h tail of applied rows.
+10. **Agents waiting** — count + the 3 oldest asks, routed by
+    `WorkbenchRoute.forAsk` (`Workbench.swift:45`), the rule
+    `WorkbenchNotificationPolicy` now shares.
+11. **Calendar deep link** — `navigateToCalendarEvent` +
+    `pendingCalendarEventID` (`AppState.swift:511`, `:371`), consumed by
+    `CalendarEventsView.openPendingEvent` (`:205`) through
+    `openLinkedEvent`.
+12. **Today cards follow tab visibility** — a card whose tab is hidden is
+    not shown, so no link leads to a hidden tab.
+
+### Tests
+
+Core: `GettingReadyTests`, `FeatureCardCopyTests`, `HomeTodayTests`,
+`HomeQueriesTests` (`testOneFailingCardKeepsTheOthers`),
+`WorkbenchTargetExclusionTests.testProj01_HomeSummaryNeverReturnsAProjectTarget`.
+Desktop: `HomeCenterTests` (`testAllReadsFailedIsNotAllClear`),
+`HomeCenterSurvivesNavigationTests`, `HomeLandingTests` (landing, launch
+default, fallback, re-run keeps the tab), `HomeLinkTests`, `HomeViewTests`.
+
 ## Contracts and tests
 
-- **No inventory file changes.** No guard test is touched:
+- **No inventory file changes** (P1, P4 and P2). P2 adds a PROJ-01 guard
+  case for `homeSummary` and changes no contract. P1/P4 touched no guard test:
   `TestShouldRunBriefing_*`, `*Backoff_*` and `TestOwner02_*` are as they were.
   `TestDaemon_RunSyncInvokesAllTrackedPhases` (`internal/daemon/daemon_test.go:1088`)
   got fixture data only — active users and a digest situation in people's window
@@ -220,4 +392,5 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 
 ## Pending
 
-- **P2 Home and P3 Try this** (spec §3–§4) wait for the Home mockup (#784).
+- **P3 Try this → Recent work** (spec §4, #785): the `off` features Home's
+  Getting ready leaves out are P3's.
