@@ -813,7 +813,8 @@ func TestPhaseSlackSync_FirstSyncStartsBackfill(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "acme", Domain: "acme"}))
 	d.SetOrchestrators([]*sync.Orchestrator{newBackfillOrchestrator(t, database, d.config)})
 
-	d.phaseSlackSync(context.Background())
+	syncErr, _ := d.phaseSlackSync(context.Background())
+	require.NoError(t, syncErr)
 	rows, err := database.ListHistoryBackfills()
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
@@ -823,7 +824,8 @@ func TestPhaseSlackSync_FirstSyncStartsBackfill(t *testing.T) {
 	// The watermark now exists: a later cycle starts nothing new.
 	_, err = database.Exec(`DELETE FROM history_backfill`)
 	require.NoError(t, err)
-	d.phaseSlackSync(context.Background())
+	syncErr, _ = d.phaseSlackSync(context.Background())
+	require.NoError(t, syncErr)
 	rows, err = database.ListHistoryBackfills()
 	require.NoError(t, err)
 	assert.Empty(t, rows)
