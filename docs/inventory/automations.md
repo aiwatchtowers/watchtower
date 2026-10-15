@@ -73,9 +73,14 @@ automation's own tables) · Planned (P2: the write side, `tool` writes through
 own tables are `Registry.Propose` (and the `Apply` it triggers) on the
 `automation` surface, `shell()` and `session()`; `output.inbox`/`report`
 (and P2's `briefing`) write only `automation_outputs`, and `state.set` only
-`automation_state`, both through the run's commit (AUTO-04). In P1, `tool()`
-reaches only `Registry.CallRead`: a write tool throws `NotAvailable` ("writes
-arrive in a later phase") and never reaches `Propose`. The automation read
+`automation_state`, both through the run's commit (AUTO-04). `tool()` reads
+go through `Registry.CallRead`; `tool()` writes (P2's `ToolWriteModule`) go
+only through `Registry.Propose` under the run's automation binding
+(`Surface='automation'`, `context_type='automation_run'`, `context_id` and
+`AutomationRunID` = the run id, never `DirectApply`), after the manifest check:
+each write is one `agent_actions` row, pending unless the automation trust
+order decides `execute` (AGENT-03), and a dry run never reaches the registry
+(AUTO-12). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
 without the shadow handle, so it writes no shadow row.
@@ -85,10 +90,10 @@ without the shadow handle, so it writes no shadow row.
 wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
-- `internal/automations/sdk_test.go` — `TestTool_WriteNotAvailableInP1`
+- `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval)
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
 - `cmd/automations_registry_test.go` — `TestBuildAutomationRegistry_AddsMemoryTools` (recall on this registry writes no shadow row)
-- P2 adds the write-side guard (plan `2026-10-14-automations-p2.md`) and flips this entry.
+- P2 Task 9 flips this entry's status to Enforced (the write-side guard above landed in Task 5).
 
 **Locked since:** 2026-10-14
 
@@ -359,6 +364,7 @@ would make checking as dangerous as running.
 
 **Test guards:**
 - `internal/automations/executor_test.go` — `TestAuto12_DryRunWritesNoActionsOutputsOrState`
+- `internal/automations/sdk_tool_write_test.go` — `TestAuto12_DryRunWriteNeverReachesRegistry` (P2: a `tool()` write, `{wait:true}` included)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
 - P5 adds the session/shell guard (plan `2026-10-14-automations-p5.md`) and flips that half.
@@ -387,6 +393,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-15 (Automations P2 Task 5): AUTO-02's P1 guard `TestTool_WriteNotAvailableInP1` is retired as planned (P2 plan Task 5, Step 3): it pinned P1's interim "writes arrive in a later phase" branch, not a contract. `tool()` writes now go through `Registry.Propose` on the `automation` surface (`ToolWriteModule`); the write-side guard `TestAuto02_ToolWriteGoesThroughPropose` replaces it. AUTO-12 gains `TestAuto12_DryRunWriteNeverReachesRegistry` (a dry-run write, `{wait:true}` included, returns `{status:"dry_run"}` and writes no `agent_actions` row). The status flips of AUTO-02/AUTO-03 stay with Task 9.
 - 2026-10-15 (**owner decision, ask #294**; spec §20.3 D26, amending D5): strengthening, no guard relaxed. AUTO-06's `approval_hash` now also binds the trigger (without a button's cosmetic label; `confirm` counts), the `missed` policy, the budget (tokens and minutes) and `concurrency`, so a schedule or budget edit needs the owner's confirmation again. `TestApprovalHash_GoldenCanonicalBytes` gets new canonical bytes and hex (computed outside Go); guards `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`, `TestApprovalHash_ButtonLabelIsCosmetic` added. Upgrade effect: every recipe is re-hashed once, so every recipe confirmed before this change is unconfirmed until the owner confirms it again.
 - 2026-10-15 (**owner decision, ask #294**; spec §20.3 D25): **AUTO-08 amended — the daily-cap clause is removed** (owner-approved in ask #294). `automations.daily_budget_tokens`, `ExecutorOptions.DailyBudgetTokens`, the meter's live daily total and `InterruptDailyCap` are gone; `error_kind='daily_cap'` stays in the CHECK but is no longer produced. Guards retired with that approval: `TestAuto08_DailyCap`, `TestAuto08_DailyCapSeesConcurrentSpend`, `TestAuto08_DailyCapDayFollowsTheExecutorZone`, `TestAuto08_DailyCapWindowIsTheRunStartDay`, `TestExecutor_DailyCapZeroSpendsNothing`, `TestSandbox_DailyCapInterruptsUncatchably` (plus the meter unit tests `TestMeter_DailyRemainderInterrupts`, `TestMeter_LiveDailyTotalAcrossRuns`, `TestMeter_DailyTotalReadErrorRefusesCall`). Added `TestAuto08_NoDailyCapAcrossRuns`. The per-run token budget, time budget, pause timeout and terminal-status guards are unchanged.
 - 2026-10-15 (**owner decision, ask #293**; spec §20.3 D24): strengthening, no guard relaxed. AUTO-06 notes that `automations enable` and `automations delete` are owner-only (refused under AGENT-07 markers before anything is read or written); guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers` added.
