@@ -37,6 +37,11 @@ const (
 	loginTimeout = 5 * time.Minute
 )
 
+// tokenHTTPClient serves the token and revoke endpoints. Its timeout is
+// load-bearing: a refresh runs under Client.mu and the cross-process token
+// lock, so a stalled endpoint must not hold them (and the sync phase) forever.
+var tokenHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // ErrAuthRevoked means the refresh token was rejected (invalid_grant): the
 // owner must sign in again.
 var ErrAuthRevoked = errors.New("linear auth revoked")
@@ -167,7 +172,7 @@ func postToken(ctx context.Context, endpoint string, form url.Values) (*Token, e
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
+	resp, err := tokenHTTPClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
@@ -217,7 +222,7 @@ func Revoke(ctx context.Context, accessToken string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
+	resp, err := tokenHTTPClient.Do(req) //nolint:gosec // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return fmt.Errorf("revoke request: %w", err)
 	}

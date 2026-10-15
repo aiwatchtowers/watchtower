@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -25,8 +26,32 @@ func (c *Client) FetchViewer(ctx context.Context) (Viewer, error) {
 	if err != nil {
 		return Viewer{}, err
 	}
+	return v.viewer(), nil
+}
+
+// FetchViewerWithToken runs one viewer request with a bare access token: no
+// token store, no refresh. Login and add use it to identify a fresh token's
+// workspace before anything is written to disk.
+func FetchViewerWithToken(ctx context.Context, accessToken string) (Viewer, error) {
+	body, err := json.Marshal(map[string]any{"query": queryViewer})
+	if err != nil {
+		return Viewer{}, fmt.Errorf("encoding linear request: %w", err)
+	}
+	c := &Client{endpoint: graphqlEndpoint, http: &http.Client{Timeout: 30 * time.Second}}
+	var v viewerData
+	authFailed, err := c.send(ctx, body, accessToken, &v)
+	if err != nil {
+		return Viewer{}, fmt.Errorf("fetching linear viewer: %w", err)
+	}
+	if authFailed {
+		return Viewer{}, fmt.Errorf("fetching linear viewer: %w: access token rejected", ErrAuthRevoked)
+	}
+	return v.viewer(), nil
+}
+
+func (v viewerData) viewer() Viewer {
 	return Viewer{UserID: v.Viewer.ID, Email: v.Viewer.Email, Name: v.Viewer.Name,
-		OrgID: v.Viewer.Organization.ID, OrgName: v.Viewer.Organization.Name, URLKey: v.Viewer.Organization.URLKey}, nil
+		OrgID: v.Viewer.Organization.ID, OrgName: v.Viewer.Organization.Name, URLKey: v.Viewer.Organization.URLKey}
 }
 
 func (c *Client) fetchViewer(ctx context.Context) (viewerData, error) {

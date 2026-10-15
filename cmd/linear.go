@@ -30,6 +30,16 @@ func resolveLinearOAuthConfig() linear.OAuthConfig {
 	return linear.OAuthConfig{ClientID: id}
 }
 
+// linearLoginConfig is resolveLinearOAuthConfig for the browser flows: an
+// empty client id fails before any browser opens.
+func linearLoginConfig() (linear.OAuthConfig, error) {
+	cfg := resolveLinearOAuthConfig()
+	if cfg.ClientID == "" {
+		return cfg, errors.New("Linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
+	}
+	return cfg, nil
+}
+
 var linearFlagAccount int64
 
 var linearCmd = &cobra.Command{
@@ -228,9 +238,7 @@ func linearClient(cfg *config.Config, accountID int64) *linear.Client {
 // Seams for the browser flow and the API call, swapped by tests.
 var (
 	linearLogin       = linear.Login
-	linearFetchViewer = func(ctx context.Context, cfg *config.Config, accountID int64) (linear.Viewer, error) {
-		return linearClient(cfg, accountID).FetchViewer(ctx)
-	}
+	linearFetchViewer = linear.FetchViewerWithToken
 )
 
 // discardNewLinearAccount undoes a half-created account: its token is deleted
@@ -263,7 +271,7 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 	if err = saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), id), token); err != nil {
 		return 0, false, err
 	}
-	viewer, err := linearFetchViewer(ctx, cfg, id)
+	viewer, err := linearFetchViewer(ctx, token.AccessToken)
 	if err != nil {
 		return 0, false, fmt.Errorf("fetching Linear viewer: %w", err)
 	}
@@ -325,6 +333,10 @@ func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 }
 
 func runLinearAdd(cmd *cobra.Command, _ []string) error {
+	oauthCfg, err := linearLoginConfig()
+	if err != nil {
+		return err
+	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
@@ -334,7 +346,7 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linearLogin(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
+	token, err := linearLogin(cmd.Context(), oauthCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("linear login: %w", err)
@@ -358,6 +370,10 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runLinearLogin(cmd *cobra.Command, _ []string) error {
+	oauthCfg, err := linearLoginConfig()
+	if err != nil {
+		return err
+	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
@@ -370,7 +386,7 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linearLogin(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
+	token, err := linearLogin(cmd.Context(), oauthCfg, out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("linear login: %w", err)
@@ -385,14 +401,9 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 // relinkLinearAccount checks the new token belongs to the account's workspace
 // before saving it, then refreshes the owner and sets the status ok.
 func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token) error {
-	// The viewer is fetched with the new token through a scratch store so a
-	// wrong-workspace login never overwrites the account's token.
-	scratch := linear.NewTokenStore(cfg.WorkspaceDir(), -account.ID)
-	if err := saveLinearTokenLocked(ctx, scratch, token); err != nil {
-		return err
-	}
-	viewer, err := linearFetchViewer(ctx, cfg, -account.ID)
-	_ = scratch.Delete()
+	// The viewer is fetched with the new token in memory, before it is saved,
+	// so a wrong-workspace login never overwrites the account's token.
+	viewer, err := linearFetchViewer(ctx, token.AccessToken)
 	if err != nil {
 		return fmt.Errorf("fetching Linear viewer: %w", err)
 	}

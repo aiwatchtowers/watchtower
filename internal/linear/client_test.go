@@ -117,3 +117,111 @@ func TestLinear02_ConcurrentRefreshSingleFlight(t *testing.T) {
 }
 
 func jsonInt(v int64) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestClient_StalledTokenEndpointTimesOut(t *testing.T) {
+	old := tokenHTTPClient
+	tokenHTTPClient = &http.Client{Timeout: 200 * time.Millisecond}
+	t.Cleanup(func() { tokenHTTPClient = old })
+	release := make(chan struct{})
+	c, store := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}, func(_ http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		select { // never answers; released by the cleanup below or a dropped connection
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	t.Cleanup(func() { close(release) }) // runs before the servers' Close (LIFO)
+	start := time.Now()
+	err := c.Do(context.Background(), `query { a }`, nil, &struct{}{})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrAuthRevoked)
+	assert.Less(t, time.Since(start), 5*time.Second)
+	// The lock is released: a later refresh attempt is not blocked.
+	unlock, err := store.Lock(context.Background())
+	require.NoError(t, err)
+	unlock()
+}
+
+// Two Client values on one token file stand in for two processes (the daemon
+// and a CLI command): only the file lock serializes them, not Client.mu.
+func TestLinear02_TwoClientsOneStoreSingleRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		initial *Token
+	}{
+		{"both hit 401", &Token{AccessToken: "a0", RefreshToken: "r0", Expiry: time.Now().Add(time.Hour).Format(time.RFC3339)}},
+		{"both start expired", &Token{AccessToken: "a0", RefreshToken: "r0", Expiry: time.Now().Add(-time.Hour).Format(time.RFC3339)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var refreshes atomic.Int32
+			gql := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") == "Bearer a0" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			}))
+			t.Cleanup(gql.Close)
+			tok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				n := refreshes.Add(1)
+				time.Sleep(50 * time.Millisecond) // widen the race window
+				if r.PostForm.Get("refresh_token") != "r0" || n > 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"access_token":"a1","refresh_token":"r1","expires_in":86399}`))
+			}))
+			t.Cleanup(tok.Close)
+
+			dir := t.TempDir()
+			require.NoError(t, NewTokenStore(dir, 1).Save(tc.initial))
+			clients := make([]*Client, 2)
+			for i := range clients {
+				c := NewClient(OAuthConfig{ClientID: "cid"}, NewTokenStore(dir, 1))
+				c.endpoint, c.tokenURL = gql.URL, tok.URL
+				clients[i] = c
+			}
+			var wg sync.WaitGroup
+			for _, c := range clients {
+				for range 4 {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						assert.NoError(t, c.Do(context.Background(), `query { a }`, nil, &struct{}{}))
+					}()
+				}
+			}
+			wg.Wait()
+			assert.Equal(t, int32(1), refreshes.Load())
+			saved, err := NewTokenStore(dir, 1).Load()
+			require.NoError(t, err)
+			assert.Equal(t, "r1", saved.RefreshToken)
+		})
+	}
+}
+
+func TestFetchViewerWithToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"user-1","name":"Owner","email":"owner@example.com",
+			"organization":{"id":"org-1","name":"Acme","urlKey":"acme"}}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	old := graphqlEndpoint
+	graphqlEndpoint = srv.URL
+	t.Cleanup(func() { graphqlEndpoint = old })
+
+	v, err := FetchViewerWithToken(context.Background(), "good")
+	require.NoError(t, err)
+	assert.Equal(t, Viewer{UserID: "user-1", Email: "owner@example.com", Name: "Owner", OrgID: "org-1", OrgName: "Acme", URLKey: "acme"}, v)
+
+	_, err = FetchViewerWithToken(context.Background(), "stale")
+	assert.ErrorIs(t, err, ErrAuthRevoked)
+}

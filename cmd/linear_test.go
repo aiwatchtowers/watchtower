@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -62,7 +64,7 @@ func TestLinearCommandsRegistered(t *testing.T) {
 
 // linearTestEnv points HOME and the config path at temp dirs and stubs the
 // viewer call, so add/login run without a browser or the network.
-func linearTestEnv(t *testing.T, viewers map[int64]linear.Viewer) *config.Config {
+func linearTestEnv(t *testing.T, viewer *linear.Viewer) *config.Config {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	oldCfg, oldFetch := flagConfig, linearFetchViewer
@@ -70,14 +72,11 @@ func linearTestEnv(t *testing.T, viewers map[int64]linear.Viewer) *config.Config
 	t.Cleanup(func() { flagConfig, linearFetchViewer = oldCfg, oldFetch })
 	cfg := &config.Config{ActiveWorkspace: "test"}
 	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
-	linearFetchViewer = func(_ context.Context, _ *config.Config, id int64) (linear.Viewer, error) {
-		if v, ok := viewers[id]; ok {
-			return v, nil
+	linearFetchViewer = func(_ context.Context, accessToken string) (linear.Viewer, error) {
+		if viewer == nil || accessToken == "" {
+			return linear.Viewer{}, errors.New("viewer unavailable")
 		}
-		if v, ok := viewers[0]; ok {
-			return v, nil
-		}
-		return linear.Viewer{}, errors.New("viewer unavailable")
+		return *viewer, nil
 	}
 	return cfg
 }
@@ -85,7 +84,7 @@ func linearTestEnv(t *testing.T, viewers map[int64]linear.Viewer) *config.Config
 var acmeViewer = linear.Viewer{UserID: "user-1", Email: "owner@example.com", Name: "Owner", OrgID: "org-1", OrgName: "Acme", URLKey: "acme"}
 
 func TestConnectLinearAccount_New(t *testing.T) {
-	cfg := linearTestEnv(t, map[int64]linear.Viewer{0: acmeViewer})
+	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
 	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
 	require.NoError(t, err)
@@ -97,7 +96,7 @@ func TestConnectLinearAccount_New(t *testing.T) {
 }
 
 func TestConnectLinearAccount_DuplicateRefused(t *testing.T) {
-	cfg := linearTestEnv(t, map[int64]linear.Viewer{0: acmeViewer})
+	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
 	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "")
 	require.NoError(t, err)
@@ -111,7 +110,7 @@ func TestConnectLinearAccount_DuplicateRefused(t *testing.T) {
 }
 
 func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
-	cfg := linearTestEnv(t, map[int64]linear.Viewer{0: acmeViewer})
+	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
 	first, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "a"}, "Work")
 	require.NoError(t, err)
@@ -150,7 +149,7 @@ func TestConnectLinearAccount_FailureLeavesNothingHalfConnected(t *testing.T) {
 }
 
 func TestRelinkLinearAccount(t *testing.T) {
-	cfg := linearTestEnv(t, map[int64]linear.Viewer{0: acmeViewer})
+	cfg := linearTestEnv(t, &acmeViewer)
 	database := db.OpenTestDB(t)
 	id, _, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "old"}, "")
 	require.NoError(t, err)
@@ -161,7 +160,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	// Wrong workspace: refused, token untouched.
 	other := acmeViewer
 	other.OrgID, other.OrgName = "org-2", "Other"
-	linearFetchViewer = func(context.Context, *config.Config, int64) (linear.Viewer, error) { return other, nil }
+	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return other, nil }
 	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "wrong"})
 	require.ErrorContains(t, err, "this login is for workspace Other, but account")
 	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
@@ -169,7 +168,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	assert.Equal(t, "old", tok.AccessToken)
 
 	// Same workspace: saved, status ok.
-	linearFetchViewer = func(context.Context, *config.Config, int64) (linear.Viewer, error) { return acmeViewer, nil }
+	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return acmeViewer, nil }
 	require.NoError(t, relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}))
 	tok, err = linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
@@ -177,4 +176,24 @@ func TestRelinkLinearAccount(t *testing.T) {
 	acct, err = database.GetLinearAccount(id)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acct.Status)
+
+	// The viewer check is in memory: no scratch token file is ever written.
+	scratch, err := filepath.Glob(filepath.Join(cfg.WorkspaceDir(), "linear_token_-*"))
+	require.NoError(t, err)
+	assert.Empty(t, scratch)
+}
+
+func TestLinearLoginCommands_EmptyClientIDFailsFast(t *testing.T) {
+	t.Setenv("WATCHTOWER_LINEAR_CLIENT_ID", "")
+	oldDefault, oldLogin := linear.DefaultLinearClientID, linearLogin
+	t.Cleanup(func() { linear.DefaultLinearClientID, linearLogin = oldDefault, oldLogin })
+	linear.DefaultLinearClientID = ""
+	linearLogin = func(context.Context, linear.OAuthConfig, io.Writer, linear.LoginOptions) (*linear.Token, error) {
+		t.Fatal("the browser flow must not start without a client id")
+		return nil, nil
+	}
+	for _, c := range []*cobra.Command{linearAddCmd, linearLoginCmd} {
+		err := c.RunE(c, nil)
+		require.EqualError(t, err, "Linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)", c.Name())
+	}
 }
