@@ -32,6 +32,90 @@ type Syncer struct {
 	// partial-batch-failure watermark behavior without needing a real DB error
 	// (see sync_test.go).
 	upsertImapMessage func(db.ImapMessage, string) error
+
+	// firstSyncFrom is the window start of the last Sync when it was the
+	// account's first (no last UID and no UIDVALIDITY recorded) and its
+	// search succeeded; zero otherwise. A UIDVALIDITY-reset resync does not
+	// count. Sync resets it; the daemon reads it via FirstSyncFrom.
+	firstSyncFrom time.Time
+}
+
+// AccountID returns the email_accounts row this syncer serves.
+func (s *Syncer) AccountID() int64 { return s.account.ID }
+
+// FirstSyncFrom reports whether the last Sync was the account's first and,
+// if so, the start of its SINCE window.
+func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
+	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
+}
+
+// FetchRange stores every message received in [from, to) (IMAP SINCE/BEFORE,
+// day-granular), uncapped, in batches of MaxMessagesPerSync. It writes no
+// watermark and no auth state; the first error stops it.
+func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error) {
+	client, uidValidity, err := Dial(s.cfg, s.auth)
+	if err != nil {
+		return 0, fmt.Errorf("connecting account %d: %w", s.account.ID, err)
+	}
+	defer func() { _ = client.Close() }()
+
+	uids, err := client.SearchRange(from, to)
+	if err != nil {
+		return 0, fmt.Errorf("listing account %d: %w", s.account.ID, err)
+	}
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+
+	batch := s.appConfig.Imap.MaxMessagesPerSync
+	if batch <= 0 {
+		batch = config.DefaultImapMaxMessagesPerSync
+	}
+	maxBody := s.maxBodyBytes()
+	upsert := s.upsertFunc()
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	count := 0
+	for start := 0; start < len(uids); start += batch {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		msgs, err := client.FetchUIDs(uids[start:min(start+batch, len(uids))])
+		if err != nil {
+			return count, fmt.Errorf("fetching account %d: %w", s.account.ID, err)
+		}
+		for _, m := range msgs {
+			if err := upsert(s.messageRow(m, uidValidity, maxBody), syncedAt); err != nil {
+				return count, fmt.Errorf("account %d: upsert uid %d: %w", s.account.ID, m.UID, err)
+			}
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Syncer) messageRow(m Message, uidValidity uint32, maxBody int) db.ImapMessage {
+	toJSON, _ := json.Marshal(m.To)
+	ccJSON, _ := json.Marshal(m.Cc)
+	return db.ImapMessage{
+		AccountID: s.account.ID, UID: int64(m.UID), UIDValidity: int64(uidValidity),
+		FromEmail: m.FromEmail, FromName: m.FromName,
+		ToJSON: string(toJSON), CcJSON: string(ccJSON),
+		Subject: m.Subject, Snippet: m.Snippet,
+		BodyText: truncateUTF8(m.BodyText, maxBody), InternalDate: m.InternalDate,
+		IsUnread: m.IsUnread,
+	}
+}
+
+func (s *Syncer) upsertFunc() func(db.ImapMessage, string) error {
+	if s.upsertImapMessage != nil {
+		return s.upsertImapMessage
+	}
+	return s.db.UpsertImapMessage
+}
+
+func (s *Syncer) maxBodyBytes() int {
+	if s.appConfig.Imap.MaxBodyBytes > 0 {
+		return s.appConfig.Imap.MaxBodyBytes
+	}
+	return config.DefaultImapMaxBodyBytes
 }
 
 // NewSyncer creates a Syncer for one connected mailbox.
@@ -46,6 +130,7 @@ func NewSyncer(account db.EmailAccount, cfg AccountConfig, auth Authenticator, d
 // Sync connects, fetches new messages since the account's watermark, stores
 // them, and advances the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
+	s.firstSyncFrom = time.Time{}
 	days := s.appConfig.Imap.InitialHistoryDays
 	if days <= 0 {
 		days = config.DefaultImapInitialHistoryDays
@@ -54,15 +139,13 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if maxMsgs <= 0 {
 		maxMsgs = config.DefaultImapMaxMessagesPerSync
 	}
-	maxBody := s.appConfig.Imap.MaxBodyBytes
-	if maxBody <= 0 {
-		maxBody = config.DefaultImapMaxBodyBytes
-	}
+	maxBody := s.maxBodyBytes()
 
 	lastUID, uidValidity, err := s.db.GetImapWatermark(s.account.ID)
 	if err != nil {
 		return 0, fmt.Errorf("reading imap watermark for account %d: %w", s.account.ID, err)
 	}
+	firstSync := lastUID == 0 && uidValidity == 0
 
 	client, newUIDValidity, err := Dial(s.cfg, s.auth)
 	if err != nil {
@@ -86,13 +169,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// discarded tail is never fetched over the wire at all, unlike fetching
 	// everything up front and capping the already-fetched result.
 	var uids []uint32
+	var since time.Time
 	if lastUID == 0 {
-		uids, err = client.SearchSince(time.Now().AddDate(0, 0, -days))
+		since = time.Now().AddDate(0, 0, -days)
+		uids, err = client.SearchSince(since)
 	} else {
 		uids, err = client.SearchNewSince(uint32(lastUID))
 	}
 	if err != nil {
 		return 0, fmt.Errorf("listing account %d: %w", s.account.ID, err)
+	}
+	if firstSync {
+		s.firstSyncFrom = since
 	}
 
 	// Ascending UID order so a cap below keeps the oldest, unprocessed tail
@@ -114,10 +202,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// regardless of what order the server returned FETCH responses in.
 	sort.Slice(msgs, func(i, j int) bool { return msgs[i].UID < msgs[j].UID })
 
-	upsert := s.upsertImapMessage
-	if upsert == nil {
-		upsert = s.db.UpsertImapMessage
-	}
+	upsert := s.upsertFunc()
 
 	now := time.Now().UTC()
 	syncedAt := now.Format(time.RFC3339)
@@ -129,17 +214,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		toJSON, _ := json.Marshal(m.To)
-		ccJSON, _ := json.Marshal(m.Cc)
-		row := db.ImapMessage{
-			AccountID: s.account.ID, UID: int64(m.UID), UIDValidity: int64(newUIDValidity),
-			FromEmail: m.FromEmail, FromName: m.FromName,
-			ToJSON: string(toJSON), CcJSON: string(ccJSON),
-			Subject: m.Subject, Snippet: m.Snippet,
-			BodyText: truncateUTF8(m.BodyText, maxBody), InternalDate: m.InternalDate,
-			IsUnread: m.IsUnread,
-		}
-		if err := upsert(row, syncedAt); err != nil {
+		if err := upsert(s.messageRow(m, newUIDValidity, maxBody), syncedAt); err != nil {
 			s.logger.Printf("imap account %d: upsert uid %d: %v", s.account.ID, m.UID, err)
 			stalled = true
 			continue
