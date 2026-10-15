@@ -409,6 +409,21 @@ func TestRotationRaceKeepsFullGeneration(t *testing.T) {
 	}
 }
 
+// The same inode truncated below the cap (someone emptied the log in place)
+// is no longer full: nothing to rotate.
+func TestRotationSkipsSameFileNoLongerOverCap(t *testing.T) {
+	path := setup(t)
+	setMaxFileBytesForTest(1024)
+	seen := writeFull(t, path, 4096)
+	if err := os.Truncate(path, 10); err != nil {
+		t.Fatal(err)
+	}
+	rotate(path, seen)
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("rotated a file under the cap (err=%v)", err)
+	}
+}
+
 func TestRotationSkippedWhileAnotherWriterHoldsTheLock(t *testing.T) {
 	path := setup(t)
 	setMaxFileBytesForTest(1024)
