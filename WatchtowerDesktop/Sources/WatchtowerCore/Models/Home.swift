@@ -218,18 +218,34 @@ package struct HomeSnapshot: Equatable, Sendable {
     package let today: [TodayCard]
     /// Every allowed card's read failed.
     package let todayReadFailed: Bool
+    /// The allowed cards whose read failed (`HomeTodayData.failed ∩ allowed`);
+    /// any one of them rules out the all-clear (Review Focus 3).
+    package let todayFailed: Set<TodayCardKind>
 
-    package init(gettingReady: GettingReadyZone, firstSync: FirstSyncLine?, today: [TodayCard], todayReadFailed: Bool) {
+    package init(
+        gettingReady: GettingReadyZone,
+        firstSync: FirstSyncLine?,
+        today: [TodayCard],
+        todayReadFailed: Bool,
+        todayFailed: Set<TodayCardKind> = []
+    ) {
         self.gettingReady = gettingReady
         self.firstSync = firstSync
         self.today = today
         self.todayReadFailed = todayReadFailed
+        self.todayFailed = todayFailed
     }
 
-    /// "Nothing needs you right now.": no card, no failed read, and no
-    /// Getting ready zone still asking for attention.
+    /// No card to show, and at least one allowed card's read failed: Home
+    /// shows the read error where the all-clear line would be.
+    package var showsReadError: Bool {
+        today.isEmpty && (todayReadFailed || !todayFailed.isEmpty)
+    }
+
+    /// "Nothing needs you right now.": no card, no failed read (not even
+    /// one), and no Getting ready zone still asking for attention.
     package var nothingNeedsYou: Bool {
-        guard today.isEmpty, !todayReadFailed else { return false }
+        guard today.isEmpty, !showsReadError else { return false }
         switch gettingReady {
         case .hidden, .allReady: return true
         case .shown: return false

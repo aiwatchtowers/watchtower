@@ -309,8 +309,14 @@ final class HomeTodayTests: XCTestCase {
 
     // MARK: - Snapshot
 
-    private func snapshot(_ zone: GettingReadyZone, today: [TodayCard] = [], failed: Bool = false) -> HomeSnapshot {
-        HomeSnapshot(gettingReady: zone, firstSync: nil, today: today, todayReadFailed: failed)
+    private func snapshot(
+        _ zone: GettingReadyZone,
+        today: [TodayCard] = [],
+        failed: Bool = false,
+        failedKinds: Set<TodayCardKind> = []
+    ) -> HomeSnapshot {
+        HomeSnapshot(gettingReady: zone, firstSync: nil, today: today, todayReadFailed: failed,
+                     todayFailed: failedKinds)
     }
 
     func testEmptyDataIsNothingNeedsYou() {
@@ -328,6 +334,29 @@ final class HomeTodayTests: XCTestCase {
     }
 
     func testFailedReadIsNotNothingNeedsYou() {
-        XCTAssertFalse(snapshot(.hidden, failed: true).nothingNeedsYou)
+        let all = snapshot(.hidden, failed: true, failedKinds: Set(TodayCardKind.allCases))
+        XCTAssertFalse(all.nothingNeedsYou)
+        XCTAssertTrue(all.showsReadError)
+    }
+
+    /// Review Focus 3: one failed card read with every other card empty is
+    /// the read error, never the all-clear.
+    func testOneFailedReadIsNotNothingNeedsYou() {
+        var data = HomeTodayData()
+        data.failed = [.briefing]
+        let today = cards(data)
+        XCTAssertTrue(today.isEmpty)
+        let partial = snapshot(.hidden, today: today, failedKinds: [.briefing])
+        XCTAssertFalse(partial.todayReadFailed)
+        XCTAssertFalse(partial.nothingNeedsYou)
+        XCTAssertTrue(partial.showsReadError)
+    }
+
+    func testFailedReadBesideACardIsNoReadError() {
+        var data = HomeTodayData()
+        data.targets = [target(1, "Ship the release", status: "in_progress")]
+        let partial = snapshot(.hidden, today: cards(data), failedKinds: [.briefing])
+        XCTAssertFalse(partial.nothingNeedsYou)
+        XCTAssertFalse(partial.showsReadError)
     }
 }
