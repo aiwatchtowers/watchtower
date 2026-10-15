@@ -149,6 +149,21 @@ final class TrayMenuViewTests: XCTestCase {
         return try! JSONDecoder().decode(SyncProgress.self, from: Data(json.utf8))
     }
 
+    /// The history backfill line sits under the status text while a backfill loads.
+    func testBackfillLineIsRenderedWhenSet() throws {
+        let view = TrayMenuContent(
+            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil, voicesPendingCount: 0,
+            backfillLine: "Loading history: 1 of 30 days",
+            updateVersion: nil, updateAction: {}, syncNowAction: {}, quickCaptureAction: {}, voicesAction: {},
+            reviewVoicesAction: {}, trainVoicesAction: {}, openAction: {}, settingsAction: {})
+        XCTAssertNoThrow(try view.inspect().find(text: "Loading history: 1 of 30 days"))
+    }
+
+    func testNoBackfillLineWhenNil() {
+        let view = Self.content()
+        XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Loading history") })
+    }
+
     func testNoErrorLinesWhenNothingFailed() throws {
         let view = Self.content()
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("CLI store:") })

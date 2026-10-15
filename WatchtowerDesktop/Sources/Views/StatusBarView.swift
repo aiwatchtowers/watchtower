@@ -7,6 +7,7 @@ struct StatusBarView: View {
     @State private var daemonManager = DaemonManager()
     @State private var lastSync: String?
     @State private var stats: WorkspaceStats?
+    @State private var backfillLine: String?
     @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
@@ -32,6 +33,11 @@ struct StatusBarView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 appState.selectedDestination = .usage
+            }
+
+            if let backfillLine {
+                Text(backfillLine)
+                    .foregroundStyle(.tertiary)
             }
 
             Spacer()
@@ -77,14 +83,15 @@ struct StatusBarView: View {
         guard let db = appState.databaseManager else { return }
         Task.detached {
             do {
-                let (ws, st) = try await db.dbPool.read { db in
+                let (ws, st, line) = try await db.dbPool.read { db in
                     let ws = try WorkspaceQueries.fetchWorkspace(db)
                     let st = try WorkspaceStats.fetch(db)
-                    return (ws, st)
+                    return (ws, st, BackfillProgress.line(try BackfillQueries.rows(db)))
                 }
                 await MainActor.run {
                     lastSync = ws?.syncedAt
                     stats = st
+                    backfillLine = line
                 }
             } catch {
                 // Status bar stats are decorative: a failed read keeps the last shown values.
