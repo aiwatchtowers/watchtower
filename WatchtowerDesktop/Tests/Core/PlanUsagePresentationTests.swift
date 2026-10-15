@@ -104,4 +104,23 @@ final class PlanUsagePresentationTests: XCTestCase {
         XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "collecting"), last: last))
         XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "hit"), last: last))
     }
+
+    func testProjectedEndClampsAndPercentText() {
+        let last = PlanUsageSample(takenAt: now, percent: 40, resetsAt: nil)
+        func safe(_ rate: Double) -> PlanUsageLimit {
+            PlanUsageLimit(key: "session", label: "5-hour", group: "session", percent: 40,
+                           resetsAt: now.addingTimeInterval(2 * 3600), severity: nil,
+                           projection: PlanUsageProjection(state: "safe", hitAt: nil, ratePerHour: rate))
+        }
+        XCTAssertEqual(PlanUsagePresentation.projectedEnd(safe(500), last: last)?.percent, 100)
+        XCTAssertEqual(PlanUsagePresentation.projectedEnd(safe(-500), last: last)?.percent, 0)
+        XCTAssertEqual(PlanUsagePresentation.percentText(41.6), "42 %")
+        XCTAssertEqual(PlanUsagePresentation.percentText(0), "0 %")
+    }
+
+    func testBannerTrimsTrailingDot() {
+        let err = PlanUsageStatus(state: "error", reason: "", plan: "max", fetchedAt: nil,
+                                  lastError: "HTTP 500.", limits: [], breakdown: [])
+        XCTAssertEqual(PlanUsagePresentation.banner(err, now: now), "Couldn't update: HTTP 500.")
+    }
 }

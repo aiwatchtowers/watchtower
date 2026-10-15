@@ -13,7 +13,9 @@ struct ClaudePlanView: View {
 
     var body: some View {
         if let center = appState.planUsageCenter {
-            content(center)
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                content(center, now: context.date)
+            }
         } else {
             Text("Claude plan limits are not loaded yet.")
                 .foregroundStyle(.secondary)
@@ -21,8 +23,7 @@ struct ClaudePlanView: View {
         }
     }
 
-    private func content(_ center: PlanUsageCenter) -> some View {
-        let now = Date()
+    private func content(_ center: PlanUsageCenter, now: Date) -> some View {
         let status = center.status
         let stale = status.map { PlanUsagePresentation.isStale($0, now: now) } ?? true
         return ScrollView {
@@ -79,7 +80,7 @@ struct ClaudePlanView: View {
                 HStack {
                     Text(limit.label).fontWeight(.medium)
                     Spacer()
-                    Text("\(Int(limit.percent.rounded())) %").monospacedDigit()
+                    Text(PlanUsagePresentation.percentText(limit.percent)).monospacedDigit()
                 }
                 ProgressView(value: min(100, max(0, limit.percent)), total: 100).tint(color(tone))
                 Text(PlanUsagePresentation.resetText(limit, now: now)).font(.caption).foregroundStyle(.secondary)
@@ -103,13 +104,20 @@ struct ClaudePlanView: View {
                     .foregroundStyle(color(tone))
             }
             if let last = points.last, let end = projected {
-                LineMark(x: .value("Time", last.takenAt), y: .value("Percent", last.percent), series: .value("Series", "projection"))
-                LineMark(x: .value("Time", end.at), y: .value("Percent", end.percent), series: .value("Series", "projection"))
-                    .lineStyle(StrokeStyle(dash: [4, 3]))
+                ForEach([(last.takenAt, last.percent), (end.at, end.percent)], id: \.0) { at, percent in
+                    LineMark(
+                        x: .value("Time", at), y: .value("Percent", percent),
+                        series: .value("Series", "projection")
+                    )
+                        .foregroundStyle(color(tone))
+                        .lineStyle(StrokeStyle(dash: [4, 3]))
+                }
             }
             RuleMark(x: .value("Reset", reset))
                 .foregroundStyle(.secondary)
-                .annotation(position: .top, alignment: .trailing) { Text("Reset").font(.caption2).foregroundStyle(.secondary) }
+                .annotation(position: .top, alignment: .trailing, overflowResolution: .init(x: .fit)) {
+                    Text("Reset").font(.caption2).foregroundStyle(.secondary)
+                }
         }
         .chartYScale(domain: 0...100)
         .chartXScale(domain: start...reset)
@@ -124,7 +132,7 @@ struct ClaudePlanView: View {
                         HStack {
                             Text(row.label)
                             Spacer()
-                            Text("\(Int(row.percent.rounded())) %").monospacedDigit()
+                            Text(PlanUsagePresentation.percentText(row.percent)).monospacedDigit()
                         }
                         ProgressView(value: min(100, max(0, row.percent)), total: 100)
                             .tint(stale ? .secondary : .accentColor)

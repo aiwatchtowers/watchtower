@@ -75,8 +75,10 @@ package enum PlanUsagePresentation {
         case "stale": return "Your Claude Code sign-in expired — open Claude Code to refresh it."
         case "disabled": return "Claude plan limits are turned off in Features."
         case "error":
+            var detail = s.lastError
+            while detail.hasSuffix(".") { detail.removeLast() }
             let tail = s.fetchedAt.map { " Showing numbers from \(relative($0, now: now))." } ?? ""
-            return "Couldn't update: \(s.lastError).\(tail)"
+            return "Couldn't update: \(detail).\(tail)"
         default: return nil
         }
     }
@@ -102,7 +104,8 @@ package enum PlanUsagePresentation {
 
     /// End point of the dashed projection line from the last sample: the hit
     /// moment at 100 % for `will_hit`, else the reset at the extrapolated
-    /// percent (clamped to 0...100). Nil when there is nothing to draw.
+    /// percent (clamped to 0...100). Nil when there is nothing to draw:
+    /// `collecting` has no trustworthy rate yet and `hit` is already at the cap.
     package static func projectedEnd(_ l: PlanUsageLimit, last: PlanUsageSample) -> (at: Date, percent: Double)? {
         guard let reset = l.resetsAt, reset > last.takenAt else { return nil }
         switch l.projection.state {
@@ -115,6 +118,11 @@ package enum PlanUsagePresentation {
         default:
             return nil
         }
+    }
+
+    /// "42 %" for a limit or breakdown row.
+    package static func percentText(_ percent: Double) -> String {
+        "\(Int(percent.rounded())) %"
     }
 
     private static func relative(_ date: Date, now: Date) -> String {
