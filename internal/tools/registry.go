@@ -243,9 +243,13 @@ var (
 	ErrBadTransition     = errors.New("action is not in an applicable state")
 	ErrNotFound          = errors.New("action not found")
 	// ErrWorkbenchAutomationWrite: a write of a workbench-scoped automation run
-	// (or of a run that no longer exists) — refused until workbench
-	// automations ship (P5); see workbenchAutomationGate.
+	// — refused until workbench automations ship (P5); see
+	// workbenchAutomationGate and WorkbenchAutomationWriteError.
 	ErrWorkbenchAutomationWrite = errors.New("workbench automations get writes in a later phase")
+	// ErrAutomationRunGone: an automation run's write whose run no longer
+	// exists — refused (fail closed, workbenchAutomationGate), since the run
+	// may have been a workbench one.
+	ErrAutomationRunGone = errors.New("the automation run no longer exists")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -616,7 +620,7 @@ func automationBindingGate(b Binding) error {
 // It checks the binding's WorkbenchID and, for a run, the run's automation's
 // project_id, so one gate covers Propose, a later Approve and every Apply
 // (inline or `actions apply`) of a row recorded before it existed. A run that
-// no longer exists fails closed: deleting a workbench cascades its
+// no longer exists fails closed (ErrAutomationRunGone): deleting a workbench cascades its
 // automations and runs, so a missing run may have been a workbench one.
 // Bindings off the automation surface pass untouched.
 func (r *Registry) workbenchAutomationGate(b Binding) error {
@@ -624,14 +628,14 @@ func (r *Registry) workbenchAutomationGate(b Binding) error {
 		return nil
 	}
 	if b.WorkbenchID != 0 {
-		return fmt.Errorf("%w: workbench %d's automation cannot write yet", ErrWorkbenchAutomationWrite, b.WorkbenchID)
+		return WorkbenchAutomationWriteError(b.WorkbenchID)
 	}
 	if b.AutomationRunID == 0 {
 		return nil
 	}
 	run, err := r.db.GetAutomationRun(b.AutomationRunID)
 	if errors.Is(err, db.ErrAutomationRunNotFound) {
-		return fmt.Errorf("%w: automation run %d no longer exists", ErrWorkbenchAutomationWrite, b.AutomationRunID)
+		return fmt.Errorf("automation run %d: %w", b.AutomationRunID, ErrAutomationRunGone)
 	}
 	if err != nil {
 		return err
@@ -644,6 +648,14 @@ func (r *Registry) workbenchAutomationGate(b Binding) error {
 		return fmt.Errorf("%w: automation run %d belongs to workbench %d", ErrWorkbenchAutomationWrite, b.AutomationRunID, a.ProjectID)
 	}
 	return nil
+}
+
+// WorkbenchAutomationWriteError is the refusal of a write by workbench wb's
+// automation until P5 (ErrWorkbenchAutomationWrite). The SDK throws the same
+// error for a dry run, which never reaches the registry, so a dry run
+// refuses what a live run would.
+func WorkbenchAutomationWriteError(wb int64) error {
+	return fmt.Errorf("%w: workbench %d's automation cannot write yet", ErrWorkbenchAutomationWrite, wb)
 }
 
 // directApplyGate is what keeps DirectApply narrow: it never runs an External
