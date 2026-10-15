@@ -1632,3 +1632,12 @@ Entry format:
 - weak-dimension: 7. Tests seeded fixtures the production writer never produces (empty limits under non-ok states), the off-path daemon test does not assert the runner stayed down, and `reasonFor` is only tested for 429.
 - rule-gap (candidate, Swift dim 6): *sibling surfaces that render the same status (menu bar label, tray, tab, notices) share one "is live" predicate. Gating one surface on `state` and another on non-nil is the tell.*
 - outcome: TBD
+
+## 2026-10-16 — feature/linear-integration (round 1) — verdict: changes-needed
+
+- contested: issue moved from a selected Linear team to an unselected one: upserting by UUID only helps if some selected team's filter still returns the issue; with a per-team `team.id eq` filter the row freezes under the old team/key and stays in `tracker_issues`, which has no team-selection filter. LINEAR-04's guard serves the "moved" node back under the OLD team's query, which the real API never does [6/7]
+- false-positive: none dismissed outright; F5 (Revoke treats HTTP 400 as success) downgraded to nit: it only decides whether a warning prints, and the token file is deleted either way [4]
+- miss: the moved-to-unselected-team staleness was caught only by codex; the prosecutor checked the UUID upsert and stopped there [6]
+- weak-dimension: 7 — a fake GraphQL server that ignores the request filter can't guard any filter-dependent contract; the fakes can't fail comment or planning pages either, yet LINEAR-01 is marked Enforced for those passes
+- rule-gap: a test fake for a filtered or paginated remote API must apply the filter it receives (or assert on it), else guards about what the filter returns are vacuous; and a CLI `sync` verb must exit non-zero when any account/unit fails (the Jira twin does, the Linear one printed and returned nil) — the bimodal-coverage rule again: the untested CLI entry point carried the bug
+- outcome: TBD
