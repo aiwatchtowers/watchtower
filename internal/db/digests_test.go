@@ -447,35 +447,59 @@ func TestChannelsWithMessagesInRange(t *testing.T) {
 	defer db.Close()
 
 	for _, m := range []struct{ ch, ts string }{
-		{"C1", "110.000001"}, {"C1", "150.000001"}, {"C1", "190.000001"},
-		{"C2", "250.000001"},
+		{"1:C1", "110.000001"}, {"1:C1", "150.000001"}, {"1:C1", "190.000001"},
+		{"1:C2", "250.000001"},
 	} {
 		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
 		require.NoError(t, err)
 	}
 	for _, d := range []struct{ from, to float64 }{{100, 150}, {300, 400}} {
 		_, err = db.UpsertDigest(Digest{
-			ChannelID: "C1", Type: "channel",
+			ChannelID: "1:C1", Type: "channel",
 			PeriodFrom: d.from, PeriodTo: d.to,
 			Summary: "s", MessageCount: 1, Model: "haiku",
 		})
 		require.NoError(t, err)
 	}
 
-	candidates, err := db.ChannelsWithMessagesInRange(100, 200)
+	candidates, err := db.ChannelsWithMessagesInRange(1, 100, 200)
 	require.NoError(t, err)
 	require.Len(t, candidates, 1, "C2's only message is outside the range")
-	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, "1:C1", candidates[0].ChannelID)
 	assert.Equal(t, 190.0, candidates[0].NewestInRange)
 	assert.Equal(t, 150.0, candidates[0].LastDigestInRange,
 		"the digest ending at 400 is outside the range and must not count")
 
 	// A range with no in-range digest reports 0.
-	candidates, err = db.ChannelsWithMessagesInRange(200, 300)
+	candidates, err = db.ChannelsWithMessagesInRange(1, 200, 300)
 	require.NoError(t, err)
 	require.Len(t, candidates, 1)
-	assert.Equal(t, "C2", candidates[0].ChannelID)
+	assert.Equal(t, "1:C2", candidates[0].ChannelID)
 	assert.Equal(t, 0.0, candidates[0].LastDigestInRange)
+}
+
+// TestChannelsWithMessagesInRange_AccountScoped pins that a backfill row's
+// discovery sees only its own Slack account's channels: channel ids are
+// namespaced "<account>:<raw>", and account 1 must not match account 11.
+func TestChannelsWithMessagesInRange_AccountScoped(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, ch := range []string{"1:C1", "2:C2", "11:C3"} {
+		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, '150.000001', 'U1', 'msg')", ch)
+		require.NoError(t, err)
+	}
+
+	candidates, err := db.ChannelsWithMessagesInRange(2, 100, 200)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "2:C2", candidates[0].ChannelID)
+
+	candidates, err = db.ChannelsWithMessagesInRange(1, 100, 200)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1, "account 11's channel is not account 1's")
+	assert.Equal(t, "1:C1", candidates[0].ChannelID)
 }
 
 func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {

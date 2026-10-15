@@ -20,8 +20,10 @@ type BackfillWindowResult struct {
 	Complete bool
 }
 
-// RunBackfillWindow digests the Slack history inside one backfill chunk
-// (from, to]. Each channel's window is resolved like the forward path's, but
+// RunBackfillWindow digests one Slack account's history inside one backfill
+// chunk (from, to]: only that account's channels, since each account has its
+// own backfill row (another account's messages in the same range wait for
+// its own row). Each channel's window is resolved like the forward path's, but
 // scoped to the chunk: it starts at the later of from, the channel's newest
 // digest ending inside the chunk, what this call already considered, and the
 // FEAT-03 fast-forward floor, and loads up to `to`. Passes repeat until no
@@ -38,7 +40,7 @@ type BackfillWindowResult struct {
 // Lock contention returns {0, false} with no error: the chunk is retried next
 // cycle. The returned usage is the sum of this call's own passes — never the
 // pipeline's shared counters, which the forward phase also feeds.
-func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (BackfillWindowResult, *Usage, error) {
+func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64) (BackfillWindowResult, *Usage, error) {
 	if !p.cfg.Digest.Enabled {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
 	}
@@ -68,7 +70,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (Bac
 		if err := ctx.Err(); err != nil {
 			return res, usage, err
 		}
-		windows, err := p.backfillWindows(from, to, fastForwardTS)
+		windows, err := p.backfillWindows(slackAccountID, from, to, fastForwardTS)
 		if err != nil {
 			return res, usage, err
 		}
@@ -114,8 +116,8 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (Bac
 // that still has messages in (from, to] past its window start. Muted channels
 // and 1:1 DMs are dropped here, not only inside runChannelWindows: they are
 // never digested, so leaving them in would read as a pass without progress.
-func (p *Pipeline) backfillWindows(from, to, fastForwardTS float64) ([]channelWindow, error) {
-	candidates, err := p.db.ChannelsWithMessagesInRange(from, to)
+func (p *Pipeline) backfillWindows(slackAccountID int64, from, to, fastForwardTS float64) ([]channelWindow, error) {
+	candidates, err := p.db.ChannelsWithMessagesInRange(slackAccountID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("digest backfill: %w", err)
 	}

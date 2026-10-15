@@ -171,16 +171,16 @@ func seedBackfillChunk(t *testing.T, database *db.DB) (from, to time.Time) {
 	t.Helper()
 	from = time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
 	to = from.Add(48 * time.Hour)
-	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "alpha", Type: "public"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "1:C1", Name: "alpha", Type: "public"}))
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	for i := range 5 {
 		require.NoError(t, database.UpsertMessage(db.Message{
-			ChannelID: "C1", TS: fmt.Sprintf("%d.%06d", from.Unix()+3600+int64(i*60), i),
+			ChannelID: "1:C1", TS: fmt.Sprintf("%d.%06d", from.Unix()+3600+int64(i*60), i),
 			UserID: "U1", Text: fmt.Sprintf("alpha-%d", i),
 		}))
 	}
 	_, err := database.UpsertDigest(db.Digest{
-		ChannelID: "C2", Type: "channel", PeriodFrom: float64(from.Unix()) + 7200,
+		ChannelID: "1:C2", Type: "channel", PeriodFrom: float64(from.Unix()) + 7200,
 		PeriodTo: float64(from.Unix()) + 7300, Summary: "s", MessageCount: 3, Model: "m",
 	})
 	require.NoError(t, err)
@@ -194,12 +194,12 @@ func TestHistoryBackfill_SlackSourceProcess(t *testing.T) {
 	d.SetDigestPipeline(digest.New(database, d.config, gen, d.logger))
 	from, to := seedBackfillChunk(t, database)
 
-	src := slackSource{d: d}
+	src := slackSource{id: 1, d: d}
 	complete, err := src.Process(context.Background(), from, to)
 	require.NoError(t, err)
 	assert.True(t, complete)
 
-	ch, err := database.GetDigests(db.DigestFilter{ChannelID: "C1", Type: "channel"})
+	ch, err := database.GetDigests(db.DigestFilter{ChannelID: "1:C1", Type: "channel"})
 	require.NoError(t, err)
 	require.Len(t, ch, 1, "the window digested C1")
 	daily, err := database.GetDigests(db.DigestFilter{Type: "daily"})

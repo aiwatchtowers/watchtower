@@ -134,7 +134,7 @@ func (d *Daemon) historyBackfillDue() bool {
 func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 	out := make([]historybackfill.Source, 0, len(d.orchestrators)+len(d.gmailSyncers)+len(d.imapSyncers)+len(d.jiraSyncers))
 	for _, o := range d.orchestrators {
-		out = append(out, slackSource{o: o, d: d})
+		out = append(out, slackSource{o: o, id: o.AccountID(), d: d})
 	}
 	for _, s := range d.gmailSyncers {
 		out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
@@ -265,12 +265,13 @@ func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error
 // slackSource backfills one Slack account: search fetch, then chunk digests
 // and the chunk's daily rollups.
 type slackSource struct {
-	o *sync.Orchestrator
-	d *Daemon
+	o  *sync.Orchestrator
+	id int64
+	d  *Daemon
 }
 
 func (s slackSource) Kind() string     { return "slack" }
-func (s slackSource) AccountID() int64 { return s.o.AccountID() }
+func (s slackSource) AccountID() int64 { return s.id }
 
 func (s slackSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := s.o.BackfillSearch(ctx, from, to)
@@ -292,7 +293,7 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 		return true, nil
 	}
 	fromTS, toTS := float64(from.Unix()), float64(to.Unix())
-	res, _, err := d.digestPipe.RunBackfillWindow(ctx, fromTS, toTS)
+	res, _, err := d.digestPipe.RunBackfillWindow(ctx, s.id, fromTS, toTS)
 	if err != nil || !res.Complete {
 		return false, err
 	}

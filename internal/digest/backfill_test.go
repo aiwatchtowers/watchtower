@@ -57,32 +57,68 @@ func batchAnswer(channelIDs ...string) string {
 
 func TestRunBackfillWindow_DigestsChunk(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
-	seedChannel(t, database, "C2", "beta")
+	seedChannel(t, database, "1:C1", "alpha")
+	seedChannel(t, database, "1:C2", "beta")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
-	seedRangeMessages(t, database, "C2", "beta", from+7200, 5)
+	seedRangeMessages(t, database, "1:C1", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "1:C2", "beta", from+7200, 5)
 
 	gen := &promptCapturingGenerator{responses: map[string]string{
-		"digest.channel_batch": batchAnswer("C1", "C2"),
+		"digest.channel_batch": batchAnswer("1:C1", "1:C2"),
 		"digest.channel":       validDigestJSON(),
 	}}
 	p := backfillPipeline(t, database, gen)
 
-	res, usage, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, usage, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.True(t, res.Complete)
 	assert.Equal(t, 2, res.Digests)
 	require.NotNil(t, usage)
 	assert.Positive(t, usage.InputTokens, "the call's own usage is returned")
 
-	for _, ch := range []string{"C1", "C2"} {
+	for _, ch := range []string{"1:C1", "1:C2"} {
 		ds := channelDigests(t, database, ch)
 		require.Len(t, ds, 1, ch)
 		assert.GreaterOrEqual(t, ds[0].PeriodFrom, from, ch)
 		assert.LessOrEqual(t, ds[0].PeriodTo, to, ch)
 	}
+}
+
+// TestRunBackfillWindow_AccountScoped pins F1: a backfill row belongs to one
+// Slack account, so its chunk digests only that account's channels — the
+// other account's messages in the same range wait for that account's own
+// row, and its forward digest is left alone.
+func TestRunBackfillWindow_AccountScoped(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "1:CA", "alpha")
+	seedChannel(t, database, "2:CB", "beta")
+	seedUser(t, database, "U1", "alice", "Alice")
+	from, to := backfillRange()
+	seedRangeMessages(t, database, "1:CA", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "2:CB", "beta", from+3600, 5)
+	now := float64(time.Now().Unix())
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "1:CA", Type: "channel", PeriodFrom: now - 7200, PeriodTo: now - 60,
+		Summary: "forward A", MessageCount: 1, Model: "m",
+	})
+	require.NoError(t, err)
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel_batch": batchAnswer("2:CB"),
+		"digest.channel":       validDigestJSON(),
+	}}
+	p := backfillPipeline(t, database, gen)
+
+	res, _, err := p.RunBackfillWindow(context.Background(), 2, from, to)
+	require.NoError(t, err)
+	assert.True(t, res.Complete)
+	assert.Equal(t, 1, res.Digests)
+	assert.Zero(t, gen.promptsContaining("alpha-0"), "account 1's messages are not in account 2's backfill")
+	assert.Len(t, channelDigests(t, database, "2:CB"), 1)
+	da := channelDigests(t, database, "1:CA")
+	require.Len(t, da, 1, "account 1 keeps only its forward digest")
+	assert.Equal(t, "forward A", da[0].Summary)
 }
 
 // apiTokenGenerator answers every call with a fixed usage that includes
@@ -104,11 +140,11 @@ func (g *apiTokenGenerator) Generate(context.Context, string, string, string) (s
 // the forward phase also feeds.
 func TestRunBackfillWindow_UsageIsThisCallsOwn(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "busy")
+	seedChannel(t, database, "1:C1", "busy")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
 	for i := range db.DefaultTimeRangeLimit + 50 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("busy-%d", i))
+		seedMessage(t, database, "1:C1", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("busy-%d", i))
 	}
 
 	gen := &apiTokenGenerator{}
@@ -118,7 +154,7 @@ func TestRunBackfillWindow_UsageIsThisCallsOwn(t *testing.T) {
 	p.totalOutputTokens.Store(1000)
 	p.totalAPITokens.Store(1000)
 
-	res, usage, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, usage, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	require.Equal(t, 2, res.Digests, "two passes, two AI calls")
 	require.Equal(t, 2, gen.calls)
@@ -133,26 +169,26 @@ func TestRunBackfillWindow_UsageIsThisCallsOwn(t *testing.T) {
 // call then reports the failure so the chunk takes a strike.
 func TestRunBackfillWindow_FailedChannelNotReofferedInTheSameCall(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C_OK", "steady")
-	seedChannel(t, database, "C_FAIL", "flaky")
+	seedChannel(t, database, "1:C_OK", "steady")
+	seedChannel(t, database, "1:C_FAIL", "flaky")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
 	// A backlog over the load cap, so the healthy channel needs a second pass.
 	for i := range db.DefaultTimeRangeLimit + 50 {
-		seedMessage(t, database, "C_OK", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("steady-%d", i))
+		seedMessage(t, database, "1:C_OK", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("steady-%d", i))
 	}
-	seedRangeMessages(t, database, "C_FAIL", "flaky", from+3600, 5)
+	seedRangeMessages(t, database, "1:C_FAIL", "flaky", from+3600, 5)
 
 	gen := &channelKeyedGenerator{failChannel: "flaky", response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 	p.cfg.Digest.BatchMaxChannels = 1
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.Error(t, err, "a channel left failing is reported, not silently passed")
 	assert.Contains(t, err.Error(), "simulated AI failure")
 	assert.False(t, res.Complete)
 	assert.Equal(t, 2, res.Digests, "the healthy channel still finished its two windows")
-	assert.Len(t, channelDigests(t, database, "C_OK"), 2)
+	assert.Len(t, channelDigests(t, database, "1:C_OK"), 2)
 	assert.Equal(t, 3, gen.calls, "two healthy calls and exactly one call for the failing channel")
 }
 
@@ -165,8 +201,8 @@ func TestRunBackfillWindow_PromptCarriesNoPresentDayContext(t *testing.T) {
 		name     string
 		channels []string
 	}{
-		{"single", []string{"C1"}},
-		{"batch", []string{"C1", "C2"}},
+		{"single", []string{"1:C1"}},
+		{"batch", []string{"1:C1", "1:C2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database := testDB(t)
@@ -193,16 +229,16 @@ func TestRunBackfillWindow_PromptCarriesNoPresentDayContext(t *testing.T) {
 			p := backfillPipeline(t, database, gen)
 			p.TrackContext = "TRACK-CONTEXT-TODAY"
 
-			res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+			res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 			require.NoError(t, err)
 			require.Equal(t, len(tc.channels), res.Digests)
-			require.Positive(t, gen.promptsContaining("old-C1-0"), "the backfill prompt was rendered")
+			require.Positive(t, gen.promptsContaining("old-1:C1-0"), "the backfill prompt was rendered")
 			assert.Zero(t, gen.promptsContaining("PRESENT-DAY-SUMMARY"))
 			assert.Zero(t, gen.promptsContaining("PREVIOUS CONTEXT"))
 			assert.Zero(t, gen.promptsContaining("TRACK-CONTEXT-TODAY"))
 
 			// The forward path still loads it.
-			assert.Contains(t, p.loadPreviousContext("C1", "channel"), "PRESENT-DAY-SUMMARY",
+			assert.Contains(t, p.loadPreviousContext("1:C1", "channel"), "PRESENT-DAY-SUMMARY",
 				"outside a backfill the running summary is still offered")
 		})
 	}
@@ -213,12 +249,12 @@ func TestRunBackfillWindow_PromptCarriesNoPresentDayContext(t *testing.T) {
 // and no current track context — while the forward rollup keeps both.
 func TestRunBackfillRollups_PromptCarriesNoPresentDayContext(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
-	seedChannel(t, database, "C2", "beta")
+	seedChannel(t, database, "1:C1", "alpha")
+	seedChannel(t, database, "1:C2", "beta")
 	from, _ := backfillRange()
 	yesterday := float64(utcDayStart(time.Now().AddDate(0, 0, -1)).Unix())
 	for _, day := range []float64{from, yesterday} {
-		for _, ch := range []string{"C1", "C2"} {
+		for _, ch := range []string{"1:C1", "1:C2"} {
 			_, err := database.UpsertDigest(db.Digest{
 				ChannelID: ch, Type: "channel", PeriodFrom: day + 3600, PeriodTo: day + 7200,
 				Summary: "s " + ch, MessageCount: 3, Model: "m",
@@ -254,63 +290,63 @@ func TestRunBackfillRollups_PromptCarriesNoPresentDayContext(t *testing.T) {
 
 func TestRunBackfillWindow_OverLoadCap(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "busy")
+	seedChannel(t, database, "1:C1", "busy")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
 	for i := range db.DefaultTimeRangeLimit + 50 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("busy-%d", i))
+		seedMessage(t, database, "1:C1", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("busy-%d", i))
 	}
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.True(t, res.Complete)
 	assert.Equal(t, 2, res.Digests)
-	assert.Len(t, channelDigests(t, database, "C1"), 2)
+	assert.Len(t, channelDigests(t, database, "1:C1"), 2)
 }
 
 func TestRunBackfillWindow_DeclinedChannelDoesNotLoop(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C_REAL", "real")
-	seedChannel(t, database, "C_NOISY", "noisy")
+	seedChannel(t, database, "1:C_REAL", "real")
+	seedChannel(t, database, "1:C_NOISY", "noisy")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C_REAL", "real", from+3600, 4)
-	seedRangeMessages(t, database, "C_NOISY", "noisy", from+3600, 4)
+	seedRangeMessages(t, database, "1:C_REAL", "real", from+3600, 4)
+	seedRangeMessages(t, database, "1:C_NOISY", "noisy", from+3600, 4)
 
 	gen := &promptCapturingGenerator{responses: map[string]string{
-		"digest.channel_batch": batchAnswer("C_REAL"),
+		"digest.channel_batch": batchAnswer("1:C_REAL"),
 		"digest.channel":       validDigestJSON(),
 	}}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.True(t, res.Complete, "the declined channel is passed by the in-memory considered mark")
 	assert.Equal(t, 1, res.Digests)
 	assert.Equal(t, 1, gen.promptsContaining("noisy-0"), "the declined channel is rendered once, not re-offered")
 
 	var considered any
-	require.NoError(t, database.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = 'C_NOISY'`).Scan(&considered))
+	require.NoError(t, database.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = '1:C_NOISY'`).Scan(&considered))
 	assert.Nil(t, considered, "a backfill never writes the forward considered mark")
-	require.NoError(t, database.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = 'C_REAL'`).Scan(&considered))
+	require.NoError(t, database.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = '1:C_REAL'`).Scan(&considered))
 	assert.Nil(t, considered)
 	assert.Nil(t, p.backfill, "the backfill scope is cleared after the call")
 }
 
 func TestRunBackfillWindow_LowActivityChannelNotCooledDown(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "trickle")
+	seedChannel(t, database, "1:C1", "trickle")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "trickle", from+3600, 2)
+	seedRangeMessages(t, database, "1:C1", "trickle", from+3600, 2)
 
 	// A forward digest written a moment ago (created_at = now).
 	now := float64(time.Now().Unix())
 	_, err := database.UpsertDigest(db.Digest{
-		ChannelID: "C1", Type: "channel", PeriodFrom: now - 7200, PeriodTo: now - 60,
+		ChannelID: "1:C1", Type: "channel", PeriodFrom: now - 7200, PeriodTo: now - 60,
 		Summary: "forward", MessageCount: 1, Model: "m",
 	})
 	require.NoError(t, err)
@@ -318,7 +354,7 @@ func TestRunBackfillWindow_LowActivityChannelNotCooledDown(t *testing.T) {
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.True(t, res.Complete)
 	assert.Equal(t, 1, res.Digests, "the live-edge cooldown does not apply below every forward mark")
@@ -326,13 +362,13 @@ func TestRunBackfillWindow_LowActivityChannelNotCooledDown(t *testing.T) {
 
 func TestRunBackfillWindow_ForwardWindowUnaffected(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "1:C1", "alpha")
 	seedUser(t, database, "U1", "alice", "Alice")
 	for _, ts := range []string{"600.000000", "700.000000", "800.000000", "2500.000000"} {
-		seedMessage(t, database, "C1", ts, "U1", "msg "+ts)
+		seedMessage(t, database, "1:C1", ts, "U1", "msg "+ts)
 	}
 	_, err := database.UpsertDigest(db.Digest{
-		ChannelID: "C1", Type: "channel", PeriodFrom: 1000, PeriodTo: 2000,
+		ChannelID: "1:C1", Type: "channel", PeriodFrom: 1000, PeriodTo: 2000,
 		Summary: "forward", MessageCount: 1, Model: "m",
 	})
 	require.NoError(t, err)
@@ -340,7 +376,7 @@ func TestRunBackfillWindow_ForwardWindowUnaffected(t *testing.T) {
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), 500, 1000)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, 500, 1000)
 	require.NoError(t, err)
 	assert.True(t, res.Complete)
 	assert.Equal(t, 1, res.Digests)
@@ -353,18 +389,18 @@ func TestRunBackfillWindow_ForwardWindowUnaffected(t *testing.T) {
 
 func TestRunBackfillWindow_MutedAndDMChannelsDoNotStall(t *testing.T) {
 	database := testDB(t)
-	require.NoError(t, database.UpsertChannel(db.Channel{ID: "D1", Name: "dm", Type: "dm"}))
-	seedChannel(t, database, "C_MUTED", "muted")
-	require.NoError(t, database.SetMuteForLLM("C_MUTED", true))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "1:D1", Name: "dm", Type: "dm"}))
+	seedChannel(t, database, "1:C_MUTED", "muted")
+	require.NoError(t, database.SetMuteForLLM("1:C_MUTED", true))
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "D1", "dm", from+3600, 5)
-	seedRangeMessages(t, database, "C_MUTED", "muted", from+3600, 5)
+	seedRangeMessages(t, database, "1:D1", "dm", from+3600, 5)
+	seedRangeMessages(t, database, "1:C_MUTED", "muted", from+3600, 5)
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err, "channels the digest never covers are not a stall")
 	assert.True(t, res.Complete)
 	assert.Equal(t, 0, gen.calls)
@@ -372,17 +408,17 @@ func TestRunBackfillWindow_MutedAndDMChannelsDoNotStall(t *testing.T) {
 
 func TestRunBackfillWindow_FastForwardFloorApplies(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "1:C1", "alpha")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "1:C1", "alpha", from+3600, 5)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "acme", Domain: "acme"}))
 	require.NoError(t, database.SetDigestFastForwardTS(to))
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.True(t, res.Complete)
 	assert.Equal(t, 0, gen.calls, "FEAT-03: history below the fast-forward floor stays undigested")
@@ -390,16 +426,16 @@ func TestRunBackfillWindow_FastForwardFloorApplies(t *testing.T) {
 
 func TestRunBackfillWindow_DisabledIsComplete(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "1:C1", "alpha")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "1:C1", "alpha", from+3600, 5)
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 	p.cfg.Digest.Enabled = false
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.Equal(t, BackfillWindowResult{Digests: 0, Complete: true}, res)
 	assert.Equal(t, 0, gen.calls)
@@ -407,10 +443,10 @@ func TestRunBackfillWindow_DisabledIsComplete(t *testing.T) {
 
 func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "1:C1", "alpha")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "1:C1", "alpha", from+3600, 5)
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
@@ -418,7 +454,7 @@ func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 	require.NoError(t, err)
 	defer unlock()
 
-	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
 	require.NoError(t, err)
 	assert.Equal(t, BackfillWindowResult{Digests: 0, Complete: false}, res)
 	assert.Equal(t, 0, gen.calls)
@@ -426,28 +462,28 @@ func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 
 func TestRunBackfillWindow_CancelledContext(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "1:C1", "alpha")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
+	seedRangeMessages(t, database, "1:C1", "alpha", from+3600, 5)
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, _, err := p.RunBackfillWindow(ctx, from, to)
+	res, _, err := p.RunBackfillWindow(ctx, 1, from, to)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.False(t, res.Complete)
 }
 
 func TestRunBackfillRollups_EachUTCDay(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
-	seedChannel(t, database, "C2", "beta")
+	seedChannel(t, database, "1:C1", "alpha")
+	seedChannel(t, database, "2:C2", "beta")
 	from, to := backfillRange()
 	for _, day := range []float64{from, from + 86400} {
-		for _, ch := range []string{"C1", "C2"} {
+		for _, ch := range []string{"1:C1", "2:C2"} {
 			_, err := database.UpsertDigest(db.Digest{
 				ChannelID: ch, Type: "channel", PeriodFrom: day + 3600, PeriodTo: day + 7200,
 				Summary: "s " + ch, MessageCount: 3, Model: "m",
@@ -456,11 +492,15 @@ func TestRunBackfillRollups_EachUTCDay(t *testing.T) {
 		}
 	}
 
-	gen := &mockGenerator{response: validDigestJSON()}
+	gen := &promptCapturingGenerator{responses: map[string]string{"digest.daily": validDigestJSON()}}
 	p := backfillPipeline(t, database, gen)
 
 	require.NoError(t, p.RunBackfillRollups(context.Background(), from, to))
 	daily, err := database.GetDigests(db.DigestFilter{Type: "daily"})
 	require.NoError(t, err)
 	assert.Len(t, daily, 2, "one daily rollup per UTC day of the chunk")
+	// Daily rollups stay workspace-global (F1): one rollup covers every
+	// Slack account's channel digests of the day.
+	assert.Contains(t, gen.prompt(t, 0), "s 1:C1")
+	assert.Contains(t, gen.prompt(t, 0), "s 2:C2")
 }
