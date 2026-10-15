@@ -36,8 +36,9 @@ struct NotificationSettings: View {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
                 Toggle("Workbench notifications", isOn: $notifyWorkbenches)
-                Toggle("Claude plan limits", isOn: $notifyPlanUsage)
                     .help("Agent questions and asks, finished targets, proposals awaiting approval")
+                Toggle("Claude plan limits", isOn: $notifyPlanUsage)
+                    .help("Warns when a session or weekly limit will be hit before it resets, and at 90%")
             }
 
             Section("Meeting Reminders") {

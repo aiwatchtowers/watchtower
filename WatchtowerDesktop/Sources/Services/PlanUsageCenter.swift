@@ -78,7 +78,9 @@ final class PlanUsageCenter {
         }
     }
 
-    /// Runs on every reload; the policy's `sent` set is the only dedupe.
+    /// Runs on every reload; the policy's `sent` set is the only dedupe. A
+    /// window counts as sent once it is handed to the notifier, even if
+    /// notifications are denied (the `sendSessionAgentNotice` precedent).
     private func notify(_ status: PlanUsageStatus) {
         guard let notifier, defaults.object(forKey: PlanUsageNoticePolicy.enabledKey) as? Bool ?? true else { return }
         let sent = Set(defaults.stringArray(forKey: PlanUsageNoticePolicy.sentKey) ?? [])
