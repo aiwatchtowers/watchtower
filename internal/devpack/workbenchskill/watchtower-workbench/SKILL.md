@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v8
+x-watchtower-pack: v9
 ---
 
 # Watchtower Workbench
@@ -26,6 +26,7 @@ At session start a hook prints the workbench brief: counts, the open part of the
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
 - `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points, `target_id` and `level` (`quick` or `full`; by default from its shape). A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
 - `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
+- `get_review` — read a review round the owner sent from the diff reviewer (`round_id`): each comment with file, lines, quoted code and text.
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
 - `finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines: what was done, the PRs, what is left) and an optional `target_id` (see "Finishing a session").
@@ -89,6 +90,15 @@ Anything beyond a Chat question is an `ask_owner` call — never text in the ter
 - **Withdrawn means withdrawn:** file a withdrawn ask again only with new data, as a revision: `previous_ask_id` = the withdrawn ask, `changes` = what is new. `ask_owner` refuses that revision without `changes`, and refuses a new ask with the title of an ask of the same kind you withdrew in the last 7 days.
 - **Raised from chat:** an ask with `origin: chat` (`get_ask`, `list_asks`) is your own terminal question that waited; its answer is the answer to that question — act on it as on any ask. If the owner answered in the terminal meanwhile, `withdraw_ask` it.
 - **Board status:** waiting for the owner is never `in_review` (see Rules). The target the ask is about goes `blocked` only when nothing on it can proceed until the answer comes.
+
+## Review rounds
+
+The owner reviews your changes in Watchtower's diff reviewer and sends a round as one line: `Review round #N sent (K comments) — read it with get_review N …`. A waiting round is also listed in the session brief.
+
+- Call `get_review N` first. Each comment names a file and lines of the snapshot the owner reviewed, with the quoted code; the code may have moved since — find it by the quote.
+- Address every comment: fix it, or say why not. In your reply, name each comment as `#<id>` with what you did, one line each.
+- A design comment (no file) is about the approach as a whole; answer it before the line comments.
+- Do not ask the owner to re-review: they open the next round themselves.
 
 ## Running a plan (subagent-driven development)
 
