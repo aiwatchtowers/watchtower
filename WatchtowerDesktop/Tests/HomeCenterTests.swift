@@ -278,6 +278,35 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
     }
 
+    /// The pool itself failing before any good read: a snapshot with every
+    /// card failed (the read error, Getting ready), not an endless spinner.
+    func testFirstPoolFailurePublishesAllFailed() async throws {
+        let pool = try makePool()
+        try pool.close()
+        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.todayReadFailed, true)
+        XCTAssertEqual(center.snapshot?.todayFailed, Set(TodayCardKind.allCases))
+        XCTAssertEqual(center.snapshot?.showsReadError, true)
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+    }
+
+    /// A good read, then the pool failing: the stale read is marked failed,
+    /// never shown as the all-clear.
+    func testPoolFailureAfterGoodReadIsNotAllClear() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0?.nothingNeedsYou == true }
+
+        try pool.close()
+        await waitUntil(center) { $0?.showsReadError == true }
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+    }
+
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))

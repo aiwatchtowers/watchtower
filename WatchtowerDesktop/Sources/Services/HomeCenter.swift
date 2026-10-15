@@ -140,21 +140,26 @@ final class HomeCenter {
     }
 
     /// One Today read. Each card's failure is caught inside `HomeQueries.today`;
-    /// what lands here is the pool itself failing, which keeps the last read.
+    /// what lands here is the pool itself failing: every card is marked
+    /// failed (keeping the last read's content), so Home shows the read error
+    /// and Getting ready instead of a spinner, and never an all-clear.
     private func reread(_ pool: DatabasePool, generation current: Int) async {
         readToken += 1
         todayReads += 1
         let token = readToken
         let now = environment.now
         let calendar = environment.calendar
+        let value: HomeTodayData
         do {
-            let value = try await pool.read { db in HomeQueries.today(db, now: now, calendar: calendar) }
-            guard generation == current, readToken == token else { return }
-            data = value
+            value = try await pool.read { db in HomeQueries.today(db, now: now, calendar: calendar) }
         } catch {
             NSLog("HomeCenter: reading Today: %@", error.localizedDescription)
+            var failed = data ?? HomeTodayData()
+            failed.failed = Set(TodayCardKind.allCases)
+            value = failed
         }
-        guard generation == current else { return }
+        guard generation == current, readToken == token else { return }
+        data = value
         rebuildSnapshot()
     }
 
