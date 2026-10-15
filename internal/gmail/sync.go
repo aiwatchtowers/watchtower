@@ -21,6 +21,22 @@ type Syncer struct {
 	cfg       *config.Config
 	logger    *log.Logger
 	accountID int64
+
+	// firstSyncFrom is the window start of the last Sync when it was the
+	// account's first (watermark 0) and its ID list succeeded; zero
+	// otherwise. Sync resets it; the daemon reads it via FirstSyncFrom to
+	// start a history backfill.
+	firstSyncFrom time.Time
+}
+
+// AccountID returns the google_accounts row this syncer serves.
+func (s *Syncer) AccountID() int64 { return s.accountID }
+
+// FirstSyncFrom reports whether the last Sync was the account's first
+// (watermark 0, ID list succeeded — even if empty) and, if so, the start of
+// its newer_than window.
+func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
+	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
 }
 
 // NewSyncer creates a Gmail syncer for the connected google_accounts row
@@ -39,6 +55,7 @@ var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL"
 // Sync pulls inbox messages newer than the watermark, stores them, and advances
 // the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
+	s.firstSyncFrom = time.Time{}
 	days := s.cfg.Gmail.InitialHistoryDays
 	if days <= 0 {
 		days = config.DefaultGmailInitialHistoryDays
@@ -47,10 +64,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if maxMsgs <= 0 {
 		maxMsgs = config.DefaultGmailMaxMessagesPerSync
 	}
-	maxBody := s.cfg.Gmail.MaxBodyBytes
-	if maxBody <= 0 {
-		maxBody = config.DefaultGmailMaxBodyBytes
-	}
+	maxBody := s.maxBodyBytes()
 
 	watermark, err := s.db.GetGmailAccountWatermark(s.accountID)
 	if err != nil {
@@ -70,6 +84,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	// an older backlog tail behind the cap (data loss once the watermark
 	// advances past it). MaxMessagesPerSync is applied below, only to the
 	// processing phase (GetMessage/upsert), after sorting oldest-first.
+	listedAt := time.Now().UTC()
 	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
 	if err != nil {
 		s.recordAuthResult(ctx, err)
@@ -79,6 +94,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("listing gmail messages: %w", err)
 	}
 	s.recordAuthResult(ctx, nil)
+	if watermark == 0 {
+		s.firstSyncFrom = listedAt.AddDate(0, 0, -days)
+	}
 
 	// Gmail returns newest-first; reverse so we process oldest-first. This
 	// matters when we're capped below: the watermark then advances only to
@@ -106,57 +124,33 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	stalled := false // set once a message is lost, so maxSeen stops advancing past the gap
 
 	for _, id := range ids {
-		m, err := s.client.GetMessage(ctx, id)
+		stored, msgUnix, err := s.storeMessage(ctx, id, func(string) string { return syncedAt }, maxBody, watermark)
 		if err != nil {
-			s.logger.Printf("gmail: fetch message %s: %v", id, err)
-			// The lost message's date is unknown, but oldest-first order puts
-			// it at or after the last second the pass advanced to — a noise
-			// skip or a stored message in that same second must not leave
-			// the watermark on it.
-			if !stalled { // later losses sit at or after the first one
-				maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
+			s.logger.Printf("gmail: %v", err)
+			if msgUnix == 0 {
+				// The lost message's date is unknown (the fetch failed), but
+				// oldest-first order puts it at or after the last second the
+				// pass advanced to — a noise skip or a stored message in that
+				// same second must not leave the watermark on it.
+				if !stalled { // later losses sit at or after the first one
+					maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
+				}
+			} else {
+				maxSeen = holdBelowLoss(maxSeen, watermark, msgUnix)
 			}
 			stalled = true
 			continue
 		}
-		// Noise filter (before storage/AI).
-		skip := false
-		for _, l := range m.Labels {
-			if noiseLabels[l] {
-				skip = true
-				break
-			}
-		}
-		msgUnix := isoToUnix(m.InternalDate)
-		if skip {
+		if !stored {
 			// A noise skip is deliberate non-storage, not a loss: move the
 			// watermark past it (unless an earlier message was lost), or every
 			// promo/social message newer than the last stored one is re-fetched
 			// each cycle — and a capped window of pure noise never advances.
+			// (An already-seen skip sits at or below the watermark, so this
+			// is a no-op for it.)
 			if !stalled && msgUnix > maxSeen {
 				maxSeen = msgUnix
 			}
-			continue
-		}
-		// Watermark filter: skip already-seen messages (internalDate <= watermark).
-		if watermark > 0 && msgUnix <= watermark {
-			continue
-		}
-		body := truncateUTF8(m.BodyText, maxBody)
-		toJSON, _ := json.Marshal(m.To)
-		ccJSON, _ := json.Marshal(m.Cc)
-		labelsJSON, _ := json.Marshal(m.Labels)
-		row := db.GmailMessage{
-			ID: m.ID, ThreadID: m.ThreadID, FromEmail: m.FromEmail, FromName: m.FromName,
-			ToJSON: string(toJSON), CcJSON: string(ccJSON), Subject: m.Subject, Snippet: m.Snippet,
-			BodyText: body, InternalDate: m.InternalDate, LabelsJSON: string(labelsJSON),
-			IsUnread: m.IsUnread, Permalink: m.Permalink,
-		}
-		row.SyncedAt = syncedAt
-		if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
-			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
-			maxSeen = holdBelowLoss(maxSeen, watermark, msgUnix)
-			stalled = true
 			continue
 		}
 		count++
@@ -188,6 +182,87 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// FetchRange stores every non-noise inbox message received in [from, to),
+// ignoring MaxMessagesPerSync. It writes no watermark and no auth state, and
+// each row's synced_at is the message's own date, so the inbox detector never
+// sees backfilled mail as new. The first error stops it (wrapped, so
+// ErrAuthRevoked stays matchable).
+func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error) {
+	query := fmt.Sprintf("in:inbox after:%d before:%d", from.Unix(), to.Unix())
+	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
+	if err != nil {
+		return 0, fmt.Errorf("listing gmail messages %q: %w", query, err)
+	}
+	maxBody := s.maxBodyBytes()
+	ownDate := func(internalDate string) string { return backfillSyncedAt(internalDate, from) }
+	count := 0
+	for _, id := range ids {
+		stored, _, err := s.storeMessage(ctx, id, ownDate, maxBody, 0)
+		if err != nil {
+			return count, err
+		}
+		if stored {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// storeMessage fetches message id and upserts it unless it carries a noise
+// label or its internalDate is at or below skipAtOrBelow (0 = no filter).
+// msgUnix is the message's date (0 when the fetch failed or the date did not
+// parse); stored=false with a nil error is a deliberate skip. syncedAt maps
+// the message's internal date to the row's synced_at.
+func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(internalDate string) string, maxBody int, skipAtOrBelow float64) (stored bool, msgUnix float64, err error) {
+	m, err := s.client.GetMessage(ctx, id)
+	if err != nil {
+		return false, 0, fmt.Errorf("fetch message %s: %w", id, err)
+	}
+	msgUnix = isoToUnix(m.InternalDate)
+	// Noise filter (before storage/AI).
+	for _, l := range m.Labels {
+		if noiseLabels[l] {
+			return false, msgUnix, nil
+		}
+	}
+	// Watermark filter: skip already-seen messages.
+	if skipAtOrBelow > 0 && msgUnix <= skipAtOrBelow {
+		return false, msgUnix, nil
+	}
+	toJSON, _ := json.Marshal(m.To)
+	ccJSON, _ := json.Marshal(m.Cc)
+	labelsJSON, _ := json.Marshal(m.Labels)
+	row := db.GmailMessage{
+		ID: m.ID, ThreadID: m.ThreadID, FromEmail: m.FromEmail, FromName: m.FromName,
+		ToJSON: string(toJSON), CcJSON: string(ccJSON), Subject: m.Subject, Snippet: m.Snippet,
+		BodyText: truncateUTF8(m.BodyText, maxBody), InternalDate: m.InternalDate, LabelsJSON: string(labelsJSON),
+		IsUnread: m.IsUnread, Permalink: m.Permalink,
+	}
+	row.SyncedAt = syncedAt(m.InternalDate)
+	if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
+		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
+	}
+	return true, msgUnix, nil
+}
+
+// backfillSyncedAt is a backfilled row's synced_at: the message's own date
+// (UTC RFC3339), or from when that is missing or unparseable. The inbox
+// detector reads synced_at as "arrived since my cursor", so a backfilled row
+// stamped now would surface weeks-old mail as new.
+func backfillSyncedAt(internalDate string, from time.Time) string {
+	if t, err := time.Parse(time.RFC3339, internalDate); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	return from.UTC().Format(time.RFC3339)
+}
+
+func (s *Syncer) maxBodyBytes() int {
+	if s.cfg.Gmail.MaxBodyBytes > 0 {
+		return s.cfg.Gmail.MaxBodyBytes
+	}
+	return config.DefaultGmailMaxBodyBytes
 }
 
 // holdBelowLoss keeps the watermark strictly below the second of a lost
