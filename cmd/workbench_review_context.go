@@ -84,19 +84,19 @@ func readPlainFile(folder, path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	real, err := filepath.EvalSymlinks(path)
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", false
 	}
-	rel, err := filepath.Rel(realFolder, real)
+	rel, err := filepath.Rel(realFolder, resolved)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	fi, err := os.Lstat(real)
+	fi, err := os.Lstat(resolved)
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", false
 	}
-	f, err := os.Open(real)
+	f, err := os.Open(resolved)
 	if err != nil {
 		return "", false
 	}
