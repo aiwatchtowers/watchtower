@@ -73,4 +73,9 @@ func TestBackfillStatusText(t *testing.T) {
 	_, err = database.RecordHistoryBackfillFailure(rows[0].ID, "boom", now)
 	require.NoError(t, err)
 	assert.Equal(t, "slack #1  running  12/30 days  (waiting: plan_limit)  — boom\n", runBackfillCmd(t))
+
+	// R29: a jira row is listed like any other kind.
+	_, err = database.StartHistoryBackfill("jira", 2, upper-30*86400, upper, now)
+	require.NoError(t, err)
+	assert.Contains(t, runBackfillCmd(t), "jira #2  running  0/30 days\n")
 }

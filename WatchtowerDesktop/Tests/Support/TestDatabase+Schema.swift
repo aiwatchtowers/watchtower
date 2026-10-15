@@ -1717,7 +1717,7 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
 );
 CREATE TABLE IF NOT EXISTS history_backfill (
     id             INTEGER PRIMARY KEY,
-    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap')),
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap', 'jira')),
     account_id     INTEGER NOT NULL,
     floor_ts       REAL    NOT NULL,
     upper_ts       REAL    NOT NULL,

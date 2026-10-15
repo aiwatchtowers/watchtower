@@ -59,6 +59,7 @@ type jiraAccountSyncer interface {
 	ResolveUsers(ctx context.Context, manualMap map[string]string) error
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
+	FirstSyncFrom() (time.Time, bool)
 }
 
 // minPollInterval is the minimum allowed poll interval. Values below this
@@ -97,7 +98,6 @@ type Daemon struct {
 	briefingPipe        *briefing.Pipeline
 	inboxPipe           *inbox.Pipeline
 	ideasPipe           *ideas.Pipeline
-	ideasDrained        []timeSpan // windows the history backfill's ideas drain already covered (this process)
 	memoryPipe          *memory.Pipeline
 	memoryOpen          func() (*memory.Pipeline, error)
 	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
@@ -828,6 +828,10 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	anyClean := false
 	for _, s := range d.jiraSyncers {
 		n, err := s.Sync(ctx)
+		// Read after every Sync, whatever it returned (R13).
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("jira", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
 			if firstErr == nil {

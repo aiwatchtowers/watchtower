@@ -130,14 +130,17 @@ func (d *Daemon) historyBackfillDue() bool {
 }
 
 // historyBackfillSources builds one source per wired Slack orchestrator,
-// Gmail syncer and IMAP syncer.
+// Gmail syncer, IMAP syncer and Jira syncer.
 func (d *Daemon) historyBackfillSources() []historybackfill.Source {
-	out := make([]historybackfill.Source, 0, len(d.orchestrators)+len(d.gmailSyncers)+len(d.imapSyncers))
+	out := make([]historybackfill.Source, 0, len(d.orchestrators)+len(d.gmailSyncers)+len(d.imapSyncers)+len(d.jiraSyncers))
 	for _, o := range d.orchestrators {
 		out = append(out, slackSource{o: o, d: d})
 	}
 	for _, s := range d.gmailSyncers {
-		out = append(out, gmailSource{s: s, d: d})
+		out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
+	}
+	for _, s := range d.jiraSyncers {
+		out = append(out, jiraSource{id: s.AccountID(), d: d})
 	}
 	for _, s := range d.imapSyncers {
 		out = append(out, imapSource{s: s})
@@ -150,7 +153,8 @@ func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 // would otherwise stay running forever and hold memory extraction back. A
 // lookup error other than "not found" reads as OK: the chunk's fetch then
 // fails on its own and is retried, while a wrong Gone would turn the
-// backfill off for good. IMAP accounts have no enabled flag and no revoked
+// backfill off for good. Jira reads as Gone also when jira.enabled is off.
+// IMAP accounts have no enabled flag and no revoked
 // state, so only a deleted mailbox ends theirs.
 func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountState {
 	var status string
@@ -172,11 +176,18 @@ func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountStat
 		}
 	case "imap":
 		_, err = d.db.GetEmailAccount(id) // IMAP has no revoked state
+	case "jira":
+		var a db.JiraAccount
+		a, err = d.db.GetJiraAccount(id)
+		status = a.Status
+		if err == nil && (!d.config.Jira.Enabled || status == "removed" || !a.Enabled) {
+			return historybackfill.AccountGone
+		}
 	default:
 		return historybackfill.AccountGone
 	}
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, db.ErrJiraAccountNotFound):
 		return historybackfill.AccountGone
 	case err != nil:
 		d.logger.Printf("history backfill: %s account %d lookup: %v", kind, id, err)
@@ -291,18 +302,18 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 	return true, nil
 }
 
-// gmailSource backfills one Google account's mail: range fetch, then the
-// ideas stream digests (streams.enabled) and consolidator (ideas.enabled,
-// gated inside ideas.Backfill) over the chunk. ideas.Backfill drains a
-// window for every Google and Jira account at once, so a window already
-// drained by another Gmail row is not drained again (M4).
+// gmailSource backfills one Google account's mail: range fetch, then that
+// account's ideas stream digests over the chunk (R28). The stream digests
+// are consolidated by the regular ideas run, which keeps the ideas.enabled
+// gate.
 type gmailSource struct {
-	s *gmail.Syncer
-	d *Daemon
+	s  *gmail.Syncer
+	id int64
+	d  *Daemon
 }
 
 func (g gmailSource) Kind() string     { return "gmail" }
-func (g gmailSource) AccountID() int64 { return g.s.AccountID() }
+func (g gmailSource) AccountID() int64 { return g.id }
 
 func (g gmailSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := g.s.FetchRange(ctx, from, to)
@@ -310,53 +321,45 @@ func (g gmailSource) Fetch(ctx context.Context, from, to time.Time) error {
 }
 
 func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
-	d := g.d
+	return g.d.backfillStreams("gmail", func() (bool, error) {
+		return g.d.ideasPipe.BackfillEmail(ctx, g.id, from, to)
+	})
+}
+
+// jiraSource backfills one Jira account's stream digests (R29). Fetch is a
+// no-op: Jira's first sync is a full scan, so every issue is already stored.
+type jiraSource struct {
+	id int64
+	d  *Daemon
+}
+
+func (j jiraSource) Kind() string                                    { return "jira" }
+func (j jiraSource) AccountID() int64                                { return j.id }
+func (jiraSource) Fetch(context.Context, time.Time, time.Time) error { return nil }
+
+func (j jiraSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
+	return j.d.backfillStreams("jira", func() (bool, error) {
+		return j.d.ideasPipe.BackfillJira(ctx, j.id, from, to)
+	})
+}
+
+// backfillStreams runs one account's stage-1 stream drain under the ideas
+// backfill lock, gated on streams.enabled. A held lock is not an error: the
+// chunk is retried next cycle.
+func (d *Daemon) backfillStreams(kind string, drain func() (bool, error)) (bool, error) {
 	if d.ideasPipe == nil || !d.config.Streams.Enabled {
 		return true, nil
 	}
-	from, to, ok := uncoveredSpan(d.ideasDrained, from, to)
-	if !ok {
-		return true, nil // another Gmail row's chunk already drained this window
-	}
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon history backfill")
 	if errors.Is(err, ideas.ErrBackfillLockHeld) {
-		d.logger.Printf("history backfill: gmail chunk waits — %v", err)
-		return false, nil // held: retry the chunk next cycle
+		d.logger.Printf("history backfill: %s chunk waits — %v", kind, err)
+		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	defer release()
-	if _, err := d.ideasPipe.Backfill(ctx, from, to, nil); err != nil {
-		return false, err
-	}
-	d.ideasDrained = append(d.ideasDrained, timeSpan{from, to})
-	return true, nil
-}
-
-// timeSpan is a [from, to) window.
-type timeSpan struct{ from, to time.Time }
-
-// uncoveredSpan clips [from, to) by the spans that cover either end of it
-// and reports what is left; ok is false when nothing is. A span strictly
-// inside the window leaves it whole: a hole in the middle is drained again
-// rather than split.
-func uncoveredSpan(spans []timeSpan, from, to time.Time) (time.Time, time.Time, bool) {
-	for changed := true; changed && from.Before(to); {
-		changed = false
-		for _, s := range spans {
-			switch {
-			case !s.from.After(from) && s.to.After(from): // covers the bottom end
-				from, changed = s.to, true
-			case s.from.Before(to) && !s.to.Before(to): // covers the top end
-				to, changed = s.from, true
-			}
-			if !from.Before(to) {
-				break
-			}
-		}
-	}
-	return from, to, from.Before(to)
+	return drain()
 }
 
 // imapSource backfills one IMAP mailbox: fetch only (no AI step).

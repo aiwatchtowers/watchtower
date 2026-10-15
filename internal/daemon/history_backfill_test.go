@@ -473,12 +473,11 @@ func TestHistoryBackfill_SlackSourceIncompleteIsHold(t *testing.T) {
 }
 
 // stageGen answers stage-1 stream digest calls and stage-2 consolidator
-// calls, counting each. acct is the seeded Gmail account the stage-1 idea
-// cites, so stage 1 writes a stream digest for stage 2 to read.
+// calls, counting each and recording the stage-1 prompts.
 type stageGen struct {
 	mu             gosync.Mutex
-	acct           int64
 	stage1, stage2 int
+	prompts        []string
 }
 
 func (g *stageGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
@@ -489,39 +488,53 @@ func (g *stageGen) Generate(_ context.Context, _, user, _ string) (string, *dige
 		return `{"ops":[]}`, &digest.Usage{}, "", nil
 	}
 	g.stage1++
-	return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, g.acct),
-		&digest.Usage{}, "", nil
+	g.prompts = append(g.prompts, user)
+	return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, &digest.Usage{}, "", nil
 }
 
-// seedGmailForIdeas seeds one Gmail account with a message inside [from, to]
-// and an initialized ideas floor below it, and returns the account id.
-func seedGmailForIdeas(t *testing.T, database *db.DB, from time.Time) int64 {
+// saw reports whether any stage-1 prompt contained s, and how many prompts
+// there were.
+func (g *stageGen) saw(s string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range g.prompts {
+		if strings.Contains(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// seedGmailAccountForIdeas seeds a Gmail account whose ideas floor is already
+// initialized at now (the forward pass ran), and returns its id.
+func seedGmailAccountForIdeas(t *testing.T, database *db.DB, email string) int64 {
 	t.Helper()
-	_, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'acme')`)
-	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date, ideas_email_floor)
-		VALUES ('a@example.com', 'Test', 1, ?, ?)`, float64(time.Now().Unix()), float64(from.Add(-time.Hour).Unix()))
+		VALUES (?, 'Test', 1, ?, ?)`, email, float64(time.Now().Unix()), float64(time.Now().Unix()))
 	require.NoError(t, err)
 	acct, err := res.LastInsertId()
-	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
-		VALUES (?, 'm1', 'thr-1', 'b@example.com', 'Ann', 'Subj', 'we should try X', ?)`,
-		acct, from.Add(time.Hour).UTC().Format(time.RFC3339))
 	require.NoError(t, err)
 	return acct
 }
 
-// R17: the Gmail chunk's AI is gated per flag — streams.enabled gates the
-// stage-1 stream digests, ideas.enabled the consolidator.
+func seedGmailMail(t *testing.T, database *db.DB, acct int64, id, body string, at time.Time) {
+	t.Helper()
+	_, err := database.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+		VALUES (?, ?, ?, 'b@example.com', 'Ann', 'Subj', ?, ?)`, acct, id, "thr-"+id, body, at.UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+}
+
+// R17/R28: the Gmail chunk runs only stage 1, gated on streams.enabled; the
+// consolidator is the regular ideas run's job, whatever ideas.enabled says.
 func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
 	cases := []struct {
-		name              string
-		streams, ideasOn  bool
-		wantStage1, want2 bool
+		name             string
+		streams, ideasOn bool
+		wantStage1       bool
 	}{
-		{"streams off", false, true, false, false},
-		{"ideas off", true, false, true, false},
-		{"both on", true, true, true, true},
+		{"streams off", false, true, false},
+		{"ideas off", true, false, true},
+		{"both on", true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -531,68 +544,160 @@ func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
 			gen := &stageGen{}
 			d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
 			from := time.Now().AddDate(0, 0, -20)
-			gen.acct = seedGmailForIdeas(t, database, from)
+			acct := seedGmailAccountForIdeas(t, database, "a@example.com")
+			seedGmailMail(t, database, acct, "m1", "we should try X", from.Add(time.Hour))
 
-			complete, err := gmailSource{d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
+			complete, err := gmailSource{id: acct, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
 			require.NoError(t, err)
 			assert.True(t, complete)
 			assert.Equal(t, tc.wantStage1, gen.stage1 > 0, "stage 1")
-			assert.Equal(t, tc.want2, gen.stage2 > 0, "stage 2")
+			assert.Zero(t, gen.stage2, "no consolidator call from the backfill")
 		})
 	}
 }
 
-// M4: N Gmail rows walking the same window pay for its ideas drain once.
-func TestHistoryBackfill_GmailWindowDrainedOnce(t *testing.T) {
+// fetchingGmail is the daemon's gmailSource with a scripted Fetch, so a test
+// can make an account's mail arrive only with its own row's fetch.
+type fetchingGmail struct {
+	gmailSource
+	fetch func()
+}
+
+func (f fetchingGmail) Fetch(context.Context, time.Time, time.Time) error {
+	f.fetch()
+	return nil
+}
+
+// R28 regression: two Gmail rows in one Step, A then B, with B's mail
+// arriving only with B's fetch. A's chunk must not drain B's account (which
+// would move B's floor past the window before B's mail exists), and each
+// row's Process mines only its own account.
+func TestHistoryBackfill_TwoGmailRowsOneStep(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
+	d.config.Gmail.Enabled = true
 	d.config.Streams.Enabled = true
-	d.config.Ideas.Enabled = true
 	gen := &stageGen{}
 	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
-	from := time.Now().AddDate(0, 0, -20)
-	to := from.Add(48 * time.Hour)
-	gen.acct = seedGmailForIdeas(t, database, from)
 
-	complete, err := gmailSource{d: d}.Process(context.Background(), from, to)
-	require.NoError(t, err)
-	require.True(t, complete)
-	calls := gen.stage1 + gen.stage2
-	require.Positive(t, calls)
+	a := seedGmailAccountForIdeas(t, database, "a@example.com")
+	b := seedGmailAccountForIdeas(t, database, "b@example.com")
+	upper := time.Now().AddDate(0, 0, -10).Truncate(time.Second)
+	floor := upper.Add(-48 * time.Hour) // one chunk
+	for _, acct := range []int64{a, b} {
+		_, err := database.StartHistoryBackfill("gmail", acct, float64(floor.Unix()), float64(upper.Unix()), time.Now())
+		require.NoError(t, err)
+	}
+	seedGmailMail(t, database, b, "old-b", "bravo pending forward mail", time.Now().Add(-time.Hour)) // above the window
 
-	complete, err = gmailSource{d: d}.Process(context.Background(), from, to) // a second account's row
+	srcA := fetchingGmail{gmailSource{id: a, d: d}, func() {
+		seedGmailMail(t, database, a, "ma", "alpha backfilled mail", floor.Add(time.Hour))
+	}}
+	var aSawB bool
+	srcB := fetchingGmail{gmailSource{id: b, d: d}, func() {
+		aSawB = gen.saw("bravo")
+		seedGmailMail(t, database, b, "mb", "bravo backfilled mail", floor.Add(2*time.Hour))
+	}}
+	r := &historybackfill.Runner{
+		Store: database, Sources: []historybackfill.Source{srcA, srcB}, Account: d.accountState,
+		Budget: time.Minute, Now: time.Now, Logger: d.logger,
+	}
+	require.NoError(t, r.Step(context.Background()))
+
+	assert.True(t, gen.saw("alpha backfilled mail"))
+	assert.True(t, gen.saw("bravo backfilled mail"), "B's mail, fetched after A's chunk ran, is mined")
+	assert.False(t, aSawB, "A's chunk did no AI work for B's account")
+	assert.False(t, gen.saw("bravo pending forward mail"), "B's chunk stays inside its window")
+	rows, err := database.ListHistoryBackfills()
 	require.NoError(t, err)
-	assert.True(t, complete)
-	assert.Equal(t, calls, gen.stage1+gen.stage2, "the window was already drained: no AI")
+	for _, row := range rows {
+		assert.Equal(t, "done", row.Status)
+	}
 }
 
-func TestUncoveredSpan(t *testing.T) {
-	at := func(h int) time.Time { return time.Unix(int64(h)*3600, 0).UTC() }
-	spans := []timeSpan{{at(10), at(20)}}
-	cases := []struct {
-		name             string
-		from, to         int
-		wantFrom, wantTo int
-		ok               bool
-	}{
-		{"inside", 12, 18, 0, 0, false},
-		{"same", 10, 20, 0, 0, false},
-		{"below", 0, 5, 0, 5, true},
-		{"overlaps top", 15, 25, 20, 25, true},
-		{"overlaps bottom", 5, 15, 5, 10, true},
-		{"spans it", 5, 25, 5, 25, true},
+func seedJiraIssueForIdeas(t *testing.T, database *db.DB, acct int64, key, desc string, updated time.Time) {
+	t.Helper()
+	u := db.FormatJiraTime(updated)
+	_, err := database.Exec(`INSERT INTO jira_issues
+		(account_id, key, id, project_key, board_id, summary, description_text, status, status_category, sprint_id, created_at, updated_at, synced_at)
+		VALUES (?, ?, ?, 'PRJ', 0, 'Summary', ?, 'Open', 'new', 0, ?, ?, ?)`, acct, key, key, desc, u, u, u)
+	require.NoError(t, err)
+}
+
+// R29: a Jira row's Process digests only its own account's issues.
+func TestHistoryBackfill_JiraSourceProcessOwnAccountOnly(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Streams.Enabled = true
+	gen := &stageGen{}
+	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+	now := db.FormatJiraTime(time.Now())
+	a, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-a"})
+	require.NoError(t, err)
+	b, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-b"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE jira_accounts SET ideas_jira_floor = ?`, now)
+	require.NoError(t, err)
+	from := time.Now().AddDate(0, 0, -20)
+	seedJiraIssueForIdeas(t, database, a, "AA-1", "alpha issue", from.Add(time.Hour))
+	seedJiraIssueForIdeas(t, database, b, "BB-1", "bravo issue", from.Add(time.Hour))
+
+	complete, err := jiraSource{id: a, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.True(t, gen.saw("AA-1"))
+	assert.False(t, gen.saw("BB-1"), "only the row's own account")
+	assert.Zero(t, gen.stage2)
+
+	d.config.Streams.Enabled = false
+	n := gen.stage1
+	complete, err = jiraSource{id: b, d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Equal(t, n, gen.stage1, "streams off: no AI")
+}
+
+// R29: a Jira account's first sync starts a jira row; a later sync does not.
+func TestPhaseJiraSync_FirstSyncStartsBackfill(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-a"})
+	require.NoError(t, err)
+	existing, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-b"})
+	require.NoError(t, err)
+	started := time.Now().Add(-time.Minute).Truncate(time.Second)
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: acct, firstSync: started},
+		&stubJiraSyncer{accountID: existing},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, to, ok := uncoveredSpan(spans, at(tc.from), at(tc.to))
-			assert.Equal(t, tc.ok, ok)
-			if ok {
-				assert.Equal(t, at(tc.wantFrom), f)
-				assert.Equal(t, at(tc.wantTo), to)
-			}
-		})
-	}
-	f, to, ok := uncoveredSpan([]timeSpan{{at(10), at(20)}, {at(20), at(30)}}, at(15), at(35))
-	assert.True(t, ok)
-	assert.Equal(t, at(30), f, "adjacent spans clip in turn")
-	assert.Equal(t, at(35), to)
+
+	d.phaseJiraSync(context.Background())
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "jira", rows[0].SourceKind)
+	assert.Equal(t, acct, rows[0].AccountID)
+	assert.Equal(t, float64(started.Unix()), rows[0].UpperTS)
+}
+
+func TestHistoryBackfill_AccountStateJira(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Jira.Enabled = true
+	ok, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	revoked, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountAuthState(revoked, "revoked", "grant gone"))
+	removed, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c3"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountRemoved(removed))
+	disabled, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c4"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountEnabled(disabled, false))
+
+	assert.Equal(t, historybackfill.AccountOK, d.accountState("jira", ok))
+	assert.Equal(t, historybackfill.AccountRevoked, d.accountState("jira", revoked))
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", removed))
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", disabled))
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", 999))
+
+	d.config.Jira.Enabled = false
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", ok), "jira.enabled=false: never wired")
 }

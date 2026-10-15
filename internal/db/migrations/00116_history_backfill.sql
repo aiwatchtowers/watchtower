@@ -1,10 +1,10 @@
 -- +goose Up
 -- One row per source that started a history backfill after its first sync
 -- (docs/features/history-backfill.md). reached_ts only moves down, from
--- upper_ts (the first sync's window start) to floor_ts.
+-- upper_ts (the first instant the first sync covered) to floor_ts.
 CREATE TABLE history_backfill (
     id             INTEGER PRIMARY KEY,
-    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap')),
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap', 'jira')),
     account_id     INTEGER NOT NULL,
     floor_ts       REAL    NOT NULL,
     upper_ts       REAL    NOT NULL,

@@ -9,7 +9,7 @@ import (
 // HistoryBackfill is one source's history backfill (docs/features/history-backfill.md).
 type HistoryBackfill struct {
 	ID            int64
-	SourceKind    string // slack | gmail | imap
+	SourceKind    string // slack | gmail | imap | jira
 	AccountID     int64
 	FloorTS       float64
 	UpperTS       float64

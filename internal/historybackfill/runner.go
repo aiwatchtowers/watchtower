@@ -23,7 +23,7 @@ var ErrHold = errors.New("history backfill: hold the chunk")
 // Source fetches one account's raw data for a range. Process runs the AI
 // steps over that range. Auth reports whether the account can be used now.
 type Source interface {
-	Kind() string // slack | gmail | imap
+	Kind() string // slack | gmail | imap | jira
 	AccountID() int64
 	Fetch(ctx context.Context, from, to time.Time) error
 	Process(ctx context.Context, from, to time.Time) (complete bool, err error)
