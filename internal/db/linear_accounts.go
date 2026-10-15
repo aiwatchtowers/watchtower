@@ -137,3 +137,9 @@ func (db *DB) SetLinearAccountRemoved(id int64) error {
 	return db.execLinearAccount(fmt.Sprintf("removing linear account %d", id),
 		`UPDATE linear_accounts SET status = 'removed', enabled = 0 WHERE id = ?`, id)
 }
+
+// SetLinearAccountLabel renames the account.
+func (db *DB) SetLinearAccountLabel(id int64, label string) error {
+	return db.execLinearAccount(fmt.Sprintf("setting linear account %d label", id),
+		`UPDATE linear_accounts SET label = ? WHERE id = ?`, strings.TrimSpace(label), id)
+}

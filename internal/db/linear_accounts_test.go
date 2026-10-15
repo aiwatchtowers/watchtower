@@ -80,3 +80,13 @@ func TestLinearAccount_AutoLabel(t *testing.T) {
 	assert.Equal(t, "Acme 2", gb.Label)
 	assert.Error(t, d.SetLinearAccountEnabled(99, false))
 }
+
+func TestSetLinearAccountLabel(t *testing.T) {
+	d := OpenTestDB(t)
+	id, err := d.CreateLinearAccount("Old")
+	require.NoError(t, err)
+	require.NoError(t, d.SetLinearAccountLabel(id, " New "))
+	a, err := d.GetLinearAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "New", a.Label)
+}

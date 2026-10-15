@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -224,11 +225,103 @@ func linearClient(cfg *config.Config, accountID int64) *linear.Client {
 	return linear.NewClient(resolveLinearOAuthConfig(), linear.NewTokenStore(cfg.WorkspaceDir(), accountID))
 }
 
+// Seams for the browser flow and the API call, swapped by tests.
+var (
+	linearLogin       = linear.Login
+	linearFetchViewer = func(ctx context.Context, cfg *config.Config, accountID int64) (linear.Viewer, error) {
+		return linearClient(cfg, accountID).FetchViewer(ctx)
+	}
+)
+
 // discardNewLinearAccount undoes a half-created account: its token is deleted
-// and the row is marked removed.
-func discardNewLinearAccount(cfg *config.Config, database *db.DB, id int64) {
-	_ = linear.NewTokenStore(cfg.WorkspaceDir(), id).Delete()
-	_ = database.SetLinearAccountRemoved(id)
+// and the row is marked removed. Cleanup failures are returned, not dropped.
+func discardNewLinearAccount(cfg *config.Config, database *db.DB, id int64) error {
+	var errs []error
+	if err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
+		errs = append(errs, fmt.Errorf("deleting token of discarded account %d: %w", id, err))
+	}
+	if err := database.SetLinearAccountRemoved(id); err != nil {
+		errs = append(errs, fmt.Errorf("marking discarded account %d removed: %w", id, err))
+	}
+	return errors.Join(errs...)
+}
+
+// connectLinearAccount turns a fresh token into a connected account. A
+// workspace already connected is refused; one that was removed is revived
+// (its unique org_id index would reject a second row).
+func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, token *linear.Token, label string) (id int64, revived bool, err error) {
+	id, err = database.CreateLinearAccount(label)
+	if err != nil {
+		return 0, false, fmt.Errorf("creating linear account: %w", err)
+	}
+	newID := id
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, discardNewLinearAccount(cfg, database, newID))
+		}
+	}()
+	if err = saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), id), token); err != nil {
+		return 0, false, err
+	}
+	viewer, err := linearFetchViewer(ctx, cfg, id)
+	if err != nil {
+		return 0, false, fmt.Errorf("fetching Linear viewer: %w", err)
+	}
+	existing, err := database.ListLinearAccounts()
+	if err != nil {
+		return 0, false, err
+	}
+	for _, a := range existing {
+		if a.ID == id || a.OrgID == "" || a.OrgID != viewer.OrgID {
+			continue
+		}
+		if a.Status != "removed" {
+			return 0, false, fmt.Errorf("this Linear workspace is already connected as account %d", a.ID)
+		}
+		if err = reviveLinearAccount(ctx, cfg, database, a, token, label, viewer); err != nil {
+			return 0, false, err
+		}
+		// The new row is discarded by the deferred cleanup only on error;
+		// on success it is discarded here.
+		if derr := discardNewLinearAccount(cfg, database, id); derr != nil {
+			return a.ID, true, derr
+		}
+		return a.ID, true, nil
+	}
+	if err = database.UpdateLinearAccountConnection(id, viewer.OrgID, viewer.URLKey, viewer.OrgName); err != nil {
+		return 0, false, err
+	}
+	if err = database.SetLinearAccountOwner(id, viewer.UserID, viewer.Email, viewer.Name); err != nil {
+		return 0, false, err
+	}
+	if err = enableLinearPhase(); err != nil {
+		return 0, false, fmt.Errorf("saving linear config: %w", err)
+	}
+	return id, false, nil
+}
+
+func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, a db.LinearAccount, token *linear.Token, label string, viewer linear.Viewer) error {
+	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), a.ID), token); err != nil {
+		return err
+	}
+	if err := database.SetLinearAccountAuthState(a.ID, "ok", ""); err != nil {
+		return err
+	}
+	if err := database.SetLinearAccountEnabled(a.ID, true); err != nil {
+		return err
+	}
+	if strings.TrimSpace(label) != "" {
+		if err := database.SetLinearAccountLabel(a.ID, label); err != nil {
+			return err
+		}
+	}
+	if err := database.SetLinearAccountOwner(a.ID, viewer.UserID, viewer.Email, viewer.Name); err != nil {
+		return err
+	}
+	if err := enableLinearPhase(); err != nil {
+		return fmt.Errorf("saving linear config: %w", err)
+	}
+	return nil
 }
 
 func runLinearAdd(cmd *cobra.Command, _ []string) error {
@@ -241,48 +334,25 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linear.Login(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
+	token, err := linearLogin(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("linear login: %w", err)
 	}
-
-	id, err := database.CreateLinearAccount(label)
+	id, revived, err := connectLinearAccount(cmd.Context(), cfg, database, token, label)
 	if err != nil {
-		return fmt.Errorf("creating linear account: %w", err)
-	}
-	if err := saveLinearTokenLocked(cmd.Context(), linear.NewTokenStore(cfg.WorkspaceDir(), id), token); err != nil {
-		discardNewLinearAccount(cfg, database, id)
 		return err
 	}
-	viewer, err := linearClient(cfg, id).FetchViewer(cmd.Context())
+	if revived {
+		fmt.Fprintf(out, "\nLinear workspace reconnected as account %d\n", id)
+		return nil
+	}
+	a, err := database.GetLinearAccount(id)
 	if err != nil {
-		discardNewLinearAccount(cfg, database, id)
-		return fmt.Errorf("fetching Linear viewer: %w", err)
-	}
-	existing, err := database.ListLinearAccounts()
-	if err != nil {
-		discardNewLinearAccount(cfg, database, id)
 		return err
 	}
-	for _, a := range existing {
-		if a.ID != id && a.Status != "removed" && a.OrgID == viewer.OrgID {
-			discardNewLinearAccount(cfg, database, id)
-			return fmt.Errorf("this Linear workspace is already connected as account %d", a.ID)
-		}
-	}
-	if err := database.UpdateLinearAccountConnection(id, viewer.OrgID, viewer.URLKey, viewer.OrgName); err != nil {
-		return err
-	}
-	if err := database.SetLinearAccountOwner(id, viewer.UserID, viewer.Email, viewer.Name); err != nil {
-		return err
-	}
-	if err := enableLinearPhase(); err != nil {
-		return fmt.Errorf("saving linear config: %w", err)
-	}
-
 	fmt.Fprintf(out, "\nLinear connected as account %d!\n", id)
-	fmt.Fprintf(out, "Workspace: %s (https://linear.app/%s)\n", viewer.OrgName, viewer.URLKey)
+	fmt.Fprintf(out, "Workspace: %s (%s)\n", a.OrgName, linearWorkspaceURL(a))
 	fmt.Fprintf(out, "\nRun 'watchtower linear sync --account %d' to sync issues.\n", id)
 	return nil
 }
@@ -300,12 +370,40 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 	}
 	out := cmd.OutOrStdout()
 	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linear.Login(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
+	token, err := linearLogin(cmd.Context(), resolveLinearOAuthConfig(), out, opts)
 	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("linear login: %w", err)
 	}
-	if err := saveLinearTokenLocked(cmd.Context(), linear.NewTokenStore(cfg.WorkspaceDir(), account.ID), token); err != nil {
+	if err := relinkLinearAccount(cmd.Context(), cfg, database, account, token); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\nLinear account %d re-authorized.\n", account.ID)
+	return nil
+}
+
+// relinkLinearAccount checks the new token belongs to the account's workspace
+// before saving it, then refreshes the owner and sets the status ok.
+func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token) error {
+	// The viewer is fetched with the new token through a scratch store so a
+	// wrong-workspace login never overwrites the account's token.
+	scratch := linear.NewTokenStore(cfg.WorkspaceDir(), -account.ID)
+	if err := saveLinearTokenLocked(ctx, scratch, token); err != nil {
+		return err
+	}
+	viewer, err := linearFetchViewer(ctx, cfg, -account.ID)
+	_ = scratch.Delete()
+	if err != nil {
+		return fmt.Errorf("fetching Linear viewer: %w", err)
+	}
+	if account.OrgID != "" && viewer.OrgID != account.OrgID {
+		return fmt.Errorf("this login is for workspace %s, but account %d is %s; run 'watchtower linear add' to connect another workspace",
+			viewer.OrgName, account.ID, account.OrgName)
+	}
+	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), account.ID), token); err != nil {
+		return err
+	}
+	if err := database.SetLinearAccountOwner(account.ID, viewer.UserID, viewer.Email, viewer.Name); err != nil {
 		return err
 	}
 	if err := database.SetLinearAccountAuthState(account.ID, "ok", ""); err != nil {
@@ -314,7 +412,6 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 	if err := enableLinearPhase(); err != nil {
 		return fmt.Errorf("saving linear config: %w", err)
 	}
-	fmt.Fprintf(out, "\nLinear account %d re-authorized.\n", account.ID)
 	return nil
 }
 
@@ -524,9 +621,12 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 		syncer := linear.NewSyncer(linearClient(cfg, a.ID), database, a.ID, cfg.Linear.BackfillDays)
 		n, err := syncer.Sync(cmd.Context())
 		if errors.Is(err, linear.ErrAuthRevoked) {
-			_ = database.SetLinearAccountAuthState(a.ID, "revoked", err.Error())
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: authorization revoked; run 'watchtower linear login --account %d'\n", a.ID, a.ID)
-			revoked = err
+			revoked = errors.Join(revoked, err)
+			if werr := database.SetLinearAccountAuthState(a.ID, "revoked", err.Error()); werr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "account %d: recording revoked state: %v\n", a.ID, werr)
+				revoked = errors.Join(revoked, werr)
+			}
 			continue
 		}
 		if err != nil {
@@ -534,7 +634,10 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Fprintf(out, "account %d: %d issues synced\n", a.ID, n)
 		keys := linearTeamKeys(database, a.ID)
-		states, _ := database.ListLinearSyncStates(a.ID)
+		states, serr := database.ListLinearSyncStates(a.ID)
+		if serr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: reading sync state: %v\n", a.ID, serr)
+		}
 		for _, s := range states {
 			if s.LastError != "" {
 				fmt.Fprintf(out, "  team %s: %s\n", keys[s.TeamID], s.LastError)
