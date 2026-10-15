@@ -377,17 +377,20 @@ func (m *Manifest) AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args 
 }
 
 // outputTools are the write tools an output kind is sugar for (spec §5):
-// listing the kind under outputs admits the tool without a tool: entry.
+// the output.target/output.slack shortcuts run these tools, gated by the
+// kind under outputs, not by a capability.
 var outputTools = map[string]string{
 	"create_target":      "target",
 	"send_slack_message": "slack",
 }
 
-// AdmitsTool is the single "admitted by name" rule: t is on the automation
-// surface and the manifest lists tool:<name>, any entry of the tool's
-// ToolCapabilities capability+verb (whatever its scope), or the output kind
-// the tool is sugar for. It ignores call arguments — AllowTool checks the
-// scope per call.
+// AdmitsTool reports whether a tool() call of t can be admitted by name: t
+// is on the automation surface and the manifest lists tool:<name> or an
+// entry of the tool's ToolCapabilities capability+verb. A scoped capability
+// is matched by any entry's scope, since AllowTool checks the scope per call
+// — except for a tool whose call carries no scope at all (list_messages,
+// list_upcoming_events, list_jira_projects), which only @* admits. Outputs
+// admit no tool() call.
 func (m *Manifest) AdmitsTool(t *tools.Tool) bool {
 	if !t.VisibleOn(tools.AutomationSurface) {
 		return false
@@ -395,20 +398,27 @@ func (m *Manifest) AdmitsTool(t *tools.Tool) bool {
 	if m.has("tool:" + t.Name) {
 		return true
 	}
-	if kind, ok := outputTools[t.Name]; ok && slices.Contains(m.outputs, kind) {
-		return true
-	}
 	c, ok := ToolCapabilities[t.Name]
-	return ok && slices.ContainsFunc(m.entries, func(p Permission) bool {
-		return p.Capability == c.Capability && p.Verb == c.Verb
+	if !ok {
+		return false
+	}
+	unscopedCall := capabilitySpecs[c.Capability].scope == scopeRequired && c.ScopeArg == "" && c.ScopeOf == nil
+	return slices.ContainsFunc(m.entries, func(p Permission) bool {
+		return p.Capability == c.Capability && p.Verb == c.Verb && (!unscopedCall || p.Scope == "*")
 	})
 }
 
-// AdmitsWrite reports whether t is a write the manifest admits by name and
-// that may ever run without a per-call Approve (not AlwaysAsk) — the tools
-// an auto grant may name.
+// AdmitsWrite reports whether an auto grant may be set for t: a write that
+// may ever run without a per-call Approve (not AlwaysAsk), on the
+// automation surface, admitted by name (AdmitsTool) or as the tool behind
+// a declared output shortcut (outputs:[target] → create_target,
+// outputs:[slack] → send_slack_message).
 func (m *Manifest) AdmitsWrite(t *tools.Tool) bool {
-	return t.Access == tools.AccessWrite && !t.AlwaysAsk && m.AdmitsTool(t)
+	if t.Access != tools.AccessWrite || t.AlwaysAsk || !t.VisibleOn(tools.AutomationSurface) {
+		return false
+	}
+	kind, isOutput := outputTools[t.Name]
+	return m.AdmitsTool(t) || (isOutput && slices.Contains(m.outputs, kind))
 }
 
 func (m *Manifest) has(normalised string) bool {
