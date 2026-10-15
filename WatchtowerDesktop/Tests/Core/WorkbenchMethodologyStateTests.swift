@@ -60,6 +60,7 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
 
     func testInstallNoteForAKeptPresetOrASingleFileCore() throws {
         XCTAssertNil(try decode().installNote)
+        XCTAssertEqual(try decode().installFlow, "")
         let none = Self.envelope.replacingOccurrences(of: #""effective":{"preset":"watchtower-flow""#,
                                                       with: #""effective":{"preset":"none""#)
         for kept in ["drifted", "foreign"] {
@@ -75,15 +76,6 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
                                                         with: #""install_single_file_layout":true"#)
         XCTAssertEqual(try decode(single).installNote,
                        "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset.")
-    }
-
-    func testDecodesAnEnvelopeWithoutTheInstallReport() throws {
-        let old = Self.envelope.replacingOccurrences(
-            of: #""install_flow":"","install_codex_flow":"","install_single_file_layout":false"#, with: #""unknown":0"#)
-        XCTAssertNotEqual(old, Self.envelope)
-        let state = try decode(old)
-        XCTAssertNil(state.installFlow)
-        XCTAssertNil(state.installNote)
     }
 
     func testKeysFlagsChoicesAndLabels() {
