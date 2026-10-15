@@ -16,7 +16,7 @@ final class AppState {
     /// `AppState()` instances.
     static let shared = AppState()
 
-    var selectedDestination: SidebarDestination = .inbox
+    var selectedDestination: SidebarDestination = .home
 
     /// Which feature ids are currently disabled — drives sidebar visibility,
     /// navigation fallback, and the Dashboard banner. Populated by the
@@ -841,14 +841,14 @@ final class AppState {
                 // A re-run that changed nothing needs no restart — only a
                 // daemon, if none runs.
                 bringUpDaemonInBackground(startOnly: isRerun && !rerunChangedSomething)
-                // The landing reads the sources the steps just connected.
+                // The sidebar reads the sources the steps just connected.
                 await refreshConnectedSources()
             },
             completeOnboarding: {
                 completeOnboarding()
                 // Landing is for the first run; a re-run goes back to where
                 // the owner was.
-                if !isRerun { land(after: route) }
+                if !isRerun { landOnHome() }
             },
             onRetry: onRetry
         )
@@ -1209,17 +1209,9 @@ final class AppState {
         emptyStateTurnOnErrors[featureID] = nil
     }
 
-    /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
-    private func land(after route: OnboardingRoute) {
-        let catchUpVisible = SidebarDestination.catchUp.isVisible(
-            disabledFeatures: featureVisibility.disabledFeatureIDs,
-            connected: featureVisibility.connectedSources
-        )
-        switch OnboardingFinishPlan.landing(goals: route.goals, catchUpVisible: catchUpVisible) {
-        case .catchUp: selectedDestination = .catchUp
-        case .workbench: selectedDestination = .workbench
-        case .chat: selectedDestination = .chat
-        }
+    /// A first run of onboarding opens Home, whatever the goals.
+    private func landOnHome() {
+        selectedDestination = .home
     }
 
     /// Called when onboarding flow completes successfully.

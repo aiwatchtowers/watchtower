@@ -233,6 +233,8 @@ struct MainNavigationView: View {
     @ViewBuilder
     private var detailView: some View {
         switch appState.selectedDestination {
+        case .home:
+            HomeView()
         case .chat:
             ChatView()
         case .catchUp:
