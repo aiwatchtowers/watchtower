@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -313,9 +314,10 @@ func TestActions_WorkbenchSurfaceIsNoTrustPlace(t *testing.T) {
 
 // Settings → Assistant tools draws a switch per listed surface, and trust is a
 // write-tool setting: the listing carries write tools only — none of the
-// automation-only reads — and no "automation" surface anywhere (P1 automations
-// get no grants). `actions trust` refuses a read tool, with or without
-// --surface, and the automation surface on a write tool; nothing is written.
+// automation-only reads. The automation surface is a trust place since
+// Automations P2 (spec §6.2), so a write tool lists it exactly when it has a
+// trust level there. `actions trust` refuses a read tool, with or without
+// --surface, and a surface the write tool is not on; nothing is written.
 func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 	database := writeActionsConfig(t)
 	out, err := runActions(t, "tools", "--json")
@@ -330,10 +332,10 @@ func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 	require.NotEmpty(t, listed)
 	for _, l := range listed {
 		assert.Equal(t, string(tools.AccessWrite), l.Access, "%s: only write tools take trust", l.Name)
-		assert.NotContains(t, l.Surfaces, tools.AutomationSurface, l.Name)
-		assert.NotContains(t, l.TrustBySurface, tools.AutomationSurface, l.Name)
+		_, trusted := l.TrustBySurface[tools.AutomationSurface]
+		assert.Equal(t, slices.Contains(l.Surfaces, tools.AutomationSurface), trusted,
+			"%s: the automation surface is listed exactly when it carries a trust level", l.Name)
 	}
-	assert.NotContains(t, out, `"`+tools.AutomationSurface+`"`)
 	for _, name := range []string{"list_emails", "get_email", "list_inbox", "get_writing_style", "list_messages"} {
 		assert.NotContains(t, out, `"`+name+`"`, "%s is a read tool", name)
 	}
@@ -346,7 +348,8 @@ func TestActions_ToolsListsOnlyTrustableTools(t *testing.T) {
 		_, err = runActions(t, args...)
 		require.ErrorIs(t, err, tools.ErrNotWritable, args)
 	}
-	_, err = runActions(t, "trust", "create_target", "execute", "--surface", tools.AutomationSurface)
+	// brief_context is reaction-only and never offered to automations.
+	_, err = runActions(t, "trust", "brief_context", "execute", "--surface", tools.AutomationSurface)
 	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
 	var rows int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust

@@ -506,17 +506,11 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// listedToolSurfaces is toolJSON.Surfaces: t's surfaces without the
-// automation surface, which takes no trust in P1 (tools.TrustSurfaces) and
-// would otherwise show as a switch; never nil, so JSON carries [].
+// listedToolSurfaces is toolJSON.Surfaces: t's surfaces, the automation
+// surface included (a trust place since Automations P2, spec §6.2); never
+// nil, so JSON carries [].
 func listedToolSurfaces(t *tools.Tool) []string {
-	out := make([]string, 0, len(t.Surfaces))
-	for _, s := range t.Surfaces {
-		if s != tools.AutomationSurface {
-			out = append(out, s)
-		}
-	}
-	return out
+	return append(make([]string, 0, len(t.Surfaces)), t.Surfaces...)
 }
 
 // summarizeTrust is toolJSON.Trust: the level on the filtered surface, else
