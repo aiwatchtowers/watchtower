@@ -31,9 +31,10 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         let sub = args[2]
         let answer: String = lock.withLock {
             seen.append(args)
-            let list = script[sub] ?? [#"{"ok":false,"error":"unscripted \#(sub)"}"#]
-            let n = served[sub, default: 0]
-            served[sub] = n + 1
+            let key = sub == "diff" && args.contains("--since") && script["diff-since"] != nil ? "diff-since" : sub
+            let list = script[key] ?? [#"{"ok":false,"error":"unscripted \#(sub)"}"#]
+            let n = served[key, default: 0]
+            served[key] = n + 1
             return list[min(n, list.count - 1)]
         }
         if sub == "start" { try seedRound(answer) }
@@ -251,7 +252,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(carried.first?.carriedFrom, c6)
         XCTAssertEqual(h.model.comments, carried)
         XCTAssertEqual(h.model.view, .sinceLastRound)
-        XCTAssertTrue(h.cli.calls("diff").first?.contains("--since") == true)
+        XCTAssertTrue(h.cli.calls("diff").last?.contains("--since") == true)
     }
 
     func testNewRoundKeepsViewedMarksWhoseHunksAreUnchanged() async throws {
@@ -270,10 +271,62 @@ final class ReviewChangesModelTests: XCTestCase {
             try ReviewQueries.setViewed(db, roundID: r6, path: "b.go", contentSHA: "stale")
         }
         h.baseScript(id: 7, prev: r6, paths: ["a.go", "b.go"])
+        h.cli.script(["diff-since": diffJSON(path: "c.go")])
         await h.model.open()
         XCTAssertTrue(h.model.isViewed("a.go"))
         XCTAssertFalse(h.model.isViewed("b.go"))
         XCTAssertEqual(Set(h.model.viewed.keys), ["a.go"])
+        XCTAssertEqual(h.model.files.map(\.path), ["c.go"])
+    }
+
+    func testViewedKeyComesFromTheAllDiffInEveryView() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["a.go", "b.go"])
+        h.cli.script(["diff-since": diffJSON(["a.go"], hunk: "since")])
+        await h.model.open()
+        await h.model.setView(.sinceLastRound)
+        try h.model.toggleViewed("a.go")
+        XCTAssertTrue(h.model.isViewed("a.go"))
+        await h.model.setView(.all)
+        XCTAssertTrue(h.model.isViewed("a.go"))
+        XCTAssertFalse(h.model.isViewed("b.go"))
+    }
+
+    func testDeletingACarriedCommentResolvesItAndReopenDoesNotCarryAgain() async throws {
+        let h = try harness()
+        let r6 = try await h.db.write { db -> Int64 in
+            try db.execute(sql: Self.sentRoundSQL, arguments: [h.projectID, h.sessionID])
+            return db.lastInsertedRowID
+        }
+        try await h.db.write { db in
+            let id = try ReviewQueries.addDraft(db, roundID: r6, path: "a.go", side: "new", startLine: 1, endLine: 1,
+                                                anchor: ReviewCommentAnchor.anchor(text: "x\n", startLine: 1, endLine: 1),
+                                                treeSHA: "t6", body: "b")
+            try db.execute(sql: "UPDATE review_comments SET status='sent' WHERE id=?", arguments: [id])
+        }
+        h.cli.script(["start": startJSON(id: 7, prev: r6), "context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(path: "a.go"),
+                      "file": fileJSON(old: "x\n", new: "x\n")])
+        await h.model.open()
+        let carried = try XCTUnwrap(h.model.comments.first)
+        XCTAssertEqual(carried.status, .carried)
+        try h.model.deleteComment(id: carried.id)
+        await h.model.open()
+        let rows = try await h.comments()
+        XCTAssertEqual(rows.map(\.status), [.resolved])
+    }
+
+    func testOldSideCommentIsRefusedInTheSinceView() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["file": fileJSON(old: "one\n", new: "two\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        await h.model.setView(.sinceLastRound)
+        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "old", startLine: 1, endLine: 1, body: "x")) {
+            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .oldSideInSinceView)
+        }
+        XCTAssertEqual(h.model.lastError, "Switch to All changes to comment on removed lines")
+        XCTAssertEqual(h.model.comments, [])
     }
 
     func testToggleViewedSetsAndClears() async throws {
@@ -344,9 +397,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.setView(.sinceLastRound)
         XCTAssertEqual(h.model.view, .sinceLastRound)
-        XCTAssertEqual(h.cli.calls("diff").count, 2)
-        XCTAssertTrue(h.cli.calls("diff")[1].contains("--since"))
-        XCTAssertFalse(h.cli.calls("diff")[0].contains("--since"))
+        let sinceFlags = h.cli.calls("diff").map { $0.contains("--since") }
+        XCTAssertEqual(sinceFlags, [false, false, true])
     }
 
     func testRefreshMovesAndOutdatesDrafts() async throws {

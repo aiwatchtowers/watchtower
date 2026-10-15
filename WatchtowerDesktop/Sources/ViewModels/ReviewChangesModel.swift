@@ -33,12 +33,14 @@ final class ReviewChangesModel {
         case noRound
         case fileNotLoaded(String)
         case unknownFile(String)
+        case oldSideInSinceView
 
         var errorDescription: String? {
             switch self {
             case .noRound: "No review round is open."
             case .fileNotLoaded(let path): "The file \(path) is not open, so its lines cannot be anchored."
             case .unknownFile(let path): "The file \(path) is not part of this diff."
+            case .oldSideInSinceView: "Switch to All changes to comment on removed lines"
             }
         }
     }
@@ -59,6 +61,9 @@ final class ReviewChangesModel {
     private(set) var lastSend: SessionLineDelivery.Delivery?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
+
+    /// The base..tree diff: the Viewed keys always come from it, whatever view is shown.
+    private var allFiles: [ReviewDiffFile] = []
 
     private let projectID: Int64
     private let sessionID: Int64
@@ -81,7 +86,7 @@ final class ReviewChangesModel {
 
     /// Whether `path` is marked Viewed at its current content.
     func isViewed(_ path: String) -> Bool {
-        guard let file = files.first(where: { $0.path == path }) else { return false }
+        guard let file = allFiles.first(where: { $0.path == path }) else { return false }
         return viewed[path] == Self.contentKey(file)
     }
 
@@ -179,6 +184,8 @@ final class ReviewChangesModel {
     func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String) throws {
         try run {
             guard let info = round else { throw ModelError.noRound }
+            // Old-side lines of the since view belong to the previous tree, not to base.
+            guard !(side == "old" && view == .sinceLastRound) else { throw ModelError.oldSideInSinceView }
             guard selectedPath == path, let sides else { throw ModelError.fileNotLoaded(path) }
             let text = side == "old" ? sides.old.text : sides.new.text
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
@@ -199,7 +206,9 @@ final class ReviewChangesModel {
 
     func deleteComment(id: Int64) throws {
         try run {
-            try db.write { try ReviewQueries.deleteDraft($0, id: id) }
+            // A carried comment is closed, not deleted: a deleted one would be carried again on reopen.
+            let carried = comments.first { $0.id == id }?.status == .carried
+            try db.write { carried ? try ReviewQueries.resolve($0, id: id) : try ReviewQueries.deleteDraft($0, id: id) }
             try reloadComments()
         }
     }
@@ -214,7 +223,7 @@ final class ReviewChangesModel {
     func toggleViewed(_ path: String) throws {
         try run {
             guard let info = round else { throw ModelError.noRound }
-            guard let file = files.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
+            guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
             let key = viewed[path] == Self.contentKey(file) ? nil : Self.contentKey(file)
             try db.write { try ReviewQueries.setViewed($0, roundID: info.id, path: path, contentSHA: key) }
             viewed = try db.read { try ReviewQueries.viewed($0, roundID: info.id) }
@@ -261,14 +270,21 @@ final class ReviewChangesModel {
 
     private func loadDiff(_ info: ReviewRoundInfo) async throws {
         let since = view == .sinceLastRound
-        let env = try Self.checked(await cli.reviewDiff(projectID: projectID, roundID: info.id, since: since))
-        guard let diff = env.diff else { throw Failure(message: "The diff is missing from the answer.") }
+        let all = try await fetchDiff(info, since: false)
+        let diff = since ? try await fetchDiff(info, since: true) : all
         guard since == (view == .sinceLastRound) else { return }
+        allFiles = all.files
         files = diff.files
         truncated = diff.truncated
         if let selectedPath, !diff.files.contains(where: { $0.path == selectedPath }) {
             self.selectedPath = nil
         }
+    }
+
+    private func fetchDiff(_ info: ReviewRoundInfo, since: Bool) async throws -> ReviewDiff {
+        let env = try Self.checked(await cli.reviewDiff(projectID: projectID, roundID: info.id, since: since))
+        guard let diff = env.diff else { throw Failure(message: "The diff is missing from the answer.") }
+        return diff
     }
 
     /// Loads the sides of the selected file; a stale answer (another file or
@@ -303,7 +319,7 @@ final class ReviewChangesModel {
         let open = previous.filter { $0.status == .sent || $0.status == .carried }
         let plan = try await plan(open, round: info)
         let oldMarks = try await db.read { try ReviewQueries.viewed($0, roundID: previousID) }
-        let keys = files.reduce(into: [String: String]()) { $0[$1.path] = Self.contentKey($1) }
+        let keys = allFiles.reduce(into: [String: String]()) { $0[$1.path] = Self.contentKey($1) }
         try await db.write { db in
             try ReviewQueries.carry(db, from: previous, into: info.id, plan: plan, treeSHA: info.treeSha)
             for (path, key) in oldMarks where keys[path] == key {
