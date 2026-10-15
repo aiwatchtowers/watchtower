@@ -238,3 +238,36 @@ func TestProj13_PreToolUseFollowsMode(t *testing.T) {
 		assert.Empty(t, out, "off: allowed")
 	})
 }
+
+// TestProj13_UnreadableSessionVariableIsStrict: a terminal-session variable
+// that is present but unreadable never resolves the workbench folder's rules
+// (which here say off): both hooks run strict. An absent variable keeps the
+// folder's rules.
+func TestProj13_UnreadableSessionVariableIsStrict(t *testing.T) {
+	t.Run("pre-tool-use", func(t *testing.T) {
+		database, pid, _ := stopGuardFixture(t)
+		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\n---\n")
+		ask := func() string {
+			t.Helper()
+			out, _, err := runAskGuard(t, strconv.FormatInt(pid, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
+			require.NoError(t, err)
+			return out
+		}
+		t.Setenv(terminalSessionEnv, "not-a-number")
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), ask(), "unreadable variable: strict")
+		require.NoError(t, os.Unsetenv(terminalSessionEnv))
+		assert.Empty(t, ask(), "absent variable: the folder's off applies")
+	})
+	t.Run("stop", func(t *testing.T) {
+		database, pid, _ := stopGuardFixture(t)
+		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\n")
+		gen := &stubAskGuardGen{reply: verdictJSON("full")}
+		useAskGuardGen(t, gen)
+		t.Setenv(terminalSessionEnv, "not-a-number")
+
+		_, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload("Review the spec, please.", false)))
+
+		require.NoError(t, err)
+		assert.NotZero(t, gen.calls, "strict + on: the request is classified (off + off would call no model)")
+	})
+}

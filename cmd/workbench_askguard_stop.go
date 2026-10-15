@@ -304,6 +304,9 @@ var strictModes = askGuardModes{askGuard: workbenchmethod.AskGuardStrict, finish
 // failure reads as strictModes, silently: the guard's stderr is pinned by
 // the PROJ-13 diagnostics. A var for tests.
 var askGuardModesFor = func(dbPath string, target askGuardTarget) askGuardModes {
+	if _, ok, err := terminalSessionRowID(); ok && err != nil {
+		return strictModes // a present but unreadable session variable: never a weaker mode
+	}
 	database, err := db.OpenExisting(dbPath, askGuardBusyTimeout)
 	if err != nil {
 		return strictModes

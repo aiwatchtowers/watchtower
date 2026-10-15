@@ -66,7 +66,8 @@ var workbenchAskGuardCmd = &cobra.Command{
 	Short: "The workbench ask guard: Claude Code's Stop and PreToolUse(AskUserQuestion) hooks",
 	Long: "Two hooks installed by `integrate claude-code --workbench N`, each always exiting 0.\n" +
 		"--pre-tool-use (matcher AskUserQuestion): when the hook input on stdin names\n" +
-		"AskUserQuestion and workbench N exists, it denies the tool (by the workbench's ask guard mode: strict always, soft while the owner is away, off never) and tells the agent to ask in\n" +
+		"AskUserQuestion and workbench N exists, it denies the tool (by the workbench's ask guard mode:\n" +
+		"strict always, soft while the owner is away, off never) and tells the agent to ask in\n" +
 		"plain text when the owner is here in this session, or to file the question with ask_owner\n" +
 		"otherwise. Another tool, a deleted workbench, a bad id or any failure before the denial\n" +
 		"prints nothing, so the tool runs.\n" +
@@ -187,7 +188,7 @@ func runCodexAskGuardHook(stdin io.Reader, stdout, stderr io.Writer) {
 	reason := askToolDenialReasonAway
 	deadline := time.Now().Add(askGuardReadBudget)
 	if database, err := openAskGuardDB(); err == nil {
-		reason = askGuardReasonBy(database, deadline, row.WorkbenchID.Int64, row.ID, func(d *db.DB) bool {
+		reason = askGuardReasonBy(database, deadline, row.WorkbenchID.Int64, row.ID, false, func(d *db.DB) bool {
 			return askGuardOwnerHereIn(d, row.WorkbenchID.Int64, row.ID, in.SessionID, agentkind.Codex)
 		})
 	}
@@ -199,7 +200,8 @@ func runCodexAskGuardHook(stdin io.Reader, stdout, stderr io.Writer) {
 
 // askGuardToolReason is the denial reason for an AskUserQuestion of
 // conversation claudeID in workbench rawID, "" when the workbench does not
-// exist or cannot be read (the tool runs). It only reads: db.OpenExisting
+// exist or cannot be read, or when its ask guard mode lets the tool run (off,
+// or soft with the owner here): the tool runs. It only reads: db.OpenExisting
 // (query_only, never creating or migrating) under askGuardBusyTimeout. A var
 // for tests.
 var askGuardToolReason = func(rawID, claudeID string) string {
@@ -220,9 +222,11 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 		_ = database.Close()
 		return ""
 	}
-	rowID, _, _ := terminalSessionRowID() // an unreadable variable reads as no row
+	// An absent variable is no Desktop row (the workbench folder's rules); a
+	// present but unreadable one is strict, never a weaker mode.
+	rowID, _, rowErr := terminalSessionRowID()
 	presence := askGuardOwnerPresence
-	return askGuardReasonBy(database, deadline, id, rowID, func(d *db.DB) bool { return presence(d, id, claudeID) })
+	return askGuardReasonBy(database, deadline, id, rowID, rowErr != nil, func(d *db.DB) bool { return presence(d, id, claudeID) })
 }
 
 // askGuardToolMode is the workbench's ask guard mode for a PreToolUse hook
@@ -255,11 +259,24 @@ func askToolReasonFor(mode string, here bool) string {
 // the one budget ending at deadline: a read cut by it, like a failing one,
 // resolves strict with the owner away. The database is closed once the
 // reads end (sql.DB.Close waits for a running query, so the hook does not).
-func askGuardReasonBy(database *db.DB, deadline time.Time, workbenchID, rowID int64, presence func(*db.DB) bool) string {
+// strict forces strict (an unreadable session variable). A panic in a read
+// also resolves strict with the owner away.
+func askGuardReasonBy(database *db.DB, deadline time.Time, workbenchID, rowID int64, strict bool, presence func(*db.DB) bool) string {
 	reason := make(chan string, 1)
 	go func() {
 		defer func() { _ = database.Close() }()
-		mode := askGuardToolMode(database, workbenchID, rowID)
+		defer func() {
+			if recover() != nil {
+				select {
+				case reason <- askToolDenialReasonAway:
+				default:
+				}
+			}
+		}()
+		mode := workbenchmethod.AskGuardStrict
+		if !strict {
+			mode = askGuardToolMode(database, workbenchID, rowID)
+		}
 		if mode == workbenchmethod.AskGuardOff {
 			reason <- ""
 			return
