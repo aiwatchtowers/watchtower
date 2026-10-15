@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,4 +180,94 @@ func writeWorkbenchWorkflow(t *testing.T, database *db.DB, pid int64, content st
 	require.NoError(t, database.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, pid).Scan(&folder))
 	require.NoError(t, os.MkdirAll(filepath.Join(folder, ".watchtower"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(folder, workbenchmethod.FileRel), []byte(content), 0o644))
+}
+
+// TestProj13_PreToolUseFollowsMode is spec §7.2: strict always denies (the
+// reason by presence), soft denies only while the owner is away, off never
+// denies; an unreadable mode is strict. Claude Code's AskUserQuestion and
+// Codex's request_user_input alike.
+func TestProj13_PreToolUseFollowsMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		here bool
+		want string
+	}{
+		{workbenchmethod.AskGuardStrict, true, askToolDenialReasonPresent},
+		{workbenchmethod.AskGuardStrict, false, askToolDenialReasonAway},
+		{workbenchmethod.AskGuardSoft, true, ""},
+		{workbenchmethod.AskGuardSoft, false, askToolDenialReasonAway},
+		{workbenchmethod.AskGuardOff, true, ""},
+		{workbenchmethod.AskGuardOff, false, ""},
+		{"", false, askToolDenialReasonAway}, // an unknown mode reads as strict
+	} {
+		assert.Equal(t, tc.want, askToolReasonFor(tc.mode, tc.here), "%q here=%v", tc.mode, tc.here)
+	}
+
+	t.Run("claude", func(t *testing.T) {
+		database, pid, row := stopGuardFixture(t)
+		raw := strconv.FormatInt(pid, 10)
+		ask := func() string {
+			t.Helper()
+			out, _, err := runAskGuard(t, raw, strings.NewReader(askToolPayload("AskUserQuestion")))
+			require.NoError(t, err)
+			return out
+		}
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardSoft}))
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), ask(), "soft, away: denied")
+		setOwnerPresence(t, database, row, time.Now())
+		assert.Empty(t, ask(), "soft, present: allowed")
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff}))
+		setOwnerPresence(t, database, nil, time.Now())
+		assert.Empty(t, ask(), "off: allowed")
+		_, err := database.Exec(`ALTER TABLE projects DROP COLUMN ask_guard_mode`)
+		require.NoError(t, err)
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), ask(), "an unreadable mode is strict")
+	})
+	t.Run("codex", func(t *testing.T) {
+		database, pid, row := codexRowFixture(t, codexTUISession)
+		ask := string(codexHookFixture(t, "pre_tool_use_request_user_input"))
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardSoft}))
+		out, _ := runCodexAskTool(t, ask)
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), out, "soft, away: denied")
+		setOwnerPresence(t, database, row, time.Now())
+		out, _ = runCodexAskTool(t, ask)
+		assert.Empty(t, out, "soft, present: allowed")
+		require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff}))
+		setOwnerPresence(t, database, nil, time.Now())
+		out, _ = runCodexAskTool(t, ask)
+		assert.Empty(t, out, "off: allowed")
+	})
+}
+
+// TestProj13_UnreadableSessionVariableIsStrict: a terminal-session variable
+// that is present but unreadable never resolves the workbench folder's rules
+// (which here say off): both hooks run strict. An absent variable keeps the
+// folder's rules.
+func TestProj13_UnreadableSessionVariableIsStrict(t *testing.T) {
+	t.Run("pre-tool-use", func(t *testing.T) {
+		database, pid, _ := stopGuardFixture(t)
+		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\n---\n")
+		ask := func() string {
+			t.Helper()
+			out, _, err := runAskGuard(t, strconv.FormatInt(pid, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
+			require.NoError(t, err)
+			return out
+		}
+		t.Setenv(terminalSessionEnv, "not-a-number")
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), ask(), "unreadable variable: strict")
+		require.NoError(t, os.Unsetenv(terminalSessionEnv))
+		assert.Empty(t, ask(), "absent variable: the folder's off applies")
+	})
+	t.Run("stop", func(t *testing.T) {
+		database, pid, _ := stopGuardFixture(t)
+		writeWorkbenchWorkflow(t, database, pid, "---\nask_guard: off\nfinish_check: off\n---\n")
+		gen := &stubAskGuardGen{reply: verdictJSON("full")}
+		useAskGuardGen(t, gen)
+		t.Setenv(terminalSessionEnv, "not-a-number")
+
+		_, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload("Review the spec, please.", false)))
+
+		require.NoError(t, err)
+		assert.NotZero(t, gen.calls, "strict + on: the request is classified (off + off would call no model)")
+	})
 }
