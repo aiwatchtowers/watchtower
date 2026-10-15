@@ -1,11 +1,6 @@
 import CloudKit
 import Foundation
 import os
-#if os(macOS)
-import Security
-#elseif targetEnvironment(simulator)
-import MachO
-#endif
 
 /// Result of probing the CloudKit account. `.unavailable` carries a
 /// human-readable reason (missing entitlement, network, CK errors).
@@ -54,8 +49,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// A payload-free signal (`WireKind.signal`): the ask-alert subscription's trigger (D14).
     static let signalRecordType = "WatchtowerSignal"
     /// Record types already logged as ignored: one line per type, not one per record.
-    private static let ignoredTypesLogged = OSAllocatedUnfairLock(initialState: Set<String>())
-    private static let mappingLogger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
+    static let ignoredTypesLogged = OSAllocatedUnfairLock(initialState: Set<String>())
+    static let mappingLogger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
     /// Records per send batch; `.limitExceeded` halves it (spec §9).
     static let maxBatchSize = 200
     /// Backoff when a throttle carries no `CKErrorRetryAfterKey` (spec §9).
@@ -67,8 +62,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         _ delegate: any CKSyncEngineDelegate
     ) -> any SyncEngineDriving
 
-    private let store: TransportStore
-    private let containerID: String
+    let store: TransportStore
+    let containerID: String
     /// The hub this transport syncs and its two zones, fixed for its lifetime.
     nonisolated public let zones: HubZones
     /// Which side of the link this transport plays (multi-hub spec §4.1).
@@ -76,119 +71,119 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// The database this transport syncs.
     nonisolated public var scope: CloudDatabaseScope { zones.scope }
     /// Only the hub creates, re-creates and deletes zones.
-    private var managesZones: Bool { role == .hub }
-    private let entitlementCheck: @Sendable () -> Bool
-    private let zoneAdmin: any CloudZoneAdministering
-    private let engineFactory: EngineFactory
-    private let now: @Sendable () -> Date
-    private let sleep: @Sendable (TimeInterval) async -> Void
+    var managesZones: Bool { role == .hub }
+    let entitlementCheck: @Sendable () -> Bool
+    let zoneAdmin: any CloudZoneAdministering
+    let engineFactory: EngineFactory
+    let now: @Sendable () -> Date
+    let sleep: @Sendable (TimeInterval) async -> Void
     /// Counts the CloudKit requests this transport issues (the phone's
     /// battery diagnostics); nil counts nothing.
-    private let energy: EnergyCounter?
-    private let logger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
+    let energy: EnergyCounter?
+    let logger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
 
-    private var engine: (any SyncEngineDriving)?
-    private var delegateBox: DelegateBox?
+    var engine: (any SyncEngineDriving)?
+    var delegateBox: DelegateBox?
     /// Last recorded failure (startup or store I/O), surfaced via availability().
-    private(set) var lastError: String?
+    var lastError: String?
     /// Number of CloudKit account changes that forced a local reset. Read via
     /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
-    public private(set) var accountResetCount = 0
+    public internal(set) var accountResetCount = 0
     /// Fired after an account-change reset so an owner (the desktop hub) can
     /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
-    private var accountResetHandler: (@Sendable () -> Void)?
+    var accountResetHandler: (@Sendable () -> Void)?
     /// Fired after a hub-role DataZone deletion (see
     /// `setDataZoneResetHandler`).
-    private var dataZoneResetHandler: (@Sendable () -> Void)?
-    private var eventHandler: (@Sendable (TransportEvent) -> Void)?
-    private var recordRejectedHandler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?
+    var dataZoneResetHandler: (@Sendable () -> Void)?
+    var eventHandler: (@Sendable (TransportEvent) -> Void)?
+    var recordRejectedHandler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?
     /// The relaunch an account-change reset schedules (awaitable in tests).
-    private(set) var restartTask: Task<Void, Never>?
+    var restartTask: Task<Void, Never>?
     /// Set by `stop()`, cleared only by the public `start()`: a reset's
     /// queued relaunch must not bring back an engine the owner stopped.
-    private(set) var isStopped = false
+    var isStopped = false
 
     // Send-side error state (spec §9).
-    private(set) var batchLimit = maxBatchSize
+    var batchLimit = maxBatchSize
     /// The batch last handed to the engine: what a request-level
     /// `.limitExceeded` (which names no record) is about.
-    private var lastBuiltBatch: (id: Int, size: Int, saves: [(name: String, zone: CloudZoneID)])?
-    private var batchSerial = 0
+    var lastBuiltBatch: (id: Int, size: Int, saves: [(name: String, zone: CloudZoneID)])?
+    var batchSerial = 0
     /// The batch a `.limitExceeded` was already applied to — the same
     /// failure can arrive thrown and per record; it shrinks once.
-    private var shrunkBatchID: Int?
+    var shrunkBatchID: Int?
     /// Start of the current throttling stretch; nil once a send succeeds.
     /// Settings shows "iCloud is slowing sync down" after 60 s of it.
-    public private(set) var throttledSince: Date?
+    public internal(set) var throttledSince: Date?
     /// No sends and no fetches before this instant.
-    private var throttledUntil: Date?
-    private var nextBackoff = initialBackoff
+    var throttledUntil: Date?
+    var nextBackoff = initialBackoff
     /// The wait-then-resend scheduled by the last throttle (awaitable in tests).
-    private(set) var retryTask: Task<Void, Never>?
+    var retryTask: Task<Void, Never>?
     /// True after `.quotaExceeded`: nothing is sent until `resume()`.
-    public private(set) var isPaused = false
+    public internal(set) var isPaused = false
     /// Phone role: the hub's zones are gone (`TransportEvent.unlinked`
     /// was emitted). Terminal for this transport's lifetime — nothing is
     /// sent, nudged or fetched any more, and neither an account-change reset
     /// nor anything else clears it. One transport serves one link: the phone
     /// builds a new transport (and store scope) when it links again.
-    public private(set) var isUnlinked = false
+    public internal(set) var isUnlinked = false
     /// An expired-token zone check + re-fetch is running (two concurrent
     /// pulls, or a pull and the event path, must not both run one).
-    private var refetchInFlight = false
+    var refetchInFlight = false
     /// That re-fetch's `fetchChanges(scope:)` is awaiting the engine: a
     /// manual fetch, so its run events are not the engine's own (no
     /// `.engineFetchRun`, no `engineFetchedHandler`). Its fetch errors are
     /// not parked: the event path handles them as before.
-    private var refetchFetchInFlight = false
+    var refetchFetchInFlight = false
     /// The running pull, error handling included. A `pull()` arriving
     /// meanwhile joins it (awaits it, gets its outcome) instead of starting
     /// a second fetch, so the flag and parked events below belong to it.
-    private var pullTask: Task<Void, Error>?
+    var pullTask: Task<Void, Error>?
     /// Pulls that joined a running one (observable in tests).
-    private(set) var pullJoins = 0
+    var pullJoins = 0
     /// The running pull's `fetchChanges(scope:)` is awaiting the engine (cleared
     /// before its error handling). Fetch-error events delivered meanwhile
     /// are parked — every one: in the phone role one fetch covers every
     /// zone and fails once per zone — and handled by the pull, so one
     /// server failure is handled once.
-    private var manualFetchInFlight = false
-    private var parkedEventErrors: [(error: CKError, zoneID: CKRecordZone.ID)] = []
+    var manualFetchInFlight = false
+    var parkedEventErrors: [(error: CKError, zoneID: CKRecordZone.ID)] = []
     /// The running `deleteHubZones` (server delete, then store wipe). It
     /// lives here, with the store it wipes, rather than on any one owner:
     /// `start()` and a second delete wait for it, so a late wipe never lands
     /// under an engine some other owner of this transport started.
-    private var hubZoneDelete: Task<Void, Error>?
+    var hubZoneDelete: Task<Void, Error>?
 
     // The engine's own fetch runs (phone push path, board #724).
     /// Between the engine's own `willFetchChanges` and `didFetchChanges`
     /// (a run a manual fetch started is not tracked).
-    private(set) var engineRunInFlight = false
+    var engineRunInFlight = false
     /// When the engine's current or last own fetch run began.
-    private(set) var engineRunStartedAt: Date?
+    var engineRunStartedAt: Date?
     /// `fetchForPush` callers waiting for an own run to begin: resumed with
     /// true when one begins, with false when their grace ends first, a
     /// `pull()` takes the push over or the engine goes.
-    private var engineRunStartWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var engineRunStartWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// `fetchForPush` callers waiting for the running own run to end:
     /// resumed with true when it ends, with false when the wait's bound
     /// (`engineRunEndWait`) passes first, a `pull()` takes the push over or
     /// the engine goes.
-    private var engineRunEndWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    var engineRunEndWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// Fired when an own fetch run of the engine ends (see
     /// `setEngineFetchedHandler`).
-    private var engineFetchedHandler: (@Sendable () -> Void)?
+    var engineFetchedHandler: (@Sendable () -> Void)?
     /// The running `fetchForPush`; a second one joins it. A `pull()` waits
     /// for it only while it runs its own fallback fetch (one manual fetch
     /// at a time); while it still waits on the engine, the pull serves it.
-    private var pushFetchTask: Task<Void, Error>?
+    var pushFetchTask: Task<Void, Error>?
     /// The running push fetch has stopped waiting and runs its own fetch.
-    private var pushFetchFetching = false
+    var pushFetchFetching = false
     /// Push fetches that joined a running one (observable in tests).
-    private(set) var pushFetchJoins = 0
+    var pushFetchJoins = 0
     /// Push fetches an own engine run covered, so they sent no request of
     /// their own (observable in tests).
-    private(set) var pushFetchesCoveredByEngine = 0
+    var pushFetchesCoveredByEngine = 0
     /// Push fetches waiting on an own engine run (observable in tests).
     var engineRunWaiterCount: Int { engineRunStartWaiters.count + engineRunEndWaiters.count }
 
@@ -312,1115 +307,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int {
         try store.sweepEvents(in: zone, olderThan: cutoff, upTo: token)
     }
-
-    // MARK: - Lifecycle
-
-    /// Builds the CKSyncEngine on the scope's database with the stored
-    /// engine state and, in the hub role, registers this hub's two zones as
-    /// pending database changes (a phone never creates zones).
-    /// Failures are recorded and surfaced via availability() — never thrown,
-    /// never fatal: unsigned dev builds routinely lack the iCloud entitlement
-    /// and must degrade to store-only operation (records wait in the pending
-    /// queue).
-    /// A `deleteHubZones` still running is awaited first: the engine is
-    /// built only on the store its wipe left.
-    public func start() async {
-        isStopped = false
-        await settleHubZoneDelete()
-        await startEngine()
-    }
-
-    private func startEngine() async {
-        guard engine == nil, !isStopped, hubZoneDelete == nil else { return }
-        guard entitlementCheck() else {
-            lastError = "missing iCloud entitlement (unsigned dev build?)"
-            return
-        }
-        do {
-            if try store.adoptScope(scope, hubID: zones.hubID) {
-                logger.notice("transport store held another database's or hub's state; wiped it")
-            }
-        } catch {
-            // The store's scope is unknown: starting could drive this
-            // database with the other database's engine state.
-            recordError(error)
-            return
-        }
-
-        var stateSerialization: CKSyncEngine.State.Serialization?
-        do {
-            if let data = try store.loadEngineState() {
-                stateSerialization = try JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data)
-            }
-        } catch {
-            // Unreadable state blob: start the engine fresh (it re-fetches
-            // everything and re-emits a .stateUpdate) rather than failing.
-            stateSerialization = nil
-        }
-
-        let box = DelegateBox(ownZoneIDs: zones.allZoneIDs)
-        box.transport = self
-        let engine = engineFactory(stateSerialization, box)
-        self.engine = engine
-        delegateBox = box
-
-        if managesZones {
-            engine.add(pendingDatabaseChanges: CloudZoneID.allCases.map {
-                .saveZone(CKRecordZone(zoneID: zones.zoneID(for: $0)))
-            })
-        }
-        lastError = nil
-        nudgeEngine()
-    }
-
-    /// Stops syncing until the next `start()` (the Mac owner turned the hub
-    /// off): cancels the engine's operations and drops it, so nothing is
-    /// fetched or sent on pushes any more. Saves made meanwhile wait in the
-    /// store; the engine state stays in the store for the next start.
-    public func stop() async {
-        isStopped = true
-        retryTask?.cancel()
-        retryTask = nil
-        restartTask?.cancel()
-        restartTask = nil
-        // The throttle dies with its retry task: a restart must not wait out
-        // a deadline nothing is armed to end.
-        throttledUntil = nil
-        throttledSince = nil
-        nextBackoff = Self.initialBackoff
-        // Actor re-entrancy: an engine built while cancelOperations() was
-        // awaited is dropped too, unless a start() meanwhile un-stopped us.
-        releaseEngineRunWaiters()
-        while isStopped, let live = engine {
-            engine = nil
-            delegateBox = nil
-            await live.cancelOperations()
-        }
-    }
-
-    /// Manual fetch with the forced zone poll — the poll loops call this
-    /// (a silent push takes the light `fetchForPush`). No-op while the engine is unavailable, the
-    /// server asked us to wait, or the link is gone. Fetch errors the
-    /// transport can act on (unlinked, an expired token, throttling) are
-    /// handled, not thrown. A successful fetch ends a throttling stretch.
-    public func pull() async throws {
-        // One manual fetch at a time: a push fetch running its own fetch
-        // ends first (its outcome is the push's), then this pull polls as
-        // usual. One still waiting on the engine's run stops waiting and
-        // takes this pull as its fetch, so a pull never waits on the engine.
-        while let pushFetchTask, pushFetchFetching {
-            _ = try? await pushFetchTask.value
-        }
-        if pushFetchTask != nil {
-            abandonEngineRunWaits()
-        }
-        if let pullTask {
-            pullJoins += 1
-            return try await pullTask.value
-        }
-        guard let engine, !isUnlinked else { return }
-        if let throttledUntil, now() < throttledUntil { return }
-        // Actor-isolated: the body runs after this job suspends below, so
-        // `pullTask` is set before it can clear it.
-        let task = Task {
-            defer { self.pullTask = nil }
-            try await self.performPull(engine: engine, poll: true)
-        }
-        pullTask = task
-        try await task.value
-    }
-
-    /// `poll`: the forced zone poll after the engine fetch (`pull()`);
-    /// false for a push's light fetch.
-    private func performPull(engine: any SyncEngineDriving, poll: Bool) async throws {
-        manualFetchInFlight = true
-        parkedEventErrors = []
-        do {
-            try await fetchAndHandle(engine: engine, poll: poll)
-        } catch where isUnlinked {
-            // The link ended while this pull ran (the event path or the
-            // handling unlinked): `.unlinked` already told the owner, so a
-            // leftover zone error is not a new outage.
-            return
-        }
-    }
-
-    private func fetchAndHandle(engine: any SyncEngineDriving, poll: Bool) async throws {
-        var thrown: CKError?
-        energy?.record(.engineFetch)
-        do {
-            try await engine.fetchChanges(scope: zones.allZoneIDs)
-        } catch let error as CKError {
-            thrown = error
-        } catch {
-            manualFetchInFlight = false
-            parkedEventErrors = []
-            throw error
-        }
-        let parked = parkedEventErrors
-        manualFetchInFlight = false
-        parkedEventErrors = []
-        if let thrown {
-            // The thrown error supersedes the event copies of it, but keeps
-            // their zones: a bare error is ours when nothing was parked or
-            // any parked zone is ours, and otherwise is about a foreign zone.
-            let zoneID = parked.isEmpty ? nil : (parked.first { ownsZone($0.zoneID) } ?? parked[0]).zoneID
-            try await handleFetchError(thrown, zoneID: zoneID, engine: engine)
-        } else if !parked.isEmpty {
-            // The engine reported this fetch's failures as events only.
-            let items = parked.flatMap { Self.flatten($0.error, zoneID: $0.zoneID) }
-            try await handleFetchItems(items, original: parked[0].error, engine: engine)
-        } else {
-            clearThrottle()
-        }
-        if poll {
-            try await pollZones(engine: engine)
-        }
-    }
-
-    /// The poll half of `pull()`: each zone's changes straight from the
-    /// server since the transport's own per-zone token, buffered like the
-    /// engine's fetched changes. The engine fetches only the zones a
-    /// delivered push told it about, so without this a manual pull sends no
-    /// request (seen on a hub whose pushes never arrived: the phone's
-    /// records sat unread until an engine restart). Skipped once unlinked,
-    /// stopped or throttled, and when the engine was replaced meanwhile (an
-    /// account reset wiped the store this page would land in).
-    private func pollZones(engine: any SyncEngineDriving) async throws {
-        for zone in CloudZoneID.allCases {
-            var moreComing = true
-            while moreComing {
-                guard self.engine === engine, !isUnlinked, !isStopped else { return }
-                if let throttledUntil, now() < throttledUntil { return }
-                let zoneID = zones.zoneID(for: zone)
-                let page: PolledZoneChanges
-                energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
-                do {
-                    page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
-                } catch let error as CKError {
-                    try await handlePollError(error, zone: zone, zoneID: zoneID, engine: engine)
-                    break
-                }
-                guard self.engine === engine, !isStopped else { return }
-                bufferPolledChanges(page)
-                try store.setPollToken(page.changeToken, zone: zone)
-                moreComing = page.moreComing
-            }
-        }
-    }
-
-    /// A poll error. An expired token restarts that zone's poll from the
-    /// beginning on the next pull (known records are skipped by change tag).
-    /// A missing zone in the hub role is one the engine has not created
-    /// yet; in the phone role it unlinks, through the usual fetch-error
-    /// rules, which also wait out throttling and rethrow anything else.
-    private func handlePollError(
-        _ error: CKError,
-        zone: CloudZoneID,
-        zoneID: CKRecordZone.ID,
-        engine: any SyncEngineDriving
-    ) async throws {
-        if error.code == .changeTokenExpired {
-            try store.setPollToken(nil, zone: zone)
-            return
-        }
-        if managesZones, Self.zoneGoneCodes.contains(error.code) { return }
-        try await handleFetchError(error, zoneID: zoneID, engine: engine)
-    }
-
-    /// Buffers a poll page minus what the store already holds: a record
-    /// whose change tag matches its archived system fields (fetched by the
-    /// engine, or sent from here), and a deletion of a record it has no
-    /// system fields for (never seen, or its deletion already buffered).
-    private func bufferPolledChanges(_ page: PolledZoneChanges) {
-        let modifications = page.modifications.filter { record in
-            guard let zone = zones.cloudZone(for: record.recordID.zoneID),
-                  let tag = record.recordChangeTag else { return true }
-            return Self.knownChangeTag(recordName: record.recordID.recordName, zone: zone, store: store) != tag
-        }
-        let deletions = page.deletions.filter { id in
-            guard let zone = zones.cloudZone(for: id.zoneID) else { return false }
-            return (try? store.systemFields(recordName: id.recordName, zone: zone)) != nil
-        }
-        bufferFetched(modifications: modifications, deletions: deletions)
-    }
-
-    /// The change tag in a record's archived system fields, if any.
-    private static func knownChangeTag(recordName: String, zone: CloudZoneID, store: TransportStore) -> String? {
-        guard let data = try? store.systemFields(recordName: recordName, zone: zone),
-              let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data),
-              let known = CKRecord(coder: unarchiver) else { return nil }
-        unarchiver.finishDecoding()
-        return known.recordChangeTag
-    }
-
-    /// Lifts the quota pause (the owner freed iCloud space) and sends again.
-    public func resume() async {
-        guard isPaused else { return }
-        isPaused = false
-        await resend()
-    }
-
-    public func availability() async -> CloudAvailability {
-        if let lastError { return .unavailable(lastError) }
-        guard entitlementCheck() else {
-            return .unavailable("missing iCloud entitlement (unsigned dev build?)")
-        }
-        do {
-            switch try await CKContainer(identifier: containerID).accountStatus() {
-            case .available: return .available
-            case .noAccount: return .noAccount
-            case .restricted: return .restricted
-            case .couldNotDetermine: return .unavailable("iCloud account status could not be determined")
-            case .temporarilyUnavailable: return .unavailable("iCloud account temporarily unavailable")
-            @unknown default: return .unavailable("unknown iCloud account status")
-            }
-        } catch {
-            return .unavailable(error.localizedDescription)
-        }
-    }
-
-    // MARK: - Engine plumbing
-
-    /// Schedules the store's pending rows on the engine so it calls
-    /// nextRecordZoneChangeBatch. No-op while the engine is nil (CloudKit
-    /// unavailable) — records simply wait in the store until start() succeeds.
-    private func nudgeEngine() {
-        guard let engine, !isUnlinked else { return }
-        do {
-            // Names only: the engine reads the records (payload BLOBs, assets)
-            // when it asks for a batch.
-            let pending = try store.pendingNames(limit: Self.maxBatchSize)
-            var changes: [CKSyncEngine.PendingRecordZoneChange] = pending.saves.map {
-                .saveRecord(CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone)))
-            }
-            changes += pending.deletes.map {
-                .deleteRecord(CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone)))
-            }
-            guard !changes.isEmpty else { return }
-            engine.add(pendingRecordZoneChanges: changes)
-        } catch {
-            recordError(error)
-        }
-    }
-
-    fileprivate func handleEngineEvent(_ event: CKSyncEngine.Event) {
-        switch event {
-        case .stateUpdate(let stateUpdate):
-            persistEngineState(stateUpdate.stateSerialization)
-        case .fetchedRecordZoneChanges(let changes):
-            bufferFetchedChanges(changes)
-        case .sentRecordZoneChanges(let sent):
-            handleSentChanges(
-                saved: sent.savedRecords,
-                deleted: sent.deletedRecordIDs,
-                failedSaves: sent.failedRecordSaves.map { ($0.record, $0.error) },
-                failedDeletes: sent.failedRecordDeletes
-            )
-        case .fetchedDatabaseChanges(let changes):
-            handleDeletedZones(changes.deletions.map(\.zoneID))
-        case .didFetchRecordZoneChanges(let fetched):
-            // Not awaited here: a re-fetch from inside the engine's own
-            // event delivery would wait on the fetch that is delivering.
-            // Parked right here while a pull's fetch is awaiting the engine:
-            // the engine awaits this delivery inside that fetch, so the park
-            // happens before `fetchChanges(scope:)` returns — no Task hop that
-            // could lose the race with the pull's resume. Phone role only
-            // (the hub role ignores event-path errors, as before roles).
-            if let error = fetched.error {
-                if manualFetchInFlight, !managesZones, !isUnlinked {
-                    parkedEventErrors.append((error, fetched.zoneID))
-                } else {
-                    Task { await self.handleFetchEventError(error, zoneID: fetched.zoneID) }
-                }
-            }
-        case .accountChange(let change):
-            handleAccountChange(change.changeType)
-        case .willFetchChanges:
-            engineWillFetch()
-        case .didFetchChanges:
-            engineDidFetch()
-        default:
-            break
-        }
-    }
-
-    /// A server-side zone deletion evicts that zone's buffered events and
-    /// archived system fields. In the hub role it then re-registers the
-    /// zone so the surviving pending rows re-create it and re-send on the
-    /// next batch, and a deleted DataZone fires the data-zone reset handler
-    /// once. In the phone role the hub removed its zones (unlinked or
-    /// removed this phone): the phone is unlinked, and it must never
-    /// re-create the hub's zone. Another hub's zones are not ours.
-    func handleDeletedZones(_ zoneIDs: [CKRecordZone.ID]) {
-        let deletedZones = zoneIDs.compactMap(zones.cloudZone(for:))
-        guard !deletedZones.isEmpty else { return }
-        do {
-            for zone in deletedZones {
-                try store.evictZone(zone)
-                if managesZones {
-                    engine?.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zones.zoneID(for: zone)))])
-                }
-            }
-            lastError = nil
-        } catch {
-            recordError(error)
-        }
-        if managesZones {
-            // A deleted DataZone (`.encryptedDataReset`, the owner deleting
-            // iCloud data) took every published slice record with it: the
-            // owner's record of what is published is stale. Tell it once per
-            // deletion batch, evicted or not (the server zone is gone).
-            if deletedZones.contains(.data) {
-                dataZoneResetHandler?()
-            }
-            nudgeEngine()
-        } else {
-            emitUnlinked(reason: "zone deleted")
-        }
-    }
-
-    /// Acts on a fetch error, `zoneID` being the zone it is about when
-    /// known (the event path). Per-zone errors of a `.partialFailure` carry
-    /// their own zone. Only this hub's zones count: an error about another
-    /// hub's (or, in `shared` scope, another owner's) zone never touches
-    /// this link.
-    /// - Phone role: `.zoneNotFound` / `.userDeletedZone` → unlinked.
-    /// - Both roles: an expired change token re-fetches once (unless, in
-    ///   the phone role, a zone is gone: unlinked); throttling waits.
-    /// - Anything else is rethrown (phone role: unless it is only about
-    ///   zones that are not this hub's).
-    func handleFetchError(_ error: CKError, zoneID: CKRecordZone.ID?, engine: any SyncEngineDriving) async throws {
-        try await handleFetchItems(Self.flatten(error, zoneID: zoneID), original: error, engine: engine)
-    }
-
-    /// `handleFetchError` over already-flattened items (one server failure
-    /// may arrive as several parked events); `original` is what is rethrown.
-    private func handleFetchItems(
-        _ items: [(zoneID: CKRecordZone.ID?, error: CKError)],
-        original error: CKError,
-        engine: any SyncEngineDriving
-    ) async throws {
-        let mine = items.filter { ownsZone($0.zoneID) }.map(\.error)
-        if !managesZones, mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
-            emitUnlinked(reason: "zone not found on fetch")
-            return
-        }
-        if mine.contains(where: { $0.code == .changeTokenExpired }) {
-            try await refetchAfterExpiredToken(engine: engine)
-            return
-        }
-        if applyThrottle(from: mine) { return }
-        if !managesZones, mine.isEmpty { return }
-        throw error
-    }
-
-    /// The engine's report that fetching one zone failed. Hub role:
-    /// ignored, exactly as before roles (the engine retries its own
-    /// automatic fetches; `pull()` handles manual ones). Phone role: acts
-    /// only on "zone gone" and an expired token for this hub's zones.
-    /// While a `pull()` is awaiting the engine the error is parked for it.
-    func handleFetchEventError(_ error: CKError, zoneID: CKRecordZone.ID) async {
-        guard !managesZones, let engine, !isUnlinked else { return }
-        if manualFetchInFlight {
-            parkedEventErrors.append((error, zoneID))
-            return
-        }
-        let mine = Self.flatten(error, zoneID: zoneID).filter { ownsZone($0.zoneID) }.map(\.error)
-        if mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
-            emitUnlinked(reason: "zone not found on an engine fetch")
-        } else if mine.contains(where: { $0.code == .changeTokenExpired }) {
-            do {
-                try await refetchAfterExpiredToken(engine: engine)
-            } catch where !isUnlinked {
-                recordError(error)
-            } catch {
-                // Unlinked meanwhile: the event already said so.
-            }
-        }
-    }
-
-    /// One zone check and re-fetch after `.changeTokenExpired`; a second
-    /// failure surfaces to the caller. A throttle on the zone check waits
-    /// like any throttle.
-    private func refetchAfterExpiredToken(engine: any SyncEngineDriving) async throws {
-        guard !refetchInFlight else { return }
-        refetchInFlight = true
-        defer { refetchInFlight = false }
-        if !managesZones {
-            let exists: Bool
-            do {
-                energy?.record(.zoneCheck)
-                exists = try await ownersZonesExist(engine: engine)
-            } catch let error as CKError {
-                if applyThrottle(from: Self.flatten(error, zoneID: nil).map(\.error)) { return }
-                throw error
-            }
-            guard exists else {
-                emitUnlinked(reason: "change token expired on a missing zone")
-                return
-            }
-        }
-        energy?.record(.engineFetch)
-        refetchFetchInFlight = true
-        defer { refetchFetchInFlight = false }
-        try await engine.fetchChanges(scope: zones.allZoneIDs)
-        clearThrottle()
-    }
-
-    /// nil (no zone context) counts as ours: the error may be about any zone.
-    private func ownsZone(_ zoneID: CKRecordZone.ID?) -> Bool {
-        guard let zoneID else { return true }
-        return zones.cloudZone(for: zoneID) != nil
-    }
-
-    private func ownersZonesExist(engine: any SyncEngineDriving) async throws -> Bool {
-        let existing = try await engine.existingZoneNames()
-        return CloudZoneID.allCases.allSatisfy { existing.contains($0.rawValue) }
-    }
-
-    /// A CloudKit account sign-out or switch makes all local state belong to
-    /// the wrong account: wipe and relaunch with fresh engine state. A plain
-    /// sign-in has nothing local to discard (the reconcile fetch handles it).
-    func handleAccountChange(_ changeType: CKSyncEngine.Event.AccountChange.ChangeType) {
-        switch changeType {
-        case .signIn:
-            return
-        case .signOut, .switchAccounts:
-            resetForAccountChange()
-        @unknown default:
-            resetForAccountChange()
-        }
-    }
-
-    /// Wipes the store, drops the engine, and relaunches it fresh, recording
-    /// the reset and notifying the owner. Internal so it is exercisable
-    /// without fabricating a CKSyncEngine account event.
-    func resetForAccountChange() {
-        do {
-            try store.wipe()
-        } catch {
-            // Wipe failed: the store may contain stale old-account state.
-            // Drop the engine so the transport is inert (.unavailable via lastError)
-            // until the operator restarts — relaunching against a partially-wiped
-            // store would reload old-account engine state/system_fields into the
-            // new account context, and clearing lastError would make availability()
-            // lie. The reset handler is intentionally NOT fired: the hub must not
-            // wipe its own derived state when the transport's store is in an
-            // unknown state.
-            recordError(error)
-            engine = nil
-            delegateBox = nil
-            releaseEngineRunWaiters()
-            return
-        }
-        engine = nil
-        delegateBox = nil
-        releaseEngineRunWaiters()
-        // The old account's throttle and quota say nothing about the new one.
-        retryTask?.cancel()
-        throttledSince = nil
-        throttledUntil = nil
-        nextBackoff = Self.initialBackoff
-        isPaused = false
-        batchLimit = Self.maxBatchSize
-        lastBuiltBatch = nil
-        shrunkBatchID = nil
-        accountResetCount += 1
-        accountResetHandler?()
-        // Relaunch with fresh state (loadEngineState is now empty). No-op on
-        // unsigned dev builds — start() re-checks the entitlement and returns.
-        restartTask = Task {
-            guard !Task.isCancelled else { return }
-            await startEngine()
-        }
-    }
-
-    func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard !isPaused, !isUnlinked else { return nil }
-        if let throttledUntil, now() < throttledUntil { return nil }
-        do {
-            let pending = try store.pendingBatch(limit: batchLimit)
-            guard !pending.saves.isEmpty || !pending.deletes.isEmpty else {
-                // Queue drained: the next backlog starts at full size again.
-                batchLimit = Self.maxBatchSize
-                return nil
-            }
-            let recordsToSave = try pending.saves.map {
-                Self.ckRecord(
-                    from: $0,
-                    in: zones.zoneID(for: $0.zone),
-                    systemFields: try store.systemFields(recordName: $0.recordName, zone: $0.zone)
-                )
-            }
-            batchSerial += 1
-            lastBuiltBatch = (
-                id: batchSerial,
-                size: pending.saves.count + pending.deletes.count,
-                saves: pending.saves.map { (name: $0.recordName, zone: $0.zone) }
-            )
-            let recordIDsToDelete = pending.deletes.map {
-                CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone))
-            }
-            energy?.record(.sendBatch)
-            return CKSyncEngine.RecordZoneChangeBatch(
-                recordsToSave: recordsToSave,
-                recordIDsToDelete: recordIDsToDelete,
-                atomicByZone: false
-            )
-        } catch {
-            recordError(error)
-            return nil
-        }
-    }
-
-    private func persistEngineState(_ serialization: CKSyncEngine.State.Serialization) {
-        do {
-            let data = try JSONEncoder().encode(serialization)
-            try store.saveEngineState(data)
-            lastError = nil
-        } catch {
-            recordError(error)
-        }
-    }
-
-    private func bufferFetchedChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
-        bufferFetched(modifications: event.modifications.map(\.record), deletions: event.deletions.map(\.recordID))
-    }
-
-    /// Buffers fetched records and deletions of this hub's zones (the
-    /// engine's fetched-changes events and the transport's own zone poll).
-    /// Internal so tests feed it without fabricating an engine event.
-    func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) {
-        let modifications = fetched.filter { zones.cloudZone(for: $0.recordID.zoneID) != nil }
-        let changed = modifications.compactMap { modification -> CloudRecord? in
-            guard let record = zones.cloudZone(for: modification.recordID.zoneID)
-                .flatMap({ Self.cloudRecord(from: modification, zone: $0) }) else { return nil }
-            // CKAsset downloads land in a temporary staging area that may be
-            // purged after this callback; the buffered event outlives it, so
-            // stash a durable copy and point the event at that. A failed
-            // stash keeps the temporary URL — best-effort, the consumer's
-            // validation surfaces a vanished file as a failed ingest. An
-            // asset over the stash cap is not copied either: the event keeps
-            // CloudKit's temporary URL, so the hub refuses it by size only
-            // while that file is still there; once CloudKit purged it, the
-            // hub reports the audio as missing, not as too large (the phone's
-            // own uploader cap keeps a real recording under the stash cap).
-            guard let assetURL = record.assetFileURL,
-                  let stashed = store.stashAsset(from: assetURL, recordName: record.recordName, zone: record.zone) else {
-                return record
-            }
-            return CloudRecord(
-                recordName: record.recordName,
-                zone: record.zone,
-                kind: record.kind,
-                modifiedAt: record.modifiedAt,
-                payload: record.payload,
-                notifyLevel: record.notifyLevel,
-                assetFileURL: stashed,
-                creatorUserRecordName: record.creatorUserRecordName,
-                serverModifiedAt: record.serverModifiedAt
-            )
-        }
-        var deletedByZone: [CloudZoneID: [String]] = [:]
-        for deletion in deletions {
-            guard let zone = zones.cloudZone(for: deletion.zoneID) else { continue }
-            deletedByZone[zone, default: []].append(deletion.recordName)
-        }
-        do {
-            try store.bufferChanged(changed)
-            // Persist the fetched records' system fields so a later local save
-            // of the same recordName goes out with the server's change tag
-            // (e.g. desktop status write-backs onto mobile-created records).
-            for modification in modifications {
-                guard let zone = zones.cloudZone(for: modification.recordID.zoneID) else { continue }
-                try store.saveSystemFields(
-                    Self.archivedSystemFields(of: modification),
-                    recordName: modification.recordID.recordName,
-                    zone: zone
-                )
-            }
-            for (zone, names) in deletedByZone {
-                try store.bufferDeleted(recordNames: names, zone: zone)
-                try store.deleteSystemFields(recordNames: names, zone: zone)
-            }
-            lastError = nil
-        } catch {
-            recordError(error)
-        }
-    }
-
-    /// The outcome of one sent batch: clears what landed, persists fresh
-    /// system fields, and applies the spec §9 error rules to what failed.
-    /// Internal (plain arrays, not the engine's event type) so it is
-    /// exercisable without fabricating a CKSyncEngine event.
-    func handleSentChanges(
-        saved: [CKRecord],
-        deleted: [CKRecord.ID],
-        failedSaves: [(record: CKRecord, error: CKError)],
-        failedDeletes: [CKRecord.ID: CKError]
-    ) {
-        var saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)] = []
-        var savedFields: [(name: String, zone: CloudZoneID, data: Data)] = []
-        for record in saved {
-            guard let zone = zones.cloudZone(for: record.recordID.zoneID) else { continue }
-            // Use the record's own modifiedAt as the stamp so that a newer
-            // local re-enqueue (modified_at > stamp) is not silently lost.
-            // Missing field → .distantFuture → clears unconditionally (old behaviour).
-            let stamp = (record["modifiedAt"] as? Date) ?? .distantFuture
-            saves.append((name: record.recordID.recordName, zone: zone, sentModifiedAt: stamp))
-            // The saved record carries the fresh server change tag — persist it
-            // so the NEXT save of this record (heartbeat re-save, status flip)
-            // doesn't hit .serverRecordChanged.
-            savedFields.append((
-                name: record.recordID.recordName,
-                zone: zone,
-                data: Self.archivedSystemFields(of: record)
-            ))
-        }
-        var deletes: [(name: String, zone: CloudZoneID)] = []
-        for recordID in deleted {
-            guard let zone = zones.cloudZone(for: recordID.zoneID) else { continue }
-            deletes.append((name: recordID.recordName, zone: zone))
-        }
-        // Failed saves stay pending — the engine retries them. Failed deletes
-        // for records the server never saw count as success under the seam's
-        // idempotent-delete contract, so clear those too.
-        for (recordID, error) in failedDeletes where error.code == .unknownItem {
-            guard let zone = zones.cloudZone(for: recordID.zoneID) else { continue }
-            deletes.append((name: recordID.recordName, zone: zone))
-        }
-
-        let failures = failedSaves.map(\.error) + Array(failedDeletes.values)
-        applySendFailures(failures)
-        let throttled = applyThrottle(from: failures)
-        if !saved.isEmpty || !deleted.isEmpty, !throttled {
-            clearThrottle()
-        }
-
-        // re-nudge: pendingBatch is capped at 200; without this a large offline
-        // backlog stalls — and it is also what reschedules the still-pending
-        // failed saves with their corrected system fields. Deferred so a store
-        // error mid-block cannot skip the reschedule (Task 1 review Minor 1).
-        defer { nudgeEngine() }
-        do {
-            try store.clearPending(saves: saves, deletes: deletes)
-            for entry in savedFields {
-                try store.saveSystemFields(entry.data, recordName: entry.name, zone: entry.zone)
-            }
-            for entry in deletes {
-                try store.deleteSystemFields(recordNames: [entry.name], zone: entry.zone)
-            }
-            try fixSystemFieldsForFailedSaves(failedSaves)
-            try dropSavesWithMissingAssets(failedSaves)
-            let batchSize = saved.count + deleted.count + failedSaves.count + failedDeletes.count
-            let tooLarge = failedSaves.filter { $0.error.code == .limitExceeded }.compactMap { failure in
-                zones.cloudZone(for: failure.record.recordID.zoneID).map { (name: failure.record.recordID.recordName, zone: $0) }
-            }
-            if !tooLarge.isEmpty {
-                try shrinkBatch(size: batchSize, rejectable: tooLarge)
-            }
-            lastError = nil
-        } catch {
-            recordError(error)
-        }
-    }
-
-    /// An error from an engine send call itself rather than per record.
-    func handleSendError(_ error: CKError) {
-        let errors = Self.flatten(error, zoneID: nil).map(\.error)
-        applySendFailures(errors)
-        if errors.contains(where: { $0.code == .limitExceeded }) {
-            // A request-level rejection names no record: it is about the
-            // batch last handed out.
-            if let batch = lastBuiltBatch {
-                do {
-                    try shrinkBatch(size: batch.size, rejectable: batch.saves)
-                } catch {
-                    recordError(error)
-                }
-            } else {
-                batchLimit = max(1, batchLimit / 2)
-            }
-        }
-        if !applyThrottle(from: errors), !errors.contains(where: { Self.handledSendCodes.contains($0.code) }) {
-            recordError(error)
-        }
-    }
-
-    /// Failed saves stay pending and the trailing re-nudge reschedules them,
-    /// but two error codes need system-field surgery first or the retry fails
-    /// identically forever.
-    private func fixSystemFieldsForFailedSaves(_ failures: [(record: CKRecord, error: CKError)]) throws {
-        for failure in failures {
-            guard let zone = zones.cloudZone(for: failure.record.recordID.zoneID) else { continue }
-            let name = failure.record.recordID.recordName
-            switch failure.error.code {
-            case .serverRecordChanged:
-                // Conflict policy: this device's payload wins — desktop is the
-                // source of truth for DataZone, and for RelayZone the
-                // write-back/chunk author wins by protocol design. Persist the
-                // SERVER record's system fields (userInfo's
-                // CKRecordChangedErrorServerRecordKey, surfaced as
-                // CKError.serverRecord) so the retry carries the server change
-                // tag and succeeds instead of looping.
-                if let server = failure.error.serverRecord {
-                    try store.saveSystemFields(
-                        Self.archivedSystemFields(of: server),
-                        recordName: name,
-                        zone: zone
-                    )
-                }
-            case .unknownItem:
-                // The server-side record vanished while we held its change tag
-                // (deleted by another device). Drop the stale system fields so
-                // the retry goes out as a fresh record instead of wedging on a
-                // tag the server no longer knows.
-                try store.deleteSystemFields(recordNames: [name], zone: zone)
-            default:
-                break
-            }
-        }
-    }
-
-    /// A save whose asset file is gone (`.assetFileNotFound`) fails the
-    /// same way on every retry — e.g. a recording upload whose audio the
-    /// phone deleted on the hub's `received` echo while the save was still
-    /// queued. It is rejected like a record too large alone: dropped from
-    /// the queue, logged, and handed to the rejected-record handler.
-    /// `dropPending` ignores the stamp, so a newer version re-enqueued after
-    /// the failed batch was built goes too — this heals only where the
-    /// rejected handler republishes (the hub's `.data` slices); a caller
-    /// without such a handler loses that newer save.
-    private func dropSavesWithMissingAssets(_ failures: [(record: CKRecord, error: CKError)]) throws {
-        for failure in failures where failure.error.code == .assetFileNotFound {
-            guard let zone = zones.cloudZone(for: failure.record.recordID.zoneID) else { continue }
-            let name = failure.record.recordID.recordName
-            try store.dropPending(recordName: name, zone: zone)
-            logger.error("the asset file of \(name, privacy: .public) is gone (assetFileNotFound); dropped it from the send queue")
-            recordRejectedHandler?(name, zone)
-        }
-    }
-
-    // MARK: - Error rules (spec §9)
-
-    /// Codes that mean the owner's zone is gone for this participant.
-    private static let zoneGoneCodes: Set<CKError.Code> = [.zoneNotFound, .userDeletedZone]
-    private static let throttleCodes: Set<CKError.Code> = [.requestRateLimited, .zoneBusy]
-    private static let handledSendCodes: Set<CKError.Code> = zoneGoneCodes.union([.quotaExceeded, .limitExceeded])
-
-    /// The per-item errors of a `.partialFailure`, each with its zone when
-    /// the item key names one (a zone ID, or a record ID's zone), or the
-    /// error itself with `zoneID`.
-    private static func flatten(_ error: CKError, zoneID: CKRecordZone.ID?) -> [(zoneID: CKRecordZone.ID?, error: CKError)] {
-        guard error.code == .partialFailure, let partial = error.partialErrorsByItemID else { return [(zoneID, error)] }
-        let inner: [(zoneID: CKRecordZone.ID?, error: CKError)] = partial.compactMap { key, value in
-            guard let itemError = value as? CKError else { return nil }
-            let itemZone = (key as? CKRecordZone.ID) ?? (key as? CKRecord.ID)?.zoneID ?? zoneID
-            return (itemZone, itemError)
-        }
-        return inner.isEmpty ? [(zoneID, error)] : inner
-    }
-
-    /// Unlinked (phone role) and the quota pause.
-    private func applySendFailures(_ errors: [CKError]) {
-        let codes = Set(errors.map(\.code))
-        if !managesZones, !codes.isDisjoint(with: Self.zoneGoneCodes) {
-            emitUnlinked(reason: "zone not found on send")
-        }
-        if codes.contains(.quotaExceeded) {
-            pauseForQuota()
-        }
-    }
-
-    /// `.limitExceeded` on a batch of `size`: halve the next batch and
-    /// retry. A record that fails even alone (`rejectable`) is logged,
-    /// dropped from the queue, and handed to the rejected-record handler,
-    /// so it never retries forever. Applied once per built batch.
-    private func shrinkBatch(size: Int, rejectable: [(name: String, zone: CloudZoneID)]) throws {
-        if let id = lastBuiltBatch?.id {
-            guard shrunkBatchID != id else { return }
-            shrunkBatchID = id
-        }
-        guard size <= 1 else {
-            batchLimit = max(1, size / 2)
-            return
-        }
-        for (name, zone) in rejectable {
-            try store.dropPending(recordName: name, zone: zone)
-            logger.error("CloudKit rejected \(name, privacy: .public) even alone (limitExceeded); dropped it from the send queue")
-            recordRejectedHandler?(name, zone)
-        }
-        batchLimit = Self.maxBatchSize
-    }
-
-    /// Throttles on `.requestRateLimited` / `.zoneBusy`, once for all of
-    /// them. Returns whether it did.
-    private func applyThrottle(from errors: [CKError]) -> Bool {
-        let throttling = errors.filter { Self.throttleCodes.contains($0.code) }
-        guard !throttling.isEmpty else { return false }
-        throttle(retryAfter: throttling.compactMap(\.retryAfterSeconds).max())
-        return true
-    }
-
-    /// Waits `retryAfter` (the server's `CKErrorRetryAfterKey`) or the
-    /// default backoff — 5 s, doubling to a 120 s cap — then sends again.
-    private func throttle(retryAfter: TimeInterval?) {
-        let delay: TimeInterval
-        if let retryAfter {
-            delay = retryAfter
-        } else {
-            delay = nextBackoff
-            nextBackoff = min(nextBackoff * 2, Self.maxBackoff)
-        }
-        let start = now()
-        if throttledSince == nil { throttledSince = start }
-        throttledUntil = start.addingTimeInterval(delay)
-        logger.notice("CloudKit throttled sync; retrying in \(delay, privacy: .public) s")
-        retryTask?.cancel()
-        retryTask = Task { [weak self, sleep] in
-            await sleep(delay)
-            guard !Task.isCancelled else { return }
-            await self?.throttleElapsed()
-        }
-    }
-
-    private func throttleElapsed() async {
-        throttledUntil = nil
-        guard !isPaused, !isUnlinked else { return }
-        let pending: (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)])
-        do {
-            pending = try store.pendingBatch(limit: 1)
-        } catch {
-            recordError(error)
-            return
-        }
-        guard !pending.saves.isEmpty || !pending.deletes.isEmpty else {
-            // Nothing waits to be sent (a fetch-only throttle): the stretch
-            // is over. The backoff stays until a request succeeds.
-            throttledSince = nil
-            return
-        }
-        await resend()
-    }
-
-    /// A request succeeded: the throttling stretch and its backoff end.
-    private func clearThrottle() {
-        throttledSince = nil
-        throttledUntil = nil
-        nextBackoff = Self.initialBackoff
-    }
-
-    private func pauseForQuota() {
-        guard !isPaused else { return }
-        isPaused = true
-        logger.error("iCloud quota exceeded; sync paused until resume()")
-        eventHandler?(.quotaExceeded)
-    }
-
-    private func emitUnlinked(reason: String) {
-        guard !isUnlinked else { return }
-        isUnlinked = true
-        logger.notice("hub zones gone (\(reason, privacy: .public)); unlinked")
-        // Nothing is fetched any more: a push waiting on the engine's run
-        // returns now instead of at its grace's end.
-        releaseEngineRunWaiters()
-        eventHandler?(.unlinked)
-    }
-
-    /// Re-schedules the pending queue and asks the engine to send now.
-    private func resend() async {
-        guard let engine, !isUnlinked else { return }
-        nudgeEngine()
-        do {
-            try await engine.sendChanges(scope: zones.allZoneIDs)
-        } catch let error as CKError {
-            handleSendError(error)
-        } catch {
-            recordError(error)
-        }
-    }
-
-    private func recordError(_ error: Error) {
-        lastError = error.localizedDescription
-    }
-
-    /// Whether the RUNNING PROCESS is code-signed with the given iCloud
-    /// container. Public because it is the composition-time transport switch
-    /// (Plan 6 Decision 1): `AppEnvironment.init()` probes this to pick
-    /// CloudKitTransport (entitled) vs InMemory+DemoSeed (unsigned sim/CI),
-    /// and `start()`/`availability()` probe it to degrade instead of crash —
-    /// CloudKit raises an uncatchable ObjC exception when touched without
-    /// the entitlement. That exception fires specifically when the container
-    /// ID is absent from `com.apple.developer.icloud-container-identifiers`,
-    /// so we check that list rather than the presence of `icloud-services`.
-    ///
-    /// Per platform:
-    /// - macOS: read the code-sign entitlements of the running process.
-    /// - iOS simulator: signing embeds entitlements as the main executable's
-    ///   `__TEXT,__entitlements` Mach-O section; `CODE_SIGNING_ALLOWED=NO`
-    ///   builds (CI, `make mobile-test`/`mobile-run`) have no section and
-    ///   probe false — the sim stays on the demo path.
-    /// - iOS device: always true — an unsigned build cannot install on a
-    ///   device, and entitlements come from the provisioning profile.
-    public static func entitlementPresent(containerID: String = WatchtowerCloud.containerID) -> Bool {
-        #if os(macOS)
-        guard let task = SecTaskCreateFromSelf(nil) else { return false }
-        guard let value = SecTaskCopyValueForEntitlement(
-            task,
-            "com.apple.developer.icloud-container-identifiers" as CFString,
-            nil
-        ) else { return false }
-        guard let list = value as? [String] else { return false }
-        return list.contains(containerID)
-        #elseif targetEnvironment(simulator)
-        guard let data = simulatorEntitlementsSection(),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
-              let entitlements = plist as? [String: Any],
-              let list = entitlements["com.apple.developer.icloud-container-identifiers"] as? [String]
-        else { return false }
-        return list.contains(containerID)
-        #else
-        return true
-        #endif
-    }
-
-    #if targetEnvironment(simulator)
-    /// The main executable's `__TEXT,__entitlements` section (XML plist),
-    /// present only when the simulator build was actually code-signed. Found
-    /// by scanning loaded images for MH_EXECUTE rather than referencing
-    /// `_mh_execute_header`, which does not link from a test bundle.
-    private static func simulatorEntitlementsSection() -> Data? {
-        for index in 0..<_dyld_image_count() {
-            guard let header = _dyld_get_image_header(index),
-                  header.pointee.filetype == UInt32(MH_EXECUTE),
-                  // 64-bit magic before the mach_header_64 rebind — iOS 17
-                  // sims are 64-bit-only, this makes the safety self-evident.
-                  header.pointee.magic == MH_MAGIC_64 else { continue }
-            var size: UInt = 0
-            let bytes = header.withMemoryRebound(to: mach_header_64.self, capacity: 1) {
-                getsectiondata($0, "__TEXT", "__entitlements", &size)
-            }
-            guard let bytes, size > 0 else { return nil }
-            return Data(bytes: bytes, count: Int(size))
-        }
-        return nil
-    }
-    #endif
-
-    // MARK: - Direct save
-
-    /// Saves one record into `hubID`'s zone of `scope`'s database with one
-    /// request, outside any engine and store: nothing is fetched first, and
-    /// the save overwrites whatever the server holds (`.allKeys`, no change
-    /// tag compared). The phone's unlink farewell kept after its hub's files
-    /// went (#143) goes out this way. Throws the CloudKit error, the
-    /// record's own included. The caller checks the entitlement first.
-    public static func saveDirectly(
-        _ record: CloudRecord,
-        scope: CloudDatabaseScope,
-        hubID: String,
-        containerID: String = WatchtowerCloud.containerID
-    ) async throws {
-        let ck = directSaveRecord(record, scope: scope, hubID: hubID)
-        let database = scope.database(in: CKContainer(identifier: containerID))
-        let (saves, _) = try await database.modifyRecords(saving: [ck], deleting: [], savePolicy: .allKeys, atomically: false)
-        try saves[ck.recordID]?.get()
-    }
-
-    /// The record a direct save sends: a fresh one (no system fields) in
-    /// the hub's zone of the record's kind.
-    static func directSaveRecord(_ record: CloudRecord, scope: CloudDatabaseScope, hubID: String) -> CKRecord {
-        ckRecord(from: record, in: HubZones(scope: scope, hubID: hubID).zoneID(for: record.zone), systemFields: nil)
-    }
-
-    // MARK: - Mapping (pure, unit-tested)
-
-    /// Builds the outgoing CKRecord, seeded from archived system fields when
-    /// present so the save carries the server change tag (identity + metadata
-    /// come from the archive). nil or undecodable blob → fresh record, the
-    /// pre-system-fields behaviour. Payload/kind/modifiedAt always come from
-    /// the CloudRecord — the archive never carries payload fields.
-    static func ckRecord(from record: CloudRecord, in zoneID: CKRecordZone.ID, systemFields: Data?) -> CKRecord {
-        let ck: CKRecord
-        if let systemFields,
-           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: systemFields),
-           let decoded = CKRecord(coder: unarchiver) {
-            unarchiver.finishDecoding()
-            ck = decoded
-        } else {
-            let id = CKRecord.ID(recordName: record.recordName, zoneID: zoneID)
-            let type = record.kind == WireKind.signal ? Self.signalRecordType : Self.recordType
-            ck = CKRecord(recordType: type, recordID: id)
-        }
-        // A signal carries no payload: it only names the record a subscription fires on.
-        if record.kind != WireKind.signal {
-            ck.encryptedValues["payload"] = record.payload
-        }
-        ck["kind"] = record.kind
-        ck["modifiedAt"] = record.modifiedAt
-        // The audio of a phone recording upload. A PLAIN field on purpose:
-        // encryptedValues does not accept CKAsset, and CloudKit encrypts
-        // asset content on its own. nil REMOVES the field — the desktop's
-        // status write-back is what frees the iCloud storage.
-        ck["asset"] = record.assetFileURL.map { CKAsset(fileURL: $0) }
-        // nil REMOVES the field (isError discipline: absent, never null) —
-        // an untagged save is byte-identical to a pre-Plan-6 one, and a
-        // system-fields-seeded re-save cannot carry a stale tag.
-        // Owner ruling (Task 3 review): encryptedValues, not a plain field —
-        // "user has an urgent item right now" is content-adjacent under ADP,
-        // no server query needs it, and the phone decrypts everything anyway.
-        ck.encryptedValues["notifyLevel"] = record.notifyLevel
-        return ck
-    }
-
-    /// Archives identity + server metadata (change tag) without payload fields.
-    static func archivedSystemFields(of record: CKRecord) -> Data {
-        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
-        record.encodeSystemFields(with: archiver)
-        archiver.finishEncoding()
-        return archiver.encodedData
-    }
-
-    /// `zone` is the kind of the record's zone, resolved by the caller
-    /// through `HubZones` (a zone name carries the hub id).
-    static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
-        let payload: Data
-        switch ck.recordType {
-        case Self.recordType:
-            guard let sealed = ck.encryptedValues["payload"] as? Data else { return nil }
-            payload = sealed
-        case Self.signalRecordType:
-            payload = Data()
-        default:
-            // The pre-E2E type (and anything unknown) after the hard cut: never read, logged once per type.
-            let type = ck.recordType
-            if ignoredTypesLogged.withLock({ $0.insert(type).inserted }) {
-                mappingLogger.notice("ignoring records of type \(type, privacy: .public)")
-            }
-            return nil
-        }
-        return CloudRecord(
-            recordName: ck.recordID.recordName,
-            zone: zone,
-            kind: (ck["kind"] as? String) ?? "",
-            modifiedAt: (ck["modifiedAt"] as? Date) ?? Date(timeIntervalSince1970: 0),
-            payload: payload,
-            notifyLevel: ck.encryptedValues["notifyLevel"] as? String,
-            // CloudKit's staged download location — temporary; the buffering
-            // path stashes a durable copy before persisting the event.
-            assetFileURL: (ck["asset"] as? CKAsset)?.fileURL,
-            // The owner's own records read `CKCurrentUserDefaultName` here.
-            creatorUserRecordName: ck.creatorUserRecordID?.recordName,
-            serverModifiedAt: ck.modificationDate
-        )
-    }
 }
 
 /// Forwards CKSyncEngineDelegate callbacks into the actor. Held strongly by
 /// the transport; holds the transport weakly, so no retain cycle regardless
 /// of how CKSyncEngine.Configuration retains its delegate.
-private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Sendable {
+final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Sendable {
     weak var transport: CloudKitTransport?
     let ownZoneIDs: [CKRecordZone.ID]
 
@@ -1448,261 +340,5 @@ private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Send
         var options = context.options
         options.scope = .zoneIDs(ownZoneIDs)
         return options
-    }
-}
-
-// MARK: - Push fetch (the phone's silent pushes, board #724)
-
-extension CloudKitTransport {
-    /// Phone role, after a silent push that arrived at `since`: the light
-    /// fetch. CKSyncEngine (`automaticallySync`, left on for both roles: it
-    /// also sends) fetches on the same push by itself, so this waits for
-    /// that own run instead of fetching twice: a run that began at or after
-    /// `since` covers the push (a running one is awaited). Only when none
-    /// begins within `grace` of `since` does it fetch through the engine
-    /// itself, without `pull()`'s forced zone poll (that stays in the
-    /// timed and pull-to-refresh paths, which keep its guarantee). Joins a
-    /// running push fetch or pull. No-op while the engine is unavailable,
-    /// unlinked or throttled; errors are handled as in `pull()`.
-    ///
-    /// `pollOnFallback`: the fallback fetch also runs the forced zone poll.
-    /// The engine fetches only the zones a delivered push told it about, so
-    /// without the poll the fallback may send no request at all; the
-    /// foreground asks for it (the owner is looking), the background keeps
-    /// the light fetch.
-    public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool = false) async throws {
-        if let pushFetchTask {
-            pushFetchJoins += 1
-            return try await pushFetchTask.value
-        }
-        if let pullTask {
-            pullJoins += 1
-            return try await pullTask.value
-        }
-        guard let engine, !isUnlinked else { return }
-        if let throttledUntil, now() < throttledUntil { return }
-        let task = Task {
-            defer {
-                self.pushFetchTask = nil
-                self.pushFetchFetching = false
-            }
-            try await self.performPushFetch(engine: engine, since: since, grace: grace, poll: pollOnFallback)
-        }
-        pushFetchTask = task
-        try await task.value
-    }
-
-    /// How long a push fetch waits for a running own engine run to end
-    /// before fetching itself: a run that never reports its end must not
-    /// stall the push (and the caller's completion) for good.
-    static func engineRunEndWait(grace: TimeInterval) -> TimeInterval {
-        max(grace, 30)
-    }
-
-    private func performPushFetch(
-        engine: any SyncEngineDriving, since: Date, grace: TimeInterval, poll: Bool
-    ) async throws {
-        if await engineRunCovers(since: since, grace: grace, engine: engine) {
-            pushFetchesCoveredByEngine += 1
-            return
-        }
-        // A pull that took the push over is its fetch.
-        if let pullTask {
-            pullJoins += 1
-            return try await pullTask.value
-        }
-        guard self.engine === engine, !isUnlinked, !isStopped else { return }
-        if let throttledUntil, now() < throttledUntil { return }
-        pushFetchFetching = true
-        try await performPull(engine: engine, poll: poll)
-    }
-
-    /// Whether an own engine fetch run that began at or after `since` has
-    /// run (awaiting it if it is running, up to `engineRunEndWait`),
-    /// waiting up to `since + grace` for one to begin. False once a wait
-    /// runs out, a `pull()` takes the push over, or the engine is stopped
-    /// or replaced.
-    private func engineRunCovers(since: Date, grace: TimeInterval, engine: any SyncEngineDriving) async -> Bool {
-        while self.engine === engine, !isStopped {
-            if engineRunInFlight {
-                let startedAt = engineRunStartedAt
-                guard await waitForEngineRun(end: true, timeout: Self.engineRunEndWait(grace: grace)) else { return false }
-                if let startedAt, startedAt >= since { return true }
-                continue
-            }
-            if let startedAt = engineRunStartedAt, startedAt >= since { return true }
-            let remaining = since.addingTimeInterval(grace).timeIntervalSince(now())
-            guard remaining > 0 else { return false }
-            guard await waitForEngineRun(end: false, timeout: remaining) else { return false }
-        }
-        return false
-    }
-
-    /// True when an own run begins (`end` false) or the running one ends
-    /// (`end` true) within `timeout`. The timer stops once the wait ends.
-    private func waitForEngineRun(end: Bool, timeout: TimeInterval) async -> Bool {
-        let id = UUID()
-        let sleep = sleep
-        // Actor-isolated: the timer's expiry runs after this job suspends
-        // below, so the waiter is registered before it can expire.
-        let timer = Task {
-            await sleep(timeout)
-            self.expireEngineRunWaiter(id)
-        }
-        defer { timer.cancel() }
-        return await withCheckedContinuation { continuation in
-            if end {
-                engineRunEndWaiters[id] = continuation
-            } else {
-                engineRunStartWaiters[id] = continuation
-            }
-        }
-    }
-
-    private func expireEngineRunWaiter(_ id: UUID) {
-        (engineRunStartWaiters.removeValue(forKey: id) ?? engineRunEndWaiters.removeValue(forKey: id))?
-            .resume(returning: false)
-    }
-
-    /// A `pull()` serves the waiting push fetch: it stops waiting on the
-    /// engine (the run state stays as it is).
-    private func abandonEngineRunWaits() {
-        let starts = engineRunStartWaiters
-        let ends = engineRunEndWaiters
-        engineRunStartWaiters = [:]
-        engineRunEndWaiters = [:]
-        starts.values.forEach { $0.resume(returning: false) }
-        ends.values.forEach { $0.resume(returning: false) }
-    }
-
-    /// `willFetchChanges`. A manual fetch's own event (a pull, a push's
-    /// fallback, an expired token's re-fetch) is not a run of the engine's
-    /// (it is counted as `.engineFetch` where it starts).
-    func engineWillFetch() {
-        guard !manualFetchInFlight, !refetchFetchInFlight else { return }
-        energy?.record(.engineFetchRun)
-        engineRunInFlight = true
-        engineRunStartedAt = now()
-        let waiters = engineRunStartWaiters
-        engineRunStartWaiters = [:]
-        waiters.values.forEach { $0.resume(returning: true) }
-    }
-
-    /// `didFetchChanges`: the own run's fetched changes are buffered (the
-    /// engine delivers its events in order).
-    func engineDidFetch() {
-        guard engineRunInFlight else { return }
-        engineRunInFlight = false
-        let waiters = engineRunEndWaiters
-        engineRunEndWaiters = [:]
-        waiters.values.forEach { $0.resume(returning: true) }
-        engineFetchedHandler?()
-    }
-
-    /// The engine went (stop, account reset): nobody waits for its runs.
-    private func releaseEngineRunWaiters() {
-        engineRunInFlight = false
-        engineRunStartedAt = nil
-        abandonEngineRunWaits()
-    }
-}
-
-// MARK: - Send now (the mobile hub's fast lane)
-
-extension CloudKitTransport {
-    /// Asks the engine to send the pending queue at once instead of waiting
-    /// for its own scheduling (mobile POC spec §4.5: the hub's fast lane
-    /// sends right after a fast diff saved something). The same path as a
-    /// throttle retry (`resend()`). No-op while stopped, without an engine,
-    /// unlinked, paused for quota, or inside a server-requested wait.
-    public func sendNow() async {
-        guard !isStopped, !isPaused else { return }
-        if let throttledUntil, now() < throttledUntil { return }
-        await resend()
-    }
-}
-
-// MARK: - Hub zones (multi-hub spec §3.3, §3.6)
-
-extension CloudKitTransport {
-    /// Hub role, after `stop()`: deletes this hub's two zones on the server
-    /// (the owner turned the hub off; their shares and every participant go
-    /// with them) and wipes the store, whose engine state and system fields
-    /// describe zones that no longer exist. A delete that removed nothing
-    /// throws CloudKit's error and leaves both in place; one that removed
-    /// something but did not finish throws `HubZoneError.partlyDeleted`.
-    /// A call while a delete runs joins it (its outcome, no second server
-    /// delete), and `start()` waits for it.
-    public func deleteHubZones() async throws {
-        guard role == .hub else { throw HubZoneError.notHub }
-        if let running = hubZoneDelete {
-            try await running.value
-            return
-        }
-        guard engine == nil else { throw HubZoneError.engineRunning }
-        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
-        let work = Task { try await self.deleteZonesThenWipe() }
-        hubZoneDelete = work
-        let outcome = await work.result
-        if hubZoneDelete == work { hubZoneDelete = nil }
-        try outcome.get()
-    }
-
-    /// Returns once no `deleteHubZones` is running.
-    private func settleHubZoneDelete() async {
-        while let running = hubZoneDelete {
-            _ = await running.result
-            if hubZoneDelete == running { hubZoneDelete = nil }
-        }
-    }
-
-    private func deleteZonesThenWipe() async throws {
-        do {
-            try await zoneAdmin.deleteZones(zones.allZoneIDs)
-        } catch let partial as PartialZoneDeleteError {
-            logger.error("hub zones partly deleted: \(partial.underlying.localizedDescription, privacy: .public)")
-            throw HubZoneError.partlyDeleted
-        }
-        // Re-checked after the await: the zones are gone, so a store this
-        // engine drives must not be wiped under it (`start()` waits for this
-        // delete, so this holds unless that contract breaks).
-        guard engine == nil else {
-            logger.error("hub zones deleted while an engine runs; the store is not wiped")
-            throw HubZoneError.partlyDeleted
-        }
-        do {
-            try store.wipe()
-        } catch {
-            logger.error("hub zones deleted, store not wiped: \(error.localizedDescription, privacy: .public)")
-            throw HubZoneError.partlyDeleted
-        }
-    }
-
-    /// Hub role: the single-hub build's fixed-name `DataZone`/`RelayZone`.
-    /// `deleteIf` gets the legacy DataZone `heartbeat` payload (nil: none)
-    /// and decides; both legacy zones that exist go together, or neither. A
-    /// legacy RelayZone with no legacy DataZone has no heartbeat (nil) and is
-    /// deleted if `deleteIf` agrees. A heartbeat record that exists but whose
-    /// payload cannot be read keeps the zones without asking `deleteIf`
-    /// (spec §3.6): it may be another hub's.
-    public func removeLegacyZones(
-        deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool
-    ) async throws -> LegacyZoneCleanup {
-        guard role == .hub else { throw HubZoneError.notHub }
-        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
-        let present = try await zoneAdmin.zoneIDs().filter(HubZones.legacyZoneIDs.contains)
-        guard !present.isEmpty else { return .noneFound }
-        var payload: Data?
-        let legacyData = HubZones.legacyZoneID(.data)
-        if present.contains(legacyData) {
-            let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData))
-            if let heartbeat {
-                guard let bytes = heartbeat.encryptedValues["payload"] as? Data else { return .kept }
-                payload = bytes
-            }
-        }
-        guard deleteIf(payload) else { return .kept }
-        try await zoneAdmin.deleteZones(present)
-        return .deleted
     }
 }

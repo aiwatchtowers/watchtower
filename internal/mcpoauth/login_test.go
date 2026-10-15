@@ -3,6 +3,7 @@ package mcpoauth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"watchtower/internal/oauthpage"
 )
 
 // syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
@@ -222,7 +225,7 @@ func TestLogin_WrongStateCallbackIsIgnored(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Errorf("params %v: status = %d, want 400", params, status)
 		}
-		if strings.Contains(body, "Authorization Failed") || strings.Contains(body, "Connected") {
+		if strings.Contains(body, "Authorization failed") || strings.Contains(body, "Connected") {
 			t.Errorf("params %v: body = %q, want neither the error nor the success page", params, body)
 		}
 		if !strings.Contains(body, "This sign-in page is out of date") {
@@ -261,11 +264,8 @@ func TestLogin_ErrorQueryParamServesErrorPage(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "Authorization Failed") {
-		t.Errorf("callback body = %q, want the error page", body)
-	}
-	if !strings.Contains(body, "access_denied") {
-		t.Errorf("callback body = %q, want it to include the provider's error", body)
+	if want := oauthpage.Error("access_denied", false); body != want {
+		t.Errorf("callback body = %q, want the shared error page with the provider's error %q", body, want)
 	}
 
 	res := <-resultCh
@@ -297,10 +297,10 @@ func TestLogin_ExchangeFailureServesErrorPage(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "Authorization Failed") {
+	if !strings.Contains(body, "Authorization failed") {
 		t.Errorf("callback body = %q, want the error page when the code exchange fails", body)
 	}
-	if strings.Contains(body, "This connection has been signed in") {
+	if strings.Contains(body, "is connected to Watchtower") {
 		t.Errorf("callback body = %q, want NOT the success page when the code exchange fails", body)
 	}
 
@@ -344,7 +344,7 @@ func TestLogin_BYOClientIDSkipsRegistration(t *testing.T) {
 	}
 }
 
-func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	as := newFakeAS(t)
 
 	urlCh := captureAuthorizeURL(t)
@@ -362,11 +362,8 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 	if status != http.StatusOK {
 		t.Errorf("callback status = %d, want 200", status)
 	}
-	if !strings.Contains(body, "watchtower-auth://connected") {
-		t.Errorf("callback body = %q, want the app-return redirect", body)
-	}
-	if !strings.Contains(body, "4500") {
-		t.Errorf("callback body = %q, want the app-return close delay (4500ms)", body)
+	if want := oauthpage.Success("The MCP server", true); body != want {
+		t.Errorf("callback body = %q, want the shared success page %q", body, want)
 	}
 
 	res := <-resultCh
@@ -502,6 +499,9 @@ func TestLogin_ContextCancelled(t *testing.T) {
 		if err == nil {
 			t.Fatal("Login: want error after context cancellation, got nil")
 		}
+		if !errors.Is(err, oauthpage.ErrLoginTimedOut) {
+			t.Errorf("Login: err = %v, want it to wrap oauthpage.ErrLoginTimedOut", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Login did not return after context cancellation")
 	}
@@ -574,5 +574,80 @@ func TestBuildGrant_PositiveExpiresInStampsExpiresAt(t *testing.T) {
 	want := fixedNow.Add(3600 * time.Second)
 	if !grant.ExpiresAt.Equal(want) {
 		t.Errorf("ExpiresAt = %v, want %v", grant.ExpiresAt, want)
+	}
+}
+
+// TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut: the callback came
+// and the exchange was still running when the login's context ended. The
+// owner was just in the browser, so the error must not read as the
+// nobody-came timeout that keeps oauthpage.ReturnAfterLogin from bringing
+// the app back (#741).
+func TestLogin_DeadlineDuringExchangeIsNotErrLoginTimedOut(t *testing.T) {
+	as := newFakeAS(t)
+	inner := as.server.Config.Handler
+	inToken := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // before as.server.Close (LIFO)
+	var once sync.Once
+	// Set before Login starts, so every request below sees it.
+	as.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			once.Do(func() { close(inToken) })
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+
+	urlCh := captureAuthorizeURL(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := Login(ctx, LoginConfig{ServerURL: as.server.URL}, &syncBuffer{}, LoginOptions{})
+		errCh <- err
+	}()
+
+	u, err := url.Parse(<-urlCh)
+	if err != nil {
+		t.Fatalf("parsing authorize URL: %v", err)
+	}
+	q := u.Query()
+	cb, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		t.Fatalf("parsing redirect_uri: %v", err)
+	}
+	cb.RawQuery = url.Values{"code": {as.AuthCode}, "state": {q.Get("state")}}.Encode()
+	// In a goroutine: the callback only answers once the exchange gives up.
+	go func() {
+		if resp, err := http.Get(cb.String()); err == nil { //nolint:gosec,noctx
+			resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-inToken:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the exchange never reached /token")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Login: want an error when the context ends mid-exchange, got nil")
+		}
+		if errors.Is(err, oauthpage.ErrLoginTimedOut) {
+			t.Errorf("Login: err = %v, must not wrap ErrLoginTimedOut once the callback came", err)
+		}
+		// The handler's own outcome, the same one its error page shows.
+		if !strings.Contains(err.Error(), "exchanging code for token") {
+			t.Errorf("Login: err = %v, want the handler's exchange failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Login did not return after the context ended")
 	}
 }

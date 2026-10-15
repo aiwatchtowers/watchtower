@@ -18,6 +18,56 @@ struct WhisperKitProvider: TranscriptionProvider {
     func availability() -> ProviderAvailability { .available }
     func supportedLanguages(model: String) -> Set<String>? { nil }
 
+    /// On-disk sizes of the Core ML folders, measured; `small` and `base`
+    /// are the dictation-only variants.
+    func downloadSizeBytes(model: String) -> Int64? {
+        [
+            "large-v3-v20240930": 1_600_000_000,
+            "large-v3": 3_100_000_000,
+            "distil-large-v3": 1_500_000_000,
+            "medium": 1_500_000_000,
+            "small": 490_000_000,
+            "base": 150_000_000
+        ][model]
+    }
+
+    /// The Hub cache folder WhisperKit downloads into: HubApi's default base
+    /// (Documents/huggingface) plus the repo.
+    static var hubRepoFolder: URL? {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appending(path: "huggingface/models/argmaxinc/whisperkit-coreml")
+    }
+
+    func modelFilesMissing(model: String) -> Bool {
+        guard let repo = Self.hubRepoFolder else { return false }
+        return Self.modelFilesMissing(model: model, in: repo)
+    }
+
+    /// The repo holds one folder per variant: "openai_whisper-<model>" or
+    /// "<family>_<model>" (e.g. "distil-whisper_distil-large-v3") — never a
+    /// bare "-<model>" suffix, which would let the distil folder stand in for
+    /// "large-v3". Present = both weight files landed (the Hub moves each
+    /// file in only once it is complete). A repo folder that does not exist
+    /// is missing; one that cannot be read (a revoked Documents grant) is
+    /// "cannot tell", never missing.
+    static func modelFilesMissing(model: String, in repo: URL) -> Bool {
+        let fileManager = FileManager.default
+        let folders: [String]
+        do {
+            folders = try fileManager.contentsOfDirectory(atPath: repo.path)
+        } catch {
+            let nsError = error as NSError
+            return nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError
+        }
+        return !folders.contains { name in
+            guard name == "openai_whisper-\(model)" || name.hasSuffix("_\(model)") else { return false }
+            let folder = repo.appending(path: name)
+            return ["AudioEncoder", "TextDecoder"].allSatisfy {
+                fileManager.fileExists(atPath: folder.appending(path: "\($0).mlmodelc/weights/weight.bin").path)
+            }
+        }
+    }
+
     func prefetch(model: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         _ = try await WhisperKitEngine.ensureModelFilesDownloaded(modelName: model, downloadProgress: progress)
     }

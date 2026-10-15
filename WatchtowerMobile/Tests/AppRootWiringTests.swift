@@ -1116,7 +1116,7 @@ final class AppRootWiringTests: XCTestCase {
         let list = RecordingsListModel(
             recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
             seen: RecordingsSeen(baseline: .distantPast, opened: []), now: clock.now, calendar: .current,
-            held: root.env.heldRecordings
+            held: root.env.heldRecordings, linkedHubIDs: root.env.linkedHubIDs
         )
         XCTAssertEqual(list.inProgress.map(\.state), [.heldForMac(nil)])
 

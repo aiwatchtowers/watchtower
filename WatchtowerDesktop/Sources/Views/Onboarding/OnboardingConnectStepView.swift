@@ -14,8 +14,9 @@ struct OnboardingConnectStepView: View {
         AddSlackAccountView(daemonPolicy: daemonPolicy)
     }
 
-    static func googleSheet(mail: Bool, calendar: Bool) -> AddGoogleAccountView {
-        AddGoogleAccountView(daemonPolicy: daemonPolicy, calendar: calendar, mail: mail)
+    /// Opens with Calendar and Gmail both checked, whatever the goals.
+    static func googleSheet() -> AddGoogleAccountView {
+        AddGoogleAccountView(daemonPolicy: daemonPolicy)
     }
 
     static func jiraSheet() -> AddJiraAccountView {
@@ -32,7 +33,7 @@ struct OnboardingConnectStepView: View {
 
     private enum Sheet: Identifiable {
         case slack
-        case google(mail: Bool, calendar: Bool)
+        case google
         case jira
 
         var id: String {
@@ -111,7 +112,7 @@ struct OnboardingConnectStepView: View {
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .slack: Self.slackSheet()
-            case let .google(mail, calendar): Self.googleSheet(mail: mail, calendar: calendar)
+            case .google: Self.googleSheet()
             case .jira: Self.jiraSheet()
             }
         }
@@ -144,16 +145,16 @@ struct OnboardingConnectStepView: View {
                 },
                 showsRoster: true
             )
-        case let .google(mail, calendar):
+        case .google:
             // v1: the first account, whatever its status or scopes.
             let account = appState.googleAccountsViewModel?.accounts.first
             sourceRow(
                 letter: "G", title: "Google",
-                subtitle: Self.googleSubtitle(mail: mail, calendar: calendar),
+                subtitle: "Mail and calendar · for work communication and meetings",
                 connected: account?.displayName,
                 available: appState.googleAccountsViewModel != nil,
                 error: appState.googleAccountsViewModel?.error,
-                connect: { sheet = .google(mail: mail, calendar: calendar) },
+                connect: { sheet = .google },
                 remove: account.map { account in
                     { await appState.googleAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 }
@@ -172,14 +173,6 @@ struct OnboardingConnectStepView: View {
                     { await appState.jiraAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 }
             )
-        }
-    }
-
-    static func googleSubtitle(mail: Bool, calendar: Bool) -> String {
-        switch (mail, calendar) {
-        case (true, true): "Mail and calendar · for work communication and meetings"
-        case (true, false): "Mail · for work communication"
-        default: "Calendar · for meetings"
         }
     }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
@@ -57,7 +58,8 @@ var actionsTrustCmd = &cobra.Command{
 	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
 covers another. Without --surface the level is set on every surface the tool
 is offered on; with --surface it is set on that surface only (what
-Settings → Assistant tools passes, one switch per surface).`,
+Settings → Assistant tools passes, one switch per surface). Only write tools
+take a trust level; the workbench and automation surfaces take none.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runActionsTrust,
 }
@@ -345,14 +347,18 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 // Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
 // it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
 // workbench terminal hands its agent tools.TerminalSessionEnv (a plain shell
-// terminal does not get it).
-var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv}
+// terminal does not get it); a child an automation run starts carries
+// automations.RunEnvMarker.
+var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", tools.TerminalSessionEnv,
+	automations.RunEnvMarker}
 
 // refuseUnderAgent keeps the owner's decision the owner's (AGENT-07): an
 // agent that can run `watchtower` could otherwise approve or apply its own
 // proposal (a prompt-injected send_slack_message, then `actions approve` on
-// the id its receipt names). The approve, the apply and an execute trust
-// grant are refused when any marker is set; the Desktop's Approve/Retry
+// the id its receipt names). Refused when any marker is set: the approve,
+// the apply and an execute trust grant; `automations confirm`,
+// `automations save --confirm-hash` and `automations dry-run` of a recipe
+// that is not confirmed yet (spec 2026-10-14 §14.3, D16). The Desktop's
 // buttons are the path. Reject and the read verbs stay open.
 func refuseUnderAgent(verb string) error {
 	for _, name := range agentEnvMarkers {
@@ -411,6 +417,9 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return tools.ErrUnknownTool
 	}
+	if err := tools.CheckTrustable(t); err != nil {
+		return err
+	}
 	surfaces := tools.TrustSurfaces(t)
 	if actionsFlagSurface != "" {
 		surfaces = []string{actionsFlagSurface}
@@ -459,10 +468,12 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	}
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
-		surfaces := t.Surfaces
-		if surfaces == nil {
-			surfaces = []string{}
+		// Settings → Assistant tools draws a trust switch per surface, so
+		// only what trust can act on is listed (CheckTrustable).
+		if tools.CheckTrustable(t) != nil {
+			continue
 		}
+		surfaces := listedToolSurfaces(t)
 		trustSurfaces := tools.TrustSurfaces(t)
 		bySurface := make(map[string]string, len(trustSurfaces))
 		for _, s := range trustSurfaces {
@@ -492,6 +503,19 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))
 	}
 	return nil
+}
+
+// listedToolSurfaces is toolJSON.Surfaces: t's surfaces without the
+// automation surface, which takes no trust in P1 (tools.TrustSurfaces) and
+// would otherwise show as a switch; never nil, so JSON carries [].
+func listedToolSurfaces(t *tools.Tool) []string {
+	out := make([]string, 0, len(t.Surfaces))
+	for _, s := range t.Surfaces {
+		if s != tools.AutomationSurface {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // summarizeTrust is toolJSON.Trust: the level on the filtered surface, else

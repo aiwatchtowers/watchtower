@@ -25,6 +25,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   switched off in Settings — and Reset to goals turns it on.
 - Tasks & Jira → `stream-digests`, `next-step`.
 - Meetings → `briefing` (meeting prep rides the daily briefing).
+  It is also the only goal that downloads the transcription model ahead of
+  use, after the first sync (#744, `TranscriptionModelAutoDownload`); every
+  other route downloads it at the first recording or dictation.
 - Development → nothing (Workbench, the chat, Targets and Knowledge search
   need no switch).
 - Always on: `knowledge-search`, `secretary-inbox` (Attention detection,
@@ -35,7 +38,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   off, Reset to goals included; on its own it does not make the re-run
   "Features customized". Settings → Features keeps them as normal toggles, and the
   related-features offer after a connect never proposes them. Left alone:
-  `knowledge-connectors` (Confluence in search) and the core entries.
+  `knowledge-connectors` (Confluence in search), `automations` (on by
+  default, runs nothing until the owner confirms a recipe) and the core
+  entries.
   `OnboardingFeaturePlanTests` parses `internal/features/registry.go` and
   fails on a toggleable feature that is in none of these sets.
 - Default goals: all but Meetings. Zero goals = Development only.
@@ -46,6 +51,17 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 - The Customize screen tags a feature "Experimental" when it is off at the
   screen's first load (on a fresh install: ships off by default), except
   Memory — `OnboardingFeaturePlan.establishedDefaultOffFeatureIDs` (#378).
+
+**Connect step cards** (`OnboardingConnectPlan`, WatchtowerCore). Slack for
+Work communication, one Google card for Work communication or Meetings,
+Jira for Tasks & Jira. The Google card carries no scopes: connecting a
+Google account means mail and calendar both, whatever the goals (owner
+decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
+checked like Settings' Add Google sheet, and either can be unchecked there.
+A calendar granted this way makes the Calendar tab show (the source rule
+below; Calendar has no feature rule) and turns `calendar.enabled` on
+(`recordGoogleConnection`), with or without the Meetings goal; the goal
+still decides only the `briefing` feature.
 
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
@@ -76,7 +92,9 @@ Finish writes `onboarding_done` first, then brings the daemon up in the
 background (`OnboardingFinishPlan.bringUpDaemon`: start if none runs, else
 restart once), so Continue never waits on a slow restart. No one-shot
 `digest`/`tracks`/`people generate` runs: the daemon's first cycle does
-it; launch just ensures a daemon runs. A daemon that fails to come up
+it; launch just ensures a daemon runs. The daemon syncs calendars once
+before that first cycle, so a calendar connected here shows events within
+about a minute instead of after the first Slack sync (#740). A daemon that fails to come up
 shows a banner over the tab setup landed on.
 
 **Workspace without Slack.** Goals' Continue runs `watchtower workspace init
