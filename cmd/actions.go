@@ -57,9 +57,12 @@ var actionsTrustCmd = &cobra.Command{
 	Short: "Set a tool's trust level, per chat surface",
 	Long: `Trust is per (tool, chat surface): an execute granted on one surface never
 covers another. Without --surface the level is set on every surface the tool
-is offered on; with --surface it is set on that surface only (what
-Settings → Assistant tools passes, one switch per surface). Only write tools
-take a trust level; the workbench and automation surfaces take none.`,
+is offered on except automation; with --surface it is set on that surface
+only (what Settings → Assistant tools passes, one switch per surface). An
+automation-wide level is set only with an explicit --surface automation; it
+applies to every automation's calls of the tool (a per-automation auto grant
+is 'automations auto'). Only write tools take a trust level; the workbench
+surface takes none.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runActionsTrust,
 }
@@ -80,9 +83,9 @@ func init() {
 		"sha256 (hex) of the args_json the owner was shown; the approve is refused if the stored args differ")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
-	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target|reaction|project)")
+	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by surface (main|target|reaction|project|automation)")
 	actionsTrustCmd.Flags().StringVar(&actionsFlagSurface, "surface", "",
-		"set the trust on this surface only (default: every surface the tool is on)")
+		"set the trust on this surface only: main|target|reaction|automation (default: every surface the tool is on but automation)")
 }
 
 // actionJSON is the wire shape of one row. Field names are load-bearing:
@@ -421,15 +424,9 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 	if err := tools.CheckTrustable(t); err != nil {
 		return err
 	}
-	surfaces := tools.TrustSurfaces(t)
-	if actionsFlagSurface != "" {
-		surfaces = []string{actionsFlagSurface}
-	}
-	if len(surfaces) == 0 {
-		if len(t.Surfaces) > 0 {
-			return fmt.Errorf("%s: workbench tools always apply in their own workbench", t.Name)
-		}
-		return fmt.Errorf("%s names no surface; pass --surface", t.Name)
+	surfaces, err := trustTargetSurfaces(t, actionsFlagSurface)
+	if err != nil {
+		return err
 	}
 	for _, s := range surfaces {
 		if err := reg.SetTrust(t.Name, s, tools.Trust(args[1])); err != nil {
@@ -438,6 +435,32 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s: trust = %s on %s\n", t.Name, args[1], strings.Join(surfaces, ", "))
 	return nil
+}
+
+// trustTargetSurfaces is the surfaces `actions trust` sets: the --surface
+// given, else every trust surface of t but automation — an execute meant for
+// the chats must not silently auto-apply every automation's calls too, so
+// the automation surface is set only when named.
+func trustTargetSurfaces(t *tools.Tool, flag string) ([]string, error) {
+	if flag != "" {
+		return []string{flag}, nil
+	}
+	all := tools.TrustSurfaces(t)
+	out := make([]string, 0, len(all))
+	for _, s := range all {
+		if s != tools.AutomationSurface {
+			out = append(out, s)
+		}
+	}
+	switch {
+	case len(out) > 0:
+		return out, nil
+	case len(all) > 0:
+		return nil, fmt.Errorf("%s is offered only to automations; pass --surface %s", t.Name, tools.AutomationSurface)
+	case len(t.Surfaces) > 0:
+		return nil, fmt.Errorf("%s: workbench tools always apply in their own workbench", t.Name)
+	}
+	return nil, fmt.Errorf("%s names no surface; pass --surface", t.Name)
 }
 
 type toolJSON struct {
@@ -474,7 +497,9 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 		if tools.CheckTrustable(t) != nil {
 			continue
 		}
-		surfaces := listedToolSurfaces(t)
+		// Never nil, so JSON carries []; the automation surface is listed with
+		// its trust level like any other (spec §6.2).
+		surfaces := append(make([]string, 0, len(t.Surfaces)), t.Surfaces...)
 		trustSurfaces := tools.TrustSurfaces(t)
 		bySurface := make(map[string]string, len(trustSurfaces))
 		for _, s := range trustSurfaces {
@@ -504,19 +529,6 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 			t.Name, t.Access, t.External, t.Trust, strings.Join(perSurface, ","))
 	}
 	return nil
-}
-
-// listedToolSurfaces is toolJSON.Surfaces: t's surfaces without the
-// automation surface, which takes no trust in P1 (tools.TrustSurfaces) and
-// would otherwise show as a switch; never nil, so JSON carries [].
-func listedToolSurfaces(t *tools.Tool) []string {
-	out := make([]string, 0, len(t.Surfaces))
-	for _, s := range t.Surfaces {
-		if s != tools.AutomationSurface {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // summarizeTrust is toolJSON.Trust: the level on the filtered surface, else

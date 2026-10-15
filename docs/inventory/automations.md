@@ -107,10 +107,11 @@ AGENT-03 amendment of spec §14.2, owner-approved in ask #265, lands with it.)
 per-call click; it is safe only while it is bound to exactly the code and
 permissions the owner reviewed.
 
-**Test guards:** none yet — P2 adds them (plan `2026-10-14-automations-p2.md`)
-and flips this entry. P1 already refuses trust on the `automation` surface
-(`internal/tools/registry_test.go` `TestSetTrust_RefusesReadToolsAndTheAutomationSurface`,
-see `agent-actions.md`).
+**Test guards:** the registry side is in code since P2 Task 3
+(`internal/tools/registry_automation_test.go`: `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`,
+`TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`,
+`TestAgent03_AlwaysAskIsNeverAuto`, `TestTrustOrder_AutomationSurface`; see AGENT-03 in `agent-actions.md`).
+The entry flips to Enforced with the `automations auto` CLI guards (plan `2026-10-14-automations-p2.md` Tasks 8–9).
 
 **Locked since:** 2026-10-14
 
