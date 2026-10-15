@@ -167,6 +167,10 @@ func normalized(t *testing.T, tool *Tool, d *db.DB, raw json.RawMessage) json.Ra
 	return out
 }
 
+// The four Jira writes are External, on main, the target chat and (since
+// Automations P2, spec 2026-10-14 §6.1) the automation surface, and require a
+// reason; the name predates the automation surface and is kept because the
+// inventory cites it.
 func TestJiraWriteTools_ExternalOnMainAndTargetWithReason(t *testing.T) {
 	reg := New(openDB(t))
 	names := []string{"add_jira_comment", "transition_jira_issue", "assign_jira_issue", "update_jira_issue"}

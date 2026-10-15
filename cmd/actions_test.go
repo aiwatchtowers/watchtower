@@ -410,19 +410,27 @@ func TestActionsTools_ListsAutomationTrust(t *testing.T) {
 // named (trustTargetSurfaces, spec §6.2).
 func TestActionsTrust_WithoutSurfaceLeavesAutomationAsk(t *testing.T) {
 	database := writeActionsConfig(t)
-	out, err := runActions(t, "trust", "create_idea", "execute")
+	// create_track is seeded at ask on both chat surfaces (00065, 00112), so
+	// the execute below is what flips them.
+	countExecute := func() int {
+		var n int
+		require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
+			WHERE tool = 'create_track' AND trust = 'execute'`).Scan(&n))
+		return n
+	}
+	require.Zero(t, countExecute(), "create_track starts at ask")
+
+	out, err := runActions(t, "trust", "create_track", "execute")
 	require.NoError(t, err)
-	assert.Contains(t, out, "create_idea: trust = execute on reaction, main")
+	assert.Contains(t, out, "create_track: trust = execute on reaction, main")
 	assert.NotContains(t, out, tools.AutomationSurface)
 
 	var rows int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
-		WHERE tool = 'create_idea' AND surface = ?`, tools.AutomationSurface).Scan(&rows))
+		WHERE tool = 'create_track' AND surface = ?`, tools.AutomationSurface).Scan(&rows))
 	assert.Zero(t, rows, "no automation trust row without --surface automation")
-	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust
-		WHERE tool = 'create_idea' AND trust = 'execute'`).Scan(&rows))
-	assert.Equal(t, 2, rows, "both chat surfaces execute")
-	assert.Equal(t, string(tools.TrustAsk), listedAutomationTrust(t)["create_idea"])
+	assert.Equal(t, 2, countExecute(), "both chat surfaces execute")
+	assert.Equal(t, string(tools.TrustAsk), listedAutomationTrust(t)["create_track"])
 }
 
 // listedAutomationTrust is trust_by_surface.automation per tool from
