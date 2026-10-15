@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message, upper = when that sync started; IMAP: first sync; Jira: no project watermark before a `Sync` that left one, whatever it returned), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
+**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark on an account with no stored messages, upper = local midnight of the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message, upper = when that sync started; IMAP: first sync; Jira: no project watermark before a `Sync` that left one, whatever it returned), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
 
 **Why locked:** Existing installs must be untouched, and nothing may re-digest a period that was already digested.
 
@@ -33,6 +33,9 @@
 - `internal/gmail/fetch_range_test.go::TestSync_FirstSyncFromFalseOnEmptyList`
 - `internal/jira/first_sync_test.go::TestSync_FirstSyncFrom`
 - `internal/daemon/history_backfill_test.go::TestPhaseJiraSync_FirstSyncStartsBackfill`
+- `internal/daemon/history_backfill_test.go::TestPhaseSlackSync_FirstSyncStartsBackfill`
+- `internal/daemon/history_backfill_test.go::TestPhaseMailSync_FirstSyncStartsBackfill`
+- `internal/sync/search_backfill_test.go::TestFirstSyncFrom_AccountWithStoredMessagesIsNotAFirstSync`
 - `internal/imap/fetch_range_test.go::TestSyncFirstSyncFrom`
 
 **Locked since:** 2026-10-15
