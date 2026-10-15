@@ -804,6 +804,78 @@ func TestPhaseJiraSync_FirstSyncStartsBackfill(t *testing.T) {
 	assert.Equal(t, float64(started.Unix()), rows[0].UpperTS)
 }
 
+// F4: phaseSlackSync starts a backfill for an account's first sync (no
+// search watermark, no stored messages) and none for an account that
+// already synced.
+func TestPhaseSlackSync_FirstSyncStartsBackfill(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Sync.InitialHistoryDays = 3
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "acme", Domain: "acme"}))
+	d.SetOrchestrators([]*sync.Orchestrator{newBackfillOrchestrator(t, database, d.config)})
+
+	d.phaseSlackSync(context.Background())
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "slack", rows[0].SourceKind)
+	assert.Equal(t, int64(1), rows[0].AccountID)
+
+	// The watermark now exists: a later cycle starts nothing new.
+	_, err = database.Exec(`DELETE FROM history_backfill`)
+	require.NoError(t, err)
+	d.phaseSlackSync(context.Background())
+	rows, err = database.ListHistoryBackfills()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+// stubMailSyncer is a mailSyncer whose Sync reports a scripted first sync.
+type stubMailSyncer struct {
+	accountID int64
+	firstSync time.Time // zero: not a first sync
+	syncErr   error
+}
+
+func (s *stubMailSyncer) Sync(context.Context) (int, error) { return 0, s.syncErr }
+func (s *stubMailSyncer) FetchRange(context.Context, time.Time, time.Time) (int, error) {
+	return 0, nil
+}
+func (s *stubMailSyncer) AccountID() int64 { return s.accountID }
+func (s *stubMailSyncer) FirstSyncFrom() (time.Time, bool) {
+	return s.firstSync, !s.firstSync.IsZero()
+}
+
+// F4: phaseGmailSync and phaseImapSync start a backfill for an account's
+// first sync — also when the sync then errs (R13) — and none for an account
+// that already synced.
+func TestPhaseMailSync_FirstSyncStartsBackfill(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		wire func(d *Daemon, s []mailSyncer)
+		run  func(d *Daemon)
+	}{
+		{"gmail", func(d *Daemon, s []mailSyncer) { d.gmailSyncers = s }, func(d *Daemon) { d.phaseGmailSync(context.Background()) }},
+		{"imap", func(d *Daemon, s []mailSyncer) { d.imapSyncers = s }, func(d *Daemon) { d.phaseImapSync(context.Background()) }},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			d, database, _ := newBackfillDaemon(t)
+			started := time.Now().Add(-time.Minute).Truncate(time.Second)
+			tc.wire(d, []mailSyncer{
+				&stubMailSyncer{accountID: 7, firstSync: started, syncErr: fmt.Errorf("late failure")},
+				&stubMailSyncer{accountID: 8},
+			})
+
+			tc.run(d)
+			rows, err := database.ListHistoryBackfills()
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, tc.kind, rows[0].SourceKind)
+			assert.Equal(t, int64(7), rows[0].AccountID)
+			assert.Equal(t, float64(started.Unix()), rows[0].UpperTS)
+		})
+	}
+}
+
 func TestHistoryBackfill_AccountStateJira(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
 	d.config.Jira.Enabled = true

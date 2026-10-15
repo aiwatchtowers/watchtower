@@ -63,6 +63,16 @@ type jiraAccountSyncer interface {
 	FirstSyncFrom() (time.Time, bool)
 }
 
+// mailSyncer is the slice of *gmail.Syncer and *imap.Syncer behaviour the
+// mail sync phases and the history backfill use — an interface, like
+// jiraAccountSyncer, so a test can stage a first sync without a mail server.
+type mailSyncer interface {
+	Sync(ctx context.Context) (int, error)
+	FetchRange(ctx context.Context, from, to time.Time) (int, error)
+	AccountID() int64
+	FirstSyncFrom() (time.Time, bool)
+}
+
 // minPollInterval is the minimum allowed poll interval. Values below this
 // (e.g. nanosecond-scale durations from misconfigured integer values) are
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
@@ -113,8 +123,8 @@ type Daemon struct {
 	reactionCmdPipe     *reactioncmd.Pipeline
 	calendarSyncers     []*calendar.Syncer
 	calDAVSyncers       []*caldav.Syncer
-	gmailSyncers        []*gmail.Syncer
-	imapSyncers         []*imap.Syncer
+	gmailSyncers        []mailSyncer
+	imapSyncers         []mailSyncer
 	jiraSyncers         []jiraAccountSyncer
 	externalSync        ExternalSyncRunner
 	dayPlanPipeline     DayPlanRunner
@@ -270,14 +280,20 @@ func (d *Daemon) SetCalDAVSyncers(s []*caldav.Syncer) {
 // google_accounts row with gmail enabled and a live token (mirrors
 // SetCalendarSyncers/SetImapSyncers).
 func (d *Daemon) SetGmailSyncers(s []*gmail.Syncer) {
-	d.gmailSyncers = s
+	d.gmailSyncers = make([]mailSyncer, len(s))
+	for i, syncer := range s {
+		d.gmailSyncers[i] = syncer
+	}
 }
 
 // SetImapSyncers sets the per-account IMAP/Outlook syncers for post-sync mail
 // fetch — one per connected email_accounts row, unlike Gmail's single syncer,
 // since a workspace can have any number of connected mailboxes.
 func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
-	d.imapSyncers = s
+	d.imapSyncers = make([]mailSyncer, len(s))
+	for i, syncer := range s {
+		d.imapSyncers[i] = syncer
+	}
 }
 
 // SetJiraSyncers sets the per-account Jira syncers — one per connected,

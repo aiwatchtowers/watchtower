@@ -12,10 +12,8 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/gmail"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
-	"watchtower/internal/imap"
 	"watchtower/internal/planusage"
 	"watchtower/internal/sync"
 )
@@ -320,7 +318,7 @@ func slackRollupErr(err error) error {
 // are consolidated by the regular ideas run, which keeps the ideas.enabled
 // gate.
 type gmailSource struct {
-	s  *gmail.Syncer
+	s  mailSyncer
 	id int64
 	d  *Daemon
 }
@@ -405,7 +403,7 @@ func (d *Daemon) backfillStreams(key backfillResumeKey, from time.Time, drain fu
 
 // imapSource backfills one IMAP mailbox: fetch only (no AI step).
 type imapSource struct {
-	s *imap.Syncer
+	s mailSyncer
 }
 
 func (m imapSource) Kind() string     { return "imap" }
