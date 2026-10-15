@@ -100,7 +100,7 @@ final class ReadinessCenter {
         }
     }
 
-    private nonisolated static func readSnapshot(_ db: Database) throws -> DBSnapshot {
+    nonisolated private static func readSnapshot(_ db: Database) throws -> DBSnapshot {
         DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
                    latestRuns: try ReadinessQueries.latestRuns(db))
     }
