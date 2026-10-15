@@ -116,14 +116,19 @@ func TestRunForWindow_SituationsReadError(t *testing.T) {
 	_, err := database.Exec(`DROP TABLE digests`)
 	require.NoError(t, err)
 
-	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	gen := &mockGenerator{response: outcomeBatchReply}
+	pipe := New(database, testConfig(), gen, testLogger())
 	_, err = pipe.RunForWindow(context.Background(), from, to)
 	require.ErrorContains(t, err, "loading situations")
+	assert.Equal(t, int32(0), gen.calls.Load(), "the failed daemon run does not reach the AI")
 
-	forced := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	forcedGen := &mockGenerator{response: outcomeBatchReply}
+	forced := New(database, testConfig(), forcedGen, testLogger())
 	forced.ForceRegenerate = true
 	_, err = forced.RunForWindow(context.Background(), from, to)
-	assert.NotContains(t, fmt.Sprint(err), "loading situations", "the forced run continues past the read")
+	require.NoError(t, err, "the forced run continues past the read")
+	assert.GreaterOrEqual(t, int(forcedGen.calls.Load()), 1)
+	assert.Equal(t, OutcomeGenerated, forced.LastOutcome())
 }
 
 // HasData is the negation of RunForWindow's OutcomeNoData over Run's window.
