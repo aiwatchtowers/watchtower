@@ -61,7 +61,7 @@ func (f escalateFixture) escalate(t *testing.T, reason string) escalateResult {
 // and prints one JSON object.
 func runEscalate(t *testing.T, args ...string) escalateResult {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"escalate-question"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"escalate-question"}, args...)...)
 	require.NoError(t, err, "the verb always exits 0")
 	var res escalateResult
 	dec := json.NewDecoder(strings.NewReader(out))

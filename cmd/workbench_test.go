@@ -27,7 +27,18 @@ import (
 // precedent) under `workbench`, with stdout and stderr captured separately.
 func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	return runWorkbenchAs(t, "workbench", args...)
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs(append([]string{"workbench"}, args...))
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	resetSetFlags(append(workbenchCmd.Commands(), workbenchCmd, rootCmd)...)
+	workbenchFlagJSON = false
+	workbenchCreateFlagFolder = ""
+	workbenchCreateFlagName = ""
+	workbenchBriefFlagWorkbench = ""
+	return out.String(), errOut.String(), err
 }
 
 // runRootCmd runs rootCmd with args and resets every flag the run set on cmds
@@ -73,23 +84,6 @@ func resetSetFlags(cmds ...*cobra.Command) {
 		c.PersistentFlags().VisitAll(reset)
 		c.InheritedFlags().VisitAll(reset)
 	}
-}
-
-// runWorkbenchAs is runWorkbench run as the top-level command called name.
-func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr string, err error) {
-	t.Helper()
-	var out, errOut bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&errOut)
-	rootCmd.SetArgs(append([]string{name}, args...))
-	err = rootCmd.Execute()
-	rootCmd.SetArgs(nil)
-	resetSetFlags(append(workbenchCmd.Commands(), workbenchCmd, rootCmd)...)
-	workbenchFlagJSON = false
-	workbenchCreateFlagFolder = ""
-	workbenchCreateFlagName = ""
-	workbenchBriefFlagWorkbench = ""
-	return out.String(), errOut.String(), err
 }
 
 // The pre-rename `project` command and --project flag are gone (spec

@@ -2427,7 +2427,7 @@ END;
 
 -- projects* tables = Workbench (UI/CLI/code name since 2026-10-02; table names kept).
 -- Projects (00081, spec 2026-09-29-project-board-poc-design.md): a folder-bound
--- project worked on by Claude Code through `watchtower mcp --project N`. Its
+-- project worked on by Claude Code through `watchtower mcp --workbench N`. Its
 -- targets carry targets.project_id and appear only on its board. Comments hang
 -- off a target or a thread root (parent_id; replies are flat, parent_id = the
 -- root); attached documents and their comments were replaced by owner_asks (00100).

@@ -115,7 +115,7 @@ func runCodexHook(t *testing.T, stdin string, args ...string) (stdout, stderr st
 	t.Helper()
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	out, errOut, err := runWorkbenchAs(t, "workbench", args...)
+	out, errOut, err := runWorkbench(t, args...)
 	require.NoError(t, err, "a hook always exits 0")
 	return out, errOut
 }
@@ -215,9 +215,9 @@ func TestCodexHook_FlagRule(t *testing.T) {
 // Outside a hook, `workbench check --agent codex` is a plain usage error.
 func TestCodexHook_CheckWithoutStopHookIsAnError(t *testing.T) {
 	writeActionsConfig(t)
-	_, _, err := runWorkbenchAs(t, "workbench", "check", "--agent", "codex")
+	_, _, err := runWorkbench(t, "check", "--agent", "codex")
 	assert.ErrorContains(t, err, "--agent codex runs only with --stop-hook")
-	_, _, err = runWorkbenchAs(t, "workbench", "check", "--agent", "codex", "--workbench", "1")
+	_, _, err = runWorkbench(t, "check", "--agent", "codex", "--workbench", "1")
 	assert.ErrorIs(t, err, errAgentWithWorkbench)
 }
 

@@ -40,7 +40,7 @@ func runSessionState(t *testing.T, workbenchID int64, stdin io.Reader, extra ...
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	args := append([]string{"session-state", "--workbench", strconv.FormatInt(workbenchID, 10)}, extra...)
-	return runWorkbenchAs(t, "workbench", args...)
+	return runWorkbench(t, args...)
 }
 
 // stepClock makes every hook event one second later than the previous one,

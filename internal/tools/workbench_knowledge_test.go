@@ -134,11 +134,18 @@ func TestSearchKnowledge_ProjectSessionPrefersProjectSources(t *testing.T) {
 	assert.Empty(t, res.Hits)
 }
 
-func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
+func TestSearchKnowledge_WorkbenchScopeErrors(t *testing.T) {
 	d := openDB(t)
 	p := seedScopedKnowledge(t, d)
 	reg := knowledgeRegistry(t, d)
 	var ve *ValidationError
+
+	// Only workbench_scope is offered; the pre-rename project_scope is gone.
+	tool, ok := reg.Get("search_knowledge")
+	require.True(t, ok)
+	require.NotNil(t, tool.InputSchema)
+	assert.Contains(t, tool.InputSchema.Properties, "workbench_scope")
+	assert.NotContains(t, tool.InputSchema.Properties, "project_scope")
 
 	_, err := searchIn(t, reg, 0, `{"queries":["стейдж"],"workbench_scope":"only"}`)
 	require.ErrorAs(t, err, &ve)

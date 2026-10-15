@@ -73,7 +73,7 @@ func localToolNames(t *testing.T, database *db.DB, opts []internalmcp.ServerOpti
 	return names, ls
 }
 
-// DEV-06 / DEV-01: plain `watchtower mcp` (no --chat, no --project) is still
+// DEV-06 / DEV-01: plain `watchtower mcp` (no --chat, no --workbench) is still
 // the read-only developer surface — query_only on, no write tool, no project
 // tool, no get_action.
 func TestDev06_PlainMCPStaysReadOnly(t *testing.T) {

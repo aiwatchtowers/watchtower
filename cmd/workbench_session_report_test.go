@@ -43,7 +43,7 @@ func loadSessionReportFixture(t *testing.T, path, folder string) {
 
 func runSessionReport(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"session-report"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"session-report"}, args...)...)
 	return out, err
 }
 

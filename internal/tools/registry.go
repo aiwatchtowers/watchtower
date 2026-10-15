@@ -426,9 +426,11 @@ func reasonOf(args json.RawMessage) string {
 
 // Propose validates a write-tool call and records it. With trust "ask" the
 // row is pending and nothing executes; with "execute" the row is inserted as
-// approved and applied inline, so the model sees the result immediately. A
-// call by a pre-rename workbench tool name is recorded under the tool's
-// current name (Tool.Name), the one name agent_actions.tool ever gets.
+// approved and applied inline, so the model sees the result immediately. The
+// row records the tool's current name (Tool.Name), the one name
+// agent_actions.tool ever gets. A pre-rename workbench tool name still
+// resolves here only so rows stored under it keep working; no adapter sends
+// one.
 func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
 	t, ok := r.Get(name)
 	if !ok {

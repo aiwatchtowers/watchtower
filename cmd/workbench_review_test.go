@@ -40,7 +40,7 @@ func reviewSession(t *testing.T, database *db.DB, wbID int64, folder string) int
 
 func reviewJSON(t *testing.T, wb int64, sub string, args ...string) map[string]any {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"review", sub, "--workbench", itoa(wb), "--json"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"review", sub, "--workbench", itoa(wb), "--json"}, args...)...)
 	resetSetFlags(workbenchReviewCmd.Commands()...)
 	require.NoError(t, err)
 	var m map[string]any

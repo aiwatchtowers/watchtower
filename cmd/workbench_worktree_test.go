@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,7 +58,7 @@ func (f *worktreeFixture) joinedCalls() string {
 
 func runWorktree(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	stdout, _, err := runWorkbenchAs(t, "workbench", append([]string{"worktree"}, args...)...)
+	stdout, _, err := runWorkbench(t, append([]string{"worktree"}, args...)...)
 	resetSetFlags(workbenchWorktreeCmd.Commands()...)
 	return stdout, err
 }
@@ -129,7 +130,7 @@ func TestWorkbenchWorktree_EnsureReinstallsAndReportsTheCwd(t *testing.T) {
 
 func TestWorkbenchWorktree_ForgetUnregistersOnlyAndKeepsSharedExcludeLines(t *testing.T) {
 	f := newWorktreeFixture(t)
-	_, _, err := runWorkbenchAs(t, "integrate", "claude-code", "--workbench", f.idArg)
+	_, _, err := runRootCmd(t, []*cobra.Command{integrateClaudeCodeCmd}, "integrate", "claude-code", "--workbench", f.idArg)
 	require.NoError(t, err)
 	before := readExclude(t, f.folder)
 	c := f.create(t, "s3")

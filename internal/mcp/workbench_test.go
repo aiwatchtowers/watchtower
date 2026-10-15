@@ -264,6 +264,13 @@ func TestWorkbenchMode_OldNamesAreUnknownAndOldRowsResolve(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Errorf("update_project call: want an unknown-tool error, got %v", err)
 	}
+	var n int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("a refused old name leaves no audit row, got %d", n)
+	}
 
 	oldRow, err := database.InsertAgentAction(db.AgentAction{Tool: "add_project_source", ArgsJSON: `{}`, Reason: "r",
 		Surface: "project", ContextType: tools.WorkbenchContextType, ContextID: strconv.FormatInt(pid, 10),

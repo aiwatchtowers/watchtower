@@ -124,9 +124,9 @@ type WorkbenchInstallReport struct {
 // WorkbenchStatus is what is installed in a workbench folder right now.
 // Hook, StopHook and MCP count the pre-rename entries too (spec 2026-10-02
 // §5.2), although they no longer run since the legacy aliases were removed
-// (§10): Legacy tells such a folder apart. Legacy is set
-// while anything a resync would migrate is still there: the old
-// registration, an old hook command, or the old skill as we shipped it.
+// (§10): Legacy tells such a folder apart. Legacy is set while anything a
+// resync would migrate is still there: the old registration, an old hook
+// command, or the old skill as we shipped it.
 // LegacySkill is the old skill's state: StateMissing, StateUnchanged (ours,
 // un-edited), StateDrifted (edited, kept by every resync — PROJ-04) or
 // StateForeign. CurrentMCP and LegacyMCP say which registration MCP stands

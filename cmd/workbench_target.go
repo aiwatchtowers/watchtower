@@ -41,7 +41,7 @@ var (
 
 func init() {
 	f := workbenchTargetAddCmd.Flags()
-	workbenchTargetAddCmd.Flags().Int64Var(&workbenchTargetFlagWorkbench, workbenchFlag, 0, "workbench id (required)")
+	f.Int64Var(&workbenchTargetFlagWorkbench, workbenchFlag, 0, "workbench id (required)")
 	f.StringVar(&workbenchTargetFlagTitle, "title", "", fmt.Sprintf("the target title (required, at most %d characters)", workbenchTargetTitleMax))
 	f.StringVar(&workbenchTargetFlagIntent, "intent", "", "why the target matters")
 	f.StringVar(&workbenchTargetFlagPriority, "priority", "", "high | medium | low (default medium)")
