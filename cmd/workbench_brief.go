@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/kb"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchcheck"
+	"watchtower/internal/workbenchmethod"
 )
 
 const (
@@ -201,8 +202,9 @@ func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	defer cancel()
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
+	method := briefMethodSection(workbenchmethod.ResolveSession(database, p.ID, briefSessionRow()))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now, vocab,
-		briefCleanupLine(database, p.ID))
+		method, briefCleanupLine(database, p.ID))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -295,17 +297,21 @@ const briefLegacyLine = "This folder's Watchtower setup predates the Workbench r
 // board: archived targets (PROJ-15) leave the counts and the tree, and are
 // only counted in the header; comments on them keep their titles. Pure.
 func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary) string {
-	return renderSessionBrief(board, p, comments, drift, recent, answered, now, vocab, "")
+	return renderSessionBrief(board, p, comments, drift, recent, answered, now, vocab, "", "")
 }
 
-// renderSessionBrief is renderWorkbenchBrief with the session's cleanup line
-// (briefCleanupLine) after the rules when cleanup is not "": like the rules,
-// its room is set aside before anything else is fitted. Pure.
-func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary, cleanup string) string {
+// renderSessionBrief is renderWorkbenchBrief with the folder rules slot
+// (briefMethodSection) and the session's cleanup line (briefCleanupLine) after
+// the rules when not "": like the rules, their room is set aside before
+// anything else is fitted. Pure.
+func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary, method, cleanup string) string {
 	shown := db.WithoutArchived(board)
 	header := briefHeader(p, shown, db.CountArchived(board), len(comments), vocab)
 	head := header
 	rules := strings.Join(briefRules, "\n")
+	if method != "" {
+		rules += "\n" + method
+	}
 	if cleanup != "" {
 		rules += "\n" + cleanup
 	}
