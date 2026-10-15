@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// AgentLogFile is one agent_log_files row: a transcript's scan state.
 type AgentLogFile struct {
 	Path, Agent   string
 	Size          int64
@@ -15,11 +16,15 @@ type AgentLogFile struct {
 	ParserVersion int
 	MissingAt     string // "" = present
 }
+
+// AgentLogSession is one agent_log_sessions row (upserted per batch).
 type AgentLogSession struct {
 	SessionUUID, Agent, FolderPath, HomeCWD, SourcePath, GitBranch, Model, StartedAt, EndedAt string
 	ProjectID                                                                                 *int64
 	ReportedCostUSD                                                                           *float64
 }
+
+// AgentLogEvent is one agent_log_events row, unique by Key.
 type AgentLogEvent struct {
 	SessionUUID, Key, Kind, TS, UUID, ParentUUID, PromptID, AgentID                    string
 	IsSidechain                                                                        bool
@@ -35,10 +40,14 @@ type AgentLogEvent struct {
 	MessageID                                                                          string // api_call only, not stored
 	SubagentReplayCheck                                                                bool   // skip when the session already has this message.id under another key
 }
+
+// AgentToolResult pairs a tool_result with its stored `tool:<ToolUseID>` event.
 type AgentToolResult struct {
 	ToolUseID, TS, Outcome, ErrorClass string
 	LinesAdded, LinesRemoved           int
 }
+
+// AgentLogBatch is what one parse of one file writes in one transaction.
 type AgentLogBatch struct {
 	File         AgentLogFile // Path, Agent, Size, MTime, ParserVersion; ReadOffset = the new offset
 	ExpectOffset int64        // compare-and-set: the offset the caller read from; -1 = file row must not exist
@@ -47,6 +56,7 @@ type AgentLogBatch struct {
 	ToolResults  []AgentToolResult
 }
 
+// AgentLogStats is a workbench's totals for `agents stats --json` (pinned keys).
 type AgentLogStats struct {
 	Sessions           int                   `json:"sessions"`
 	Tokens             AgentLogTokens        `json:"tokens"`
@@ -59,6 +69,8 @@ type AgentLogStats struct {
 	Skills             []AgentLogSkill       `json:"skills"`
 	PerSession         []AgentLogSessionStat `json:"per_session"`
 }
+
+// AgentLogTokens sums the token buckets of api_call events.
 type AgentLogTokens struct {
 	Input        int64 `json:"input"`
 	Output       int64 `json:"output"`
@@ -66,16 +78,22 @@ type AgentLogTokens struct {
 	CacheWrite5m int64 `json:"cache_write_5m"`
 	CacheWrite1h int64 `json:"cache_write_1h"`
 }
+
+// AgentLogCount is a name and how often it occurred.
 type AgentLogCount struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
 }
+
+// AgentLogSkill counts one skill's activations per trigger.
 type AgentLogSkill struct {
 	Name      string `json:"name"`
 	Proactive int    `json:"proactive"`
 	Slash     int    `json:"slash"`
 	Read      int    `json:"read"`
 }
+
+// AgentLogSessionStat is one session's line in AgentLogStats.PerSession.
 type AgentLogSessionStat struct {
 	SessionUUID     string   `json:"session_uuid"`
 	StartedAt       string   `json:"started_at"`
@@ -86,8 +104,6 @@ type AgentLogSessionStat struct {
 	ReportedCostUSD *float64 `json:"reported_cost_usd"`
 	ToolErrors      int      `json:"tool_errors"`
 }
-
-// (types from the Interfaces block above go here, with doc comments)
 
 const agentLogFileCols = `path, agent, size, mtime, read_offset, parser_version, COALESCE(missing_at, '')`
 

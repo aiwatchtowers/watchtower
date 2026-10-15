@@ -2166,8 +2166,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     board_language TEXT NOT NULL DEFAULT '', -- unused: the board always follows the session language (00087, retired by board item #153)
     archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365), -- closed targets older than this leave the board; 0 = never (00103)
-    archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL) -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105),
-    worktree_setup TEXT NOT NULL DEFAULT '' -- the command run in a new session worktree before the agent's first launch; '' = none (00114),
+    archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105)
+    worktree_setup TEXT NOT NULL DEFAULT '', -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
     agent_analytics INTEGER NOT NULL DEFAULT 0 CHECK (agent_analytics IN (0, 1)) -- 1 = Agent analytics reads this workbench's Claude Code logs (00116)
 );
 
