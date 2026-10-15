@@ -83,16 +83,16 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choices, ["file", "strict", "soft", "off"])
         XCTAssertEqual(WorkbenchMethodologyKey.preset.choices, ["file", "watchtower-flow", "none"])
         XCTAssertEqual(WorkbenchMethodologyKey.finishCheck.choices, ["file", "on", "off"])
-        XCTAssertEqual(WorkbenchMethodologyKey.preset.label("watchtower-flow"), "Watchtower flow")
-        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.label("file"), "From folder file")
-        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.label("soft"), "Soft")
-        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.help("soft").contains("Watchtower app running"),
+        XCTAssertEqual(WorkbenchMethodologyKey.preset.choiceLabel("watchtower-flow"), "Watchtower flow")
+        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("file"), "From folder file")
+        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("soft"), "Soft")
+        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("soft").contains("Watchtower app running"),
                       "spec §7.1: soft's Desktop-down limit is in the help")
-        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.help("soft").contains("only in sessions run in Watchtower's terminal"),
+        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("soft").contains("only in sessions run in Watchtower's terminal"),
                       "soft records nothing outside a Watchtower terminal session")
         for key in WorkbenchMethodologyKey.allCases {
             for choice in key.choices {
-                XCTAssertFalse(key.help(choice).isEmpty, "\(key) \(choice)")
+                XCTAssertFalse(key.choiceHelp(choice).isEmpty, "\(key) \(choice)")
             }
         }
     }

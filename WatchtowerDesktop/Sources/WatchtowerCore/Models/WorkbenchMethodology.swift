@@ -39,7 +39,7 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         }
     }
 
-    package func label(_ choice: String) -> String {
+    package func choiceLabel(_ choice: String) -> String {
         switch choice {
         case Self.fromFile: "From folder file"
         case "watchtower-flow": "Watchtower flow"
@@ -48,7 +48,7 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
     }
 
     /// What a value does; soft names the Desktop-down limit (spec §7.1).
-    package func help(_ choice: String) -> String {
+    package func choiceHelp(_ choice: String) -> String {
         switch (self, choice) {
         case (_, Self.fromFile):
             "Use the folder's .watchtower/workflow.md, else the built-in default."
@@ -151,7 +151,7 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     /// from; nil when a personal value is set.
     package func effectiveLine(_ key: WorkbenchMethodologyKey) -> String? {
         guard personal[key].isEmpty else { return nil }
-        let value = key.label(effective[key])
+        let value = key.choiceLabel(effective[key])
         return sources[key] == "file" ? "Now \(value), from .watchtower/workflow.md" : "Now \(value), the built-in default"
     }
 
