@@ -605,4 +605,20 @@ final class WorkbenchCLITests: XCTestCase {
         )
         XCTAssertEqual(untrusted.summaryLines.map(\.problem), [true])
     }
+
+    func testMethodologyCallsPassTheFlagsAndJSON() async throws {
+        let runner = FakeCLIRunner(stdout: Data(WorkbenchMethodologyFixtures.envelope.utf8))
+        let cli = WorkbenchCLI(runner: runner)
+        let read = try await cli.methodology(projectID: 7)
+        _ = try await cli.setMethodology(projectID: 7, key: .askGuard, choice: "soft")
+        _ = try await cli.setMethodology(projectID: 7, key: .preset, choice: WorkbenchMethodologyKey.fromFile)
+        _ = try await cli.createWorkflowFile(projectID: 7)
+        XCTAssertEqual(read.effective.askGuard, "soft")
+        XCTAssertEqual(runner.invocations, [
+            ["workbench", "methodology", "7", "--json"],
+            ["workbench", "methodology", "7", "--ask-guard=soft", "--json"],
+            ["workbench", "methodology", "7", "--preset=file", "--json"],
+            ["workbench", "methodology", "7", "--create-file", "--json"]
+        ])
+    }
 }

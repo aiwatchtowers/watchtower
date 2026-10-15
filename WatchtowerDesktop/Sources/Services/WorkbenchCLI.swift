@@ -722,6 +722,29 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchResynced.self, from: data)
     }
 
+    /// The workbench's methodology — personal settings, effective values and
+    /// their sources (spec 2026-10-15 §8). Read-only.
+    func methodology(projectID: Int64) async throws -> WorkbenchMethodologyState {
+        try await methodologyCall(projectID: projectID, extra: [])
+    }
+
+    /// Sets one methodology setting; `WorkbenchMethodologyKey.fromFile` drops
+    /// it. Go updates the folder's skills right after a preset change.
+    func setMethodology(projectID: Int64, key: WorkbenchMethodologyKey, choice: String) async throws -> WorkbenchMethodologyState {
+        try await methodologyCall(projectID: projectID, extra: ["\(key.flag)=\(choice)"])
+    }
+
+    /// Writes the commented `.watchtower/workflow.md` template when the
+    /// folder has none; never overwrites.
+    func createWorkflowFile(projectID: Int64) async throws -> WorkbenchMethodologyState {
+        try await methodologyCall(projectID: projectID, extra: ["--create-file"])
+    }
+
+    private func methodologyCall(projectID: Int64, extra: [String]) async throws -> WorkbenchMethodologyState {
+        let data = try await runner.run(args: ["workbench", "methodology", String(projectID)] + extra + ["--json"])
+        return try JSONDecoder().decode(WorkbenchMethodologyState.self, from: data)
+    }
+
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
     /// Desktop never does. `folder` (absolute) asks about that folder instead
