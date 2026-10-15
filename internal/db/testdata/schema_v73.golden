@@ -270,6 +270,63 @@ ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track'
 index	idx_kb_documents_source_time
 CREATE INDEX idx_kb_documents_source_time ON kb_documents(source, doc_time_unix)
 
+index	idx_linear_accounts_org
+CREATE UNIQUE INDEX idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != ''
+
+index	idx_linear_comments_created
+CREATE INDEX idx_linear_comments_created ON linear_comments(created_at)
+
+index	idx_linear_comments_issue_author
+CREATE INDEX idx_linear_comments_issue_author ON linear_comments(issue_key, author_id)
+
+index	idx_linear_comments_synced
+CREATE INDEX idx_linear_comments_synced ON linear_comments(synced_at)
+
+index	idx_linear_history_issue
+CREATE INDEX idx_linear_history_issue ON linear_issue_history(account_id, issue_id, changed_at)
+
+index	idx_linear_issues_assignee
+CREATE INDEX idx_linear_issues_assignee ON linear_issues(assignee_id)
+
+index	idx_linear_issues_assignee_status
+CREATE INDEX idx_linear_issues_assignee_status ON linear_issues(assignee_slack_id, status_category)
+
+index	idx_linear_issues_cycle
+CREATE INDEX idx_linear_issues_cycle ON linear_issues(cycle_id)
+
+index	idx_linear_issues_due
+CREATE INDEX idx_linear_issues_due ON linear_issues(due_date)
+
+index	idx_linear_issues_key
+CREATE INDEX idx_linear_issues_key ON linear_issues(key)
+
+index	idx_linear_issues_project
+CREATE INDEX idx_linear_issues_project ON linear_issues(project_id)
+
+index	idx_linear_issues_status_cat
+CREATE INDEX idx_linear_issues_status_cat ON linear_issues(status_category)
+
+index	idx_linear_issues_synced
+CREATE INDEX idx_linear_issues_synced ON linear_issues(synced_at)
+
+index	idx_linear_issues_team
+CREATE INDEX idx_linear_issues_team ON linear_issues(account_id, team_id)
+
+index	idx_linear_issues_updated
+CREATE INDEX idx_linear_issues_updated ON linear_issues(updated_at)
+
+index	idx_linear_relations_issue
+CREATE INDEX idx_linear_relations_issue ON linear_relations(account_id, issue_id)
+
+index	idx_linear_relations_related
+CREATE INDEX idx_linear_relations_related ON linear_relations(account_id, related_issue_id, type)
+
+index	idx_linear_teams_key
+CREATE INDEX idx_linear_teams_key ON linear_teams(key)
+
+index	idx_linear_user_map_slack
+CREATE INDEX idx_linear_user_map_slack ON linear_user_map(slack_user_id)
+
 index	idx_meeting_notes_event
 CREATE INDEX idx_meeting_notes_event ON meeting_notes(event_id)
 
@@ -1531,6 +1588,166 @@ source TEXT PRIMARY KEY,
 cursor TEXT NOT NULL DEFAULT '',
 last_reconciled_at TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL DEFAULT ''
+)
+
+table	linear_accounts
+CREATE TABLE linear_accounts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+org_id TEXT NOT NULL DEFAULT '',
+url_key TEXT NOT NULL DEFAULT '',
+org_name TEXT NOT NULL DEFAULT '',
+label TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'ok', -- ok | error | revoked | removed
+error TEXT NOT NULL DEFAULT '',
+enabled INTEGER NOT NULL DEFAULT 1,
+owner_user_id TEXT NOT NULL DEFAULT '',
+owner_email TEXT NOT NULL DEFAULT '',
+owner_display_name TEXT NOT NULL DEFAULT '',
+memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
+ideas_floor TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
+table	linear_comments
+CREATE TABLE linear_comments (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+issue_id TEXT NOT NULL,
+issue_key TEXT NOT NULL DEFAULT '',
+author_id TEXT NOT NULL DEFAULT '',
+author_display_name TEXT NOT NULL DEFAULT '',
+body_text TEXT NOT NULL DEFAULT '',
+mentioned_user_ids TEXT NOT NULL DEFAULT '[]',
+created_at TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT '',
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_cycles
+CREATE TABLE linear_cycles (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+team_id TEXT NOT NULL DEFAULT '',
+number INTEGER NOT NULL DEFAULT 0,
+name TEXT NOT NULL DEFAULT '',
+starts_at TEXT NOT NULL DEFAULT '',
+ends_at TEXT NOT NULL DEFAULT '',
+completed_at TEXT NOT NULL DEFAULT '',
+progress REAL NOT NULL DEFAULT 0,
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_issue_history
+CREATE TABLE linear_issue_history (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+field TEXT NOT NULL CHECK (field IN ('status','assignee')),
+issue_id TEXT NOT NULL,
+from_value TEXT NOT NULL DEFAULT '',
+from_string TEXT NOT NULL DEFAULT '',
+to_value TEXT NOT NULL DEFAULT '',
+to_string TEXT NOT NULL DEFAULT '',
+actor_id TEXT NOT NULL DEFAULT '',
+actor_display_name TEXT NOT NULL DEFAULT '',
+changed_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id, field)
+)
+
+table	linear_issues
+CREATE TABLE linear_issues (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+key TEXT NOT NULL,
+previous_keys TEXT NOT NULL DEFAULT '[]',
+team_id TEXT NOT NULL DEFAULT '',
+team_key TEXT NOT NULL DEFAULT '',
+title TEXT NOT NULL DEFAULT '',
+description_text TEXT NOT NULL DEFAULT '',
+state_name TEXT NOT NULL DEFAULT '',
+state_type TEXT NOT NULL DEFAULT '',
+status_category TEXT NOT NULL DEFAULT 'todo',
+state_changed_at TEXT NOT NULL DEFAULT '',
+assignee_id TEXT NOT NULL DEFAULT '',
+assignee_email TEXT NOT NULL DEFAULT '',
+assignee_display_name TEXT NOT NULL DEFAULT '',
+assignee_slack_id TEXT NOT NULL DEFAULT '',
+creator_id TEXT NOT NULL DEFAULT '',
+creator_email TEXT NOT NULL DEFAULT '',
+creator_display_name TEXT NOT NULL DEFAULT '',
+creator_slack_id TEXT NOT NULL DEFAULT '',
+priority INTEGER NOT NULL DEFAULT 0,
+estimate REAL,
+due_date TEXT NOT NULL DEFAULT '',
+cycle_id TEXT NOT NULL DEFAULT '',
+project_id TEXT NOT NULL DEFAULT '',
+parent_id TEXT NOT NULL DEFAULT '',
+labels TEXT NOT NULL DEFAULT '[]',
+url TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT '',
+completed_at TEXT NOT NULL DEFAULT '',
+canceled_at TEXT NOT NULL DEFAULT '',
+raw_json TEXT NOT NULL DEFAULT '{}',
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+is_deleted INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_projects
+CREATE TABLE linear_projects (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+name TEXT NOT NULL DEFAULT '',
+state TEXT NOT NULL DEFAULT '',
+progress REAL NOT NULL DEFAULT 0,
+target_date TEXT NOT NULL DEFAULT '',
+lead_id TEXT NOT NULL DEFAULT '',
+url TEXT NOT NULL DEFAULT '',
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_relations
+CREATE TABLE linear_relations (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+issue_id TEXT NOT NULL,
+related_issue_id TEXT NOT NULL,
+type TEXT NOT NULL,
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_sync_state
+CREATE TABLE linear_sync_state (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+team_id TEXT NOT NULL,
+watermark TEXT NOT NULL DEFAULT '',
+last_synced_at TEXT NOT NULL DEFAULT '',
+last_error TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, team_id)
+)
+
+table	linear_teams
+CREATE TABLE linear_teams (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+key TEXT NOT NULL DEFAULT '',
+name TEXT NOT NULL DEFAULT '',
+is_selected INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (account_id, id)
+)
+
+table	linear_user_map
+CREATE TABLE linear_user_map (
+linear_user_id TEXT PRIMARY KEY,
+email TEXT NOT NULL DEFAULT '',
+display_name TEXT NOT NULL DEFAULT '',
+slack_user_id TEXT NOT NULL DEFAULT '',
+match_method TEXT NOT NULL DEFAULT '',
+match_confidence REAL NOT NULL DEFAULT 0,
+resolved_at TEXT NOT NULL DEFAULT ''
 )
 
 table	meeting_notes
@@ -3773,6 +3990,138 @@ GROUP BY up.ancestor
 1	cursor	TEXT	notnull=1	dflt=''	pk=0
 2	last_reconciled_at	TEXT	notnull=1	dflt=''	pk=0
 3	updated_at	TEXT	notnull=1	dflt=''	pk=0
+
+## linear_accounts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	org_id	TEXT	notnull=1	dflt=''	pk=0
+2	url_key	TEXT	notnull=1	dflt=''	pk=0
+3	org_name	TEXT	notnull=1	dflt=''	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+5	status	TEXT	notnull=1	dflt='ok'	pk=0
+6	error	TEXT	notnull=1	dflt=''	pk=0
+7	enabled	INTEGER	notnull=1	dflt=1	pk=0
+8	owner_user_id	TEXT	notnull=1	dflt=''	pk=0
+9	owner_email	TEXT	notnull=1	dflt=''	pk=0
+10	owner_display_name	TEXT	notnull=1	dflt=''	pk=0
+11	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
+12	ideas_floor	TEXT	notnull=1	dflt=''	pk=0
+13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## linear_comments
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	issue_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	issue_key	TEXT	notnull=1	dflt=''	pk=0
+4	author_id	TEXT	notnull=1	dflt=''	pk=0
+5	author_display_name	TEXT	notnull=1	dflt=''	pk=0
+6	body_text	TEXT	notnull=1	dflt=''	pk=0
+7	mentioned_user_ids	TEXT	notnull=1	dflt='[]'	pk=0
+8	created_at	TEXT	notnull=1	dflt=''	pk=0
+9	updated_at	TEXT	notnull=1	dflt=''	pk=0
+10	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## linear_cycles
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	team_id	TEXT	notnull=1	dflt=''	pk=0
+3	number	INTEGER	notnull=1	dflt=0	pk=0
+4	name	TEXT	notnull=1	dflt=''	pk=0
+5	starts_at	TEXT	notnull=1	dflt=''	pk=0
+6	ends_at	TEXT	notnull=1	dflt=''	pk=0
+7	completed_at	TEXT	notnull=1	dflt=''	pk=0
+8	progress	REAL	notnull=1	dflt=0	pk=0
+9	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## linear_issue_history
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	field	TEXT	notnull=1	dflt=NULL	pk=3
+3	issue_id	TEXT	notnull=1	dflt=NULL	pk=0
+4	from_value	TEXT	notnull=1	dflt=''	pk=0
+5	from_string	TEXT	notnull=1	dflt=''	pk=0
+6	to_value	TEXT	notnull=1	dflt=''	pk=0
+7	to_string	TEXT	notnull=1	dflt=''	pk=0
+8	actor_id	TEXT	notnull=1	dflt=''	pk=0
+9	actor_display_name	TEXT	notnull=1	dflt=''	pk=0
+10	changed_at	TEXT	notnull=1	dflt=''	pk=0
+
+## linear_issues
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	key	TEXT	notnull=1	dflt=NULL	pk=0
+3	previous_keys	TEXT	notnull=1	dflt='[]'	pk=0
+4	team_id	TEXT	notnull=1	dflt=''	pk=0
+5	team_key	TEXT	notnull=1	dflt=''	pk=0
+6	title	TEXT	notnull=1	dflt=''	pk=0
+7	description_text	TEXT	notnull=1	dflt=''	pk=0
+8	state_name	TEXT	notnull=1	dflt=''	pk=0
+9	state_type	TEXT	notnull=1	dflt=''	pk=0
+10	status_category	TEXT	notnull=1	dflt='todo'	pk=0
+11	state_changed_at	TEXT	notnull=1	dflt=''	pk=0
+12	assignee_id	TEXT	notnull=1	dflt=''	pk=0
+13	assignee_email	TEXT	notnull=1	dflt=''	pk=0
+14	assignee_display_name	TEXT	notnull=1	dflt=''	pk=0
+15	assignee_slack_id	TEXT	notnull=1	dflt=''	pk=0
+16	creator_id	TEXT	notnull=1	dflt=''	pk=0
+17	creator_email	TEXT	notnull=1	dflt=''	pk=0
+18	creator_display_name	TEXT	notnull=1	dflt=''	pk=0
+19	creator_slack_id	TEXT	notnull=1	dflt=''	pk=0
+20	priority	INTEGER	notnull=1	dflt=0	pk=0
+21	estimate	REAL	notnull=0	dflt=NULL	pk=0
+22	due_date	TEXT	notnull=1	dflt=''	pk=0
+23	cycle_id	TEXT	notnull=1	dflt=''	pk=0
+24	project_id	TEXT	notnull=1	dflt=''	pk=0
+25	parent_id	TEXT	notnull=1	dflt=''	pk=0
+26	labels	TEXT	notnull=1	dflt='[]'	pk=0
+27	url	TEXT	notnull=1	dflt=''	pk=0
+28	created_at	TEXT	notnull=1	dflt=''	pk=0
+29	updated_at	TEXT	notnull=1	dflt=''	pk=0
+30	completed_at	TEXT	notnull=1	dflt=''	pk=0
+31	canceled_at	TEXT	notnull=1	dflt=''	pk=0
+32	raw_json	TEXT	notnull=1	dflt='{}'	pk=0
+33	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+34	is_deleted	INTEGER	notnull=1	dflt=0	pk=0
+
+## linear_projects
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	name	TEXT	notnull=1	dflt=''	pk=0
+3	state	TEXT	notnull=1	dflt=''	pk=0
+4	progress	REAL	notnull=1	dflt=0	pk=0
+5	target_date	TEXT	notnull=1	dflt=''	pk=0
+6	lead_id	TEXT	notnull=1	dflt=''	pk=0
+7	url	TEXT	notnull=1	dflt=''	pk=0
+8	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## linear_relations
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	issue_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	related_issue_id	TEXT	notnull=1	dflt=NULL	pk=0
+4	type	TEXT	notnull=1	dflt=NULL	pk=0
+
+## linear_sync_state
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	team_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	watermark	TEXT	notnull=1	dflt=''	pk=0
+3	last_synced_at	TEXT	notnull=1	dflt=''	pk=0
+4	last_error	TEXT	notnull=1	dflt=''	pk=0
+
+## linear_teams
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	key	TEXT	notnull=1	dflt=''	pk=0
+3	name	TEXT	notnull=1	dflt=''	pk=0
+4	is_selected	INTEGER	notnull=1	dflt=0	pk=0
+
+## linear_user_map
+0	linear_user_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	email	TEXT	notnull=1	dflt=''	pk=0
+2	display_name	TEXT	notnull=1	dflt=''	pk=0
+3	slack_user_id	TEXT	notnull=1	dflt=''	pk=0
+4	match_method	TEXT	notnull=1	dflt=''	pk=0
+5	match_confidence	REAL	notnull=1	dflt=0	pk=0
+6	resolved_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## meeting_notes
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
