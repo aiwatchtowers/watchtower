@@ -24,6 +24,21 @@ package struct ReviewHunk: Decodable, Equatable, Sendable {
     package let newStart: Int
     package let newLines: Int
     package let lines: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case hunkId, header, oldStart, oldLines, newStart, newLines, lines
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hunkId = try c.decode(String.self, forKey: .hunkId)
+        header = try c.decode(String.self, forKey: .header)
+        oldStart = try c.decode(Int.self, forKey: .oldStart)
+        oldLines = try c.decode(Int.self, forKey: .oldLines)
+        newStart = try c.decode(Int.self, forKey: .newStart)
+        newLines = try c.decode(Int.self, forKey: .newLines)
+        lines = try c.decodeIfPresent([String].self, forKey: .lines) ?? []
+    }
 }
 
 package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
@@ -36,11 +51,37 @@ package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
     package let binary: Bool
     package let collapsedReason: String?
     package let hunks: [ReviewHunk]
+
+    private enum CodingKeys: String, CodingKey {
+        case path, oldPath, status, additions, deletions, binary, collapsedReason, hunks
+    }
+
+    /// Go emits `"hunks": null` for collapsed, binary and unchanged files.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        oldPath = try c.decodeIfPresent(String.self, forKey: .oldPath)
+        status = try c.decode(String.self, forKey: .status)
+        additions = try c.decode(Int.self, forKey: .additions)
+        deletions = try c.decode(Int.self, forKey: .deletions)
+        binary = try c.decode(Bool.self, forKey: .binary)
+        collapsedReason = try c.decodeIfPresent(String.self, forKey: .collapsedReason)
+        hunks = try c.decodeIfPresent([ReviewHunk].self, forKey: .hunks) ?? []
+    }
 }
 
 package struct ReviewDiff: Decodable, Equatable, Sendable {
     package let files: [ReviewDiffFile]
     package let truncated: Bool
+
+    private enum CodingKeys: String, CodingKey { case files, truncated }
+
+    /// `files` is `null` when nothing changed.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        files = try c.decodeIfPresent([ReviewDiffFile].self, forKey: .files) ?? []
+        truncated = try c.decode(Bool.self, forKey: .truncated)
+    }
 }
 
 package struct ReviewFileSide: Decodable, Equatable, Sendable {
@@ -58,8 +99,7 @@ package struct ReviewContextItem: Decodable, Equatable, Sendable {
     package let planTask: Int?
     package let planText: String?
     package let specPath: String?
-    // swiftlint:disable:next discouraged_optional_boolean
-    package let missing: Bool?
+    package let missing: String?
 }
 
 package struct ReviewEnvelope: Decodable, Sendable {
