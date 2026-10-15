@@ -169,7 +169,9 @@ func scopeName(l rawLimit) string {
 	return ""
 }
 
-func slug(s string) string { return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), " ", "-") }
+func slug(s string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), " ", "-")
+}
 
 func clampPercent(p float64) float64 { return math.Max(0, math.Min(100, p)) }
 
