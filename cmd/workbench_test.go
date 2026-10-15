@@ -93,12 +93,31 @@ func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr s
 }
 
 // The pre-rename `project` command and --project flag are gone (spec
-// 2026-10-02 §10): only the workbench vocabulary is served.
+// 2026-10-02 §10): only the workbench vocabulary is served. A never-resynced
+// folder's hooks (internal/devpack/workbench_legacy_test.go's argv) and its
+// `mcp --project N` server fail with nothing on stdout and a plain error —
+// exit 1 through Execute, never an exitCodeError's other code (a Stop hook
+// exiting 2 would block the turn, PROJ-07).
 func TestWorkbench_NoPreRenameCommandOrFlag(t *testing.T) {
 	assert.Empty(t, workbenchCmd.Aliases)
-	_, _, err := runRootCmd(t, nil, "project", "brief", "--workbench", "1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `unknown command "project"`)
+	rootCmd.SetIn(strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	for _, argv := range [][]string{
+		{"project", "brief", "--project", "7"},
+		{"project", "check", "--project", "7", "--stop-hook"},
+		{"mcp", "--project", "7"},
+	} {
+		stdout, _, err := runRootCmd(t, []*cobra.Command{mcpCmd}, argv...)
+		require.Error(t, err, "%v", argv)
+		assert.Empty(t, stdout, "%v", argv)
+		var ec *exitCodeError
+		assert.False(t, errors.As(err, &ec), "%v must exit 1, got %v", argv, err)
+		if argv[0] == "project" {
+			assert.Contains(t, err.Error(), `unknown command "project"`)
+		} else {
+			assert.Contains(t, err.Error(), "unknown flag: --project")
+		}
+	}
 
 	cmds := []*cobra.Command{mcpCmd, integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd, integrateCodexCmd}
 	var walk func(*cobra.Command)
