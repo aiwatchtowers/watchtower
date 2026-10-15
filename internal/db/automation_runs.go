@@ -1034,34 +1034,36 @@ type NamedAutomationOutput struct {
 	AutomationName string
 }
 
-// ListAutomationOutputsSince returns every output of kind created at or after
-// since, oldest first, each with its automation's name. Never nil.
-func (db *DB) ListAutomationOutputsSince(kind string, since time.Time) ([]NamedAutomationOutput, error) {
-	rows, err := db.Query(`SELECT `+qualifiedAutomationOutputCols+`, COALESCE(NULLIF(a.name, ''), a.slug)
+// ListAutomationOutputsSince returns the newest limit outputs of kind created
+// at or after since, newest first, each with its automation's name and its
+// body cut to maxBodyChars characters, plus the count of every matching row
+// (so a caller can say how many it left out). Never nil.
+func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
+	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
+			o.created_at, o.read_at, o.dismissed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at, o.id`, kind, formatAutomationTime(since))
+		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
+		maxBodyChars, kind, formatAutomationTime(since), limit)
 	if err != nil {
-		return nil, fmt.Errorf("listing %s automation outputs since %s: %w", kind, formatAutomationTime(since), err)
+		return nil, 0, fmt.Errorf("listing %s automation outputs since %s: %w", kind, formatAutomationTime(since), err)
 	}
 	defer rows.Close()
 	out := []NamedAutomationOutput{}
+	total := 0
 	for rows.Next() {
 		var n NamedAutomationOutput
-		if n.AutomationOutput, err = scanAutomationOutput(rows, &n.AutomationName); err != nil {
-			return nil, err
+		if n.AutomationOutput, err = scanAutomationOutput(rows, &n.AutomationName, &total); err != nil {
+			return nil, 0, err
 		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing %s automation outputs: %w", kind, err)
+		return nil, 0, fmt.Errorf("listing %s automation outputs: %w", kind, err)
 	}
-	return out, nil
+	return out, total, nil
 }
 
-const (
-	automationOutputCols          = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at`
-	qualifiedAutomationOutputCols = `o.id, o.automation_id, o.run_id, o.kind, o.title, o.body, o.priority, o.created_at, o.read_at, o.dismissed_at`
-)
+const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at`
 
 // scanAutomationOutput scans one automationOutputCols row; extra receives any
 // columns the query selects after them.

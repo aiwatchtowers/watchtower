@@ -164,7 +164,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	sinceLastBriefing := p.revisionWindowStart(currentUserID, date)
 	workbenchesCtx, hasRealWorkbenches := p.gatherWorkbenches(sinceLastBriefing)
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
-	automationsCtx, hasRealAutomationOutputs := p.gatherAutomationOutputs(sinceLastBriefing)
+	automationsCtx, hasRealAutomationOutputs := p.gatherAutomationOutputs(p.automationOutputsSince(currentUserID, date))
 
 	// Check we have some data (suggestion text alone doesn't count).
 	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches,
