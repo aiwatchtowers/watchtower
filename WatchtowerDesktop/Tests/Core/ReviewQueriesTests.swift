@@ -46,6 +46,27 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(now.first { $0.carriedFrom == b }?.status, .outdated)
     }
 
+    func testReplaceMovesAndMarkOutdatedKeepsTheRow() throws {
+        let db = try TestDatabase.create()
+        let roundID = try db.write { try Self.seedRound($0) }
+        let a = try draft(db, roundID, "a.go", tree: "t1", body: "move")
+        let b = try draft(db, roundID, "b.go", tree: "t1", body: "lose")
+        try db.write {
+            try ReviewQueries.replace($0, id: a, placement: .init(startLine: 4, endLine: 6), treeSHA: "t2")
+            try ReviewQueries.markOutdated($0, id: b)
+        }
+        let rows = try db.read { try ReviewQueries.comments($0, roundID: roundID) }
+        XCTAssertEqual(rows.first { $0.id == a }?.startLine, 4)
+        XCTAssertEqual(rows.first { $0.id == a }?.endLine, 6)
+        XCTAssertEqual(rows.first { $0.id == a }?.treeSHA, "t2")
+        XCTAssertEqual(rows.first { $0.id == a }?.status, .draft)
+        XCTAssertEqual(rows.first { $0.id == b }?.status, .outdated)
+        XCTAssertThrowsError(try db.write { try ReviewQueries.markOutdated($0, id: b) }) {
+            XCTAssertEqual($0 as? ReviewQueries.ReviewQueryError, .notADraft)
+        }
+        XCTAssertThrowsError(try db.write { try ReviewQueries.replace($0, id: b, placement: .init(startLine: 1, endLine: 1), treeSHA: "t3") })
+    }
+
     func testResolveClosesCarriedAndOutdatedOnly() throws {
         let db = try TestDatabase.create()
         let roundID = try db.write { try Self.seedRound($0) }

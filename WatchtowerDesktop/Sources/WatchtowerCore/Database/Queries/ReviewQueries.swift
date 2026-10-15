@@ -50,6 +50,24 @@ package enum ReviewQueries {
         guard db.changesCount == 1 else { throw ReviewQueryError.notResolvable }
     }
 
+    /// Moves a draft or carried comment to its re-anchored lines on a refreshed tree.
+    package static func replace(_ db: Database, id: Int64, placement: ReviewCommentAnchor.Placement, treeSHA: String) throws {
+        try db.execute(sql: """
+            UPDATE review_comments SET start_line = ?, end_line = ?, tree_sha = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE id = ? AND status IN ('draft','carried')
+            """, arguments: [placement.startLine, placement.endLine, treeSHA, id])
+        guard db.changesCount == 1 else { throw ReviewQueryError.notADraft }
+    }
+
+    /// Marks a draft or carried comment whose lines are gone from the refreshed tree (kept, never dropped).
+    package static func markOutdated(_ db: Database, id: Int64) throws {
+        try db.execute(sql: """
+            UPDATE review_comments SET status = 'outdated', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE id = ? AND status IN ('draft','carried')
+            """, arguments: [id])
+        guard db.changesCount == 1 else { throw ReviewQueryError.notADraft }
+    }
+
     /// Carries the previous round's unresolved comments into roundID: moved →
     /// `carried` at the new lines, lost → `outdated` (REVIEW-03: none dropped).
     package static func carry(
