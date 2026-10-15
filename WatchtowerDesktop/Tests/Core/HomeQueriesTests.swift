@@ -103,6 +103,48 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertEqual(count, 5)
     }
 
+    func testHomeSummaryInProgressWithFutureDueSortsAfterDueByUpdatedAt() throws {
+        let texts = try db.write { d in
+            try self.insertTarget(d, "Older in progress", status: "in_progress", dueDate: self.day(2) + "T09:00",
+                                  updatedAt: self.stampAgo(minutesAgo: 60))
+            try self.insertTarget(d, "Newer in progress", status: "in_progress", dueDate: self.day(1) + "T09:00",
+                                  updatedAt: self.stampAgo(minutesAgo: 5))
+            try self.insertTarget(d, "Due today", dueDate: self.day(0) + "T15:00",
+                                  updatedAt: self.stampAgo(minutesAgo: 120))
+            try self.insertTarget(d, "Overdue", dueDate: self.day(-2) + "T09:00",
+                                  updatedAt: self.stampAgo(minutesAgo: 1))
+            return try TargetQueries.homeSummary(d, today: self.day(0)).map(\.text)
+        }
+        XCTAssertEqual(texts, ["Overdue", "Due today", "Newer in progress", "Older in progress"])
+    }
+
+    func testHomeSummaryIncludesBlockedDueToday() throws {
+        let texts = try db.write { d in
+            try self.insertTarget(d, "Blocked today", status: "blocked", dueDate: self.day(0) + "T11:00")
+            try self.insertTarget(d, "Blocked tomorrow", status: "blocked", dueDate: self.day(1) + "T11:00")
+            try self.insertTarget(d, "Blocked undated", status: "blocked")
+            return try TargetQueries.homeSummary(d, today: self.day(0)).map(\.text)
+        }
+        XCTAssertEqual(texts, ["Blocked today"])
+    }
+
+    /// Over five matches: every due row (earliest first) beats in-progress,
+    /// and the newest in-progress fills what is left.
+    func testHomeSummaryKeepsTheFiveFirstInOrder() throws {
+        let texts = try db.write { d in
+            for (i, minutes) in [30.0, 10.0, 20.0].enumerated() {
+                try self.insertTarget(d, "In progress \(i)", status: "in_progress",
+                                      updatedAt: self.stampAgo(minutesAgo: minutes))
+            }
+            try self.insertTarget(d, "Due 15", dueDate: self.day(0) + "T15:00")
+            try self.insertTarget(d, "Due 09", dueDate: self.day(0) + "T09:00")
+            try self.insertTarget(d, "Overdue", dueDate: self.day(-1) + "T18:00")
+            try self.insertTarget(d, "Due 12", dueDate: self.day(0) + "T12:00")
+            return try TargetQueries.homeSummary(d, today: self.day(0)).map(\.text)
+        }
+        XCTAssertEqual(texts, ["Overdue", "Due 09", "Due 12", "Due 15", "In progress 1"])
+    }
+
     // MARK: - openAsksAllWorkbenches
 
     func testOpenAsksAllWorkbenchesSpansWorkbenches() throws {

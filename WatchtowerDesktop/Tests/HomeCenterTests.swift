@@ -7,6 +7,7 @@ import WatchtowerTestSupport
 
 /// Home's inputs for tests: the owner known, every Today card allowed.
 @MainActor
+@Observable
 final class FakeHomeEnvironment: HomeEnvironment {
     var now = Date()
     var calendar = Calendar.current
@@ -160,6 +161,26 @@ final class HomeCenterTests: XCTestCase {
         // `digests` is not a Home table: only readiness sees this write.
         try await pool.write { db in try TestDatabase.insertDigest(db) }
         await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .ready }
+        XCTAssertEqual(center.todayReads, reads)
+    }
+
+    /// A first-sync or allowed-cards change rebuilds from the last read
+    /// without touching the DB.
+    func testEnvironmentChangeRebuildsWithoutDBRead() async throws {
+        let pool = try makePool()
+        try insertTargetDueToday(pool)
+        let environment = FakeHomeEnvironment()
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, snapshotHas(.myTargets))
+        let reads = center.todayReads
+
+        let line = FirstSyncLine(title: "Syncing Slack", detail: "12 of 40 channels")
+        environment.firstSync = line
+        await waitUntil(center) { $0?.firstSync == line }
+        environment.allowedTodayCards = [.agentsWaiting]
+        await waitUntil(center) { $0?.today == [] }
         XCTAssertEqual(center.todayReads, reads)
     }
 
@@ -356,6 +377,31 @@ final class HomeCenterTests: XCTestCase {
         store.memory = GettingReadyMemory(hiddenByOwner: true, firstShownAt: shown, completedAt: nil)
         XCTAssertEqual(GettingReadyStore(defaults: defaults).memory,
                        GettingReadyMemory(hiddenByOwner: true, firstShownAt: shown, completedAt: nil))
+    }
+
+    /// Each tab-following card against its own tab's rule, one source or
+    /// feature at a time.
+    func testTodayCardsFollowTheirOwnTab() {
+        let appState = AppState.isolated()
+        let always: Set<TodayCardKind> = [.myTargets, .agentsWaiting]
+        let rows: [(ConnectedSources, Set<String>, Set<TodayCardKind>)] = [
+            // Briefings has no source gate; Inbox and Catch-Up need any source.
+            (.none, [], always.union([.briefing])),
+            // Calendar fills Calendar, and Inbox and Catch-Up (meeting items).
+            (ConnectedSources(calendar: true), [],
+             always.union([.briefing, .nextMeeting, .waitingOnYou, .sinceYouWereAway])),
+            (ConnectedSources(slack: true), [], always.union([.briefing, .waitingOnYou, .sinceYouWereAway])),
+            (ConnectedSources(jira: true), [], always.union([.briefing, .waitingOnYou, .sinceYouWereAway])),
+            (.all, ["briefing"], Set(TodayCardKind.allCases).subtracting([.briefing])),
+            // Catch-Up needs one of its three features; Inbox has no feature gate.
+            (.all, ["secretary-inbox", "slack-digests", "stream-digests"],
+             Set(TodayCardKind.allCases).subtracting([.sinceYouWereAway]))
+        ]
+        for (connected, disabled, expected) in rows {
+            appState.featureVisibility.connectedSources = connected
+            appState.featureVisibility.disabledFeatureIDs = disabled
+            XCTAssertEqual(appState.homeTodayCardsAllowed, expected, "\(connected) disabled \(disabled)")
+        }
     }
 
     /// Waiting on you, Next meeting, Briefing and Since you were away follow
