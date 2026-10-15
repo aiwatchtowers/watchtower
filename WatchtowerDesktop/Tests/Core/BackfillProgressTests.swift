@@ -23,9 +23,23 @@ final class BackfillProgressTests: XCTestCase {
         XCTAssertEqual(BackfillProgress.line([row("running", loaded: 12, of: 30)]), "Loading history: 12 of 30 days")
     }
 
-    func testTotalsSumOverRunningAndPausedRowsOnly() {
-        let rows = [row("running", loaded: 10, of: 28), row("paused", loaded: 4, of: 23), row("done", loaded: 30, of: 30)]
-        XCTAssertEqual(BackfillProgress.line(rows), "Loading history: 14 of 51 days")
+    /// R22: a paused (revoked) row is not loading, so only running rows count.
+    func testTotalsSumOverRunningRowsOnly() {
+        let rows = [row("running", loaded: 10, of: 28), row("running", loaded: 2, of: 5),
+                    row("paused", loaded: 4, of: 23), row("done", loaded: 30, of: 30)]
+        XCTAssertEqual(BackfillProgress.line(rows), "Loading history: 12 of 33 days")
+    }
+
+    /// R22: every considered row paused for a revoked account.
+    func testAllPausedAsksToReconnect() {
+        let rows = [row("paused", loaded: 4, of: 23), row("paused", loaded: 1, of: 30), row("done", loaded: 30, of: 30)]
+        XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — reconnect the account")
+    }
+
+    /// R22: rows all paused, one of them still waiting on the plan limit.
+    func testAllPausedWithPlanLimitShowsThePlanCopy() {
+        let rows = [row("paused", loaded: 4, of: 23, waiting: "plan_limit"), row("paused", loaded: 1, of: 30)]
+        XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — Claude plan limit")
     }
 
     /// Partial days round to the nearest whole day.

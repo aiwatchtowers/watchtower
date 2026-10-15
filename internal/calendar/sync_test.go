@@ -551,7 +551,7 @@ func TestSync_HistoryWindowSparesReferencedEvent(t *testing.T) {
 // TestCalendarHistoryDaysClamp pins the floor (spec: default 30, floor 1 —
 // the same clamp CalendarViewModel applies on the Swift side): any value < 1
 // floors to 1, never collapsing the window; any value >= 1 is used as-is.
-// An absent config key gets the 14-day default from viper's SetDefault, not
+// An absent config key gets the 30-day default from viper's SetDefault, not
 // from this clamp.
 func TestCalendarHistoryDaysClamp(t *testing.T) {
 	assert.Equal(t, 1, config.CalendarConfig{}.EffectiveHistoryDays())

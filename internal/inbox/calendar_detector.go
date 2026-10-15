@@ -97,7 +97,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 		case e.syncedAt > sinceISO && myRSVP == "needsAction":
 			// Newly arrived event that needs an RSVP response. A "new" row
 			// whose event already ended is history backfill, not an invite:
-			// the calendar.history_days sync window (default 14 d) gives past
+			// the calendar.history_days sync window (default 30 d) gives past
 			// events a fresh synced_at on first sync / re-auth, and without
 			// this guard every dead invite would mint an actionable inbox
 			// item. An unparseable end_time keeps the invite (conservative).
