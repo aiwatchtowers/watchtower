@@ -27,8 +27,8 @@ func writeSyncSwitchConfig(t *testing.T, body string) (string, *config.Config) {
 	return path, cfg
 }
 
-// Regression for #740: a fresh install's config carries `calendar.enabled:
-// false` (the default, or written explicitly by the Desktop's first Save), and
+// Regression for #740: a config carrying `calendar.enabled: false` (the old
+// default, written explicitly by an earlier Desktop Save), and
 // connecting Google through the Add sheet (onboarding's Connect step, Settings)
 // never flipped it — the account row said "calendar connected" while the daemon
 // wired no calendar syncer at all, so the Calendar tab stayed empty forever.
@@ -43,9 +43,21 @@ func TestEnableGoogleSyncSwitches_CalendarGrantTurnsCalendarSyncOn(t *testing.T)
 	assert.False(t, reloaded.Gmail.Enabled, "Gmail was not granted and must stay off")
 }
 
-func TestEnableGoogleSyncSwitches_MissingKeysUseDefaultsThenTurnOn(t *testing.T) {
-	path, cfg := writeSyncSwitchConfig(t, "sync:\n  initial_history_days: 3\n")
+func TestEnableGoogleSyncSwitches_MissingKeysAreOnAndWriteNothing(t *testing.T) {
+	body := "sync:\n  initial_history_days: 3\n"
+	path, cfg := writeSyncSwitchConfig(t, body)
 	require.True(t, cfg.Calendar.Enabled, "precondition: the default is on (#757)")
+	require.True(t, cfg.Gmail.Enabled, "precondition: the default is on (#757)")
+
+	require.NoError(t, enableGoogleSyncSwitches(path, cfg, true, true))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, body, string(got), "switches on by default need no write")
+}
+
+func TestEnableGoogleSyncSwitches_TurningOnKeepsOtherKeys(t *testing.T) {
+	path, cfg := writeSyncSwitchConfig(t, "sync:\n  initial_history_days: 3\ncalendar:\n  enabled: false\ngmail:\n  enabled: false\n")
 
 	require.NoError(t, enableGoogleSyncSwitches(path, cfg, true, true))
 
