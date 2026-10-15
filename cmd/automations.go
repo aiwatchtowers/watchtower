@@ -73,11 +73,14 @@ func init() {
 	outputs := newAutomationsSubcommand("outputs", "List automation outputs", cobra.NoArgs, runAutomationsOutputs)
 	wake := newAutomationsSubcommand("wake", "Wake the daemon's automation scheduler and executor", cobra.NoArgs,
 		runAutomationsWake)
+	auto := newAutomationsSubcommand("auto <id|slug> <tool> on|off",
+		"Turn a tool's auto grant on (owner only, at the current approval hash) or off", cobra.ExactArgs(3),
+		runAutomationsAuto)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
-	for _, c := range []*cobra.Command{list, show, validate, rescan} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
 		c.Flags().Int64Var(&autoFlags.Workbench, "workbench", 0, "workbench id (its .watchtower/automations folder)")
 	}
 	dryRun.Flags().StringVar(&autoFlags.File, "file", "", "a recipe file in a recipe folder (rescanned first)")
@@ -85,12 +88,13 @@ func init() {
 	save.Flags().StringVar(&autoFlags.Path, "path", "", "where to write it (default: the personal folder, the file's name)")
 	save.Flags().StringVar(&autoFlags.ConfirmHash, "confirm-hash", "", "confirm the saved recipe at this approval hash (owner only)")
 	confirm.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash being confirmed (required)")
+	auto.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash the grant binds to (required for on)")
 	run.Flags().Int64Var(&autoFlags.RerunOf, "rerun-of", 0, "the run this one reruns")
 	runs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many runs (default 20)")
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
 	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, report)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake)
+		confirm, save, del, outputs, wake, auto)
 }
 
 // openAutomationsCmd loads the config and opens the database with the
@@ -244,11 +248,13 @@ type automationJSON struct {
 	ApprovalHash      string   `json:"approval_hash"`
 	ConfirmedHash     string   `json:"confirmed_hash"`
 	Widening          []string `json:"widening"`
+	// Grants are the auto grants, inactive ones included (P2, spec §6.4).
+	Grants []automationGrantJSON `json:"grants"`
 }
 
 // newAutomationJSON builds show's payload; widening is Covers(nil, current)
 // for an unconfirmed recipe (see automationJSON's v1 limit).
-func newAutomationJSON(a *db.Automation) (automationJSON, error) {
+func newAutomationJSON(a *db.Automation, grants []db.AutomationToolGrant) (automationJSON, error) {
 	perms, err := decodeAutomationList("permissions_json", a.PermissionsJSON)
 	if err != nil {
 		return automationJSON{}, fmt.Errorf("automation %d: %w", a.ID, err)
@@ -264,7 +270,7 @@ func newAutomationJSON(a *db.Automation) (automationJSON, error) {
 		Concurrency: a.Concurrency, MissedPolicy: a.MissedPolicy, PauseTimeoutHours: a.PauseTimeoutHours,
 		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
-		ConfirmedHash: a.ConfirmedHash, Widening: []string{},
+		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
 	}
 	if a.ParseError != "" {
 		return j, nil
@@ -290,7 +296,11 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	j, err := newAutomationJSON(a)
+	grants, err := database.ListAutomationToolGrants(a.ID)
+	if err != nil {
+		return err
+	}
+	j, err := newAutomationJSON(a, grants)
 	if err != nil {
 		return err
 	}
@@ -316,6 +326,13 @@ func printAutomation(w io.Writer, j automationJSON) {
 	fmt.Fprintf(w, "  approval:    %s (confirmed: %s)\n", j.ApprovalHash, orNone(j.ConfirmedHash))
 	if len(j.Widening) > 0 {
 		fmt.Fprintf(w, "  not confirmed yet: %v\n", j.Widening)
+	}
+	for _, g := range j.Grants {
+		state := "auto"
+		if !g.Active {
+			state = "auto paused — the recipe changed"
+		}
+		fmt.Fprintf(w, "  grant:       %s (%s)\n", g.Tool, state)
 	}
 }
 

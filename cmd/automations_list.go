@@ -29,6 +29,10 @@ type automationListItem struct {
 	NextRunAt         *time.Time `json:"next_run_at"`
 	LastStatus        string     `json:"last_status"`
 	Tokens7d          int64      `json:"tokens_7d"`
+	// Grants are the auto grants (P2); AutoPaused is true when any of them
+	// is inactive because the recipe changed since it was granted.
+	Grants     []automationGrantJSON `json:"grants"`
+	AutoPaused bool                  `json:"auto_paused"`
 }
 
 func runAutomationsList(cmd *cobra.Command, _ []string) error {
@@ -57,11 +61,16 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 	for i := range rows {
 		a := &rows[i]
 		s := stats[a.ID]
+		grants, err := database.ListAutomationToolGrants(a.ID)
+		if err != nil {
+			return err
+		}
+		gj := newAutomationGrantsJSON(grants)
 		items = append(items, automationListItem{
 			ID: a.ID, Slug: a.Slug, Scope: a.Scope, ProjectID: a.ProjectID, Name: a.Name,
 			TriggerKind: a.TriggerKind, TriggerSpec: a.TriggerSpec, Enabled: a.Enabled, Runnable: a.Runnable(),
 			NeedsConfirmation: automationNeedsConfirmation(a), ParseError: a.ParseError, NextRunAt: a.NextRunAt,
-			LastStatus: s.LastStatus, Tokens7d: s.TokensSince,
+			LastStatus: s.LastStatus, Tokens7d: s.TokensSince, Grants: gj, AutoPaused: anyGrantPaused(gj),
 		})
 	}
 	w := cmd.OutOrStdout()
@@ -95,8 +104,12 @@ func printAutomationList(w io.Writer, items []automationListItem) {
 		if it.NextRunAt != nil {
 			next = it.NextRunAt.Local().Format(time.DateTime)
 		}
-		fmt.Fprintf(w, "#%d %-24s %-9s %-24s next %s, last %s, %d tokens (7 days)\n",
-			it.ID, it.Slug, it.TriggerKind, automationListState(it), next, orNone(it.LastStatus), it.Tokens7d)
+		paused := ""
+		if it.AutoPaused {
+			paused = ", auto paused"
+		}
+		fmt.Fprintf(w, "#%d %-24s %-9s %-24s next %s, last %s, %d tokens (7 days)%s\n",
+			it.ID, it.Slug, it.TriggerKind, automationListState(it), next, orNone(it.LastStatus), it.Tokens7d, paused)
 	}
 }
 
