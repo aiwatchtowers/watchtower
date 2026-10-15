@@ -99,9 +99,20 @@ func TestProj07_StopHookBlocksOnceWithTheDrift(t *testing.T) {
 	assert.Equal(t, "block", got.Decision)
 	assert.Contains(t, got.Reason, "#"+strconv.FormatInt(tid, 10))
 	assert.Contains(t, got.Reason, "branch merged is merged into main")
+	assert.Contains(t, got.Reason, `the watchtower-workbench skill's "Keeping the board in step with git"`)
+	assert.NotContains(t, got.Reason, "watchtower-project")
 
 	// Claude Code is already continuing because of this hook: never block again.
 	assert.Empty(t, stopHook(t, pid, `{"hook_event_name":"Stop","stop_hook_active":true}`))
+
+	// The installed hook's argv, through cobra: one decision JSON naming the skill.
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`),
+		"check", "--workbench", strconv.FormatInt(pid, 10), "--stop-hook")
+	require.NoError(t, err)
+	var viaCobra stopHookOutput
+	require.NoError(t, json.Unmarshal([]byte(stdout), &viaCobra), "one decision JSON object: %q", stdout)
+	assert.Equal(t, "block", viaCobra.Decision)
+	assert.Contains(t, viaCobra.Reason, "the watchtower-workbench skill's")
 
 	// Fixed board: silent.
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "done"))

@@ -185,7 +185,8 @@ func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	p := briefWorkbench()
 	p.Description = ""
 	out := renderWorkbenchBrief(nil, p, nil, workbenchcheck.Report{}, nil, nil, time.Now())
-	assert.Contains(t, out, "Setup pending")
+	assert.Contains(t, out, "Setup pending: run the watchtower-workbench skill's setup (workbench_info, update_workbench, first board).")
+	assert.NotContains(t, out, "watchtower-project")
 	assert.Contains(t, out, "Open targets: none.")
 	assert.Contains(t, out, "Board language: follow the session language")
 }
