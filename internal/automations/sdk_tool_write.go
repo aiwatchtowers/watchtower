@@ -253,9 +253,13 @@ func defaultReason(env *Env) string {
 }
 
 // registryError maps a registry failure for the script: a registry
-// ValidationError is a ValidationError; an unknown or non-writable tool and
+// ValidationError is a ValidationError; a write of a workbench automation
+// (tools.ErrWorkbenchAutomationWrite, until P5) is NotAvailable; an unknown or non-writable tool and
 // every other failure a ToolError.
 func registryError(t *tools.Tool, err error) error {
+	if errors.Is(err, tools.ErrWorkbenchAutomationWrite) {
+		return notAvailable(fmt.Sprintf("%s: %v", t.Name, err))
+	}
 	var ve *tools.ValidationError
 	if errors.As(err, &ve) {
 		return &SDKError{Name: ErrNameValidation, Message: ve.Msg}
