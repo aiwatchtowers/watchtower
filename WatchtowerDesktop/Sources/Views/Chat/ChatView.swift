@@ -60,8 +60,10 @@ struct ChatSplitView: View {
                     Divider()
                     if chatVM.isInspectorExpanded {
                         // The open panel in place of the conversation (#786);
-                        // the thread view that feeds it the live turn is gone,
-                        // so the feed comes along.
+                        // the thread view that feeds it the live turn and shows
+                        // the errors is gone, so the feed and the errors come along.
+                        ChatErrorStrip(chatVM: chatVM)
+                            .padding(10)
                         ChatInspectorContent(chatVM: chatVM)
                             .background {
                                 if let live = chatVM.liveTurn {
