@@ -223,11 +223,13 @@ struct DayPlanView: View {
                 Image(systemName: "calendar.day.timeline.left")
                     .font(.largeTitle)
                     .foregroundStyle(.secondary)
-                Text(todaysPlanLine(hour: context.dayPlanHour))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                // No owner, no plan made (OWNER-02): no time promised then.
                 if showsNoOwnerState(owner: owner, hasPlan: false) {
                     NoOwnerEmptyState(openConnections: openConnections)
+                } else {
+                    Text(todaysPlanLine(hour: context.dayPlanHour))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

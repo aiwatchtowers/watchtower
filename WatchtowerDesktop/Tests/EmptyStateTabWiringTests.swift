@@ -71,6 +71,11 @@ final class EmptyStateTabWiringTests: XCTestCase {
         let later = DayPlanView.emptyState(owner: Self.known, context: established) {}
         XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
 
+        // No owner: the daemon makes no plan, so no time is promised.
+        let noOwner = DayPlanView.emptyState(owner: .unknown, context: established) {}
+        XCTAssertThrowsError(try noOwner.inspect().find(text: "Today's plan at or after 10:00"))
+        XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
+
         // A fresh install keeps the first-run copy.
         let fresh = DayPlanView.emptyState(owner: Self.known, context: context) {}
         XCTAssertNoThrow(try fresh.inspect().find(text: try copy(.dayPlan).title))
