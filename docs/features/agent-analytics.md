@@ -49,8 +49,8 @@ Mirrored into `schema.sql`, `TestAllTablesExist`, the golden snapshot and the ge
 
 - `watchtower agents enable --workbench N` sets the column and scans synchronously (`--json`: a line per file batch, then a summary).
 - `watchtower agents disable --workbench N` clears it; nothing is deleted.
-- `watchtower agents scan --workbench N [--json]` — the incremental scan, then reprice.
-- `watchtower agents stats --workbench N --json` — totals and per-session figures with pinned keys (`sessions`, `tokens`, `cost_usd`, `cost_estimated`, `reported_cost_usd`, `tools`, `outcomes`, `skills`, `unknown_records`).
+- `watchtower agents scan --workbench N [--json]` — the incremental scan, then reprice. `--json` reports `unknown_records` (the `agentlog.Result` counter of unknown record types), so format drift is visible.
+- `watchtower agents stats --workbench N --json` — totals and per-session figures with pinned keys (exactly `workbench_id`, `enabled`, `sessions`, `tokens`, `cost_usd`, `cost_estimated_calls`, `reported_cost_usd`, `owner_turns`, `tools`, `outcomes`, `skills`, `per_session`; pinned by `TestAgentsStatsJSON_PinnedKeys`).
 - Daemon phase `phaseAgentAnalytics`: inert unless some workbench has the column set (the `phaseExternalSync` precedent); each cycle runs the incremental scan for every enabled workbench under a 30 s budget and resumes where it stopped. A budget stop never marks unread files missing.
 
 ## v1 limits
