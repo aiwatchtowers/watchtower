@@ -33,6 +33,14 @@ final class OwnerQueriesTests: XCTestCase {
         var ownerDisplayName = ""
     }
 
+    private struct LinearSeed {
+        var enabled = true
+        var status = "ok"
+        var ownerUserID = ""
+        var ownerEmail = ""
+        var ownerDisplayName = ""
+    }
+
     private struct UserMapSeed {
         var jiraAccountID: String
         var slackUserID: String
@@ -46,6 +54,7 @@ final class OwnerQueriesTests: XCTestCase {
         var google: [String] = []        // google_accounts emails, in id order
         var jira: [JiraSeed] = []
         var jiraUserMap: [UserMapSeed] = []
+        var linear: [LinearSeed] = []    // linear_accounts, in id order
     }
 
     private static func seed(_ db: Database, _ s: OwnerSeed) throws {
@@ -71,6 +80,12 @@ final class OwnerQueriesTests: XCTestCase {
                 WHERE id = ?
                 """, arguments: [j.ownerAccountID, j.ownerEmail, j.ownerDisplayName, id])
         }
+        for l in s.linear {
+            try db.execute(sql: """
+                INSERT INTO linear_accounts (enabled, status, owner_user_id, owner_email, owner_display_name)
+                VALUES (?, ?, ?, ?, ?)
+                """, arguments: [l.enabled, l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
+        }
         for m in s.jiraUserMap {
             try db.execute(
                 sql: "INSERT INTO jira_user_map (jira_account_id, slack_user_id) VALUES (?, ?)",
@@ -85,21 +100,52 @@ final class OwnerQueriesTests: XCTestCase {
         slackUserID: String = "",
         email: String = "",
         jiraAccountID: String = "",
-        displayName: String = ""
+        displayName: String = "",
+        linearUserIDs: [String] = []
     ) -> Owner {
         Owner(id: id, source: source, slackUserID: slackUserID, email: email,
-              jiraAccountID: jiraAccountID, displayName: displayName)
+              jiraAccountID: jiraAccountID, displayName: displayName,
+              linearUserIDs: linearUserIDs)
     }
 
     // MARK: - Ladder
+
+    /// The Linear rows of the ladder table (Go: the `linear` cases of
+    /// `TestOwner01_ResolveOwnerLadder`).
+    private static let linearLadderCases: [(name: String, seed: OwnerSeed, want: Owner)] = [
+            ("linear only",
+             OwnerSeed(linear: [LinearSeed(ownerUserID: "user-1", ownerEmail: "owner@example.com", ownerDisplayName: "Owner")]),
+             OwnerQueriesTests.owner(id: "linear:user-1", source: .linear, email: "owner@example.com", displayName: "Owner",
+                                     linearUserIDs: ["user-1"])),
+            ("jira + linear: jira wins ID and enrichment, linear ids still filled",
+             OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: true, ownerAccountID: "acc-9",
+                                       ownerEmail: "j@x.com", ownerDisplayName: "J Doe")],
+                       linear: [LinearSeed(ownerUserID: "user-1", ownerEmail: "owner@example.com", ownerDisplayName: "Owner")]),
+             OwnerQueriesTests.owner(id: "jira:acc-9", source: .jira, email: "j@x.com", jiraAccountID: "acc-9", displayName: "J Doe",
+                                     linearUserIDs: ["user-1"])),
+            ("removed linear is skipped",
+             OwnerSeed(linear: [LinearSeed(status: "removed", ownerUserID: "user-1")]),
+             Owner.unknown),
+            ("disabled linear is skipped",
+             OwnerSeed(linear: [LinearSeed(enabled: false, ownerUserID: "user-1")]),
+             Owner.unknown),
+            ("linear account without an owner id is skipped",
+             OwnerSeed(linear: [LinearSeed(), LinearSeed(ownerUserID: "user-2")]),
+             OwnerQueriesTests.owner(id: "linear:user-2", source: .linear, linearUserIDs: ["user-2"])),
+            ("two linear workspaces: first is the rung, both ids listed by account id",
+             OwnerSeed(linear: [LinearSeed(ownerUserID: "user-1", ownerEmail: "owner@example.com"),
+                                LinearSeed(ownerUserID: "user-2")]),
+             OwnerQueriesTests.owner(id: "linear:user-1", source: .linear, email: "owner@example.com", displayName: "owner",
+                                     linearUserIDs: ["user-1", "user-2"]))
+    ]
 
     func testOwner01ResolveOwnerLadder() throws {
         let cases: [(name: String, seed: OwnerSeed, want: Owner)] = [
             ("none", OwnerSeed(), Owner.unknown),
             ("slack only",
              OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
-                       slackUser: UserSeed(id: "1:U123", name: "vadym", displayName: "Vadym", email: "v@slack.io")),
-             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", email: "v@slack.io", displayName: "Vadym")),
+                       slackUser: UserSeed(id: "1:U123", name: "owner-a", displayName: "Owner A", email: "owner-a@example.com")),
+             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", email: "owner-a@example.com", displayName: "Owner A")),
             ("google only, mixed-case email",
              OwnerSeed(google: ["Me@X.com"]),
              Self.owner(id: "google:me@x.com", source: .google, email: "Me@X.com", displayName: "Me")),
@@ -132,22 +178,22 @@ final class OwnerQueriesTests: XCTestCase {
              Owner.unknown),
             ("slack + jira_user_map bridge fills JiraAccountID",
              OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
-                       slackUser: UserSeed(id: "1:U123", name: "vadym", displayName: "Vadym"),
+                       slackUser: UserSeed(id: "1:U123", name: "owner-a", displayName: "Owner A"),
                        jiraUserMap: [UserMapSeed(jiraAccountID: "acc-map", slackUserID: "1:U123")]),
-             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", jiraAccountID: "acc-map", displayName: "Vadym")),
+             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", jiraAccountID: "acc-map", displayName: "Owner A")),
             ("google account without an email is skipped",
              OwnerSeed(google: ["", "b@x.com"]),
              Self.owner(id: "google:b@x.com", source: .google, email: "b@x.com", displayName: "b")),
             ("slack user without display name falls back to real name",
              OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
-                       slackUser: UserSeed(id: "1:U123", name: "vadym", realName: "Vadym Real")),
-             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", displayName: "Vadym Real")),
+                       slackUser: UserSeed(id: "1:U123", name: "owner-a", realName: "Owner A Real")),
+             Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", displayName: "Owner A Real")),
             ("bare-form jira_user_map row bridges a namespaced owner",
              OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
                        jiraUserMap: [UserMapSeed(jiraAccountID: "acc-bare", slackUserID: "U123")]),
              Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", jiraAccountID: "acc-bare"))
-        ]
-        XCTAssertEqual(cases.count, 14, "the Go ladder table has fourteen cases; copy every one")
+        ] + Self.linearLadderCases
+        XCTAssertEqual(cases.count, 20, "the Go ladder table has twenty cases; copy every one")
 
         for c in cases {
             let db = try TestDatabase.create()
@@ -159,6 +205,7 @@ final class OwnerQueriesTests: XCTestCase {
             XCTAssertEqual(got.email, c.want.email, "\(c.name): email")
             XCTAssertEqual(got.jiraAccountID, c.want.jiraAccountID, "\(c.name): jiraAccountID")
             XCTAssertEqual(got.displayName, c.want.displayName, "\(c.name): displayName")
+            XCTAssertEqual(got.linearUserIDs, c.want.linearUserIDs, "\(c.name): linearUserIDs")
             XCTAssertEqual(got.isKnown, !c.want.id.isEmpty, "\(c.name): isKnown")
         }
     }
@@ -170,15 +217,17 @@ final class OwnerQueriesTests: XCTestCase {
         try db.write {
             try Self.seed($0, OwnerSeed(
                 slack: [SlackSeed(teamID: "T1", currentUserID: "1:U123")],
-                slackUser: UserSeed(id: "1:U123", name: "vadym", displayName: "Vadym", email: "v@slack.io"),
+                slackUser: UserSeed(id: "1:U123", name: "owner-a", displayName: "Owner A", email: "owner-a@example.com"),
                 google: ["me@x.com"],
                 jira: [JiraSeed(cloudID: "c1", enabled: true, ownerAccountID: "acc-9",
-                                ownerEmail: "j@x.com", ownerDisplayName: "J Doe")]
+                                ownerEmail: "j@x.com", ownerDisplayName: "J Doe")],
+                linear: [LinearSeed(ownerUserID: "user-1", ownerEmail: "owner@example.com", ownerDisplayName: "Owner")]
             ))
         }
         let got = try db.read { try OwnerQueries.resolve($0) }
         XCTAssertEqual(got, Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123",
-                                       email: "v@slack.io", jiraAccountID: "acc-9", displayName: "Vadym"))
+                                       email: "owner-a@example.com", jiraAccountID: "acc-9", displayName: "Owner A",
+                                       linearUserIDs: ["user-1"]))
     }
 
     // MARK: - Profile singleton

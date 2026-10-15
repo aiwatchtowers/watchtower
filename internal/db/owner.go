@@ -9,7 +9,7 @@ import (
 
 // ErrNoOwner is returned by owner-scoped writers when no connected account
 // yields an owner identity (ResolveOwner returned an unknown Owner).
-var ErrNoOwner = errors.New("no owner identity: connect Slack, Google or Jira first")
+var ErrNoOwner = errors.New("no owner identity: connect Slack, Google, Jira or Linear first")
 
 // OwnerSource names the ResolveOwner rung that produced Owner.ID.
 type OwnerSource string
@@ -19,12 +19,14 @@ const (
 	OwnerSourceSlack  OwnerSource = "slack"
 	OwnerSourceGoogle OwnerSource = "google"
 	OwnerSourceJira   OwnerSource = "jira"
+	OwnerSourceLinear OwnerSource = "linear"
 )
 
 // Owner is the one person this install belongs to. ID is the stable key
 // owner-scoped rows (user_profile, day plans, …) are stored under; its shape
 // depends on the rung that produced it: the namespaced Slack user id
-// ("1:U123"), "google:<lower-cased email>", or "jira:<atlassian account id>".
+// ("1:U123"), "google:<lower-cased email>", "jira:<atlassian account id>", or
+// "linear:<linear user id>".
 // The other fields are enriched from every connected source.
 type Owner struct {
 	ID            string
@@ -33,6 +35,9 @@ type Owner struct {
 	Email         string
 	JiraAccountID string
 	DisplayName   string
+	// LinearUserIDs is the owner's Linear user id on every enabled,
+	// non-removed account (one per workspace), by account id; nil when none.
+	LinearUserIDs []string
 }
 
 // Known reports whether any rung produced an owner identity.
@@ -46,8 +51,16 @@ type ownerJira struct {
 	DisplayName string
 }
 
+// ownerLinear is the Linear rung's row: the connecting person's own Linear
+// identity on the first enabled, non-removed account that recorded one.
+type ownerLinear struct {
+	UserID      string
+	Email       string
+	DisplayName string
+}
+
 // ResolveOwner returns the one owner identity of this install: Slack account
-// #1 → Google account #1 → Jira account #1 (spec 2026-09-25). The Swift twin
+// #1 → Google account #1 → Jira account #1 → Linear account #1 (spec 2026-09-25). The Swift twin
 // is WatchtowerCore/Database/Queries/OwnerQueries.swift — change both
 // together. Every field is enriched from every source, independent of which
 // rung produced ID. No connected identity → the zero Owner and a nil error.
@@ -65,6 +78,11 @@ func (db *DB) ResolveOwner() (Owner, error) {
 		return Owner{}, err
 	}
 
+	linear, err := db.ownerLinearAccount()
+	if err != nil {
+		return Owner{}, err
+	}
+
 	o := Owner{SlackUserID: slackID}
 	switch {
 	case slackID != "":
@@ -73,10 +91,12 @@ func (db *DB) ResolveOwner() (Owner, error) {
 		o.ID, o.Source = "google:"+strings.ToLower(google), OwnerSourceGoogle
 	case jira.AccountID != "":
 		o.ID, o.Source = "jira:"+jira.AccountID, OwnerSourceJira
+	case linear.UserID != "":
+		o.ID, o.Source = "linear:"+linear.UserID, OwnerSourceLinear
 	default:
 		return Owner{}, nil
 	}
-	return db.enrichOwner(o, google, jira)
+	return db.enrichOwner(o, google, jira, linear)
 }
 
 // RequireOwner is ResolveOwner for callers that cannot act without an owner
@@ -136,9 +156,48 @@ func (db *DB) ownerJiraAccount() (ownerJira, error) {
 	return j, nil
 }
 
-// enrichOwner fills Email, JiraAccountID and DisplayName from every source,
-// whichever rung produced o.ID.
-func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira) (Owner, error) {
+// ownerLinearAccount is the Linear rung: the first enabled, non-removed Linear
+// account that recorded its connecting person's identity (viewer at connect).
+func (db *DB) ownerLinearAccount() (ownerLinear, error) {
+	var l ownerLinear
+	err := db.QueryRow(`SELECT owner_user_id, owner_email, owner_display_name FROM linear_accounts
+		WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id LIMIT 1`).
+		Scan(&l.UserID, &l.Email, &l.DisplayName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ownerLinear{}, nil
+	}
+	if err != nil {
+		return ownerLinear{}, fmt.Errorf("resolving owner linear account: %w", err)
+	}
+	return l, nil
+}
+
+// ownerLinearUserIDs lists the owner's Linear user id on every enabled,
+// non-removed account (one per workspace), by account id. nil when none.
+func (db *DB) ownerLinearUserIDs() ([]string, error) {
+	rows, err := db.Query(`SELECT owner_user_id FROM linear_accounts
+		WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing owner linear user ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning owner linear user id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing owner linear user ids: %w", err)
+	}
+	return ids, nil
+}
+
+// enrichOwner fills Email, JiraAccountID, DisplayName and LinearUserIDs from
+// every source, whichever rung produced o.ID.
+func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira, linear ownerLinear) (Owner, error) {
 	var slackUser *User
 	if o.SlackUserID != "" {
 		u, err := db.GetUserByID(o.SlackUserID)
@@ -147,31 +206,39 @@ func (db *DB) enrichOwner(o Owner, googleEmail string, jira ownerJira) (Owner, e
 		}
 		slackUser = u
 	}
-	o.Email = ownerEmail(slackUser, googleEmail, jira)
+	o.Email = ownerEmail(slackUser, googleEmail, jira, linear)
 	jiraID, err := db.ownerJiraID(o.SlackUserID, jira)
 	if err != nil {
 		return Owner{}, err
 	}
 	o.JiraAccountID = jiraID
-	o.DisplayName = ownerDisplayName(slackUser, jira, o.Email)
+	o.DisplayName = ownerDisplayName(slackUser, jira, linear, o.Email)
+	linearIDs, err := db.ownerLinearUserIDs()
+	if err != nil {
+		return Owner{}, err
+	}
+	o.LinearUserIDs = linearIDs
 	return o, nil
 }
 
 // ownerEmail: the Slack user's email, else the Google email, else the Jira
-// owner email.
-func ownerEmail(slackUser *User, googleEmail string, jira ownerJira) string {
+// owner email, else the Linear owner email.
+func ownerEmail(slackUser *User, googleEmail string, jira ownerJira, linear ownerLinear) string {
 	if slackUser != nil && slackUser.Email != "" {
 		return slackUser.Email
 	}
 	if googleEmail != "" {
 		return googleEmail
 	}
-	return jira.Email
+	if jira.Email != "" {
+		return jira.Email
+	}
+	return linear.Email
 }
 
 // ownerDisplayName: the Slack user's display name (else real name), else the
-// Jira owner display name, else the email's local part with its case kept.
-func ownerDisplayName(slackUser *User, jira ownerJira, email string) string {
+// Jira owner display name, else the Linear one, else the email's local part with its case kept.
+func ownerDisplayName(slackUser *User, jira ownerJira, linear ownerLinear, email string) string {
 	if slackUser != nil {
 		if slackUser.DisplayName != "" {
 			return slackUser.DisplayName
@@ -182,6 +249,9 @@ func ownerDisplayName(slackUser *User, jira ownerJira, email string) string {
 	}
 	if jira.DisplayName != "" {
 		return jira.DisplayName
+	}
+	if linear.DisplayName != "" {
+		return linear.DisplayName
 	}
 	local, _, _ := strings.Cut(email, "@")
 	return local
