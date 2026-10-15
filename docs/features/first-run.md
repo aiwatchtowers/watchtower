@@ -63,8 +63,11 @@ until the next morning's hour.
   is app-wide on `AppState` (`WatchtowerDesktop/Sources/App/AppState.swift:53`), so a reading survives tab
   switches. It re-evaluates on a GRDB `ValueObservation` of the content tables
   and `pipeline_runs`, on any change of the observable inputs it reads
-  (`DaemonManager` status poll, `FeatureVisibilityStore`) and on a 60 s tick. A
-  failed DB observation keeps the last reading; before the first DB read the map
+  (`DaemonManager` status poll, `FeatureVisibilityStore`) and on a 30 s tick
+  that re-reads the DB. The observation sees only this process' writes; the
+  daemon's (another process) reach readiness through the tick's re-read, so a
+  daemon write shows within ~30 s. A failed observation or re-read keeps the
+  last reading, and the next tick tries again; before the first DB read the map
   is empty and the empty states show no readiness line and no state-gated
   button (`FeatureEmptyState.swift:106`).
 

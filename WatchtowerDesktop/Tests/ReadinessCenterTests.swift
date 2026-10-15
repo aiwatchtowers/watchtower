@@ -77,6 +77,23 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
+    /// The daemon writes from another process, which the ValueObservation
+    /// never sees: a second pool on the same file stands in for it, and the
+    /// tick's re-read must pick its write up.
+    func testTickPicksUpAnotherConnectionsWrite() async throws {
+        let pool = try makePool()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment(), tickInterval: .milliseconds(100))
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .ready)
+
+        let daemonPool = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try insertDigest(daemonPool)
+        try daemonPool.close()
+        await waitUntil(center) { $0[.digests] == .ready }
+    }
+
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }

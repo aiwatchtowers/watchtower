@@ -23,9 +23,11 @@ protocol ReadinessEnvironment: AnyObject {
 
 /// Live feature readiness, app-wide so a reading survives tab switches. It
 /// re-evaluates on a GRDB observation of the content tables and
-/// `pipeline_runs`, on any change of the observable inputs the environment
-/// reads (the daemon's status poll, the feature/source visibility store), and
-/// on a 60 s tick so scheduled times roll over.
+/// `pipeline_runs` (this process' writes), on any change of the observable
+/// inputs the environment reads (the daemon's status poll, the feature/source
+/// visibility store), and on a 30 s tick that re-reads the DB — the daemon
+/// writes those tables from another process, which a ValueObservation never
+/// sees — and rolls scheduled times over.
 @MainActor
 @Observable
 final class ReadinessCenter {
@@ -39,7 +41,6 @@ final class ReadinessCenter {
     /// The daemon's throttle stamps read here, a subset of
     /// `DaemonStampFiles.names`.
     static let stampFiles = ["last_people.txt", "last_briefing.txt", "last_ideas.txt", "last_streams.txt"]
-    static let tickInterval: Duration = .seconds(60)
 
     struct DBSnapshot: Equatable, Sendable {
         var contentPresent: Set<ReadinessFeature>
@@ -47,6 +48,7 @@ final class ReadinessCenter {
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
+    @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var snapshot: DBSnapshot?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
@@ -56,8 +58,9 @@ final class ReadinessCenter {
     /// another one, so registrations don't pile up.
     @ObservationIgnored private var trackingToken = 0
 
-    init(environment: any ReadinessEnvironment) {
+    init(environment: any ReadinessEnvironment, tickInterval: Duration = .seconds(30)) {
         self.environment = environment
+        self.tickInterval = tickInterval
     }
 
     /// Observes the content tables that exist in this DB (a table missing
@@ -74,11 +77,8 @@ final class ReadinessCenter {
                 let regions: [any DatabaseRegionConvertible] = ReadinessQueries.observedTables
                     .filter(tables.contains)
                     .map { Table($0) }
-                let observation = ValueObservation.tracking(regions: regions) { db in
-                    DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
-                               latestRuns: try ReadinessQueries.latestRuns(db))
-                }
-                .removeDuplicates()
+                let observation = ValueObservation.tracking(regions: regions, fetch: Self.readSnapshot)
+                    .removeDuplicates()
                 for try await value in observation.values(in: pool) {
                     guard let self, self.generation == current else { return }
                     self.snapshot = value
@@ -86,17 +86,37 @@ final class ReadinessCenter {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                // The last reading stays; the tick keeps its times current.
+                // The last reading stays; the tick re-reads the DB.
                 NSLog("ReadinessCenter: observing readiness: %@", error.localizedDescription)
             }
         }
+        let interval = tickInterval
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.tickInterval)
+                try? await Task.sleep(for: interval)
                 guard !Task.isCancelled, let self, self.generation == current else { return }
-                self.refresh()
+                await self.reread(pool, generation: current)
             }
         }
+    }
+
+    private nonisolated static func readSnapshot(_ db: Database) throws -> DBSnapshot {
+        DBSnapshot(contentPresent: try ReadinessQueries.contentPresent(db),
+                   latestRuns: try ReadinessQueries.latestRuns(db))
+    }
+
+    /// The tick's one-shot read: picks up the daemon's writes, and a table a
+    /// migration created after `start`. A failed read keeps the last snapshot.
+    private func reread(_ pool: DatabasePool, generation current: Int) async {
+        do {
+            let value = try await pool.read(Self.readSnapshot)
+            guard generation == current else { return }
+            if value != snapshot { snapshot = value }
+        } catch {
+            NSLog("ReadinessCenter: re-reading readiness: %@", error.localizedDescription)
+        }
+        guard generation == current else { return }
+        refresh()
     }
 
     /// Stops the observation and the tick; the last reading stays.
