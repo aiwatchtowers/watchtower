@@ -193,7 +193,7 @@ UI text is English only. "Readiness" = the line from §1.1.
 | Catch Up | A recap of what you missed while away, built from Slack, mail, Jira and the calendar | digests + inbox | "Build a recap" (existing) |
 | Briefings | A morning briefing: meetings, what needs you, what changed. **Generated once a day at or after HH:00** (replaces the wrong "after sync completes") | briefing | Change the hour (Settings → Briefing) |
 | Day Plan | Your day in time blocks, from the calendar, targets and the briefing. Once a day at or after HH:00 | day plan | Change the hour |
-| Inbox | Messages and mentions waiting for your reply, plus reaction shortcuts | inbox | — (no button; the existing reaction cheat sheet is shown inline, as built) |
+| Inbox | Proposals and due reminders that need you, plus reaction shortcuts | inbox | — (no button; the existing reaction cheat sheet is shown inline, as built) |
 | Ideas | Ideas and decisions picked up from conversations, every ~6 h | ideas | — |
 | Calendar | Today's meetings with prep | calendar | Connect a calendar |
 | Targets | Your tasks — from you, from Slack reactions, from meetings | — (no pipeline) | "New target", "React with an emoji in Slack" |

@@ -79,7 +79,7 @@ package enum EmptyStateCopyTable {
             feature: .dayPlan, primaryAction: .openSettings(tab: "features")),
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
-            landsHere: "Messages and mentions waiting for your reply, plus reaction shortcuts.",
+            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
             feature: .inbox, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",

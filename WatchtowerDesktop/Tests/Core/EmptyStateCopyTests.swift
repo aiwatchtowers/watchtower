@@ -22,6 +22,12 @@ final class EmptyStateCopyTests: XCTestCase {
             text, "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after 07:00.")
     }
 
+    /// The Inbox holds proposals and due reminders, not replies (owner, ask #299).
+    func testInboxCopySaysProposalsAndReminders() throws {
+        XCTAssertEqual(
+            try XCTUnwrap(copy("inbox")).landsHere, "Proposals and due reminders that need you, plus reaction shortcuts.")
+    }
+
     func testDayPlanCopyNamesConfiguredHour() throws {
         let text = try XCTUnwrap(copy("dayPlan", briefingHour: 7, dayPlanHour: 9)).landsHere
         XCTAssertTrue(text.contains("09:00"), text)
