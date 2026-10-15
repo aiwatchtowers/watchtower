@@ -64,6 +64,13 @@ struct TerminalSessionRow: View {
             if session.projectID != nil, let cleanUp = actions.cleanUp {
                 Button("Clean Up…") { cleanUp(session) }
             }
+            // A placed session's folder is its worktree (spec 2026-10-14
+            // §7, D9); shown only while the directory exists.
+            if session.worktreeBranch != nil, FileManager.default.fileExists(atPath: session.folderPath) {
+                Button("Show Worktree in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
+                }
+            }
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }

@@ -11,8 +11,6 @@ enum WorkbenchesPanelItem: Hashable {
 /// A folder the owner picked, held while the TCC warning is on screen.
 private enum PendingFolder {
     case project(URL)
-    /// New Project…: not on disk yet (or empty) until the warning is passed.
-    case newWorkbench(URL)
     case terminal(TerminalSession.Kind, URL)
 }
 
@@ -89,7 +87,7 @@ struct WorkbenchesView: View {
             "Folder in \(sensitiveLocation ?? "")",
             isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
         ) {
-            Button(isTerminalPending ? "Open anyway" : "Create anyway") { startPending() }
+            Button("Open anyway") { startPending() }
             Button("Choose another folder", role: .cancel) { pendingFolder = nil }
         } message: {
             Text(
@@ -98,11 +96,6 @@ struct WorkbenchesView: View {
                     + "Desktop, Downloads and cloud storage avoids that prompt."
             )
         }
-    }
-
-    private var isTerminalPending: Bool {
-        if case .terminal? = pendingFolder { return true }
-        return false
     }
 
     @ViewBuilder
@@ -118,7 +111,7 @@ struct WorkbenchesView: View {
     }
 
     private var switcherActions: WorkbenchSwitcherActions {
-        WorkbenchSwitcherActions(newWorkbench: chooseNewWorkbenchFolder, showAll: vm.showAllWorkbenches)
+        WorkbenchSwitcherActions(openFolder: chooseFolder, showAll: vm.showAllWorkbenches)
     }
 
     private var sessionActions: SessionRowActions {
@@ -158,6 +151,7 @@ struct WorkbenchesView: View {
             // The Undo of a session delete (board #480) in its own bar, as
             // under the sessions list at level 2.
             SessionDeleteToast(vm: vm)
+            WorkbenchDeleteNotice(vm: vm)
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
@@ -170,18 +164,13 @@ struct WorkbenchesView: View {
             Text("Workbenches").font(.headline)
             Spacer(minLength: 4)
             if vm.isCreating { ProgressView().controlSize(.small) }
-            Menu {
-                Button("New Workbench…") { chooseNewWorkbenchFolder() }
-                Button("Add Existing Folder…") { chooseExistingFolder() }
-            } label: {
-                Image(systemName: "plus")
+            Button(action: chooseFolder) {
+                Image(systemName: "folder.badge.plus")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(.borderless)
             .disabled(vm.isCreating)
-            .help("New workbench…")
-            .accessibilityLabel("New workbench…")
+            .help("Open Folder…")
+            .accessibilityLabel("Open Folder…")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -232,43 +221,31 @@ struct WorkbenchesView: View {
         }
     }
 
-    /// New Project… → name a folder that is created for it. Only checked
-    /// here; it is created once the TCC warning (if any) is passed, so
-    /// "Choose another folder" leaves no empty folder behind.
-    private func chooseNewWorkbenchFolder() {
-        guard let url = runNewWorkbenchPanel() else { return }
-        do {
-            _ = try NewWorkbenchFolder.check(url)
-        } catch {
-            showCreateOutcome(error: error)
-            return
+    /// Open Folder… (board #778), the one way to a workbench: any folder —
+    /// the panel's New Folder makes a new one — becomes the workbench, or
+    /// opens the one already bound to it. `WorkbenchesViewModel.openFolder`
+    /// decides on a fresh list; only a new workbench in a TCC-sensitive
+    /// location asks first (a bound folder opens without the warning, owner
+    /// decision #778).
+    private func chooseFolder() {
+        guard let url = runFolderPanel(title: "Open Folder", prompt: "Open", canCreate: true) else { return }
+        Task {
+            if case let .confirmLocation(location) = await vm.openFolder(url) {
+                pendingFolder = .project(url)
+                sensitiveLocation = location
+            }
         }
-        confirmLocation(of: .newWorkbench(url), path: url.path)
-    }
-
-    /// New Workbench… may come from the switcher (level 2, or the panel
-    /// hidden), where the list that carries the create's progress and
-    /// errors is not on screen: it goes there once the create fails or
-    /// starts, not on "Choose another folder".
-    private func showCreateOutcome(error: Error?) {
-        vm.showAllWorkbenches()
-        if let error { vm.errorMessage = error.localizedDescription }
-    }
-
-    /// Add Existing Folder… → a folder already on disk becomes the project.
-    private func chooseExistingFolder() {
-        guard let url = runFolderPanel(prompt: "Add Folder", canCreate: true) else { return }
-        confirmLocation(of: .project(url), path: url.path)
     }
 
     /// New terminal → "… in Folder…": the same TCC warning as a project.
     private func chooseTerminalFolder(_ kind: TerminalSession.Kind) {
-        guard let url = runFolderPanel(prompt: "Open Terminal", canCreate: false) else { return }
+        guard let url = runFolderPanel(title: nil, prompt: "Open Terminal", canCreate: false) else { return }
         confirmLocation(of: .terminal(kind, url), path: url.path)
     }
 
-    private func runFolderPanel(prompt: String, canCreate: Bool) -> URL? {
+    private func runFolderPanel(title: String?, prompt: String, canCreate: Bool) -> URL? {
         let panel = NSOpenPanel()
+        if let title { panel.title = title }
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = canCreate
@@ -276,21 +253,6 @@ struct WorkbenchesView: View {
         panel.prompt = prompt
         guard panel.runModal() == .OK else { return nil }
         return panel.url?.resolvingSymlinksInPath()
-    }
-
-    /// The entered name is the folder's and the project's. Whatever the panel
-    /// says about an existing name, nothing is ever replaced: an empty folder
-    /// is reused and anything else is refused by `NewWorkbenchFolder`.
-    private func runNewWorkbenchPanel() -> URL? {
-        let panel = NSSavePanel()
-        panel.title = "New Workbench"
-        panel.nameFieldLabel = "Workbench name:"
-        panel.prompt = "Create"
-        panel.canCreateDirectories = true
-        panel.showsTagField = false
-        panel.directoryURL = NewWorkbenchFolder.defaultParent(home: FileManager.default.homeDirectoryForCurrentUser)
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return NewWorkbenchFolder.resolved(url)
     }
 
     private func confirmLocation(of pending: PendingFolder, path: String) {
@@ -309,16 +271,7 @@ struct WorkbenchesView: View {
         sensitiveLocation = nil
         switch pending {
         case let .project(folder):
-            Task { await vm.createWorkbench(folder: folder, name: nil) }
-        case let .newWorkbench(folder):
-            do {
-                try NewWorkbenchFolder.prepare(folder)
-            } catch {
-                showCreateOutcome(error: error)
-                return
-            }
-            showCreateOutcome(error: nil)
-            Task { await vm.createWorkbench(folder: folder, name: folder.lastPathComponent) }
+            Task { await vm.createFromOpenedFolder(folder) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
         }
@@ -425,5 +378,34 @@ struct WorkbenchTitleRow: View {
         }
         .disabled(paletteOpen)
         .hidden()
+    }
+}
+
+/// The worktrees a workbench delete kept because work was in them: a
+/// neutral line under the list (not the red error), until dismissed.
+private struct WorkbenchDeleteNotice: View {
+    @Bindable var vm: WorkbenchesViewModel
+
+    var body: some View {
+        if let notice = vm.deleteNotice {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
+                    vm.deleteNotice = nil
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(8)
+            .accessibilityElement(children: .contain)
+        }
     }
 }

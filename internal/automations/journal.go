@@ -234,8 +234,8 @@ func applyStepLinks(row *db.AutomationRunStep, link db.StepFinish) {
 }
 
 // Usage records one model call's tokens on the step and, for a DB journal,
-// adds them to the run's counters at once (they count toward the daily cap
-// even if the run never finishes). reportedUSD is nil when the provider
+// adds them to the run's counters at once (they count even if the run never
+// finishes). reportedUSD is nil when the provider
 // reported no cost.
 func (s *Step) Usage(in, out int64, estimated bool, reportedUSD *float64) {
 	j := s.j

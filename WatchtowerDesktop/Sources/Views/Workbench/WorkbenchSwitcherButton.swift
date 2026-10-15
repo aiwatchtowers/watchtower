@@ -4,8 +4,8 @@ import WatchtowerCore
 /// What the switcher's two list actions do; the workbench list owns the
 /// create flow (folder panel, TCC warning) and the panel's visibility.
 struct WorkbenchSwitcherActions {
-    /// "New Workbench…": the workbench list's New Workbench… flow.
-    let newWorkbench: () -> Void
+    /// "Open Folder…": the workbench list's Open Folder… flow.
+    let openFolder: () -> Void
     /// "All Workbenches": level 1, the panel shown.
     let showAll: () -> Void
 }
@@ -30,10 +30,10 @@ struct WorkbenchSwitcher: View {
                         showsPopover = false
                         Task { await vm.switchTo(workbenchID: id) }
                     },
-                    onNewWorkbench: {
+                    onOpenFolder: {
                         showsPopover = false
-                        // The save panel runs modally: after the popover is gone.
-                        DispatchQueue.main.async { actions.newWorkbench() }
+                        // The folder panel runs modally: after the popover is gone.
+                        DispatchQueue.main.async { actions.openFolder() }
                     },
                     onShowAll: {
                         showsPopover = false

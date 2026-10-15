@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -344,6 +345,62 @@ func TestRescan_RunnableAgainRestartsScheduleNow(t *testing.T) {
 	}
 }
 
+// TestAuto06_ScheduleBudgetEditNeedsConfirmation: the trigger, missed policy,
+// budget and concurrency are in the approval hash (D26, ask #294), so editing
+// any of them in the file makes a confirmed recipe wait for the owner again; a
+// name or description edit keeps the confirmation.
+func TestAuto06_ScheduleBudgetEditNeedsConfirmation(t *testing.T) {
+	base := recipeText("d", `log("hi")`)
+	cases := []struct {
+		label    string
+		edited   string
+		runnable bool
+	}{
+		{"schedule", strings.Replace(base, `"0 9 * * *"`, `"30 8 * * 1-5"`, 1), false},
+		{"budget tokens", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nbudget: {tokens: 9000}", 1), false},
+		{"budget minutes", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nbudget: {minutes: 9}", 1), false},
+		{"concurrency", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nconcurrency: 2", 1), false},
+		{"missed", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nmissed: skip", 1), false},
+		{"name", strings.Replace(base, "name: Morning mail", "name: Evening mail", 1), true},
+		{"description", recipeText("other words", `log("hi")`), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			f := newIndexerFixture(t)
+			f.write(t, "mail.md", base)
+			f.rescan(t)
+			f.confirmEnable(t, "mail")
+			before := f.row(t, "mail")
+			f.write(t, "mail.md", tc.edited)
+			rep := f.rescan(t)
+			a := f.row(t, "mail")
+			if a.Runnable() != tc.runnable || (a.ApprovalHash == before.ApprovalHash) != tc.runnable {
+				t.Fatalf("runnable=%v, hash changed=%v; want runnable=%v", a.Runnable(), a.ApprovalHash != before.ApprovalHash, tc.runnable)
+			}
+			if !tc.runnable && (len(rep.NeedConfirmation) != 1 || a.ConfirmedHash != before.ConfirmedHash) {
+				t.Fatalf("NeedConfirmation = %v, confirmed = %q; want [%d] and the old confirmation kept", rep.NeedConfirmation, a.ConfirmedHash, a.ID)
+			}
+		})
+	}
+}
+
+// TestAuto06_ButtonLabelEditKeepsConfirmation: a button's label is cosmetic
+// and stays out of the approval hash (D26, ask #294); the rename is indexed
+// and the recipe stays runnable.
+func TestAuto06_ButtonLabelEditKeepsConfirmation(t *testing.T) {
+	f := newIndexerFixture(t)
+	button := strings.Replace(recipeText("d", "1"), `schedule: "0 9 * * *"`, "button: {label: Check mail}", 1)
+	f.write(t, "job.md", button)
+	f.rescan(t)
+	f.confirmEnable(t, "job")
+	f.write(t, "job.md", strings.Replace(button, "Check mail", "Mail now", 1))
+	f.rescan(t)
+	a := f.row(t, "job")
+	if !a.Runnable() || !strings.Contains(a.TriggerSpec, "Mail now") {
+		t.Fatalf("runnable=%v trigger_spec=%s; want runnable with the new label", a.Runnable(), a.TriggerSpec)
+	}
+}
+
 func TestRescan_TriggerBecomesScheduleRestartsNow(t *testing.T) {
 	f := newIndexerFixture(t)
 	manual := strings.Replace(recipeText("d", "1"), `schedule: "0 9 * * *"`, "manual: true", 1)
@@ -353,6 +410,12 @@ func TestRescan_TriggerBecomesScheduleRestartsNow(t *testing.T) {
 	f.clock.now = f.clock.now.Add(30 * 24 * time.Hour)
 	f.write(t, "job.md", recipeText("d", "1"))
 	f.rescan(t)
+	// A trigger change is in the approval hash (D26, ask #294): the row waits
+	// for the owner, and the confirmation restarts the schedule from now.
+	if a := f.row(t, "job"); a.Runnable() {
+		t.Fatal("a manual → schedule edit stayed runnable without a new confirmation")
+	}
+	f.confirmEnable(t, "job")
 	if a := f.row(t, "job"); !a.Runnable() || !a.LastScheduledFor.Equal(f.clock.now) {
 		t.Errorf("runnable=%v last_scheduled_for=%v, want runnable and %v", a.Runnable(), a.LastScheduledFor, f.clock.now)
 	}
@@ -375,7 +438,7 @@ func TestRescan_SlugTakenAtOtherPathIsSkipped(t *testing.T) {
 		t.Fatalf("Skipped = %+v, want mail.md", rep.Skipped)
 	}
 	reason := rep.Skipped[0].Reason
-	for _, want := range []string{`slug "mail" is already used`, elsewhere, "removed", "automations delete"} {
+	for _, want := range []string{`slug "mail" is already used`, elsewhere, "removed", "ask the owner to delete automation " + strconv.FormatInt(id, 10)} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("reason %q lacks %q", reason, want)
 		}

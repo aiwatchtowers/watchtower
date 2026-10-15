@@ -34,10 +34,7 @@ func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Genera
 		Generator: gen,
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     clock,
-	}, automations.ExecutorOptions{
-		DailyBudgetTokens: &cfg.Automations.DailyBudgetTokens,
-		Logger:            logger,
-	})
+	}, automations.ExecutorOptions{Logger: logger})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
 	sched := automations.NewScheduler(database, ix, clock, exec.Wake)
 	sched.SetLogger(logger)

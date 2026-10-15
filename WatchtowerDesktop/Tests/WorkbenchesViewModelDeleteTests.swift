@@ -29,6 +29,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         var fail = false
         var removalError = ""
         var filesError = ""
+        var keptWorktrees: [String] = []
         private(set) var calls: [[String]] = []
         init(pool: DatabasePool) { self.pool = pool }
 
@@ -41,7 +42,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
             try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id]) }
             let envelope: [String: Any] = [
                 "id": id, "deleted": true, "removal_ok": removalError.isEmpty, "removal_error": removalError,
-                "files_ok": filesError.isEmpty, "files_error": filesError
+                "files_ok": filesError.isEmpty, "files_error": filesError, "kept_worktrees": keptWorktrees
             ]
             return try JSONSerialization.data(withJSONObject: envelope)
         }
@@ -102,6 +103,27 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertNil(vm.deleteCommitTask, "the window stops with nothing left in it")
         let row = try await pool.read { try TerminalSessionQueries.fetch($0, id: session.id) }
         XCTAssertNil(row, "gone with the workbench (PROJ-02)")
+    }
+
+    /// Worktrees the delete kept are a neutral, dismissible notice — not
+    /// the red error line — and the next delete replaces it.
+    func testKeptWorktreesAreANeutralNoticeNotAnError() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = DeletingCLIRunner(pool: pool)
+        runner.keptWorktrees = ["/tmp/a/.claude/worktrees/x"]
+        let vm = makeVM(runner)
+        await vm.reload()
+
+        let ok = await vm.deleteWorkbench(id)
+
+        XCTAssertTrue(ok)
+        XCTAssertNil(vm.errorMessage, "a kept worktree is not an error")
+        XCTAssertEqual(vm.deleteNotice, "Kept 1 worktree with work in it: /tmp/a/.claude/worktrees/x")
+
+        let next = try await pool.write { try TestDatabase.insertWorkbench($0, name: "next", folder: "/tmp/next") }
+        runner.keptWorktrees = []
+        _ = await vm.deleteWorkbench(next)
+        XCTAssertNil(vm.deleteNotice, "a delete that kept nothing clears it")
     }
 
     /// The rows are gone but the folder cleanup failed: the project still

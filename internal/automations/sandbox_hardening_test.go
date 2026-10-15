@@ -2,12 +2,8 @@ package automations
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"math"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -234,7 +230,7 @@ func TestSandbox_WrapperBreakoutRefused(t *testing.T) {
 		"})()); }); globalThis.x = 1; (function (" + returnHookParam + ") { " + returnHookParam + "((function () {",
 	} {
 		env := &Env{Ctx: context.Background(), Recipe: &Recipe{Script: script}, Journal: NewMemoryJournal(),
-			Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, math.MaxInt64, nil)}
+			Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, nil)}
 		_, err := NewSandbox(env, nil)
 		var se *ScriptError
 		if !errors.As(err, &se) || se.Message != errWrapperBroken {
@@ -273,42 +269,6 @@ func TestEnvCall_EncodingFailureReclosesStepAsError(t *testing.T) {
 	}
 }
 
-func TestMeter_LiveDailyTotalAcrossRuns(t *testing.T) {
-	const capTokens, perCall = 1000, 300
-	var spent atomic.Int64
-	source := func() (int64, error) { return spent.Load(), nil }
-	a := NewMeter(Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, nil)
-	b := NewMeter(Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, nil)
-	a.UseDailyTotal(capTokens, source)
-	b.UseDailyTotal(capTokens, source)
-	for i := 0; i < 10; i++ {
-		m := []*Meter{a, b}[i%2]
-		if m.BeforeCall() != nil {
-			continue
-		}
-		m.Debit(perCall, 0) // before the usage is recorded
-		spent.Add(perCall)  // the step's Usage writing the run row
-	}
-	if got := spent.Load(); got > capTokens+perCall {
-		t.Fatalf("spent %d; want at most cap + one call (%d)", got, capTokens+perCall)
-	}
-	if a.Crossed() != InterruptDailyCap || b.Crossed() != InterruptDailyCap {
-		t.Fatalf("crossed = %q / %q; want daily_cap on both", a.Crossed(), b.Crossed())
-	}
-}
-
-func TestMeter_DailyTotalReadErrorRefusesCall(t *testing.T) {
-	m := NewMeter(Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, nil)
-	m.UseDailyTotal(1000, func() (int64, error) { return 0, sql.ErrConnDone })
-	var se *SDKError
-	if err := m.BeforeCall(); !errors.As(err, &se) || se.Name != ErrNameBudget || !strings.Contains(se.Message, "connection") {
-		t.Fatalf("BeforeCall = %v; want a refusal naming the read error", err)
-	}
-	if m.Crossed() != "" {
-		t.Fatalf("a read error flagged %q", m.Crossed())
-	}
-}
-
 func TestJournal_UsesClock(t *testing.T) {
 	clock := newSBClock()
 	j := NewMemoryJournal().UseClock(clock)
@@ -322,7 +282,7 @@ func TestJournal_UsesClock(t *testing.T) {
 	// NewSandbox gives a journal without a clock the meter's.
 	adopt := NewMemoryJournal()
 	if _, err := NewSandbox(&Env{Ctx: context.Background(), Recipe: &Recipe{Script: "1"}, Journal: adopt,
-		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, math.MaxInt64, clock)}, nil); err != nil {
+		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, clock)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := adopt.Begin("log", "", nil); !adopt.Steps()[0].StartedAt.Equal(clock.Now()) {
@@ -476,12 +436,7 @@ func TestEnv_MeteredModelCallOrder(t *testing.T) {
 		}
 		return r.InputTokens + r.OutputTokens
 	}
-	meter := NewMeter(Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, nil)
-	meter.UseDailyTotal(1000, func() (int64, error) {
-		n := tokensOnRun()
-		seq = append(seq, "daily="+strconv.FormatInt(n, 10))
-		return n, nil
-	})
+	meter := NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil)
 	env := &Env{Ctx: context.Background(), Journal: NewJournal(d, run, false), Meter: meter}
 	step := env.Journal.Begin("llm", "light", "p")
 	err := env.MeteredModelCall(step, func(context.Context) (ModelUsage, error) {
@@ -491,14 +446,13 @@ func TestEnv_MeteredModelCallOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// BeforeCall reads 0, the generator runs, Debit reads 0 (the usage is
-	// not on the run yet) and crosses the cap with this call's 1100, then
-	// Usage writes the run row.
-	if got := strings.Join(seq, ","); got != "daily=0,generate,daily=0" {
+	// BeforeCall admits the call, the generator runs, Debit crosses the run
+	// budget with this call's 1100, then Usage writes the run row.
+	if got := strings.Join(seq, ","); got != "generate" {
 		t.Fatalf("order = %s", got)
 	}
-	if meter.Crossed() != InterruptDailyCap || tokensOnRun() != 1100 {
-		t.Fatalf("crossed %q, run tokens %d; want daily_cap, 1100", meter.Crossed(), tokensOnRun())
+	if meter.Crossed() != InterruptBudget || tokensOnRun() != 1100 {
+		t.Fatalf("crossed %q, run tokens %d; want budget, 1100", meter.Crossed(), tokensOnRun())
 	}
 	called := false
 	if err := env.MeteredModelCall(env.Journal.Begin("llm", "light", "p"), func(context.Context) (ModelUsage, error) {

@@ -795,37 +795,6 @@ func TestEventPayload_MarshalsEmptyArrays(t *testing.T) {
 	}
 }
 
-func TestAutomationTokensBetween_LocalDayWindow(t *testing.T) {
-	d := openTestDB(t)
-	loc := time.FixedZone("acme", 2*3600)
-	day1 := time.Date(2026, 3, 10, 0, 0, 0, 0, loc)
-	day2, day3 := day1.AddDate(0, 0, 1), day1.AddDate(0, 0, 2)
-	a := seedRunAutomation(t, d, "digest", 4)
-	for i, started := range []time.Time{day2.Add(-time.Minute), day2.Add(time.Minute)} {
-		tr := []string{TriggerManual, TriggerButton}[i]
-		run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: tr})
-		if ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, started); err != nil || !ok {
-			t.Fatalf("claim = (%v, %v)", ok, err)
-		}
-		if err := d.AddAutomationRunUsage(run, RunUsage{InputTokens: int64(100 * (i + 1)), OutputTokens: 10}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, c := range []struct {
-		name     string
-		from, to time.Time
-		want     int64
-	}{
-		{"day 1 (the 23:59 run)", day1, day2, 110},
-		{"day 2 (the 00:01 run)", day2, day3, 210},
-		{"empty day", day3, day3.AddDate(0, 0, 1), 0},
-	} {
-		if n, err := d.AutomationTokensBetween(c.from, c.to); err != nil || n != c.want {
-			t.Errorf("%s = %d, %v; want %d", c.name, n, err, c.want)
-		}
-	}
-}
-
 func TestAddAutomationRunUsage_Accumulates(t *testing.T) {
 	d := openTestDB(t)
 	_, run := seedRunningAutomationRun(t, d)

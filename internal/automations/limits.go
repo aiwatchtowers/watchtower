@@ -75,7 +75,3 @@ const (
 	DefaultPauseTimeoutHours = 72
 	MaxPauseTimeoutHours     = 168
 )
-
-// DefaultDailyBudgetTokens is the default of automations.daily_budget_tokens,
-// the global per-local-day token cap across all runs (spec §7.5).
-const DefaultDailyBudgetTokens = 2000000

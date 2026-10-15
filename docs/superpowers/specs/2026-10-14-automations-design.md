@@ -2,7 +2,9 @@
 
 **Status:** Approved, 2026-10-14. Owner-approved shape: asks #259–#267; business spec approved in ask #269; the
 open questions decided in ask #270 (§20); the questions the phase plans raised decided in asks #271–#273, the extra local-store read tools in ask #277
-(§20.1); the rulings made while P1 was built in asks #280 and #287 (§20.2).
+(§20.1); the rulings made while P1 was built in asks #280 and #287 (§20.2); the rulings after P1 in asks #293, #294
+and #295 (§20.3). The Desktop UI mockups (seven screens: tab, describe-in-words, confirm, edit form, templates, quick run
+(drawn with ⌘K, bound to ⌃⌘R by the owner's ruling), menu-bar run) were approved by the owner on 2026-10-15; §12 describes them in words.
 The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01 and AGENT-04 amendments (§14.4, §14.5)
 are approved with §20 (ask #270); the PROJ-03 and QC-02 amendments (§14.6, §14.7) are approved in ask #272.
 **Business spec:** `2026-10-14-automations-business.md`. **Plans:** one per phase,
@@ -101,9 +103,16 @@ on the Automations card only, in a workbench recipe also in the workbench header
 
 - `content_hash` — sha256 of the file bytes. Change detection only.
 - `approval_hash` — sha256 of the canonical JSON `{"permissions": [sorted, normalised], "outputs": [sorted],
-  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>"}`. "What this code may do." Owner
-  confirmations and auto grants bind to it (§6.4, §2.5). Edits to `name`, description, `trigger`, `missed`,
-  `budget`, `concurrency`, `pause_timeout_hours` do not change it (§20 D5).
+  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>", "trigger": <trigger>,
+  "missed": "<policy>", "budget": {"tokens": N, "minutes": M}, "concurrency": N}` (keys in that order, no
+  whitespace, no HTML escaping; `trigger` in the `trigger_spec` shape of §9.1 with a `where` map's keys sorted and
+  without the button's cosmetic `label` — its `confirm` stays; missed, budget and concurrency are the effective
+  values after defaults). "What this code may do, when and how much." Owner confirmations and auto grants bind to
+  it (§6.4, §2.5), so a schedule, missed-policy, budget or concurrency edit needs the owner's confirmation again
+  (§20.3 D26, amending D5). Edits to `name`, description, a button's `label` and `pause_timeout_hours` do not
+  change it.
+  Upgrading to D26 re-hashes every recipe once: every recipe confirmed before it shows **Needs your
+  confirmation** until the owner confirms it again.
 
 ### 2.5 Index and confirmation
 
@@ -115,7 +124,7 @@ A recipe is **runnable** iff: parsed without error, `enabled = 1`, and `confirme
 `confirmed_hash` is set only by (a) the apply of an owner-approved `save_automation` (§11), (b) a Desktop save
 carrying `--confirm-hash` (§10), or (c) `automations confirm <id> --hash <sha>` — (b) and (c) refuse under an AI
 agent's environment markers (AGENT-07). A recipe new to the index, or one whose `approval_hash` changed by any
-other way (a git pull, a hand edit, another tool), is indexed with its old `confirmed_hash` and therefore not
+other way (a git pull, a hand edit, another tool — a schedule, missed, budget or concurrency edit included, §20.3 D26), is indexed with its old `confirmed_hash` and therefore not
 runnable; the Automations tab and the workbench header show it as **Needs your confirmation** (AUTO-06).
 The store call is `db.ConfirmAutomation(id, hash, now)` (refuses any hash but the current `approval_hash`,
 `ErrHashMismatch`; a missing row `ErrAutomationNotFound`); an insert never sets `confirmed_hash` or `enabled`.
@@ -215,7 +224,7 @@ and `agent()` processes get the environment of §13.2, never the secret files' c
 - `trigger` (read-only object): `{kind, run_id, scheduled_for?, catch_up?, button?, events?: [...], dry_run}`.
 - **Interrupt.** Each run has a context with deadline `started_at + budget.minutes` of **active** time (time
   paused on the owner or the app, §7.6, is excluded: the deadline is re-armed on resume). On deadline, budget
-  exhaustion, daily cap or cancel the executor calls `vm.Interrupt(reason)` and cancels the context, so a pending
+  exhaustion or cancel the executor calls `vm.Interrupt(reason)` and cancels the context, so a pending
   SDK call (network, CLI process) stops too. The run ends `timed_out`, `budget_exceeded` or `cancelled`.
 - **Memory.** goja has no heap limit, so size is capped at every edge: an SDK result serialised to more than
   256 KiB fails the call with `ResultTooLarge` (never silently truncated) — the one exception is `shell()`, whose
@@ -386,8 +395,8 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
 - First index of a schedule automation sets `last_scheduled_for = now` (no catch-up for times before it existed).
   Enabling a disabled automation does the same (no catch-up for the disabled period). So does a confirm that changes
   `confirmed_hash` (no catch-up for the unconfirmed window; re-confirming the same hash keeps the point), a rescan
-  that makes a row runnable again (its `approval_hash` reverted to the confirmed one, or its trigger became `schedule`
-  — `db.PrimeAutomationSchedule` writes only while the row is not a runnable schedule) and enabling the `automations`
+  that makes a row runnable again (its `approval_hash` reverted to the confirmed one — since §20.3 D26 a trigger edit
+  alone never leaves a row runnable — `db.PrimeAutomationSchedule` writes only while the row is not a runnable schedule) and enabling the `automations`
   feature (FEAT-03 hook `db.FastForwardAutomations`, which also cancels runs queued while it was off, dry runs kept).
 - **Compare-and-set (P1).** The schedule advance is conditional on the `last_scheduled_for` the scheduler read
   (`EnqueueRequest.ExpectLastScheduledFor`, required with `AdvanceScheduleTo`; `db.CompareAndSetAutomationSchedule`);
@@ -445,13 +454,9 @@ Budgets are in **tokens**, not dollars (§20 D4, ask #270).
   / 4)` tokens, so a provider without usage numbers cannot run unbounded.
 - Display only: when the provider reports a dollar cost (claude's `total_cost_usd`), it is stored in
   `reported_cost_usd`; nothing compares against it, and it is never estimated.
-- Global daily cap: config `automations.daily_budget_tokens` (default `2000000`), summed over
-  `automation_runs.input_tokens + output_tokens` whose `started_at` falls on the local calendar day, dry runs
-  included. (P1: the day is the local day of the run's own `started_at`, in the scheduler's per-tick zone; the sum is
-  re-read before each model call, so concurrent runs see each other's spend; `0` = automations may spend nothing —
-  every run ends `daily_cap` before its script starts; a negative value logs a warning and uses the default.) A run claimed while the cap is spent ends
-  at once `budget_exceeded` with `error_kind='daily_cap'`; a running run that crosses it is interrupted the same
-  way. The scheduler keeps inserting rows (they end as above), so the history shows what was skipped.
+- No global daily cap (§20.3 D25, ask #294): each run is bounded only by its own `budget.tokens` and
+  `budget.minutes`. The former `automations.daily_budget_tokens` key is gone (a leftover key in `config.yaml` is
+  ignored); `error_kind='daily_cap'` stays in the CHECK (no migration) but nothing produces it.
 
 ### 7.6 Waiting
 
@@ -595,17 +600,24 @@ through the CLI. The approval-hash function exists only in Go; the Desktop gets 
 | `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted; an **unconfirmed** recipe is refused under AGENT-07 markers (owner only, §20.1 D16); the CLI pins the hash its check saw (`ExecuteInlinePinned`) — a recipe changed before the claim cancels the run |
 | `automations cancel <run-id>` | |
 | `automations runs <id> [--limit N] [--json]`, `automations steps <run-id> [--json]` | history |
-| `automations enable\|disable <id>` | |
+| `automations enable <id>` | owner only (AGENT-07 markers refused before anything is read, §20.3 D24, ask #293) |
+| `automations disable <id>` | open under agent markers (it only reduces activity) |
 | `automations confirm <id> --hash <sha>` | owner only (AGENT-07 markers refused) |
 | `automations auto <id> <tool> on --hash <sha>` / `off` | `on` owner only (AGENT-07) |
 | `automations save --file F [--path P] [--confirm-hash <sha>]` | writes the recipe atomically (temp + rename), indexes it; with `--confirm-hash` (owner only) confirms in the same step |
-| `automations delete <id>` | removes the index row (cascade) in one statement refused while a run is `running`/`waiting` ("cancel it first"), then the file when it is a regular file in its recipe folder |
+| `automations delete <id>` | owner only (AGENT-07 markers refused before anything is read, §20.3 D24, ask #293); removes the index row (cascade) in one statement refused while a run is `running`/`waiting` ("cancel it first"), then the file when it is a regular file in its recipe folder |
 | `automations wake` | sends the wake signal (P1); open under agent markers |
 | `automations templates [--json]`, `automations install-template <name> [--workbench N]` | P6 |
 | `automations outputs [--kind K] [--json]` | P1, until the Inbox renders them (P3) |
 
 AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell()`/`agent()`/`session()` child,
 §13.2), so a command run by an automation can no more approve than an agent can.
+
+Owner-only under AGENT-07 markers: `confirm`, `save --confirm-hash`, `dry-run` of an unconfirmed recipe, `auto … on`
+(P2), `enable` and `delete` (§20.3 D24). Open: `disable`, `cancel`, `run` (of a confirmed, enabled recipe),
+`rescan`, a plain `save`, the read verbs and `wake` — they only reduce activity or run what the owner already
+confirmed. Removing a recipe file by hand is outside the CLI and not guarded (the next rescan marks the row
+`removed_at`, §2.5).
 
 ## 11. Authoring (P3)
 
@@ -614,8 +626,7 @@ AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell
 - `draft_automation` — **read** tool, surfaces `main` and `automation_editor` (§14.5). Args `{recipe_text,
   workbench_id?}`. Validates; computes the widening against the saved version (when editing); dry-runs in memory
   bounded by `min(budget.tokens, 50000 tokens)` and `min(budget.minutes, 5)` with writes as `{status:"dry_run"}`.
-  Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted; its
-  tokens are not counted in the daily cap — a stated v1 limit). Result: `{ok, errors[], manifest, widening[],
+  Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted). Result: `{ok, errors[], manifest, widening[],
   dry_run: {steps[], outputs[], tokens}}`. The dry-run journal goes back to the chat model as is: a draft that
   reads `list_emails`/`get_email` shows that model the clipped mail of those steps (owner-approved, §20.1 D18).
   `draft_automation` dry-runs a **draft** — text the chat is authoring — never an unconfirmed recipe: when the
@@ -646,6 +657,13 @@ failed/timed_out/expired red, budget_exceeded orange, cancelled grey), tokens th
 confirmation**, **Auto paused**, **Disabled**, **Parse error**. Sidebar badge = automations needing
 confirmation + runs waiting on the owner.
 
+Approved layout (mockup 1): the header carries **Templates**, **+ New** and a "Search automations" field (name
+filter); the list sits left of the card. A row is two lines — the name with its status pill or badge on the right
+("● Succeeded", "● Failed", "● Running", "Needs your confirmation", "Disabled"), then one detail line joined with
+" · ": the trigger text, then the most useful fact for the state — "next in 14 h" (+ "3.2k tokens this week") for a
+healthy row, "last run: <error>" for a failed one, "started 40 s ago" for a running one, "schedule changed, waiting
+for you" for one that needs confirmation, "coming in a later version" for an event trigger before P4.
+
 ### 12.2 Automation card
 
 Description, recipe (read-only, Monaco), permissions with widening vs confirmed, outputs (latest reports),
@@ -653,6 +671,53 @@ history (runs, each expands into its steps: kind, name, status, tokens, duration
 Inbox card, sessions to the session, asks to the ask), buttons **Run now**, **Dry run**, **Enable/Disable**,
 **Edit**, **Change in words**, **Delete**. Dry run renders the would-be writes and outputs as a list ("would
 propose create_jira_issue {…}").
+
+Approved layout (mockup 1): title, then a subtitle "<schedule in words> · <personal | workbench name> ·
+<enabled | disabled>" ("Every weekday at 09:00 · personal · enabled"); the button row **Run now** (primary),
+**Dry run**, **Change in words**, **Edit**, **⋯** — **Enable/Disable** and **Delete** live inside **⋯**. Below: the
+description in plain words; **It may** — each permission and output as a human line ("Read mail in work (Gmail)",
+"Use the light model", "Put cards in your Inbox"); **Limits per run** — "40,000 tokens · 5 minutes", "One run at a
+time", "Missed while asleep: run once"; **History** — one row per run ("Succeeded · Today 09:00 · 41 s", tokens on
+the right), the newest expanded into its steps as "✓ list_emails — 23 messages", "✓ llm (light) — 1,180 tokens",
+"✓ inbox card — "Mail: 4 need a reply"", the others collapsed and expandable. The recipe in Monaco is reached from
+**Edit** (and "Show the script" in the confirm sheet), not shown inline.
+
+**Confirmation sheet** (mockup 3; AUTO-06, §2.5, D26): title "Confirm “<name>”?", the line "The recipe changed
+since you last confirmed it. It won't run again until you confirm. Changes are marked." A **Changed** block lists
+each hashed field that differs from the confirmed version as "<field> <old> → <new>" — schedule (in words),
+missed policy, budget per run (tokens, minutes), concurrency, outputs — and the script ("Script changed"), followed by who changed it and
+when. **It may** lists the permissions with widening entries marked, or "No change to what it can access.";
+"Show the script (N lines)" discloses the script read-only. Buttons **Dry run first**, **Not now**, **Confirm**
+(primary). Go computes the block (`show --json` keys `changes`, `changes_known`, `changed_by`, `changed_at`, added
+in P3): the index holds only `confirmed_hash`, so the confirmed text is the newest `automation_runs.recipe_snapshot`
+whose `recipe_hash` equals `confirmed_hash`, else the `previous_recipe_text` pinned in the last applied
+`save_automation` for that automation, and a candidate counts only if its `approval_hash` computed now equals
+`confirmed_hash`. So: confirmed → no changes, known; never confirmed → "First confirmation"; a counting candidate →
+its field diff, known; no counting candidate — including after a hash-format change such as D26's re-hash, where
+the snapshot text may equal the current text yet its hash no longer matches — → `changes_known` false and the
+block reads "What changed is not known — review the whole recipe". The author line is "Changed by the
+assistant in the chat · <age>" when an applied `save_automation` pinned the recipe's current `approval_hash`,
+otherwise "Changed outside Watchtower · <age of updated_at>" — v1 limit: a plain `automations save`
+or a hand edit records no author, so the mockup's "Changed by Claude in the workbench terminal" needs an author
+record (owner-accepted limit, 2026-10-15; a later phase; a `confirmed_text` column would also remove the snapshot fallback).
+
+**Create in words** (mockup 2): a "New automation" sheet with three tabs, **Describe in words** (default),
+**Form**, **Template**. Left: the chat (the owner's request, the assistant's replies, follow-ups such as "Skip
+newsletters.", a composer with **Send**). Right: a live **Draft** panel re-rendered after every `draft_automation`
+result — name, "Show recipe", **When** ("Weekdays at 09:00", "Your local time · if the Mac was asleep, runs once
+when it wakes"), **Each run may spend** ("40,000 tokens · 5 min", "Last dry run used 1,050 tokens"), **It asks to**
+(each permission with its manifest string and a plain explanation), what it can't do ("It can't send mail, post to
+Slack or change Jira."), and a **Dry run · nothing was written** block of `DryRunPresentation` lines. The footer
+reads "Saving asks for your confirmation. It won't run until you confirm." with **Cancel**, **Dry run again**,
+**Save…** (→ the `save_automation` card, §11).
+
+**Edit form** (mockup 4): title "Edit “<name>”" with the recipe path; **Name**; **Runs** as choice buttons — "On a
+schedule", "When I press a button", "Only when I run it", "On new mail / message (soon)" (disabled until P4); for a
+schedule a human picker (every weekday / day / week on… / hour / custom (cron), plus "at" time) with a live line
+"Next: tomorrow 09:00 · cron 0 9 * * 1-5" and the checkbox "If the Mac was asleep at that time, run once when it
+wakes" (`missed`); **Each run may spend** (tokens, minutes); **It may** as removable chips with **+ Add**;
+**Script** in Monaco with the link "Change it in words instead". Footer note "Changing the schedule, budget,
+permissions or script needs your confirmation again." and **Cancel**, **Dry run**, **Save and confirm**.
 
 ### 12.3 Template gallery
 
@@ -677,6 +742,41 @@ source of the strip, which needs the STRIP-01 amendment (§14.4).
 `internal/briefing` adds a section "From your automations" with `automation_outputs.kind='briefing'` created
 since the previous briefing's `created_at` (titles + bodies, bounded to 4 KiB total, oldest dropped first with a
 "+N more" line).
+
+### 12.7 Quick run (P3, ask #295, §20.3 D27)
+
+Two ways to run a recipe without opening its card, both calling `automations run <id> --json` exactly like the
+card's **Run now** and both honouring the feature-off refusal (with `automations` off the entry points are hidden;
+a refusal that still arrives is shown as the CLI's message, nothing is retried).
+
+- **Who is listed.** Every indexed, not removed recipe, personal and workbench. Manual and button recipes are the
+  subject; a scheduled or event recipe is listed after them in its group as "(run now)". A row is runnable exactly
+  when the recipe is runnable (§2.5: parsed, not removed, confirmed and enabled) — the same rule as the card's Run
+  now, which the CLI enforces (`notRunnableReason`) and which shows a disabled recipe's Run now disabled. Not runnable rows are listed dimmed with their reason: "needs your confirmation first",
+  "disabled", "can't be read" (parse error).
+- **Run Automation… — ⌃⌘R** (mockup 6, drawn there as ⌘K). Owner ruling 2026-10-15: one key combination does
+  the same thing everywhere, so quick run does **not** reuse ⌘K (the Workbench tab's "Go to…" palette and the Chat
+  tab's "Search Chats" keep it) and adds nothing to the Go to… palette. "Run Automation…" is an app-menu item with
+  its own key equivalent **⌃⌘R** (R for run; unused anywhere in the app — no `.keyboardShortcut`, key monitor or
+  Monaco binding — and not a standard macOS shortcut), so it opens the same standalone palette from every tab and
+  window. The palette has a "Search commands" field; the **Run automation** section
+  ranks rows by fuzzy name match (exact > prefix > word start > substring > subsequence). A row shows the name,
+  the scope ("watchtower workbench" / "personal"), a hint ("asks before it runs" for `confirm: true`, "only when you
+  run it" for manual) and the last run ("last run 2 days ago, succeeded"); the selected runnable row shows "↩ run".
+  An **Other** section offers "Open Automations". ↩ on a runnable row runs it; a `confirm: true` recipe first shows
+  a short sheet "Run “<name>”?" with the description's first paragraph and "You'll get a notice when it ends.",
+  **Cancel** / **Run**. ↩ on a dimmed row runs nothing: unconfirmed → the confirmation sheet (§12.2); disabled or
+  parse error → its card.
+- **Menu-bar tray → Run automation ▸** (mockup 7). A submenu grouped by workbench name, then **Personal**; each
+  item is the name ("…" appended when it asks before running, "(run now)" for a scheduled recipe) with its last
+  status: "✓ 2 d ago" (last succeeded), "✗ 2 d ago" (last failed), "● running" (a click opens the run),
+  "— needs confirmation" (a click opens the confirmation sheet in the main window), "— disabled" / "— can't be
+  read" (not clickable). The submenu ends with "Open Automations…". A `confirm: true` recipe asks "Run “<name>”?"
+  in a small alert first (the tray has no window).
+- **Finish notice.** A run started from either place is watched until it ends; then a macOS notification "<name>
+  finished" (succeeded) or "<name> failed" / "<name> stopped: <status in words>" with the run's `summary` (or
+  `error`) as its body; a click opens the run on its card. A coalesced run (`"coalesced": true`) is watched the same
+  way. Runs started elsewhere (schedule, card, buttons) post no notice.
 
 ## 13. Workbench automations (P5)
 
@@ -733,9 +833,9 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 | AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change makes it inactive until re-granted; every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
 | AUTO-04 | State commits only on success | `state.set` and `output.*` (local) are buffered and committed in one transaction with `status='succeeded'`; any other terminal status leaves `automation_state` and `automation_outputs` byte-identical. | P1 |
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
-| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
+| AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed (a schedule, missed-policy, budget or concurrency change included, §20.3 D26). Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
 | AUTO-07 | The script sees the world only through the SDK | No `require`, filesystem, network, timers or promises in the sandbox; no SDK result carries a secret. | P1 |
-| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, the daily token cap holds, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
+| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
 | AUTO-09 | Triggers only queue | Scheduler, event bus, CLI `run` and Desktop buttons only insert `queued` rows; only the daemon's executor runs them (dry run excepted, which writes nothing outside its journal). | P1, P4 |
 | AUTO-10 | Missed schedules | After a gap covering N ≥ 1 missed due times: `run_once` inserts exactly one `catch_up` run, `skip` none; a restart never repeats it. | P1 |
 | AUTO-11 | Complete journal | Every SDK call, denied ones included, has exactly one step row with its status, tokens and duration. | P1 |
@@ -783,7 +883,8 @@ unchanged.
   guard's call list with a fake generator.
 - AGENT-07: marker list gains `WATCHTOWER_AUTOMATION_RUN_ID`; `automations confirm`, `automations auto … on`,
   `automations save --confirm-hash` and `automations dry-run` of an unconfirmed recipe (§20.1 D16, ask #271) join
-  the refused commands. Desktop `Constants.agentEnvMarkers` gains the
+  the refused commands; `automations enable` and `automations delete` join them too (§20.3 D24, ask #293). Guard
+  `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`. Desktop `Constants.agentEnvMarkers` gains the
   variable.
 
 ### 14.4 STRIP-01 amendment — approved (ask #270, §20 D10)
@@ -844,9 +945,9 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; per-run token budgets (the daily cap was retired by §20.3 D25); Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
-| **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
+| **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; quick run from the "Run Automation…" palette (⌃⌘R) and the menu-bar tray with a finish notice (§12.7, ask #295); the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
 | **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
 | **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates; the QC-02 amendment (§14.7, approved in ask #272). |
@@ -862,10 +963,10 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
 - Manifest: `TestManifest_GrammarTable` (valid/invalid strings incl. quoting), `TestManifest_ScopeMatching`
   (exact, case, `*`, absent scope arg needs `@*`), `TestManifest_MCPGlob`, `TestManifest_ShellExactOnly`
   (prefix/suffix/whitespace variants refused), `TestManifest_CoversWidening`, `TestToolCapabilities_CoversEveryAutomationTool`.
-- Hashes: `TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions`.
+- Hashes: `TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget`, `TestApprovalHash_ButtonLabelIsCosmetic`, `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`.
 - Sandbox: `TestAuto07_NoRequireFsNetTimers`, `TestAuto08_InterruptOnTimeout` (busy loop stops within 1 s of the
   deadline), `TestAuto08_InterruptOnBudget` (fake generator reporting 30k tokens per call, budget 50k: second call
-  crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_DailyCap`,
+  crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_NoDailyCapAcrossRuns`,
   `TestSandbox_ResultTooLargeIsAnErrorNotATruncation`, `TestSandbox_StateTooLarge`, `TestSandbox_ErrorLineMapsToFile`.
 - Permissions: `TestAuto01_DeniedCallThrowsAndWritesDeniedStep` (backend fake records zero calls).
 - State: `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed_out, budget_exceeded, cancelled
@@ -900,7 +1001,9 @@ updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces`.
 `AutomationsViewModelTests` (list, badges, Run now → CLI args, Dry run rendering, state survives navigation),
 `AutomationQueriesTests`, `AutomationFormTests` (widening sheet shown only on widening; grant boxes unchecked by
 default), `AgentActionCardLabelTests` (automation label), `ActionStripAutomationOutputTests` (output cards on the
-strip, Done/Dismiss write only `automation_outputs`).
+strip, Done/Dismiss write only `automation_outputs`), `QuickRunCatalogTests` (who is listed, dimmed reasons,
+fuzzy order), `QuickRunCenterTests` (run args, confirm-first, dimmed ↩ opens instead of running, finish notice once
+per watched run), `TrayRunAutomationMenuTests` (grouping and status text).
 
 **P4:** `TestBus_OneRunPerAutomationPerCycle`, `TestBus_WhereFilterAndGlob`, `TestBus_EventsCarryNoContent`,
 `TestBus_TruncatesAt100`, one publisher test per sync phase (`TestPhaseGmailSync_PublishesNewMessages`, …),
@@ -941,10 +1044,11 @@ section it governs; nothing remains open.
    `--surface automation --automation-run N`, `--allowedTools` = the effective tool set, the run marker in its
    environment; runtime B (`internal/agentloop`) for ollama (§6.5).
 4. **D4 Budgets in tokens.** `budget.tokens` (input + output across `llm`/`agent` calls) and `budget.minutes` per
-   run; the global daily cap `automations.daily_budget_tokens` is in tokens too. No dollar budget anywhere; a
+   run (no global daily cap since §20.3 D25, ask #294). No dollar budget anywhere; a
    provider-reported dollar cost is kept in `reported_cost_usd` for display only (§2.3, §7.5, §9.2, §9.3, §12).
 5. **D5 What drops a confirmation/auto.** `approval_hash` = script + permissions + outputs + scope; trigger,
-   budget, name and description edits keep confirmation and grants (§2.4).
+   budget, name and description edits keep confirmation and grants (§2.4). *Amended by §20.3 D26 (ask #294): the
+   trigger (without a button's label), missed policy, budget and concurrency are in the hash too.*
 6. **D6 Restart.** Interrupted runs end `failed` / `interrupted` with state uncommitted; Rerun is offered; no
    replay-resume in v1 (§7.7).
 7. **D7 `ask()`** only in workbench automations in v1; a personal recipe declaring `ask:owner` fails validation;
@@ -1012,3 +1116,39 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
   `raw_json`), `get_jira_time_in_status` by `project`, else its `issue_keys` prefixes, else absent, whatever
   `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
   stays under `people:read`; neither is `tool:`-only.
+
+### 20.3 Rulings after P1 (asks #293, #294, #295)
+
+24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
+    under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
+    `refuseUnderAgent` check, before anything is read or written, with the hint "enable and delete are owner-only"
+    (after `refuseUnderAgent`'s own "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)"). `disable`,
+    `cancel`, `run` (of a confirmed, enabled recipe), `rescan` and a plain `save` stay open: they only reduce
+    activity or run what the owner already confirmed. Deleting the recipe file directly is outside Watchtower's
+    control; only the CLI verb is guarded. Guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`.
+25. **D25 (ask #294): no daily token cap.** The global per-day cap `automations.daily_budget_tokens` is removed —
+    config key, default, executor wiring (`ExecutorOptions.DailyBudgetTokens`) and the meter's live daily total.
+    Each run stays bounded by its own `budget.tokens` and `budget.minutes` (§7.5, AUTO-08). `error_kind='daily_cap'`
+    stays in the CHECK (no migration) but is no longer produced. The `TestAuto08_DailyCap*` guards are retired with
+    the owner's approval; `TestAuto08_NoDailyCapAcrossRuns` pins the new rule.
+26. **D26 (ask #294, amends D5): a schedule or budget change needs the owner's confirmation.** `approval_hash` also
+    covers the trigger (`trigger_spec` without a button's cosmetic `label`; `confirm` stays), the `missed` policy
+    (any schedule edit waits for the owner), the budget (tokens and minutes) and `concurrency` (§2.4), so editing
+    any of them drops a confirmation and auto grants like a script or permission edit does; name, description, a
+    button's label and `pause_timeout_hours` still keep it. A rescan makes such a row runnable again only when the
+    file reverts to the confirmed text; otherwise the owner confirms. The change re-hashes every recipe once: after
+    the upgrade every existing recipe is unconfirmed until the owner confirms it again. Guards
+    `TestApprovalHash_GoldenCanonicalBytes` (new bytes and hex), `TestApprovalHash_ButtonLabelIsCosmetic`,
+    `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`.
+27. **D27 (ask #295): quick run in P3.** After approving the seven UI mockups (2026-10-15) the owner added quick run
+    for manual and button recipes to P3: "Run Automation…" (fuzzy search by name over personal and workbench
+    recipes; ↩ runs; a `confirm: true` recipe shows "Run “<name>”?" first; an unconfirmed, disabled or unparsable
+    recipe is listed dimmed with its reason and ↩ opens its confirmation or card instead of running) and the
+    menu-bar tray's "Run automation ▸" submenu (grouped by workbench, then Personal; each item with its last status —
+    "✓ <age>", "● running", "needs confirmation"; disabled items not runnable; "Open Automations…" at the end), plus
+    a macOS notification when a run started from either place ends. Owner ruling 2026-10-15 (uniform shortcut): one key
+    combination does the same thing everywhere, so the palette does not reuse ⌘K and adds nothing to the Workbench
+    "Go to…" palette; it has its own app-menu shortcut ⌃⌘R, identical on every tab and window. The owner also
+    accepted the confirm sheet's author-line limit (§12.2: only the assistant's saves are attributed). Both call `automations run <id> --json` like the
+    card's Run now and respect the feature-off refusal (§12.7). No Go change beyond P3's `show --json` additions
+    (§12.2): the CLI already returns `run_id`/`coalesced`, and runs carry `summary`/`error` for the notice.

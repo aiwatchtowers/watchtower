@@ -1,8 +1,6 @@
 package config
 
 import (
-	"bytes"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,30 +167,17 @@ func TestLoad_CalendarAndGmailDefaults(t *testing.T) {
 }
 
 // TestConfig_AutomationsDefaults pins the Automations defaults through the
-// real load path (spec 2026-10-14 §20 D12, D4): an absent block is on with a
-// 2,000,000-token daily cap, and explicit keys are read.
+// real load path (spec 2026-10-14 §20 D12): an absent block is on, an
+// explicit key is read, and a leftover daily_budget_tokens key (the daily cap
+// retired by D25, ask #294) is ignored.
 func TestConfig_AutomationsDefaults(t *testing.T) {
 	cfg, err := Load(writeTestConfig(t, ""))
 	require.NoError(t, err)
 	assert.True(t, cfg.Automations.Enabled, "absent block = on")
-	assert.Equal(t, int64(2000000), cfg.Automations.DailyBudgetTokens)
 
 	set, err := Load(writeTestConfig(t, "automations:\n  enabled: false\n  daily_budget_tokens: 5000\n"))
 	require.NoError(t, err)
 	assert.False(t, set.Automations.Enabled)
-	assert.Equal(t, int64(5000), set.Automations.DailyBudgetTokens)
-
-	zero, err := Load(writeTestConfig(t, "automations:\n  daily_budget_tokens: 0\n"))
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), zero.Automations.DailyBudgetTokens, "an explicit 0 means spend nothing, not the default")
-
-	var logged bytes.Buffer
-	log.SetOutput(&logged)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	neg, err := Load(writeTestConfig(t, "automations:\n  daily_budget_tokens: -1\n"))
-	require.NoError(t, err)
-	assert.Equal(t, int64(2000000), neg.Automations.DailyBudgetTokens, "a negative value falls back to the default")
-	assert.Contains(t, logged.String(), "automations.daily_budget_tokens is negative")
 }
 
 func TestValidate_Valid(t *testing.T) {

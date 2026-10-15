@@ -25,7 +25,7 @@ import (
 // (spec §20 D8) and the executor leaves an unconfirmed recipe alone.
 func TestNewDaemonAutomations_IndexesPersonalFolder(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := &config.Config{ActiveWorkspace: "acme", Automations: config.AutomationsConfig{Enabled: true, DailyBudgetTokens: 1000000}}
+	cfg := &config.Config{ActiveWorkspace: "acme", Automations: config.AutomationsConfig{Enabled: true}}
 	dir := automations.PersonalDir(cfg.WorkspaceDir())
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	recipe := "---\nname: Morning note\ntrigger:\n  schedule: \"0 9 * * 1-5\"\npermissions:\n  - llm:light\noutputs: [inbox]\n---\n\n```js\noutput.inbox({ title: \"Hi\", body: llm(\"Say hi\") });\n```\n"

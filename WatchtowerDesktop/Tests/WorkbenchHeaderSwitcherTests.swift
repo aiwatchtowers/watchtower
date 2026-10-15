@@ -305,7 +305,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
     // MARK: - Views
 
     private func titleRow(_ vm: WorkbenchesViewModel) -> WorkbenchTitleRow {
-        WorkbenchTitleRow(vm: vm, switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})) {}
+        WorkbenchTitleRow(vm: vm, switcherActions: WorkbenchSwitcherActions(openFolder: {}, showAll: {})) {}
     }
 
     func testAHiddenPanelPutsTheSwitchersInTheTitleRow() async throws {
@@ -331,7 +331,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         await vm.reload()
         vm.drill(into: a)
         var shown = 0
-        let actions = WorkbenchSwitcherActions(newWorkbench: {}, showAll: { shown += 1 })
+        let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: { shown += 1 })
 
         XCTAssertThrowsError(
             try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
@@ -359,7 +359,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.panelVisible = true
-        let actions = WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
+        let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: {})
         // A hidden button cannot be tapped in ViewInspector: its action is
         // `showAll`, the same as the visible ‹ the test above taps.
         func back(paletteOpen: Bool = false) throws -> InspectableView<ViewType.Button> {
