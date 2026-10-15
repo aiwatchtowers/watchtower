@@ -222,9 +222,7 @@ package enum WorkbenchNotificationPolicy {
             guard previous.openAsks[id] == nil else { return nil }
             // The session it was filed from; one filed outside the app has
             // none, so it lands on the board (the asks stack sits beside it).
-            let route = ask.sessionID.map {
-                WorkbenchRoute(projectID: current.projectID, pane: .terminal, subjectID: $0, askID: id)
-            } ?? WorkbenchRoute(projectID: current.projectID, pane: .board, askID: id)
+            let route = WorkbenchRoute.forAsk(projectID: current.projectID, sessionID: ask.sessionID, askID: id)
             return (ask, notice(.askOpened, current, title: ask.noticeTitle, body: current.projectName,
                                 route: route, key: "\(id)"))
         }

@@ -48,16 +48,6 @@ final class OnboardingFinishPlanTests: XCTestCase {
         XCTAssertFalse(restarted)
     }
 
-    func testLanding() {
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], catchUpVisible: true), .catchUp)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication, .development], catchUpVisible: false), .workbench,
-                       "no Catch-Up tab to land on")
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], catchUpVisible: false), .chat)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.development, .meetings], catchUpVisible: true), .workbench)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.tasksAndJira, .meetings], catchUpVisible: true), .chat)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [], catchUpVisible: false), .chat)
-    }
-
     private func progress(active: Bool, updated: Date) throws -> SyncProgress {
         let stamp = ISO8601DateFormatter().string(from: updated)
         let json = #"{"active":\#(active),"phase":"Messages","detail":"34/105 channels","messages_fetched":120,"updated_at":"\#(stamp)"}"#

@@ -115,14 +115,18 @@ func runBriefingCapturing(t *testing.T, database *db.DB, cfg *config.Config) str
 	return gen.systemMsg
 }
 
-// memoryRevisionsSection returns the text after the "=== MEMORY REVISIONS ==="
-// header (that section is rendered last in the template).
+// memoryRevisionsSection returns the text between the "=== MEMORY REVISIONS ==="
+// header and the next section header (v12 renders FROM YOUR AUTOMATIONS after it).
 func memoryRevisionsSection(t *testing.T, prompt string) string {
 	t.Helper()
 	const header = "=== MEMORY REVISIONS ==="
 	idx := strings.Index(prompt, header)
 	require.GreaterOrEqual(t, idx, 0, "prompt must carry a MEMORY REVISIONS section")
-	return strings.TrimSpace(prompt[idx+len(header):])
+	section := prompt[idx+len(header):]
+	if next := strings.Index(section, "\n=== "); next >= 0 {
+		section = section[:next]
+	}
+	return strings.TrimSpace(section)
 }
 
 func TestGatherMemoryRevisions_StatusTransitionSurfaces(t *testing.T) {

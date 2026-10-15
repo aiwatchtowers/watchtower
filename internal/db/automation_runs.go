@@ -1001,7 +1001,7 @@ type AutomationOutput struct {
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
 // kind), newest first; limit ≤ 0 returns all of them.
 func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput, error) {
-	q := `SELECT id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at
+	q := `SELECT ` + automationOutputCols + `
 		FROM automation_outputs WHERE (? = '' OR kind = ?) ORDER BY created_at DESC, id DESC`
 	args := []any{kind, kind}
 	if limit > 0 {
@@ -1015,22 +1015,8 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	defer rows.Close()
 	out := []AutomationOutput{}
 	for rows.Next() {
-		var (
-			o               AutomationOutput
-			created         string
-			read, dismissed sql.NullString
-		)
-		if err := rows.Scan(&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
-			&read, &dismissed); err != nil {
-			return nil, fmt.Errorf("listing automation outputs: %w", err)
-		}
-		if o.CreatedAt, err = time.Parse(automationTimeLayout, created); err != nil {
-			return nil, fmt.Errorf("automation output %d created_at %q: %w", o.ID, created, err)
-		}
-		if o.ReadAt, err = parseAutomationTime(read, "read_at"); err != nil {
-			return nil, err
-		}
-		if o.DismissedAt, err = parseAutomationTime(dismissed, "dismissed_at"); err != nil {
+		o, err := scanAutomationOutput(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -1039,4 +1025,68 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 		return nil, fmt.Errorf("listing automation outputs: %w", err)
 	}
 	return out, nil
+}
+
+// NamedAutomationOutput is an automation output with the name of the
+// automation that wrote it (its slug when the recipe has no name).
+type NamedAutomationOutput struct {
+	AutomationOutput
+	AutomationName string
+}
+
+// ListAutomationOutputsSince returns the newest limit outputs of kind created
+// at or after since, newest first, each with its automation's name and its
+// body cut to maxBodyChars characters, plus the count of every matching row
+// (so a caller can say how many it left out). Never nil.
+func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
+	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
+			o.created_at, o.read_at, o.dismissed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
+		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
+		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
+		maxBodyChars, kind, formatAutomationTime(since), limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing %s automation outputs since %s: %w", kind, formatAutomationTime(since), err)
+	}
+	defer rows.Close()
+	out := []NamedAutomationOutput{}
+	total := 0
+	for rows.Next() {
+		var n NamedAutomationOutput
+		if n.AutomationOutput, err = scanAutomationOutput(rows, &n.AutomationName, &total); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("listing %s automation outputs: %w", kind, err)
+	}
+	return out, total, nil
+}
+
+const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at`
+
+// scanAutomationOutput scans one automationOutputCols row; extra receives any
+// columns the query selects after them.
+func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error) {
+	var (
+		o               AutomationOutput
+		created         string
+		read, dismissed sql.NullString
+	)
+	dest := append([]any{&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
+		&read, &dismissed}, extra...)
+	if err := rows.Scan(dest...); err != nil {
+		return o, fmt.Errorf("scanning automation output: %w", err)
+	}
+	var err error
+	if o.CreatedAt, err = time.Parse(automationTimeLayout, created); err != nil {
+		return o, fmt.Errorf("automation output %d created_at %q: %w", o.ID, created, err)
+	}
+	if o.ReadAt, err = parseAutomationTime(read, "read_at"); err != nil {
+		return o, err
+	}
+	if o.DismissedAt, err = parseAutomationTime(dismissed, "dismissed_at"); err != nil {
+		return o, err
+	}
+	return o, nil
 }

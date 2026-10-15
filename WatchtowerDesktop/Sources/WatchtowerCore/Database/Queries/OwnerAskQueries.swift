@@ -48,6 +48,20 @@ package struct OwnerAskRows: Equatable, Sendable {
     }
 }
 
+/// An open ask with the name of the workbench it was filed in.
+package struct WorkbenchAskRow: Equatable, Sendable {
+    package let ask: OwnerAsk
+    package let workbenchName: String
+}
+
+/// Every workbench's open asks read row by row, with `OwnerAskRows`' rule:
+/// an unreadable row is named, never blanks the others.
+package struct WorkbenchAskRows: Equatable, Sendable {
+    package var rows: [WorkbenchAskRow]
+    /// The ids of the rows that could not be read, in list order.
+    package var unreadableIDs: [Int64]
+}
+
 /// Owner asks (spec 2026-10-03 Parts 2 and 8). Go writes `open`, `withdrawn`
 /// and `delivered`; the Desktop's only write is `open → answered` with the
 /// answer, guarded on `status = 'open'` (`answer`).
@@ -59,6 +73,29 @@ package enum OwnerAskQueries {
             sql: "SELECT * FROM owner_asks WHERE project_id = ? AND status = 'open' ORDER BY created_at, id",
             arguments: [projectID]
         )
+    }
+
+    /// Every workbench's open asks, oldest first (the order `openAsks` uses),
+    /// joined to `projects.name`; a row `OwnerAsk(row:)` refuses is named in
+    /// `unreadableIDs`, never blanks the others.
+    package static func openAsksAllWorkbenches(_ db: Database) throws -> WorkbenchAskRows {
+        var out = WorkbenchAskRows(rows: [], unreadableIDs: [])
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT a.*, p.name AS workbench_name FROM owner_asks a
+            JOIN projects p ON p.id = a.project_id
+            WHERE a.status = 'open'
+            ORDER BY a.created_at, a.id
+            """)
+        for row in rows {
+            do {
+                out.rows.append(WorkbenchAskRow(ask: try OwnerAsk(row: row), workbenchName: row["workbench_name"]))
+            } catch {
+                let id: Int64 = row["id"]
+                NSLog("OwnerAskQueries: open ask #%lld could not be read: %@", id, "\(error)")
+                out.unreadableIDs.append(id)
+            }
+        }
+        return out
     }
 
     /// A session's answered, delivered and withdrawn asks, newest first, read

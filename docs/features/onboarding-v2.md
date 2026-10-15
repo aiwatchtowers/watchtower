@@ -80,8 +80,8 @@ needs a calendar; Boards, Workload, Blockers, Project Map and Releases need
 Jira; Statistics needs Slack or mail; Inbox and Catch-Up need any source
 (Slack, mail, Jira or a calendar). Inbox has no feature rule; Catch-Up needs
 `secretary-inbox`, `slack-digests` or `stream-digests` on (owner decision
-2026-10-03, #284). A Jira- or calendar-only install that lands on a hidden
-tab therefore falls back to Inbox. The quiet "+ Connect Slack, Mail, Jira…"
+2026-10-03, #284). A selection that lands on a hidden tab falls back to
+Home, which has no gate (first-run P2, `docs/features/first-run.md`). The quiet "+ Connect Slack, Mail, Jira…"
 row at the bottom of the menu names the kinds still missing (Mail = any
 Google, IMAP or CalDAV/ICS source), opens Settings → Connections, and hides
 for good with its × (`sidebar_connect_row_dismissed`).
@@ -162,12 +162,12 @@ staged changes) and restarts the daemon once; a retry after a failed
 restart only restarts. The offer is a sheet in the Settings window, shown
 once no Add account sheet is up, and closes only through its own buttons.
 
-**Finish landing.** Catch-Up when the goals include Work communication and
-its tab shows, else Workbench for Development, else AI Chat. Re-runs keep
-the current tab. Catch-Up's empty state during the very first sync (a sync
-running, none finished yet) reads "Syncing Slack for the last N days —
-usually 3–5 min" (wording follows the connected sources) with the sync
-heartbeat line.
+**Finish landing.** Home, for every goal set (first-run P2,
+`AppState.landOnHome`). Re-runs keep the current tab. During the very first
+sync (a sync running, none finished yet) Catch-Up's empty state and Home's
+Getting ready both show `AppState.firstSyncLine`: "Syncing Slack for the
+last N days — usually 3–5 min" (wording follows the connected sources) with
+the sync heartbeat line.
 
 ## What went away
 

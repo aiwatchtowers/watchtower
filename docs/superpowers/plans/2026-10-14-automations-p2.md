@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let an automation change the world only through the registry: the `automation` surface on the ten write tools of spec §6.1, `tool(name, args, {wait})` writes as proposals (trust `ask` by default), the per-(automation, tool) **auto grant** bound to `approval_hash` (migration 00114, granted only by the owner from the Desktop, refused under AGENT-07 markers), the AGENT-03 amendment exactly as spec §14.2, output kinds `briefing`/`target`/`slack` through `RegisterOutputKind`, the briefing section, and proposal rows that carry their automation run (`context_type='automation_run'`, `context_id=<run>`) so the Inbox labels them `⚙ <automation name> · run #<n>` — the Swift card label itself is P3 Task 12 (`runLabels`, `AgentActionCardLabelTests`), where spec §6.3 puts it and where the P3 plan already implements it.
+**Goal:** Let an automation change the world only through the registry: the `automation` surface on the ten write tools of spec §6.1, `tool(name, args, {wait})` writes as proposals (trust `ask` by default), the per-(automation, tool) **auto grant** bound to `approval_hash` (migration 00117, granted only by the owner from the Desktop, refused under AGENT-07 markers), the AGENT-03 amendment exactly as spec §14.2, output kinds `briefing`/`target`/`slack` through `RegisterOutputKind`, the briefing section, and proposal rows that carry their automation run (`context_type='automation_run'`, `context_id=<run>`) so the Inbox labels them `⚙ <automation name> · run #<n>` — the Swift card label itself is P3 Task 12 (`runLabels`, `AgentActionCardLabelTests`), where spec §6.3 puts it and where the P3 plan already implements it.
 
 **Architecture:** Every SDK write is `Registry.Propose` with `Binding{Surface: "automation", ContextType: "automation_run", ContextID: <run>, AutomationRunID: <run>, WorkbenchID: <wb or 0>}`. `resolveTrust` gets an automation-surface branch (AlwaysAsk → grant → External → `tool_trust(tool,'automation')`); a grant row applies only while `grant_hash = automations.approval_hash = automation_runs.recipe_hash`. An inline apply goes through `applyTrusted` → `Apply`'s claim (AGENT-05). `{wait:true}` pauses the run on P1's `Waiter` until the `agent_actions` row is `applied`/`rejected`/`failed`. Grants are written only by `watchtower automations auto <id> <tool> on --hash <sha>`.
 
-**Tech Stack:** Go 1.26, SQLite (goose migration 00114), goja (P1), cobra; Swift (WatchtowerCore) for the Settings surface label only.
+**Tech Stack:** Go 1.26, SQLite (goose migration 00117), goja (P1), cobra; Swift (WatchtowerCore) for the Settings surface label only.
 
 **Spec:** `docs/superpowers/specs/2026-10-14-automations-design.md` — §5 (`tool`, `output.*`), §6 (surface, trust order, auto grants), §9.4, §10 (`automations auto`), §12.6 (briefing), §14.2 (AGENT-03 amendment, owner-approved ask #265), §14.3, §18 P2 tests, §20 (D5, D14). Business spec: `docs/superpowers/specs/2026-10-14-automations-business.md`. P1 plan and its **Seams for later phases**: `docs/superpowers/plans/2026-10-14-automations-p1.md`.
 
@@ -28,7 +28,7 @@
 - Inner loop only: `go test ./internal/<pkg>` (no reflexive `-count=1`), `go test ./cmd -run '<Name>'` (never the whole `./cmd` per task), `make test-swift FILTER=<Class>`, `make lint-diff`. The full gate (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`) runs once at the end of the phase, by the controller.
 - Tests that start a subprocess kill its process group and wait for it in `t.Cleanup` (P2 starts none; keep it so).
 - Transactions `BEGIN IMMEDIATE`; never hold a write tx across a tool `Execute`, an LLM call or script execution.
-- Migration **00114** (`automation_tool_grants`). Before merging, re-check `internal/db/migrations` on `origin/main`; if taken, renumber and verify by table presence, not goose version.
+- Migration **00117** (`automation_tool_grants`; 00114–00116 are taken on main by `00114_terminal_session_placement.sql`, `00115_plan_usage.sql` and `00116_agent_analytics.sql`). Before merging, re-check `internal/db/migrations` on `origin/main`; if taken, renumber and verify by table presence, not goose version.
 - Pinned values (spec, do not change without the spec):
   - Surface `"automation"`, context type `"automation_run"`; `Binding.AutomationRunID int64`, `Binding.AutomationAgent bool` (S8); `DirectApply` is never set for an automation binding.
   - Write tools that gain `"automation"` in `Surfaces`: `create_target`, `create_idea`, `create_track`, `remind_me`, `create_jira_issue`, `add_jira_comment`, `transition_jira_issue`, `assign_jira_issue`, `update_jira_issue`, `send_slack_message`. **Not** offered: `connect_jira_board`, `dismiss_tracks`, `edit_confluence_page`, `brief_context`, every workbench tool.
@@ -57,7 +57,7 @@
 | Path | Responsibility |
 |---|---|
 | `internal/automations/manifest.go` | `AdmitsTool`, `AdmitsWrite` (scope resolution is P1's) |
-| `internal/db/migrations/00114_automation_tool_grants.sql`, `internal/db/schema.sql` | grants table |
+| `internal/db/migrations/00117_automation_tool_grants.sql`, `internal/db/schema.sql` | grants table |
 | `internal/db/automation_grants.go` | grant store + active-grant join |
 | `internal/tools/registry.go` | `Binding.AutomationRunID`, `Binding.AutomationAgent`, `bindingOf`, `newProposalRow`, automation trust branch, `Receipt.Auto` |
 | `internal/tools/{targets,ideas,tracks,remind,jira,jira_write,slack_send}.go` | `"automation"` in `Surfaces` |
@@ -91,10 +91,10 @@
 - [ ] **Step 4:** Step 2 command and `go test ./internal/automations` → PASS.
 - [ ] **Step 5:** `make lint-diff`; commit `feat(automations): AdmitsTool and AdmitsWrite in the manifest`.
 
-### Task 2: Migration 00114 and the grant store
+### Task 2: Migration 00117 and the grant store
 
 **Files:**
-- Create: `internal/db/migrations/00114_automation_tool_grants.sql`, `internal/db/automation_grants.go`, `internal/db/automation_grants_test.go`
+- Create: `internal/db/migrations/00117_automation_tool_grants.sql`, `internal/db/automation_grants.go`, `internal/db/automation_grants_test.go`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), golden snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerate)
 
 **Interfaces:**
@@ -109,15 +109,15 @@
 - Depends on: none.
 
 - [ ] **Step 1: Failing tests:**
-  - `TestMigration00114_GrantsTable` — table + PK; deleting the automation cascades its grants.
+  - `TestMigration00117_GrantsTable` — table + PK; deleting the automation cascades its grants.
   - `TestGrant_SetRefusesStaleHash` — `SetAutomationToolGrant(id, tool, "other")` → `ErrHashMismatch`, no row.
   - `TestGrant_ActiveRequiresAllThreeHashes` — table: grant=approval=run → true; run claimed with an older `recipe_hash` → false; approval changed (rescan) → false; another automation's run → false; another tool → false; `approval_hash=''` → false.
   - `TestGrant_ListMarksInactive` — after `approval_hash` changes, `Active=false`; a re-grant with the new hash → `Active=true`.
   - Add the table to `TestAllTablesExist`.
-- [ ] **Step 2:** `go test ./internal/db -run 'TestMigration00114|TestGrant_|TestAllTablesExist'` → FAIL.
+- [ ] **Step 2:** `go test ./internal/db -run 'TestMigration00117|TestGrant_|TestAllTablesExist'` → FAIL.
 - [ ] **Step 3:** Migration (Up + Down), schema mirror, store.
 - [ ] **Step 4:** `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema' -update`, then Step 2 → PASS; `go test ./internal/db` → PASS.
-- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): migration 00114 automation_tool_grants`.
+- [ ] **Step 5:** `make lint-diff`; commit `feat(automations): migration 00117 automation_tool_grants`.
 
 ### Task 3: Registry — binding, proposal row, automation trust order (AGENT-03 amendment in code)
 
@@ -309,6 +309,6 @@
 
 ## Self-review against the spec
 
-- §5 `tool` writes + `{wait}` → Task 5; `output.briefing/target/slack` → Task 6; §6.1 surface + `AutomationRunID` + `bindingOf` → Tasks 3–5; §6.2 trust order → Task 3; §6.3 row context → Task 3 (card label and run link: P3 Task 12); §6.4 grants + "a save never carries grants over" → Tasks 2, 8; §9.4 00114 → Task 2; §10 `automations auto` → Task 8; §12.6 → Task 7; §14.2 verbatim → Task 9; §14.3 AGENT-01/07 → Task 9; §18 P2 tests: `TestAgent01_AutomationWriteRecordsProposalOnly`, five AGENT-03 guards, `TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash`, `TestAuto02_ToolWriteGoesThroughPropose`, `TestToolWait_AppliedRejectedFailed`, `TestToolWait_PauseExcludedFromActiveTime`, `TestTrustOrder_AutomationSurface`, `TestBriefing_IncludesAutomationOutputsSinceLast`, updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` — all present.
+- §5 `tool` writes + `{wait}` → Task 5; `output.briefing/target/slack` → Task 6; §6.1 surface + `AutomationRunID` + `bindingOf` → Tasks 3–5; §6.2 trust order → Task 3; §6.3 row context → Task 3 (card label and run link: P3 Task 12); §6.4 grants + "a save never carries grants over" → Tasks 2, 8; §9.4 00117 → Task 2; §10 `automations auto` → Task 8; §12.6 → Task 7; §14.2 verbatim → Task 9; §14.3 AGENT-01/07 → Task 9; §18 P2 tests: `TestAgent01_AutomationWriteRecordsProposalOnly`, five AGENT-03 guards, `TestAuto03_GrantInactiveAfterEditAndReactivatedByNewHash`, `TestAuto02_ToolWriteGoesThroughPropose`, `TestToolWait_AppliedRejectedFailed`, `TestToolWait_PauseExcludedFromActiveTime`, `TestTrustOrder_AutomationSurface`, `TestBriefing_IncludesAutomationOutputsSinceLast`, updated `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` — all present.
 - D5 as amended by D26 (hash scope, ask #294), D14 (AlwaysAsk never auto) → Tasks 2, 3, 8.
 - Not in P2 (by spec): the STRIP-01 text amendment and output cards (P3), the run link from the card (P3), the Desktop's SIGUSR2 after an approval on an automation row (P3; P2 relies on the executor's 10 s poll, pinned by `TestToolWait_AppliedRejectedFailed` on the fake clock).

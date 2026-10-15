@@ -314,14 +314,15 @@ card is a deep link into its tab.
 
 | Card | Source (existing unless marked new) | Links to |
 |---|---|---|
-| Waiting on you | `SidebarCountsViewModel.inboxStripCount` + the strip's top 3 items | Inbox |
+| Since you were away | `CatchUpQueries.autoWindowStart` + latest recap from `fetchRecaps(limit: 1)` | Catch-Up |
 | Next meeting | `CalendarQueries.fetchNextEvent` + its prep (`EventLink`) | Calendar event |
+| Waiting on you | `SidebarCountsViewModel.inboxStripCount` + the strip's top 3 items | Inbox |
 | Briefing | `BriefingQueries.fetchByDate(today)` — headline (see Q3) | Briefings |
 | My targets | **new** `TargetQueries.homeSummary`: open, ownership mine, due ≤ today or `in_progress`, limit 5 | Targets / the target |
 | Agents waiting | **new** `OwnerAskQueries.openAsksAllWorkbenches` (today's `openAsks` takes one `projectID`) | Workbench → the ask |
-| Since you were away | `CatchUpQueries.autoWindowStart` + latest recap from `fetchRecaps(limit: 1)` | Catch-Up |
 
-Order is fixed as listed, so the page doesn't reshuffle. With no card and
+Order is fixed as listed (owner ask #308: Since you were away first), so
+the page doesn't reshuffle. With no card and
 Getting ready collapsed, Today shows one line: "Nothing needs you right
 now."
 
