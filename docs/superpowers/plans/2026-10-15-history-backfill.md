@@ -330,7 +330,7 @@ func TestConfig_BackfillZeroIsKept(t *testing.T) {
 
 ### Task 3: Range fetchers and first-sync signals for Slack, Gmail, IMAP
 
-Each syncer gains (a) a range fetch that writes **no cursor, no auth state, no account error** and ignores per-cycle caps, and (b) `FirstSyncFrom() (time.Time, bool)`: true only when the **last `Sync`/`Run` was a completed first sync**, returning that sync's window start.
+Each syncer gains (a) a range fetch that writes **no cursor, no auth state, no account error** and ignores per-cycle caps, and (b) `FirstSyncFrom() (time.Time, bool)`: true only when the **last `Sync`/`Run` was a completed first sync**, returning the first instant that sync covered (Slack: the day after its exclusive `after:` date, R19; Gmail: only with a non-empty listing, R25).
 
 **Files:**
 - Modify: `internal/sync/search_sync.go`, `internal/sync/orchestrator.go` (field), `internal/gmail/sync.go`, `internal/imap/client.go`, `internal/imap/sync.go`
@@ -765,7 +765,7 @@ package enum BackfillProgress {
     package static func line(_ rows: [BackfillRow]) -> String?
 }
 ```
-`line`: consider rows with status running|paused; none → nil. If any considered row has `waiting == "plan_limit"` → `"Loading history paused — Claude plan limit"`. Otherwise totals summed over considered rows: `M = Σ round((upper−floor)/86400)`, `N = Σ round((upper−reached)/86400)` → `"Loading history: N of M days"`.
+`line`: consider rows with status running|paused; none → nil. If any considered row has `waiting == "plan_limit"` → `"Loading history paused — Claude plan limit"`. (Amended by R22: if every considered row is paused → `"Loading history paused — reconnect the account"`; otherwise totals summed over the running rows only.) Originally: totals summed over considered rows: `M = Σ round((upper−floor)/86400)`, `N = Σ round((upper−reached)/86400)` → `"Loading history: N of M days"`.
 
 - [ ] **Step 1: Failing tests** (`Tests/Core`, the `PlanUsageQueriesTests` shape, `TestDatabase.create()`): `rows` reads inserted rows; `line` — empty → nil; all done → nil; one running at 12 of 30 → "Loading history: 12 of 30 days"; two running (slack 10/28, gmail 4/23) → "Loading history: 14 of 51 days"; any plan_limit → the paused copy. Tray test: `TrayMenuContent(… backfillLine: "Loading history: 1 of 30 days")` shows that text; nil shows nothing.
 - [ ] **Step 2:** `make test-swift FILTER='BackfillQueriesTests|BackfillProgressTests'` → FAIL.

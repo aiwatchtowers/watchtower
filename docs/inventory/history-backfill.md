@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark; Gmail: watermark 0 and the ID list succeeded; IMAP: first sync), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
+**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message; IMAP: first sync), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
 
 **Why locked:** Existing installs must be untouched, and nothing may re-digest a period that was already digested.
 
@@ -30,6 +30,7 @@
 - `internal/sync/search_backfill_test.go::TestFirstSyncFrom_IncompletePaginationIsNotAFirstSync`
 - `internal/gmail/fetch_range_test.go::TestSync_FirstSyncFrom`
 - `internal/gmail/fetch_range_test.go::TestSync_FirstSyncFromFalseOnListFailure`
+- `internal/gmail/fetch_range_test.go::TestSync_FirstSyncFromFalseOnEmptyList`
 - `internal/imap/fetch_range_test.go::TestSyncFirstSyncFrom`
 
 **Locked since:** 2026-10-15
@@ -65,3 +66,4 @@
 ## Changelog
 
 - 2026-10-15: file created with 3 contracts (BACKFILL-01..03), introduced by the history backfill feature (spec `docs/superpowers/specs/2026-10-15-history-backfill-design.md`).
+- 2026-10-16 (final fix wave, controller rulings R19/R25): BACKFILL-01 sharpened, not weakened — the Slack upper is the day after the exclusive `after:` date (`TestFirstSyncFrom_FreshAccountCompletedRun` now expects D + 1 day), and a Gmail first sync needs a non-empty listing (new guard `TestSync_FirstSyncFromFalseOnEmptyList`; `TestSync_FirstSyncFrom` unchanged).

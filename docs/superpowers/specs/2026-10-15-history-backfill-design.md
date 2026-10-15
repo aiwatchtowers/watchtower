@@ -74,7 +74,7 @@ re-digest a period that was already digested.
 
 Depth: `sync.backfill_days`, default 30; `0` turns the backfill off for
 sources that start after the change. The backfill goes from the source's
-first-sync window start (its **upper bound**, recorded at start) down to
+first instant its first sync covered (its **upper bound**, recorded at start; for Slack the day after the exclusive `after:` date) down to
 `first sync time − backfill_days` (its **floor**). A source whose first sync
 already reached the floor (depth ≥ 30) gets no backfill row.
 
@@ -193,7 +193,9 @@ A daemon restart resumes from `reached_ts`.
   total, status, last error.
 - Desktop: one line in the existing sync status area of the sidebar footer and
   the tray menu — "Loading history: 12 of 30 days" while any row runs,
-  "Paused — Claude plan limit" when gated, gone when everything is done.
+  "Paused — Claude plan limit" when gated, "Loading history paused — reconnect
+  the account" when every active row is paused (amended by R22; paused rows
+  are not counted in N of M), gone when everything is done.
   Read from `history_backfill` (`BackfillQueries` in WatchtowerCore).
 - `FeatureReadiness` is unchanged: a feature that has data stays `ready`.
 
