@@ -10,7 +10,7 @@ Shows how much of the account's Claude plan limits is used — the 5-hour sessio
 
 `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <access token>` and `anthropic-beta: oauth-2025-04-20` (the endpoint Claude Code's `/usage` reads). It is undocumented, so `planusage.Parse` is lenient: unknown keys are ignored, every field is optional, and a body with no usable limit is a parse error, never a crash. HTTP timeout 15 s, `User-Agent: watchtower/<version>`.
 
-- `limits[]` is the primary list. Each entry gets a stable key: `session`, `weekly_all`, `weekly_scoped:<model display name lowercased>` (or `:<surface>` for a surface scope) and a label ("5-hour", "Weekly", "Weekly · <model>").
+- `limits[]` is the primary list. Each entry gets a stable key `<kind>:<slug(name)>`, where slug trims, lowercases and turns spaces into `-` (for example `weekly_scoped:weekly-opus`); `session` and `weekly_all` carry no scope and keep the bare kind. An unknown kind with no scope keeps the bare kind as both key and label. Labels read "5-hour", "Weekly", "Weekly · <model>".
 - If `limits` is absent or empty the parser falls back to `five_hour` → `session`, `seven_day` → `weekly_all`, and `seven_day_opus` / `seven_day_sonnet` when non-null.
 - `percent` is clamped to 0…100 and kept as a float. `severity` is stored verbatim as a hint only; the UI thresholds are our own.
 - `seven_day_breakdown.rows` (key, label, percent) is kept for the card.
@@ -44,19 +44,20 @@ Watchtower never refreshes the token — a refresh rotates the refresh token and
 States: `idle` (window not started, no `resets_at`), `collecting` (samples span under 15 min), `safe`, `will_hit`, `hit`.
 
 1. percent ≥ 100: `hit`.
-2. Span under 15 min: `collecting`.
-3. Rate is the least-squares slope in percent per hour, floored at 0; under 0.01 %/h: `safe`.
-4. `hit_at = now + (100 − percent) / rate`; at or after `resets_at`: `safe` (with `hit_at` kept), otherwise `will_hit`.
+2. No `resets_at`: `idle`.
+3. Span under 15 min: `collecting`.
+4. Rate is the least-squares slope in percent per hour, floored at 0; under 0.01 %/h: `safe`.
+5. `hit_at = now + (100 − percent) / rate`; at or after `resets_at`: `safe` (with `hit_at` kept), otherwise `will_hit`.
 
 A window reset (new `resets_at`) restarts the projection at `collecting`.
 
 ## Desktop
 
 - `PlanUsageCenter` re-reads the status row every 30 s. The daemon writes the DB from another process, so there is no GRDB observation. `refresh()` runs `usage plan --now` and reloads.
-- Menu bar text `5h N% · 7d M%`, showing the session and `weekly_all` limits only (per-model limits are not in the menu bar). A `⚠︎ ` prefix marks a warning state instead of colour, because a `MenuBarExtra` label is rendered as a template and drops colour. Toggle `planUsage.showInMenuBar` (default on) hides the text; unavailable or disabled shows the icon only.
+- Menu bar text `5h N% · 7d M%`, showing the session and `weekly_all` limits only (per-model limits are not in the menu bar). A `⚠︎ ` prefix marks a warning state instead of colour, because a `MenuBarExtra` label is rendered as a template and drops colour. Toggle `planUsage.showInMenuBar` (default on) hides the text; `stale` and `error` keep the text but drop the `⚠︎`; only `unavailable` and `disabled` show the icon alone.
 - The tray menu shows one item per limit line (session and weekly); a click opens Usage → Claude plan.
 - Usage → Claude plan tab (`ClaudePlanView`): plan name, updated-ago, Refresh, stale / error banner, one row per limit (bar, percent, reset, projection sentence), percent-over-time charts with the projection as a dashed line, and the weekly surface breakdown. Pure rendering rules live in `PlanUsagePresentation` (WatchtowerCore).
-- Notifications (`PlanUsageNoticePolicy` decides, the Desktop posts them): kind `will` for `session` and `weekly_all` when the projection is `will_hit`; kind `p90` for any limit at or above 90 %. Dedupe key `<kind>|<limit_key>|<resets_at ISO>`, so at most one notice per kind per limit per window (PLANUSAGE-03); sent keys are kept in the `planUsage.sentNotices` default and pruned once their window is past. The `planUsage.notifications` toggle (absent = on) switches them off. Clicking a notice routes to Usage → Claude plan.
+- Notifications (`PlanUsageNoticePolicy` decides, the Desktop posts them): kind `will` for `session` and `weekly_all` when the projection is `will_hit`; kind `p90` for any limit at or above 90 %. Dedupe key `<kind>|<limit_key>|<resets_at ISO>`, so at most one notice per kind per limit per window (PLANUSAGE-03); sent keys are kept in the `planUsage.sentNotices` default and pruned once their window is past. The `planUsage.notifications` toggle (absent = on) switches them off. Clicking a notice routes to Usage → Claude plan. The policy sends nothing when the status is not `ok` or is stale (older than 15 min), and a limit with no `resets_at` never notifies.
 
 ## CLI
 
