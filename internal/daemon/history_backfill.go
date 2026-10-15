@@ -66,12 +66,33 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		Logger:      d.logger,
 	}
 	d.trackedPipelineRun("history-backfill", func() pipelineRunStats {
+		// The digest and ideas pipelines are shared with the forward phases,
+		// so their counters are running totals: report this Step's delta
+		// (the phaseIdeas pattern). The phase runs alone, after them.
+		u0 := d.historyBackfillUsage()
 		err := r.Step(ctx)
 		if err != nil {
 			d.logger.Printf("history backfill: %v", err)
 		}
-		return pipelineRunStats{err: err}
+		u := d.historyBackfillUsage()
+		return pipelineRunStats{inTok: u.inTok - u0.inTok, outTok: u.outTok - u0.outTok,
+			cost: u.cost - u0.cost, totalAPI: u.totalAPI - u0.totalAPI, err: err}
 	})
+}
+
+// historyBackfillUsage sums the AI usage counters of the pipelines the
+// backfill sources call.
+func (d *Daemon) historyBackfillUsage() pipelineRunStats {
+	var s pipelineRunStats
+	if d.digestPipe != nil {
+		in, out, cost, api := d.digestPipe.AccumulatedUsage()
+		s.inTok, s.outTok, s.cost, s.totalAPI = s.inTok+in, s.outTok+out, s.cost+cost, s.totalAPI+api
+	}
+	if d.ideasPipe != nil {
+		in, out, cost, api := d.ideasPipe.AccumulatedUsage()
+		s.inTok, s.outTok, s.cost, s.totalAPI = s.inTok+in, s.outTok+out, s.cost+cost, s.totalAPI+api
+	}
+	return s
 }
 
 // historyBackfillDue reports whether the phase has work: a running or paused
@@ -117,9 +138,13 @@ func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 	return out
 }
 
-// accountState maps a row's account to the runner's states. A lookup error
-// other than "not found" reads as OK: the chunk's fetch then fails on its own
-// and is retried, while a wrong Gone would turn the backfill off for good.
+// accountState maps a row's account to the runner's states. An account whose
+// source is turned off reads as Gone (R15): it is never wired, so its row
+// would otherwise stay running forever and hold memory extraction back. A
+// lookup error other than "not found" reads as OK: the chunk's fetch then
+// fails on its own and is retried, while a wrong Gone would turn the
+// backfill off for good. IMAP accounts have no enabled flag and no revoked
+// state, so only a deleted mailbox ends theirs.
 func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountState {
 	var status string
 	var err error
@@ -128,13 +153,16 @@ func (d *Daemon) accountState(kind string, id int64) historybackfill.AccountStat
 		var a db.SlackAccount
 		a, err = d.db.GetSlackAccount(id)
 		status = a.Status
-		if err == nil && status == "removed" {
+		if err == nil && (status == "removed" || !a.Enabled) {
 			return historybackfill.AccountGone
 		}
 	case "gmail":
 		var a db.GoogleAccount
 		a, err = d.db.GetGoogleAccount(id)
 		status = a.Status
+		if err == nil && (!d.config.Gmail.Enabled || !a.GmailEnabled) {
+			return historybackfill.AccountGone
+		}
 	case "imap":
 		_, err = d.db.GetEmailAccount(id) // IMAP has no revoked state
 	default:
@@ -259,8 +287,12 @@ func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, err
 		return true, nil
 	}
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon history backfill")
+	if errors.Is(err, ideas.ErrBackfillLockHeld) {
+		d.logger.Printf("history backfill: gmail chunk waits — %v", err)
+		return false, nil // held: retry the chunk next cycle
+	}
 	if err != nil {
-		return false, nil //nolint:nilerr // lock held: retry the chunk next cycle
+		return false, err
 	}
 	defer release()
 	if _, err := d.ideasPipe.Backfill(ctx, from, to, nil); err != nil {

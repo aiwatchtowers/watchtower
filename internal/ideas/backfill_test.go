@@ -702,6 +702,23 @@ func TestBackfillLock_ErrorNamesTheCurrentOwner(t *testing.T) {
 	assert.Contains(t, err.Error(), "the daemon is mining right now")
 }
 
+// TestBackfillLock_HeldErrorIsErrBackfillLockHeld: a losing acquire is
+// distinguishable from any other lock failure (a daemon history backfill
+// retries it next cycle instead of counting it as a failed chunk).
+func TestBackfillLock_HeldErrorIsErrBackfillLockHeld(t *testing.T) {
+	dir := t.TempDir()
+	release, err := AcquireBackfillLock(dir, "daemon")
+	require.NoError(t, err)
+	defer release()
+
+	_, err = AcquireBackfillLock(dir, "CLI backfill")
+	require.ErrorIs(t, err, ErrBackfillLockHeld)
+
+	_, err = AcquireBackfillLock(filepath.Join(dir, "missing", "dir"), "daemon")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrBackfillLockHeld)
+}
+
 // TestBackfillLock_ReleaseDoesNotRemoveAReclaimedLock pins GB7's
 // ownership-checked release: if this process's own lock goes stale and gets
 // reclaimed by a DIFFERENT owner before this process's deferred release

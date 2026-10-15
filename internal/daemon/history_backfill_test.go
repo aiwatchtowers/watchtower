@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,7 +23,10 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/guide"
 	"watchtower/internal/historybackfill"
+	"watchtower/internal/ideas"
 	"watchtower/internal/memory"
+	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/sync"
 )
 
 // newBackfillDaemon is a daemon over a test DB with a temp HOME and an
@@ -141,14 +147,12 @@ func (g *countingGenerator) count() int {
 	return g.calls
 }
 
-func TestHistoryBackfill_SlackSourceProcess(t *testing.T) {
-	d, database, _ := newBackfillDaemon(t)
-	d.config.Digest = config.DigestConfig{Enabled: true, MinMessages: 3}
-	gen := &countingGenerator{}
-	d.SetDigestPipeline(digest.New(database, d.config, gen, d.logger))
-
-	dayStart := time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
-	from, to := dayStart, dayStart.Add(48*time.Hour)
+// seedBackfillChunk seeds a two-day chunk 20 days back: five C1 messages for
+// the window to digest and a C2 channel digest so the day's rollup has two.
+func seedBackfillChunk(t *testing.T, database *db.DB) (from, to time.Time) {
+	t.Helper()
+	from = time.Now().UTC().AddDate(0, 0, -20).Truncate(24 * time.Hour)
+	to = from.Add(48 * time.Hour)
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "alpha", Type: "public"}))
 	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
 	for i := range 5 {
@@ -157,12 +161,20 @@ func TestHistoryBackfill_SlackSourceProcess(t *testing.T) {
 			UserID: "U1", Text: fmt.Sprintf("alpha-%d", i),
 		}))
 	}
-	// A second channel digest that day, so the rollup has two to merge.
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C2", Type: "channel", PeriodFrom: float64(from.Unix()) + 7200,
 		PeriodTo: float64(from.Unix()) + 7300, Summary: "s", MessageCount: 3, Model: "m",
 	})
 	require.NoError(t, err)
+	return from, to
+}
+
+func TestHistoryBackfill_SlackSourceProcess(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Digest = config.DigestConfig{Enabled: true, MinMessages: 3}
+	gen := &countingGenerator{}
+	d.SetDigestPipeline(digest.New(database, d.config, gen, d.logger))
+	from, to := seedBackfillChunk(t, database)
 
 	src := slackSource{d: d}
 	complete, err := src.Process(context.Background(), from, to)
@@ -184,6 +196,28 @@ func TestHistoryBackfill_SlackSourceProcess(t *testing.T) {
 	assert.Equal(t, calls, gen.count(), "digests off: no AI call")
 }
 
+// A held ideas lock holds the chunk for the next cycle; any other lock
+// error is a chunk failure.
+func TestHistoryBackfill_GmailSourceLockErrors(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Streams.Enabled = true
+	d.SetIdeasPipeline(ideas.New(database, d.config, &mockGenerator{}, d.logger))
+	src := gmailSource{d: d}
+	from := time.Now().AddDate(0, 0, -20)
+
+	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "CLI backfill")
+	require.NoError(t, err)
+	complete, err := src.Process(context.Background(), from, from.Add(48*time.Hour))
+	require.NoError(t, err, "held lock: no failure")
+	assert.False(t, complete, "held lock: retry the chunk")
+	release()
+
+	require.NoError(t, os.RemoveAll(d.config.WorkspaceDir())) // the lock file cannot be written
+	complete, err = src.Process(context.Background(), from, from.Add(48*time.Hour))
+	require.Error(t, err)
+	assert.False(t, complete)
+}
+
 func TestHistoryBackfill_AccountState(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
 
@@ -201,6 +235,7 @@ func TestHistoryBackfill_AccountState(t *testing.T) {
 	assert.Equal(t, historybackfill.AccountGone, d.accountState("slack", removed))
 	assert.Equal(t, historybackfill.AccountGone, d.accountState("slack", 999))
 
+	d.config.Gmail.Enabled = true
 	g, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@example.com", GmailEnabled: true})
 	require.NoError(t, err)
 	assert.Equal(t, historybackfill.AccountOK, d.accountState("gmail", g))
@@ -212,6 +247,90 @@ func TestHistoryBackfill_AccountState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, historybackfill.AccountOK, d.accountState("imap", m))
 	assert.Equal(t, historybackfill.AccountGone, d.accountState("imap", 999))
+}
+
+// R15: an account whose source is turned off is never wired, so its row
+// would otherwise stay running forever and hold memory back.
+func TestHistoryBackfill_AccountStateSourceTurnedOff(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Gmail.Enabled = true
+
+	s, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T1"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetSlackAccountEnabled(s, false))
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("slack", s), "a disabled slack account")
+
+	g, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@example.com", GmailEnabled: true})
+	require.NoError(t, err)
+	assert.Equal(t, historybackfill.AccountOK, d.accountState("gmail", g))
+	d.config.Gmail.Enabled = false
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("gmail", g), "gmail.enabled=false")
+
+	d.config.Gmail.Enabled = true
+	g2, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "b@example.com", CalendarEnabled: true})
+	require.NoError(t, err)
+	assert.Equal(t, historybackfill.AccountGone, d.accountState("gmail", g2), "the account's gmail_enabled=0")
+}
+
+func TestPhaseHistoryBackfill_TurnedOffGmailRowStopsAndMemoryRuns(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Gmail.Enabled = false
+	d.config.Memory = enabledMemoryConfig()
+	opens := 0
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		return nil, fmt.Errorf("vault unavailable in test")
+	})
+	g, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@example.com", GmailEnabled: true})
+	require.NoError(t, err)
+	_, err = database.StartHistoryBackfill("gmail", g, 0, 3*86400, time.Now())
+	require.NoError(t, err)
+
+	d.phaseHistoryBackfill(context.Background()) // no gmail syncer is wired
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "off", rows[0].Status)
+
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 1, opens, "memory runs once the row is off")
+}
+
+// newBackfillOrchestrator is a Slack orchestrator for account 1 over
+// database, against the test Slack API (search returns no matches).
+func newBackfillOrchestrator(t *testing.T, database *db.DB, cfg *config.Config) *sync.Orchestrator {
+	t.Helper()
+	_, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T1", TeamName: "acme", TeamDomain: "acme"})
+	require.NoError(t, err)
+	srv := httptest.NewServer(testMux())
+	t.Cleanup(srv.Close)
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), cfg, 1)
+	o.SetLogger(log.New(io.Discard, "", 0))
+	return o
+}
+
+// R16: the phase's AI usage lands on its pipeline_runs row.
+func TestPhaseHistoryBackfill_RecordsUsage(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Digest = config.DigestConfig{Enabled: true, MinMessages: 3}
+	gen := &countingGenerator{}
+	d.SetDigestPipeline(digest.New(database, d.config, gen, d.logger))
+	d.SetOrchestrators([]*sync.Orchestrator{newBackfillOrchestrator(t, database, d.config)})
+	from, to := seedBackfillChunk(t, database)
+	_, err := database.StartHistoryBackfill("slack", 1, float64(from.Unix()), float64(to.Unix()), time.Now())
+	require.NoError(t, err)
+
+	d.phaseHistoryBackfill(context.Background())
+	require.Positive(t, gen.count(), "the chunk was digested")
+
+	var inTok, outTok int
+	var status string
+	require.NoError(t, database.QueryRow(`SELECT input_tokens, output_tokens, status FROM pipeline_runs
+		WHERE pipeline = 'history-backfill'`).Scan(&inTok, &outTok, &status))
+	assert.Equal(t, "done", status)
+	assert.Equal(t, gen.count(), inTok, "one input token per AI call")
+	assert.Equal(t, gen.count(), outTok)
 }
 
 // wirePeopleBackfill turns people cards on with a real pipeline, so the
