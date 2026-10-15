@@ -57,6 +57,26 @@ final class EmptyStateTabWiringTests: XCTestCase {
         XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
     }
 
+    /// An established install (day plan rows exist) with no plan for today
+    /// yet gets a calm line, not the first-run screen (owner, ask #299).
+    func testDayPlanEstablishedWithoutTodaysPlanSaysWhen() throws {
+        var established = context
+        established.readiness = { _ in .ready }
+        established.dayPlanHour = 8
+        let view = DayPlanView.emptyState(owner: Self.known, context: established) {}
+        XCTAssertNoThrow(try view.inspect().find(text: "Today's plan at or after 08:00"))
+        XCTAssertThrowsError(try view.inspect().find(text: try copy(.dayPlan).title), "not the first-run screen")
+
+        established.dayPlanHour = 10
+        let later = DayPlanView.emptyState(owner: Self.known, context: established) {}
+        XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
+
+        // A fresh install keeps the first-run copy.
+        let fresh = DayPlanView.emptyState(owner: Self.known, context: context) {}
+        XCTAssertNoThrow(try fresh.inspect().find(text: try copy(.dayPlan).title))
+        XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
+    }
+
     func testPeopleEmptyUsesSharedState() throws {
         try assertSharedState(PeopleListView.emptyState(context: context), .people)
     }

@@ -164,6 +164,10 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   another's Turn on. A failed restart leaves the feature on; the button stays
   as **Try again** and only restarts. An error recorded while the feature was
   off goes stale once it is on another way (`emptyStateTurnOnError`, `:1201`).
+- **Day Plan, established install** (owner, ask #299): with day-plan rows
+  (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` shows
+  only "Today's plan at or after HH:00" (`todaysPlanLine`, the day-plan hour)
+  instead of the first-run screen; a fresh install keeps the shared empty state.
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction

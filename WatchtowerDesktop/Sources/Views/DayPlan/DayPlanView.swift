@@ -211,14 +211,37 @@ struct DayPlanView: View {
         !owner.isKnown && !hasPlan
     }
 
-    /// No plan yet: the shared empty state; Generate stays in the footer,
-    /// and with no owner identity the way to connect one is inside (OWNER-02).
+    /// No plan for the date. A fresh install (no day plan at all) gets the
+    /// shared first-run empty state; an established one, whose day plan rows
+    /// make the feature ready, only says when today's comes (owner, ask
+    /// #299). Generate stays in the footer, and with no owner identity the
+    /// way to connect one is inside (OWNER-02).
+    @ViewBuilder
     static func emptyState(owner: Owner, context: EmptyStateContext, openConnections: @escaping () -> Void) -> some View {
-        TabEmptyState(.dayPlan, context: context) {
-            if showsNoOwnerState(owner: owner, hasPlan: false) {
-                NoOwnerEmptyState(openConnections: openConnections)
+        if context.readiness(.dayPlan) == .ready {
+            VStack(spacing: 12) {
+                Image(systemName: "calendar.day.timeline.left")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text(todaysPlanLine(hour: context.dayPlanHour))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if showsNoOwnerState(owner: owner, hasPlan: false) {
+                    NoOwnerEmptyState(openConnections: openConnections)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TabEmptyState(.dayPlan, context: context) {
+                if showsNoOwnerState(owner: owner, hasPlan: false) {
+                    NoOwnerEmptyState(openConnections: openConnections)
+                }
             }
         }
+    }
+
+    static func todaysPlanLine(hour: Int) -> String {
+        "Today's plan at or after \(String(format: "%02d:00", hour))"
     }
 
     private func openConnections() {
