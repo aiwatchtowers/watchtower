@@ -10,8 +10,9 @@ import (
 	"watchtower/internal/tools"
 )
 
-// ToolRegistry is the part of the tool registry the SDK calls (P1 reads
-// only Get and CallRead; P2 proposes). *tools.Registry satisfies it.
+// ToolRegistry is the part of the tool registry the SDK calls: Get and
+// CallRead for reads, Propose for writes (ToolWriteModule).
+// *tools.Registry satisfies it.
 type ToolRegistry interface {
 	Get(name string) (*tools.Tool, bool)
 	CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error)
@@ -21,7 +22,8 @@ type ToolRegistry interface {
 var _ ToolRegistry = (*tools.Registry)(nil)
 
 // Backends is what the SDK modules call. DB is used for read-only lookups
-// only (AllowTool's account labels) and may be nil. Shell and Workbench stay
+// only (AllowTool's account labels, a tool write's {wait} reading its
+// agent_actions row) and may be nil (a {wait} then throws NotAvailable). Shell and Workbench stay
 // nil until P5 wires them; a module that needs a nil backend throws
 // NotAvailable. Later phases append fields here, never rename one.
 type Backends struct {
