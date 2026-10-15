@@ -98,6 +98,19 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "cheat"))
     }
 
+    /// Briefings and Day Plan name what the button is for, not where it goes
+    /// (owner, ask #299); it still opens Settings → Features.
+    func testHourActionSaysChangeTheHour() throws {
+        for destination in [SidebarDestination.briefings, .dayPlan] {
+            let copy = try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8))
+            let action = try XCTUnwrap(copy.primaryAction)
+            XCTAssertEqual(action, .openSettings(tab: "features", label: "Change the hour"))
+            XCTAssertEqual(FeatureEmptyState<EmptyView>.label(for: action), "Change the hour")
+            let view = makeView(copy: copy, readiness: .scheduled(.nextCycle(minutes: 15)))
+            XCTAssertNoThrow(try view.inspect().find(button: "Change the hour"), "\(destination)")
+        }
+    }
+
     func testOpenSettingsFeaturesMapsToFeaturesTab() {
         XCTAssertEqual(SettingsTab(emptyStateTab: "features"), .features)
         XCTAssertNil(SettingsTab(emptyStateTab: "feature"))
@@ -105,7 +118,7 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         // Every Settings tab the copy table names exists.
         for destination in SidebarDestination.allCases {
             let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8)
-            guard case .openSettings(let tab) = copy?.primaryAction else { continue }
+            guard case .openSettings(let tab, _) = copy?.primaryAction else { continue }
             XCTAssertNotNil(SettingsTab(emptyStateTab: tab), "\(destination.rawValue): \(tab)")
         }
     }

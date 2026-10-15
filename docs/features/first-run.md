@@ -151,8 +151,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
   action while off (R13); Connect <source> while `needsSource`; otherwise the
-  table's action (Open Settings → Features for the hours — R14 keeps the generic
-  label —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
+  table's action ("Change the hour" for the hours, which opens Settings →
+  Features — owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
 - **Turn on** goes through `AppState.turnOnFeatureFromEmptyState`
   (`WatchtowerDesktop/Sources/App/AppState.swift:1215`, plan correction 6): `FeatureManagerService.enableNow`
@@ -166,8 +166,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   off goes stale once it is on another way (`emptyStateTurnOnError`, `:1201`).
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
-- **Spec §1.5 deviations as built:** Briefings/Day Plan offer "Open Settings →
-  Features", not "Change the hour"; the Inbox row has no button — the reaction
+- **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction
   cheat sheet is inline (spec row updated).
 
 ## Fresh-install first cycle (Go daemon, P4)

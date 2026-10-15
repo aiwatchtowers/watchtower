@@ -31,7 +31,7 @@ extension AppState {
         case .connect:
             settingsTab = .connections
             openSettingsWindow?()
-        case .openSettings(let name):
+        case .openSettings(let name, _):
             if let tab = SettingsTab(emptyStateTab: name) { settingsTab = tab }
             openSettingsWindow?()
         case .tabAction:

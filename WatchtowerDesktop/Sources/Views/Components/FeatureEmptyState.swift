@@ -123,7 +123,7 @@ struct FeatureEmptyState<Extra: View>: View {
         switch action {
         case .turnOn: retry ? "Try again" : "Turn on"
         case .connect(let source): "Connect \(source.displayName)"
-        case .openSettings(let tab): "Open Settings → \(tab.capitalized)"
+        case .openSettings(_, let label): label
         case .tabAction(let label): label
         }
     }
@@ -153,7 +153,7 @@ extension FeatureEmptyState where Extra == EmptyView {
 }
 
 extension SettingsTab {
-    /// The tab an `EmptyStateAction.openSettings(tab:)` names; nil for a
+    /// The tab an `EmptyStateAction.openSettings(tab:label:)` names; nil for a
     /// name no tab has, so a typo in the copy table fails a test instead of
     /// opening the wrong tab.
     init?(emptyStateTab name: String) {

@@ -29,8 +29,9 @@ package enum EmptyStateAction: Equatable, Sendable {
     case turnOn(featureID: String)
     /// Shown only when readiness is `.needsSource`.
     case connect(ReadinessSource)
-    /// A Settings tab, e.g. "features" for the briefing and day plan hours.
-    case openSettings(tab: String)
+    /// A Settings tab, e.g. "features" for the briefing and day plan hours,
+    /// under the button's own label.
+    case openSettings(tab: String, label: String)
     /// The tab's own existing action (e.g. "Build a recap").
     case tabAction(label: String)
 }
@@ -72,11 +73,11 @@ package enum EmptyStateCopyTable {
         "briefings": EmptyStateCopy(
             icon: "sun.max", title: "No briefings yet",
             landsHere: "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after {hour}.",
-            feature: .briefing, primaryAction: .openSettings(tab: "features")),
+            feature: .briefing, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
         "dayPlan": EmptyStateCopy(
             icon: "calendar.day.timeline.left", title: "No day plan yet",
             landsHere: "Your day in time blocks, from the calendar, targets and the briefing. Once a day at or after {hour}.",
-            feature: .dayPlan, primaryAction: .openSettings(tab: "features")),
+            feature: .dayPlan, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
             landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
