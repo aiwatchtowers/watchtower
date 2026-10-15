@@ -34,15 +34,33 @@ const (
 	// price is that an output written in the margin before the previous
 	// briefing finished can appear in both.
 	automationGatherMargin = 10 * time.Minute
-	// maxAutomationLookback bounds how far back a briefing after a long gap
-	// reaches for automation outputs.
-	maxAutomationLookback = 7 * 24 * time.Hour
+	// maxAutomationLookbackDays bounds how far back (calendar days) a briefing
+	// after a long gap reaches for automation outputs.
+	maxAutomationLookbackDays = 7
+)
+
+// automationLineBreaks is every line break a body may carry: each starts a
+// new indented line, and the header flattens each to a space, so no text can
+// begin a line the block's structure owns.
+var automationLineBreaks = []string{"\r\n", "\n", "\r", "\u2028", "\u2029", "\u0085"}
+
+func lineBreakReplacer(with string) *strings.Replacer {
+	pairs := make([]string, 0, 2*len(automationLineBreaks))
+	for _, br := range automationLineBreaks {
+		pairs = append(pairs, br, with)
+	}
+	return strings.NewReplacer(pairs...)
+}
+
+var (
+	automationHeaderFlattener = lineBreakReplacer(" ")
+	automationBodyIndenter    = lineBreakReplacer("\n" + automationBodyIndent)
 )
 
 // automationOutputsSince is where the FROM YOUR AUTOMATIONS window starts for
 // the briefing of date: the created_at of the user's latest earlier briefing
 // (however many days back — a skipped weekend loses nothing) minus
-// automationGatherMargin, never earlier than seven days before date; with no
+// automationGatherMargin, never earlier than seven calendar days before date; with no
 // earlier briefing, the previous day's midnight. A read error is logged and
 // takes the no-earlier-briefing window.
 func (p *Pipeline) automationOutputsSince(userID, date string) time.Time {
@@ -60,7 +78,7 @@ func (p *Pipeline) automationOutputsSince(userID, date string) time.Time {
 		return fallback
 	}
 	since := prev.Add(-automationGatherMargin)
-	if floor := day.Add(-maxAutomationLookback); since.Before(floor) {
+	if floor := day.AddDate(0, 0, -maxAutomationLookbackDays); since.Before(floor) {
 		since = floor
 	}
 	return since
@@ -90,9 +108,8 @@ func (p *Pipeline) gatherAutomationOutputs(since time.Time) (string, bool) {
 // renderAutomationEntry is one output: the header on one line (name and title
 // flattened), every body line indented.
 func renderAutomationEntry(name, title, body string) string {
-	flat := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
-	return fmt.Sprintf("⚙ %s: %s\n%s%s", flat.Replace(name), flat.Replace(title),
-		automationBodyIndent, strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\n"+automationBodyIndent))
+	return fmt.Sprintf("⚙ %s: %s\n%s%s", automationHeaderFlattener.Replace(name), automationHeaderFlattener.Replace(title),
+		automationBodyIndent, automationBodyIndenter.Replace(body))
 }
 
 // boundAutomationEntries keeps the newest entries that fit in limit bytes
