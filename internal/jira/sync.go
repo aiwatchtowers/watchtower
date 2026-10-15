@@ -102,7 +102,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		had = true // unknown is not a first sync: never start a backfill on a guess
 	}
 	n, err := s.sync(ctx)
-	if err == nil && !had {
+	if !had { // whatever sync returned (R13, R32): a watermark stamped before a late error counts
 		if has, herr := s.hasSyncWatermark(); herr == nil && has {
 			s.firstSyncFrom = started
 		}
@@ -111,7 +111,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 }
 
 // FirstSyncFrom reports whether the last Sync was the account's first — no
-// project of the account had a watermark before it, it returned nil, and at
+// project of the account had a watermark before it and, whatever it returned, at
 // least one project has one after it — and, if so, when that Sync started.
 // The history backfill's upper bound (docs/features/history-backfill.md):
 // the forward ideas Jira floor is initialized after this instant.

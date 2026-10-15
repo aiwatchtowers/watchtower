@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message, upper = when that sync started; IMAP: first sync; Jira: no project watermark before a `Sync` that returned nil and left one), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
+**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message, upper = when that sync started; IMAP: first sync; Jira: no project watermark before a `Sync` that left one, whatever it returned), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
 
 **Why locked:** Existing installs must be untouched, and nothing may re-digest a period that was already digested.
 
