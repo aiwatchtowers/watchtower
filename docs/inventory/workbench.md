@@ -444,10 +444,13 @@ or matching the sidecar); an edited or foreign copy is kept and reported. An own
 before v9 (marker below `v9`) keeps the single-file layout: nothing is written beside it, and
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v9 core and
 preset." A core byte-identical to the shipped v8 with no sidecar is adopted as ours. A preset change
-through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the preset only; no hook or
-registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install or
-resync, and the brief names the mismatch. An owner-edited preset copy counts as installed (no
-mismatch line, never rewritten).
+through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
+copy goes through the install first, so a pre-v9 core of ours becomes v9, then the preset follows; no
+hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
+or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
+`watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
+reports it (`install_flow`/`install_codex_flow` `drifted` or `foreign`) and the brief says to delete it
+by hand.
 
 **Why locked:** The workbench folder is the owner's repository. An installer
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
@@ -1403,8 +1406,11 @@ failure to read them — no database, a schema without the columns, a lock, a pr
 terminal-session variable — resolves to `strict` and `on`, silently. `strict` with the finish check on
 is the table above, unchanged (`decideStop`). `soft`:
 the classifier runs; a request is never sent back — a chat request is recorded whatever the presence,
-a full request is recorded with the message's own text (its last 1800 runes, `chat_question.level`
-`full`) and raised as a Full ask with no options; a failed record passes. `off`: no request is checked
+a full request is recorded with the message's own text (at most 1800 runes counting a leading "…": a
+longer message keeps its last 1799 runes after the "…"; `chat_question.level` `full`) and raised as a
+Full ask with no options; a failed record passes. Recording needs a Watchtower terminal session (a
+Desktop terminal row of this workbench with the state hooks): outside one, soft passes a request and
+records nothing. `off`: no request is checked
 and nothing is recorded or cleared; the classifier runs only for the finish check. The finish phase
 runs only with the finish check on. With `off` and the finish check off the hook returns after
 decoding stdin, before any classifier call. `stop_hook_active` never blocks in any mode. PreToolUse
@@ -1412,8 +1418,8 @@ decoding stdin, before any classifier call. `stop_hook_active` never blocks in a
 is away (the away reason) and lets the tool run while the owner is present in this session; `off` lets
 it run. The PreToolUse mode read runs inside the shared `askGuardReadBudget`, and a panic in it
 recovers to the strict away denial; the Stop mode read is bounded per read by `askGuardBusyTimeout`.
-The classifier text (v4 golden) and the fixed reasons are unchanged. Accepted limit: under `soft` a
-recorded question is raised only while the Desktop runs.
+The classifier text (v4 golden) and the fixed reasons are unchanged. Accepted limits: under `soft` a
+recorded question is raised only while the Desktop runs, and only in Watchtower terminal sessions.
 
 **Why locked:** Owner decision (spec 2026-10-03, decision 3), the PROJ-07
 precedent, and the three ask levels (asks #66, #145, #146): a guard that could

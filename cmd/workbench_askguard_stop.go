@@ -410,9 +410,10 @@ func (v askGuardVerdict) fullAsk() bool {
 // asks' 2000 runes.
 const askGuardFullQuestionRunes = 1800
 
-// askGuardFullText is a full request's text as the soft guard records it:
-// the message trimmed, or its last askGuardFullQuestionRunes runes opened by
-// "…" (a closing request sits at the end).
+// askGuardFullText is a full request's text as the soft guard records it,
+// at most askGuardFullQuestionRunes runes: the message trimmed, or "…" and
+// its last askGuardFullQuestionRunes-1 runes (a closing request sits at the
+// end).
 func askGuardFullText(message string) string {
 	s := strings.TrimSpace(message)
 	r := []rune(s)
