@@ -69,10 +69,15 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// it (`codex`), its script in `codexCommandEnv`; without one there is
     /// no binary to run, and the launch exits 127 ("Codex was not found").
     package static func make(
-        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, codex: CodexLaunchArgs? = nil
+        shell: String?,
+        folder: String,
+        mode: Mode,
+        rowID: Int64? = nil,
+        codex: CodexLaunchArgs? = nil,
+        setup: String? = nil
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
-        let args: [String]
+        var args: [String]
         switch mode {
         case let .newAgent(.claude, uuid, prompt):
             // `env -u` keeps the prompt out of everything Claude Code runs.
@@ -93,6 +98,14 @@ package struct TerminalLaunch: Equatable, Sendable {
         case .shell:
             args = ["-l"]
         }
+        // The worktree setup command runs before a NEW agent start only
+        // (never a resume or a plain shell), ahead of the agent's own command.
+        var setupText: String?
+        if let setup, !setup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           case .newAgent = mode, codex != nil || mode.agent == .claude {
+            args[args.count - 1] = setupPrefix + args[args.count - 1]
+            setupText = setup
+        }
         var launch = Self(executable: executable, args: args, currentDirectory: folder)
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
@@ -103,8 +116,27 @@ package struct TerminalLaunch: Equatable, Sendable {
         if let prompt = mode.prompt {
             launch.environment.append("\(firstPromptEnv)=\(mode.agent == .codex ? prompt : positionalPrompt(prompt))")
         }
+        if let setupText { launch.environment.append("\(setupCommandEnv)=\(setupText)") }
         return launch
     }
+
+    /// The owner's worktree setup command, verbatim (spec 2026-10-14): only
+    /// `/bin/sh` ever parses it, from the environment. The variable stays in the
+    /// agent's environment (the owner's own command; the existing `-c` string is
+    /// kept unchanged by design).
+    package static let setupCommandEnv = "WATCHTOWER_WORKTREE_SETUP"
+
+    /// Prepended to a new agent start's login-shell command: a fixed literal
+    /// with no backslash (so no dim escape) and only its own pair of single quotes, so every
+    /// login shell (fish, nushell, csh) hands it to `/bin/sh` as is. The
+    /// command runs in a subshell (an `exit` in it must not end the script, and
+    /// its `cd`/`export` do not carry into the agent);
+    /// a failure is reported and the agent starts anyway.
+    package static let setupPrefix = "/bin/sh -c '"
+        + "echo \"watchtower: running the worktree setup command…\"; "
+        + "( eval \"$\(setupCommandEnv)\" ); s=$?; "
+        + "[ \"$s\" -eq 0 ] || echo \"watchtower: the worktree setup command failed (exit $s); starting the agent anyway.\""
+        + "'; "
 
     /// The `/bin/sh` script a Codex launch runs, carried in the environment.
     package static let codexCommandEnv = "WATCHTOWER_CODEX_COMMAND"

@@ -73,9 +73,9 @@ final class OnboardingGoalsModelTests: XCTestCase {
 
     // MARK: - Defaults
 
-    func testDefaultGoalsAreAllButMeetings() {
+    func testDefaultGoalsAreAllFour() {
         let model = makeModel()
-        XCTAssertEqual(model.selection.goals, [.workCommunication, .tasksAndJira, .development])
+        XCTAssertEqual(model.selection.goals, [.workCommunication, .tasksAndJira, .meetings, .development])
         XCTAssertFalse(model.selection.isCustomized)
         XCTAssertEqual(model.language, "Russian")
     }
@@ -142,8 +142,8 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let route = await model.submit(hasSlackAccount: false)
         XCTAssertEqual(spy.calls, ["workspace init", "language Polish", "features"])
         XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs,
-                       OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira, .development]))
-        XCTAssertEqual(route, OnboardingRoute(goals: [.workCommunication, .tasksAndJira, .development], hasSlackAccount: false))
+                       OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira, .meetings, .development]))
+        XCTAssertEqual(route, OnboardingRoute(goals: [.workCommunication, .tasksAndJira, .meetings, .development]))
         XCTAssertNil(model.continueError)
     }
 
@@ -227,14 +227,14 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let relaunched = makeModel()
         XCTAssertEqual(relaunched.savedGoals, [.development])
         XCTAssertEqual(relaunched.selection.goals, [.development])
-        XCTAssertTrue(relaunched.route(hasSlackAccount: false).skips(.connect))
+        XCTAssertTrue(relaunched.route.skips(.connect))
     }
 
     func testIndicatorRouteDoesNotFollowLiveCheckboxes() {
         let model = makeModel()
-        let before = model.route(hasSlackAccount: true)
+        let before = model.route
         model.selection.goals = [.development]
-        XCTAssertEqual(model.route(hasSlackAccount: true), before)
+        XCTAssertEqual(model.route, before)
     }
 
     func testUnknownPersistedGoalIsIgnored() {
@@ -339,7 +339,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(model.cliCheck, .checking)
         XCTAssertNil(model.continueError)
         XCTAssertFalse(model.isCustomizingFeatures)
-        XCTAssertTrue(model.selection.goals.contains(.meetings), "the goals stay")
+        XCTAssertFalse(model.selection.goals.contains(.meetings), "the deselected goal stays deselected (no reset to defaults)")
         await model.prepareGoalsStep(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")

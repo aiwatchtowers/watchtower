@@ -10,22 +10,9 @@ package enum PeopleRosterState: Equatable, Sendable {
     case done(count: Int)
     case failed(String)
 
-    package var isLoadingOrFailed: Bool {
-        switch self {
-        case .loading, .failed: true
-        case .idle, .done: false
-        }
-    }
-
     package var isFailure: Bool {
         if case .failed = self { return true }
         return false
-    }
-
-    /// About you's line under the pickers while the load runs.
-    package var stillLoadingText: String? {
-        guard case let .loading(fetched, saved) = self else { return nil }
-        return saved == 0 ? "Still loading people — \(fetched)" : "Still loading people — \(saved) of \(fetched)"
     }
 
     /// The Slack card's progress line; nil when there is nothing to say.
@@ -44,10 +31,10 @@ package enum PeopleRosterState: Equatable, Sendable {
 }
 
 /// Onboarding's `watchtower sync --users-only --progress-json` run, started
-/// once a Slack account is connected so About you's people pickers have the
-/// roster. Held by `AppState`: the run keeps going while the owner moves on
-/// to About you, which reads `state`. `stop()` (app quit) terminates the
-/// child.
+/// once a Slack account is connected so the workspace's people are in the
+/// database before the daemon's first sync. Held by `AppState`: the run
+/// keeps going after the owner leaves the Connect step, whose Slack card
+/// reads `state`. `stop()` (app quit) terminates the child.
 @MainActor
 @Observable
 package final class PeopleRosterLoad {
@@ -105,7 +92,9 @@ package final class PeopleRosterLoad {
                 state = .done(count: lastTotal)
             } else {
                 let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                state = .failed(lastError ?? (stderr.isEmpty ? "exit code \(result.exitCode)" : String(stderr.prefix(300))))
+                let reason = lastError ?? (stderr.isEmpty ? "exit code \(result.exitCode)" : String(stderr.prefix(300)))
+                NSLog("PeopleRosterLoad: roster load for account %ld failed: %@", accountID, reason)
+                state = .failed(reason)
             }
         }
         return true

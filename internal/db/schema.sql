@@ -2166,7 +2166,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     board_language TEXT NOT NULL DEFAULT '', -- unused: the board always follows the session language (00087, retired by board item #153)
     archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365), -- closed targets older than this leave the board; 0 = never (00103)
-    archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL) -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105)
+    archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL) -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105),
+    worktree_setup TEXT NOT NULL DEFAULT '' -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
 );
 
 -- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;
@@ -2279,6 +2280,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_cwd_at      TEXT, -- that report's event time, agent_state_at format; NULL with agent_cwd
     cleanup_result    TEXT, -- JSON of the last `workbench cleanup --apply` of this session (Go only); NULL = never
     cleanup_at        TEXT, -- its time, agent_state_at format; NULL with cleanup_result
+    worktree_branch   TEXT, -- non-NULL = Watchtower created the worktree this row's folder_path is in, on this wt/<slug> branch; #535's cleanup owns that worktree and branch by record; NULL = every other row (00114)
+    worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );

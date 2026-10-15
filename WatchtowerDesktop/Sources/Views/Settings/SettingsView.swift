@@ -43,17 +43,13 @@ struct SettingsView: View {
                 .tag(SettingsTab.profile)
         }
         .frame(width: 760, height: 580)
-        // One sheet slot, here where the connect happened: About you after
-        // the first Slack connect, then the related-features offer.
-        .sheet(item: Binding(
-            get: { appState.settingsSheet },
-            set: { if $0 == nil, let shown = appState.settingsSheet { appState.settingsSheetDismissed(shown) } }
-        )) { sheet in
-            switch sheet {
-            case .aboutYou: LateAboutYouSheet().environment(appState)
-            case .featureSuggestion: FeatureSuggestionSheet().environment(appState)
-            }
+        // Here where the connect happened: the related-features offer,
+        // closed only through its own buttons.
+        .sheet(isPresented: Binding(
+            get: { appState.showsFeatureSuggestion },
+            set: { _ in }
+        )) {
+            FeatureSuggestionSheet().environment(appState)
         }
-        .onAppear { appState.presentLateAboutYouIfReady() }
     }
 }

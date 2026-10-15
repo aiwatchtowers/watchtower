@@ -51,6 +51,16 @@ package enum WorkbenchQueries {
         guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
     }
 
+    /// The workbench's worktree setup command (00114): run in a new session
+    /// worktree before the agent's first launch; "" = none. Stored trimmed.
+    package static func setWorktreeSetup(_ db: Database, projectID: Int64, command: String) throws {
+        try db.execute(
+            sql: "UPDATE projects SET worktree_setup = ?, updated_at = \(now) WHERE id = ?",
+            arguments: [command.trimmingCharacters(in: .whitespacesAndNewlines), projectID]
+        )
+        guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
+    }
+
     /// The header menu's "Archive Closed Targets Now" (board #415): stamps
     /// `archived_through` with the database's now, so every target closed by
     /// then archives at once; work closed later waits for the age rule.
