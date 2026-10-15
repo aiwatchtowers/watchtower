@@ -73,9 +73,14 @@ automation's own tables) · Planned (P2: the write side, `tool` writes through
 own tables are `Registry.Propose` (and the `Apply` it triggers) on the
 `automation` surface, `shell()` and `session()`; `output.inbox`/`report`
 (and P2's `briefing`) write only `automation_outputs`, and `state.set` only
-`automation_state`, both through the run's commit (AUTO-04). In P1, `tool()`
-reaches only `Registry.CallRead`: a write tool throws `NotAvailable` ("writes
-arrive in a later phase") and never reaches `Propose`. The automation read
+`automation_state`, both through the run's commit (AUTO-04). `tool()` reads
+go through `Registry.CallRead`; `tool()` writes (P2's `ToolWriteModule`) go
+only through `Registry.Propose` under the run's automation binding
+(`Surface='automation'`, `context_type='automation_run'`, `context_id` and
+`AutomationRunID` = the run id, never `DirectApply`), after the manifest check:
+each write is one `agent_actions` row, pending unless the automation trust
+order decides `execute` (AGENT-03), and a dry run never reaches the registry
+(AUTO-12). The automation read
 tools write nothing either: `memory_open` skips its access-stat bump on the
 `automation` surface and `buildAutomationRegistry` mounts `memory_recall`
 without the shadow handle, so it writes no shadow row.
@@ -88,7 +93,7 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 - `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval)
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
 - `cmd/automations_registry_test.go` — `TestBuildAutomationRegistry_AddsMemoryTools` (recall on this registry writes no shadow row)
-- P2 adds the write-side guard (plan `2026-10-14-automations-p2.md`) and flips this entry.
+- P2 Task 9 flips this entry's status to Enforced (the write-side guard above landed in Task 5).
 
 **Locked since:** 2026-10-14
 

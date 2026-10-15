@@ -159,10 +159,15 @@ func finishWrite(step *Step, rc tools.Receipt) map[string]any {
 
 // waitForAction pauses the run on the executor's Waiter until action id is
 // decided, then finishes the step with that decision. The step is marked
-// waiting first, linked to the action. A cancel or a pause timeout ends the
+// waiting first, linked to the action (a failed mark closes it as an error
+// that keeps the link). A cancel or a pause timeout ends the
 // wait with the executor's interrupt (the proposal stays pending).
 func waitForAction(env *Env, b Backends, step *Step, id int64) (any, error) {
 	if err := step.Mark(StepWaiting, db.StepFinish{ActionID: id}); err != nil {
+		// The proposal exists: close the step as an error that still links it,
+		// so the journal never loses the action id.
+		err = fmt.Errorf("proposal #%d is recorded, but the run could not wait for it: %w", id, err)
+		step.Finish(db.StepFinish{Status: StepError, ActionID: id, Error: err.Error()})
 		return nil, err
 	}
 	var row *db.AgentAction

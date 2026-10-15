@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -30,7 +33,7 @@ func newWriteFixture(t *testing.T) *writeFixture {
 	w := &writeFixture{}
 	w.exFixture = newExFixture(t, exOpts{fileDB: true, registry: func(d *db.DB) automations.ToolRegistry {
 		w.reg = tools.New(d)
-		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), tools.NewCreateIdea(), tools.NewCreateJiraIssue(nil)} {
+		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), tools.NewCreateIdea(), tools.NewCreateJiraIssue(nil), editNoteTool(t)} {
 			if err := w.reg.Register(tl); err != nil {
 				t.Fatalf("register %s: %v", tl.Name, err)
 			}
@@ -38,6 +41,45 @@ func newWriteFixture(t *testing.T) *writeFixture {
 		return w.reg
 	}})
 	return w
+}
+
+// noteArgs is what the fake edit_note write tool takes.
+type noteArgs struct {
+	Text   string `json:"text"`
+	Reason string `json:"reason"`
+}
+
+// editNoteTool is a fake automation write tool that takes owner edits
+// (Revise replaces text) and returns the text it applied.
+func editNoteTool(t *testing.T) *tools.Tool {
+	t.Helper()
+	schema, err := jsonschema.For[noteArgs](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tools.Tool{
+		Name: "edit_note", Description: "fake write with edits", InputSchema: schema, Access: tools.AccessWrite,
+		Surfaces: []string{tools.AutomationSurface},
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Revise: func(_ context.Context, _ *db.DB, args, patch json.RawMessage) (json.RawMessage, error) {
+			var a, p noteArgs
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(patch, &p); err != nil {
+				return nil, err
+			}
+			a.Text = p.Text
+			return json.Marshal(a)
+		},
+		Execute: func(_ context.Context, _ *db.DB, call tools.Call) (any, error) {
+			var a noteArgs
+			if err := json.Unmarshal(call.Args, &a); err != nil {
+				return nil, err
+			}
+			return map[string]any{"text": a.Text}, nil
+		},
+	}
 }
 
 // seedWrite indexes, confirms and enables a recipe with perms and script.
@@ -215,8 +257,13 @@ func TestToolWrite_DefaultReason(t *testing.T) {
 			if strings.Contains(want, "%d") {
 				want = fmt.Sprintf(want, r.ID)
 			}
-			if row := w.onlyAction(t); row.Reason != strings.TrimSpace(want) && row.Reason != want {
+			row := w.onlyAction(t)
+			if row.Reason != strings.TrimSpace(want) && row.Reason != want {
 				t.Fatalf("reason = %q; want %q", row.Reason, want)
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(row.ArgsJSON), &args); err != nil || args["reason"] != want {
+				t.Fatalf("args_json reason = %q (%v); want %q verbatim", args["reason"], err, want)
 			}
 		})
 	}
@@ -502,5 +549,106 @@ func TestToolWrite_NonStringReasonReachesRegistryUnchanged(t *testing.T) {
 	p := r.reg.ProposedCalls()
 	if len(p) != 1 || !strings.Contains(string(p[0].Args), `"reason":5`) {
 		t.Fatalf("proposals = %+v; want the args with reason 5 unchanged", p)
+	}
+}
+
+// logWaits records every move of a run or a step to waiting in wait_log.
+func (w *writeFixture) logWaits(t *testing.T) {
+	t.Helper()
+	for _, q := range []string{
+		`CREATE TABLE wait_log (what TEXT NOT NULL)`,
+		`CREATE TRIGGER log_run_wait AFTER UPDATE OF status ON automation_runs WHEN NEW.status = 'waiting'
+			BEGIN INSERT INTO wait_log VALUES ('run'); END`,
+		`CREATE TRIGGER log_step_wait AFTER UPDATE OF status ON automation_run_steps WHEN NEW.status = 'waiting'
+			BEGIN INSERT INTO wait_log VALUES ('step'); END`,
+	} {
+		if _, err := w.d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestToolWait_AutoGrantReturnsAtOnce: {wait:true} on a write an active
+// grant applied inline returns the applied result at once — neither the run
+// nor the step ever goes waiting.
+func TestToolWait_AutoGrantReturnsAtOnce(t *testing.T) {
+	w := newWriteFixture(t)
+	a := w.seedWrite(t, []string{"tool:create_target"}, "", waitScript)
+	if err := w.d.SetAutomationToolGrant(a.ID, "create_target", a.ApprovalHash, exStart); err != nil {
+		t.Fatal(err)
+	}
+	w.logWaits(t)
+	r := w.runToEnd(t, a)
+	row := w.onlyAction(t)
+	if out := summaryObject(t, r); r.Status != db.RunSucceeded || out["status"] != "applied" || idOf(t, out) != row.ID {
+		t.Fatalf("run %s, script got %s; want succeeded with applied #%d", r.Status, r.Summary, row.ID)
+	}
+	if n := w.count(t, "wait_log"); n != 0 {
+		t.Fatalf("wait_log rows = %d; want no run or step ever waiting", n)
+	}
+	wantStep(t, w.toolStep(t, r.ID), automations.StepApplied, row.ID, true)
+}
+
+// TestToolWait_DryRunInMemoryAnswersDryRun: the in-memory dry run has no
+// Waiter and no DB; a {wait:true} write still answers {status:"dry_run"}
+// (never NotAvailable) and proposes nothing.
+func TestToolWait_DryRunInMemoryAnswersDryRun(t *testing.T) {
+	text := strings.NewReplacer("PERMS", "  - tool:create_target\n", "EXTRA", "",
+		"SCRIPT", `var r = tool("create_target", {text: "x"}, {wait: true});
+if (r.status !== "dry_run") throw new Error(JSON.stringify(r));
+return 1`).Replace(writeRecipe)
+	rc, err := automations.ParseRecipe("mail", []byte(text), automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := fakeTools()
+	rep, err := automations.DryRunInMemory(context.Background(),
+		automations.Backends{Registry: reg, Generator: &automationstest.FakeGenerator{}}, rc, automations.DryRunOptions{})
+	if err != nil || rep.Status != db.RunSucceeded {
+		t.Fatalf("DryRunInMemory = %+v, %v; want succeeded", rep, err)
+	}
+	if len(rep.Steps) != 1 || rep.Steps[0].Status != automations.StepDryRun || len(reg.ProposedCalls()) != 0 {
+		t.Fatalf("steps = %v, proposals %d; want one dry_run step and none", stepStatuses(rep.Steps), len(reg.ProposedCalls()))
+	}
+}
+
+// TestToolWait_MarkFailureKeepsActionLink: when the journal cannot mark the
+// step waiting, the step closes as an error that still names the proposal,
+// and the proposal stays pending.
+func TestToolWait_MarkFailureKeepsActionLink(t *testing.T) {
+	w := newWriteFixture(t)
+	a := w.seedWrite(t, []string{"tool:create_target"}, "", waitScript)
+	if _, err := w.d.Exec(`CREATE TRIGGER refuse_step_wait BEFORE UPDATE OF status ON automation_run_steps
+		WHEN NEW.status = 'waiting' BEGIN SELECT RAISE(ABORT, 'the journal refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	r := w.runToEnd(t, a)
+	row := w.onlyAction(t)
+	if r.Status != db.RunFailed || row.Status != "pending" {
+		t.Fatalf("run %s (%s), row %s; want a failed run and a pending row", r.Status, r.Error, row.Status)
+	}
+	s := w.toolStep(t, r.ID)
+	if s.Status != automations.StepError || s.ActionID != row.ID || s.FinishedAt == nil {
+		t.Fatalf("step = %s action %d; want a closed error step linked to #%d", s.Status, s.ActionID, row.ID)
+	}
+	mustContain(t, "step error", s.Error, fmt.Sprintf("proposal #%d is recorded", row.ID))
+}
+
+// TestToolWait_OwnerEditReachesResult: the owner approves the waited-on
+// proposal with an edit; the script's result is what the edited args applied.
+func TestToolWait_OwnerEditReachesResult(t *testing.T) {
+	w := newWriteFixture(t)
+	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:edit_note"}, "",
+		`return JSON.stringify(tool("edit_note", {text: "draft", reason: "scheduled"}, {wait: true}))`))
+	if ok, err := w.reg.Approve(context.Background(), actionID, json.RawMessage(`{"text":"edited by the owner"}`)); err != nil || !ok {
+		t.Fatalf("approve with edit = (%v, %v)", ok, err)
+	}
+	if _, err := w.reg.Apply(context.Background(), actionID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	out := summaryObject(t, w.finishWait(t, runID))
+	res, _ := out["result"].(map[string]any)
+	if out["status"] != "applied" || res["text"] != "edited by the owner" {
+		t.Fatalf("script got %v; want applied with the edited text", out)
 	}
 }
