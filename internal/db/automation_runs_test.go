@@ -908,3 +908,47 @@ func TestClaimWithin_HonoursTheGlobalRunningBound(t *testing.T) {
 		t.Fatalf("claim under the global bound = (%v, %v); want (true, nil)", ok, err)
 	}
 }
+
+func TestListAutomationOutputsSince_AscendingNamedAndFiltered(t *testing.T) {
+	d := openTestDB(t)
+	named, run := seedRunningAutomationRun(t, d) // name "Acme digest"
+	unnamed := seedRunAutomation(t, d, "nameless", 1)
+	if _, err := d.Exec(`UPDATE automations SET name = '' WHERE id = ?`, unnamed); err != nil {
+		t.Fatal(err)
+	}
+	unnamedRun, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: unnamed, Trigger: TriggerManual})
+	since := runTestNow.Add(-time.Hour)
+	insert := func(a, r int64, kind, title string, at time.Time) {
+		t.Helper()
+		if _, err := d.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, created_at)
+			VALUES (?, ?, ?, ?, 'b', ?)`, a, r, kind, title, formatAutomationTime(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(named, run, "briefing", "before", since.Add(-time.Second))
+	insert(named, run, "briefing", "at", since)
+	insert(unnamed, unnamedRun, "briefing", "later", since.Add(20*time.Minute))
+	insert(named, run, "briefing", "middle", since.Add(10*time.Minute))
+	insert(named, run, "inbox", "other kind", since.Add(5*time.Minute))
+
+	got, err := d.ListAutomationOutputsSince("briefing", since)
+	if err != nil {
+		t.Fatalf("ListAutomationOutputsSince: %v", err)
+	}
+	var titles, names []string
+	for _, o := range got {
+		titles = append(titles, o.Title)
+		names = append(names, o.AutomationName)
+	}
+	if want := []string{"at", "middle", "later"}; !reflect.DeepEqual(titles, want) {
+		t.Errorf("titles = %v; want %v (ascending, kind-filtered, since inclusive)", titles, want)
+	}
+	if want := []string{"Acme digest", "Acme digest", "nameless"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v; want %v (an empty name falls back to the slug)", names, want)
+	}
+
+	none, err := d.ListAutomationOutputsSince("report", since)
+	if err != nil || none == nil || len(none) != 0 {
+		t.Errorf("no rows = (%v, %v); want an empty, non-nil slice", none, err)
+	}
+}

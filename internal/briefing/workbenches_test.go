@@ -167,7 +167,7 @@ func TestGetPrompt_CustomizedTemplateWithOldVerbCountFallsBackToDefault(t *testi
 
 	const sentinel = "SENTINEL-PRE-V8-BRIEFING-7C21"
 	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
-	require.Equal(t, 16, verbs, "v8 carries 16 verbs")
+	require.Equal(t, 17, verbs, "v12 carries 17 verbs (v8–v11 carried 16)")
 	old := sentinel + "\n" + strings.Repeat("%s\n", verbs-1)
 
 	store := prompts.New(d, nil)
@@ -217,7 +217,7 @@ func TestBriefingDailyV9_WorkbenchesHeaderSameVerbsLegacySourceType(t *testing.T
 	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 9, "the reworded template must auto-upgrade stored v8 rows")
 	assert.Contains(t, tmpl, "\n=== WORKBENCHES ===\n%s\n")
 	assert.NotContains(t, tmpl, "=== PROJECTS ===")
-	assert.Equal(t, 16, countVerbs(tmpl), "v9 keeps v8's 16 verbs")
+	assert.Equal(t, 17, countVerbs(tmpl), "v9 kept v8's 16 verbs; v12 added FROM YOUR AUTOMATIONS")
 	assert.Contains(t, tmpl, `source_type="project"`)
 	assert.Contains(t, tmpl, noWorkbenchActivity, "the placeholder the template names is the one rendered")
 }
