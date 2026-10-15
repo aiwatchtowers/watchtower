@@ -33,7 +33,7 @@ type Syncer struct {
 func (s *Syncer) AccountID() int64 { return s.accountID }
 
 // FirstSyncFrom reports whether the last Sync was the account's first
-// (watermark 0, ID list succeeded — even if empty) and, if so, the start of
+// (watermark 0, ID list succeeded and non-empty) and, if so, the start of
 // its newer_than window.
 func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
@@ -94,7 +94,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("listing gmail messages: %w", err)
 	}
 	s.recordAuthResult(ctx, nil)
-	if watermark == 0 {
+	if watermark == 0 && len(ids) > 0 { // an empty inbox has nothing to backfill (R25)
 		s.firstSyncFrom = listedAt.AddDate(0, 0, -days)
 	}
 

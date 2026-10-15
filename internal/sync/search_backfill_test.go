@@ -89,8 +89,7 @@ func TestBackfillSearch_RateLimitedIsAnErrorWithoutRunState(t *testing.T) {
 
 	_, err := ts.orch.BackfillSearch(context.Background(),
 		time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "incomplete")
+	require.ErrorIs(t, err, ErrBackfillIncomplete, "R23: an incomplete search is a hold, not a failure")
 	assert.False(t, ts.orch.searchRateLimited, "a backfill must not flag the forward run as rate-limited")
 	assert.Empty(t, ts.orch.searchGapNote)
 }
@@ -121,9 +120,11 @@ func TestFirstSyncFrom_FreshAccountCompletedRun(t *testing.T) {
 	from, ok := ts.orch.FirstSyncFrom()
 	require.True(t, ok, "a completed run on an account with no watermark is a first sync")
 	require.NotEmpty(t, queries)
-	want, err := time.Parse(searchDateFormat, queries[0][len("after:"):])
+	after, err := time.Parse(searchDateFormat, queries[0][len("after:"):])
 	require.NoError(t, err)
-	assert.Equal(t, want, from)
+	// R19: after:D is exclusive, so the first instant the first sync covered
+	// is D + 1 day — the backfill's upper bound.
+	assert.Equal(t, after.AddDate(0, 0, 1), from)
 	assert.Equal(t, time.UTC, from.Location())
 
 	// The watermark now exists: the next Run is not a first sync.

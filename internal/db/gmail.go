@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // gmailChannelScheme is the leading segment of every Gmail channel id. It is
@@ -174,7 +175,10 @@ type GmailMessage struct {
 }
 
 // UpsertGmailMessage inserts or updates a message for accountID, stamping
-// synced_at/updated_at from m.SyncedAt. gmail_messages' primary key is
+// synced_at from m.SyncedAt and updated_at with the write time. They differ
+// only on the history backfill path, where synced_at is the message's own
+// date (so the inbox detector skips it) while updated_at still lets the
+// knowledge index pick the row up (R18). gmail_messages' primary key is
 // (account_id, id) (migration 00043), so the same Gmail message id synced by
 // two different connected accounts is stored as two independent rows.
 func (db *DB) UpsertGmailMessage(accountID int64, m GmailMessage) error {
@@ -193,7 +197,7 @@ func (db *DB) UpsertGmailMessage(accountID int64, m GmailMessage) error {
          labels_json=excluded.labels_json, is_unread=excluded.is_unread, permalink=excluded.permalink,
          synced_at=excluded.synced_at, updated_at=excluded.updated_at`,
 		accountID, m.ID, m.ThreadID, m.FromEmail, m.FromName, m.ToJSON, m.CcJSON, m.Subject, m.Snippet,
-		m.BodyText, m.InternalDate, m.LabelsJSON, unread, m.Permalink, m.SyncedAt, m.SyncedAt)
+		m.BodyText, m.InternalDate, m.LabelsJSON, unread, m.Permalink, m.SyncedAt, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("upserting gmail message %d/%s: %w", accountID, m.ID, err)
 	}

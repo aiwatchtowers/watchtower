@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // EmailAccount is one row of email_accounts — a connected IMAP or Outlook mailbox.
@@ -112,7 +113,9 @@ func (db *DB) DeleteEmailAccount(id int64) error {
 	return nil
 }
 
-// UpsertImapMessage inserts or updates a message, stamping synced_at/updated_at.
+// UpsertImapMessage inserts or updates a message, stamping synced_at from
+// syncedAt and updated_at with the write time (R18: a backfilled row keeps
+// its own date as synced_at but must still reach the knowledge index).
 // The conflict target is (account_id, uidvalidity, uid) — the full primary
 // key — so a UID reused under a different UIDVALIDITY epoch (a real message,
 // after the server recreates the mailbox) is stored as its own row rather
@@ -133,7 +136,7 @@ func (db *DB) UpsertImapMessage(m ImapMessage, syncedAt string) error {
          is_unread=excluded.is_unread, permalink=excluded.permalink,
          synced_at=excluded.synced_at, updated_at=excluded.updated_at`,
 		m.AccountID, m.UID, m.UIDValidity, m.FromEmail, m.FromName, m.ToJSON, m.CcJSON, m.Subject, m.Snippet,
-		m.BodyText, m.InternalDate, unread, m.Permalink, syncedAt, syncedAt)
+		m.BodyText, m.InternalDate, unread, m.Permalink, syncedAt, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return fmt.Errorf("upserting imap message %d/%d (uidvalidity %d): %w", m.AccountID, m.UID, m.UIDValidity, err)
 	}

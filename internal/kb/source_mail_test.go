@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,4 +118,35 @@ func TestIMAP_BuildAndChanged(t *testing.T) {
 	missing, err := imapSource{}.Build(ctx, d, "imap:1:7:999")
 	require.NoError(t, err)
 	assert.Nil(t, missing)
+}
+
+// R18: a backfilled row keeps its own (old) date as synced_at, so the inbox
+// detector's *SyncedAfter cursor never surfaces it, but its updated_at is the
+// write time, so the knowledge index still picks it up.
+func TestMail_BackfilledRowsReachTheIndex(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO google_accounts (id, email) VALUES (1, 'me@example.com')`)
+	exec(t, d, `INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'me@example.com')`)
+	old := time.Now().UTC().AddDate(0, 0, -20).Format(time.RFC3339)
+	cursor := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+
+	require.NoError(t, d.UpsertGmailMessage(1, db.GmailMessage{ID: "m1", ThreadID: "t1",
+		FromEmail: "a@example.com", Subject: "Old", InternalDate: old, SyncedAt: old}))
+	require.NoError(t, d.UpsertImapMessage(db.ImapMessage{AccountID: 1, UID: 42, UIDValidity: 7,
+		FromEmail: "a@example.com", Subject: "Old", InternalDate: old}, old))
+
+	keys, _, _, err := gmailSource{}.Changed(ctx, d, cursor, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gmail:1:t1"}, keys, "a backfilled gmail row reaches the index")
+	keys, _, _, err = imapSource{}.Changed(ctx, d, cursor, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"imap:1:7:42"}, keys, "a backfilled imap row reaches the index")
+
+	gm, err := d.GmailMessagesSyncedAfter(1, cursor)
+	require.NoError(t, err)
+	assert.Empty(t, gm, "the inbox detector still skips the backfilled gmail row")
+	im, err := d.ImapMessagesSyncedAfter(1, cursor)
+	require.NoError(t, err)
+	assert.Empty(t, im, "the inbox detector still skips the backfilled imap row")
 }

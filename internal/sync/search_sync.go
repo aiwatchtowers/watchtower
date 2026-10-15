@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -149,10 +150,12 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		}
 		// A completed sync that started with no usable watermark is the
 		// account's first: its window start is where a history backfill
-		// picks up (FirstSyncFrom).
+		// picks up (FirstSyncFrom). after:D is exclusive, so the first
+		// instant this sync covered is D + 1 day (R19); the backfill's top
+		// chunk then digests and rolls up day D itself.
 		if _, perr := time.Parse(searchDateFormat, lastDate); perr != nil {
-			if from, ferr := time.Parse(searchDateFormat, searchAfter); ferr == nil {
-				o.firstSyncFrom = from
+			if after, ferr := time.Parse(searchDateFormat, searchAfter); ferr == nil {
+				o.firstSyncFrom = after.AddDate(0, 0, 1)
 			}
 		}
 	} else {
@@ -179,9 +182,16 @@ func slackSearchRange(from, to time.Time) (after, before string) {
 	return from.UTC().AddDate(0, 0, -1).Format(searchDateFormat), to.UTC().AddDate(0, 0, 1).Format(searchDateFormat)
 }
 
+// ErrBackfillIncomplete is BackfillSearch's error when Slack's search did not
+// return every page (a rate limit or partial pagination): transient, so the
+// caller holds the chunk for a later cycle instead of counting a failure
+// (R23).
+var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate limit or partial pages)")
+
 // BackfillSearch saves every message Slack's search finds in [from, to)
 // (widened to whole days) without touching the search watermark, the
-// progress heartbeat or the account's auth/error state.
+// progress heartbeat or the account's auth/error state. An incomplete search
+// returns an error wrapping ErrBackfillIncomplete.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false)
@@ -189,14 +199,14 @@ func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (
 		return saved, err
 	}
 	if !completed {
-		return saved, fmt.Errorf("slack backfill search %s..%s incomplete (rate limit or partial pages)", after, before)
+		return saved, fmt.Errorf("%w: %s..%s", ErrBackfillIncomplete, after, before)
 	}
 	return saved, nil
 }
 
 // FirstSyncFrom reports whether the last Run was the account's completed
-// first search sync and, if so, that sync's window start (UTC midnight of
-// its "after:" date).
+// first search sync and, if so, the first instant it covered: UTC midnight
+// of the day after its exclusive "after:" date (R19).
 func (o *Orchestrator) FirstSyncFrom() (time.Time, bool) {
 	return o.firstSyncFrom, !o.firstSyncFrom.IsZero()
 }

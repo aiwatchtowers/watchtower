@@ -152,6 +152,22 @@ func TestSync_FirstSyncFrom(t *testing.T) {
 	}
 }
 
+// R25: an inbox whose list comes back empty has nothing to backfill, so a
+// watermark-0 sync over it is not a first sync.
+func TestSync_FirstSyncFromFalseOnEmptyList(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"messages":[]}`)
+	})
+	s, _, _ := newTestSyncerForMux(t, mux)
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.FirstSyncFrom(); ok {
+		t.Fatal("an empty inbox list is not a first sync")
+	}
+}
+
 func TestSync_FirstSyncFromFalseOnListFailure(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, _ *http.Request) {
