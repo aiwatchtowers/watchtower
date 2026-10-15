@@ -482,7 +482,8 @@ func TestToolWrite_UnknownOptionIsValidationError(t *testing.T) {
 
 // TestToolWrite_ReceiptAndErrorMapping: an inline apply that failed is a
 // failed result and step; a registry ValidationError is a ValidationError,
-// any other registry failure a ToolError, and nothing is retried.
+// a workbench automation's write (until P5) NotAvailable, any other registry
+// failure a ToolError, and nothing is retried.
 func TestToolWrite_ReceiptAndErrorMapping(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -495,6 +496,9 @@ func TestToolWrite_ReceiptAndErrorMapping(t *testing.T) {
 			want: `{"error":"boom","id":9,"status":"failed"}`, step: automations.StepFailed},
 		{name: "validation", err: &tools.ValidationError{Msg: "text is required"},
 			want: "ValidationError|text is required", step: automations.StepError},
+		{name: "workbench automation", err: fmt.Errorf("%w: workbench 3's automation cannot write yet", tools.ErrWorkbenchAutomationWrite),
+			want: "NotAvailable|create_target: workbench automations get writes in a later phase: workbench 3's automation cannot write yet",
+			step: automations.StepError},
 		{name: "other", err: tools.ErrNotWritable,
 			want: "ToolError|create_target: tool is not a write tool", step: automations.StepError},
 	}

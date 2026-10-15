@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -350,4 +352,91 @@ func TestRegisterOutputKind_UnknownKindStillRefused(t *testing.T) {
 		sdkCase{}, "undefined|function|function|function")
 	mustReturn(t, `try { output.email({title: "t", body: "b"}); return "called" } catch (e) { return e.name }`,
 		sdkCase{outputs: []string{"inbox"}}, "TypeError")
+}
+
+// seedWorkbenchOutput indexes a workbench automation (a real workbench and
+// its recipe folder) with perms, outputs and script, then confirms and
+// enables it.
+func (w *writeFixture) seedWorkbenchOutput(t *testing.T, slug string, perms []string, outputs, script string) db.Automation {
+	t.Helper()
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wb, err := w.d.CreateWorkbench("acme", folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines strings.Builder
+	for _, p := range perms {
+		lines.WriteString("  - " + p + "\n")
+	}
+	text := strings.NewReplacer("PERMS", lines.String(), "OUTPUTS", outputs, "SCRIPT", script).Replace(outputRecipe)
+	dir := automations.WorkbenchDir(folder)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, slug+".md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope := automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: wb}
+	if _, err := w.ix.RescanFolder(context.Background(), scope, dir); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	a, err := w.d.GetAutomationBySlug("workbench", wb, slug)
+	if err != nil {
+		t.Fatalf("get %s: %v", slug, err)
+	}
+	if a.ParseError != "" {
+		t.Fatalf("%s does not parse: %s", slug, a.ParseError)
+	}
+	if err := w.d.ConfirmAutomation(a.ID, a.ApprovalHash, exStart); err != nil {
+		t.Fatalf("confirm %s: %v", slug, err)
+	}
+	if err := w.d.SetAutomationEnabled(a.ID, true, exStart); err != nil {
+		t.Fatalf("enable %s: %v", slug, err)
+	}
+	if a, err = w.d.GetAutomation(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	return *a
+}
+
+// Until P5 a workbench automation's run may not write: through the real
+// registry, a live run's output.target and tool() write throw NotAvailable
+// and record no agent_actions row, and a dry run refuses the same writes
+// rather than report {status: "dry_run"}. Each refused call is one error
+// step without an action.
+func TestWorkbenchAutomation_WritesNotAvailable(t *testing.T) {
+	const script = `const out = [];
+		for (const f of [() => output.target({text: "Reply to acme"}), () => tool("create_target", {text: "x"})]) {
+			try { f(); out.push("called") } catch (e) { out.push(e.name) }
+		}
+		return out.join(",")`
+	for _, trigger := range []string{db.TriggerManual, db.TriggerDryRun} {
+		t.Run(trigger, func(t *testing.T) {
+			w := newOutputFixture(t)
+			a := w.seedWorkbenchOutput(t, "wb-writes", []string{"llm:light", "tool:create_target"}, "target", script)
+			id := w.enqueue(t, a, trigger)
+			r, err := w.e.ExecuteInline(context.Background(), id)
+			if err != nil || r.Status != db.RunSucceeded {
+				t.Fatalf("ExecuteInline = %+v, %v; want succeeded", r, err)
+			}
+			if r.Summary != "NotAvailable,NotAvailable" {
+				t.Fatalf("script got %q; want both writes NotAvailable", r.Summary)
+			}
+			if rows := w.actions(t); len(rows) != 0 {
+				t.Fatalf("agent_actions = %+v; want none", rows)
+			}
+			for _, s := range w.steps(t, id) {
+				if s.Kind != automations.StepKindOutput && s.Kind != automations.StepKindTool {
+					continue
+				}
+				if s.Status != automations.StepError || s.ActionID != 0 {
+					t.Fatalf("%s %s step = %s action %d; want error, no action", s.Kind, s.Name, s.Status, s.ActionID)
+				}
+				mustContain(t, s.Name+" step error", s.Error, "workbench automations get writes in a later phase")
+			}
+		})
+	}
 }

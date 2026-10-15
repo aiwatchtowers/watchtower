@@ -242,6 +242,14 @@ var (
 	ErrSurfaceNotOffered = errors.New("tool is not offered on that surface")
 	ErrBadTransition     = errors.New("action is not in an applicable state")
 	ErrNotFound          = errors.New("action not found")
+	// ErrWorkbenchAutomationWrite: a write of a workbench-scoped automation run
+	// — refused until workbench automations ship (P5); see
+	// workbenchAutomationGate and WorkbenchAutomationWriteError.
+	ErrWorkbenchAutomationWrite = errors.New("workbench automations get writes in a later phase")
+	// ErrAutomationRunGone: an automation run's write whose run no longer
+	// exists — refused (fail closed, workbenchAutomationGate), since the run
+	// may have been a workbench one.
+	ErrAutomationRunGone = errors.New("the automation run no longer exists")
 )
 
 // Registry holds the tools and the DB the proposal rows live in.
@@ -494,6 +502,9 @@ func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMess
 	if row.Status != "pending" {
 		return false, nil
 	}
+	if err := r.workbenchAutomationGate(bindingOf(row)); err != nil {
+		return false, err
+	}
 	if seenArgsSHA256 != "" && !strings.EqualFold(seenArgsSHA256, ArgsSHA256(row.ArgsJSON)) {
 		return false, fmt.Errorf("%w: #%d changed since it was shown; reload it and approve again", ErrBadTransition, id)
 	}
@@ -562,6 +573,9 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 	if err := automationBindingGate(b); err != nil {
 		return nil, err
 	}
+	if err := r.workbenchAutomationGate(b); err != nil {
+		return nil, err
+	}
 	if !visibleOn(t, b.Surface) {
 		// Get is surface-blind: a caller that dispatches by name (a reaction
 		// mapping, a model naming a tool it was never offered) must not reach a
@@ -597,6 +611,51 @@ func automationBindingGate(b Binding) error {
 		return &ValidationError{Msg: "an automation run's context is valid only on the automation surface"}
 	}
 	return nil
+}
+
+// workbenchAutomationGate refuses every write of a workbench-scoped automation
+// run until workbench automations ship (P5): such a run's agent_actions row
+// carries the run, not the workbench (newProposalRow), so its Apply would run
+// with WorkbenchID 0 — without WorkbenchAlive and without the tool's Scope.
+// It checks the binding's WorkbenchID and, for a run, the run's automation's
+// project_id, so one gate covers Propose, a later Approve and every Apply
+// (inline or `actions apply`) of a row recorded before it existed. A run that
+// no longer exists fails closed (ErrAutomationRunGone): deleting a workbench cascades its
+// automations and runs, so a missing run may have been a workbench one.
+// Bindings off the automation surface pass untouched.
+func (r *Registry) workbenchAutomationGate(b Binding) error {
+	if b.Surface != AutomationSurface {
+		return nil
+	}
+	if b.WorkbenchID != 0 {
+		return WorkbenchAutomationWriteError(b.WorkbenchID)
+	}
+	if b.AutomationRunID == 0 {
+		return nil
+	}
+	run, err := r.db.GetAutomationRun(b.AutomationRunID)
+	if errors.Is(err, db.ErrAutomationRunNotFound) {
+		return fmt.Errorf("automation run %d: %w", b.AutomationRunID, ErrAutomationRunGone)
+	}
+	if err != nil {
+		return err
+	}
+	a, err := r.db.GetAutomation(run.AutomationID)
+	if err != nil {
+		return fmt.Errorf("reading the automation of run %d: %w", b.AutomationRunID, err)
+	}
+	if a.ProjectID != 0 {
+		return fmt.Errorf("%w: automation run %d belongs to workbench %d", ErrWorkbenchAutomationWrite, b.AutomationRunID, a.ProjectID)
+	}
+	return nil
+}
+
+// WorkbenchAutomationWriteError is the refusal of a write by workbench wb's
+// automation until P5 (ErrWorkbenchAutomationWrite). The SDK throws the same
+// error for a dry run, which never reaches the registry, so a dry run
+// refuses what a live run would.
+func WorkbenchAutomationWriteError(wb int64) error {
+	return fmt.Errorf("%w: workbench %d's automation cannot write yet", ErrWorkbenchAutomationWrite, wb)
 }
 
 // directApplyGate is what keeps DirectApply narrow: it never runs an External
@@ -705,11 +764,13 @@ func (r *Registry) automationGrantOrTrust(t *Tool, b Binding) (Trust, bool, erro
 // automation: the row must reach the Inbox strip with its run label (spec
 // §6.3), so the workbench context is not written for it.
 //
-// Known limit (P5 must close it): such a row's Apply — inline or later — runs
-// with WorkbenchID 0, so WorkbenchAlive and a tool's Scope do not re-check the
-// workbench at apply time the way they do for a workbench row. Before
-// workbench automations ship, Apply of an 'automation_run' row must resolve
-// the workbench from run → automations.project_id and fail when it is gone.
+// Known limit (P5 must close it): such a row's Apply would run with
+// WorkbenchID 0, so WorkbenchAlive and a tool's Scope could not re-check the
+// workbench at apply time the way they do for a workbench row. Until
+// workbench automations ship, workbenchAutomationGate refuses every write of
+// a workbench automation's run — Propose, Approve and Apply alike — with
+// ErrWorkbenchAutomationWrite. P5 must instead resolve the workbench from run
+// → automations.project_id at Apply and fail when it is gone.
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
 	switch {
@@ -901,6 +962,9 @@ func (r *Registry) apply(ctx context.Context, id int64, live Binding) (*db.Agent
 	// Re-scope against the stored binding: a retried or late-applied workbench
 	// row must still belong to a live workbench and touch only its rows.
 	if err := r.WorkbenchAlive(ctx, call.Binding); err != nil {
+		return r.recordFailure(id, from, err)
+	}
+	if err := r.workbenchAutomationGate(call.Binding); err != nil {
 		return r.recordFailure(id, from, err)
 	}
 	if err := t.scope(ctx, r.db, call.Args, call.Binding); err != nil {

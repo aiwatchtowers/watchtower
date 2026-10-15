@@ -100,6 +100,10 @@ workbench target. The registry's `list_targets`/`get_target` return a workbench
 target only inside that workbench's own session (`watchtower mcp --workbench N`);
 any other session is told `no target with id N`.
 
+*Note (2026-10-15, no contract change):* the Desktop's Home "My targets" read,
+`TargetQueries.homeSummary`, filters `project_id IS NULL` as well, guarded by
+`testProj01_HomeSummaryNeverReturnsAProjectTarget`.
+
 **Why locked:** Owner decision D4. An agent decomposes a plan into dozens of
 sub-targets; letting them into the Targets tab, the day plan, next-step,
 Catch-Up, memory mirrors or the inbox overdue notification would flood every
@@ -109,12 +113,13 @@ calls on it.
 **Test guards:**
 - `internal/db` — `TestProj01_ProjectTargetsNeverReachNonBoardReaders` (Task 3)
 - `internal/tools/workbenches_test.go::TestProj01_TargetReadsFollowTheSessionScope`
+- `WatchtowerDesktop/Tests/Core/WorkbenchTargetExclusionTests.swift::testProj01_HomeSummaryNeverReturnsAProjectTarget` (Home, 2026-10-15)
 
 **Locked since:** 2026-09-29
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for agent analytics, owner approved in ask #153, board #297)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
@@ -172,6 +177,7 @@ row delete removes each session's worktree ledger
 from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
 itself. The worktrees and branches a cleanup removed are not brought back
 by anything; a workbench delete runs no sweep of the repository (only the placed sessions' own cleanup below).
+Agent analytics rows (`agent_log_sessions`/`agent_log_events`, migration `00116`) are the one exception: they outlive the workbench with `project_id` NULL (and `terminal_session_id` NULL) and are adopted by a workbench later created on the same folder.
 *2026-10-14 (board #229, asks #122/#124):* deleting a workbench
 first runs the session cleanup (PROJ-18) for every placed session's
 worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
@@ -200,7 +206,7 @@ registered against a dead id — is worse than no workbench at all, and the owne
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives — assertions added, none relaxed)
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives; since 2026-10-15, board #297, an agent analytics session of it survives with `project_id` NULL — assertion added, none relaxed)
 - `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes` (2026-10-14, board #229)
 - `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList` (2026-10-14, board #229: a kept worktree stays on disk, is listed in `kept_worktrees`, and its local MCP entry is unregistered)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
@@ -2020,6 +2026,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-15 (first run P2, Home, board #783): note only, no contract text changed and no guard relaxed. **PROJ-01** — the Desktop's Home "My targets" read `TargetQueries.homeSummary` is one more non-board reader filtering `project_id IS NULL`; its guard `testProj01_HomeSummaryNeverReturnsAProjectTarget` is listed under PROJ-01.
 - 2026-10-15 (Automations P1, board #753): note only, no contract text or guard changed. The owner's `watchtower automations` CLI can write and remove recipe files in a workbench folder's `.watchtower/automations/` (`save --path` atomically through `fsutil.WriteFileAtomic`; `delete` removes only a regular recipe file in that folder); `dry-run --file` and `rescan --workbench N` read it. No Desktop path, workbench MCP tool or daemon code writes the folder in P1, so PROJ-03 (the Desktop's writes) is unchanged; the owner-approved PROJ-03 amendment (ask #272, automations spec §14.6) is written into PROJ-03 with Automations P5, which adds the Desktop save.
 - 2026-10-14 (board #535, session cleanup; spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13, business page `…-business.md`, plan `docs/superpowers/plans/2026-10-12-session-cleanup.md`; **PROJ-18 added, PROJ-11, PROJ-04 and PROJ-02 amended, owner approved 2026-10-12, ask #193**): `watchtower workbench cleanup` (`internal/sessioncleanup`, migration `00111`: `terminal_session_worktrees` + `terminal_sessions.cleanup_result`/`cleanup_at`) plans, then with `--apply` removes, the linked worktrees and local branches a session's agents created — never unsaved, unpushed, in-use or someone else's work (PROJ-18, the approved wording verbatim plus the stricter as-shipped list); the skill pack's finishing step runs it (DEV-04 changelog: pack v8); the Desktop offers it on Delete Session (**Delete and Clean Up**, the default, or **Delete Only**), per session (**Clean Up…**) and as the owner's sweep (**Clean Up Old Worktrees…**, with a one-time hint above 1 GB). **PROJ-11:** the state hooks record each new (worktree root, branch) of any agent of the session, at most 64, without git; a ledger failure never costs the state write. **PROJ-04:** the install adds one `permissions.allow` rule `Bash(<bin> workbench cleanup:*)` (the bin quoted only when unsafe, ours only with an absolute `watchtower` bin, the owner's entries never touched). **PROJ-02:** the folder removal deletes that rule; the ledger goes with the session row by cascade (`TestProj02_RemoveProjectLeavesNothingInstalled` and `TestProj02_DeleteProjectLeavesNoRows` extended, assertions added). **PROJ-17:** note only — `delete` (✕, ⌘⌫, Delete Only) is a no-op and Start fresh refused on a row a cleanup runs on, and every resume of a row whose terminal Delete and Clean Up closed is refused. **PROJ-14** unchanged (the report only reads `cleanup_result`). No guard relaxed.
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).

@@ -39,6 +39,15 @@ package struct WorkbenchRoute: Equatable, Sendable {
     }
 }
 
+extension WorkbenchRoute {
+    /// An ask's landing: its session's terminal pane, or the board when it was
+    /// filed outside the app (the rule `WorkbenchNotificationPolicy` uses).
+    package static func forAsk(projectID: Int64, sessionID: Int64?, askID: Int64) -> WorkbenchRoute {
+        sessionID.map { WorkbenchRoute(projectID: projectID, pane: .terminal, subjectID: $0, askID: askID) }
+            ?? WorkbenchRoute(projectID: projectID, pane: .board, askID: askID)
+    }
+}
+
 /// A `projects` row. Written only by the Go CLI (`watchtower workbench create`);
 /// the Desktop reads it.
 package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
