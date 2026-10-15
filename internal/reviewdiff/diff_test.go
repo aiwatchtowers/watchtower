@@ -115,3 +115,54 @@ func TestFile_BothSides(t *testing.T) {
 		t.Fatalf("missing = %+v, %v", missing, err)
 	}
 }
+
+func TestDiff_TypeChangeToSymlink(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "f", "plain\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "f")
+	r := openRepo(t, dir)
+	base := strings.TrimSpace(gitIn(t, dir, "rev-parse", "HEAD"))
+	if err := os.Remove(filepath.Join(dir, "f")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.go", filepath.Join(dir, "f")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "a.go", "package a\n\nfunc A() int { return 2 }\n")
+	tree, err := r.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Diff(context.Background(), base, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range d.Files {
+		switch f.Path {
+		case "f":
+			n++
+			if f.Status != "modified" || len(f.Hunks) == 0 {
+				t.Fatalf("f = %+v", f)
+			}
+		case "a.go":
+			if len(f.Hunks) != 1 {
+				t.Fatalf("a.go = %+v", f)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("f listed %d times: %+v", n, d.Files)
+	}
+}
+
+func TestSplitSections_LineOverMaxIsAnError(t *testing.T) {
+	patch := []byte("diff --git a/x b/x\n@@ -0,0 +1 @@\n+" + strings.Repeat("y", 5000) + "\n")
+	if _, err := splitSections(patch, 1024); err == nil {
+		t.Fatal("over-long line silently truncated the patch")
+	}
+	if _, err := splitSections(patch, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+}

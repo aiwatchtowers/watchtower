@@ -25,6 +25,8 @@ type File struct {
 	Binary          bool   `json:"binary"`
 	CollapsedReason string `json:"collapsed_reason,omitempty"` // lockfile|generated|too_large
 	Hunks           []Hunk `json:"hunks"`
+
+	typeChange bool // name-status T: the patch holds a deletion and a creation section
 }
 
 type Hunk struct {
@@ -53,16 +55,31 @@ func (r *Repo) Diff(ctx context.Context, from, to string) (Diff, error) {
 	if err != nil {
 		return Diff{}, err
 	}
-	sections := splitSections(patch)
-	if len(sections) != len(files) {
-		return Diff{}, fmt.Errorf("diff-tree: %d files but %d patch sections", len(files), len(sections))
+	sections, err := splitSections(patch, maxPatchLine)
+	if err != nil {
+		return Diff{}, fmt.Errorf("diff-tree patch: %w", err)
+	}
+	want := 0
+	for _, f := range files {
+		want++
+		if f.typeChange {
+			want++
+		}
+	}
+	if len(sections) != want {
+		return Diff{}, fmt.Errorf("diff-tree: %d patch sections for %d files, want %d", len(sections), len(files), want)
 	}
 	d := Diff{Files: files}
-	total := 0
+	total, next := 0, 0
 	for i := range d.Files {
 		f := &d.Files[i]
 		f.CollapsedReason = collapsedReason(f.Path)
-		parseSection(f, sections[i])
+		parseSection(f, sections[next])
+		next++
+		if f.typeChange { // a file turned symlink (or back): git patches it as delete + create
+			parseSection(f, sections[next])
+			next++
+		}
 		changed := f.Additions + f.Deletions
 		switch {
 		case changed > MaxFileChangedLines:
@@ -101,18 +118,21 @@ func parseNameStatus(b []byte) []File {
 		case 'D':
 			files = append(files, File{Status: "deleted", Path: fields[i+1]})
 		default: // M, T
-			files = append(files, File{Status: "modified", Path: fields[i+1]})
+			files = append(files, File{Status: "modified", Path: fields[i+1], typeChange: st[0] == 'T'})
 		}
 		i += 2
 	}
 	return files
 }
 
+// maxPatchLine is the longest patch line splitSections accepts.
+const maxPatchLine = 64 << 20
+
 // splitSections cuts the patch at each "diff --git " line.
-func splitSections(patch []byte) [][]string {
+func splitSections(patch []byte, maxLine int) ([][]string, error) {
 	var out [][]string
 	sc := bufio.NewScanner(bytes.NewReader(patch))
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	sc.Buffer(make([]byte, 0, min(64<<10, maxLine)), maxLine)
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "diff --git ") {
@@ -122,7 +142,10 @@ func splitSections(patch []byte) [][]string {
 			out[len(out)-1] = append(out[len(out)-1], line)
 		}
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func parseSection(f *File, lines []string) {
