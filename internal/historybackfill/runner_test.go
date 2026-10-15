@@ -1,6 +1,7 @@
 package historybackfill
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -78,6 +79,7 @@ type fakeSource struct {
 	processErr error
 	incomplete bool
 	onProcess  func()
+	block      bool // Process waits for its ctx to end
 	calls      []call
 }
 
@@ -89,10 +91,14 @@ func (f *fakeSource) Fetch(_ context.Context, from, to time.Time) error {
 	return f.fetchErr
 }
 
-func (f *fakeSource) Process(_ context.Context, from, to time.Time) (bool, error) {
+func (f *fakeSource) Process(ctx context.Context, from, to time.Time) (bool, error) {
 	f.calls = append(f.calls, call{"process", from, to})
 	if f.onProcess != nil {
 		f.onProcess()
+	}
+	if f.block {
+		<-ctx.Done()
+		return false, ctx.Err()
 	}
 	return !f.incomplete, f.processErr
 }
@@ -161,6 +167,8 @@ func TestRunner_ThreeFailuresSkipChunk(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
 	src := &fakeSource{kind: "gmail", id: 1, processErr: errors.New("boom")}
 	r := newRunner(st, src)
+	var buf bytes.Buffer
+	r.Logger = log.New(&buf, "", 0)
 	for i := 1; i <= 2; i++ {
 		require.NoError(t, r.Step(context.Background()))
 		assert.Equal(t, 30*day, st.rows[0].ReachedTS)
@@ -171,6 +179,8 @@ func TestRunner_ThreeFailuresSkipChunk(t *testing.T) {
 	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
 	assert.Equal(t, 0, st.rows[0].ChunkFailures)
 	assert.Equal(t, "running", st.rows[0].Status)
+	assert.Contains(t, buf.String(), "SKIPPING gmail account 1 chunk ["+
+		ts(28*day).Format(time.RFC3339)+", "+ts(30*day).Format(time.RFC3339)+") after 3 failures: process: boom")
 }
 
 func TestRunner_FetchFailureRecorded(t *testing.T) {
@@ -277,38 +287,109 @@ func TestRunner_BudgetStopsStep(t *testing.T) {
 	assert.Equal(t, 30*day, st.rows[1].ReachedTS)
 }
 
-func TestRunner_SlackDoneHookOnce(t *testing.T) {
-	done := running(1, "slack", 1, 10*day, 10*day)
-	done.Status = "done"
+func withStatus(b db.HistoryBackfill, status string) db.HistoryBackfill {
+	b.Status = status
+	return b
+}
+
+// recordHook installs an OnSlackDone that records each floor it is called with.
+func recordHook(r *Runner, err error) *[]time.Time {
+	var floors []time.Time
+	r.OnSlackDone = func(_ context.Context, floor time.Time) error {
+		floors = append(floors, floor)
+		return err
+	}
+	return &floors
+}
+
+func TestRunner_SlackDoneHookEveryStep(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{
-		done,
+		withStatus(running(1, "slack", 1, 10*day, 10*day), "done"),
 		running(2, "slack", 2, 4*day, 3*day),
 		running(3, "gmail", 1, 30*day, 0),
 	}}
-	src := &fakeSource{kind: "slack", id: 2}
-	r := newRunner(st, src, &fakeSource{kind: "gmail", id: 1})
-	var floors []time.Time
-	r.OnSlackDone = func(_ context.Context, floor time.Time) { floors = append(floors, floor) }
+	r := newRunner(st, &fakeSource{kind: "slack", id: 2}, &fakeSource{kind: "gmail", id: 1})
+	floors := recordHook(r, nil)
 
 	require.NoError(t, r.Step(context.Background()))
 	assert.Equal(t, "done", st.rows[1].Status)
-	assert.Equal(t, []time.Time{ts(3 * day)}, floors)
+	assert.Equal(t, []time.Time{ts(3 * day)}, *floors)
 
 	require.NoError(t, r.Step(context.Background()))
-	assert.Len(t, floors, 1)
+	assert.Equal(t, []time.Time{ts(3 * day), ts(3 * day)}, *floors, "the daemon owns run-once")
 }
 
-func TestRunner_SlackDoneHookWaitsForEverySlackRow(t *testing.T) {
+func TestRunner_SlackDoneHookCountsOffRows(t *testing.T) {
 	st := &fakeStore{rows: []db.HistoryBackfill{
-		running(1, "slack", 1, day, 0),
-		running(2, "slack", 2, 30*day, 0),
+		withStatus(running(1, "slack", 1, 0, 0), "off"),
+		withStatus(running(2, "slack", 2, 5*day, 5*day), "done"),
 	}}
-	r := newRunner(st, &fakeSource{kind: "slack", id: 1}, &fakeSource{kind: "slack", id: 2})
-	called := false
-	r.OnSlackDone = func(context.Context, time.Time) { called = true }
+	r := newRunner(st)
+	floors := recordHook(r, nil)
 	require.NoError(t, r.Step(context.Background()))
-	assert.Equal(t, "done", st.rows[0].Status)
-	assert.False(t, called)
+	assert.Equal(t, []time.Time{ts(5 * day)}, *floors, "floor = min over the done rows only")
+}
+
+func TestRunner_SlackDoneHookErrorIsLoggedOnly(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{withStatus(running(1, "slack", 1, 0, 0), "done")}}
+	r := newRunner(st)
+	var buf bytes.Buffer
+	r.Logger = log.New(&buf, "", 0)
+	floors := recordHook(r, errors.New("inbox down"))
+	require.NoError(t, r.Step(context.Background()))
+	assert.Len(t, *floors, 1)
+	assert.Contains(t, buf.String(), "inbox down")
+}
+
+func TestRunner_SlackDoneHookNotCalled(t *testing.T) {
+	cases := map[string]struct {
+		rows    []db.HistoryBackfill
+		account AccountState
+	}{
+		"a slack row running": {rows: []db.HistoryBackfill{
+			withStatus(running(1, "slack", 1, 0, 0), "done"),
+			running(2, "slack", 2, 30*day, 0),
+		}},
+		"a slack row paused": {rows: []db.HistoryBackfill{
+			withStatus(running(1, "slack", 1, 0, 0), "done"),
+			withStatus(running(2, "slack", 2, 30*day, 0), "paused"),
+		}, account: AccountRevoked},
+		"every slack row off": {rows: []db.HistoryBackfill{withStatus(running(1, "slack", 1, 0, 0), "off")}},
+		"no slack rows":       {rows: []db.HistoryBackfill{withStatus(running(1, "gmail", 1, 0, 0), "done")}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			st := &fakeStore{rows: tc.rows}
+			r := newRunner(st) // no sources: a running row stays running
+			r.Account = func(string, int64) AccountState { return tc.account }
+			floors := recordHook(r, nil)
+			require.NoError(t, r.Step(context.Background()))
+			assert.Empty(t, *floors)
+		})
+	}
+}
+
+func TestRunner_SlackDoneHookSkippedOnCanceledContext(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{withStatus(running(1, "slack", 1, 0, 0), "done")}}
+	r := newRunner(st)
+	floors := recordHook(r, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = r.Step(ctx)
+	assert.Empty(t, *floors)
+}
+
+func TestRunner_BudgetDeadlineHoldsChunk(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0), running(2, "imap", 1, 30*day, 0)}}
+	a := &fakeSource{kind: "gmail", id: 1, block: true}
+	b := &fakeSource{kind: "imap", id: 1}
+	r := newRunner(st, a, b)
+	r.Budget = 50 * time.Millisecond
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 1, a.count("process"))
+	assert.Equal(t, 0, st.failures)
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Empty(t, b.calls, "the deadline stops the Step")
 }
 
 func TestRunner_NoSourceWiredSkips(t *testing.T) {

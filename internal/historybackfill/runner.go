@@ -45,10 +45,10 @@ type Store interface {
 // Runner is the daemon's history backfill phase.
 type Runner struct {
 	Store       Store
-	Sources     []Source                                   // the cycle's wired sources
-	Account     func(kind string, id int64) AccountState   // auth/removal lookup
-	OnSlackDone func(ctx context.Context, floor time.Time) // once, when every slack row is done
-	Budget      time.Duration                              // 5 min
+	Sources     []Source                                         // the cycle's wired sources
+	Account     func(kind string, id int64) AccountState         // auth/removal lookup
+	OnSlackDone func(ctx context.Context, floor time.Time) error // each Step while every slack row is done/off; the caller owns run-once
+	Budget      time.Duration                                    // 5 min
 	Now         func() time.Time
 	Logger      *log.Logger
 }
@@ -61,43 +61,40 @@ func (r *Runner) Step(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slackDone, err := r.runRows(ctx, rows)
-	// The done transition is the trigger, so a restart never repeats the hook.
-	// It runs even when the loop stopped on an error after the transition.
-	if slackDone {
-		r.maybeSlackDone(ctx, rows)
+	err = r.runRows(ctx, rows)
+	if ctx.Err() == nil {
+		r.slackDone(ctx, rows)
 	}
 	return err
 }
 
 // runRows walks the rows in id order, updating each row's in-memory copy as
-// it changes it, and reports whether a slack row became done.
-func (r *Runner) runRows(ctx context.Context, rows []db.HistoryBackfill) (slackDone bool, err error) {
+// it changes it. Fetch and Process run under the Budget deadline.
+func (r *Runner) runRows(ctx context.Context, rows []db.HistoryBackfill) error {
 	start := r.Now()
+	bctx, cancel := context.WithTimeout(ctx, r.Budget)
+	defer cancel()
 	for i := range rows {
 		row := &rows[i]
 		if row.Status == "done" || row.Status == "off" {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return slackDone, err
+			return err
 		}
-		if r.Now().Sub(start) >= r.Budget {
-			return slackDone, nil
+		if bctx.Err() != nil || r.Now().Sub(start) >= r.Budget {
+			return nil
 		}
-		stop, err := r.runRow(ctx, row)
-		if row.Status == "done" && row.SourceKind == "slack" {
-			slackDone = true
-		}
+		stop, err := r.runRow(ctx, bctx, row)
 		if err != nil || stop {
-			return slackDone, err
+			return err
 		}
 	}
-	return slackDone, nil
+	return nil
 }
 
 // runRow handles one row; stop ends the Step.
-func (r *Runner) runRow(ctx context.Context, row *db.HistoryBackfill) (stop bool, err error) {
+func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (stop bool, err error) {
 	switch r.Account(row.SourceKind, row.AccountID) {
 	case AccountGone:
 		return false, r.setStatus(row, "off")
@@ -125,8 +122,8 @@ func (r *Runner) runRow(ctx context.Context, row *db.HistoryBackfill) (stop bool
 	}
 	from, to := unixTime(fromTS), unixTime(toTS)
 
-	if err := src.Fetch(ctx, from, to); err != nil {
-		return false, r.fail(ctx, row, fromTS, from, to, fmt.Errorf("fetch: %w", err))
+	if err := src.Fetch(bctx, from, to); err != nil {
+		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("fetch: %w", err))
 	}
 
 	if r.nearLimit() {
@@ -135,8 +132,8 @@ func (r *Runner) runRow(ctx context.Context, row *db.HistoryBackfill) (stop bool
 				return true, err
 			}
 			row.Waiting = waitingPlanLimit
+			r.logf("history backfill: Claude plan limit near, processing waits (%s account %d)", row.SourceKind, row.AccountID)
 		}
-		r.logf("history backfill: Claude plan limit near, processing waits (%s account %d)", row.SourceKind, row.AccountID)
 		return true, nil
 	}
 	if row.Waiting != "" {
@@ -146,9 +143,9 @@ func (r *Runner) runRow(ctx context.Context, row *db.HistoryBackfill) (stop bool
 		row.Waiting = ""
 	}
 
-	complete, err := src.Process(ctx, from, to)
+	complete, err := src.Process(bctx, from, to)
 	if err != nil {
-		return false, r.fail(ctx, row, fromTS, from, to, fmt.Errorf("process: %w", err))
+		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("process: %w", err))
 	}
 	if !complete {
 		return true, nil // budget cut or lock held: retry the chunk next cycle
@@ -157,25 +154,31 @@ func (r *Runner) runRow(ctx context.Context, row *db.HistoryBackfill) (stop bool
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
-// canceled context is a shutdown, not a failure.
-func (r *Runner) fail(ctx context.Context, row *db.HistoryBackfill, fromTS float64, from, to time.Time, err error) error {
+// canceled context is a shutdown and a passed Budget deadline holds the chunk
+// for the next cycle: neither is a failure, and both stop the Step.
+func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS float64, from, to time.Time, err error) (stop bool, _ error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+		return true, ctxErr
+	}
+	select {
+	case <-bctx.Done(): // the Budget deadline passed: hold the chunk
+		return true, nil
+	default:
 	}
 	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
 	if recErr != nil {
-		return recErr
+		return false, recErr
 	}
 	row.ChunkFailures = n
 	row.LastError = err.Error()
 	if n < MaxChunkFailures {
 		r.logf("history backfill: %s account %d chunk [%s, %s) failed (%d of %d): %v",
 			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), n, MaxChunkFailures, err)
-		return nil
+		return false, nil
 	}
 	r.logf("history backfill: SKIPPING %s account %d chunk [%s, %s) after %d failures: %v",
 		row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), n, err)
-	return r.advance(row, fromTS)
+	return false, r.advance(row, fromTS)
 }
 
 func (r *Runner) advance(row *db.HistoryBackfill, reachedTS float64) error {
@@ -216,9 +219,10 @@ func (r *Runner) source(kind string, id int64) Source {
 	return nil
 }
 
-// maybeSlackDone calls OnSlackDone with the lowest slack floor once every
-// slack row is done.
-func (r *Runner) maybeSlackDone(ctx context.Context, rows []db.HistoryBackfill) {
+// slackDone calls OnSlackDone when every slack row is done or off and at
+// least one is done, with the lowest floor of the done rows. It runs on every
+// such Step; the caller keeps its own run-once stamp. An error is only logged.
+func (r *Runner) slackDone(ctx context.Context, rows []db.HistoryBackfill) {
 	if r.OnSlackDone == nil {
 		return
 	}
@@ -227,12 +231,20 @@ func (r *Runner) maybeSlackDone(ctx context.Context, rows []db.HistoryBackfill) 
 		if row.SourceKind != "slack" {
 			continue
 		}
-		if row.Status != "done" {
+		switch row.Status {
+		case "done":
+			floor = min(floor, row.FloorTS)
+		case "off":
+		default:
 			return
 		}
-		floor = min(floor, row.FloorTS)
 	}
-	r.OnSlackDone(ctx, unixTime(floor))
+	if math.IsInf(floor, 1) {
+		return // no done slack row
+	}
+	if err := r.OnSlackDone(ctx, unixTime(floor)); err != nil {
+		r.logf("history backfill: slack-done follow-up: %v", err)
+	}
 }
 
 func (r *Runner) logf(format string, args ...any) {
