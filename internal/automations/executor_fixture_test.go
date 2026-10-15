@@ -37,6 +37,8 @@ type exOpts struct {
 	gen           digest.Generator // nil = a FakeGenerator replying "done" with 10+5 tokens
 	maxConcurrent int
 	modules       func(f *exFixture) []automations.Module // appended to DefaultModules
+	fileDB        bool                                    // a file database instead of :memory:
+	registry      func(d *db.DB) automations.ToolRegistry // nil = fakeTools()
 }
 
 type exFixture struct {
@@ -70,7 +72,7 @@ func (b *syncBuffer) String() string {
 
 func newExFixture(t *testing.T, o exOpts) *exFixture {
 	t.Helper()
-	d := db.OpenTestDB(t)
+	d := openExDB(t, o.fileDB)
 	if o.gen == nil {
 		o.gen = &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
 	}
@@ -78,7 +80,11 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 	f := &exFixture{d: d, clock: automationstest.NewFakeClock(exStart), gen: o.gen, reg: fakeTools(),
 		dir: automations.PersonalDir(ws), logs: &syncBuffer{}}
 	f.ix = automations.NewIndexer(d, ws, f.clock)
-	f.e = automations.NewExecutor(d, automations.Backends{DB: d, Generator: o.gen, Registry: f.reg, Clock: f.clock},
+	var reg automations.ToolRegistry = f.reg
+	if o.registry != nil {
+		reg = o.registry(d)
+	}
+	f.e = automations.NewExecutor(d, automations.Backends{DB: d, Generator: o.gen, Registry: reg, Clock: f.clock},
 		automations.ExecutorOptions{
 			MaxConcurrent: o.maxConcurrent,
 			Modules: func(b automations.Backends) []automations.Module {
@@ -91,6 +97,19 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 			Logger: log.New(f.logs, "", 0),
 		})
 	return f
+}
+
+func openExDB(t *testing.T, file bool) *db.DB {
+	t.Helper()
+	if !file {
+		return db.OpenTestDB(t)
+	}
+	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
+	if err != nil {
+		t.Fatalf("opening the test db: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	return d
 }
 
 // write puts slug's recipe file in the personal folder (no rescan).

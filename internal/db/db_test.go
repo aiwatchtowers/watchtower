@@ -202,6 +202,7 @@ func TestAllTablesExist(t *testing.T) {
 		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs",
 		"plan_usage_samples", "plan_usage_status",
 		"agent_log_files", "agent_log_sessions", "agent_log_events",
+		"automation_tool_grants",
 	}
 
 	for _, table := range expectedTables {

@@ -376,6 +376,76 @@ func (m *Manifest) AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args 
 	return m.allowUnits(c.Capability, c.Verb, units)
 }
 
+// outputTools are the write tools an output kind is sugar for (spec §5):
+// the output.target/output.slack shortcuts run these tools, gated by the
+// kind under outputs (output.slack also by its capability, see
+// outputNeedsCapability).
+var outputTools = map[string]string{
+	"create_target":      "target",
+	"send_slack_message": "slack",
+}
+
+// outputNeedsCapability marks the output shortcuts whose call must also pass
+// the tool's capability scope (D28, ask #315): output.slack writes only to a
+// Slack account the manifest's slack:write@<account> covers. outputs is the
+// whole gate of output.target.
+var outputNeedsCapability = map[string]bool{"slack": true}
+
+// AllowOutputTool checks an output.<kind> shortcut call of t (one of
+// outputTools): outputs:[<kind>], and for a kind in outputNeedsCapability
+// also AllowTool's check of the call. The admitting entries are returned
+// joined by ", ".
+func (m *Manifest) AllowOutputTool(ctx context.Context, d *db.DB, kind string, t *tools.Tool, args json.RawMessage) (string, error) {
+	entry, err := m.AllowOutput(kind)
+	if err != nil || !outputNeedsCapability[kind] {
+		return entry, err
+	}
+	capEntry, err := m.AllowTool(ctx, d, t, args)
+	if err != nil {
+		return "", err
+	}
+	return entry + ", " + capEntry, nil
+}
+
+// AdmitsTool reports whether a tool() call of t can be admitted by name: t
+// is on the automation surface and the manifest lists tool:<name> or an
+// entry of the tool's ToolCapabilities capability+verb. A scoped capability
+// is matched by any entry's scope, since AllowTool checks the scope per call
+// — except for a tool whose call carries no scope at all (list_messages,
+// list_upcoming_events, list_jira_projects), which only @* admits. Outputs
+// admit no tool() call.
+func (m *Manifest) AdmitsTool(t *tools.Tool) bool {
+	if !t.VisibleOn(tools.AutomationSurface) {
+		return false
+	}
+	if m.has("tool:" + t.Name) {
+		return true
+	}
+	c, ok := ToolCapabilities[t.Name]
+	if !ok {
+		return false
+	}
+	unscopedCall := capabilitySpecs[c.Capability].scope == scopeRequired && c.ScopeArg == "" && c.ScopeOf == nil
+	return slices.ContainsFunc(m.entries, func(p Permission) bool {
+		return p.Capability == c.Capability && p.Verb == c.Verb && (!unscopedCall || p.Scope == "*")
+	})
+}
+
+// AdmitsWrite reports whether an auto grant may be set for t: a write that
+// may ever run without a per-call Approve (not AlwaysAsk), on the
+// automation surface, admitted by name (AdmitsTool) or as the tool behind
+// a declared output shortcut whose gate is outputs alone (outputs:[target]
+// → create_target). outputs:[slack] alone admits no grant on
+// send_slack_message: output.slack also needs slack:write (D28), which
+// AdmitsTool already covers, so a grant never exceeds the recipe's scope.
+func (m *Manifest) AdmitsWrite(t *tools.Tool) bool {
+	if t.Access != tools.AccessWrite || t.AlwaysAsk || !t.VisibleOn(tools.AutomationSurface) {
+		return false
+	}
+	kind, isOutput := outputTools[t.Name]
+	return m.AdmitsTool(t) || (isOutput && !outputNeedsCapability[kind] && slices.Contains(m.outputs, kind))
+}
+
 func (m *Manifest) has(normalised string) bool {
 	return slices.ContainsFunc(m.entries, func(p Permission) bool { return p.String() == normalised })
 }

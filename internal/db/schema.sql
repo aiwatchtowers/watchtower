@@ -2608,3 +2608,13 @@ SELECT session_uuid,
   SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
   SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
 FROM agent_log_events GROUP BY session_uuid;
+
+-- The owner's per-(automation, tool) auto grant (00117, Automations P2). Active
+-- only while grant_hash = automations.approval_hash = the run's recipe_hash.
+CREATE TABLE IF NOT EXISTS automation_tool_grants (
+    automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    tool          TEXT NOT NULL,
+    grant_hash    TEXT NOT NULL,                             -- approval_hash the owner granted
+    granted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (automation_id, tool)
+);
