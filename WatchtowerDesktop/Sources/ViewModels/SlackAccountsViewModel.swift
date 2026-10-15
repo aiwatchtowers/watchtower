@@ -66,9 +66,9 @@ final class SlackAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `slack add` args — always `--app-return` (the OAuth success
-    /// page redirects to watchtower-auth:// so macOS brings the app back to the
-    /// foreground) and an optional `--label`. Pure and side-effect-free so the
+    /// Builds the `slack add` args — always `--app-return` (the CLI opens
+    /// watchtower-auth:// once consent is done, so macOS brings the app back to
+    /// the foreground) and an optional `--label`. Pure and side-effect-free so the
     /// flag assembly is directly testable without shelling out to a real
     /// process.
     static func addArgs(label: String) -> [String] {

@@ -74,7 +74,7 @@ struct SettingsView: View {
                 NavigationLink {
                     MacsView()
                 } label: {
-                    LabeledContent("Macs", value: "\(linking.links.count)")
+                    LabeledContent("Macs", value: "\(linking.links.count + linking.unreadableHubIDs.count)")
                 }
             }
             if model.waitingForKeys {

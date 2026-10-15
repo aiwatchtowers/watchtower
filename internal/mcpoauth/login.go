@@ -3,16 +3,15 @@ package mcpoauth
 import (
 	"context"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/oauthpage"
 )
 
 const (
@@ -39,7 +38,7 @@ type LoginConfig struct {
 // LoginOptions configures the Login flow's presentation.
 type LoginOptions struct {
 	SkipBrowserOpen bool // print the URL instead of opening the browser
-	AppReturn       bool // success page redirects to watchtower-auth://connected
+	AppReturn       bool // callback page links back to the app (oauthpage)
 }
 
 // loginResult is what the /callback handler hands back to Login: either the
@@ -103,17 +102,6 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 	resultCh := make(chan loginResult, 1)
 	var delivered atomic.Bool
 
-	// With app-return the success page sits briefly (so the confirmation is
-	// readable and the redirect doesn't race page load), then navigates to the
-	// app scheme; without it the tab just self-closes (the jira.Login precedent).
-	returnBlock, closeMS := "", "2000"
-	if opts.AppReturn {
-		returnBlock = appReturnBlock
-		closeMS = "4500"
-	}
-	successPage := strings.NewReplacer("<!--RETURN-->", returnBlock, "{{CLOSE_MS}}", closeMS).
-		Replace(callbackSuccessPage)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, callbackHandler(callbackParams{
 		loginCtx:     loginCtx,
@@ -124,7 +112,7 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		resource:     cfg.ServerURL,
 		state:        state,
 		verifier:     pkce.Verifier,
-		successPage:  successPage,
+		appReturn:    opts.AppReturn,
 		resultCh:     resultCh,
 		delivered:    &delivered,
 	}))
@@ -146,7 +134,21 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 	case res := <-resultCh:
 		return res.grant, res.err
 	case <-loginCtx.Done():
-		return nil, fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", loginCtx.Err())
+		if delivered.Load() {
+			// The callback came: its handler always delivers, and its exchange
+			// ends with loginCtx, so wait for that outcome — the page it
+			// serves and what Login returns must agree. The bound only guards
+			// a handler that died without delivering.
+			select {
+			case res := <-resultCh:
+				return res.grant, res.err
+			case <-time.After(5 * time.Second):
+			}
+			// Still not ErrLoginTimedOut: the owner was just in the browser,
+			// so the app should come back.
+			return nil, fmt.Errorf("mcpoauth: login timed out while finishing the sign-in: %w", loginCtx.Err())
+		}
+		return nil, fmt.Errorf("mcpoauth: %w or was cancelled: %w", oauthpage.ErrLoginTimedOut, loginCtx.Err())
 	}
 }
 
@@ -199,7 +201,7 @@ type callbackParams struct {
 	resource     string
 	state        string
 	verifier     string
-	successPage  string
+	appReturn    bool
 	resultCh     chan loginResult
 	delivered    *atomic.Bool
 }
@@ -234,11 +236,10 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			default:
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, page)
+			fmt.Fprint(w, page) //nolint:gosec // G705: page is oauthpage output, rendered by html/template
 		}
 		fail := func(userMsg, errText string) {
-			page := strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(userMsg), 1)
-			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, page)
+			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, oauthpage.Error(userMsg, p.appReturn))
 		}
 
 		if errMsg := q.Get("error"); errMsg != "" {
@@ -257,6 +258,6 @@ func callbackHandler(p callbackParams) http.HandlerFunc {
 			return
 		}
 
-		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, p.successPage)
+		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, oauthpage.Success("The MCP server", p.appReturn))
 	}
 }

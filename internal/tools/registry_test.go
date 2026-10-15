@@ -716,6 +716,39 @@ func TestSetTrust_RefusesTheWorkbenchSurface(t *testing.T) {
 	assert.Empty(t, TrustSurfaces(tool))
 }
 
+// Trust is a write-tool setting: a read tool never proposes, so SetTrust
+// refuses one, and TrustSurfaces offers it no surface. The automation surface
+// takes no trust either — P1 automations get no grants (P2 adds them), so a
+// tool_trust row there would be a switch nothing reads.
+func TestSetTrust_RefusesReadToolsAndTheAutomationSurface(t *testing.T) {
+	database := openDB(t)
+	var executed, peeked []Call
+	reg := New(database)
+	write := newEchoTool(t, false, &executed)
+	write.Surfaces = []string{"main", AutomationSurface}
+	read := newPeekTool(t, &peeked)
+	read.Surfaces = []string{"main", AutomationSurface}
+	require.NoError(t, reg.Register(write))
+	require.NoError(t, reg.Register(read))
+
+	for _, s := range []string{"main", AutomationSurface} {
+		err := reg.SetTrust("peek", s, TrustAsk)
+		require.ErrorIs(t, err, ErrNotWritable, s)
+		assert.Contains(t, err.Error(), "trust applies only to write tools")
+	}
+	err := reg.SetTrust("echo", AutomationSurface, TrustAsk)
+	require.ErrorIs(t, err, ErrSurfaceNotOffered)
+	assert.Contains(t, err.Error(), "automation surface takes no trust")
+	assert.Empty(t, TrustSurfaces(read), "a read tool has no trust surface")
+	assert.Equal(t, []string{"main"}, TrustSurfaces(write), "the automation surface is no trust place")
+
+	var rows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tool_trust WHERE tool IN ('echo', 'peek')`).Scan(&rows))
+	assert.Zero(t, rows, "a refused SetTrust writes no tool_trust row")
+	assert.Empty(t, executed)
+	assert.Empty(t, peeked)
+}
+
 func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {
 	database := openDB(t)
 	var executed []Call

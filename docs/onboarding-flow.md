@@ -46,6 +46,7 @@ Customize screen never loses what was picked.
  ┌──────────────────────────────────────────────────────────────────┐
  │ 2. CONNECT        skipped when the goals are Development only   │
  │  one card per source the goals need (Slack, Google, Jira)       │
+ │  Google always asks for mail AND calendar, whatever the goals   │
  │  Add sheets in `.deferred` mode — no daemon restart             │
  │  a new Slack account → `sync --users-only` in the background    │
  │  Back · Continue always allowed                                 │

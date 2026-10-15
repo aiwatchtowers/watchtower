@@ -42,13 +42,22 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   link then), opens the public link and stores the code (`exp = iat + 600`).
 /// - `closeLink(reason:)` runs on use, at expiry and when the sheet closes:
 ///   it closes the public link, then removes every participant whose iCloud
-///   user is not a linked `shared` phone (one bound to a used nonce). The
+///   user is not a linked `shared` phone (one bound to a used nonce): after
+///   `answerGrace` on use, expiry and sheet close, so a phone late with its
+///   hello still reads its refusal (the closed code is retired, so that hello
+///   is refused, never kept waiting), at once otherwise. A new code cancels a
+///   pending grace sweep, and a deferred sweep stands down once a code is
+///   being issued: it never closes the new link or sweeps its phone. The
 ///   sweep runs only while `hub_meta` marks it pending (the link was opened,
 ///   or a Remove failed to drop its participant); a failed sweep keeps the
 ///   mark and is retried by the next close (`.restart` at the next hub build).
 /// - Every share call is bounded (`shareTimeout`): offline CloudKit waits
 ///   for connectivity, and `handleDevice` runs inside the relay pass, which a
 ///   hub stop waits for. The close after a link runs outside the pass.
+///   A public-link call is never cancelled (a timed-out one may still
+///   land): one writer reconciles the link to the wanted state, one call at
+///   a time (`setPublicLink(open:reason:)`, #262), and a close it fails
+///   with no caller waiting re-marks the sweep and is retried.
 /// - Mobile E2E (spec §2.3): the QR carries the hub's public keys. A phone
 ///   asks to link with a hello sealed to `hub_kx` under the scanned code's
 ///   nonce; `handleHello(_:)` opens it with each kept code's nonce (F4),
@@ -94,6 +103,16 @@ final class MobileLinkCenter {
         case issueFailed = "issue_failed"
         /// The Mac's iCloud account changed: the QR names the old user.
         case accountChanged = "account_changed"
+
+        /// A close after which a phone that joined the shares may still send its hello (the code was used, expired
+        /// or put away): its participant stays for `answerGrace`, so it can read the refusal (`used_code`,
+        /// `expired_code`, `not_confirmed`) in DataZone. The other closes sweep at once.
+        var answersLateHellos: Bool {
+            switch self {
+            case .used, .expired, .sheetClosed: true
+            case .restart, .issueFailed, .accountChanged: false
+            }
+        }
     }
 
     /// `link_codes` keeps this many, newest first (spec §2.3).
@@ -113,6 +132,13 @@ final class MobileLinkCenter {
     nonisolated static let maxRefusalsPerCode = 10
     /// At most this many phones hold a refusal at once (`link_refusals` rows), whatever the code.
     nonisolated static let maxLinkRefusals = 50
+    /// How long an answering close (`CloseReason.answersLateHellos`) keeps the unbound participants: a phone that
+    /// accepted the public link but had not written its hello yet still gets its refusal. A swept phone can no longer
+    /// read DataZone, where the refusal is. The public link closes at once (a failed close is retried after
+    /// `linkCloseRetryDelays`, within the grace), so no one new joins meanwhile.
+    nonisolated static let answerGrace: Duration = .seconds(120)
+    /// Waits before each retry of an answering close's failed public-link close; the grace's sweep closes it too.
+    nonisolated static let linkCloseRetryDelays: [Duration] = [.seconds(15), .seconds(60)]
 
     /// The hub's confirm nonce for one accepted hello: fresh random bytes.
     nonisolated static func randomConfirmNonce() -> Data {
@@ -189,6 +215,9 @@ final class MobileLinkCenter {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let shareTimeout: Duration
+    @ObservationIgnored private let answerGrace: Duration
+    /// When the last answering close's grace ends; the relay stays at its active cadence until then.
+    @ObservationIgnored private var answerWindowEnd: Date?
     /// Draws the confirm nonce of an accepted hello (SAS v2).
     @ObservationIgnored private let confirmNonce: @Sendable () -> Data
     /// The close that follows a link, run outside the relay pass.
@@ -205,6 +234,11 @@ final class MobileLinkCenter {
     /// a Remove fails), so a close that was suspended meanwhile never clears
     /// the mark.
     @ObservationIgnored private var sweepEpoch = 0
+    /// True while `issueCode()` runs: a deferred sweep or link close never lands on the new code's link.
+    @ObservationIgnored private var issuing = false
+    /// The code the last answering close retired, and the refusal a late hello under it reads (a sheet close's
+    /// `not_confirmed`, where the retired `exp` alone would read `expired_code`).
+    @ObservationIgnored private var retiredCode: (nonce: String, refusal: LinkRefusal)?
     @ObservationIgnored private let logger = Logger(subsystem: Constants.bundleID, category: "MobileLinkCenter")
 
     init(
@@ -217,6 +251,7 @@ final class MobileLinkCenter {
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         shareTimeout: Duration = MobileHubService.defaultCloudTimeout,
+        answerGrace: Duration = MobileLinkCenter.answerGrace,
         confirmNonce: @escaping @Sendable () -> Data = MobileLinkCenter.randomConfirmNonce
     ) {
         self.sidecar = sidecar
@@ -228,6 +263,7 @@ final class MobileLinkCenter {
         self.now = now
         self.sleep = sleep
         self.shareTimeout = shareTimeout
+        self.answerGrace = answerGrace
         self.confirmNonce = confirmNonce
         reloadDevices()
         reloadPendingLinks()
@@ -284,6 +320,13 @@ final class MobileLinkCenter {
     /// iCloud or the Mac's user name; nothing is created then. The codes
     /// still open are retired: only the newest one links.
     func issueCode() async throws -> LinkPayload {
+        // A pending grace sweep or link close must not close the new code's link or sweep its phone; the new code's
+        // own close sweeps (the mark stays pending).
+        cancelSweepRetry()
+        issuing = true
+        defer { issuing = false }
+        // The new code retires every open one: a hello under them reads `expired_code`.
+        retiredCode = nil
         await accountChangeClose?.value
         let epoch = ownerEpoch
         let account = await accountAvailability()
@@ -330,7 +373,7 @@ final class MobileLinkCenter {
             let urls = try await share { try await shares.ensureShares() }
             // Marked before it opens: a crash in between still closes it.
             try markSweepPending()
-            try await share { try await shares.setPublicLink(open: true) }
+            try await setPublicLink(open: true)
             report(.available)
             return urls
         } catch {
@@ -364,16 +407,48 @@ final class MobileLinkCenter {
     /// Refuses every link request still waiting (before the sweep, so a
     /// waiting phone's participant is never swept before the owner decided),
     /// then closes the public link and removes every participant not bound to
-    /// a used nonce (spec §2.3). No share call when no link was opened.
+    /// a used nonce (spec §2.3). An answering close
+    /// (`CloseReason.answersLateHellos`) closes the public link now and
+    /// removes the participants after `answerGrace`, so a phone still on its
+    /// way reads its refusal first. No share call when no link was opened.
     /// A close whose share calls fail is retried in the background after
     /// these waits (`sweepRetry`), then left to the next close.
     func closeLink(reason: CloseReason) async {
         expiryTask?.cancel()
         expiryTask = nil
+        let closed = openCode
         openCode = nil
         lastCloseReason = reason
         refusePendingLinks(closing: reason)
-        if await !sweepShares(reason: reason) { scheduleSweepRetry() }
+        guard reason.answersLateHellos else {
+            if await !sweepShares(reason: reason) { scheduleSweepRetry() }
+            return
+        }
+        if let closed { retire(closed, closing: reason) }
+        guard await closePublicLink(reason: reason) else { return }
+        answerWindowEnd = now().addingTimeInterval(TimeInterval(answerGrace.components.seconds))
+        // The grace replaces a running sweep retry; a link-close retry just scheduled keeps running.
+        sweepRetry?.cancel()
+        sweepRetry = nil
+        scheduleSweepRetry(after: [answerGrace] + Self.sweepRetryDelays, reason: reason)
+    }
+
+    /// An answering close retires the code it closed: a hello under it during the grace is refused with the close's
+    /// refusal, never kept waiting for an owner who put the code away. A failure is logged: such a hello waits, and
+    /// the next close refuses it.
+    private func retire(_ code: LinkPayload, closing reason: CloseReason) {
+        do {
+            try sidecar.retireLinkCode(code.nonce, at: now())
+            retiredCode = (code.nonce, Self.refusal(closing: reason))
+        } catch {
+            logger.error("closed code not retired (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// The relay polls at its active cadence: a QR is on screen, or an answering close's grace runs (a late hello
+    /// is read and refused within it).
+    var relayIsUrgent: Bool {
+        openCode != nil || answerWindowEnd.map { now() < $0 } == true
     }
 
     /// Waits before each retry of a failed close's share calls (target 153): bounded, so an iCloud outage costs a
@@ -383,18 +458,75 @@ final class MobileLinkCenter {
     @ObservationIgnored private(set) var sweepRetry: Task<Void, Never>?
     /// Bumped per retry task: only the task that owns `sweepRetry` clears it.
     @ObservationIgnored private var sweepRetryGeneration = 0
+    /// The retry of an answering close's failed public-link close; cancelled with `sweepRetry`.
+    @ObservationIgnored private(set) var linkCloseRetry: Task<Void, Never>?
+    /// Counts `scheduleLinkCloseRetry` calls; a retry clears `linkCloseRetry` on exit only if no newer one replaced it.
+    @ObservationIgnored private var linkCloseRetryGeneration = 0
+
+    /// Closes the public link while the sweep is pending and leaves the participants to the sweep. false: no sweep
+    /// is pending (no link was opened). A failure is logged; the sweep closes the link again.
+    private func closePublicLink(reason: CloseReason) async -> Bool {
+        do {
+            guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return false }
+        } catch {
+            logger.error("share sweep mark unreadable (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+            return true
+        }
+        do {
+            try await setPublicLink(open: false, reason: reason)
+        } catch {
+            let why = error.localizedDescription
+            logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried: \(why, privacy: .public)")
+            scheduleLinkCloseRetry(reason: reason)
+        }
+        return true
+    }
+
+    /// Retries a failed public-link close after each of `linkCloseRetryDelays` until one succeeds, the sweep is no
+    /// longer pending, or a code is being issued or on screen (its link stays open). The grace's sweep closes it too.
+    private func scheduleLinkCloseRetry(reason: CloseReason) {
+        linkCloseRetry?.cancel()
+        linkCloseRetryGeneration += 1
+        let generation = linkCloseRetryGeneration
+        linkCloseRetry = Task { [weak self, sleep] in
+            defer {
+                if let self, self.linkCloseRetryGeneration == generation { self.linkCloseRetry = nil }
+            }
+            for delay in Self.linkCloseRetryDelays {
+                await sleep(delay)
+                guard !Task.isCancelled, let self, !self.yieldsToIssue else { return }
+                guard (try? self.sidecar.metaValue(forKey: Self.sweepPendingKey)) == "1" else { return }
+                do {
+                    try await self.setPublicLink(open: false, reason: reason)
+                    return
+                } catch {
+                    let why = error.localizedDescription
+                    self.logger.error("share link not closed (\(reason.rawValue, privacy: .public)) on retry: \(why, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// A code is being issued or is on screen: a deferred sweep or link close stands down (the code's own close
+    /// sweeps).
+    private var yieldsToIssue: Bool { issuing || openCode != nil }
 
     /// Closes the public link and removes the unbound participants while the sweep is pending. false: a share
     /// call failed (logged), the sweep stays pending.
-    private func sweepShares(reason: CloseReason) async -> Bool {
+    /// `deferred`: the grace sweep or a retry, which stands down after any await once a code is being issued
+    /// (`yieldsToIssue`; the mark stays pending for that code's close).
+    private func sweepShares(reason: CloseReason, deferred: Bool = false) async -> Bool {
         do {
             guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return true }
             let epoch = sweepEpoch
             let shares = self.shares
-            try await share { try await shares.setPublicLink(open: false) }
+            try await setPublicLink(open: false, reason: reason)
+            // A code being issued kept its link open (`linkWanted`): its own close sweeps.
+            if linkWanted || (deferred && yieldsToIssue) { return true }
             let bound = Set(try sidecar.linkedDevices().filter { $0.scope == .shared }.map(\.userRecordName))
             for zone in [CloudZoneID.data, .relay] {
                 try await share { try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") } }
+                if deferred, yieldsToIssue { return true }
             }
             guard epoch == sweepEpoch else { return true }
             try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
@@ -406,28 +538,120 @@ final class MobileLinkCenter {
         }
     }
 
-    /// Retries the sweep after each of `sweepRetryDelays` until one succeeds, the sweep is no longer pending, or a
-    /// QR is on screen (its own close sweeps). One retry runs at a time.
-    private func scheduleSweepRetry() {
+    /// Runs the sweep after each of `delays` until one succeeds, the sweep is no longer pending, or a QR is on
+    /// screen (its own close sweeps). One retry runs at a time.
+    private func scheduleSweepRetry(after delays: [Duration] = MobileLinkCenter.sweepRetryDelays, reason: CloseReason = .restart) {
         guard sweepRetry == nil else { return }
         sweepRetryGeneration &+= 1
         let generation = sweepRetryGeneration
         sweepRetry = Task { [weak self, sleep] in
-            for delay in Self.sweepRetryDelays {
+            for delay in delays {
                 await sleep(delay)
                 guard !Task.isCancelled, let self else { return }
-                if self.openCode != nil { break }
-                if await self.sweepShares(reason: .restart) { break }
+                if self.yieldsToIssue { break }
+                if await self.sweepShares(reason: reason, deferred: true) { break }
             }
             guard let self, self.sweepRetryGeneration == generation else { return }
             self.sweepRetry = nil
         }
     }
 
-    /// The hub stops: no share call runs behind it.
+    /// The hub stops (or a code is issued): no share call runs behind it.
     func cancelSweepRetry() {
         sweepRetry?.cancel()
         sweepRetry = nil
+        linkCloseRetry?.cancel()
+        linkCloseRetry = nil
+        linkRetriesHeld = true
+    }
+
+    /// The public link the center wants: open while a code is being issued or on screen, closed once a close asked
+    /// for it (#262).
+    @ObservationIgnored private var linkWanted = false
+    /// The public link the last write left: unknown before any, while one runs, and after a failed one.
+    private enum LinkWrite: Equatable {
+        case unknown
+        case written(open: Bool)
+    }
+    @ObservationIgnored private var linkWritten = LinkWrite.unknown
+    /// Why the last failed write did not go through.
+    @ObservationIgnored private var linkWriteError: Error?
+    /// The one task writing the public link; nil while none runs.
+    @ObservationIgnored private var linkWriter: Task<Void, Never>?
+    /// Callers waiting for a close: while one waits, a failed close is its to retry.
+    @ObservationIgnored private var linkCloseWaiters = 0
+    @ObservationIgnored private var linkCloseReason: CloseReason = .restart
+    /// The hub stopped (`cancelSweepRetry`): a close failing behind it schedules no retry (the mark stays).
+    @ObservationIgnored private var linkRetriesHeld = false
+
+    /// Opens or closes both shares' public link through the one writer (#262), and waits, bounded by
+    /// `shareTimeout`, until it is written. A public-link call is never cancelled: a timed-out one may still land,
+    /// and the writer then writes the wanted state again, one call at a time. A close yields to a code being issued
+    /// or on screen (it returns without a call) unless `reason` voids that code (`.issueFailed`, `.accountChanged`).
+    /// Throws when the write failed, timed out, or (an open) a close replaced it meanwhile.
+    private func setPublicLink(open: Bool, reason: CloseReason = .restart) async throws {
+        let voidsCode = reason == .issueFailed || reason == .accountChanged
+        linkWanted = open || (yieldsToIssue && !voidsCode)
+        guard linkWanted == open else { return }
+        linkRetriesHeld = false
+        if !open {
+            linkCloseReason = reason
+            linkCloseWaiters += 1
+        }
+        defer { if !open { linkCloseWaiters -= 1 } }
+        // A request writes at least once (a close sweeps again what a half-applied save left); one already running
+        // writes the wanted state again once its call ends, if it differs.
+        if linkWriter == nil {
+            linkWritten = .unknown
+            startLinkWriter()
+        }
+        let settled = await MobileHubService.bounded(shareTimeout) { [self] () -> Bool in
+            while let writer = await linkWriter { await writer.value }
+            return true
+        }
+        guard settled != nil else { throw ShareServiceError.timedOut }
+        guard linkWanted == open else {
+            if open { throw ShareServiceError.superseded }
+            return
+        }
+        guard linkWritten == .written(open: open) else { throw linkWriteError ?? ShareServiceError.superseded }
+    }
+
+    /// Writes `linkWanted` until the last write matches it. A write that fails while its state is still wanted
+    /// ends the run: a failed open is the issue's to report; a failed close keeps the sweep marked pending and,
+    /// when no caller waits for it (a reconciling close), is retried after `linkCloseRetryDelays`.
+    private func startLinkWriter() {
+        let shares = self.shares
+        linkWriter = Task { [weak self] in
+            while let center = self, center.linkWritten != .written(open: center.linkWanted) {
+                let target = center.linkWanted
+                center.linkWritten = .unknown
+                do {
+                    try await shares.setPublicLink(open: target)
+                    center.linkWritten = .written(open: target)
+                } catch {
+                    center.linkWriteError = error
+                    guard center.linkWanted == target else { continue }
+                    if !target { center.linkCloseFailed(error) }
+                    break
+                }
+            }
+            self?.linkWriter = nil
+        }
+    }
+
+    private func linkCloseFailed(_ error: Error) {
+        let reason = linkCloseReason
+        logger.error("share link not closed (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        do {
+            try markSweepPending()
+        } catch {
+            logger.error("share sweep mark not set (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        }
+        // A running retry chain owns the close: restarting it would reset its delays (a stuck call that later
+        // fails would turn the bounded retries into an open-ended loop).
+        guard linkCloseWaiters == 0, !linkRetriesHeld, linkCloseRetry == nil else { return }
+        scheduleLinkCloseRetry(reason: reason)
     }
 
     // MARK: - Device records (spec §2.3, §5.1)
@@ -454,7 +678,8 @@ final class MobileLinkCenter {
 
     /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
     /// revoke", §10): `unlinked: true` removes it as Remove does (in
-    /// `shared` scope it has left the shares already); otherwise its
+    /// `shared` scope it has left the shares already); otherwise its name
+    /// replaces the stored one (a rename on the phone), its
     /// start-sessions choice becomes the grant, and its typing request is
     /// stored: turned on while not allowed, the owner is asked
     /// (`onTypingRequested`); turned off while allowed, the grant goes (a
@@ -478,6 +703,10 @@ final class MobileLinkCenter {
                 logger.warning("unlinked phone's share participant not removed: \(error.localizedDescription, privacy: .public)")
             }
             return
+        }
+        if try sidecar.setDeviceName(Self.displayName(payload.name), deviceID: device.deviceID) {
+            reloadDevices()
+            nudgeKinds([.deviceGrant])
         }
         if payload.startSessions != device.startSessionsAllowed {
             try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
@@ -529,6 +758,17 @@ final class MobileLinkCenter {
         }
     }
 
+    /// Forgets the refusals and revoked phones whose keybox lifetime ended (`DeviceGrantSlice` no longer publishes
+    /// them; it only reads). Each relay cycle runs it; a failure is logged and the next cycle retries.
+    func pruneExpiredAnswers() {
+        do {
+            try sidecar.pruneLinkRefusals(olderThan: now().addingTimeInterval(-DeviceGrantSlice.refusalLifetime))
+            try sidecar.pruneRevokedDevices(olderThan: now().addingTimeInterval(-DeviceGrantSlice.revokedLifetime))
+        } catch {
+            logger.warning("expired link answers not pruned: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: - Hellos and the owner's confirmation (mobile E2E spec §2.3)
 
     /// A hello opened and checked: its payload, the device id its signing key hashes to, and the kept code whose
@@ -564,7 +804,9 @@ final class MobileLinkCenter {
         case .alreadyUsedByThisDevice:
             return
         case .refused(let reason):
-            try refuse(opened, reason, at: current)
+            // A code a sheet close retired reads that close's refusal, not the retired `exp`'s.
+            let closing = retiredCode.flatMap { $0.nonce == opened.code.nonce && reason == .expiredCode ? $0.refusal : nil }
+            try refuse(opened, closing ?? reason, at: current)
             return
         case .valid:
             break
@@ -579,12 +821,16 @@ final class MobileLinkCenter {
             hubID: try WireBytes.hubUUID(sidecar.ensureHubID()), linkNonce: opened.nonce,
             hubSigning: keyring.signingPublicKey, hubAgreement: keyring.agreementPublicKey,
             deviceSigning: opened.signingKey, deviceAgreement: opened.agreementKey, confirmNonce: nonce)
+        // `private`: the phone is the Mac's own user, so the creator check compares with the owner, never with the
+        // name the phone sent (cached since the QR was issued).
+        let user = payload.scope == .private ? await resolveOwnerUser() ?? "" : payload.userRecordName
         let saved = try sidecar.savePendingDevice(HubSyncState.PendingDevice(
             deviceID: deviceID, name: Self.displayName(payload.name), model: payload.model,
-            scope: payload.scope, userRecordName: payload.userRecordName,
+            scope: payload.scope, userRecordName: user,
             signingKey: opened.signingKey.rawRepresentation, agreementKey: opened.agreementKey.rawRepresentation,
             linkNonce: opened.code.nonce, sas: sas, confirmNonce: nonce, receivedAt: current,
-            typingRequested: payload.typingRequested), maxNoncesPerCode: Self.maxNoncesPerCode)
+            typingRequested: payload.typingRequested, startSessions: payload.startSessions),
+            maxNoncesPerCode: Self.maxNoncesPerCode)
         switch saved {
         case .unchanged:
             return
@@ -646,14 +892,19 @@ final class MobileLinkCenter {
         nudgeKinds([.deviceGrant])
     }
 
-    /// Refuses every request still waiting when the link closes (F17): after a link no other request can link
-    /// (`used_code`), at expiry the code is gone (`expired_code`), otherwise the owner did not confirm.
-    private func refusePendingLinks(closing reason: CloseReason) {
-        let refusal: LinkRefusal = switch reason {
+    /// The refusal a close answers with (F17): after a link no other request can link (`used_code`), at expiry the
+    /// code is gone (`expired_code`), otherwise the owner did not confirm.
+    private static func refusal(closing reason: CloseReason) -> LinkRefusal {
+        switch reason {
         case .used: .usedCode
         case .expired: .expiredCode
         case .sheetClosed, .restart, .issueFailed, .accountChanged: .notConfirmed
         }
+    }
+
+    /// Refuses every request still waiting when the link closes, with the close's refusal.
+    private func refusePendingLinks(closing reason: CloseReason) {
+        let refusal = Self.refusal(closing: reason)
         do {
             let refused = try sidecar.refusePendingDevices(reason: refusal, at: Self.wholeSeconds(now()))
             guard refused > 0 else { return }
@@ -671,6 +922,8 @@ final class MobileLinkCenter {
     private func refuse(_ opened: OpenedHello, _ reason: LinkRefusal, at date: Date) throws {
         let deviceID = opened.deviceID.uuidString
         guard try sidecar.linkedDevice(deviceID) == nil else { return }
+        // An expired refusal never holds a place under `maxLinkRefusals`.
+        try sidecar.pruneLinkRefusals(olderThan: now().addingTimeInterval(-DeviceGrantSlice.refusalLifetime))
         let payload = opened.hello.device
         let saved = try sidecar.saveBoundedLinkRefusal(
             HubSyncState.LinkRefusalRecord(

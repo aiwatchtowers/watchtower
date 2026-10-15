@@ -51,7 +51,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
         scope: CloudDatabaseScope? = nil,
         clock: MutableClock = MutableClock(),
         remote: RemoteFetchRecorder? = nil,
-        keys: PhoneKeys?? = nil
+        keys: PhoneKeys?? = nil,
+        startsActive: Bool = true
     ) throws -> HubSession {
         let paths = paths(base)
         try paths.prepare(hubID)
@@ -76,6 +77,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
             recordingsDirectory: paths.recordingsDirectory(hubID),
             hold: RecordingHold(directory: paths.holdDirectory),
             databaseScope: scope,
+            startsActive: startsActive,
             makeRecorder: { uploader in
                 PhoneRecorderController(
                     uploader: uploader, engine: engine, notificationCenter: NotificationCenter(),
@@ -229,6 +231,33 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let empty = AppEnvironment(transportKind: .cloudKit, defaults: try makeDefaults()) { _ in }
         let none = await empty.handlePush(inForeground: false, scope: .private)
         XCTAssertEqual(none, .noData)
+    }
+
+    /// A push launching the app into the background (#219): the hub of the
+    /// push's database serves it with the light launch fetch; a hub of
+    /// another database fetches nothing (no full launch fetch, no zone
+    /// poll) until the first activation, which fetches it in full.
+    func testAPushLaunchDefersTheLaunchFetchOfTheOtherDatabasesHubs() async throws {
+        let base = try makeBase()
+        let remoteA = RemoteFetchRecorder()
+        let remoteB = RemoteFetchRecorder()
+        let hubA = try makeSession(TestHub.hubA, base: base, scope: .private, remote: remoteA, startsActive: false)
+        let hubB = try makeSession(
+            TestHub.hubB, base: base, scope: .shared(ownerName: "_owner-acme"), remote: remoteB, startsActive: false
+        )
+        let env = try makeEnvironment([hubA, hubB])
+        let arrivedAt = Date()
+
+        _ = await env.handlePush(at: arrivedAt, inForeground: false, scope: .shared)
+        await env.waitForBoot()
+
+        XCTAssertEqual(remoteB.depths, [.push(since: arrivedAt, pollOnFallback: false)], "the push's hub: one light launch fetch")
+        XCTAssertEqual(remoteA.depths, [], "the other database's hub fetches nothing in the background")
+        XCTAssertTrue(hubA.isBootstrapped)
+        XCTAssertFalse(hubA.isLooping)
+
+        env.setActive(true)
+        try await poll({ remoteA.fullCount == 1 && remoteB.fullCount == 1 }, "the first activation did not fetch both hubs in full")
     }
 
     func testPushCompletionServesEverySessionOnTheMultiHubEnvironment() async throws {

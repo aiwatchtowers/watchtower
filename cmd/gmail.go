@@ -61,7 +61,7 @@ var gmailPurgeCmd = &cobra.Command{
 
 func init() {
 	gmailLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
-	gmailLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
+	gmailLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	gmailSyncCmd.Flags().Int64Var(&gmailSyncFlagAccount, "account", 0, "sync only this account id")
 	gmailPurgeCmd.Flags().Int64("account", 0, "account id whose Gmail data to delete (required)")
 	gmailPurgeCmd.Flags().Bool("yes", false, "skip the confirmation prompt")

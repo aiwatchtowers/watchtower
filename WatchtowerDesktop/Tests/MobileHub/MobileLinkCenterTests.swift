@@ -39,7 +39,7 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var log: [String] = []
     private var failing = false
     /// Call names (before the `:`) that throw, or hang for 5 s (a regression
-    /// fails on time, never hangs the suite), or throw once cancelled.
+    /// fails on time, never hangs the suite).
     private var failingCalls: Set<String> = []
     private var hangingCalls: Set<String> = []
     private var cancellationAware = false
@@ -47,6 +47,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     private var gates: [String: SaveGate] = [:]
     /// Call names that throw for their next N calls.
     private var failCounts: [String: Int] = [:]
+    private var linkCallsRunning = 0
+    private var mostLinkCallsRunning = 0
 
     init(account: CloudAvailability = .available) {
         self.account = account
@@ -57,6 +59,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     var shares: [CloudZoneID: Share] { lock.withLock { shareByZone } }
     /// True only when both shares exist and their public link is open.
     var isLinkOpen: Bool { lock.withLock { shareByZone.count == 2 && shareByZone.values.allSatisfy(\.publicOpen) } }
+    /// The most `setPublicLink` calls ever running at once.
+    var maxConcurrentLinkCalls: Int { lock.withLock { mostLinkCallsRunning } }
 
     func setAccount(_ value: CloudAvailability) { lock.withLock { account = value } }
     /// Every share call throws (sharing impossible on this account).
@@ -66,8 +70,9 @@ final class FakeShareService: ShareService, @unchecked Sendable {
     func setHanging(_ calls: Set<String>) { lock.withLock { hangingCalls = calls } }
     /// The next `call` parks on `gate` (once).
     func gate(_ call: String, on gate: SaveGate) { lock.withLock { gates[call] = gate } }
-    /// Every call throws `CancellationError` when its task is cancelled
-    /// (like a cancellation-aware CloudKit await).
+    /// A call whose task was cancelled still takes effect, then throws
+    /// `CancellationError` (like a cancelled CloudKit await: the server may
+    /// have applied the save, the caller reads a failure).
     func setCancellationAware(_ value: Bool) { lock.withLock { cancellationAware = value } }
     /// The next `times` calls named `call` throw.
     func failNext(_ call: String, times: Int) { lock.withLock { failCounts[call] = times } }
@@ -87,19 +92,22 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     private func record(_ call: String) async throws {
         let name = String(call.prefix { $0 != ":" })
-        let (fails, hangs, aware, gate) = lock.withLock {
+        let (fails, hangs, gate) = lock.withLock {
             log.append(call)
             let counted = (failCounts[name] ?? 0) > 0
             if counted { failCounts[name, default: 0] -= 1 }
             return (
-                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), cancellationAware,
-                gates.removeValue(forKey: name)
+                failing || failingCalls.contains(name) || counted, hangingCalls.contains(name), gates.removeValue(forKey: name)
             )
         }
         await gate?.park()
-        if aware { try Task.checkCancellation() }
         if fails { throw URLError(.cannotConnectToHost) }
         if hangs { try await Task.sleep(for: .seconds(5)) }
+    }
+
+    /// After a call took effect: a cancelled one throws in cancellation-aware mode.
+    private func settle() throws {
+        if lock.withLock({ cancellationAware }) { try Task.checkCancellation() }
     }
 
     func accountStatus() async -> CloudAvailability {
@@ -111,30 +119,41 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 
     func ensureShares() async throws -> ShareURLs {
         try await record("ensureShares")
-        return lock.withLock {
+        let urls = lock.withLock {
             for zone in [CloudZoneID.data, .relay] where shareByZone[zone] == nil {
                 createdCount += 1
                 shareByZone[zone] = Share(url: "https://www.icloud.com/share/\(zone.rawValue)-\(createdCount)")
             }
             return ShareURLs(data: shareByZone[.data]?.url ?? "", relay: shareByZone[.relay]?.url ?? "")
         }
+        try settle()
+        return urls
     }
 
     func setPublicLink(open: Bool) async throws {
+        lock.withLock {
+            linkCallsRunning += 1
+            mostLinkCallsRunning = max(mostLinkCallsRunning, linkCallsRunning)
+        }
+        defer { lock.withLock { linkCallsRunning -= 1 } }
         try await record("setPublicLink:\(open)")
         lock.withLock {
             for zone in shareByZone.keys { shareByZone[zone]?.publicOpen = open }
         }
+        try settle()
     }
 
     func participants(in zone: CloudZoneID) async throws -> [ShareParticipant] {
         try await record("participants:\(zone.rawValue)")
-        return lock.withLock { shareByZone[zone]?.participants ?? [] }
+        let found = lock.withLock { shareByZone[zone]?.participants ?? [] }
+        try settle()
+        return found
     }
 
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws {
         try await record("removeParticipants:\(zone.rawValue)")
         lock.withLock { shareByZone[zone]?.participants.removeAll(where: shouldRemove) }
+        try settle()
     }
 
     /// A test helper, not a protocol member: the zones and their shares are gone.
@@ -146,13 +165,13 @@ final class FakeShareService: ShareService, @unchecked Sendable {
 /// share service, a fake clock and an in-memory hub keyring.
 @MainActor
 final class MobileLinkCenterTests: XCTestCase {
-    private var sidecar: HubSyncState!
-    private var shares: FakeShareService!
-    private var clock: LinkTestClock!
+    var sidecar: HubSyncState!
+    var shares: FakeShareService!
+    var clock: LinkTestClock!
     private var keyring: HubKeyring!
-    private var nudges: [Set<SliceKind>] = []
+    var nudges: [Set<SliceKind>] = []
     private var sharing: [HubSharing] = []
-    private var center: MobileLinkCenter!
+    var center: MobileLinkCenter!
 
     override func setUp() async throws {
         sidecar = try HubSyncState.inMemory()
@@ -175,11 +194,13 @@ final class MobileLinkCenterTests: XCTestCase {
         clock = nil
     }
 
-    /// The expiry timer parks (until cancelled) unless a test passes its own. A fresh keyring over the current
-    /// sidecar; the hellos of the test are sealed to it.
-    private func makeCenter(
+    /// The expiry timer and the sweep retries park (until cancelled) unless a test passes its own sleep; the
+    /// answering close's grace is zero and does not park, so its sweep runs at once (`settleSweep`). A fresh keyring
+    /// over the current sidecar; the hellos of the test are sealed to it.
+    func makeCenter(
         sleep: (@Sendable (Duration) async -> Void)? = nil,
         shareTimeout: Duration = .seconds(30),
+        answerGrace: Duration = .zero,
         ownerUser: (@Sendable () async -> String?)? = nil
     ) throws -> MobileLinkCenter {
         let clock = try XCTUnwrap(self.clock)
@@ -189,8 +210,12 @@ final class MobileLinkCenterTests: XCTestCase {
             keyring: keyring,
             nudge: { [weak self] in self?.nudges.append($0) },
             now: { clock.now },
-            sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) },
-            shareTimeout: shareTimeout
+            sleep: sleep ?? { duration in
+                guard duration > .zero else { return }
+                try? await Task.sleep(for: .seconds(3600))
+            },
+            shareTimeout: shareTimeout,
+            answerGrace: answerGrace
         )
         made.onSharingChanged = { [weak self] in self?.sharing.append($0) }
         return made
@@ -198,12 +223,12 @@ final class MobileLinkCenterTests: XCTestCase {
 
     /// The two test phones with relay keys (`TestE2E`): their ids are the hashes of their signing keys, and the
     /// relay tests' hub holds their relay keys. C and D are fresh phones.
-    private let identityA = TestE2E.deviceIdentity
-    private let identityB = TestE2E.strangerIdentity
+    let identityA = TestE2E.deviceIdentity
+    let identityB = TestE2E.strangerIdentity
     private let identityC = TestHello.newPhone()
     private let identityD = TestHello.newPhone()
-    private let phoneA = TestE2E.deviceID.uuidString
-    private let phoneB = TestE2E.strangerDeviceID.uuidString
+    let phoneA = TestE2E.deviceID.uuidString
+    let phoneB = TestE2E.strangerDeviceID.uuidString
     private let strangerID = TestE2E.strangerDeviceID.uuidString
     private var phoneC: String { identityC.deviceID.uuidString }
     private var phoneD: String { identityD.deviceID.uuidString }
@@ -226,7 +251,7 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// A linked phone's own `device` record (no nonce: an unlink or a start-sessions choice).
-    private func deviceRecord(
+    func deviceRecord(
         _ deviceID: String,
         nonce: String?,
         scope: DeviceScope = .private,
@@ -248,7 +273,7 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// `phone`'s hello for the code `nonce`, as the relay hands it over (still sealed).
-    private func hello(
+    func hello(
         _ phone: DeviceIdentityKeys,
         nonce: String,
         scope: DeviceScope = .private,
@@ -258,22 +283,30 @@ final class MobileLinkCenterTests: XCTestCase {
         deviceID: String? = nil,
         signer: Curve25519.Signing.PrivateKey? = nil,
         wire: Bool = false,
-        typingRequested: Bool = false
+        typingRequested: Bool = false,
+        startSessions: Bool = true
     ) throws -> CloudRecord {
         let id = deviceID ?? phone.deviceID.uuidString
         return try TestHello.record(
-            devicePayload(id, nonce: nonce, scope: scope, user: user, name: name, typingRequested: typingRequested),
+            devicePayload(
+                id, nonce: nonce, scope: scope, user: user, name: name, typingRequested: typingRequested,
+                startSessions: startSessions),
             from: phone, to: keyring, nonce: nonce,
             signer: signer, senderID: deviceID.flatMap(UUID.init(uuidString:)), creator: creator, wire: wire)
     }
 
+    /// Waits for the deferred sweep of an answering close (zero grace here) to end; only where it succeeds.
+    func settleSweep() async {
+        await center.sweepRetry?.value
+    }
+
     /// One hello, still waiting for the owner.
-    private func handle(_ record: CloudRecord) async throws {
+    func handle(_ record: CloudRecord) async throws {
         try await center.handleHello(record)
     }
 
     /// One hello the owner confirms, and the close that follows the link.
-    private func link(_ record: CloudRecord) async throws {
+    func link(_ record: CloudRecord) async throws {
         try await center.handleHello(record)
         let deviceID = String(record.recordName.dropFirst("hello-".count))
         try await confirm(deviceID)
@@ -295,12 +328,12 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// One linked phone's own device record, and the close that may follow.
-    private func handleDevice(_ record: CloudRecord) async throws {
+    func handleDevice(_ record: CloudRecord) async throws {
         try await center.handleDevice(record)
         await center.closeAfterLink?.value
     }
 
-    private func grants() throws -> [String: DeviceGrant] {
+    func grants() throws -> [String: DeviceGrant] {
         try Dictionary(uniqueKeysWithValues: grantRecords().map {
             ($0.id, try RelayCoder.makeDecoder().decode(Keybox.self, from: $0.payload).grant)
         })
@@ -315,7 +348,7 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// `phone`'s keybox as the phone reads it: sealed by the hub, opened with the phone's own key, signature checked.
-    private func openedKeybox(_ phone: DeviceIdentityKeys) async throws -> Keybox {
+    func openedKeybox(_ phone: DeviceIdentityKeys) async throws -> Keybox {
         let keybox = try await TestHello.keybox(for: phone, in: grantRecords(), keyring: keyring)
         return try XCTUnwrap(keybox, "no keybox for \(phone.deviceID)")
     }
@@ -479,6 +512,7 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(shares.participantNames(in: .relay), ["_colleague-a"], "not swept yet")
         gate.release()
         await close.value
+        await settleSweep()
         XCTAssertTrue(center.pendingLinks.isEmpty)
         XCTAssertTrue(shares.participantNames(in: .relay).isEmpty, "swept after the refusal")
         let keybox = try await openedKeybox(identityA)
@@ -1059,7 +1093,8 @@ final class MobileLinkCenterTests: XCTestCase {
         clock.advance(7 * 86_400 - 1)
         XCTAssertEqual(try grants()[phoneA]?.revoked, true)
         clock.advance(1)
-        XCTAssertNil(try grants()[phoneA], "pruned after 7 days")
+        XCTAssertNil(try grants()[phoneA], "unpublished after 7 days")
+        center.pruneExpiredAnswers()
         XCTAssertNil(try keyring.keyboxRecipient(deviceID: identityA.deviceID))
     }
 
@@ -1231,6 +1266,7 @@ final class MobileLinkCenterTests: XCTestCase {
         shares.join("_stranger")
 
         try await link(try hello(identityA, nonce: code.nonce, scope: .shared, user: "_colleague-a", creator: "_colleague-a"))
+        await settleSweep()
 
         XCTAssertFalse(shares.isLinkOpen)
         for zone in [CloudZoneID.data, .relay] {
@@ -1250,6 +1286,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         clock.advance(1)
         await center.closeLinkIfExpired()
+        await settleSweep()
         XCTAssertFalse(shares.isLinkOpen)
         XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
@@ -1260,7 +1297,8 @@ final class MobileLinkCenterTests: XCTestCase {
         let clock = try XCTUnwrap(self.clock)
         let slept = DurationBox()
         center = try makeCenter { duration in
-            slept.set(duration)
+            // The close's zero grace is not the code's lifetime.
+            if duration > .zero { slept.set(duration) }
             clock.advance(TimeInterval(duration.components.seconds))
         }
 
@@ -1277,6 +1315,7 @@ final class MobileLinkCenterTests: XCTestCase {
         shares.join("_stranger")
 
         await center.closeLink(reason: .sheetClosed)
+        await settleSweep()
 
         XCTAssertFalse(shares.isLinkOpen)
         XCTAssertTrue(shares.participantNames(in: .data).isEmpty)

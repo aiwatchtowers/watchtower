@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import GRDB
 import Observation
 import WatchtowerE2ETesting
 import WatchtowerSync
@@ -123,6 +124,15 @@ extension XCTestCase {
         return dir.appendingPathComponent("replica.sqlite").path
     }
 
+    /// `reader` was closed (#216): a read fails as on a closed connection,
+    /// not with the disk I/O error of one left open on deleted files.
+    func assertClosed(_ reader: (any DatabaseReader)?, file: StaticString = #filePath, line: UInt = #line) {
+        guard let reader else { return XCTFail("no database", file: file, line: line) }
+        XCTAssertThrowsError(try reader.read { _ in }, file: file, line: line) { error in
+            XCTAssertEqual((error as? DatabaseError)?.resultCode, .SQLITE_MISUSE, "\(error)", file: file, line: line)
+        }
+    }
+
     /// A private UserDefaults suite, wiped on teardown.
     func makeDefaults() throws -> UserDefaults {
         let name = "mobile-tests-\(UUID().uuidString)"
@@ -226,6 +236,14 @@ enum TestPhone {
         case .demo:
             DemoSeed.hubTransport(inner: inner, seq: { first in SeqAllocator(load: { first }, store: { _ in }) }(firstSeq()))
         }
+    }
+
+    /// The `device` records the phone sealed into `transport`, as the test hub opens them.
+    static func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
+        let opened = try await hub(over: transport).changes(in: .relay, since: nil).changed
+        return try opened
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
     }
 
     /// `plain` as the hub ships a record's asset: sealed into `url`, its

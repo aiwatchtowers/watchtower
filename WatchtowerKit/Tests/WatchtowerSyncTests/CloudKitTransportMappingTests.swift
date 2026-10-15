@@ -1,5 +1,6 @@
 import XCTest
 import CloudKit
+import os
 @testable import WatchtowerSync
 
 final class CloudKitTransportMappingTests: XCTestCase {
@@ -180,5 +181,97 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertEqual(ck["modifiedAt"] as? Date, stamp, "modifiedAt stays plaintext (spec §2.4)")
         XCTAssertNil(ck.encryptedValues["modifiedAt"])
         XCTAssertEqual(ck["kind"] as? String, WireKind.envelope)
+    }
+
+    // MARK: - Direct save (the phone's kept farewell, #143)
+
+    /// A direct save sends a fresh record (no change tag) in the hub's zone
+    /// of the record's kind, owned by the shared link's owner.
+    func testADirectSaveSendsAFreshRecordInTheHubsZone() {
+        let record = CloudRecord(
+            recordName: "abcdefghijklmnopqrstuvwxyz", zone: .relay, kind: WireKind.envelope, modifiedAt: stamp,
+            payload: Data("WTE".utf8))
+
+        let ck = CloudKitTransport.directSaveRecord(record, scope: .shared(ownerName: "_owner-acme"), hubID: "hub-a")
+
+        XCTAssertEqual(ck.recordID.zoneID.zoneName, "RelayZone-hub-a")
+        XCTAssertEqual(ck.recordID.zoneID.ownerName, "_owner-acme")
+        XCTAssertNil(ck.recordChangeTag, "nothing fetched: no change tag")
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck, zone: .relay), record)
+
+        let own = CloudKitTransport.directSaveRecord(record, scope: .private, hubID: "hub-a")
+        XCTAssertEqual(own.recordID.zoneID.ownerName, CKCurrentUserDefaultName)
+    }
+
+    /// #261: the direct save is a compare-and-swap. With nothing on the
+    /// server the fresh record goes; refused for a server copy, it goes once
+    /// more over that copy (its system fields, the farewell's payload), so
+    /// a write landing after the read refuses it in turn, and that refusal
+    /// is thrown (the farewell stays kept).
+    func testADirectSaveReplacesOnlyTheServerCopyItWasRefusedFor() async throws {
+        let record = farewellRecord()
+        var sent: [CKRecord] = []
+        try await CloudKitTransport.saveDirectly(record, scope: .private, hubID: "hub-a") { sent.append($0) }
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertNil(sent.first?.recordChangeTag)
+
+        let server = CloudKitTransport.directSaveRecord(
+            CloudRecord(recordName: record.recordName, zone: .relay, kind: WireKind.envelope,
+                        modifiedAt: stamp.addingTimeInterval(-60), payload: Data("old".utf8)),
+            scope: .private, hubID: "hub-a")
+        sent = []
+        try await CloudKitTransport.saveDirectly(record, scope: .private, hubID: "hub-a") { ck in
+            sent.append(ck)
+            if sent.count == 1 { throw Self.changed(server) }
+        }
+        XCTAssertEqual(sent.count, 2)
+        let retry = try XCTUnwrap(sent.last)
+        XCTAssertEqual(CloudKitTransport.archivedSystemFields(of: retry), CloudKitTransport.archivedSystemFields(of: server),
+                       "over the copy it was refused for")
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: retry, zone: .relay), record)
+
+        sent = []
+        do {
+            try await CloudKitTransport.saveDirectly(record, scope: .private, hubID: "hub-a") { ck in
+                sent.append(ck)
+                throw Self.changed(server)
+            }
+            XCTFail("a second refusal is thrown")
+        } catch let error as CKError {
+            XCTAssertEqual(error.code, .serverRecordChanged)
+        }
+        XCTAssertEqual(sent.count, 2, "one retry, never a loop")
+    }
+
+    /// #261: a direct save cancelled (the farewell's cap) while its first
+    /// try was refused never tries again over the copy it read.
+    func testACancelledDirectSaveNeverRetriesOverTheServerCopy() async {
+        let record = farewellRecord()
+        let server = CloudKitTransport.directSaveRecord(record, scope: .private, hubID: "hub-a")
+        let saves = OSAllocatedUnfairLock(initialState: 0)
+        let task = Task {
+            try await CloudKitTransport.saveDirectly(record, scope: .private, hubID: "hub-a") { _ in
+                saves.withLock { $0 += 1 }
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw Self.changed(server)
+            }
+        }
+        do {
+            try await task.value
+            XCTFail("a cancelled save throws")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        XCTAssertEqual(saves.withLock { $0 }, 1)
+    }
+
+    private func farewellRecord() -> CloudRecord {
+        CloudRecord(
+            recordName: "abcdefghijklmnopqrstuvwxyz", zone: .relay, kind: WireKind.envelope, modifiedAt: stamp,
+            payload: Data("WTE".utf8))
+    }
+
+    private static func changed(_ server: CKRecord) -> CKError {
+        CKError(.serverRecordChanged, userInfo: [CKRecordChangedErrorServerRecordKey: server])
     }
 }

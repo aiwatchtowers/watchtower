@@ -73,6 +73,9 @@ final class LinkingViewModel {
     /// (refreshed after every change); empty while unlinked (Welcome). A
     /// pending link is not a link.
     private(set) var links: [HubRow] = []
+    /// The hub ids of the saved links that cannot be read (#222), refreshed
+    /// with `links`: listed with Forget only, never linked through.
+    private(set) var unreadableHubIDs: [String] = []
 
     /// Set by the owner right after init (it owns this model).
     @ObservationIgnored weak var host: (any LinkHost)? {
@@ -89,6 +92,9 @@ final class LinkingViewModel {
     /// switch): a removal or an account signal arriving meanwhile is the
     /// ending's own, and is ignored.
     @ObservationIgnored private var ending: Set<String> = []
+    /// The hub of the code being linked (`open`), from its check on: a
+    /// kept farewell of that hub is not followed by a share leave.
+    @ObservationIgnored private var linkingHubID: String?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LinkingViewModel")
 
     init(
@@ -116,6 +122,7 @@ final class LinkingViewModel {
     /// Reads the saved links again from the host.
     func refreshLinks() {
         links = host?.linkedHubs() ?? []
+        unreadableHubIDs = host?.unreadableHubIDs() ?? []
     }
 
     /// `hubID`'s row as the host holds it now (not the cached `links`).
@@ -203,6 +210,8 @@ final class LinkingViewModel {
             return
         }
         phase = .checking
+        linkingHubID = payload.hubID
+        defer { linkingHubID = nil }
         refreshLinks()
         if let row = links.first(where: { $0.hubID == payload.hubID }), row.state == .linked, await isGranted(row.link) {
             // Already linked to this Mac: nothing to write, except epoch keys a lost keybox signal left out of
@@ -237,7 +246,7 @@ final class LinkingViewModel {
         // its removal lost, so a refused or unanswered re-pair leaves no row
         // whose keys open nothing. Other hubs are untouched.
         if let row = row(payload.hubID), !ending.contains(row.hubID) {
-            notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
+            report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: row.hubID)
         }
         await connect(payload, hubKeys: hubKeys, userRecordName: userRecordName)
     }
@@ -689,22 +698,58 @@ final class LinkingViewModel {
     func unlink(_ hubID: String) async {
         guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
         phase = .unlinking
-        notice = LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName)
+        report(LinkNotice.after(await endLink(row, farewell: true, keepRecordings: true), macName: row.link.macName), removed: hubID)
         phase = .idle
     }
 
     /// Settings → Macs → Forget: a hub the Mac removed goes with no farewell
     /// and no share leave (its zones are gone), its keys with it; a
-    /// long-offline linked one is unlinked.
+    /// long-offline linked one, or one whose data could not be opened, is
+    /// unlinked. A row that cannot be read goes with its keys and nothing
+    /// else: its link (the scope, the shares) is unknown (#222).
     func forget(_ hubID: String) async {
-        guard !isBusy, let row = row(hubID), !ending.contains(hubID) else { return }
+        guard !isBusy, !ending.contains(hubID) else { return }
+        guard let row = row(hubID) else {
+            await forgetUnreadable(hubID)
+            return
+        }
         guard row.state == .unlinkedByMac else {
             await unlink(hubID)
             return
         }
         phase = .unlinking
-        notice = LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName)
+        report(LinkNotice.after(await endLink(row, farewell: false, keepRecordings: true), macName: row.link.macName), removed: hubID)
         phase = .idle
+    }
+
+    /// Forget of a registry row that cannot be read: the host removes it
+    /// (no session, so its files wait for the next launch's orphan pass),
+    /// then its keys go.
+    private func forgetUnreadable(_ hubID: String) async {
+        guard let host, host.unreadableHubIDs().contains(hubID) else { return }
+        phase = .unlinking
+        ending.insert(hubID)
+        let wipe = await host.removeHub(hubID, keepRecordings: true, farewell: nil)
+        removeKeys(hubID)
+        ending.remove(hubID)
+        refreshLinks()
+        report(LinkNotice.after(wipe), removed: hubID)
+        phase = .idle
+    }
+
+    /// The report of `hubID`'s removal (`LinkNotice.after`), or, with
+    /// nothing to report, no report. A stale notice stays only while
+    /// another hub is on screen: the activation of the hub that took the
+    /// screen set it, or the hub on screen did (#222); with no hub left on
+    /// screen it goes with the removed one.
+    private func report(_ found: LinkNotice?, removed hubID: String) {
+        if let found {
+            notice = found
+        } else if case .stale = notice, let active = host?.activeHubID, active != hubID {
+            return
+        } else {
+            notice = nil
+        }
     }
 
     /// `TransportEvent.unlinked` for `hubID`: its zones are gone (the phone
@@ -719,6 +764,63 @@ final class LinkingViewModel {
         ending.remove(hubID)
         refreshLinks()
         notice = .removed(macName: row.link.macName)
+    }
+
+    /// How long a kept farewell is sent again (#143): after it, the Mac is
+    /// left to its own removal and a `shared` link's shares are left.
+    static let farewellLifetime: TimeInterval = 7 * 24 * 3600
+
+    /// When the app becomes active (`AppRoot.becameActive`): the unlink
+    /// farewells a removal kept unsent (#143) are sent again, each in turn;
+    /// one sent, or past `farewellLifetime`, stops being kept and its
+    /// `shared` link leaves the shares. One made on another iCloud account,
+    /// or of a hub linked again (or being linked) since, is dropped unsent
+    /// and its shares untouched. Nothing runs while a link flow is busy or
+    /// the account cannot be read. Each farewell is decided on the state
+    /// read when its turn comes, and again after its resend: a link of its
+    /// hub that began meanwhile keeps the shares (the new link's), and one
+    /// a relink dropped while an earlier one was sent is not sent.
+    func retryFarewells() async {
+        guard let host, !isBusy else { return }
+        let kept = host.pendingFarewells()
+        guard !kept.isEmpty, await container.accountStatus() == .available else { return }
+        let account: String
+        do {
+            account = try await container.userRecordName()
+        } catch {
+            Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        for farewell in kept {
+            let hubID = farewell.hubID
+            // Read again at its turn: a relink dropped it (`LinkHost.linked`), or an unlink replaced it.
+            guard host.pendingFarewells().contains(where: { $0.isSame(as: farewell) }), !ending.contains(hubID) else { continue }
+            if isLinked(hubID) || farewell.userRecordName != account {
+                host.dropFarewell(hubID)
+                continue
+            }
+            if clock.now().timeIntervalSince(farewell.since) >= Self.farewellLifetime {
+                Self.logger.notice("a kept unlinked record expired unsent")
+                host.dropFarewell(hubID)
+            } else if await !host.resendFarewell(farewell) {
+                continue
+            }
+            // The resend awaited: a link of this hub begun meanwhile has its own shares.
+            guard !isLinked(hubID) else { continue }
+            if case let .shared(ownerName) = farewell.scope {
+                do {
+                    try await container.leaveShares(ownerName: ownerName, hubID: hubID)
+                } catch {
+                    Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// `hubID` has a saved link, a pending one, or a code of it being
+    /// linked: read now, from the host and the store.
+    private func isLinked(_ hubID: String) -> Bool {
+        row(hubID) != nil || store.pending?.link.hubID == hubID || linkingHubID == hubID
     }
 
     /// The transport saw an iCloud account change. Another account ends
@@ -844,7 +946,8 @@ final class LinkingViewModel {
     /// the hub's own transport, sealed with the hub's keys, which holds the
     /// record's server state, best effort and bounded; then its session,
     /// recordings and files), then a `shared` link that said farewell leaves
-    /// the shares, then the hub's keys are deleted (`removeHubLink`). The
+    /// the shares (unless the farewell was kept unsent: `retryFarewells`
+    /// leaves them once it is out), then the hub's keys are deleted (`removeHubLink`). The
     /// record is built here, before the hub's Settings choices go. A frozen
     /// hub's zones are gone: no farewell, no leave. Removing the hub's
     /// replica takes the outbox and the recordings sealed under this link
@@ -867,7 +970,8 @@ final class LinkingViewModel {
         let wipe = await host.removeHub(hubID, keepRecordings: keepRecordings, farewell: farewell)
         removeKeys(hubID)
         refreshLinks()
-        if linked, case let .shared(ownerName) = scope {
+        // A kept farewell still needs the zones: the shares go once it is out (`retryFarewells`).
+        if linked, !wipe.farewellKept, case let .shared(ownerName) = scope {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: hubID)
             } catch {

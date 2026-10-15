@@ -13,6 +13,8 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
+    /// The Go to… palette is up: the swipe back is off, as ⌘[ is.
+    var paletteOpen = false
     /// View-local: it is only this list's scroll. The view keeps its identity
     /// when another workbench is opened, so `project.id` resets it.
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
@@ -89,6 +91,8 @@ struct WorkbenchSessionsPanel: View {
             SessionDeleteToast(vm: vm)
             WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
+        // A swipe right over the panel goes back to the list (board #743).
+        .background(WorkbenchBackSwipeCatcher(isEnabled: !paletteOpen, onBack: switcherActions.showAll))
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
     }
 
@@ -130,10 +134,12 @@ struct WorkbenchSessionsPanel: View {
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
-    /// the workbench switcher (board #250): it fills the width, and its
-    /// popover's "All Workbenches" is the way back to level 1.
+    /// the workbench switcher (board #250): it fills the width. `‹` before
+    /// it, ⌘[, a swipe and the popover's "All Workbenches" go back to
+    /// level 1 (board #743).
     private var header: some View {
         HStack(spacing: 6) {
+            WorkbenchBackButton(action: switcherActions.showAll)
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
             // A click starts the default agent; the menu offers each agent.
             Menu {

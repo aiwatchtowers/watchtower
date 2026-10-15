@@ -84,6 +84,9 @@ type Daemon struct {
 	logger              *log.Logger
 	wakeCh              <-chan struct{}
 	triggerCh           <-chan struct{}
+	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
+	automationScheduler AutomationRunner // nil = automations not wired
+	automationExecutor  AutomationRunner
 	pidPath             string
 	db                  *db.DB
 	digestPipe          *digest.Pipeline
@@ -312,11 +315,19 @@ func (d *Daemon) SetPIDPath(path string) {
 // The caller is responsible for wiring signal handling into the context.
 // Each tick or wake event triggers an incremental sync.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Before the PID file exists: a process that finds the daemon through it
+	// may send AutomationWakeSignal at once.
+	d.watchAutomationWake(ctx)
 	if d.pidPath != "" {
 		if err := WritePID(d.pidPath); err != nil {
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 		defer RemovePID(d.pidPath)
+		// The wake watcher is installed above: advertise it — only when the
+		// scheduler and executor will run, so the CLI never signals a daemon
+		// that would drop the wake (or, built before automations, has no
+		// handler for it).
+		defer d.advertiseCaps()()
 	}
 
 	pollInterval := d.config.Sync.PollInterval
@@ -345,6 +356,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.reapStalePipelineRuns()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
+
+	// Automations run beside the sync loop, not in it; stopped and reaped
+	// before Run returns (and before the PID file is removed).
+	stopAutomations := d.startAutomations(ctx)
+	defer stopAutomations()
+
+	// Calendars first on startup: a calendar sync takes seconds, while the
+	// first cycle's Slack sync of a fresh install takes minutes and runSync
+	// puts it ahead of the calendar phases. A daemon (re)started right after
+	// a calendar connect — onboarding's finish, the Add sheet — so shows
+	// events within seconds (#740). The cycle below syncs them a second time —
+	// a few API calls per account, accepted on a (re)start for that latency.
+	d.phaseCalendarSync(ctx)
+	d.phaseCalDAVSync(ctx)
 
 	// Run an initial sync immediately on startup.
 	d.runSync(ctx)

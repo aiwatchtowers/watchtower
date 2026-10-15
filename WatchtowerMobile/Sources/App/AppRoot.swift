@@ -19,26 +19,34 @@ import WatchtowerSync
 @MainActor
 @Observable
 final class AppRoot {
-    /// How an unlink's `unlinked` record is waited for: it goes through the
-    /// removed hub's own transport (which holds the record's server state),
-    /// and the removal waits until it has left the send queue, `sendNow()`
-    /// again every `pause`; `cap` bounds the whole wait, a send that hangs
-    /// included; then it goes on whatever happened (best effort).
+    /// How an unlink's `unlinked` record is waited for: it is sealed and
+    /// goes through the removed hub's own transport (which holds the
+    /// record's server state), and the removal waits until the sealed
+    /// record has left the send queue, `sendNow()` again every `pause`;
+    /// `cap` bounds the whole wait, a send that hangs included. The sealed
+    /// record is kept in the registry before the wait (`PendingFarewell`,
+    /// #143) and dropped once it left; still queued at the cap, it stays
+    /// kept and is sent again later. The removal goes on either way.
     struct FarewellDelivery {
-        /// Whether `record` still waits in `session`'s send queue.
+        /// Whether the sealed `record` still waits in `session`'s send queue.
         let isPending: @MainActor (_ session: HubSession, _ record: CloudRecord) -> Bool
         var cap: Duration = .seconds(10)
         var pause: Duration = .milliseconds(500)
         /// One push of the send queue (`HubSession.sendNow()`); tests
         /// replace it.
         var send: @MainActor (_ session: HubSession) async -> Void = { await $0.sendNow() }
+        /// One more try of a kept farewell, its hub's session long gone:
+        /// true once it went out. Tests replace it.
+        var resend: @MainActor (_ farewell: PendingFarewell) async -> Bool = { _ in false }
 
         /// The live app: the send queue of the hub's own transport store
         /// (`TransportStore.isPending`). A session with no store, or a queue
         /// that cannot be read, reads as settled: the removal does not wait
-        /// on what it cannot see.
+        /// on what it cannot see. A kept farewell goes out by a direct save
+        /// of its sealed record within `cap` (`resendDirectly`,
+        /// `CloudKitTransport.saveDirectly`).
         static var live: Self {
-            Self { session, record in
+            var delivery = Self { session, record in
                 guard let store = session.transportStore else { return false }
                 do {
                     return try store.isPending(recordName: record.recordName, zone: record.zone)
@@ -47,6 +55,12 @@ final class AppRoot {
                     return false
                 }
             }
+            delivery.resend = { [cap = delivery.cap] farewell in
+                await AppRoot.resendDirectly(farewell, cap: cap) { farewell in
+                    try await CloudKitTransport.saveDirectly(farewell.record, scope: farewell.scope, hubID: farewell.hubID)
+                }
+            }
+            return delivery
         }
     }
 
@@ -68,6 +82,17 @@ final class AppRoot {
     /// The removal running per hub: a second one for the same hub waits
     /// for it and counts nothing.
     @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
+    /// The resend of a kept farewell running per hub: a scan of that hub
+    /// waits for it.
+    @ObservationIgnored private var resends: [String: Task<Bool, Never>] = [:]
+    /// The launch's orphan pass (`launch`): a `prepare` waits for it.
+    @ObservationIgnored private(set) var orphanPass: Task<Void, Never>?
+    /// The whole launch (`launch`): a retry of the kept farewells waits for
+    /// its account check.
+    @ObservationIgnored private var launched: Task<Void, Never>?
+    /// The retry of the kept farewells running (`becameActive`): one at a
+    /// time.
+    @ObservationIgnored private var farewellRetry: Task<Void, Never>?
     /// The link check of each hub's last fetch (`checkLink`); a test awaits
     /// it.
     @ObservationIgnored private(set) var linkChecks: [String: Task<Void, Never>] = [:]
@@ -120,6 +145,42 @@ final class AppRoot {
     /// link, or none on screen (the last one was just removed).
     var showsOnboarding: Bool { !isDemo && (linking.links.isEmpty || env.active == nil) }
 
+    /// With no hub on screen, the registry still holds Macs: every one left
+    /// could not be opened or its row cannot be read (at launch, or after
+    /// the last that opened went). The idle onboarding shows them with
+    /// Forget and Try Again instead of Welcome (`UnopenedMacsView`, #222):
+    /// the links still exist.
+    var showsUnopenedMacs: Bool {
+        showsOnboarding && !(linking.links.isEmpty && linking.unreadableHubIDs.isEmpty)
+    }
+
+    /// Try Again on the unopened Macs: each readable row with no session is
+    /// built again as the launch builds it (`AppEnvironment.makeSession`);
+    /// one that opens is wired and added, and with no hub on screen the
+    /// first in order goes on screen. One that fails stays unopened. A row
+    /// that cannot be read stays as it is (a build that reads it opens it).
+    /// A reopened link made before encryption is dropped as at launch.
+    func reopenHubs() async {
+        let rows = linkedHubs()
+        var opened = false
+        for row in rows where env.session(row.hubID) == nil && env.unopenedHubIDs.contains(row.hubID) {
+            do {
+                let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+                wire(session)
+                env.add(session)
+                opened = true
+            } catch {
+                env.markUnopened(row.hubID, error: error)
+            }
+        }
+        guard opened else { return }
+        env.nameHubs(rows)
+        if env.active == nil, let first = rows.first(where: { env.session($0.hubID) != nil }) {
+            env.activate(first.hubID)
+        }
+        await linking.dropUnencryptedLinks()
+    }
+
     /// The app's root: the demo on an unsigned build, else every linked
     /// hub from the registry (an F1 phone's link moved into it first), then
     /// the orphans' clean-up and a link a kill interrupted. Throws
@@ -168,18 +229,7 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
-        Task {
-            // Links made before E2E go first (their sessions were built
-            // stopped), so the orphan pass sees the pending link that is left.
-            await root.linking.dropUnencryptedLinks()
-            let pendingHubID = store.pending?.link.hubID
-            do {
-                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID, factory: factory)
-            } catch {
-                logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
-            }
-            await root.resumeLink()
-        }
+        root.launch { store.pending?.link.hubID }
         return root
     }
 
@@ -217,6 +267,36 @@ final class AppRoot {
         )
     }
 
+    /// The launch's clean-up: links saved before encryption go first (their
+    /// sessions were built stopped), so the orphan pass sees the pending link
+    /// that is left (`pendingHubID`, read once they are gone); then the hub
+    /// files with no row are removed inside background work (a push launch
+    /// runs it too), then `resumeLink`. The pass is kept in `orphanPass`
+    /// before the first await: a `prepare` for a hub (a cold launch by a
+    /// link URL) waits for it, so the pass never deletes the files of the
+    /// hub being linked. Returns the whole launch (a test awaits it); a
+    /// retry of the kept farewells waits for it (`becameActive`).
+    @discardableResult
+    func launch(pendingHubID: @escaping @MainActor () -> String?) -> Task<Void, Never> {
+        let pass = Task { [linking, registry, paths, factory, startWork] in
+            await linking.dropUnencryptedLinks()
+            let end = startWork?("hub-orphans")
+            defer { end?() }
+            do {
+                try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: pendingHubID(), factory: factory)
+            } catch {
+                Self.logger.error("orphan hub files not removed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        orphanPass = pass
+        let whole = Task {
+            await pass.value
+            await resumeLink()
+        }
+        launched = whole
+        return whole
+    }
+
     /// At launch: links saved before encryption are dropped (scan again),
     /// a link a kill left waiting resumes, then the account check (the
     /// account may have changed while the app was not running).
@@ -224,6 +304,28 @@ final class AppRoot {
         await linking.dropUnencryptedLinks()
         await linking.resumePendingLink()
         await accountCheck()
+    }
+
+    /// The app became active (the scene's phase; a cold launch in the
+    /// foreground too): the unlink farewells an earlier removal kept are
+    /// sent again (#143), after the launch's account check, inside
+    /// background work. Never on a background or push launch: the
+    /// background stays frugal. One retry at a time: a second activation
+    /// meanwhile joins it. Returns the retry (a test awaits it).
+    @discardableResult
+    func becameActive() -> Task<Void, Never> {
+        if let farewellRetry { return farewellRetry }
+        let retry = Task {
+            await launched?.value
+            if !isDemo {
+                let endWork = startWork?("hub-farewells")
+                await linking.retryFarewells()
+                endWork?()
+            }
+            farewellRetry = nil
+        }
+        farewellRetry = retry
+        return retry
     }
 
     /// A `watchtower://link` URL from the system Camera app. The demo has no
@@ -395,8 +497,9 @@ final class AppRoot {
             session.onFetched = nil
             session.onKeyboxChanged = nil
             session.onKeysAvailable = nil
+            var farewellKept = false
             if let farewell {
-                await deliver(farewell, through: session)
+                farewellKept = await deliver(farewell, through: session, of: rows.first { $0.hubID == hubID })
             }
             let stoppedCapture = await session.recorder.stopForWipe()
             // After the shutdown the boot (and its launch recovery) has
@@ -412,8 +515,12 @@ final class AppRoot {
             outcome = LocalWipe(
                 notSent: Self.pendingActionCount(session) + handover.lost,
                 stoppedRecording: handover.stoppedCaptureKept,
-                problem: handover.problem
+                problem: handover.problem,
+                farewellKept: farewellKept
             )
+            // The last read of its databases is done: closed before their
+            // files go (or before the next launch's orphan pass opens them).
+            session.closeDatabases()
             env.remove(hubID)
             // Audio the hold could not take may still be in the hub's
             // folder: its files stay for the next launch's orphan pass.
@@ -449,26 +556,52 @@ final class AppRoot {
         return outcome
     }
 
-    /// Saves `record` through `session`'s own transport and waits until it
-    /// has left the send queue (`FarewellDelivery`), sending again while it
-    /// waits. The whole wait races the cap: when the cap wins the removal
-    /// goes on at once, and a send still running is left to the shutdown's
-    /// `transport.stop()` to cancel. A failed save or the cap is logged.
-    private func deliver(_ record: CloudRecord, through session: HubSession) async {
+    /// Seals `record` and saves it through `session`'s own transport, keeps
+    /// the sealed record for `row`'s hub in the registry (#143) before the
+    /// wait, so a kill during it keeps it too, then waits until it has left
+    /// the send queue (`FarewellDelivery`) and stops keeping it. Returns
+    /// whether it stays kept (still queued at the cap); false once it went
+    /// out, or when it could not be queued or kept (logged).
+    private func deliver(_ record: CloudRecord, through session: HubSession, of row: HubRow?) async -> Bool {
+        let sealed: CloudRecord
         do {
-            try await session.linkTransport.save([record])
+            sealed = try await session.saveSealing(record)
         } catch {
             Self.logger.warning("unlinked record not queued: \(error.localizedDescription, privacy: .public)")
-            return
+            return false
         }
+        let kept = keepFarewell(sealed, of: row)
         let delivery = farewellDelivery
+        let sent = await Self.waitUntilSent(
+            cap: delivery.cap, pause: delivery.pause,
+            send: { await delivery.send(session) },
+            isPending: { delivery.isPending(session, sealed) }
+        )
+        if sent {
+            if let kept { dropFarewell(kept) }
+            return false
+        }
+        Self.logger.warning("unlinked record still queued when the hub went: kept to send again")
+        return kept != nil
+    }
+
+    /// Pushes a send queue (`send`) until `isPending` reads false, again
+    /// every `pause`. The whole wait races `cap`: when the cap wins it
+    /// returns false at once, and a send still running is left to its
+    /// transport's `stop()` to cancel.
+    private static func waitUntilSent(
+        cap: Duration,
+        pause: Duration,
+        send: @escaping @MainActor () async -> Void,
+        isPending: @escaping @MainActor () -> Bool
+    ) async -> Bool {
         let race = FirstOf()
         let sending = Task { @MainActor in
             while !Task.isCancelled {
-                await delivery.send(session)
-                guard delivery.isPending(session, record) else { break }
+                await send()
+                guard isPending() else { break }
                 do {
-                    try await Task.sleep(for: delivery.pause)
+                    try await Task.sleep(for: pause)
                 } catch {
                     break
                 }
@@ -476,22 +609,80 @@ final class AppRoot {
             race.finish(.send)
         }
         let timer = Task { @MainActor in
-            try? await Task.sleep(for: delivery.cap)
+            try? await Task.sleep(for: cap)
             race.finish(.cap)
         }
         let winner = await race.wait()
         sending.cancel()
         timer.cancel()
-        if winner == .cap {
-            Self.logger.warning("unlinked record still queued when the hub went: not sent")
+        return winner == .send
+    }
+
+    /// Keeps the sealed farewell of the removed hub (`row`, read before its
+    /// removal) in the registry for a later resend (#143). nil when it
+    /// could not be kept (logged): the shares are then left as usual.
+    private func keepFarewell(_ sealed: CloudRecord, of row: HubRow?) -> PendingFarewell? {
+        guard let row else { return nil }
+        let farewell = PendingFarewell(
+            hubID: row.hubID, scope: row.link.databaseScope, userRecordName: row.link.userRecordName,
+            record: sealed, since: Date()
+        )
+        do {
+            try registry.savePendingFarewell(farewell)
+            return farewell
+        } catch {
+            Self.logger.error("unsent unlinked record not kept: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
-    /// The first of two main-actor tasks to finish: the send loop or the
-    /// cap. Later finishes do nothing.
+    /// Stops keeping `farewell`, unless the registry now holds another one
+    /// for its hub (a later unlink's).
+    private func dropFarewell(_ farewell: PendingFarewell) {
+        guard pendingFarewells().contains(where: { $0.isSame(as: farewell) }) else { return }
+        dropFarewell(farewell.hubID)
+    }
+
+    /// A kept farewell sent by one direct save of its sealed record
+    /// (`save`; live: `CloudKitTransport.saveDirectly`, no engine, a
+    /// compare-and-swap over the server's copy, so a save cancelled at the
+    /// cap that lands late never replaces a relink's record, #261): the
+    /// record is already sealed, so the deleted hub keys are not needed.
+    /// True once the save returned; a failure, or a save still running at
+    /// `cap` (cancelled), reads false (logged) and the farewell stays kept.
+    static func resendDirectly(
+        _ farewell: PendingFarewell,
+        cap: Duration,
+        save: @escaping @Sendable (PendingFarewell) async throws -> Void
+    ) async -> Bool {
+        let race = FirstOf()
+        let saving = Task { @MainActor in
+            do {
+                try await save(farewell)
+                race.finish(.send)
+            } catch {
+                logger.warning("kept unlinked record not sent: \(error.localizedDescription, privacy: .public)")
+                race.finish(.failed)
+            }
+        }
+        let timer = Task { @MainActor in
+            try? await Task.sleep(for: cap)
+            race.finish(.cap)
+        }
+        let winner = await race.wait()
+        saving.cancel()
+        timer.cancel()
+        if winner == .cap {
+            logger.warning("kept unlinked record still sending at the cap")
+        }
+        return winner == .send
+    }
+
+    /// The first of two main-actor tasks to finish: the send (done or
+    /// failed) or the cap. Later finishes do nothing.
     @MainActor
     private final class FirstOf {
-        enum Winner { case send, cap }
+        enum Winner { case send, failed, cap }
 
         private var winner: Winner?
         private var waiter: CheckedContinuation<Winner, Never>?
@@ -524,9 +715,20 @@ final class AppRoot {
 // MARK: - LinkHost
 
 extension AppRoot: LinkHost {
+    var activeHubID: String? { env.activeHubID }
+
     func linkedHubs() -> [HubRow] {
         do {
             return try registry.rows()
+        } catch {
+            Self.logger.error("hub registry unreadable: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    func unreadableHubIDs() -> [String] {
+        do {
+            return try registry.unreadableHubIDs()
         } catch {
             Self.logger.error("hub registry unreadable: \(error.localizedDescription, privacy: .public)")
             return []
@@ -548,8 +750,13 @@ extension AppRoot: LinkHost {
 
     func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
-        // A removal of this hub still running decides what is left.
+        // The launch's orphan pass never deletes the files of a hub being
+        // linked (a cold launch by a link URL); a removal of this hub still
+        // running decides what is left; a kept farewell being sent again
+        // lands before the new link's records.
+        await orphanPass?.value
         _ = await removals[hubID]?.value
+        _ = await resends[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
         if let session = env.session(hubID) {
             if session.databaseScope == scope, !frozen, !fresh {
@@ -604,6 +811,8 @@ extension AppRoot: LinkHost {
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
         guard let session = env.session(record.hubID) else { throw CancellationError() }
         try registry.upsert(record, now: Date())
+        // The new link supersedes an old unlink this hub never heard.
+        dropFarewell(record.hubID)
         env.nameHubs(linkedHubs())
         session.deviceSettings.adoptUnlinkedChoices()
         // The held recordings of this hub are in its replica before the
@@ -635,6 +844,38 @@ extension AppRoot: LinkHost {
         let outcome = await task.value
         removals[hubID] = nil
         return outcome
+    }
+
+    func pendingFarewells() -> [PendingFarewell] {
+        do {
+            return try registry.pendingFarewells()
+        } catch {
+            Self.logger.error("kept farewells unreadable: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    func resendFarewell(_ farewell: PendingFarewell) async -> Bool {
+        if let running = resends[farewell.hubID] {
+            return await running.value
+        }
+        let resend = farewellDelivery.resend
+        let task = Task { await resend(farewell) }
+        resends[farewell.hubID] = task
+        let sent = await task.value
+        resends[farewell.hubID] = nil
+        if sent {
+            dropFarewell(farewell)
+        }
+        return sent
+    }
+
+    func dropFarewell(_ hubID: String) {
+        do {
+            try registry.removePendingFarewell(hubID)
+        } catch {
+            Self.logger.error("kept farewell not dropped: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func markRemovedByMac(_ hubID: String) async {

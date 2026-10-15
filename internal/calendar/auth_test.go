@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthpage"
 )
 
 func TestTokenStore_RoundTrip(t *testing.T) {
@@ -407,7 +409,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	out := &syncBuffer{}
 	go func() {
 		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out,
-			LoginOptions{SkipBrowserOpen: true})
+			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		if err != nil {
 			errCh <- err
 			return
@@ -447,6 +449,10 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	resp, err := http.Get(cbURL.String())
 	require.NoError(t, err)
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, oauthpage.Success("Your Google account", true), string(body),
+		"the callback serves the shared success page with the app link")
 
 	select {
 	case tok := <-resCh:
@@ -721,4 +727,14 @@ func mustTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+// A login nobody completes returns ErrLoginTimedOut, which keeps
+// oauthpage.ReturnAfterLogin from pulling the app forward (#741).
+func TestLogin_TimeoutIsErrLoginTimedOut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Login(ctx, GoogleOAuthConfig{ClientID: "x"}, io.Discard, LoginOptions{SkipBrowserOpen: true})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut)
 }

@@ -51,8 +51,8 @@ final class GoogleAuthService {
         // Store the process so cancelConnect() can terminate it
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
-        // --app-return: the success page redirects to watchtower-auth:// so
-        // macOS brings the app back to the foreground after the browser step.
+        // --app-return: the CLI opens watchtower-auth:// once the browser step
+        // is done, so macOS brings the app back to the foreground.
         if let accountID {
             process.arguments = ["google", "login", "--account", String(accountID), "--app-return"]
         } else {

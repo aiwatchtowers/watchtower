@@ -1,7 +1,5 @@
 import Foundation
 import GRDB
-import os
-import WatchtowerCore
 import WatchtowerSync
 
 /// The `device_grant` slice (mobile POC spec §4.13), record name
@@ -45,7 +43,6 @@ struct DeviceGrantSlice: SliceSource {
     /// nothing anyway).
     let keyring: HubKeyring?
     let now: @Sendable () -> Date
-    private static let logger = Logger(subsystem: Constants.bundleID, category: "DeviceGrantSlice")
 
     init(sidecar: HubSyncState, hubID: String, keyring: HubKeyring? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
         self.sidecar = sidecar
@@ -54,20 +51,9 @@ struct DeviceGrantSlice: SliceSource {
         self.now = now
     }
 
-    /// Reads the sidecar, not `db`: linking is the hub's own state.
+    /// Reads the sidecar, not `db`: linking is the hub's own state. Reads only: an expired refusal or revoked
+    /// phone is filtered out here and pruned by `MobileLinkCenter.pruneExpiredAnswers`.
     func records(_ db: Database) throws -> [SliceRecord] {
-        do {
-            try sidecar.pruneLinkRefusals(olderThan: now().addingTimeInterval(-Self.refusalLifetime))
-        } catch {
-            // Housekeeping only: the next tick prunes.
-            Self.logger.warning("link refusal prune failed: \(error.localizedDescription, privacy: .public)")
-        }
-        do {
-            try sidecar.pruneRevokedDevices(olderThan: now().addingTimeInterval(-Self.revokedLifetime))
-        } catch {
-            // Housekeeping only: the filter below still drops an expired one.
-            Self.logger.warning("revoked device prune failed: \(error.localizedDescription, privacy: .public)")
-        }
         // Only a phone linked through a confirmed hello has keys stored, and only its keybox carries the epoch keys.
         let keyed = Set(try sidecar.deviceKeyRows().map { $0.deviceID.uppercased() })
         let keys = try keyed.isEmpty ? nil : keyring?.keyboxKeys()
@@ -88,7 +74,9 @@ struct DeviceGrantSlice: SliceSource {
             ), keys: nil))
         }
         answered.formUnion(pending.map { $0.1.grant.deviceID.uppercased() })
-        let refused = try sidecar.linkRefusals().filter { !answered.contains($0.deviceID.uppercased()) }.map { refusal in
+        let refusedSince = now().addingTimeInterval(-Self.refusalLifetime)
+        let unexpired = try sidecar.linkRefusals().filter { $0.at >= refusedSince && !answered.contains($0.deviceID.uppercased()) }
+        let refused = unexpired.map { refusal in
             (refusal.at, Keybox(grant: DeviceGrant(
                 deviceID: refusal.deviceID, hubID: hubID, name: refusal.name, scope: refusal.scope, linked: false,
                 // The refusal's time: a second identical refusal still

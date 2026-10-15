@@ -3,10 +3,10 @@ package auth
 import (
 	"crypto/subtle"
 	"fmt"
-	"html"
 	"net/http"
-	"strings"
 	"sync/atomic"
+
+	"watchtower/internal/oauthpage"
 )
 
 // CallbackResult is what the one accepted loopback OAuth callback carried:
@@ -22,20 +22,9 @@ func StateMatches(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
-// staleCallbackMessage is what a wrong-state callback tells the owner: almost
-// always a tab left over from an earlier sign-in attempt.
-const staleCallbackMessage = "This sign-in page is out of date — use the latest tab Watchtower opened, " +
-	"or close this one and start again from Watchtower."
-
-const staleCallbackPage = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Watchtower — Sign-in Out of Date</title>` + callbackStyle + `</head><body>
-<div class="card">
-<div class="icon icon-err">!</div>
-<h1>Sign-in Out of Date</h1>
-<p>` + staleCallbackMessage + `</p>
-</div>
-</body></html>`
+// staleCallbackPage tells the owner a wrong-state callback is almost always
+// a tab left over from an earlier sign-in attempt.
+var staleCallbackPage = oauthpage.Stale()
 
 // WriteStaleCallback answers a callback whose state does not match the
 // login's: 400 with a page saying which tab to use, instead of a bare
@@ -55,9 +44,9 @@ func WriteStaleCallback(w http.ResponseWriter) {
 // without an `error`) cannot derail a sign-in in progress. Providers echo the
 // state on error redirects too (RFC 6749 §4.1.2.1), so a real denial still
 // arrives. The first matching request delivers — the code, or the provider's
-// error, which gets errorPage with its {{ERROR}} placeholder filled — and every
+// error, which gets errorPage(reason) — and every
 // later matching request gets a bare 410.
-func NewCallbackHandler(state, successPage, errorPage string) (http.HandlerFunc, <-chan CallbackResult) {
+func NewCallbackHandler(state, successPage string, errorPage func(reason string) string) (http.HandlerFunc, <-chan CallbackResult) {
 	ch := make(chan CallbackResult, 1)
 	var delivered atomic.Bool
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +66,7 @@ func NewCallbackHandler(state, successPage, errorPage string) (http.HandlerFunc,
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if res.Err != "" {
-			// #nosec G705 -- the provider error is html.EscapeString-encoded
-			// before interpolation; the taint analysis does not track it.
-			fmt.Fprint(w, strings.Replace(errorPage, "{{ERROR}}", html.EscapeString(res.Err), 1)) //nolint:gosec
+			fmt.Fprint(w, errorPage(res.Err)) //nolint:gosec // G705: errorPage is oauthpage.Error, rendered by html/template
 			return
 		}
 		fmt.Fprint(w, successPage)

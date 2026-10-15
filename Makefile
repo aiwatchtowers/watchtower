@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -73,6 +73,25 @@ test-codeindex-full:
 # code to confirm tests still cover the moved/changed paths.
 test-cover:
 	./scripts/coverage-gate.sh
+
+# The race pass (CI on main pushes and workflow_dispatch, the release gate):
+# every package but cmd (CLI glue over file-backed SQLite fixtures; its
+# concurrency lives in internal/*). internal/db runs apart, without its
+# migration and schema-snapshot tests: they replay goose migrations — one
+# goroutine of SQL — and were 2 910 of the package's 3 170 s under -race
+# (local, 2026-10-14), past the 25 m per-package timeout on a CI runner.
+# They run without -race in test-cover. The skip matches top-level names, so
+# an internal/db test of concurrency keeps those words out of its name.
+# internal/db runs alongside the rest (as one invocation did before) and both
+# results count; its log follows the rest's.
+RACE_SKIP := Migration|DownUp|SchemaGolden|DesktopTestSchema
+test-race:
+	@db_log="$$(mktemp)"; \
+	go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)' > "$$db_log" 2>&1 & db_pid=$$!; \
+	rc=0; go test $$(go list ./... | grep -v -e '^watchtower/cmd$$' -e '^watchtower/internal/db$$') -race -count=1 -timeout 25m || rc=$$?; \
+	db_rc=0; wait $$db_pid || db_rc=$$?; \
+	cat "$$db_log"; rm -f "$$db_log"; \
+	[ $$rc -eq 0 ] && [ $$db_rc -eq 0 ]
 
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe

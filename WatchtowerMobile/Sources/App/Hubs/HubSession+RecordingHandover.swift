@@ -173,6 +173,20 @@ extension HubSession {
         } catch {
             Self.handoverLogger.error("held recordings not listed: \(error.localizedDescription, privacy: .public)")
         }
+        reloadHoldFiles()
+    }
+
+    /// Reads the hold's files again for Recordings: where each held
+    /// recording's audio is now, and the `unreadable` folder.
+    private func reloadHoldFiles() {
+        guard let hold else { return }
+        let audio = heldRecordings.compactMap { recording in hold.audioURL(of: recording).map { (recording.id, $0) } }
+        heldAudioURLs = Dictionary(audio) { first, _ in first }
+        do {
+            unreadableAudio = try hold.unreadableAudio()
+        } catch {
+            Self.handoverLogger.error("unreadable audio not listed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// At boot, before the launch sweep: the held recordings of this
@@ -244,6 +258,7 @@ extension HubSession {
         } catch {
             failures.append(error.localizedDescription)
         }
+        reloadHoldFiles()
         if let first = failures.first {
             report.problem = failures.count == 1
                 ? "A recording couldn't be restored yet (\(first)); it stays on this iPhone"
