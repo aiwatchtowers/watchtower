@@ -21,6 +21,11 @@ func TestLinear03_AccountLifecycleSoftDelete(t *testing.T) {
 	assert.True(t, a.Enabled)
 	assert.Equal(t, "ok", a.Status)
 
+	require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: id, ID: "i-1", Key: "ENG-1", TeamKey: "ENG",
+		StatusCategory: "todo", UpdatedAt: "2026-10-01T00:00:00.000Z"}))
+	require.NoError(t, d.UpsertLinearComment(LinearComment{AccountID: id, ID: "cm-1", IssueID: "i-1", IssueKey: "ENG-1",
+		CreatedAt: "2026-10-01T00:00:00.000Z", UpdatedAt: "2026-10-01T00:00:00.000Z"}))
+
 	require.NoError(t, d.SetLinearAccountAuthState(id, "revoked", "invalid_grant"))
 	require.NoError(t, d.SetLinearAccountRemoved(id))
 	enabled, err := d.ListEnabledLinearAccounts()
@@ -29,6 +34,11 @@ func TestLinear03_AccountLifecycleSoftDelete(t *testing.T) {
 	all, err := d.ListLinearAccounts()
 	require.NoError(t, err)
 	require.Len(t, all, 1) // soft delete: the row stays
+	var issues, comments int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM linear_issues WHERE account_id = ?`, id).Scan(&issues))
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM linear_comments WHERE account_id = ?`, id).Scan(&comments))
+	assert.Equal(t, 1, issues, "synced issues survive remove")
+	assert.Equal(t, 1, comments, "synced comments survive remove")
 
 	_, err = d.GetLinearAccount(99)
 	assert.ErrorIs(t, err, ErrLinearAccountNotFound)

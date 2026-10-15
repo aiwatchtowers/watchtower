@@ -8,17 +8,17 @@ Connector (`internal/linear/`) → `linear_*` tables (migration 00116) → `trac
 
 ## OAuth
 
-Authorization-code flow with PKCE (no client secret). The client id comes from `WATCHTOWER_LINEAR_CLIENT_ID`, else `linear.DefaultLinearClientID` (build-time `-X`, Makefile `LINEAR_ID`; release builds need `LINEAR_ID`/`WATCHTOWER_LINEAR_CLIENT_ID` in the build environment). The loopback listener tries fixed ports 18531..18535, so the Linear OAuth app must register `http://localhost:18531/callback` ... `18535`. Tokens rotate: every refresh returns a new refresh token, saved before use and single-flight (LINEAR-02). Token file `<workspace>/linear_token_<accountID>.json`.
+Authorization-code flow with PKCE (no client secret). The client id comes from `WATCHTOWER_LINEAR_CLIENT_ID`, else `linear.DefaultLinearClientID` (build-time `-X`, Makefile `LINEAR_ID`; release builds need `LINEAR_ID`/`WATCHTOWER_LINEAR_CLIENT_ID` in the build environment); with neither, `add`/`login` fail before opening a browser. The loopback listener tries fixed ports 18531..18535, so the Linear OAuth app must register `http://localhost:18531/callback` ... `18535`. Tokens rotate: every refresh returns a new refresh token, saved before use and single-flight across goroutines and processes (LINEAR-02); token and revoke calls time out after 30 s. Token file `<workspace>/linear_token_<accountID>.json`.
 
 ## Sync
 
-`phaseLinearSync` runs every `linear.sync_interval_mins` (default 15) when `linear.enabled`, one syncer per account, errors isolated per account; `ErrAuthRevoked` marks the account `revoked` (LINEAR-03).
+`phaseLinearSync` runs every `linear.sync_interval_mins` (default 15) when `linear.enabled`, one syncer per account, errors isolated per account; `ErrAuthRevoked` marks the account `revoked` (LINEAR-03). The syncers are built once at daemon start (`wireLinearSyncers`), so an account added, disabled or removed is picked up on the daemon's next start (the Jira precedent).
 
 - Per-team watermark in `linear_sync_state`; issues and comments are queried with `updatedAt gte since` (LINEAR-01). The watermark is the max issue `updatedAt` only; a quiet successful pass records the `since` it queried with.
 - First pass: every open issue plus issues updated within `linear.backfill_days` (default 90).
 - Pages: issues 25 per page (with nested labels 20, relations 20, history 50), comments 50, teams 50, users 100, cycles/projects 50. The client gate waits when remaining requests drop below 5 or complexity below 20000 and refuses waits over 10 minutes (`ErrRateLimited`).
 - Archived or trashed issues are stored with `is_deleted = 1`. Issues are keyed by UUID; keys move (LINEAR-04).
-- Users are fetched each pass and mapped to Slack by email only (`db.ResolveLinearUsersByEmail`; manual mappings are untouched); Slack ids are back-filled onto issues and comments. Comment mentions are read from the body's `suggestion_userMentions` nodes (`attrs.id`).
+- Users are fetched each pass and mapped to Slack by email only (`db.ResolveLinearUsersByEmail`; manual mappings are untouched); Slack ids are back-filled onto issues (assignee and creator; `db.BackfillLinearSlackIDs`); comments keep their Linear author id. Comment mentions are read from the body's `suggestion_userMentions` nodes (`attrs.id`).
 
 ## Tables (00116)
 
@@ -27,13 +27,13 @@ Authorization-code flow with PKCE (no client secret). The client id comes from `
 ## Views (00117)
 
 - `tracker_issues`: tracker, account_id, issue_id, key, project_key, title, description_text, status, status_category, status_changed_at, assignee_*, reporter_*, priority, priority_rank, points, due_date, iteration_id/name, container_kind/id/name, parent_key, labels, is_bug, is_blocked, url, created_at, updated_at, resolved_at, synced_at, is_deleted.
-- `tracker_comments`, `tracker_history` (tracker, account_id, issue key, id, field, from/to value and string, actor, changed_at), `tracker_iterations` (sprints and cycles with a derived state), `tracker_people`, `tracker_accounts`.
+- `tracker_comments` (the Linear branch shows the issue's current key, so comments follow a team move), `tracker_history` (tracker, account_id, issue key, id, field, from/to value and string, actor, changed_at), `tracker_iterations` (sprints and cycles with a derived state), `tracker_people`, `tracker_accounts` (enabled, non-removed accounts only).
 
 Read the migration for the exact column lists; the owner-open query shape is pinned by `TestTrackerIssues_OwnerOpenQueryUsesIndexes`.
 
 ## CLI
 
-`watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace.
+`watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace. Both identify the fresh token's workspace with an in-memory viewer request (`linear.FetchViewerWithToken`: no token file, no refresh); `login` saves the token only after the workspace matches.
 
 ## v1 limits
 

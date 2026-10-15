@@ -128,7 +128,7 @@ func TestTrackerAccounts_HidesRemovedAndDisabled(t *testing.T) {
 }
 
 // A comment synced under the issue's old key follows the issue's current key.
-func TestTrackerComments_FollowTeamMove(t *testing.T) {
+func TestLinear04_TrackerCommentsFollowTeamMove(t *testing.T) {
 	d := openTestDB(t)
 	la, err := d.CreateLinearAccount("")
 	require.NoError(t, err)

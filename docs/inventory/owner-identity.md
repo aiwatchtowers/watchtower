@@ -60,7 +60,7 @@ Amended 2026-10-15: Linear rung (ask #162).
 
 **Locked since:** 2026-09-25
 
-Amended 2026-10-15: no-owner copy names Linear (ruling R5).
+Amended 2026-10-15: no-owner copy names Linear (follow-up to ask #162).
 
 ## Changelog
 
