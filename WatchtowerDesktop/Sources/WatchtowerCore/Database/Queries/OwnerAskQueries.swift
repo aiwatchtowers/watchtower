@@ -90,7 +90,9 @@ package enum OwnerAskQueries {
             do {
                 out.rows.append(WorkbenchAskRow(ask: try OwnerAsk(row: row), workbenchName: row["workbench_name"]))
             } catch {
-                out.unreadableIDs.append(row["id"])
+                let id: Int64 = row["id"]
+                NSLog("OwnerAskQueries: open ask #%lld could not be read: %@", id, "\(error)")
+                out.unreadableIDs.append(id)
             }
         }
         return out

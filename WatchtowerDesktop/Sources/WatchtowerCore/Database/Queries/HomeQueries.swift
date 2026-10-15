@@ -45,6 +45,9 @@ package enum HomeQueries {
         data.asks = readCard(.agentsWaiting, db, tables: ["owner_asks", "projects"], failed: &data.failed) {
             try OwnerAskQueries.openAsksAllWorkbenches(db)
         } ?? WorkbenchAskRows(rows: [], unreadableIDs: [])
+        // An unreadable ask is a failed read, never an all-clear; the readable
+        // rows still show in the card.
+        if !data.asks.unreadableIDs.isEmpty { data.failed.insert(.agentsWaiting) }
         if let value = readCard(.sinceYouWereAway, db, tables: ["catchup_recaps"], failed: &data.failed, {
             try CatchUpQueries.fetchRecaps(db, limit: 1).first
         }) {

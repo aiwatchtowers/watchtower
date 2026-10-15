@@ -242,6 +242,28 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
     }
 
+    /// Every open ask unreadable and nothing else to show: the read error,
+    /// never "Nothing needs you right now".
+    func testOnlyUnreadableAsksIsNotAllClear() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            // The column's CHECK refuses 'poll'; a newer Go could still widen it.
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(sql: "INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'poll', 'Pick one')",
+                           arguments: [workbench])
+            try db.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+        }
+        let center = makeCenter(defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.today, [])
+        XCTAssertEqual(center.snapshot?.todayFailed, [.agentsWaiting])
+        XCTAssertEqual(center.snapshot?.showsReadError, true)
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+    }
+
     /// A failed card the owner's tabs hide does not count.
     func testFailedReadOutsideAllowedIsIgnored() async throws {
         let pool = try makePool()

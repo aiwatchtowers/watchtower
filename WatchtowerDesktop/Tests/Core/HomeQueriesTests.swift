@@ -25,6 +25,20 @@ final class HomeQueriesTests: XCTestCase {
         ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutes * 60))
     }
 
+    /// An open ask `OwnerAsk(row:)` refuses: the column's CHECK refuses
+    /// 'poll', but a newer Go could still widen it.
+    @discardableResult
+    private func insertUnreadableAsk(_ d: Database, projectID: Int64) throws -> Int64 {
+        try d.execute(sql: "PRAGMA ignore_check_constraints = ON")
+        try d.execute(
+            sql: "INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'poll', 'Pick one')",
+            arguments: [projectID]
+        )
+        let id = d.lastInsertedRowID
+        try d.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+        return id
+    }
+
     @discardableResult
     private func insertTarget(
         _ d: Database,
@@ -110,14 +124,7 @@ final class HomeQueriesTests: XCTestCase {
         let (result, good, bad) = try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
             let good = try TestDatabase.insertOwnerAsk(d, projectID: p, createdAt: self.stampAgo(minutesAgo: 2))
-            // The column's CHECK refuses 'poll'; a newer Go could still widen it.
-            try d.execute(sql: "PRAGMA ignore_check_constraints = ON")
-            try d.execute(
-                sql: "INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'poll', 'Pick one')",
-                arguments: [p]
-            )
-            let bad = d.lastInsertedRowID
-            try d.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+            let bad = try self.insertUnreadableAsk(d, projectID: p)
             return (try OwnerAskQueries.openAsksAllWorkbenches(d), good, bad)
         }
         XCTAssertEqual(result.rows.map(\.ask.id), [good])
@@ -249,6 +256,22 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertNil(data.briefing)
         XCTAssertTrue(data.asks.rows.isEmpty)
         XCTAssertEqual(data.targets.map(\.text), ["Due today"])
+    }
+
+    /// An unreadable ask is a failed read (never an all-clear); the readable
+    /// asks still fill the card.
+    func testUnreadableAskMarksAgentsWaitingFailedAndKeepsReadableRows() throws {
+        let now = Date()
+        let data = try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
+            try self.insertUnreadableAsk(d, projectID: p)
+            return HomeQueries.today(d, now: now, calendar: .current)
+        }
+        XCTAssertEqual(data.failed, [.agentsWaiting])
+        let card = HomeTodayBuilder.cards(data, allowed: [.agentsWaiting], now: now, calendar: .current).first
+        XCTAssertEqual(card?.kind, .agentsWaiting)
+        XCTAssertEqual(card?.items.map(\.title), ["Check the build"])
     }
 
     func testObservedTablesCoverEveryRead() {
