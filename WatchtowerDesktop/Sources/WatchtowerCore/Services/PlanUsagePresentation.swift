@@ -144,6 +144,8 @@ package enum PlanUsagePresentation {
     private static func makeClockFormatter(_ format: String) -> DateFormatter {
         let f = DateFormatter()
         f.dateFormat = format
+        // Cached for the app's life: follow a time zone change, as Calendar.current does.
+        f.timeZone = .autoupdatingCurrent
         return f
     }
 
