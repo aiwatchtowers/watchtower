@@ -133,15 +133,17 @@ automations and tests.
 - `linear_user_map`: Linear user → Slack user by email (the same matcher as
   `jira_user_map`), with `match_method` and confidence.
 - `db.ResolveOwner` gains a Linear rung (OWNER-01 extended, owner-approved in
-  ask #162): `Owner` carries the owner's tracker identities
-  `[]TrackerIdentity{Tracker, AccountID, UserID}` from
-  `jira_accounts.owner_account_id` and `linear_accounts.owner_user_id`.
-  `JiraAccountID` stays for the existing callers.
+  ask #162): Slack #1 → Google #1 → Jira #1 → Linear #1
+  (`ID = "linear:" + owner_user_id`), and `Owner` gains `LinearUserIDs`
+  (the owner's user id on every enabled Linear workspace). Linear user ids
+  are global UUIDs, so no account pairing is needed; `JiraAccountID` stays
+  as it is.
 
 ### 3.5 Feature, onboarding, readiness
 
-A `linear` feature in `internal/features` (on when an enabled account exists),
-a Linear card in Goals → Connect, and a `.linear` readiness keyed on rows in
+A `linear.enabled` config switch (the `jira.enabled` precedent: trackers are
+sources, not `internal/features` entries; `linear add` turns it on), a Linear
+card in Goals → Connect, and a `.linear` readiness keyed on rows in
 `linear_issues`, through the existing `FeatureReadiness` vocabulary. The
 existing Jira feature toggles (`my_issues`, `awaiting_input`, `blocker_map`, …)
 govern the tracker-neutral behaviour for both trackers; their config keys keep
@@ -296,7 +298,9 @@ known to both writes one link per tracker. Readers (`GetJiraIssuesFor*`, Swift
 
 ## 9. Phases
 
-1. **P1 Schema** — `linear_*`, `tracker_*` views, `issue_slack_links`, CHECKs.
+1. **P1 Schema** — `linear_*`, `tracker_*` views. (`issue_slack_links` and
+   the CHECK expansions land in P3 next to their first readers; see Plan 1's
+   "Plan split".)
    Jira behaviour unchanged (golden + existing tests).
 2. **P2 Connector** — auth, accounts CLI (`watchtower linear login|accounts|
    sync`), `phaseLinearSync`, user map, OWNER-01 rung.
