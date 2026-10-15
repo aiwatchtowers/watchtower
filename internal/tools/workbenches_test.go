@@ -498,3 +498,16 @@ func TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown(t *testing.T) {
 	_, isTarget := plain.(*db.Target)
 	assert.True(t, isTarget, "a non-project session's get_target keeps its old shape")
 }
+
+// Spec 2026-10-15 §8: workbench_info shows the methodology with its sources,
+// read-only — no tool writes it.
+func TestWorkbenchInfo_ShowsTheMethodology(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	require.NoError(t, fx.d.SetWorkbenchMethodology(fx.a, db.WorkbenchMethodology{AskGuard: "soft"}))
+
+	got := callReadIn(t, reg, fx.a, "workbench_info", `{}`)
+
+	assert.Contains(t, got, `"methodology":{"preset":"watchtower-flow","ask_guard":"soft","finish_check":"on",`+
+		`"sources":{"preset":"default","ask_guard":"personal","finish_check":"default"}}`)
+}
