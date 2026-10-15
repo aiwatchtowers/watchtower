@@ -1,10 +1,12 @@
 import SwiftUI
 import UserNotifications
+import WatchtowerCore
 
 struct NotificationSettings: View {
     @AppStorage("notifyDecisions") private var notifyDecisions = true
     @AppStorage("notifyDailySummary") private var notifyDailySummary = true
     @AppStorage(WorkbenchNotificationCenter.enabledKey) private var notifyWorkbenches = true
+    @AppStorage(PlanUsageNoticePolicy.enabledKey) private var notifyPlanUsage = true
     @AppStorage("quietHoursEnabled") private var quietHoursEnabled = false
     @AppStorage(MeetingReminderCenter.remindersEnabledKey) private var notifyMeetingReminders = true
     @AppStorage(MeetingReminderCenter.reminderMinutesKey) private var reminderMinutes = MeetingReminderCenter.defaultReminderMinutes
@@ -34,6 +36,7 @@ struct NotificationSettings: View {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
                 Toggle("Workbench notifications", isOn: $notifyWorkbenches)
+                Toggle("Claude plan limits", isOn: $notifyPlanUsage)
                     .help("Agent questions and asks, finished targets, proposals awaiting approval")
             }
 

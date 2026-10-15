@@ -116,7 +116,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             } else {
                 appState?.selectedDestination = .digests
             }
-        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action":
+        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action", "plan_usage":
             routeNavigation(userInfo["type"] as? String, appState: appState)
         case "voice_label":
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
@@ -176,6 +176,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         case "agent_action":
             // A proposal from a workbench terminal: its card is in Inbox → Actions.
             appState?.selectedDestination = .inbox
+        case "plan_usage":
+            UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
+            appState?.selectedDestination = .usage
         case "update":
             // An update push opens Settings → System, where it installs.
             appState?.settingsTab = .system

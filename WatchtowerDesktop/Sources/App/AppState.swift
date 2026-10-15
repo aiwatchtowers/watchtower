@@ -1726,7 +1726,7 @@ final class AppState {
     /// Claude plan limits: the previous center stopped, a new one polling.
     private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
         planUsageCenter?.stop()
-        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner)
+        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
         planUsageCenter = center
         center.start()
     }
