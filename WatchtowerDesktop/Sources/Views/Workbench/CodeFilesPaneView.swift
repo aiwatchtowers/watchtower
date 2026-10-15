@@ -848,7 +848,7 @@ struct MonacoEditorView: NSViewRepresentable {
 
 /// WKUserContentController retains its handlers; this breaks the
 /// controller → coordinator → web view cycle.
-private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
+final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
     weak var target: WKScriptMessageHandler?
 
     init(_ target: WKScriptMessageHandler) {
@@ -868,11 +868,14 @@ final class CodeEditorSchemeHandler: NSObject, WKURLSchemeHandler {
     static let shared = CodeEditorSchemeHandler()
     // swiftlint:disable:next force_unwrapping
     static let pageURL = URL(string: "\(scheme)://editor/index.html")!
+    // The Changes pane's diff page (board #328).
+    // swiftlint:disable:next force_unwrapping
+    static let diffPageURL = URL(string: "\(scheme)://editor/diff.html")!
 
-    /// The editor's web view navigates nowhere but its own page, in its
+    /// An editor's web view navigates nowhere but its own `page`, in its
     /// main frame (a nil target frame is a new window).
-    static func allowsNavigation(to url: URL?, mainFrame: Bool) -> Bool {
-        mainFrame && url == pageURL
+    static func allowsNavigation(to url: URL?, mainFrame: Bool, page: URL = pageURL) -> Bool {
+        mainFrame && url == page
     }
 
     private let root: URL? = AppBundle.resources.url(forResource: "CodeEditorWeb", withExtension: nil)?.standardizedFileURL

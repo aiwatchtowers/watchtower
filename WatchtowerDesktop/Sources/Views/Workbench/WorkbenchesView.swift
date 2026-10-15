@@ -147,7 +147,11 @@ struct WorkbenchesView: View {
             },
             rename: { renamingSession = $0 },
             delete: { deletingSession = $0 },
-            cleanUp: { cleaningSession = $0 }
+            cleanUp: { cleaningSession = $0 },
+            reviewChanges: { session in
+                guard let projectID = session.projectID else { return }
+                vm.showChanges(sessionID: session.id, projectID: projectID)
+            }
         )
     }
 

@@ -161,6 +161,11 @@ final class ReviewChangesModel {
         }
     }
 
+    /// The pane's banner was dismissed.
+    func clearError() {
+        lastError = nil
+    }
+
     func select(_ path: String) async {
         selectedPath = path
         await reloadSides()

@@ -389,6 +389,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.select("a.go")
         XCTAssertNil(h.model.sides)
         XCTAssertEqual(h.model.lastError, "path escapes the folder")
+        h.model.clearError()
+        XCTAssertNil(h.model.lastError)
     }
 
     func testSetViewRefetchesTheDiffSince() async throws {

@@ -424,6 +424,12 @@ final class WorkbenchesViewModel {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// One Changes pane model per session (board #328), so its round,
+    /// drafts and selection survive the pane leaving the screen; dropped
+    /// when the session is deleted (`forgetProcessState`). Created during a
+    /// view's body, hence not observed.
+    @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
+
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
     let cli: WorkbenchCLI?
