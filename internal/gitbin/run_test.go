@@ -193,9 +193,9 @@ func TestReadsContent_AddAndPatchDiffTree(t *testing.T) {
 		want bool
 	}{
 		{[]string{"add", "-A"}, true},
+		{[]string{"write-tree"}, true},
 		{[]string{"diff-tree", "-r", "-p", "a", "b"}, true},
 		{[]string{"diff-tree", "-r", "--name-status", "a", "b"}, false},
-		{[]string{"write-tree"}, false},
 		{[]string{"read-tree", "HEAD"}, false},
 	} {
 		if got := readsContent(tc.args); got != tc.want {
