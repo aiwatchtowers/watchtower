@@ -16,7 +16,7 @@ final class AppState {
     /// `AppState()` instances.
     static let shared = AppState()
 
-    var selectedDestination: SidebarDestination = .inbox
+    var selectedDestination: SidebarDestination = .home
 
     /// Which feature ids are currently disabled — drives sidebar visibility,
     /// navigation fallback, and the Dashboard banner. Populated by the
@@ -55,6 +55,17 @@ final class AppState {
             ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
                 Constants.activeWorkspaceDir()
             }
+    )
+
+    /// The Home snapshot and the Getting ready memory, here so a read
+    /// survives tab switches. Started with the main app's DB wiring, right
+    /// after `readinessCenter`, whose readings it builds on.
+    /// `homeEnvironmentOverride` and `homeDefaultsOverride`, set before first
+    /// use, replace the live environment and `.standard` in tests.
+    @ObservationIgnored private(set) lazy var homeCenter = HomeCenter(
+        readiness: readinessCenter,
+        environment: homeEnvironmentOverride ?? LiveHomeEnvironment(appState: self),
+        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
     )
 
     /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
@@ -357,6 +368,10 @@ final class AppState {
     /// Set to navigate to a specific briefing from anywhere in the app.
     var pendingBriefingID: Int?
 
+    /// Set to open a specific calendar event from anywhere in the app;
+    /// `CalendarEventsView` consumes and clears it.
+    var pendingCalendarEventID: String?
+
     /// Set to navigate to the day plan for a specific date from anywhere in the app.
     var pendingDayPlanDate: String?
 
@@ -400,6 +415,9 @@ final class AppState {
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
+    /// Test seams: Home's inputs, and the suite its Getting ready memory lives in.
+    @ObservationIgnored var homeEnvironmentOverride: (any HomeEnvironment)?
+    @ObservationIgnored var homeDefaultsOverride: UserDefaults?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `openDatabase` the
@@ -490,6 +508,11 @@ final class AppState {
     func navigateToBriefing(_ briefingID: Int) {
         pendingBriefingID = briefingID
         selectedDestination = .briefings
+    }
+
+    func navigateToCalendarEvent(_ eventID: String) {
+        pendingCalendarEventID = eventID
+        selectedDestination = .calendar
     }
 
     func navigateToDayPlan(_ date: String? = nil) {
@@ -630,6 +653,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
             }
@@ -843,14 +867,14 @@ final class AppState {
                 // A re-run that changed nothing needs no restart — only a
                 // daemon, if none runs.
                 bringUpDaemonInBackground(startOnly: isRerun && !rerunChangedSomething)
-                // The landing reads the sources the steps just connected.
+                // The sidebar reads the sources the steps just connected.
                 await refreshConnectedSources()
             },
             completeOnboarding: {
                 completeOnboarding()
                 // Landing is for the first run; a re-run goes back to where
                 // the owner was.
-                if !isRerun { land(after: route) }
+                if !isRerun { landOnHome() }
             },
             onRetry: onRetry
         )
@@ -1211,17 +1235,9 @@ final class AppState {
         emptyStateTurnOnErrors[featureID] = nil
     }
 
-    /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
-    private func land(after route: OnboardingRoute) {
-        let catchUpVisible = SidebarDestination.catchUp.isVisible(
-            disabledFeatures: featureVisibility.disabledFeatureIDs,
-            connected: featureVisibility.connectedSources
-        )
-        switch OnboardingFinishPlan.landing(goals: route.goals, catchUpVisible: catchUpVisible) {
-        case .catchUp: selectedDestination = .catchUp
-        case .workbench: selectedDestination = .workbench
-        case .chat: selectedDestination = .chat
-        }
+    /// A first run of onboarding opens Home, whatever the goals.
+    private func landOnHome() {
+        selectedDestination = .home
     }
 
     /// Called when onboarding flow completes successfully.
@@ -1450,6 +1466,7 @@ final class AppState {
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
+        homeCenter.beginReading(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never
@@ -1457,7 +1474,9 @@ final class AppState {
         ensureChatSessionPool(manager)
     }
 
-    private func initCalendar(dbPool: DatabasePool) {
+    /// Not marked `private` (the `initIdeas` precedent) so XCTest can mount
+    /// the Calendar tab on a test pool (`HomeLinkTests`).
+    func initCalendar(dbPool: DatabasePool) {
         calendarViewModel = CalendarViewModel(dbPool: dbPool)
     }
 

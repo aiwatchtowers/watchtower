@@ -16,22 +16,9 @@ package protocol DaemonControl: AnyObject {
     func waitUntilStopped() async throws
 }
 
-/// Where the app opens once onboarding is done, how the daemon is brought up
-/// for it, and Catch-Up's first-sync line.
+/// How the daemon is brought up once onboarding is done, and Catch-Up's
+/// first-sync line.
 package enum OnboardingFinishPlan {
-    package enum Landing: Equatable, Sendable {
-        case catchUp, workbench, chat
-    }
-
-    /// Work communication while the Catch-Up tab shows (Attention detection
-    /// or a digest feature on, and any source) → Catch-Up; else Development → Workbench;
-    /// else AI Chat.
-    package static func landing(goals: Set<OnboardingGoal>, catchUpVisible: Bool) -> Landing {
-        if goals.contains(.workCommunication), catchUpVisible { return .catchUp }
-        if goals.contains(.development) { return .workbench }
-        return .chat
-    }
-
     /// Finish is the one place onboarding touches the daemon: it starts one,
     /// or restarts a running one once so it picks up the feature set and
     /// accounts the steps just wrote. The daemon's first cycle syncs and

@@ -65,6 +65,17 @@ final class WorkbenchTargetExclusionTests: XCTestCase {
         XCTAssertEqual(counts.dueToday, 1)
     }
 
+    func testProj01_HomeSummaryNeverReturnsAProjectTarget() throws {
+        let queue = try TestDatabase.create()
+        let today = TargetQueries.todayDateString()
+        try queue.write { db in
+            try self.seed(db)
+            try db.execute(sql: "UPDATE targets SET due_date = ?", arguments: [today + "T23:59"])
+        }
+        let texts = try queue.read { try TargetQueries.homeSummary($0, today: today).map(\.text) }
+        XCTAssertEqual(texts, ["Ship ordinary"])
+    }
+
     func testProj01_DistinctTagsNeverListAProjectTargetsTag() throws {
         let queue = try TestDatabase.create()
         try queue.write(seed)

@@ -30,7 +30,7 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .workbench, .calendar])
+        XCTAssertEqual(SidebarDestination.rootItems, [.home, .targets, .tracks, .workbench, .calendar])
     }
 
     /// The Workbench tab keeps the persisted raw value of the old Projects
@@ -247,21 +247,21 @@ final class SidebarSectionTests: XCTestCase {
         let visible = SidebarDestination.allCases.filter {
             $0.isVisible(disabledFeatures: Self.devOnlyDisabled, connected: .none)
         }
-        XCTAssertEqual(Set(visible), [.workbench, .chat, .targets, .search, .usage, .mcpServer])
+        XCTAssertEqual(Set(visible), [.home, .workbench, .chat, .targets, .search, .usage, .mcpServer])
     }
 
-    func testDevOnlyFallbackIsWorkbench() {
+    func testDevOnlyFallbackIsHome() {
         XCTAssertEqual(
             SidebarDestination.fallbackDestination(current: .inbox, disabled: Self.devOnlyDisabled, connected: .none),
-            .workbench
+            .home
         )
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: Self.devOnlyDisabled, connected: .none))
     }
 
-    func testFallbackPrefersInboxWhenItShows() {
+    func testFallbackIsHomeEvenWhenInboxShows() {
         XCTAssertEqual(
             SidebarDestination.fallbackDestination(current: .boards, disabled: [], connected: ConnectedSources(slack: true)),
-            .inbox
+            .home
         )
     }
 
@@ -299,11 +299,11 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertFalse(SidebarDestination.inbox.isVisible(disabledFeatures: [], connected: .none))
     }
 
-    /// A Jira-only install that lands on a hidden tab falls back to Inbox.
-    func testJiraOnlyFallbackIsInbox() {
+    /// A Jira-only install that lands on a hidden tab falls back to Home.
+    func testJiraOnlyFallbackIsHome() {
         XCTAssertEqual(
             SidebarDestination.fallbackDestination(current: .statistics, disabled: [], connected: ConnectedSources(jira: true)),
-            .inbox
+            .home
         )
     }
 
@@ -382,7 +382,7 @@ final class SidebarSectionTests: XCTestCase {
     // MARK: - Navigation fallback
 
     func testFallbackDestinationSwitchesAwayWhenCurrentBecomesHidden() {
-        XCTAssertEqual(SidebarDestination.fallbackDestination(current: .ideas, disabled: ["ideas"], connected: .all), .inbox)
+        XCTAssertEqual(SidebarDestination.fallbackDestination(current: .ideas, disabled: ["ideas"], connected: .all), .home)
     }
 
     func testFallbackDestinationNilWhenCurrentStillVisible() {

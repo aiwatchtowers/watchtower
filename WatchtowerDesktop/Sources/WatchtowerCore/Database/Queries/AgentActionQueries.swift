@@ -47,6 +47,16 @@ package enum AgentActionQueries {
             """) ?? 0
     }
 
+    /// The rows `awaitingOwnerCount` counts (pending/failed, `notWorkbenchRow`), newest first.
+    package static func awaitingOwner(_ db: Database, limit: Int) throws -> [AgentAction] {
+        try AgentAction.fetchAll(db, sql: """
+            SELECT * FROM agent_actions
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """, arguments: [limit])
+    }
+
     /// Every non-terminal proposal across every conversation, newest first,
     /// PLUS a bounded tail of recently applied/rejected rows (`decided_at >=
     /// terminalSince`, an RFC3339 UTC string) so an execute-trust tool's
