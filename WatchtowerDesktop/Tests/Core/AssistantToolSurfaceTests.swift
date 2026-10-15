@@ -9,6 +9,12 @@ final class AssistantToolSurfaceTests: XCTestCase {
         XCTAssertEqual(AssistantToolSurface.label(for: "project"), "Workbench")
     }
 
+    /// `tools.AutomationSurface` is a trust place since Automations P2: Settings
+    /// shows its switch as "Automations".
+    func testAutomationLabel() {
+        XCTAssertEqual(AssistantToolSurface.label(for: "automation"), "Automations")
+    }
+
     /// A surface added on the Go side before its label still shows, as its id.
     func testAnUnknownSurfaceShowsItsID() {
         XCTAssertEqual(AssistantToolSurface.label(for: "brand_new"), "brand_new")

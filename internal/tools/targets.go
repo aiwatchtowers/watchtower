@@ -86,7 +86,7 @@ func NewCreateTarget() *Tool {
 		InputSchema: schema,
 		Access:      AccessWrite,
 		// "reaction": the seeded :white_check_mark: reaction command proposes it.
-		Surfaces: []string{"main", "reaction"},
+		Surfaces: []string{"main", "reaction", AutomationSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a createTargetArgs
 			if err := decodeStrict(raw, &a); err != nil {
