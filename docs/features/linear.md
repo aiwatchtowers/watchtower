@@ -1,0 +1,45 @@
+# Linear connector (2026-10-15, Plan 1 of 3)
+
+Plan 1 ships the schema, the tracker-neutral views and the connector. Consumers (briefing, inbox, meeting prep, tools) are Plan 2; Desktop is Plan 3. Contracts: LINEAR-01..04 in `docs/inventory/linear.md`; the OWNER-01 Linear rung is in `docs/inventory/owner-identity.md`.
+
+## Architecture
+
+Connector (`internal/linear/`) → `linear_*` tables (migration 00116) → `tracker_*` views (migration 00117) over Jira and Linear. Consumers will read only `tracker_*`; connectors write the normalized columns (`status_category`, `state_changed_at`) so the views stay plain projections.
+
+## OAuth
+
+Authorization-code flow with PKCE (no client secret). The client id comes from `WATCHTOWER_LINEAR_CLIENT_ID`, else `linear.DefaultLinearClientID` (build-time `-X`, Makefile `LINEAR_ID`; release builds need `LINEAR_ID`/`WATCHTOWER_LINEAR_CLIENT_ID` in the build environment). The loopback listener tries fixed ports 18531..18535, so the Linear OAuth app must register `http://localhost:18531/callback` ... `18535`. Tokens rotate: every refresh returns a new refresh token, saved before use and single-flight (LINEAR-02). Token file `<workspace>/linear_token_<accountID>.json`.
+
+## Sync
+
+`phaseLinearSync` runs every `linear.sync_interval_mins` (default 15) when `linear.enabled`, one syncer per account, errors isolated per account; `ErrAuthRevoked` marks the account `revoked` (LINEAR-03).
+
+- Per-team watermark in `linear_sync_state`; issues and comments are queried with `updatedAt gte since` (LINEAR-01). The watermark is the max issue `updatedAt` only; a quiet successful pass records the `since` it queried with.
+- First pass: every open issue plus issues updated within `linear.backfill_days` (default 90).
+- Pages: issues 25 per page (with nested labels 20, relations 20, history 50), comments 50, teams 50, users 100, cycles/projects 50. The client gate waits when remaining requests drop below 5 or complexity below 20000 and refuses waits over 10 minutes (`ErrRateLimited`).
+- Archived or trashed issues are stored with `is_deleted = 1`. Issues are keyed by UUID; keys move (LINEAR-04).
+- Users are fetched each pass and mapped to Slack by email only (`db.ResolveLinearUsersByEmail`; manual mappings are untouched); Slack ids are back-filled onto issues and comments. Comment mentions are read from the body's `suggestion_userMentions` nodes (`attrs.id`).
+
+## Tables (00116)
+
+`linear_accounts`, `linear_teams` (selection), `linear_sync_state`, `linear_issues`, `linear_comments`, `linear_issue_history` (state and assignee changes), `linear_cycles`, `linear_projects`, `linear_relations`, `linear_user_map`.
+
+## Views (00117)
+
+- `tracker_issues`: tracker, account_id, issue_id, key, project_key, title, description_text, status, status_category, status_changed_at, assignee_*, reporter_*, priority, priority_rank, points, due_date, iteration_id/name, container_kind/id/name, parent_key, labels, is_bug, is_blocked, url, created_at, updated_at, resolved_at, synced_at, is_deleted.
+- `tracker_comments`, `tracker_history` (tracker, account_id, issue key, id, field, from/to value and string, actor, changed_at), `tracker_iterations` (sprints and cycles with a derived state), `tracker_people`, `tracker_accounts`.
+
+Read the migration for the exact column lists; the owner-open query shape is pinned by `TestTrackerIssues_OwnerOpenQueryUsesIndexes`.
+
+## CLI
+
+`watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace.
+
+## v1 limits
+
+- Permanently deleted Linear issues are not detected (only archived/trashed).
+- Nested history is capped at 50 per issue per pass (default order unconfirmed), labels and relations at 20.
+- The mention node name `suggestion_userMentions` (`attrs.id`) is unconfirmed against live data.
+- Slack mapping is by email only.
+- Consumers (briefing, inbox, ...) come in Plan 2, Desktop in Plan 3.
+- The OAuth app must register the five redirect URIs above; release builds need `LINEAR_ID`.

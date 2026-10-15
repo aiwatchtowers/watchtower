@@ -34,7 +34,7 @@ func newLinearTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	return d, database
 }
 
-func TestPhaseLinearSync_RevokedMarksAccount(t *testing.T) {
+func TestLinear03_RevokedMarksAccount(t *testing.T) {
 	d, database := newLinearTestDaemon(t)
 	a1, err := database.CreateLinearAccount("")
 	require.NoError(t, err)

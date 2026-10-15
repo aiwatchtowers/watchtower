@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLinearAccount_Lifecycle(t *testing.T) {
+func TestLinear03_AccountLifecycleSoftDelete(t *testing.T) {
 	d := openTestDB(t)
 	id, err := d.CreateLinearAccount("Work")
 	require.NoError(t, err)
@@ -52,7 +52,7 @@ func TestLinearTeams_UpsertKeepsSelection(t *testing.T) {
 	assert.Error(t, d.SetLinearTeamSelected(id, "NOPE", true))
 }
 
-func TestLinearSyncState_ErrorKeepsWatermark(t *testing.T) {
+func TestLinear01_ErrorKeepsWatermark(t *testing.T) {
 	d := openTestDB(t)
 	id, _ := d.CreateLinearAccount("")
 	require.NoError(t, d.RecordLinearSyncSuccess(id, "t-1", "2026-10-01T00:00:00.000Z", "2026-10-01T00:05:00Z"))

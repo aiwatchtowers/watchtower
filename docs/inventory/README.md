@@ -28,6 +28,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Slack accounts | [slack-accounts.md](slack-accounts.md) | `cmd/slack.go` (`runSlackRemove`, `removeSlackAccount`, `rollbackSlackAccount`), `internal/db/slack_accounts.go` (`SetSlackAccountRemoved`) |
 | Automations | [automations.md](automations.md) | `internal/automations/`, `internal/db/automations.go`, `internal/db/automation_runs.go`, `internal/db/automation_stats.go`, `internal/db/automation_reads.go`, `internal/db/migrations/00113_automations.sql`, `cmd/automations*.go`, `cmd/automations_registry.go`, `internal/daemon/automation_wake.go`, `internal/tools/emails.go`, `internal/tools/automation_reads.go` |
 | Claude plan limits | [plan-usage.md](plan-usage.md) | `internal/planusage/`, `internal/db/plan_usage.go`, `internal/db/migrations/00115_plan_usage.sql`, `cmd/usage_plan.go`, `cmd/plan_usage_daemon.go`, `WatchtowerDesktop/Sources/Services/PlanUsageCenter.swift`, `WatchtowerDesktop/Sources/Views/Usage/ClaudePlanView.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/` (`PlanUsage*`) |
+| Linear connector | [linear.md](linear.md) | `internal/linear/`, `internal/db/linear.go`, `internal/db/linear_accounts.go`, `internal/db/linear_users.go`, `internal/db/migrations/00116_linear_tables.sql`, `internal/db/migrations/00117_tracker_views.sql`, `cmd/linear.go`, `internal/daemon/daemon.go` (`phaseLinearSync`) |
 
 (Other modules will be added as their inventories are written.)
 

@@ -40,7 +40,7 @@ func TestClient_DecodesData(t *testing.T) {
 	assert.Equal(t, "user-1", out.Viewer.ID)
 }
 
-func TestClient_401RefreshesAndSavesRotatedPair(t *testing.T) {
+func TestLinear02_RefreshSavesRotatedPair(t *testing.T) {
 	var calls atomic.Int32
 	c, store := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
@@ -92,7 +92,7 @@ func TestClient_GateRefusesLongWait(t *testing.T) {
 	assert.ErrorIs(t, err, ErrRateLimited)
 }
 
-func TestClient_ConcurrentRefreshSingleFlight(t *testing.T) {
+func TestLinear02_ConcurrentRefreshSingleFlight(t *testing.T) {
 	var refreshes atomic.Int32
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer a0" {

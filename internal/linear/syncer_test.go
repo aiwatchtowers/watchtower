@@ -61,7 +61,7 @@ func TestSyncer_SecondPassUsesWatermark(t *testing.T) {
 	assert.NotContains(t, got, `"nin"`)
 }
 
-func TestSyncer_PageErrorHoldsWatermark(t *testing.T) {
+func TestLinear01_PageErrorHoldsWatermark(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
 	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
@@ -81,7 +81,7 @@ func TestSyncer_PageErrorHoldsWatermark(t *testing.T) {
 	assert.Len(t, got, 1)
 }
 
-func TestSyncer_TeamMoveKeepsOneRow(t *testing.T) {
+func TestLinear04_TeamMoveKeepsOneRow(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
 	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
@@ -138,7 +138,7 @@ func TestSyncer_FirstPassSinceIsBackfillWindow(t *testing.T) {
 	assert.Contains(t, f.lastIssueFilterJSON("t-1"), `"gte":"2026-09-10T00:00:00.000Z"`)
 }
 
-func TestSyncer_QuietTeamRecordsSinceAsWatermark(t *testing.T) {
+func TestLinear01_QuietTeamRecordsSinceAsWatermark(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
 	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
@@ -245,7 +245,7 @@ func TestMapIssue_HistoryRelationsAndStateChange(t *testing.T) {
 	assert.True(t, mapIssue(7, decodeIssue(t, node)).IsDeleted)
 }
 
-func TestSyncer_CommentsDoNotRaiseWatermark(t *testing.T) {
+func TestLinear01_CommentsDoNotRaiseWatermark(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
 	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
