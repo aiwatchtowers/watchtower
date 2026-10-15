@@ -13,6 +13,7 @@ import WatchtowerCore
 /// item is shown but not clickable — a documented v1 limitation.
 struct ChatSourcesPanelView: View {
     let selection: ChatSourcesSelection
+    var expand: ChatInspectorExpandButton?
     var onClose: () -> Void
     @State private var collapsed: Set<String> = []
     @State private var jiraSiteURL: String?
@@ -25,6 +26,7 @@ struct ChatSourcesPanelView: View {
                 Text("Sources").font(.headline)
                 Text("\(selection.sources.count)").font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if let expand { expand }
                 Button(action: onClose) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)
                     .help("Close")

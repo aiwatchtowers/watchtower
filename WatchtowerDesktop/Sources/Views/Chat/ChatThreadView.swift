@@ -36,7 +36,7 @@ struct ChatThreadView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            errors
+            ChatErrorStrip(chatVM: chatVM)
         })
         .sheet(item: $quoting) { target in
             QuoteReplySheet(messageText: target.text) { chatVM.addQuote($0, comment: $1) }
@@ -137,24 +137,6 @@ struct ChatThreadView: View {
         }
     }
 
-    @ViewBuilder
-    private var errors: some View {
-        if let error = chatVM.errorMessage {
-            Text(error)
-                .font(.callout)
-                .foregroundStyle(.red)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-        }
-        if let persist = chatVM.liveTurn?.persistError {
-            Text(persist).font(.caption).foregroundStyle(.red)
-        }
-        if let err = chatVM.actionFeed.lastError {
-            Text(err).font(.caption).foregroundStyle(.red)
-        }
-    }
-
     private func agentActionCard(_ action: AgentAction) -> some View {
         AgentActionCardView(
             action: action,
@@ -166,5 +148,33 @@ struct ChatThreadView: View {
             onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) }
         )
+    }
+}
+
+/// The chat's error lines, under the thread or over the expanded panel
+/// (#786) — wherever the owner is looking.
+struct ChatErrorStrip: View {
+    let chatVM: ChatViewModel
+
+    var body: some View {
+        // Nothing at all without an error, so a caller's padding adds no gap.
+        if chatVM.errorMessage != nil || chatVM.liveTurn?.persistError != nil || chatVM.actionFeed.lastError != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                if let error = chatVM.errorMessage {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                }
+                if let persist = chatVM.liveTurn?.persistError {
+                    Text(persist).font(.caption).foregroundStyle(.red)
+                }
+                if let err = chatVM.actionFeed.lastError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
     }
 }
