@@ -243,6 +243,7 @@ func TestEscalateFourOptionsIsFull(t *testing.T) {
 
 // E18, E10e: a question with no options is a Quick ask with a free reply
 // only, valid with origin chat.
+// Zero options from a chat request: a Quick ask with "options":[] on the wire.
 func TestEscalateZeroOptionsIsQuick(t *testing.T) {
 	f := newEscalateFixture(t, db.ChatQuestion{Question: "What is the staging host name?"})
 
@@ -259,6 +260,23 @@ func TestEscalateZeroOptionsIsQuick(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(a.Payload), &p))
 	_, err = asks.Validate(asks.Input{Kind: a.Kind, Title: a.Title, Questions: p.Questions}, asks.OriginChat)
 	assert.NoError(t, err)
+}
+
+// Spec 2026-10-15 §7.1 (the amendment of TestEscalateZeroOptionsIsQuick):
+// zero options from a full request the soft ask guard recorded become a
+// Full ask, its text the whole request.
+func TestEscalateZeroOptionsFromAFullRequestIsFull(t *testing.T) {
+	const text = "Please review docs/specs/a.md and run the staging check before I go on."
+	f := newEscalateFixture(t, db.ChatQuestion{Question: text, Level: asks.LevelFull})
+
+	res := f.escalate(t, escalateReasonAway)
+
+	require.Equal(t, escalateFiled, res.Outcome)
+	assert.Equal(t, asks.LevelFull, res.Level)
+	a, err := f.database.GetOwnerAsk(f.pid, res.AskID)
+	require.NoError(t, err)
+	assert.Equal(t, asks.LevelFull, a.Level)
+	assert.JSONEq(t, `{"focus":[],"questions":[{"id":"q1","question":"`+text+`","options":[]}],"checklist":[]}`, a.Payload)
 }
 
 // E20: at the open-ask cap nothing is filed and the question stays, so the
