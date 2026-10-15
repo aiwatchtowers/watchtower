@@ -115,8 +115,22 @@ func TestDbLockstats_JSON(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	assert.Equal(t, []string{"busy", "busy_holders", "malformed", "pool_wait", "sites", "wal", "window"}, keys)
+	assert.Equal(t, []string{"busy", "busy_holders", "exec_sites", "malformed", "pool_wait", "procs", "sites", "wal", "window"}, keys)
 	assert.JSONEq(t, `[]`, string(report["pool_wait"]), "--since 1h drops the 3h-old pool wait")
+	// procs keeps the 3h-old mcp line: it tells a role that stopped writing
+	// apart from a quiet one.
+	var procs []struct {
+		Proc   string    `json:"proc"`
+		LastTS time.Time `json:"last_ts"`
+		Events int       `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(report["procs"], &procs))
+	require.Len(t, procs, 2)
+	assert.Equal(t, "daemon", procs[0].Proc)
+	assert.Equal(t, 1, procs[0].Events)
+	assert.Equal(t, "mcp", procs[1].Proc)
+	assert.Zero(t, procs[1].Events)
+	assert.WithinDuration(t, now.Add(-3*time.Hour), procs[1].LastTS, time.Millisecond)
 	var wal struct {
 		Samples int `json:"samples"`
 	}

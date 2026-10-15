@@ -116,16 +116,28 @@ func TestBuild_Window(t *testing.T) {
 
 func TestBuild_SitesRankedByTotalHold(t *testing.T) {
 	r := fixtureReport(t)
-	require.Len(t, r.Sites, 3)
+	require.Len(t, r.Sites, 2, "only tx events: an exec's duration is not a pure hold")
 
 	assert.Equal(t, Site{
 		Site: siteSave, Count: 2, TotalHoldMS: 7200, MaxHoldMS: 6000,
 		MaxWaitMS: 30, Over1s: 2, Over5s: 1,
 	}, r.Sites[0], "the 9000 ms hold from the day before is outside the window")
 	assert.Equal(t, siteOwnTx, r.Sites[1].Site)
-	assert.Equal(t, Site{
-		Site: siteUpsert, Count: 1, TotalHoldMS: 300, MaxHoldMS: 300, MaxWaitMS: 250,
-	}, r.Sites[2])
+}
+
+// An exec's hold_ms is wait+hold combined: it gets its own section and is
+// never summed into total_hold_ms or counted in over_1s/over_5s.
+func TestBuild_ExecSitesKeptApartFromHolds(t *testing.T) {
+	r := fixtureReport(t)
+	assert.Equal(t, []ExecSite{{Site: siteUpsert, Count: 1, TotalMS: 300, MaxMS: 300}}, r.ExecSites)
+
+	events := []lockmetrics.Event{
+		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 6000, Site: "s"},
+		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 100, Site: "s"},
+	}
+	r = Build(Parsed{Events: events}, fixtureNow, time.Hour)
+	assert.Equal(t, []Site{{Site: "s", Count: 1, TotalHoldMS: 100, MaxHoldMS: 100}}, r.Sites)
+	assert.Equal(t, []ExecSite{{Site: "s", Count: 1, TotalMS: 6000, MaxMS: 6000}}, r.ExecSites)
 }
 
 func TestBuild_SitesTieOnTotalBreaksOnMaxThenName(t *testing.T) {
@@ -133,8 +145,11 @@ func TestBuild_SitesTieOnTotalBreaksOnMaxThenName(t *testing.T) {
 		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 500, Site: "b"},
 		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 500, Site: "b"},
 		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 1000, Site: "c"},
-		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 1000, Site: "a"},
-		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 10},
+		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 1000, Site: "a"},
+		{TS: fixtureNow, Kind: lockmetrics.KindTx, HoldMS: 10},
+		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 500, Site: "y"},
+		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 500, Site: "y"},
+		{TS: fixtureNow, Kind: lockmetrics.KindExec, HoldMS: 1000, Site: "x"},
 	}
 	r := Build(Parsed{Events: events}, fixtureNow, time.Hour)
 	var names []string
@@ -142,6 +157,11 @@ func TestBuild_SitesTieOnTotalBreaksOnMaxThenName(t *testing.T) {
 		names = append(names, s.Site)
 	}
 	assert.Equal(t, []string{"a", "c", "b", unknownSite}, names)
+	names = nil
+	for _, s := range r.ExecSites {
+		names = append(names, s.Site)
+	}
+	assert.Equal(t, []string{"x", "y"}, names)
 }
 
 func TestBuild_BusyGroupedByProcAndSite(t *testing.T) {
@@ -169,9 +189,80 @@ func TestBuild_BusyHoldersAreOtherPidsOverlappingTheWait(t *testing.T) {
 		PID: 100, Proc: "daemon", Kind: lockmetrics.KindTx, Site: siteSave, HoldMS: 6000,
 	}, first.Holders[0])
 
+	assert.Empty(t, first.Execs)
+
+	// Wait window [11:39:55, 11:40:00]: nothing slow ran then.
 	assert.Equal(t, 201, r.BusyHolders[1].PID)
 	assert.Empty(t, r.BusyHolders[1].Holders)
 	assert.NotNil(t, r.BusyHolders[1].Holders, "an empty holder list encodes as [] in --json")
+	assert.NotNil(t, r.BusyHolders[1].Execs, "an empty exec list encodes as [] in --json")
+}
+
+// An exec overlapping a busy wait is listed apart from the holders: its
+// duration may be its own wait behind the same holder.
+func TestBuild_BusyExecOverlapIsNotAHolder(t *testing.T) {
+	busyAt := fixtureNow.Add(-time.Minute)
+	events := []lockmetrics.Event{
+		{TS: busyAt.Add(time.Second), PID: 2, Proc: "daemon", Kind: lockmetrics.KindTx, HoldMS: 3000, Site: "holder"},
+		{TS: busyAt.Add(-100 * time.Millisecond), PID: 3, Proc: "hook:brief", Kind: lockmetrics.KindExec, HoldMS: 900, Site: "queued"},
+		{TS: busyAt, PID: 1, Proc: "cli", Kind: lockmetrics.KindBusy, BusyTimeoutMS: 1000, WaitMS: 1000},
+	}
+	r := Build(Parsed{Events: events}, fixtureNow, time.Hour)
+	require.Len(t, r.BusyHolders, 1)
+	b := r.BusyHolders[0]
+	require.Len(t, b.Holders, 1)
+	assert.Equal(t, "holder", b.Holders[0].Site)
+	assert.Equal(t, []ExecOverlap{{
+		TS: busyAt.Add(-100 * time.Millisecond), PID: 3, Proc: "hook:brief", Site: "queued", MS: 900,
+	}}, b.Execs)
+	assert.Equal(t, int64(1000), b.WaitMS)
+
+	var out strings.Builder
+	require.NoError(t, WriteText(&out, r))
+	assert.Contains(t, out.String(), "held by daemon pid 2 tx holder hold 3000ms")
+	assert.Contains(t, out.String(), "exec by hook:brief pid 3 queued 900ms wait+hold (may be a waiter)")
+	assert.NotContains(t, out.String(), "held by hook:brief")
+}
+
+// A busy's window is its measured wait when it has one; busy_timeout_ms is
+// only the fallback. A busy that failed fast (SQLITE_BUSY_SNAPSHOT) does not
+// name holds from its full timeout back.
+func TestBuild_BusyWindowUsesMeasuredWait(t *testing.T) {
+	busyAt := fixtureNow.Add(-time.Minute)
+	events := []lockmetrics.Event{
+		{TS: busyAt.Add(-2 * time.Second), PID: 2, Kind: lockmetrics.KindTx, HoldMS: 500, Site: "ended-before-the-wait"},
+		{TS: busyAt.Add(-50 * time.Millisecond), PID: 2, Kind: lockmetrics.KindTx, HoldMS: 500, Site: "in-the-wait"},
+		{TS: busyAt, PID: 1, Kind: lockmetrics.KindBusy, BusyTimeoutMS: 5000, WaitMS: 100, Err: "SQLITE_BUSY_SNAPSHOT"},
+		{TS: busyAt.Add(time.Millisecond), PID: 1, Kind: lockmetrics.KindBusy, BusyTimeoutMS: 5000},
+	}
+	r := Build(Parsed{Events: events}, fixtureNow, time.Hour)
+	require.Len(t, r.BusyHolders, 2)
+	sitesOf := func(hs []Holder) []string {
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.Site)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"in-the-wait"}, sitesOf(r.BusyHolders[0].Holders), "wait_ms 100 bounds the window")
+	assert.Equal(t, []string{"ended-before-the-wait", "in-the-wait"}, sitesOf(r.BusyHolders[1].Holders),
+		"no wait_ms: busy_timeout_ms bounds it")
+}
+
+// procs names each role's newest event across the files read, older than
+// the window included, so a role that stopped writing shows its last line.
+func TestBuild_ProcsNewestEventPerRole(t *testing.T) {
+	r := fixtureReport(t)
+	assert.Equal(t, []ProcLast{
+		{Proc: "daemon", LastTS: time.Date(2026, 10, 15, 11, 52, 0, 0, time.UTC), Events: 7},
+		{Proc: "hook:session-state", LastTS: time.Date(2026, 10, 15, 11, 40, 0, 0, time.UTC), Events: 3},
+		{Proc: "mcp", LastTS: time.Date(2026, 10, 15, 11, 42, 0, 0, time.UTC), Events: 2},
+	}, r.Procs)
+
+	old := []lockmetrics.Event{{TS: fixtureNow.Add(-48 * time.Hour), Proc: "desktop", Kind: lockmetrics.KindTx}}
+	r = Build(Parsed{Events: old}, fixtureNow, time.Hour)
+	assert.Equal(t, []ProcLast{{Proc: "desktop", LastTS: fixtureNow.Add(-48 * time.Hour)}}, r.Procs)
+	assert.Empty(t, r.Sites)
 }
 
 func TestBuild_BusyHoldersOverlapEdges(t *testing.T) {
@@ -252,24 +343,65 @@ func TestBuild_EmptyInputEncodesEmptyArrays(t *testing.T) {
 	out, err := json.Marshal(r)
 	require.NoError(t, err)
 	s := string(out)
-	for _, key := range []string{`"sites":[]`, `"busy":[]`, `"busy_holders":[]`, `"pool_wait":[]`} {
+	for _, key := range []string{`"sites":[]`, `"exec_sites":[]`, `"busy":[]`, `"busy_holders":[]`, `"pool_wait":[]`, `"procs":[]`} {
 		assert.Contains(t, s, key)
 	}
 }
 
-// TestReport_JSONKeysPinned pins the --json top-level keys; scripts and the
-// #529 live-run notes read them.
+// TestReport_JSONKeysPinned pins the --json keys, top-level and nested;
+// scripts and the #529 live-run notes read them. Add keys, never rename.
 func TestReport_JSONKeysPinned(t *testing.T) {
-	out, err := json.Marshal(fixtureReport(t))
+	// Every list non-empty and every omitempty field set, so each element's
+	// key set is present.
+	events := []lockmetrics.Event{
+		{TS: fixtureNow, PID: 2, Proc: "daemon", Kind: lockmetrics.KindTx, HoldMS: 900, Site: "tx"},
+		{TS: fixtureNow, PID: 3, Proc: "mcp", Kind: lockmetrics.KindExec, HoldMS: 900, Site: "exec"},
+		{TS: fixtureNow, PID: 1, Proc: "cli", Kind: lockmetrics.KindBusy, BusyTimeoutMS: 1000, Site: "b", Err: "SQLITE_BUSY"},
+		{TS: fixtureNow, PID: 2, Proc: "daemon", Kind: lockmetrics.KindWAL, WALBytes: 1, Checkpoint: "busy=0 log=1 ckpt=1"},
+		{TS: fixtureNow, PID: 2, Proc: "daemon", Kind: lockmetrics.KindPoolWait, WaitMS: 5},
+	}
+	out, err := json.Marshal(Build(Parsed{Events: events, Files: []string{"f"}}, fixtureNow, time.Hour))
 	require.NoError(t, err)
 	var top map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(out, &top))
-	var keys []string
-	for k := range top {
+	assert.Equal(t, []string{"busy", "busy_holders", "exec_sites", "malformed", "pool_wait", "procs", "sites", "wal", "window"}, keysOf(t, top))
+
+	object := func(key string) map[string]json.RawMessage {
+		var m map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(top[key], &m), key)
+		return m
+	}
+	first := func(raw json.RawMessage, key string) map[string]json.RawMessage {
+		var list []map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &list), key)
+		require.NotEmpty(t, list, key)
+		return list[0]
+	}
+	assert.Equal(t, []string{"events", "files", "from", "since_seconds", "to"}, keysOf(t, object("window")))
+	assert.Equal(t, []string{"count", "max_hold_ms", "max_wait_ms", "over_1s", "over_5s", "site", "total_hold_ms"},
+		keysOf(t, first(top["sites"], "sites")))
+	assert.Equal(t, []string{"count", "max_ms", "site", "total_ms"}, keysOf(t, first(top["exec_sites"], "exec_sites")))
+	assert.Equal(t, []string{"busy_timeouts_ms", "count", "errs", "proc", "site"}, keysOf(t, first(top["busy"], "busy")))
+	busy := first(top["busy_holders"], "busy_holders")
+	assert.Equal(t, []string{"busy_timeout_ms", "err", "execs", "holders", "pid", "proc", "site", "ts", "wait_ms"}, keysOf(t, busy))
+	assert.Equal(t, []string{"hold_ms", "kind", "pid", "proc", "site", "ts"}, keysOf(t, first(busy["holders"], "holders")))
+	assert.Equal(t, []string{"ms", "pid", "proc", "site", "ts"}, keysOf(t, first(busy["execs"], "execs")))
+	assert.Equal(t, []string{
+		"checkpoint_busy", "checkpoint_incomplete", "checkpoint_unparsed", "checkpoints",
+		"last_checkpoint", "max_bytes", "median_bytes", "min_bytes", "samples",
+	}, keysOf(t, object("wal")))
+	assert.Equal(t, []string{"count", "max_wait_ms", "proc", "total_wait_ms"}, keysOf(t, first(top["pool_wait"], "pool_wait")))
+	assert.Equal(t, []string{"events", "last_ts", "proc"}, keysOf(t, first(top["procs"], "procs")))
+}
+
+func keysOf(t *testing.T, m map[string]json.RawMessage) []string {
+	t.Helper()
+	keys := make([]string, 0, len(m))
+	for k := range m {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	assert.Equal(t, []string{"busy", "busy_holders", "malformed", "pool_wait", "sites", "wal", "window"}, keys)
+	return keys
 }
 
 func TestWriteText(t *testing.T) {
@@ -287,6 +419,10 @@ func TestWriteText(t *testing.T) {
 		"min 1000  median 3000  max 5000",
 		"3 checkpoints, 1 busy, 1 incomplete",
 		"mcp",
+		"Slow autocommit writes by site (wait+hold combined",
+		siteUpsert + "  1      300       300",
+		"Last event per process",
+		"hook:session-state  2026-10-15 11:40:00.000  3",
 	} {
 		assert.Contains(t, out, want)
 	}
@@ -298,7 +434,7 @@ func TestWriteText_Empty(t *testing.T) {
 	out := b.String()
 	assert.NotContains(t, out, "malformed")
 	assert.Contains(t, out, "0 events")
-	assert.Equal(t, 5, strings.Count(out, "  none"), "each of the five sections says none")
+	assert.Equal(t, 7, strings.Count(out, "  none"), "each of the seven sections says none")
 }
 
 func TestWriteText_CapsBusyHolderList(t *testing.T) {

@@ -193,7 +193,11 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 	}
 }
 
-func TestDriverSlowAutocommitExecRecordedAsHold(t *testing.T) {
+// An autocommit write's duration is its wait for the write lock and its hold
+// together: the driver records it as the exec's hold_ms with no wait_ms, so
+// an exec that only queued behind another writer still shows a long hold_ms.
+// `db lockstats` therefore never sums it with tx holds or names it a holder.
+func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 	dbPath, sink := setupDriver(t, "30")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
 	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(5000)")
@@ -223,8 +227,52 @@ func TestDriverSlowAutocommitExecRecordedAsHold(t *testing.T) {
 	if len(execs) != 1 {
 		t.Fatalf("want 1 exec event from insertRow, got %+v", readEvents(t, sink))
 	}
-	if execs[0].HoldMS < 30 || execs[0].WaitMS != 0 || execs[0].BusyTimeoutMS != 5000 {
-		t.Errorf("exec event = %+v, want hold_ms >= 30, no wait_ms, busy_timeout_ms 5000", execs[0])
+	// insertRow itself held the lock for a moment; the 80 ms is its wait
+	// behind holder, and it lands in hold_ms.
+	if execs[0].HoldMS < 70 || execs[0].WaitMS != 0 || execs[0].BusyTimeoutMS != 5000 {
+		t.Errorf("exec event = %+v, want hold_ms >= 70 (the wait behind the holder included), no wait_ms, busy_timeout_ms 5000", execs[0])
+	}
+}
+
+// A deferred transaction that read before another connection committed
+// cannot upgrade to a writer: SQLite fails its first write at once with
+// SQLITE_BUSY_SNAPSHOT (517), whatever the busy timeout. The driver names
+// the extended code, records the busy from inside the transaction, and the
+// rolled-back transaction leaves no tx event of its own.
+func TestDriverBusySnapshotNamedByExtendedCode(t *testing.T) {
+	dbPath, sink := setupDriver(t, "10000")                        // busy is written whatever the threshold
+	reader := openMetrics(t, dbPath+"?_pragma=busy_timeout(2000)") // no _txlock: BEGIN is deferred
+	writer := openMetrics(t, dbPath)
+
+	tx, err := reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertRow(writer); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(`INSERT INTO t (v) VALUES (3)`)
+	var se *sqlite.Error
+	if !errors.As(err, &se) || se.Code() != sqlite3.SQLITE_BUSY_SNAPSHOT {
+		t.Fatalf("stale deferred write: want *sqlite.Error SQLITE_BUSY_SNAPSHOT, got %T %v", err, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	events := readEvents(t, sink)
+	busy := ofKind(events, lockmetrics.KindBusy)
+	if len(busy) != 1 || busy[0].Err != "SQLITE_BUSY_SNAPSHOT" || busy[0].BusyTimeoutMS != 2000 ||
+		busy[0].Site != testPkg+"TestDriverBusySnapshotNamedByExtendedCode" {
+		t.Fatalf("want one SQLITE_BUSY_SNAPSHOT busy from this test with busy_timeout_ms 2000, got %+v", events)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want only the busy event, got %+v", events)
 	}
 }
 

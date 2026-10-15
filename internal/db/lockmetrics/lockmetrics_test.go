@@ -271,6 +271,26 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 	}
 }
 
+// The sink's names and cap are a Go↔Swift dual path: DBLockMetricsTests
+// asserts the same literals, so a rename on one side fails a suite instead of
+// passing both through each side's own constant.
+func TestSinkNamesAndCapAreTheSharedLiterals(t *testing.T) {
+	path := setup(t)
+	setMaxFileBytesForTest(1024)
+	for i := 0; i < 40; i++ {
+		Record(Event{Kind: KindTx, HoldMS: int64(i), Site: strings.Repeat("s", 60)})
+	}
+	dir := filepath.Dir(path)
+	for _, name := range []string{"dblock.jsonl", "dblock.jsonl.1", "dblock.jsonl.lock"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s after a rotation: %v", name, err)
+		}
+	}
+	if MaxFileBytes != 10485760 {
+		t.Errorf("MaxFileBytes = %d, want 10485760 (10 MiB, as the Swift writer)", MaxFileBytes)
+	}
+}
+
 func TestRotationMovesFullFileToDotOneAndContinues(t *testing.T) {
 	path := setup(t)
 	setMaxFileBytesForTest(1024)

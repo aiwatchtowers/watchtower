@@ -31,7 +31,7 @@ func WriteText(w io.Writer, r Report) error {
 		p("%d malformed lines skipped\n", r.Malformed)
 	}
 
-	p("\nSlow write sites (by total hold)\n")
+	p("\nSlow write transactions by site (by total hold)\n")
 	if len(r.Sites) == 0 {
 		p("  none\n")
 	} else {
@@ -41,6 +41,19 @@ func WriteText(w io.Writer, r Report) error {
 		}
 		if len(r.Sites) > maxTextSites {
 			p("  ... %d more sites (--json for all)\n", len(r.Sites)-maxTextSites)
+		}
+	}
+
+	p("\nSlow autocommit writes by site (wait+hold combined: a slow one may have been waiting, not holding)\n")
+	if len(r.ExecSites) == 0 {
+		p("  none\n")
+	} else {
+		p("  SITE\tCOUNT\tTOTAL_MS\tMAX_MS\n")
+		for _, s := range r.ExecSites[:min(len(r.ExecSites), maxTextSites)] {
+			p("  %s\t%d\t%d\t%d\n", s.Site, s.Count, s.TotalMS, s.MaxMS)
+		}
+		if len(r.ExecSites) > maxTextSites {
+			p("  ... %d more sites (--json for all)\n", len(r.ExecSites)-maxTextSites)
 		}
 	}
 
@@ -61,7 +74,7 @@ func WriteText(w io.Writer, r Report) error {
 
 	// The holder list is indented free text, not a table.
 	p = func(format string, a ...any) { _, _ = fmt.Fprintf(&buf, format, a...) }
-	p("\nWho held the lock (slow tx/exec of other pids overlapping each busy wait)\n")
+	p("\nWho held the lock (slow transactions of other pids overlapping each busy wait)\n")
 	busy := r.BusyHolders
 	if len(busy) == 0 {
 		p("  none\n")
@@ -70,14 +83,21 @@ func WriteText(w io.Writer, r Report) error {
 		busy = busy[len(busy)-maxTextBusy:]
 	}
 	for _, b := range busy {
-		p("  %s  %s pid %d  %s  busy_timeout %dms\n",
-			b.TS.UTC().Format(textTSLayout), b.Proc, b.PID, b.Site, b.BusyTimeoutMS)
+		p("  %s  %s pid %d  %s  busy_timeout %dms", b.TS.UTC().Format(textTSLayout), b.Proc, b.PID, b.Site, b.BusyTimeoutMS)
+		if b.WaitMS > 0 {
+			p("  waited %dms", b.WaitMS)
+		}
+		p("\n")
 		if len(b.Holders) == 0 {
 			p("    no recorded holder (holds under the threshold are not logged)\n")
 		}
 		for _, h := range b.Holders {
 			p("    held by %s pid %d %s %s hold %dms, ended %s\n",
 				h.Proc, h.PID, h.Kind, h.Site, h.HoldMS, h.TS.UTC().Format(textTSLayout))
+		}
+		for _, x := range b.Execs {
+			p("    exec by %s pid %d %s %dms wait+hold (may be a waiter), ended %s\n",
+				x.Proc, x.PID, x.Site, x.MS, x.TS.UTC().Format(textTSLayout))
 		}
 	}
 
@@ -105,6 +125,18 @@ func WriteText(w io.Writer, r Report) error {
 		p("  PROC\tCOUNT\tTOTAL_WAIT_MS\tMAX_WAIT_MS\n")
 		for _, pw := range r.PoolWait {
 			p("  %s\t%d\t%d\t%d\n", pw.Proc, pw.Count, pw.TotalWaitMS, pw.MaxWaitMS)
+		}
+	}
+
+	// A role that stopped writing (dead sink, threshold "off", not running)
+	// looks like a quiet one in every other section.
+	p("\nLast event per process (in the files read, any age)\n")
+	if len(r.Procs) == 0 {
+		p("  none\n")
+	} else {
+		p("  PROC\tLAST_EVENT\tIN_WINDOW\n")
+		for _, pl := range r.Procs {
+			p("  %s\t%s\t%d\n", pl.Proc, pl.LastTS.UTC().Format(textTSLayout), pl.Events)
 		}
 	}
 	_ = tw.Flush() // a bytes.Buffer write never fails

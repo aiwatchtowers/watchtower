@@ -23,11 +23,16 @@ import (
 //   - a transaction that is not ReadOnly: wait = BeginTx (BEGIN IMMEDIATE
 //     waits there for the write lock), hold = BEGIN done → COMMIT/ROLLBACK
 //     done; a KindTx event when Slow(wait, hold);
-//   - an Exec or Query outside a transaction that writes (autocommit, an
-//     UPDATE … RETURNING through Query included): its whole duration, which
-//     is both wait and hold, as HoldMS of a KindExec event;
+//   - an Exec outside a transaction that writes (autocommit), or a Query
+//     that writes (an UPDATE … RETURNING) up to its first step, where SQLite
+//     does the write: the call's duration as HoldMS of a KindExec event.
+//     The driver cannot split that duration, so an exec's HoldMS is its wait
+//     for the write lock and its hold together — never a pure hold, and
+//     `db lockstats` keeps it apart from tx holds. A writing Query's
+//     autocommit transaction stays open until rows.Close, which is not timed;
 //   - any SQLITE_BUSY/SQLITE_LOCKED from BeginTx, Exec, Query, Commit or
-//     Rollback: a KindBusy event, whatever the threshold.
+//     Rollback: a KindBusy event, whatever the threshold, with WaitMS the
+//     failing call's own duration.
 //
 // A connection whose DSN sets query_only (OpenExisting) never takes the
 // write lock: only its busy errors are recorded. Not seen: a busy error
@@ -54,7 +59,9 @@ var siteSkipPrefixes = []string{
 // genericHelpers are frames too generic to say who wrote: a site starting
 // at one of them names the next caller too ("helper <- caller").
 var genericHelpers = map[string]bool{
-	modulePrefix + "internal/db.(*DB).WithTx": true,
+	modulePrefix + "internal/db.(*DB).WithTx":          true,
+	modulePrefix + "internal/kb.withTx":                true,
+	modulePrefix + "internal/extsync.(*Engine).withTx": true,
 }
 
 func init() {
@@ -170,8 +177,9 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	return &c.tx, nil
 }
 
-// ExecContext times an autocommit write and tracks busy_timeout. Inside a
-// transaction only a busy error is recorded; the tx event covers the rest.
+// ExecContext times an autocommit write — wait and hold together, which the
+// driver cannot split — and tracks busy_timeout. Inside a transaction only a
+// busy error is recorded; the tx event covers the rest.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	if !c.measured {
 		return c.base.ExecContext(ctx, query, args)
@@ -195,8 +203,10 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 // QueryContext records a busy error from the statement's first step, and
-// times an autocommit write run as a query (UPDATE … RETURNING): the driver
-// steps the first row here, so the lock wait falls inside this call.
+// times an autocommit write run as a query (UPDATE … RETURNING) up to that
+// first step: the driver steps the first row here, and SQLite does the whole
+// write on it, so the lock wait falls inside this call. The autocommit
+// transaction then stays open until rows.Close, which is not timed.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if !c.measured {
 		return c.base.QueryContext(ctx, query, args)
@@ -224,17 +234,20 @@ type tx struct {
 	npc   int
 }
 
-func (t *tx) Commit() error   { return t.end(t.base.Commit()) }
-func (t *tx) Rollback() error { return t.end(t.base.Rollback()) }
+func (t *tx) Commit() error   { return t.end(t.base.Commit) }
+func (t *tx) Rollback() error { return t.end(t.base.Rollback) }
 
-// end records the finished transaction (err is its COMMIT/ROLLBACK
-// result): a busy error (a COMMIT that could not get the lock) always, a
-// slow transaction otherwise.
-func (t *tx) end(err error) error {
-	hold := time.Since(t.begun)
+// end runs finish (the COMMIT or ROLLBACK) and records the transaction: a
+// busy error (a COMMIT that could not get the lock) always, with the
+// COMMIT's own wait, a slow transaction otherwise.
+func (t *tx) end(finish func() error) error {
+	start := time.Now()
+	err := finish()
+	done := time.Now()
+	hold := done.Sub(t.begun)
 	t.c.inTx = false
 	pcs := t.pcs[:t.npc]
-	if !t.c.recordBusy(err, t.wait, hold, pcs) && Slow(t.wait, hold) {
+	if !t.c.recordBusy(err, done.Sub(start), hold, pcs) && Slow(t.wait, hold) {
 		t.c.record(Event{Kind: KindTx, WaitMS: t.wait.Milliseconds(), HoldMS: hold.Milliseconds()}, pcs)
 	}
 	return err

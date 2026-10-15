@@ -1,8 +1,9 @@
 // Package lockstats reads the SQLite lock-metrics log (dblock.jsonl and its
 // rotated .1 generation, written by internal/db/lockmetrics and the Desktop
 // app) and summarises it for `watchtower db lockstats`: the slowest write
-// sites, busy errors, which other processes held the lock when each busy
-// happened, WAL size and checkpoint results, and connection-pool waits.
+// transactions and autocommit writes per site, busy errors, which other
+// processes held the lock when each busy happened, WAL size and checkpoint
+// results, connection-pool waits and each process role's newest event.
 package lockstats
 
 import (
@@ -95,10 +96,12 @@ type Report struct {
 	Window      Window      `json:"window"`
 	Malformed   int         `json:"malformed"`
 	Sites       []Site      `json:"sites"`
+	ExecSites   []ExecSite  `json:"exec_sites"`
 	Busy        []BusyGroup `json:"busy"`
 	BusyHolders []BusyEvent `json:"busy_holders"`
 	WAL         WAL         `json:"wal"`
 	PoolWait    []PoolWait  `json:"pool_wait"`
+	Procs       []ProcLast  `json:"procs"`
 }
 
 // Window is the time range the report covers.
@@ -110,8 +113,9 @@ type Window struct {
 	Files        []string  `json:"files"`
 }
 
-// Site aggregates the slow tx/exec events of one call site, across
-// processes.
+// Site aggregates the slow tx events of one call site, across processes.
+// A tx's hold_ms is a true hold (BEGIN done → COMMIT/ROLLBACK done); exec
+// events are kept apart in ExecSite because theirs is not.
 type Site struct {
 	Site        string `json:"site"`
 	Count       int    `json:"count"`
@@ -120,6 +124,17 @@ type Site struct {
 	MaxWaitMS   int64  `json:"max_wait_ms"`
 	Over1s      int    `json:"over_1s"` // holds > 1000 ms
 	Over5s      int    `json:"over_5s"` // holds > 5000 ms
+}
+
+// ExecSite aggregates the slow autocommit writes (exec events) of one call
+// site. An exec's duration is its wait for the write lock and its hold
+// together — the driver cannot split them — so a slow exec may have spent
+// all of it queued behind another process: it is never summed with holds.
+type ExecSite struct {
+	Site    string `json:"site"`
+	Count   int    `json:"count"`
+	TotalMS int64  `json:"total_ms"` // wait+hold, summed
+	MaxMS   int64  `json:"max_ms"`   // wait+hold of the slowest one
 }
 
 // BusyGroup counts busy/locked errors per process role and site.
@@ -132,27 +147,40 @@ type BusyGroup struct {
 }
 
 // BusyEvent is one busy error with the other processes' slow transactions
-// that overlapped its wait.
+// that overlapped its wait, and their slow autocommit writes that did.
 type BusyEvent struct {
-	TS            time.Time `json:"ts"`
-	PID           int       `json:"pid"`
-	Proc          string    `json:"proc"`
-	Site          string    `json:"site"`
-	Err           string    `json:"err"`
-	BusyTimeoutMS int64     `json:"busy_timeout_ms"`
-	Holders       []Holder  `json:"holders"`
+	TS            time.Time     `json:"ts"`
+	PID           int           `json:"pid"`
+	Proc          string        `json:"proc"`
+	Site          string        `json:"site"`
+	Err           string        `json:"err"`
+	WaitMS        int64         `json:"wait_ms"` // measured wait; 0 = not recorded
+	BusyTimeoutMS int64         `json:"busy_timeout_ms"`
+	Holders       []Holder      `json:"holders"`
+	Execs         []ExecOverlap `json:"execs"`
 }
 
-// Holder is a tx/exec of another pid that held the write lock during a busy
+// Holder is a tx of another pid that held the write lock during a busy
 // wait. Only holds at or above the writer's threshold are logged, so an
 // empty list means no slow holder was recorded, not that nobody held it.
 type Holder struct {
-	TS     time.Time `json:"ts"` // when the tx/exec ended
+	TS     time.Time `json:"ts"` // when the tx ended
 	PID    int       `json:"pid"`
 	Proc   string    `json:"proc"`
 	Kind   string    `json:"kind"`
 	Site   string    `json:"site"`
 	HoldMS int64     `json:"hold_ms"`
+}
+
+// ExecOverlap is a slow autocommit write of another pid whose duration
+// overlapped a busy wait. Its ms is wait+hold, so it may have been a waiter
+// itself, not the holder.
+type ExecOverlap struct {
+	TS   time.Time `json:"ts"` // when the exec ended
+	PID  int       `json:"pid"`
+	Proc string    `json:"proc"`
+	Site string    `json:"site"`
+	MS   int64     `json:"ms"` // wait+hold
 }
 
 // WAL summarises the WAL size samples and their checkpoint results
@@ -177,7 +205,17 @@ type PoolWait struct {
 	MaxWaitMS   int64  `json:"max_wait_ms"`
 }
 
-// Build summarises the events with ts in [now-since, now].
+// ProcLast is a process role's newest event in the files read, whatever the
+// window: a role whose last line is old has a dead or disabled sink (or has
+// not run), which a quiet window alone cannot tell apart.
+type ProcLast struct {
+	Proc   string    `json:"proc"`
+	LastTS time.Time `json:"last_ts"`
+	Events int       `json:"events"` // inside the window
+}
+
+// Build summarises the events with ts in [now-since, now]; Procs looks at
+// every event read.
 func Build(p Parsed, now time.Time, since time.Duration) Report {
 	from := now.Add(-since)
 	r := Report{
@@ -191,7 +229,8 @@ func Build(p Parsed, now time.Time, since time.Duration) Report {
 		r.Window.Files = []string{}
 	}
 
-	var holds, busies, walSamples, poolWaits []lockmetrics.Event
+	var holds, execs, busies, walSamples, poolWaits []lockmetrics.Event
+	r.Procs = buildProcs(p.Events, from, now)
 	for _, e := range p.Events {
 		if e.TS.Before(from) || e.TS.After(now) {
 			continue
@@ -201,8 +240,10 @@ func Build(p Parsed, now time.Time, since time.Duration) Report {
 			e.Site = unknownSite
 		}
 		switch e.Kind {
-		case lockmetrics.KindTx, lockmetrics.KindExec:
+		case lockmetrics.KindTx:
 			holds = append(holds, e)
+		case lockmetrics.KindExec:
+			execs = append(execs, e)
 		case lockmetrics.KindBusy:
 			busies = append(busies, e)
 		case lockmetrics.KindWAL:
@@ -214,12 +255,14 @@ func Build(p Parsed, now time.Time, since time.Duration) Report {
 	// Events from two files and several processes are not globally ordered.
 	byTS := func(a, b lockmetrics.Event) int { return a.TS.Compare(b.TS) }
 	slices.SortStableFunc(holds, byTS)
+	slices.SortStableFunc(execs, byTS)
 	slices.SortStableFunc(busies, byTS)
 	slices.SortStableFunc(walSamples, byTS)
 
 	r.Sites = buildSites(holds)
+	r.ExecSites = buildExecSites(execs)
 	r.Busy = buildBusyGroups(busies)
-	r.BusyHolders = buildBusyHolders(busies, holds)
+	r.BusyHolders = buildBusyHolders(busies, holds, execs)
 	r.WAL = buildWAL(walSamples)
 	r.PoolWait = buildPoolWaits(poolWaits)
 	return r
@@ -254,6 +297,34 @@ func buildSites(holds []lockmetrics.Event) []Site {
 		}
 		if a.MaxHoldMS != b.MaxHoldMS {
 			return a.MaxHoldMS > b.MaxHoldMS
+		}
+		return a.Site < b.Site
+	})
+	return sites
+}
+
+func buildExecSites(execs []lockmetrics.Event) []ExecSite {
+	idx := map[string]int{}
+	sites := []ExecSite{}
+	for _, e := range execs {
+		i, ok := idx[e.Site]
+		if !ok {
+			i = len(sites)
+			idx[e.Site] = i
+			sites = append(sites, ExecSite{Site: e.Site})
+		}
+		s := &sites[i]
+		s.Count++
+		s.TotalMS += e.HoldMS
+		s.MaxMS = max(s.MaxMS, e.HoldMS)
+	}
+	sort.Slice(sites, func(i, j int) bool {
+		a, b := sites[i], sites[j]
+		if a.TotalMS != b.TotalMS {
+			return a.TotalMS > b.TotalMS
+		}
+		if a.MaxMS != b.MaxMS {
+			return a.MaxMS > b.MaxMS
 		}
 		return a.Site < b.Site
 	})
@@ -298,40 +369,65 @@ func buildBusyGroups(busies []lockmetrics.Event) []BusyGroup {
 	return groups
 }
 
-// buildBusyHolders pairs each busy with the tx/exec events of other pids
-// whose hold overlaps the busy's wait.
+// buildBusyHolders pairs each busy with the tx events of other pids whose
+// hold overlaps the busy's wait, and separately with the exec events of
+// other pids whose wait+hold does (an exec may itself have been waiting).
 //
 // Timing assumption: an event's ts is when it was recorded, and the
 // instrumentation records a tx/exec after COMMIT/ROLLBACK (Record stamps
 // time.Now() when ts is zero), so a hold ran [ts-hold_ms, ts]; a busy is
-// recorded when the error returns, after the driver waited busy_timeout_ms,
-// so its wait ran [ts-busy_timeout_ms, ts]. Both intervals are closed.
-// holds must be sorted by ts.
-func buildBusyHolders(busies, holds []lockmetrics.Event) []BusyEvent {
-	var maxHold time.Duration
-	for _, h := range holds {
-		maxHold = max(maxHold, ms(h.HoldMS))
-	}
+// recorded when the error returns, so its wait ran [ts-wait_ms, ts] — or
+// [ts-busy_timeout_ms, ts] when the writer recorded no wait_ms. Both
+// intervals are closed. holds and execs must be sorted by ts.
+func buildBusyHolders(busies, holds, execs []lockmetrics.Event) []BusyEvent {
 	out := []BusyEvent{}
+	maxHold, maxExec := maxHoldOf(holds), maxHoldOf(execs)
 	for _, b := range busies {
-		waitStart := b.TS.Add(-ms(b.BusyTimeoutMS))
+		wait := b.WaitMS
+		if wait <= 0 {
+			wait = b.BusyTimeoutMS
+		}
+		waitStart := b.TS.Add(-ms(wait))
 		be := BusyEvent{
 			TS: b.TS, PID: b.PID, Proc: b.Proc, Site: b.Site, Err: b.Err,
-			BusyTimeoutMS: b.BusyTimeoutMS, Holders: []Holder{},
+			WaitMS: b.WaitMS, BusyTimeoutMS: b.BusyTimeoutMS,
+			Holders: []Holder{}, Execs: []ExecOverlap{},
 		}
-		// A hold ending before the wait began cannot overlap it; one ending
-		// after b.TS+maxHold started after the wait ended.
-		i := sort.Search(len(holds), func(i int) bool { return !holds[i].TS.Before(waitStart) })
-		for ; i < len(holds) && !holds[i].TS.After(b.TS.Add(maxHold)); i++ {
-			h := holds[i]
-			if h.PID == b.PID || h.TS.Add(-ms(h.HoldMS)).After(b.TS) {
-				continue
-			}
+		for _, h := range overlapping(b, waitStart, holds, maxHold) {
 			be.Holders = append(be.Holders, Holder{
 				TS: h.TS, PID: h.PID, Proc: h.Proc, Kind: h.Kind, Site: h.Site, HoldMS: h.HoldMS,
 			})
 		}
+		for _, x := range overlapping(b, waitStart, execs, maxExec) {
+			be.Execs = append(be.Execs, ExecOverlap{TS: x.TS, PID: x.PID, Proc: x.Proc, Site: x.Site, MS: x.HoldMS})
+		}
 		out = append(out, be)
+	}
+	return out
+}
+
+func maxHoldOf(events []lockmetrics.Event) time.Duration {
+	var m time.Duration
+	for _, e := range events {
+		m = max(m, ms(e.HoldMS))
+	}
+	return m
+}
+
+// overlapping returns the events of pids other than b's whose
+// [ts-hold_ms, ts] overlaps [waitStart, b.TS]. events are sorted by ts and
+// maxHold is their longest hold_ms.
+func overlapping(b lockmetrics.Event, waitStart time.Time, events []lockmetrics.Event, maxHold time.Duration) []lockmetrics.Event {
+	var out []lockmetrics.Event
+	// An event ending before the wait began cannot overlap it; one ending
+	// after b.TS+maxHold started after the wait ended.
+	i := sort.Search(len(events), func(i int) bool { return !events[i].TS.Before(waitStart) })
+	for ; i < len(events) && !events[i].TS.After(b.TS.Add(maxHold)); i++ {
+		h := events[i]
+		if h.PID == b.PID || h.TS.Add(-ms(h.HoldMS)).After(b.TS) {
+			continue
+		}
+		out = append(out, h)
 	}
 	return out
 }
@@ -394,5 +490,27 @@ func buildPoolWaits(events []lockmetrics.Event) []PoolWait {
 		}
 		return out[i].Proc < out[j].Proc
 	})
+	return out
+}
+
+func buildProcs(events []lockmetrics.Event, from, now time.Time) []ProcLast {
+	idx := map[string]int{}
+	out := []ProcLast{}
+	for _, e := range events {
+		i, ok := idx[e.Proc]
+		if !ok {
+			i = len(out)
+			idx[e.Proc] = i
+			out = append(out, ProcLast{Proc: e.Proc})
+		}
+		p := &out[i]
+		if e.TS.After(p.LastTS) {
+			p.LastTS = e.TS
+		}
+		if !e.TS.Before(from) && !e.TS.After(now) {
+			p.Events++
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Proc < out[j].Proc })
 	return out
 }
