@@ -11,6 +11,7 @@ func resetForTest() {
 	role.Store(nil)
 	warnOnce = sync.Once{}
 	writeMu.Lock()
+	closeHeld()
 	maxFileBytes = MaxFileBytes
 	writeMu.Unlock()
 }

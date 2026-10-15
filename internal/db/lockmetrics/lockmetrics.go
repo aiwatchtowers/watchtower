@@ -74,6 +74,11 @@ var (
 	// fresh file into .1). Other processes are covered by O_APPEND.
 	writeMu      sync.Mutex
 	maxFileBytes int64 = MaxFileBytes // guarded by writeMu; lowered by tests
+	// The sink stays open between records (an open+close costs ~70 µs on
+	// macOS, a stat ~2 µs). Guarded by writeMu.
+	held     *os.File
+	heldPath string
+	heldFi   os.FileInfo
 
 	warnOnce sync.Once
 )
@@ -109,12 +114,18 @@ func SetProcessRole(r string) { role.Store(&r) }
 // Configure points the sink at FileName in dbPath's directory. ":memory:" or
 // "" disables it. Safe to call repeatedly; the last call wins.
 func Configure(dbPath string) {
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	if dbPath == "" || dbPath == ":memory:" {
 		sinkPath.Store(nil)
+		closeHeld()
 		return
 	}
 	p := filepath.Join(filepath.Dir(dbPath), FileName)
 	sinkPath.Store(&p)
+	if heldPath != p {
+		closeHeld()
+	}
 }
 
 // Enabled reports whether Record writes anything: a sink is configured and
@@ -169,37 +180,55 @@ func Record(e Event) {
 	appendLine(*path, line)
 }
 
-// appendLine opens the sink per call, so a file another process rotated
-// away is never written again, and rotates it once it grows past the cap.
+// appendLine writes one line through the held handle. Before each write it
+// stats the path: a file another process rotated away (or deleted) is
+// closed and the path re-opened, so a stale inode never keeps receiving
+// lines; a file past the cap is rotated to .1 first.
 func appendLine(path string, line []byte) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		warn("open", path, err)
-		return
+	pfi, err := os.Stat(path)
+	if held != nil && (heldPath != path || err != nil || !os.SameFile(heldFi, pfi)) {
+		closeHeld()
+	}
+	if err == nil && pfi.Size() > maxFileBytes {
+		// Racing processes may each rename; the loser moves a fresh, small
+		// file over .1 and a few lines are lost — never a torn one. ENOENT
+		// means another process rotated first.
+		if rerr := os.Rename(path, path+".1"); rerr != nil && !os.IsNotExist(rerr) {
+			warn("rotate", path, rerr)
+		}
+		closeHeld()
+	}
+	if held == nil {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			warn("open", path, err)
+			return
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			_ = f.Close() // the stat error is the one reported
+			warn("stat", path, err)
+			return
+		}
+		held, heldPath, heldFi = f, path, fi
 	}
 	// One write per line: O_APPEND keeps concurrent writers' lines whole.
-	_, werr := f.Write(line)
-	fi, serr := f.Stat()
-	cerr := f.Close()
-	switch {
-	case werr != nil:
-		warn("write", path, werr)
-		return
-	case cerr != nil:
-		warn("close", path, cerr)
-		return
-	case serr != nil:
-		warn("stat", path, serr)
+	if _, err := held.Write(line); err != nil {
+		warn("write", path, err)
+		closeHeld()
+	}
+}
+
+// closeHeld drops the held handle; the next write re-opens the path.
+// Caller holds writeMu.
+func closeHeld() {
+	if held == nil {
 		return
 	}
-	if fi.Size() > maxFileBytes {
-		// Racing processes may each rename; the loser moves a fresh, small
-		// file over .1 and a few lines are lost — never a torn one.
-		// ENOENT means another process rotated first.
-		if err := os.Rename(path, path+".1"); err != nil && !os.IsNotExist(err) {
-			warn("rotate", path, err)
-		}
+	if err := held.Close(); err != nil {
+		warn("close", heldPath, err)
 	}
+	held, heldPath, heldFi = nil, "", nil
 }
 
 func warn(op, path string, err error) {

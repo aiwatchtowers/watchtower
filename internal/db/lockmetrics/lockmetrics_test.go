@@ -19,7 +19,6 @@ import (
 	"time"
 )
 
-
 // helperEnv makes the re-executed test binary act as a second writer process
 // (see TestHelperProcessRecord).
 const (
@@ -303,6 +302,38 @@ func TestRotationMovesFullFileToDotOneAndContinues(t *testing.T) {
 	}
 }
 
+func TestRotatedOrDeletedElsewhereReopensPath(t *testing.T) {
+	path := setup(t)
+	Record(Event{Kind: KindTx, HoldMS: 1})
+
+	// Another process rotates the file away: the next line goes to a fresh
+	// file at the path, never to the held (now .1) inode.
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	Record(Event{Kind: KindTx, HoldMS: 2})
+	if got := readLines(t, path+".1"); len(got) != 1 {
+		t.Fatalf(".1 lines = %d, want 1 (stale inode kept receiving writes)", len(got))
+	}
+	if got := readLines(t, path); len(got) != 1 {
+		t.Fatalf("path lines after external rotation = %d, want 1", len(got))
+	}
+
+	// Someone deletes it: the next record recreates it.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	Record(Event{Kind: KindTx, HoldMS: 3})
+	got := readLines(t, path)
+	if len(got) != 1 {
+		t.Fatalf("path lines after delete = %d, want 1", len(got))
+	}
+	var e Event
+	if err := json.Unmarshal([]byte(got[0]), &e); err != nil || e.HoldMS != 3 {
+		t.Fatalf("recreated file holds %q (err=%v)", got[0], err)
+	}
+}
+
 func TestFileModeIs0600(t *testing.T) {
 	path := setup(t)
 	Record(Event{Kind: KindBusy})
@@ -339,7 +370,9 @@ func TestThresholdEnv(t *testing.T) {
 				t.Setenv(thresholdEnv, tc.val)
 			} else {
 				t.Setenv(thresholdEnv, "") // restore on cleanup
-				os.Unsetenv(thresholdEnv)
+				if err := os.Unsetenv(thresholdEnv); err != nil {
+					t.Fatal(err)
+				}
 			}
 			warns := captureWarnings(t)
 			path := setup(t)
