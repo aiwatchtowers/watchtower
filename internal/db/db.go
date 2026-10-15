@@ -15,6 +15,8 @@ import (
 	"github.com/pressly/goose/v3"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
+
+	"watchtower/internal/db/lockmetrics"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
@@ -101,7 +103,12 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open("sqlite", sqliteDSN(dbPath, immediateTxDSN))
+	// The lock-metrics sink sits next to the file; an in-memory open is never
+	// measured and must not unset the sink another open configured.
+	if dbPath != ":memory:" {
+		lockmetrics.Configure(dbPath)
+	}
+	sqlDB, err := sql.Open(lockmetrics.DriverName, sqliteDSN(dbPath, immediateTxDSN))
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -161,7 +168,8 @@ func existingDSN(dbPath string, busy time.Duration, params ...string) string {
 
 // openExistingDSN opens dsn on one connection and checks the file is there.
 func openExistingDSN(dbPath, dsn string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", dsn)
+	lockmetrics.Configure(dbPath)
+	sqlDB, err := sql.Open(lockmetrics.DriverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

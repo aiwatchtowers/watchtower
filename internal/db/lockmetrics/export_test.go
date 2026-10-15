@@ -23,3 +23,14 @@ func setMaxFileBytesForTest(n int64) {
 	defer writeMu.Unlock()
 	maxFileBytes = n
 }
+
+// Exported for the driver tests, which live in package lockmetrics_test so
+// their own frames are not skipped as this package's when a site is named.
+var (
+	ResetForTest        = resetForTest
+	IsWrite             = isWrite
+	PragmaBusyTimeoutMS = pragmaBusyTimeoutMS
+	DSNBusyTimeoutMS    = dsnBusyTimeoutMS
+	IsMemoryDSN         = isMemoryDSN
+	DSNQueryOnly        = dsnQueryOnly
+)
