@@ -529,3 +529,76 @@ func TestApprovalHash_UsesNormalisedPermissions(t *testing.T) {
 		t.Error("case and duplicate variants of the same entries hash differently")
 	}
 }
+
+// autoWriteTool is a fake registry write tool visible on the automation
+// surface (the real write tools join the surface in P2 Task 4).
+func autoWriteTool(name string) *tools.Tool {
+	t := autoTool(name)
+	t.Access = tools.AccessWrite
+	return t
+}
+
+// admitsCase is one AdmitsTool/AdmitsWrite row: a manifest (entries and
+// outputs), a tool, and the expected verdict.
+type admitsCase struct {
+	name    string
+	entries []string
+	outputs []string
+	tool    *tools.Tool
+	want    bool
+}
+
+func runAdmitsCases(t *testing.T, cases []admitsCase, admits func(*Manifest, *tools.Tool) bool) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := mustManifest(t, c.entries, c.outputs...)
+			if got := admits(m, c.tool); got != c.want {
+				t.Errorf("%v outputs %v, %s: got %v, want %v", c.entries, c.outputs, c.tool.Name, got, c.want)
+			}
+		})
+	}
+}
+
+func TestManifest_AdmitsTool(t *testing.T) {
+	jiraRead := []string{"jira:read@PAY"}
+	allReads := everyCapability
+	cases := []admitsCase{
+		{"jira read admits list_jira_issues", jiraRead, nil, autoTool("list_jira_issues"), true},
+		{"jira read admits get_jira_issue", jiraRead, nil, autoTool("get_jira_issue"), true},
+		{"jira read does not admit create_jira_issue", jiraRead, nil, autoWriteTool("create_jira_issue"), false},
+		{"jira read admits list_jira_sprints by name", jiraRead, nil, autoTool("list_jira_sprints"), true},
+		{"targets read admits list_targets", []string{"targets:read"}, nil, autoTool("list_targets"), true},
+		{"targets read does not admit create_target", []string{"targets:read"}, nil, autoWriteTool("create_target"), false},
+		{"meetings read admits get_meeting_recap", []string{"meetings:read"}, nil, autoTool("get_meeting_recap"), true},
+		{"tool entry off the surface", []string{"tool:get_confluence_page"}, nil, tools.NewGetConfluencePage(nil), false},
+		{"outputs slack admits send_slack_message", nil, []string{"slack"}, autoWriteTool("send_slack_message"), true},
+		{"outputs target admits create_target", nil, []string{"target"}, autoWriteTool("create_target"), true},
+		{"outputs slack does not admit create_target", nil, []string{"slack"}, autoWriteTool("create_target"), false},
+		{"outputs inbox admits no tool", nil, []string{"inbox", "report", "briefing"}, autoWriteTool("create_target"), false},
+		{"empty manifest", nil, nil, autoTool("list_targets"), false},
+		{"every capability: search_knowledge", allReads, nil, tools.NewSearchKnowledge(), false},
+		{"every capability: get_knowledge_document", allReads, nil, tools.NewGetKnowledgeDocument(), false},
+		{"every capability: get_task_context", allReads, nil, tools.NewGetTaskContext(), false},
+		{"tool:search_knowledge admits it", []string{"tool:search_knowledge"}, nil, tools.NewSearchKnowledge(), true},
+		{"tool:search_knowledge admits no sibling", []string{"tool:search_knowledge"}, nil, tools.NewGetKnowledgeDocument(), false},
+	}
+	runAdmitsCases(t, cases, (*Manifest).AdmitsTool)
+}
+
+func TestManifest_AdmitsWrite(t *testing.T) {
+	alwaysAsk := autoWriteTool("dismiss_tracks")
+	alwaysAsk.AlwaysAsk = true
+	cases := []admitsCase{
+		{"tool:create_target", []string{"tool:create_target"}, nil, autoWriteTool("create_target"), true},
+		{"outputs target", nil, []string{"target"}, autoWriteTool("create_target"), true},
+		{"outputs slack", nil, []string{"slack"}, autoWriteTool("send_slack_message"), true},
+		{"jira write admits create_jira_issue", []string{"jira:write@PAY"}, nil, autoWriteTool("create_jira_issue"), true},
+		{"jira read star does not admit create_jira_issue", []string{"jira:read@*"}, nil, autoWriteTool("create_jira_issue"), false},
+		{"real dismiss_tracks: AlwaysAsk, not on the surface", []string{"tool:dismiss_tracks"}, nil, tools.NewDismissTracks(), false},
+		{"AlwaysAsk on the surface", []string{"tool:dismiss_tracks"}, nil, alwaysAsk, false},
+		{"read tool admitted by name is not a write", []string{"tool:list_targets", "targets:read"}, nil, autoTool("list_targets"), false},
+		{"write tool not admitted", []string{"targets:read"}, nil, autoWriteTool("create_target"), false},
+	}
+	runAdmitsCases(t, cases, (*Manifest).AdmitsWrite)
+}

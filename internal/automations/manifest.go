@@ -376,6 +376,41 @@ func (m *Manifest) AllowTool(ctx context.Context, d *db.DB, t *tools.Tool, args 
 	return m.allowUnits(c.Capability, c.Verb, units)
 }
 
+// outputTools are the write tools an output kind is sugar for (spec §5):
+// listing the kind under outputs admits the tool without a tool: entry.
+var outputTools = map[string]string{
+	"create_target":      "target",
+	"send_slack_message": "slack",
+}
+
+// AdmitsTool is the single "admitted by name" rule: t is on the automation
+// surface and the manifest lists tool:<name>, any entry of the tool's
+// ToolCapabilities capability+verb (whatever its scope), or the output kind
+// the tool is sugar for. It ignores call arguments — AllowTool checks the
+// scope per call.
+func (m *Manifest) AdmitsTool(t *tools.Tool) bool {
+	if !t.VisibleOn(tools.AutomationSurface) {
+		return false
+	}
+	if m.has("tool:" + t.Name) {
+		return true
+	}
+	if kind, ok := outputTools[t.Name]; ok && slices.Contains(m.outputs, kind) {
+		return true
+	}
+	c, ok := ToolCapabilities[t.Name]
+	return ok && slices.ContainsFunc(m.entries, func(p Permission) bool {
+		return p.Capability == c.Capability && p.Verb == c.Verb
+	})
+}
+
+// AdmitsWrite reports whether t is a write the manifest admits by name and
+// that may ever run without a per-call Approve (not AlwaysAsk) — the tools
+// an auto grant may name.
+func (m *Manifest) AdmitsWrite(t *tools.Tool) bool {
+	return t.Access == tools.AccessWrite && !t.AlwaysAsk && m.AdmitsTool(t)
+}
+
 func (m *Manifest) has(normalised string) bool {
 	return slices.ContainsFunc(m.entries, func(p Permission) bool { return p.String() == normalised })
 }
