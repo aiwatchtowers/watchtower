@@ -3,6 +3,8 @@ package digest
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -458,6 +460,48 @@ func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, BackfillWindowResult{Digests: 0, Complete: false}, res)
 	assert.Equal(t, 0, gen.calls)
+}
+
+// blockDigestLockDir makes the digest lock's directory unusable: a regular
+// file sits where the workspace dir should be, so MkdirAll fails.
+func blockDigestLockDir(t *testing.T, p *Pipeline) {
+	t.Helper()
+	dir := p.cfg.WorkspaceDir()
+	require.NoError(t, os.MkdirAll(filepath.Dir(dir), 0o700))
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.WriteFile(dir, []byte("x"), 0o600))
+}
+
+// F8: only flock contention is a hold; any other lock error is a failure.
+func TestRunBackfillWindow_LockSetupErrorIsAFailure(t *testing.T) {
+	database := testDB(t)
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := backfillPipeline(t, database, gen)
+	blockDigestLockDir(t, p)
+	from, to := backfillRange()
+
+	res, _, err := p.RunBackfillWindow(context.Background(), 1, from, to)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDigestLocked)
+	assert.False(t, res.Complete)
+}
+
+func TestRunBackfillRollups_LockErrors(t *testing.T) {
+	database := testDB(t)
+	gen := &mockGenerator{response: validDigestJSON()}
+	p := backfillPipeline(t, database, gen)
+	from, to := backfillRange()
+
+	_, unlock, err := p.acquireDigestLock()
+	require.NoError(t, err)
+	err = p.RunBackfillRollups(context.Background(), from, to)
+	unlock()
+	require.ErrorIs(t, err, ErrDigestLocked, "contention is recognisable, so the caller can hold")
+
+	blockDigestLockDir(t, p)
+	err = p.RunBackfillRollups(context.Background(), from, to)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDigestLocked)
 }
 
 func TestRunBackfillWindow_CancelledContext(t *testing.T) {

@@ -4,6 +4,7 @@ package digest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -285,8 +286,15 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
+// ErrDigestLocked is acquireDigestLock's error when another digest run holds
+// the lock (flock contention) — transient, unlike a lock file that cannot be
+// created or opened.
+var ErrDigestLocked = errors.New("another digest pipeline is already running")
+
 // acquireDigestLock acquires an exclusive file lock to prevent concurrent digest runs.
-// Returns the lock file (caller must defer Close) and unlock func, or error if already locked.
+// Returns the lock file (caller must defer Close) and unlock func, or
+// ErrDigestLocked if already locked, or another error if the lock file cannot
+// be set up.
 func (p *Pipeline) acquireDigestLock() (*os.File, func(), error) {
 	lockPath := filepath.Join(p.cfg.WorkspaceDir(), "digest.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
@@ -298,7 +306,7 @@ func (p *Pipeline) acquireDigestLock() (*os.File, func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, nil, fmt.Errorf("another digest pipeline is already running")
+		return nil, nil, ErrDigestLocked
 	}
 	unlock := func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

@@ -490,6 +490,15 @@ func TestHistoryBackfill_SlackSourceIncompleteIsHold(t *testing.T) {
 	assert.NoError(t, slackFetchErr(nil))
 }
 
+// F8: the rollups' digest-lock contention is a hold; any other rollup error
+// is a strike.
+func TestHistoryBackfill_SlackRollupLockContentionIsHold(t *testing.T) {
+	assert.ErrorIs(t, slackRollupErr(fmt.Errorf("x: %w", digest.ErrDigestLocked)), historybackfill.ErrHold)
+	other := fmt.Errorf("opening digest lock: boom")
+	assert.Equal(t, other, slackRollupErr(other))
+	assert.NoError(t, slackRollupErr(nil))
+}
+
 // stageGen answers stage-1 stream digest calls and stage-2 consolidator
 // calls, counting each and recording the stage-1 prompts.
 type stageGen struct {

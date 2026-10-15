@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/gmail"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
@@ -298,9 +299,20 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 		return false, err
 	}
 	if err := d.digestPipe.RunBackfillRollups(ctx, fromTS, toTS); err != nil {
-		return false, err
+		return false, slackRollupErr(err)
 	}
 	return true, nil
+}
+
+// slackRollupErr maps the rollups' digest-lock contention to the runner's
+// hold, like the window's (which reports it as incomplete): another digest
+// run holds the lock, so the chunk is retried without a strike. Any other
+// error is a failure.
+func slackRollupErr(err error) error {
+	if errors.Is(err, digest.ErrDigestLocked) {
+		return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+	}
+	return err
 }
 
 // gmailSource backfills one Google account's mail: range fetch, then that

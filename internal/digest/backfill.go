@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -37,8 +38,9 @@ type BackfillWindowResult struct {
 // same call; the call then returns that failure once nothing else is left.
 // Prompts carry no previous context and no track context (see inBackfill).
 //
-// Lock contention returns {0, false} with no error: the chunk is retried next
-// cycle. The returned usage is the sum of this call's own passes — never the
+// Lock contention (ErrDigestLocked) returns {0, false} with no error: the
+// chunk is retried next cycle. Any other lock error (the lock file cannot be
+// created or opened) is returned as an error. The returned usage is the sum of this call's own passes — never the
 // pipeline's shared counters, which the forward phase also feeds.
 func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, from, to float64) (BackfillWindowResult, *Usage, error) {
 	if !p.cfg.Digest.Enabled {
@@ -46,9 +48,12 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 	}
 
 	_, unlock, err := p.acquireDigestLock()
-	if err != nil {
+	if errors.Is(err, ErrDigestLocked) {
 		p.logger.Printf("digest backfill: skipping — %v", err)
 		return BackfillWindowResult{}, &Usage{}, nil
+	}
+	if err != nil {
+		return BackfillWindowResult{}, &Usage{}, fmt.Errorf("digest backfill: %w", err)
 	}
 	defer unlock()
 
@@ -159,6 +164,8 @@ func backfillProgressed(prev map[string]float64, windows []channelWindow) bool {
 // chunk [from, to) touches. Every day is tried; the first error is returned.
 // It does not touch the daemon's forward rollup attempt budget, and its
 // prompts carry no previous context and no track context (see inBackfill).
+// Lock contention returns an error wrapping ErrDigestLocked, so the caller
+// can hold the chunk instead of counting a failure.
 func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
