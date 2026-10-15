@@ -260,34 +260,68 @@ func TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable(t *testing.T) {
 	}
 }
 
+// slackScopeCase is one output.slack scope check (D28): the run's
+// permissions and call args, and either the denial's needed scope (with the
+// step error's expected cause, "" for a plain denial) or "" for a proposal.
+type slackScopeCase struct {
+	name, args, needed, cause string
+	perms                     []string
+}
+
+const slackScopeScript = `try { return JSON.stringify(output.slack(ARGS)) } catch (e) { return e.name + "|" + e.needed }`
+
+// checkSlackScope runs c under trigger and checks the summary, the
+// agent_actions rows and the slack step (AUTO-01: a denial is a denied step
+// naming the needed scope, with no would-be summary).
+func checkSlackScope(t *testing.T, c slackScopeCase, trigger string) {
+	t.Helper()
+	w := newOutputFixture(t)
+	a := w.seedOutput(t, "scope", c.perms, "slack", strings.Replace(slackScopeScript, "ARGS", c.args, 1))
+	id := w.enqueue(t, a, trigger)
+	if trigger == db.TriggerDryRun {
+		if _, err := w.e.ExecuteInline(context.Background(), id); err != nil {
+			t.Fatalf("ExecuteInline: %v", err)
+		}
+	} else {
+		w.step(t, 1)
+	}
+	r, s := w.run(t, id), w.outputStep(t, id, "slack")
+	if c.needed == "" {
+		if !strings.HasPrefix(r.Summary, `{"id":`) || len(w.actions(t)) != 1 || s.Status != automations.StepProposed {
+			t.Fatalf("summary %q, step %s; want one proposal", r.Summary, s.Status)
+		}
+		return
+	}
+	if r.Summary != "PermissionDenied|"+c.needed {
+		t.Fatalf("summary = %q; want PermissionDenied|%s", r.Summary, c.needed)
+	}
+	if rows := w.actions(t); len(rows) != 0 {
+		t.Fatalf("agent_actions = %+v; want none", rows)
+	}
+	if s.Status != automations.StepDenied || s.Permission != c.needed || s.ResultSummary != "" {
+		t.Fatalf("step = %s permission %q summary %q; want denied, %s, no summary", s.Status, s.Permission, s.ResultSummary, c.needed)
+	}
+	if c.cause != "" {
+		mustContain(t, "denied step error", s.Error, c.cause)
+	}
+}
+
 func TestOutput_SlackNeedsSlackWriteScope(t *testing.T) {
-	const try = `try { return JSON.stringify(output.slack(ARGS)) } catch (e) { return e.name + "|" + e.needed }`
-	cases := []struct {
-		name  string
-		perms []string
-		args  string
-		want  string // the summary prefix
-	}{
-		{"outputs slack without slack:write", []string{"llm:light"}, `{channel: "#general", text: "hi"}`, "PermissionDenied|slack:write@*"},
-		{"slack:write@work, work account", slackWork, `{account_id: 1, channel: "#general", text: "hi"}`, `{"id":`},
-		{"slack:write@work, home account", slackWork, `{account_id: 2, channel: "#general", text: "hi"}`, "PermissionDenied|slack:write@home"},
+	cases := []slackScopeCase{
+		{name: "outputs slack without slack:write", perms: []string{"llm:light"}, args: `{channel: "#general", text: "hi"}`, needed: "slack:write@*"},
+		{name: "slack:write@work, work account", perms: slackWork, args: `{account_id: 1, channel: "#general", text: "hi"}`},
+		{name: "slack:write@work, home account", perms: slackWork, args: `{account_id: 2, channel: "#general", text: "hi"}`, needed: "slack:write@home"},
+		{name: "unknown account keeps its cause", perms: slackWork, args: `{account_id: 99, channel: "#general", text: "hi"}`,
+			needed: "slack:write@*", cause: "slack account 99"},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			w := newOutputFixture(t)
-			r := w.runToEnd(t, w.seedOutput(t, "scope", c.perms, "slack", strings.Replace(try, "ARGS", c.args, 1)))
-			if !strings.HasPrefix(r.Summary, c.want) {
-				t.Fatalf("summary = %q; want prefix %q", r.Summary, c.want)
-			}
-			wantRows := 0
-			if !strings.HasPrefix(c.want, "PermissionDenied") {
-				wantRows = 1
-			}
-			if rows := w.actions(t); len(rows) != wantRows {
-				t.Fatalf("agent_actions = %+v; want %d rows", rows, wantRows)
-			}
-		})
+		t.Run(c.name, func(t *testing.T) { checkSlackScope(t, c, db.TriggerManual) })
 	}
+}
+
+func TestOutput_SlackScopeDeniedInDryRun(t *testing.T) {
+	checkSlackScope(t, slackScopeCase{perms: []string{"llm:light"}, args: `{account_id: 1, channel: "#general", text: "hi"}`,
+		needed: "slack:write@work"}, db.TriggerDryRun)
 }
 
 func TestOutput_ToolOutputArgumentShape(t *testing.T) {
