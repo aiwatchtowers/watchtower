@@ -1715,6 +1715,23 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS history_backfill (
+    id             INTEGER PRIMARY KEY,
+    source_kind    TEXT    NOT NULL CHECK (source_kind IN ('slack', 'gmail', 'imap')),
+    account_id     INTEGER NOT NULL,
+    floor_ts       REAL    NOT NULL,
+    upper_ts       REAL    NOT NULL,
+    reached_ts     REAL    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'running'
+                   CHECK (status IN ('running', 'paused', 'done', 'off')),
+    waiting        TEXT    NOT NULL DEFAULT '' CHECK (waiting IN ('', 'plan_limit')),
+    chunk_failures INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT    NOT NULL DEFAULT '',
+    started_at     TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL,
+    done_at        TEXT,
+    UNIQUE (source_kind, account_id)
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
