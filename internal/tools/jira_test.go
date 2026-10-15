@@ -191,7 +191,7 @@ func TestCreateJiraIssue_Registration(t *testing.T) {
 	tool := NewCreateJiraIssue(nil)
 	assert.Equal(t, "create_jira_issue", tool.Name)
 	assert.True(t, tool.External)
-	assert.ElementsMatch(t, []string{"main", "target", "reaction"}, tool.Surfaces)
+	assert.ElementsMatch(t, []string{"main", "target", "reaction", AutomationSurface}, tool.Surfaces)
 }
 
 func TestResolveJiraAccount_SingleDefaultAndAmbiguity(t *testing.T) {

@@ -50,7 +50,7 @@ func NewRemindMe() *Tool {
 		Access:      AccessWrite,
 		// The reaction path (REACT-02 binds the reacted message) and the main
 		// chat; never the target chat (TGT-BRIEF-01 axis 3).
-		Surfaces: []string{"reaction", "main"},
+		Surfaces: []string{"reaction", "main", AutomationSurface},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a remindMeArgs
 			if err := decodeStrict(raw, &a); err != nil {

@@ -176,7 +176,7 @@ func TestJiraWriteTools_ExternalOnMainAndTargetWithReason(t *testing.T) {
 		assert.Equal(t, names[i], tool.Name)
 		assert.Equal(t, AccessWrite, tool.Access)
 		assert.True(t, tool.External, "%s leaves the machine", tool.Name)
-		assert.ElementsMatch(t, []string{"main", "target"}, tool.Surfaces)
+		assert.ElementsMatch(t, []string{"main", "target", AutomationSurface}, tool.Surfaces)
 		assert.Contains(t, tool.InputSchema.Required, "reason")
 		assert.Contains(t, tool.InputSchema.Required, "key")
 		require.NoError(t, reg.Register(tool))
