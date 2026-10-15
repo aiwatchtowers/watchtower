@@ -128,4 +128,59 @@ final class HomeQueriesTests: XCTestCase {
         let result = try db.read { try OwnerAskQueries.openAsksAllWorkbenches($0) }
         XCTAssertTrue(result.rows.isEmpty && result.unreadableIDs.isEmpty)
     }
+
+    // MARK: - awaitingOwner
+
+    func testAwaitingOwnerMatchesTheBadgeCount() throws {
+        let (rows, count) = try db.write { d in
+            try TestDatabase.insertAgentAction(d, turnID: "pending-old", status: "pending",
+                                               createdAt: self.stamp(minutesAgo: 30))
+            try TestDatabase.insertAgentAction(d, turnID: "failed-new", status: "failed",
+                                               createdAt: self.stamp(minutesAgo: 10))
+            try TestDatabase.insertAgentAction(d, turnID: "applied", status: "applied",
+                                               createdAt: self.stamp(minutesAgo: 5))
+            try TestDatabase.insertAgentAction(d, turnID: "executing", status: "executing",
+                                               createdAt: self.stamp(minutesAgo: 4))
+            try TestDatabase.insertAgentAction(d, contextType: "project", contextID: "7", turnID: "workbench",
+                                               status: "pending", createdAt: self.stamp(minutesAgo: 1))
+            return (try AgentActionQueries.awaitingOwner(d, limit: 10),
+                    try AgentActionQueries.awaitingOwnerCount(d))
+        }
+        XCTAssertEqual(rows.count, count)
+        XCTAssertEqual(rows.map(\.turnID), ["failed-new", "pending-old"])
+    }
+
+    func testAwaitingOwnerLimit() throws {
+        let rows = try db.write { d in
+            for i in 0..<5 {
+                try TestDatabase.insertAgentAction(d, turnID: "t\(i)", createdAt: self.stamp(minutesAgo: Double(i)))
+            }
+            return try AgentActionQueries.awaitingOwner(d, limit: 3)
+        }
+        XCTAssertEqual(rows.map(\.turnID), ["t0", "t1", "t2"])
+    }
+
+    // MARK: - hasPrep
+
+    func testHasPrepFalseForEmptyResult() throws {
+        try db.write { d in
+            try d.execute(sql: "INSERT INTO meeting_prep_cache (event_id, result_json) VALUES ('empty', '')")
+            try d.execute(sql: #"INSERT INTO meeting_prep_cache (event_id, result_json) VALUES ('ready', '{"talking_points":[]}')"#)
+        }
+        try db.read { d in
+            XCTAssertFalse(try CalendarQueries.hasPrep(d, eventID: "empty"))
+            XCTAssertFalse(try CalendarQueries.hasPrep(d, eventID: "missing"))
+            XCTAssertTrue(try CalendarQueries.hasPrep(d, eventID: "ready"))
+        }
+    }
+
+    // MARK: - WorkbenchRoute.forAsk
+
+    func testAskRouteSessionOpensTerminal() {
+        let session = WorkbenchRoute.forAsk(projectID: 1, sessionID: 7, askID: 3)
+        XCTAssertEqual(session, WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 7, askID: 3))
+        let outside = WorkbenchRoute.forAsk(projectID: 1, sessionID: nil, askID: 3)
+        XCTAssertEqual(outside, WorkbenchRoute(projectID: 1, pane: .board, askID: 3))
+        XCTAssertNil(outside.subjectID)
+    }
 }
