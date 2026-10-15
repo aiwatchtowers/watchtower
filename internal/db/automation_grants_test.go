@@ -90,6 +90,23 @@ func TestGrant_SetRefusesStaleHash(t *testing.T) {
 	}
 }
 
+func TestGrant_StaleReGrantKeepsExistingGrant(t *testing.T) {
+	d := openTestDB(t)
+	id := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h1")
+	now := time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC)
+	if err := d.SetAutomationToolGrant(id, "create_target", "h1", now); err != nil {
+		t.Fatal(err)
+	}
+	setApprovalHash(t, d, id, "h2")
+	err := d.SetAutomationToolGrant(id, "create_target", "h1", now.Add(time.Hour))
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("stale re-grant = %v, want ErrHashMismatch", err)
+	}
+	wantGrants(t, "after a stale re-grant", mustListGrants(t, d, id), []AutomationToolGrant{
+		{AutomationID: id, Tool: "create_target", GrantHash: "h1", GrantedAt: now},
+	})
+}
+
 func TestGrant_ActiveRequiresAllThreeHashes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -199,8 +216,8 @@ func TestGrant_DeleteAutomationToolGrant(t *testing.T) {
 	if err != nil || removed {
 		t.Errorf("second DeleteAutomationToolGrant = (%v, %v), want (false, nil)", removed, err)
 	}
-	if got := mustListGrants(t, d, id); len(got) != 0 {
-		t.Errorf("grants after delete = %+v, want none", got)
+	if got := mustListGrants(t, d, id); got == nil || len(got) != 0 {
+		t.Errorf("grants after delete = %#v, want an empty non-nil slice", got)
 	}
 }
 

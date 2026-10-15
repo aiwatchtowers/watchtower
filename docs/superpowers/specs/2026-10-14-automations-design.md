@@ -18,7 +18,7 @@ Connections (QC-01..04), Reaction Commands (STRIP-01..03), Model & Provider Regi
 `cmd/automations*.go`, `internal/tools/registry.go` (surface + binding + trust order), `cmd/actions_registry.go`,
 `internal/daemon/` (scheduler/executor goroutines, wake signal, event publishing from sync phases),
 `internal/digest/models.go` + `tier_scan_test.go` (source tags), `internal/briefing/` (P2), `internal/skills/shipped/`
-(P3), `internal/config/` (one key), migrations 00113–00115, `internal/db/schema.sql`; Desktop: new Automations
+(P3), `internal/config/` (one key), migrations 00113 and 00115–00116 (00114 is an unrelated main migration), `internal/db/schema.sql`; Desktop: new Automations
 tab, `AgentActionCardView` label, Inbox strip (P3), workbench header buttons and session requests (P5); new
 `docs/inventory/automations.md`. New Go dependencies: `github.com/dop251/goja` (sandbox) and
 `github.com/robfig/cron/v3` (its standard 5-field parser only; its scheduler is not used).
@@ -564,7 +564,7 @@ IS NOT NULL`, partial unique `(automation_id, trigger) WHERE status='queued'` (c
 (agent_actions id, no FK); `ask_id`, `session_id` INTEGER NULL (no FK, P5); `input_tokens`, `output_tokens`
 INTEGER DEFAULT 0; `tokens_estimated` INTEGER DEFAULT 0; `reported_cost_usd` REAL NULL (display only); `duration_ms`; `error` TEXT DEFAULT ''; `started_at`, `finished_at`.
 
-### 9.4 `automation_state`, `automation_outputs` (00113); `automation_tool_grants` (00114, P2)
+### 9.4 `automation_state`, `automation_outputs` (00113); `automation_tool_grants` (00115, P2)
 
 - `automation_state(automation_id PK FK CASCADE, state_json TEXT NOT NULL DEFAULT '{}', run_id INTEGER NULL,
   updated_at)`.
@@ -574,7 +574,7 @@ INTEGER DEFAULT 0; `tokens_estimated` INTEGER DEFAULT 0; `reported_cost_usd` REA
 - `automation_tool_grants(automation_id FK CASCADE, tool TEXT, grant_hash TEXT NOT NULL, granted_at,
   PRIMARY KEY (automation_id, tool))`.
 
-### 9.5 00115_automation_workbench.sql (P5)
+### 9.5 00116_automation_workbench.sql (P5)
 
 `ALTER TABLE owner_asks ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`;
 `ALTER TABLE terminal_sessions ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET
@@ -946,10 +946,10 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 | Phase | Depends on | Delivers |
 |---|---|---|
 | **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; per-run token budgets (the daily cap was retired by §20.3 D25); Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
-| **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
+| **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00115; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; quick run from the "Run Automation…" palette (⌃⌘R) and the menu-bar tray with a finish notice (§12.7, ask #295); the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
-| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00115, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
+| **P5 workbench** | P1, P2, P3 | Workbench scope, repo recipes in `.watchtower/automations/`, Desktop rescan for protected folders, header buttons, `session()` + `AutomationSessionCenter`, `shell()`, `ask()`, migration 00116, AUTO-12 (session/shell half), AUTO-13; the PROJ-03 amendment (§14.6, approved in ask #272). |
 | **P6 mcp, agent, templates** | P1, P2 | `mcp()`, `agent()` (§6.5, §20 D3), five templates + gallery (`templates`, `install-template`), e2e over the templates; the QC-02 amendment (§14.7, approved in ask #272). |
 
 P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases, P2 the registry). Swift work
@@ -1014,7 +1014,7 @@ per watched run), `TrayRunAutomationMenuTests` (grouping and status text).
 `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails` (ask #272),
 `TestSaveAutomation_WorkbenchWritesIntoItsFolder` (PROJ-03, ask #272),
 `TestSession_WaitsForAppThenSessionThenFinish`, `TestAsk_WaitsAndDelivers`, `TestAuto12_DryRunStartsNoSessionOrShell`,
-`TestRescan_WorkbenchRecipeNeedsConfirmation`, migration test for 00115. Swift — `WorkbenchHeaderAutomationButtonsTests`
+`TestRescan_WorkbenchRecipeNeedsConfirmation`, migration test for 00116. Swift — `WorkbenchHeaderAutomationButtonsTests`
 (runnable/unconfirmed/active states, confirm dialog), `AutomationSessionCenterTests` (launch on request, writes
 session id, wakes daemon; app launched later picks pending request).
 

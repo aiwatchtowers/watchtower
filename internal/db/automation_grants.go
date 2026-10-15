@@ -84,7 +84,8 @@ func (db *DB) DeleteAutomationToolGrant(automationID int64, tool string) (bool, 
 }
 
 // ListAutomationToolGrants returns automation automationID's grants in tool
-// order, inactive ones included (Active computed against approval_hash).
+// order, inactive ones included (Active computed against approval_hash); an
+// empty, non-nil slice when there are none.
 func (db *DB) ListAutomationToolGrants(automationID int64) ([]AutomationToolGrant, error) {
 	rows, err := db.Query(`SELECT g.automation_id, g.tool, g.grant_hash, g.granted_at,
 		g.grant_hash = a.approval_hash AND a.approval_hash <> ''
@@ -94,7 +95,7 @@ func (db *DB) ListAutomationToolGrants(automationID int64) ([]AutomationToolGran
 		return nil, fmt.Errorf("listing the grants of automation %d: %w", automationID, err)
 	}
 	defer func() { _ = rows.Close() }()
-	var out []AutomationToolGrant
+	out := []AutomationToolGrant{}
 	for rows.Next() {
 		var g AutomationToolGrant
 		var grantedAt string
