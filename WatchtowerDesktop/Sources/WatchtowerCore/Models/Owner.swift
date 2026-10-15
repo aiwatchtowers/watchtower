@@ -58,7 +58,7 @@ package enum OwnerError: LocalizedError, Equatable {
 
     package var errorDescription: String? {
         switch self {
-        case .noOwner: "no owner identity: connect Slack, Google or Jira first"
+        case .noOwner: "no owner identity: connect Slack, Google, Jira or Linear first"
         }
     }
 }

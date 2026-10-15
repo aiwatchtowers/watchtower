@@ -287,7 +287,7 @@ final class OwnerQueriesTests: XCTestCase {
             try ProfileQueries.upsertOwnerProfile($0, owner: .unknown, profile: UserProfile(slackUserID: "", role: "EM"))
         }) { error in
             XCTAssertEqual(error as? OwnerError, .noOwner)
-            XCTAssertEqual(error.localizedDescription, "no owner identity: connect Slack, Google or Jira first")
+            XCTAssertEqual(error.localizedDescription, "no owner identity: connect Slack, Google, Jira or Linear first")
         }
         let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM user_profile") }
         XCTAssertEqual(count, 0)
