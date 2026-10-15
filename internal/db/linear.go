@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -82,7 +83,7 @@ func (db *DB) GetLinearSyncState(accountID int64, teamID string) (LinearSyncStat
 	s := LinearSyncState{AccountID: accountID, TeamID: teamID}
 	err := db.QueryRow(`SELECT watermark, last_synced_at, last_error FROM linear_sync_state
 		WHERE account_id = ? AND team_id = ?`, accountID, teamID).Scan(&s.Watermark, &s.LastSyncedAt, &s.LastError)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return LinearSyncState{}, fmt.Errorf("getting linear sync state: %w", err)
 	}
 	return s, nil

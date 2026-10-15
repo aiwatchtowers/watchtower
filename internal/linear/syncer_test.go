@@ -81,6 +81,41 @@ func TestLinear01_PageErrorHoldsWatermark(t *testing.T) {
 	assert.Len(t, got, 1)
 }
 
+// syncTeamWithFailure runs one pass of team t-1 (one good issue page over a
+// stored watermark) with the fake's failure hook set by fail, and returns the
+// team's watermark, last error and how many issue rows were kept.
+func syncTeamWithFailure(t *testing.T, fail func(*fakeLinear)) (watermark, lastErr string, issues int) {
+	t.Helper()
+	f := newFakeLinear(t)
+	f.viewerTeams = []string{"t-1"}
+	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
+	f.issuePages = [][]map[string]any{{issueNode("i-1", "ENG-1", "started", "2026-10-02T00:00:00.000Z")}}
+	fail(f)
+	d, s := newTestSyncer(t, f)
+	require.NoError(t, d.RecordLinearSyncSuccess(s.AccountID(), "t-1", "2026-09-01T00:00:00.000Z", "x"))
+	_, err := s.Sync(context.Background())
+	require.Error(t, err)
+	st, err := d.GetLinearSyncState(s.AccountID(), "t-1")
+	require.NoError(t, err)
+	got, err := d.GetLinearIssueByKey("ENG-1")
+	require.NoError(t, err)
+	return st.Watermark, st.LastError, len(got)
+}
+
+func TestLinear01_CommentFailureHoldsWatermark(t *testing.T) {
+	watermark, lastErr, issues := syncTeamWithFailure(t, func(f *fakeLinear) { f.failComments = true })
+	assert.Equal(t, "2026-09-01T00:00:00.000Z", watermark)
+	assert.Contains(t, lastErr, "comments unavailable")
+	assert.Equal(t, 1, issues) // the issue page that succeeded is kept
+}
+
+func TestLinear01_PlanningFailureHoldsWatermark(t *testing.T) {
+	watermark, lastErr, issues := syncTeamWithFailure(t, func(f *fakeLinear) { f.failPlanning = true })
+	assert.Equal(t, "2026-09-01T00:00:00.000Z", watermark)
+	assert.Contains(t, lastErr, "planning unavailable")
+	assert.Equal(t, 1, issues)
+}
+
 func TestLinear04_TeamMoveKeepsOneRow(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
@@ -239,6 +274,13 @@ func TestMapIssue_HistoryRelationsAndStateChange(t *testing.T) {
 	// No status history: a started issue falls back to startedAt.
 	node["history"] = map[string]any{"nodes": []any{}}
 	assert.Equal(t, "2026-09-20T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
+	// ... a completed one to completedAt, a canceled one to canceledAt.
+	node["completedAt"] = "2026-09-22T00:00:00.000Z"
+	node["canceledAt"] = "2026-09-23T00:00:00.000Z"
+	node["state"] = map[string]any{"name": "Done", "type": "completed"}
+	assert.Equal(t, "2026-09-22T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
+	node["state"] = map[string]any{"name": "Canceled", "type": "canceled"}
+	assert.Equal(t, "2026-09-23T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
 	node["state"] = map[string]any{"name": "Todo", "type": "unstarted"}
 	assert.Empty(t, mapIssue(7, decodeIssue(t, node)).StateChangedAt)
 	node["trashed"] = true

@@ -359,8 +359,9 @@ func nameOf(p *idName) string {
 	return p.Name
 }
 
-// stateChangedAt is the newest history entry that set a state, else startedAt
-// for a started issue, else ”.
+// stateChangedAt is the newest history entry that set a state, else the
+// timestamp of the issue's current state category (startedAt, completedAt or
+// canceledAt), else empty.
 func stateChangedAt(n issueNodeJSON) string {
 	latest := ""
 	for _, h := range n.History.Nodes {
@@ -368,10 +369,18 @@ func stateChangedAt(n issueNodeJSON) string {
 			keepMax(&latest, h.CreatedAt)
 		}
 	}
-	if latest == "" && n.State.Type == "started" {
-		latest = str(n.StartedAt)
+	if latest != "" {
+		return latest
 	}
-	return latest
+	switch n.State.Type {
+	case "started":
+		return str(n.StartedAt)
+	case "completed":
+		return str(n.CompletedAt)
+	case "canceled":
+		return str(n.CanceledAt)
+	}
+	return ""
 }
 
 func mapIssue(accountID int64, n issueNodeJSON) db.LinearIssue {

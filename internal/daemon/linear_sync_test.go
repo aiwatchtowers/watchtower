@@ -77,3 +77,23 @@ func TestPhaseLinearSync_IntervalGate(t *testing.T) {
 	d.phaseLinearSync(context.Background())
 	assert.Equal(t, 1, ran)
 }
+
+// A cancelled context is daemon shutdown: even when the syncer's error wraps
+// ErrAuthRevoked (a request cut off mid-refresh), the account is not marked
+// revoked.
+func TestLinear03_CancelledContextLeavesAuthState(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	a1, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{
+		fakeLinearSyncer{id: a1, err: fmt.Errorf("refresh: %w", linear.ErrAuthRevoked), ran: &ran},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseLinearSync(ctx)
+	assert.Equal(t, 1, ran)
+	acc, err := database.GetLinearAccount(a1)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acc.Status)
+}

@@ -31,7 +31,9 @@ type fakeLinear struct {
 	commentPages       [][]map[string]any
 	cycles             []map[string]any
 	projects           []map[string]any
-	failIssuePage      int // 1-based issues call answered with RATELIMITED; 0 = never
+	failIssuePage      int  // 1-based issues call answered with RATELIMITED; 0 = never
+	failComments       bool // every comments call answers a GraphQL error
+	failPlanning       bool // every planning (team cycles/projects) call answers a GraphQL error
 	alwaysUnauthorized bool
 }
 
@@ -112,8 +114,16 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		data = map[string]any{"issues": pageAt(f.issuePages, req.Variables["after"])}
 	case "comments":
+		if f.failComments {
+			writeGraphQLError(w, "comments unavailable")
+			return
+		}
 		data = map[string]any{"comments": pageAt(f.commentPages, req.Variables["after"])}
 	case "planning":
+		if f.failPlanning {
+			writeGraphQLError(w, "planning unavailable")
+			return
+		}
 		data = map[string]any{"team": map[string]any{
 			"cycles":   map[string]any{"nodes": orEmpty(f.cycles)},
 			"projects": map[string]any{"nodes": orEmpty(f.projects)},
@@ -123,6 +133,11 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+}
+
+func writeGraphQLError(w http.ResponseWriter, msg string) {
+	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []any{map[string]any{
+		"message": msg, "extensions": map[string]any{"code": "INTERNAL_SERVER_ERROR"}}}})
 }
 
 func orEmpty(v []map[string]any) []map[string]any {

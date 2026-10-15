@@ -26,7 +26,7 @@
 **Why locked:** Advancing the watermark past a failed page silently drops issues forever (the next pass starts after them); letting comment timestamps or the wall clock move it can skip issues that were updated between the query and the write.
 
 **Test guards:**
-- `internal/linear/syncer_test.go`: `TestLinear01_PageErrorHoldsWatermark`, `TestLinear01_QuietTeamRecordsSinceAsWatermark`, `TestLinear01_CommentsDoNotRaiseWatermark`.
+- `internal/linear/syncer_test.go`: `TestLinear01_PageErrorHoldsWatermark`, `TestLinear01_CommentFailureHoldsWatermark`, `TestLinear01_PlanningFailureHoldsWatermark`, `TestLinear01_QuietTeamRecordsSinceAsWatermark`, `TestLinear01_CommentsDoNotRaiseWatermark`.
 - `internal/db/linear_accounts_test.go`: `TestLinear01_ErrorKeepsWatermark`.
 
 **Locked since:** 2026-10-15
@@ -52,12 +52,12 @@
 
 **Observable:** When Linear rejects the grant, the account shows status `revoked` (Re-login) and keeps all its synced data. Removing a workspace deletes the token and disables the account but keeps every `linear_*` row.
 
-**Mechanism:** `phaseLinearSync` persists exactly one failure, `linear.ErrAuthRevoked`, via `SetLinearAccountAuthState(id, "revoked", msg)`; rate-limit and network errors are only logged, a cancelled context is checked first and leaves auth state untouched, and a nil error never writes a blanket "ok" (only a login clears the state). `linear remove` is a soft delete (status `removed`, token file deleted, rows kept); `linear add` for a workspace whose org belongs to a **removed** account revives that account (same id, data kept), a non-removed match is refused, any failure after the account row is created cleans that row up, and `linear login` refuses a login into a different workspace than the account's.
+**Mechanism:** `phaseLinearSync` persists exactly one failure, `linear.ErrAuthRevoked`, via `SetLinearAccountAuthState(id, "revoked", msg)`; rate-limit and network errors are only logged, a cancelled context is checked first and leaves auth state untouched, and a nil error never writes a blanket "ok" (only a login clears the state). `linear remove` is a soft delete (status `removed`, token file deleted under the token lock, rows kept); `linear add` for a workspace whose org belongs to a **removed** account revives that account (same id, data kept), a non-removed match is refused, any failure after the account row is created cleans that row up, and `linear login` refuses a login into a different workspace than the account's.
 
 **Why locked:** Deleting synced data on auth loss or removal destroys history the owner cannot re-fetch cheaply, and writing "ok" over a revoked state hides the Re-login prompt.
 
 **Test guards:**
-- `internal/daemon/linear_sync_test.go`: `TestLinear03_RevokedMarksAccount`.
+- `internal/daemon/linear_sync_test.go`: `TestLinear03_RevokedMarksAccount`, `TestLinear03_CancelledContextLeavesAuthState` (a cancelled context wins over a wrapped `ErrAuthRevoked`).
 - `internal/db/linear_accounts_test.go`: `TestLinear03_AccountLifecycleSoftDelete` (also asserts the account's issue and comment rows survive remove).
 
 **Locked since:** 2026-10-15
