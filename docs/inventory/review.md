@@ -33,7 +33,7 @@ temporary index (`GIT_INDEX_FILE` in a fresh temp directory, removed
 afterwards): `read-tree HEAD`, `add -A`, `write-tree`. The only things written
 are git objects; no ref is created or moved, the owner's `.git/index` keeps its
 bytes, and no work-tree file changes. The diff and the file sides are read
-from tree objects (`diff-tree`, `show`), never from the work tree. A folder
+from tree objects (`diff-tree`, `cat-file`), never from the work tree. A folder
 that is not a repository answers an envelope, writes nothing.
 
 **Why locked:** The reviewer runs over the owner's live work while an agent may
@@ -71,7 +71,7 @@ the tool, and they cannot notice an absence.
 
 **Test guards:**
 - `WatchtowerDesktop/Tests/Core/ReviewQueriesTests.swift::testReview03_CarryNeverDropsAComment` (moved copies, lost outdated, nothing disappears)
-- supporting: `ReviewQueriesTests` (`testReplaceMovesAndMarkOutdatesKeepsTheRow`, `testResolveClosesCarriedAndOutdatedOnly`, `testDraftLifecycleAndSentRowsAreImmutable`); `WatchtowerDesktop/Tests/Core/ReviewCommentAnchorTests.swift` (`testLostWhenQuoteGone`, `testLostWhenFileGone`, `testMovedWhenLinesShift`, `testDesignCommentNeverMoves`); `WatchtowerDesktop/Tests/ReviewChangesModelTests.swift` (`testNewRoundCarriesPreviousComments`, `testDeletingACarriedCommentResolvesItAndReopenDoesNotCarryAgain`, `testRefreshMovesAndOutdatesDrafts`, `testOldSideCommentIsRefusedInTheSinceView`)
+- supporting: `ReviewQueriesTests` (`testReplaceMovesAndMarkOutdatedKeepsTheRow`, `testResolveClosesCarriedAndOutdatedOnly`, `testDraftLifecycleAndSentRowsAreImmutable`); `WatchtowerDesktop/Tests/Core/ReviewCommentAnchorTests.swift` (`testLostWhenQuoteGone`, `testLostWhenFileGone`, `testMovedWhenLinesShift`, `testDesignCommentNeverMoves`); `WatchtowerDesktop/Tests/ReviewChangesModelTests.swift` (`testNewRoundCarriesPreviousComments`, `testDeletingACarriedCommentResolvesItAndReopenDoesNotCarryAgain`, `testRefreshMovesAndOutdatesDrafts`, `testOldSideCommentIsRefusedInTheSinceView`)
 
 **Locked since:** 2026-10-16
 
@@ -127,7 +127,7 @@ the read hardening of `internal/gitbin` (`core.fsmonitor=false`,
 `core.hooksPath=/dev/null`, no signature display, inherited repository
 variables dropped), and the calls that read file content — `add`, `write-tree`
 and `diff-tree -p` — additionally blank the folder's `filter.*` drivers
-(`gitbin.ReadArgsIn`, `ReadsContent`), so a clean/smudge/process filter or an
+(`gitbin.ReadArgsIn`, the unexported `readsContent`), so a clean/smudge/process filter or an
 fsmonitor named in the folder's own `.git/config` or `.gitattributes` never
 runs. A scanner error while splitting the patch fails the whole diff instead of
 returning a partial one; a type change consumes two patch sections.
@@ -138,7 +138,7 @@ agent (or a cloned repository) planted, with no owner action.
 
 **Test guards:**
 - `internal/reviewdiff/guard_test.go::TestReview05_SnapshotAndDiffRunNothingFromTheFolder` (a filter driver and an fsmonitor named by the folder never run through snapshot, diff and file)
-- supporting: `internal/gitbin/run_test.go` (`TestReadArgsIn_BlanksTheFoldersFilterDrivers`, `TestReadsContent`, `TestReadsContent_AddAndPatchDiffTree`, `TestReadArgsIn_NoFilterIsReadArgs`); `internal/reviewdiff/diff_test.go` (`TestDiff_TypeChangeToSymlink`, `TestSplitSections_LineOverMaxIsAnError`)
+- supporting: `internal/gitbin/run_test.go` (`TestReadArgsIn_BlanksTheFoldersFilterDrivers`, `TestReadsContent` (the unexported `readsContent`), `TestReadsContent_AddAndPatchDiffTree`, `TestReadArgsIn_NoFilterIsReadArgs`); `internal/reviewdiff/diff_test.go` (`TestDiff_TypeChangeToSymlink`, `TestSplitSections_LineOverMaxIsAnError`)
 
 **Locked since:** 2026-10-16
 

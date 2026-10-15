@@ -8,7 +8,7 @@ and the PROJ-12 amendment in `docs/inventory/workbench.md`.
 The owner reviews what an agent session changed in a folder-bound workbench, writes
 comments on lines, sends them as a **round**, and the agent reads them with
 `get_review`. The next round shows only what changed since, carries the unresolved
-comments and keeps Viewed marks on untouched hunks.
+comments and keeps the Viewed mark of every file whose hunks are unchanged.
 
 ## What Plan 1 ships
 
@@ -58,7 +58,7 @@ comment without a file never moves — REVIEW-03).
 
 **Swift app.** `Services/WorkbenchCLI.swift` review calls; `SessionLineDelivery` gets
 `LineKey.review` so the round line goes through PROJ-12's gates; `ReviewChangesModel`
-drives a round: open, select a file, add/delete/resolve comments, Viewed (keyed by hunk
+drives a round: open, select a file, add/delete/resolve comments, Viewed (per file: `review_viewed(round_id, path, content_sha)`, the sha a hash of the file's hunk
 ids from the *all* diff in every view), refresh, new round with carry-over (deleting a
 carried comment resolves it, so reopening does not carry it again), the
 **All changes / Since round N** view (old-side comments are refused in the since view),
@@ -73,13 +73,13 @@ session row menu **Review Changes**; one model per session.
 ## Flow
 
 1. Row menu **Review Changes** → `review start` snapshots the tree and opens the round.
-2. Owner reads, marks hunks Viewed, comments lines (drafts stay local to the round).
+2. Owner reads, marks files Viewed, comments lines (drafts stay local to the round).
 3. **Send** → `review send` stores the round and its comments as `sent`; only then the
    Desktop types `Review round #N sent (n comments) — read it with get_review N …`
    into the session (held at a prompt, pasted only over a draft — PROJ-12).
 4. The agent calls `get_review N` (round becomes `delivered`), edits, replies.
 5. Next round: **Since round N** — unresolved comments are carried (moved if the quote
-   moved, outdated with their quote if it is gone) and Viewed stays on unchanged hunks.
+   moved, outdated with their quote if it is gone) and a file's Viewed mark stays while all of its hunks are unchanged.
 
 ## v1 limits
 
