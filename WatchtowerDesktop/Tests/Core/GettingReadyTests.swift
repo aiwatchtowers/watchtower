@@ -139,6 +139,43 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertFalse(result.sawUnready)
     }
 
+    /// Goals picked, Connect skipped: every switched-on feature waits on a
+    /// source, so there is no card — the Connect rows still open the zone,
+    /// and a rows-only zone is not complete.
+    func testSlackGoalsWithoutSourceShowConnectRowsNotCompleted() {
+        let result = step(readinessMap([
+            .slackSync: .needsSource(.slack), .digests: .needsSource(.slack), .tracks: .needsSource(.slack),
+            .briefing: .needsSource(.anySource)
+        ]))
+        XCTAssertEqual(cards(result.zone), [])
+        XCTAssertEqual(sourceRows(result.zone), [
+            GettingReadySourceRow(source: .slack, features: [.slackSync, .digests, .tracks]),
+            GettingReadySourceRow(source: .anySource, features: [.briefing])
+        ])
+        XCTAssertNil(result.memory.completedAt)
+        XCTAssertEqual(result.memory.firstShownAt, now)
+        XCTAssertTrue(result.sawUnready)
+    }
+
+    /// A ready knowledge-index card beside the rows does not complete the zone either.
+    func testRowsWithKnowledgeIndexReadyAreNotCompleted() {
+        let result = step(readinessMap([.knowledgeIndex: .ready, .digests: .needsSource(.slack)]))
+        XCTAssertEqual(cards(result.zone).map(\.feature), [.knowledgeIndex])
+        XCTAssertEqual(sourceRows(result.zone), [GettingReadySourceRow(source: .slack, features: [.digests])])
+        XCTAssertNil(result.memory.completedAt)
+    }
+
+    /// Rule 3: completed during this launch (the zone showed unready cards)
+    /// reads "Everything's ready" for the rest of the launch.
+    func testCompletedThisLaunchStaysAllReady() {
+        let memory = GettingReadyMemory(
+            hiddenByOwner: false, firstShownAt: now.addingTimeInterval(-3600), completedAt: now.addingTimeInterval(-60))
+        let result = step(readinessMap([.digests: .preparing(detail: nil)]), memory: memory, sawUnready: true)
+        XCTAssertEqual(result.zone, .allReady)
+        XCTAssertEqual(result.memory, memory)
+        XCTAssertTrue(result.sawUnready)
+    }
+
     func testNotEvaluatedYetIsHidden() {
         let memory = GettingReadyMemory(hiddenByOwner: false, firstShownAt: now.addingTimeInterval(-60), completedAt: nil)
         let result = step([:], memory: memory, sawUnready: true)

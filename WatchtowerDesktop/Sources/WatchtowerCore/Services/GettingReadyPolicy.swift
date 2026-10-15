@@ -28,6 +28,36 @@ package enum GettingReadyPolicy {
         }
         if let firstShownAt = memory.firstShownAt, now.timeIntervalSince(firstShownAt) > foldAfter { return hidden }
 
+        let (cards, sourceRows) = entries(
+            readiness: readiness, ownerKnown: ownerKnown, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+        // The zone opens on a card that reads a source, or on a Connect row a
+        // switched-on feature waits for (goals picked, Connect skipped). A
+        // Development-only install — the knowledge-index card, Connect rows for
+        // the bare sources — stays hidden.
+        let sourcedCards = cards.contains { $0.feature.source != .none }
+        let rowsUnlockFeatures = sourceRows.contains { $0.features.contains { $0.featureID != nil } }
+        guard sourcedCards || rowsUnlockFeatures else { return hidden }
+
+        var next = memory
+        // A rows-only zone is never complete: it stays until a source connects.
+        if sourcedCards, cards.allSatisfy(\.isTerminal) {
+            // An install that was already ready at first look never was getting ready.
+            next.completedAt = now
+            return GettingReadyStep(zone: sawUnready ? .allReady : .hidden, memory: next, sawUnready: sawUnready)
+        }
+        next.firstShownAt = memory.firstShownAt ?? now
+        return GettingReadyStep(zone: .shown(cards: cards, sourceRows: sourceRows), memory: next, sawUnready: true)
+    }
+
+    /// The cards (every feature on and not waiting on a source) and the
+    /// Connect rows (features grouped by the source they wait on), in
+    /// pipeline order.
+    private static func entries(
+        readiness: [ReadinessFeature: Readiness],
+        ownerKnown: Bool,
+        briefingHour: Int,
+        dayPlanHour: Int
+    ) -> ([GettingReadyCard], [GettingReadySourceRow]) {
         var cards: [GettingReadyCard] = []
         var sourceRows: [GettingReadySourceRow] = []
         for feature in ReadinessFeature.allCases {
@@ -49,16 +79,6 @@ package enum GettingReadyPolicy {
                     readiness: state))
             }
         }
-        // A Development-only install's lone knowledge-index card does not open the zone.
-        guard cards.contains(where: { $0.feature.source != .none }) else { return hidden }
-
-        var next = memory
-        if cards.allSatisfy(\.isTerminal) {
-            // An install that was already ready at first look never was getting ready.
-            next.completedAt = now
-            return GettingReadyStep(zone: sawUnready ? .allReady : .hidden, memory: next, sawUnready: sawUnready)
-        }
-        next.firstShownAt = memory.firstShownAt ?? now
-        return GettingReadyStep(zone: .shown(cards: cards, sourceRows: sourceRows), memory: next, sawUnready: true)
+        return (cards, sourceRows)
     }
 }
