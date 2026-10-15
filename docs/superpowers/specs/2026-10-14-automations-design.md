@@ -345,7 +345,8 @@ carries `status='applied'` and `auto=1`. Approve/Reject stay the existing owner-
   AlwaysAsk tool or a tool the manifest does not admit as a write) and removed by `… off` (open to anyone).
   The Desktop's form is the only UI that runs `on`.
 - A grant whose `grant_hash` no longer equals `approval_hash` is **inactive**, kept for display ("Auto paused —
-  the recipe changed. Re-confirm?"). Re-confirming writes the new hash. A save never carries grants over by
+  the recipe changed. Re-confirm?"). Re-confirming writes the new hash; a recipe returned to the exact granted
+  text matches the kept hash again, so the grant is active again without a new grant. A save never carries grants over by
   itself: the save sheet lists the grants the edit pauses with unchecked "Keep auto for …" boxes; checking one
   runs `auto … on --hash <new>` after the save (AUTO-03).
 
@@ -830,7 +831,7 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 |---|---|---|---|
 | AUTO-01 | The manifest is the only source of permissions | Every SDK call is checked against the recipe's `permissions`/`outputs` before its backend runs; a miss throws `PermissionDenied`, writes a `denied` step and touches nothing. No trust row, grant, surface or argument widens it. | P1 |
 | AUTO-02 | Writes only through the registry | The only SDK paths that change data outside the automation's own tables are `Registry.Propose` (and `Apply` it triggers) on the `automation` surface, `shell()` and `session()`; `output.inbox/briefing/report` write only `automation_outputs`. | P1 (pinned), P2 |
-| AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change makes it inactive until re-granted; every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
+| AUTO-03 | Auto only by the owner, bound to the hash | An auto grant is written only by `automations auto … on` outside AI-agent markers with the current `approval_hash`; it applies only while that hash equals the run's; any script/permission change deactivates it until the owner grants the new hash or the recipe returns to the exact granted text (the grant compares hashes only); every auto write is one `agent_actions` row through `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. | P2 |
 | AUTO-04 | State commits only on success | `state.set` and `output.*` (local) are buffered and committed in one transaction with `status='succeeded'`; any other terminal status leaves `automation_state` and `automation_outputs` byte-identical. | P1 |
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
 | AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed (a schedule, missed-policy, budget or concurrency change included, §20.3 D26). Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
@@ -859,9 +860,10 @@ Replace AGENT-03's Observable with:
 > AlwaysAsk tools never — when an `automation_tool_grants` row exists for (that automation, that tool) whose
 > `grant_hash` equals both the automation's current `approval_hash` and the run's `recipe_hash`. Such a grant is
 > written only by `watchtower automations auto <id> <tool> on --hash <sha>` from the Desktop, refused under an AI
-> agent's environment markers (AGENT-07) and refused for a hash other than the current one; any change to the
-> recipe's script or permissions (by anyone, the assistant included) makes it inactive until the owner grants it
-> again. An auto write is still one `agent_actions` row (`trust_at_create='execute'`, `context_type=
+> agent's environment markers (AGENT-07) and refused for a hash other than the current one; the grant is active
+> only while the recipe's `approval_hash` equals the granted hash — any change to the recipe's script or
+> permissions (by anyone, the assistant included) deactivates it, and only the owner granting the new hash or a
+> return to the exact granted text re-activates it. An auto write is still one `agent_actions` row (`trust_at_create='execute'`, `context_type=
 > 'automation_run'`) applied through `Apply`'s claim (AGENT-05), logged as an `auto=1` step of its run and shown in
 > the Inbox as applied. No other surface, binding, trust row or grant can execute an External tool.
 

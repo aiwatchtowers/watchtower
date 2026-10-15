@@ -103,8 +103,9 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Observable:** An auto grant is written only by `automations auto … on`
 outside AI-agent markers with the current `approval_hash`; it applies only
-while that hash equals the run's; any script/permission change makes it
-inactive until re-granted; every auto write is one `agent_actions` row through
+while that hash equals the run's; any script/permission change deactivates
+it until the owner grants the new hash or the recipe returns to the exact
+granted text (the grant compares hashes only); every auto write is one `agent_actions` row through
 `Apply`'s claim plus an `auto=1` step. AlwaysAsk tools are never auto. (The
 AGENT-03 amendment of spec §14.2, owner-approved in ask #265, lands with it.)
 
