@@ -164,8 +164,7 @@ func runAutomationsRescan(cmd *cobra.Command, _ []string) error {
 
 // ownerOnlyAutomationHint ends the refusal of `automations enable` and
 // `automations delete` under an AI agent's markers (AGENT-07, ask #293).
-const ownerOnlyAutomationHint = "only the owner can enable or delete an automation; " +
-	"use Automations in Settings or run it yourself in a terminal outside an agent"
+const ownerOnlyAutomationHint = "enable and delete are owner-only"
 
 // refuseOwnerOnlyAutomationVerb refuses an owner-only automations verb under
 // any AGENT-07 marker, before anything is read or written (ask #293).

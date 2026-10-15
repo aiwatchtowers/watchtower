@@ -244,8 +244,10 @@ func TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers(t *testing.T) {
 			assert.False(t, row.Enabled, "nothing enabled under %s", marker)
 			assert.FileExists(t, a.Path, "the recipe file is still there")
 
-			_, err = runAutomations(t, "delete", "999999")
-			require.ErrorContains(t, err, ownerOnlyAutomationHint, "refused before the id is looked up")
+			for _, verb := range []string{"enable", "delete"} {
+				_, err = runAutomations(t, verb, "999999")
+				require.ErrorContains(t, err, ownerOnlyAutomationHint, "%s refused before the id is looked up", verb)
+			}
 			c.assertOpenUnderAgent(t, a)
 		})
 	}

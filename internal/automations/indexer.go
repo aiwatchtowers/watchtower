@@ -247,7 +247,7 @@ func slugTakenReason(slug string, other db.Automation) string {
 		state = "removed, its file gone"
 	}
 	return fmt.Sprintf("slug %q is already used in this scope by automation %d at %s (%s); "+
-		"rename this file, or delete that automation with `watchtower automations delete %d`",
+		"rename this file, or ask the owner to delete automation %d",
 		slug, other.ID, other.Path, state, other.ID)
 }
 

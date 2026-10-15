@@ -64,7 +64,7 @@ func notRunnableReason(a *db.Automation) string {
 	case !automationConfirmed(a):
 		return "it needs your confirmation (Automations, or `watchtower automations confirm`)"
 	case !a.Enabled:
-		return "it is disabled (`watchtower automations enable`)"
+		return "it is disabled (the owner enables it with `watchtower automations enable` outside an agent)"
 	}
 	return ""
 }

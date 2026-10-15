@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -375,7 +376,7 @@ func TestRescan_SlugTakenAtOtherPathIsSkipped(t *testing.T) {
 		t.Fatalf("Skipped = %+v, want mail.md", rep.Skipped)
 	}
 	reason := rep.Skipped[0].Reason
-	for _, want := range []string{`slug "mail" is already used`, elsewhere, "removed", "automations delete"} {
+	for _, want := range []string{`slug "mail" is already used`, elsewhere, "removed", "ask the owner to delete automation " + strconv.FormatInt(id, 10)} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("reason %q lacks %q", reason, want)
 		}

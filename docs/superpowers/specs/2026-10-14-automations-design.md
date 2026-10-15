@@ -1025,8 +1025,8 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
 
 24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
     under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
-    `refuseUnderAgent` check, before anything is read or written, with the hint "only the owner can enable or delete
-    an automation; use Automations in Settings or run it yourself in a terminal outside an agent". `disable`,
+    `refuseUnderAgent` check, before anything is read or written, with the hint "enable and delete are owner-only"
+    (after `refuseUnderAgent`'s own "the owner decides in Watchtower Desktop (or runs this from a plain Terminal)"). `disable`,
     `cancel`, `run` (of a confirmed, enabled recipe), `rescan` and a plain `save` stay open: they only reduce
     activity or run what the owner already confirmed. Deleting the recipe file directly is outside Watchtower's
     control; only the CLI verb is guarded. Guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`.
