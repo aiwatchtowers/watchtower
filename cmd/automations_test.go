@@ -222,6 +222,62 @@ func TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers(t *testing.T) {
 	})
 }
 
+// AGENT-07 (owner decision, ask #293): enable and delete are owner-only —
+// refused under every agent marker before anything is read or written; the
+// verbs that only reduce activity or run what the owner confirmed stay open.
+func TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			c := newAutoCLI(t)
+			a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+			out, err := runAutomations(t, "disable", idArg(a.ID))
+			require.NoError(t, err, out)
+			t.Setenv(marker, "1")
+			for _, verb := range []string{"enable", "delete"} {
+				_, err := runAutomations(t, verb, idArg(a.ID))
+				require.Error(t, err, verb)
+				assert.Contains(t, err.Error(), marker)
+				assert.Contains(t, err.Error(), ownerOnlyAutomationHint)
+			}
+			row, err := c.d.GetAutomation(a.ID)
+			require.NoError(t, err, "the row is still there under %s", marker)
+			assert.False(t, row.Enabled, "nothing enabled under %s", marker)
+			assert.FileExists(t, a.Path, "the recipe file is still there")
+
+			_, err = runAutomations(t, "delete", "999999")
+			require.ErrorContains(t, err, ownerOnlyAutomationHint, "refused before the id is looked up")
+			c.assertOpenUnderAgent(t, a)
+		})
+	}
+	t.Run("owner", func(t *testing.T) {
+		c := newAutoCLI(t)
+		a := c.indexRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+		out, err := runAutomations(t, "enable", idArg(a.ID))
+		require.NoError(t, err, out)
+		row, err := c.d.GetAutomation(a.ID)
+		require.NoError(t, err)
+		assert.True(t, row.Enabled)
+		out, err = runAutomations(t, "delete", idArg(a.ID))
+		require.NoError(t, err, out)
+		_, err = c.d.GetAutomation(a.ID)
+		require.ErrorIs(t, err, db.ErrAutomationNotFound)
+		assert.NoFileExists(t, a.Path)
+	})
+}
+
+// assertOpenUnderAgent checks that disable, run (of a confirmed recipe) and
+// rescan still work under the marker the caller set.
+func (c *autoCLI) assertOpenUnderAgent(t *testing.T, a *db.Automation) {
+	t.Helper()
+	for _, args := range [][]string{{"disable", idArg(a.ID)}, {"rescan"}} {
+		out, err := runAutomations(t, args...)
+		require.NoError(t, err, "%v stays open: %s", args, out)
+	}
+	require.NoError(t, c.d.SetAutomationEnabled(a.ID, true, time.Now()))
+	out, err := runAutomations(t, "run", idArg(a.ID))
+	require.NoError(t, err, "run of a confirmed, enabled recipe stays open: %s", out)
+}
+
 func TestAutomationsCLI_SaveIsAtomicAndIndexes(t *testing.T) {
 	c := newAutoCLI(t)
 	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))

@@ -595,17 +595,24 @@ through the CLI. The approval-hash function exists only in Go; the Desktop gets 
 | `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted; an **unconfirmed** recipe is refused under AGENT-07 markers (owner only, §20.1 D16); the CLI pins the hash its check saw (`ExecuteInlinePinned`) — a recipe changed before the claim cancels the run |
 | `automations cancel <run-id>` | |
 | `automations runs <id> [--limit N] [--json]`, `automations steps <run-id> [--json]` | history |
-| `automations enable\|disable <id>` | |
+| `automations enable <id>` | owner only (AGENT-07 markers refused before anything is read, §20.3 D24, ask #293) |
+| `automations disable <id>` | open under agent markers (it only reduces activity) |
 | `automations confirm <id> --hash <sha>` | owner only (AGENT-07 markers refused) |
 | `automations auto <id> <tool> on --hash <sha>` / `off` | `on` owner only (AGENT-07) |
 | `automations save --file F [--path P] [--confirm-hash <sha>]` | writes the recipe atomically (temp + rename), indexes it; with `--confirm-hash` (owner only) confirms in the same step |
-| `automations delete <id>` | removes the index row (cascade) in one statement refused while a run is `running`/`waiting` ("cancel it first"), then the file when it is a regular file in its recipe folder |
+| `automations delete <id>` | owner only (AGENT-07 markers refused before anything is read, §20.3 D24, ask #293); removes the index row (cascade) in one statement refused while a run is `running`/`waiting` ("cancel it first"), then the file when it is a regular file in its recipe folder |
 | `automations wake` | sends the wake signal (P1); open under agent markers |
 | `automations templates [--json]`, `automations install-template <name> [--workbench N]` | P6 |
 | `automations outputs [--kind K] [--json]` | P1, until the Inbox renders them (P3) |
 
 AGENT-07's marker list gains `WATCHTOWER_AUTOMATION_RUN_ID` (set on every `shell()`/`agent()`/`session()` child,
 §13.2), so a command run by an automation can no more approve than an agent can.
+
+Owner-only under AGENT-07 markers: `confirm`, `save --confirm-hash`, `dry-run` of an unconfirmed recipe, `auto … on`
+(P2), `enable` and `delete` (§20.3 D24). Open: `disable`, `cancel`, `run` (of a confirmed, enabled recipe),
+`rescan`, a plain `save`, the read verbs and `wake` — they only reduce activity or run what the owner already
+confirmed. Removing a recipe file by hand is outside the CLI and not guarded (the next rescan marks the row
+`removed_at`, §2.5).
 
 ## 11. Authoring (P3)
 
@@ -783,7 +790,8 @@ unchanged.
   guard's call list with a fake generator.
 - AGENT-07: marker list gains `WATCHTOWER_AUTOMATION_RUN_ID`; `automations confirm`, `automations auto … on`,
   `automations save --confirm-hash` and `automations dry-run` of an unconfirmed recipe (§20.1 D16, ask #271) join
-  the refused commands. Desktop `Constants.agentEnvMarkers` gains the
+  the refused commands; `automations enable` and `automations delete` join them too (§20.3 D24, ask #293). Guard
+  `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`. Desktop `Constants.agentEnvMarkers` gains the
   variable.
 
 ### 14.4 STRIP-01 amendment — approved (ask #270, §20 D10)
@@ -1012,3 +1020,13 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
   `raw_json`), `get_jira_time_in_status` by `project`, else its `issue_keys` prefixes, else absent, whatever
   `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
   stays under `people:read`; neither is `tool:`-only.
+
+### 20.3 Rulings after P1 (ask #293)
+
+24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
+    under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
+    `refuseUnderAgent` check, before anything is read or written, with the hint "only the owner can enable or delete
+    an automation; use Automations in Settings or run it yourself in a terminal outside an agent". `disable`,
+    `cancel`, `run` (of a confirmed, enabled recipe), `rescan` and a plain `save` stay open: they only reduce
+    activity or run what the owner already confirmed. Deleting the recipe file directly is outside Watchtower's
+    control; only the CLI verb is guarded. Guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`.

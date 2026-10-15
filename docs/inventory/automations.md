@@ -187,6 +187,9 @@ the `approval_hash` its gate checked (`ExecuteInlinePinned`), so a recipe
 changed between the check and the claim is cancelled, never run. P3 adds the
 same refusal to `draft_automation` (a draft whose `approval_hash` is an
 indexed unconfirmed recipe's, owner-confirmed reading in ask #280).
+Switching a recipe on and deleting an automation are owner gestures too
+(ask #293): `automations enable` and `automations delete` refuse under every
+marker before anything is read or written (AGENT-07); `disable` stays open.
 
 **Why locked:** "What was confirmed is exactly what runs" is the whole
 security model: a git pull, a hand edit or an agent's edit must never run
@@ -196,7 +199,7 @@ code or permissions the owner did not see.
 - `internal/automations/executor_test.go` — `TestAuto06_UnconfirmedRecipeIsCancelledNotRun`, `TestAuto06_DryRunOfUnconfirmedRecipeRuns`, `TestAuto06_ExecutorRunsIndexedCopyNotFile`, `TestAuto06_EditDuringRunDoesNotAffectRunningSnapshot`, `TestExecutor_ExecuteInlinePinnedRefusesChangedRecipe`
 - `internal/automations/indexer_test.go` — `TestRescan_IndexesNewRecipeUnconfirmedAndDisabled`, `TestRescan_ChangedOutsideWatchtowerNeedsConfirmation`
 - `internal/db/automations_test.go` — `TestAutomationIndex_RunnableTable`, `TestAutomationIndex_ConfirmRefusesStaleHash`, `TestAutomationIndex_UpsertKeepsOwnerColumns`, `TestAutomationIndex_InsertNeverSetsOwnerColumns`, `TestAutomationIndex_UpsertChangedApprovalHashNeedsConfirmation`
-- `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`
+- `cmd/automations_test.go` — `TestAutomationsCLI_ConfirmRefusedUnderAgentMarkers`, `TestAutomationsCLI_SaveIsAtomicAndIndexes` (`--confirm-hash` under a marker refused, file not written), `TestAutomationsCLI_DryRunUnconfirmedRefusedUnderAgentMarkers`, `TestAutomationsCLI_DryRunRecipeChangedBeforeClaimRefused`, `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`
 - P3 adds the `draft_automation` guard (plan `2026-10-14-automations-p3.md`) and flips that half.
 
 **Locked since:** 2026-10-14
@@ -380,4 +383,5 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-15 (**owner decision, ask #293**; spec §20.3 D24): strengthening, no guard relaxed. AUTO-06 notes that `automations enable` and `automations delete` are owner-only (refused under AGENT-07 markers before anything is read or written); guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers` added.
 - 2026-10-15 (Automations P1, board #753): file created with AUTO-01..13 from spec §14.1. Enforced: AUTO-01, 04, 05, 07, 08, 10, 11; AUTO-02 (read side), AUTO-06 (executor, indexer, CLI — ask #271), AUTO-09 (scheduler and CLI), AUTO-12 (P1 half). Planned: AUTO-03 (P2), AUTO-13 (P5), the write side of AUTO-02 (P2), the `draft_automation` half of AUTO-06 (P3), the event half of AUTO-09 (P4), the session/shell half of AUTO-12 (P5). Owner rulings recorded: ask #280 (D16 draft refusal keyed by `approval_hash`; D22 `slack:read@*` or `tool:list_messages`), ask #287 (a Jira project grant covers linked data; `digests:read` and `find_experts` under `people:read` kept). Related strengthening elsewhere: AGENT-07 marker and refused commands (`agent-actions.md`), the DEV-01/AGENT-06 telemetry narrowing (`dev-surface.md`, `agent-actions.md`), the FEAT-03 `automations` fast-forward hook (`features.md`).

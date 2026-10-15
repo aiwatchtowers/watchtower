@@ -162,7 +162,26 @@ func runAutomationsRescan(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// ownerOnlyAutomationHint ends the refusal of `automations enable` and
+// `automations delete` under an AI agent's markers (AGENT-07, ask #293).
+const ownerOnlyAutomationHint = "only the owner can enable or delete an automation; " +
+	"use Automations in Settings or run it yourself in a terminal outside an agent"
+
+// refuseOwnerOnlyAutomationVerb refuses an owner-only automations verb under
+// any AGENT-07 marker, before anything is read or written (ask #293).
+func refuseOwnerOnlyAutomationVerb(verb string) error {
+	if err := refuseUnderAgent(verb); err != nil {
+		return fmt.Errorf("%w; %s", err, ownerOnlyAutomationHint)
+	}
+	return nil
+}
+
+// runAutomationsEnable is owner-only (AGENT-07, ask #293): an agent must not
+// switch on the schedule of a recipe it may have written. Disable stays open.
 func runAutomationsEnable(cmd *cobra.Command, args []string) error {
+	if err := refuseOwnerOnlyAutomationVerb("enable an automation"); err != nil {
+		return err
+	}
 	return setAutomationsEnabled(cmd, args[0], true)
 }
 
@@ -364,8 +383,12 @@ func indexedRecipeAt(ctx context.Context, cfg *config.Config, database *db.DB, s
 // file (only a regular file in its own recipe folder). The row delete is one
 // statement that holds only while no run is running or waiting (cancel the run
 // first), and the file is removed only after it succeeded. P1 has no pending
-// proposals or grants, so nothing else is withdrawn.
+// proposals or grants, so nothing else is withdrawn. Owner-only (AGENT-07,
+// ask #293): refused under an agent's markers before anything is read.
 func runAutomationsDelete(cmd *cobra.Command, args []string) error {
+	if err := refuseOwnerOnlyAutomationVerb("delete an automation"); err != nil {
+		return err
+	}
 	id, err := parseAutomationID("automation id", args[0])
 	if err != nil {
 		return err
