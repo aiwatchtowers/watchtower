@@ -127,3 +127,51 @@ func TestWorkbenchReview_ContextPlanEscapeStaysInFolder(t *testing.T) {
 	it := reviewJSON(t, wb, "context", "--session", itoa(s))["items"].([]any)[0].(map[string]any)
 	assert.Equal(t, "plan", it["missing"])
 }
+
+func linkTarget(t *testing.T, database *db.DB, wb, session int64, intent string) {
+	t.Helper()
+	tid := db.SeedTestWorkbenchTarget(t, database, wb, sql.NullInt64{}, "T")
+	_, err := database.Exec(`UPDATE targets SET intent = ? WHERE id = ?`, intent, tid)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at) VALUES (?, ?, 'x', 'x')`, session, tid)
+	require.NoError(t, err)
+}
+
+func TestWorkbenchReview_ContextRefusesAForeignSession(t *testing.T) {
+	database, wb, _, _ := reviewFixture(t)
+	other, err := database.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+	foreign := reviewSession(t, database, other, t.TempDir())
+	linkTarget(t, database, other, foreign, "secret.md — Task 1")
+	out := reviewJSON(t, wb, "context", "--session", itoa(foreign))
+	assert.Equal(t, false, out["ok"])
+	assert.Nil(t, out["items"])
+}
+
+func TestWorkbenchReview_ContextSkipsForeignTargets(t *testing.T) {
+	database, wb, s, _ := reviewFixture(t)
+	other, err := database.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+	linkTarget(t, database, other, s, "x.md — Task 1")
+	out := reviewJSON(t, wb, "context", "--session", itoa(s))
+	assert.Equal(t, true, out["ok"])
+	assert.Empty(t, out["items"])
+}
+
+func TestWorkbenchReview_ContextPlanReadLimits(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "plan.md"), []byte("### Task 1: x\nsecret\n"), 0o644))
+	require.NoError(t, os.Symlink(outside, filepath.Join(repo, "docs")))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "big.md"), []byte(strings.Repeat("a", 1<<20+10)), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "short.md"), []byte("### Task 1: x\nbody\n"), 0o644))
+	linkTarget(t, database, wb, s, "docs/plan.md — Task 1")
+	linkTarget(t, database, wb, s, "big.md — Task 1")
+	linkTarget(t, database, wb, s, "short.md — Task 9")
+	items := reviewJSON(t, wb, "context", "--session", itoa(s))["items"].([]any)
+	require.Len(t, items, 3)
+	assert.Equal(t, "plan", items[0].(map[string]any)["missing"])
+	assert.Equal(t, "plan", items[1].(map[string]any)["missing"])
+	assert.Equal(t, "task", items[2].(map[string]any)["missing"])
+	assert.Empty(t, items[0].(map[string]any)["plan_text"])
+}

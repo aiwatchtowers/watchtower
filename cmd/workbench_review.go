@@ -131,14 +131,22 @@ func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *d
 	return out
 }
 
-// sessionFolder: the root of the folder the session's agent works in.
-func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) (string, error) {
+// checkSessionOnWorkbench refuses a session of another workbench.
+func checkSessionOnWorkbench(database *db.DB, p *db.Workbench, sessionID int64) error {
 	row, err := database.GetTerminalSession(sessionID)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != p.ID {
-		return "", fmt.Errorf("session %d is not on workbench %d", sessionID, p.ID)
+		return fmt.Errorf("session %d is not on workbench %d", sessionID, p.ID)
+	}
+	return nil
+}
+
+// sessionFolder: the root of the folder the session's agent works in.
+func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) (string, error) {
+	if err := checkSessionOnWorkbench(database, p, sessionID); err != nil {
+		return "", err
 	}
 	cwd, err := database.TerminalAgentCwd(sessionID)
 	if err != nil {

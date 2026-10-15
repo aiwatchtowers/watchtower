@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,6 +36,9 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
+		return failReview(cmd, err)
+	}
 	ids, err := database.SessionLinkedTargets(reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
@@ -42,7 +46,7 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 	items := []reviewContextItem{}
 	for _, id := range ids {
 		t, err := database.GetTargetByID(int(id))
-		if err != nil || t == nil {
+		if err != nil || t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
 			continue
 		}
 		items = append(items, contextItem(p.FolderPath, t))
@@ -58,7 +62,7 @@ func contextItem(folder string, t *db.Target) reviewContextItem {
 	}
 	it.PlanPath = m[1]
 	it.PlanTask, _ = strconv.Atoi(m[2])
-	body, ok := readPlainFile(filepath.Join(folder, filepath.Clean("/"+m[1])))
+	body, ok := readPlainFile(folder, filepath.Join(folder, filepath.Clean("/"+m[1])))
 	if !ok {
 		it.Missing = "plan"
 		return it
@@ -73,14 +77,35 @@ func contextItem(folder string, t *db.Target) reviewContextItem {
 	return it
 }
 
-// readPlainFile: a regular, non-symlink file of at most maxPlanBytes.
-func readPlainFile(path string) (string, bool) {
-	fi, err := os.Lstat(path)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxPlanBytes {
+// readPlainFile: a regular file of at most maxPlanBytes whose symlink-resolved
+// path stays inside the symlink-resolved folder.
+func readPlainFile(folder, path string) (string, bool) {
+	realFolder, err := filepath.EvalSymlinks(folder)
+	if err != nil {
 		return "", false
 	}
-	b, err := os.ReadFile(path)
-	return string(b), err == nil
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realFolder, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	fi, err := os.Lstat(real)
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	f, err := os.Open(real)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxPlanBytes+1))
+	if err != nil || len(b) > maxPlanBytes {
+		return "", false
+	}
+	return string(b), true
 }
 
 // taskSection: from "### Task N:" to the next "### " heading.
