@@ -32,4 +32,5 @@ var (
 	PragmaBusyTimeoutMS = pragmaBusyTimeoutMS
 	DSNBusyTimeoutMS    = dsnBusyTimeoutMS
 	IsMemoryDSN         = isMemoryDSN
+	DSNQueryOnly        = dsnQueryOnly
 )

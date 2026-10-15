@@ -301,6 +301,7 @@ func TestIsWrite(t *testing.T) {
 		"select * from t":                      false,
 		"PRAGMA user_version":                  false,
 		"PRAGMA wal_checkpoint(PASSIVE)":       false,
+		"PRAGMA user_version; SELECT 1 = 1":    false,
 		"EXPLAIN QUERY PLAN SELECT 1":          false,
 		"WITH x AS (SELECT 1) SELECT * FROM x": false,
 		"-- a comment\nSELECT 1":               false,
@@ -349,6 +350,164 @@ func TestDSNBusyTimeoutMS(t *testing.T) {
 	} {
 		if got := lockmetrics.DSNBusyTimeoutMS(dsn); got != want {
 			t.Errorf("DSNBusyTimeoutMS(%q) = %d, want %d", dsn, got, want)
+		}
+	}
+}
+
+// The tx event is stamped when COMMIT is done, so [ts-hold_ms, ts] is the
+// interval the lock was held (db lockstats overlaps busy events with it).
+func TestDriverTxEventIsStampedAfterCommit(t *testing.T) {
+	dbPath, sink := setupDriver(t, "30")
+	d := openMetrics(t, dbPath+"?_txlock=immediate")
+
+	beforeBegin := time.Now()
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	beforeCommit := time.Now()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	txs := ofKind(readEvents(t, sink), lockmetrics.KindTx)
+	if len(txs) != 1 {
+		t.Fatalf("want 1 tx event, got %+v", txs)
+	}
+	e := txs[0]
+	// ts is written with millisecond precision (truncated): allow 1 ms.
+	ts := e.TS.Add(time.Millisecond)
+	if ts.Before(beforeCommit) {
+		t.Errorf("ts %v is before COMMIT was called (%v): stamped at begin?", e.TS, beforeCommit)
+	}
+	if start := ts.Add(-time.Duration(e.HoldMS) * time.Millisecond); start.Before(beforeBegin.Add(-time.Millisecond)) {
+		t.Errorf("ts - hold_ms = %v starts before Begin was called (%v)", start, beforeBegin)
+	}
+}
+
+// A query_only connection (OpenExisting) never takes the write lock: its
+// transactions and statements are not timed even at threshold 0, but its
+// busy errors are still recorded.
+func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
+	dbPath, sink := setupDriver(t, "0")
+	holder := openMetrics(t, dbPath+"?_txlock=immediate")
+	ro := openQueryOnly(t, dbPath)
+	if err := os.Remove(sink); err != nil { // drop openMetrics' own DDL events
+		t.Fatal(err)
+	}
+
+	tx, err := ro.Begin() // deferred: no _txlock on this DSN
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := tx.QueryRow(`SELECT count(*) FROM t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEvents(t, sink); len(got) != 0 {
+		t.Fatalf("a query_only connection was timed: %+v", got)
+	}
+
+	// An exclusive-mode writer shuts readers out: the read fails busy. The
+	// writer can enter that mode only while no other connection is open.
+	if err := ro.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.Exec(`PRAGMA locking_mode=EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	held, err := holder.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Rollback() })
+	if _, err := held.Exec(`INSERT INTO t (v) VALUES (3)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := countRows(openQueryOnly(t, dbPath)); err == nil {
+		t.Fatal("read under an exclusive lock succeeded")
+	}
+	busy := ofKind(readEvents(t, sink), lockmetrics.KindBusy)
+	if len(busy) != 1 || busy[0].Site != testPkg+"countRows" || busy[0].BusyTimeoutMS != 50 {
+		t.Fatalf("want 1 busy event from countRows with busy_timeout_ms 50, got %+v", readEvents(t, sink))
+	}
+	if txs := ofKind(readEvents(t, sink), lockmetrics.KindTx); len(txs) != 0 {
+		t.Fatalf("a query_only connection was timed: %+v", txs)
+	}
+}
+
+// openQueryOnly opens dbPath the way db.OpenExisting does.
+func openQueryOnly(t *testing.T, dbPath string) *sql.DB {
+	t.Helper()
+	d, err := sql.Open(lockmetrics.DriverName, "file:"+dbPath+"?mode=rw&_pragma=busy_timeout(50)&_pragma=query_only(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = d.Close() })
+	return d
+}
+
+func countRows(d *sql.DB) error {
+	var n int
+	return d.QueryRow(`SELECT count(*) FROM t`).Scan(&n)
+}
+
+// An autocommit write run through Query (… RETURNING) is timed like an Exec.
+func TestDriverSlowWriteThroughQueryRecordedAsExec(t *testing.T) {
+	dbPath, sink := setupDriver(t, "30")
+	holder := openMetrics(t, dbPath+"?_txlock=immediate")
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+
+	held, err := holder.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		released <- held.Commit()
+	}()
+	if err := insertReturning(d); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range ofKind(readEvents(t, sink), lockmetrics.KindExec) {
+		if e.Site == testPkg+"insertReturning" {
+			if e.HoldMS < 30 {
+				t.Errorf("exec event = %+v, want hold_ms >= 30", e)
+			}
+			return
+		}
+	}
+	t.Fatalf("no exec event from insertReturning in %+v", readEvents(t, sink))
+}
+
+func insertReturning(d *sql.DB) error {
+	var v int
+	return d.QueryRow(`INSERT INTO t (v) VALUES (4) RETURNING v`).Scan(&v)
+}
+
+func TestDSNQueryOnly(t *testing.T) {
+	for dsn, want := range map[string]bool{
+		"file:/x/w.db?mode=rw&_pragma=busy_timeout(500)&_pragma=query_only(1)": true,
+		"file:/x/w.db?_pragma=query_only(ON)":                                  true,
+		"file:/x/w.db?_pragma=query_only%28true%29":                            true,
+		"file:/x/w.db?_pragma=query_only(0)":                                   false,
+		"file:/x/w.db?mode=rw&_pragma=busy_timeout(500)&_txlock=immediate":     false,
+		"/x/watchtower.db?_txlock=immediate":                                   false,
+		"/x/watchtower.db":                                                     false,
+	} {
+		if got := lockmetrics.DSNQueryOnly(dsn); got != want {
+			t.Errorf("DSNQueryOnly(%q) = %v, want %v", dsn, got, want)
 		}
 	}
 }

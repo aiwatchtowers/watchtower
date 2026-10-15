@@ -23,10 +23,16 @@ import (
 //   - a transaction that is not ReadOnly: wait = BeginTx (BEGIN IMMEDIATE
 //     waits there for the write lock), hold = BEGIN done → COMMIT/ROLLBACK
 //     done; a KindTx event when Slow(wait, hold);
-//   - an Exec outside a transaction that writes (autocommit): its whole
-//     duration, which is both wait and hold, as HoldMS of a KindExec event;
+//   - an Exec or Query outside a transaction that writes (autocommit, an
+//     UPDATE … RETURNING through Query included): its whole duration, which
+//     is both wait and hold, as HoldMS of a KindExec event;
 //   - any SQLITE_BUSY/SQLITE_LOCKED from BeginTx, Exec, Query, Commit or
 //     Rollback: a KindBusy event, whatever the threshold.
+//
+// A connection whose DSN sets query_only (OpenExisting) never takes the
+// write lock: only its busy errors are recorded. Not seen: a busy error
+// from a later rows.Next (a WAL read step) and a prepared statement's Exec
+// (the repo prepares only inside transactions, which the tx event covers).
 const DriverName = "sqlite+metrics"
 
 // siteDepth bounds the stack captured for a transaction's site; frames past
@@ -90,7 +96,12 @@ func (d metricsDriver) Open(name string) (driver.Conn, error) {
 	if !ok {
 		return c, nil
 	}
-	return &conn{base: bc, measured: !isMemoryDSN(name), busyTimeoutMS: dsnBusyTimeoutMS(name)}, nil
+	return &conn{
+		base:          bc,
+		measured:      !isMemoryDSN(name),
+		queryOnly:     dsnQueryOnly(name),
+		busyTimeoutMS: dsnBusyTimeoutMS(name),
+	}, nil
 }
 
 // conn is one wrapped connection. database/sql uses a connection from one
@@ -98,6 +109,9 @@ func (d metricsDriver) Open(name string) (driver.Conn, error) {
 type conn struct {
 	base     baseConn
 	measured bool
+	// queryOnly: the DSN sets query_only, so the connection never writes —
+	// its transactions and statements are not timed, only busy errors.
+	queryOnly bool
 	// busyTimeoutMS mirrors the connection's busy_timeout: the DSN's
 	// _pragma=busy_timeout(N), then every successful PRAGMA busy_timeout=N.
 	busyTimeoutMS int64
@@ -128,10 +142,19 @@ func (c *conn) Begin() (driver.Tx, error) {
 
 // BeginTx times the BEGIN of a write transaction and remembers the caller's
 // stack (PCs only; symbolized only if an event is written). A ReadOnly
-// transaction stays deferred and takes no write lock: it is not measured.
+// transaction stays deferred and takes no write lock, nor does any on a
+// query_only connection: those are not timed, only a busy BEGIN is recorded.
 func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if !c.measured || opts.ReadOnly {
+	if !c.measured {
 		return c.base.BeginTx(ctx, opts)
+	}
+	if opts.ReadOnly || c.queryOnly {
+		start := time.Now()
+		t, err := c.base.BeginTx(ctx, opts)
+		if err != nil {
+			c.recordBusy(err, time.Since(start), 0, nil)
+		}
+		return t, err
 	}
 	c.tx = tx{c: c}
 	c.tx.npc = runtime.Callers(2, c.tx.pcs[:])
@@ -159,7 +182,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	switch {
 	case err != nil:
 		c.recordBusy(err, took, 0, nil)
-	case c.inTx:
+	case c.inTx || c.queryOnly:
 	case Slow(0, took) && isWrite(query):
 		c.record(Event{Kind: KindExec, HoldMS: took.Milliseconds()}, nil)
 	}
@@ -171,15 +194,22 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	return res, err
 }
 
-// QueryContext records a busy error from the statement's first step.
+// QueryContext records a busy error from the statement's first step, and
+// times an autocommit write run as a query (UPDATE … RETURNING): the driver
+// steps the first row here, so the lock wait falls inside this call.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if !c.measured {
 		return c.base.QueryContext(ctx, query, args)
 	}
 	start := time.Now()
 	rows, err := c.base.QueryContext(ctx, query, args)
-	if err != nil {
-		c.recordBusy(err, time.Since(start), 0, nil)
+	took := time.Since(start)
+	switch {
+	case err != nil:
+		c.recordBusy(err, took, 0, nil)
+	case c.inTx || c.queryOnly:
+	case Slow(0, took) && isWrite(query):
+		c.record(Event{Kind: KindExec, HoldMS: took.Milliseconds()}, nil)
 	}
 	return rows, err
 }
@@ -320,7 +350,8 @@ func isWrite(query string) bool {
 	case "select", "explain", "with":
 		return false
 	case "pragma":
-		return strings.Contains(q, "=")
+		stmt, _, _ := strings.Cut(q, ";")
+		return strings.Contains(stmt, "=")
 	}
 	return true
 }
@@ -408,6 +439,28 @@ func dsnBusyTimeoutMS(dsn string) int64 {
 		}
 	}
 	return ms
+}
+
+// dsnQueryOnly reports whether a DSN's _pragma=query_only(…) turns
+// query_only on for every connection.
+func dsnQueryOnly(dsn string) bool {
+	_, query, ok := strings.Cut(dsn, "?")
+	if !ok {
+		return false
+	}
+	vals, err := url.ParseQuery(query)
+	if err != nil {
+		return false
+	}
+	on := false
+	for _, p := range vals["_pragma"] {
+		p = strings.ToLower(strings.ReplaceAll(p, " ", ""))
+		if v, ok := strings.CutPrefix(p, "query_only"); ok {
+			v = strings.Trim(v, "=()")
+			on = v == "1" || v == "on" || v == "true" || v == "yes"
+		}
+	}
+	return on
 }
 
 // isMemoryDSN reports an in-memory database: ":memory:", "file::memory:",
