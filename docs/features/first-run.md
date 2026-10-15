@@ -318,18 +318,19 @@ reads every card's source in one pass, each card on its own: a missing table
 is that card having no content; a thrown error is logged (`NSLog`, card kind
 + message) and marks only that card `failed`. `HomeTodayBuilder.cards`
 (`WatchtowerDesktop/Sources/WatchtowerCore/Services/HomeTodayBuilder.swift:12`)
-is pure: each card shows only with content, in this fixed order, and only
+is pure: each card shows only with content, in this fixed order (owner ask
+#308; `TodayCardKind`'s case order), and only
 while its tab is visible (`homeTodayCardsAllowed`; My targets and Agents
 waiting have no tab gate).
 
 | Card | Source | Shows when | Click |
 |---|---|---|---|
-| Waiting on you · N | `AgentActionQueries.awaitingOwnerCount` + `awaitingOwner(limit: 3)` (pending/failed, not workbench rows) and `ReminderQueries.fetchDue`; N = the badge's count | N > 0; top 3 items, newest first, chips Proposal / Failed / Reminder | Inbox (follows the Inbox tab) |
+| Since you were away | `CatchUpQueries.newestUnacknowledgedReady` | a ready, unacknowledged recap exists (the Catch-Up badge, `hasUnacknowledgedReady`) — the newest such, so a newer building or failed run does not hide it; eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
 | Next meeting | `CalendarQueries.fetchNextEvent` + `hasPrep` | the event starts within 24 h; eyebrow "IN N MIN", "HH:MM" or "TOMORROW HH:MM"; line = time range · up to two attendees +N · "Prep ready" | the event in Calendar (`navigateToCalendarEvent`) |
+| Waiting on you · N | `AgentActionQueries.awaitingOwnerCount` + `awaitingOwner(limit: 3)` (pending/failed, not workbench rows) and `ReminderQueries.fetchDue`; N = the badge's count | N > 0; top 3 items, newest first, chips Proposal / Failed / Reminder | Inbox (follows the Inbox tab) |
 | Briefing | `BriefingQueries.fetchByDate(today)` | today's briefing has an item; body = the first item of the first non-empty section | that briefing (`navigateToBriefing`) |
 | My targets | `TargetQueries.homeSummary` (limit 5) | any row; detail "Overdue · Oct 12", "Due today", "Due HH:MM" or "In progress" | the target (`navigateToTarget`); header → Targets |
 | Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`; an unreadable row is logged, named and left out, and marks the card failed) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
-| Since you were away | `CatchUpQueries.newestUnacknowledgedReady` | a ready, unacknowledged recap exists (the Catch-Up badge, `hasUnacknowledgedReady`) — the newest such, so a newer building or failed run does not hide it; eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
 
 - `TargetQueries.homeSummary` (`TargetQueries.swift:237`): `project_id IS
   NULL` (PROJ-01 — workbench targets stay on their board), ownership `mine`,

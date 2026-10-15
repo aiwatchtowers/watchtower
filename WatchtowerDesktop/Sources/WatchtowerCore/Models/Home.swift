@@ -83,9 +83,9 @@ package struct GettingReadyStep: Equatable, Sendable {
 
 // MARK: - Today
 
-/// A Today card, in its fixed order.
+/// A Today card, in its fixed order (owner ask #308).
 package enum TodayCardKind: CaseIterable, Sendable {
-    case waitingOnYou, nextMeeting, briefing, myTargets, agentsWaiting, sinceYouWereAway
+    case sinceYouWereAway, nextMeeting, waitingOnYou, briefing, myTargets, agentsWaiting
 }
 
 /// Where a click goes. Core has no SidebarDestination; AppState.openHomeLink maps these.
