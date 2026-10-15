@@ -189,6 +189,22 @@ extension WorkbenchesViewModel {
 
     // MARK: - Creating
 
+    /// Level 2's "New session" (and ⌘T): a fresh agent session of the
+    /// workbench on screen — `agent`, else the default agent — put on screen
+    /// like a panel click. The panel may be hidden or at level 1
+    /// (`drilledWorkbenchID` is nil or this one).
+    func newSessionOnPage(agent: AgentKind? = nil, worktree: WorktreeChoice = .auto) async {
+        guard let projectID = selectedWorkbenchID else { return }
+        await newSession(projectID: projectID, agent: agent, worktree: worktree)
+    }
+
+    /// A pane picker's "New … session": starts one in that pane.
+    func newSession(
+        inPane slot: WorkspacePane, projectID: Int64, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+    ) async {
+        await newSession(projectID: projectID, placement: .replacing(slot), agent: agent, worktree: worktree)
+    }
+
     /// A new agent session of the workbench: `agent`, or the default agent
     /// (Settings → Workbench → Default agent, D1) when nil. `worktree`:
     /// where it starts (`placementForNewSession`).
