@@ -59,6 +59,7 @@ struct WelcomeFeature: Equatable {
 /// checklist for a Mac that shows no code.
 struct WelcomeView: View {
     @Environment(LinkingViewModel.self) private var linking
+    @Environment(\.startDemoTour) private var startDemoTour
 
     var body: some View {
         NavigationStack {
@@ -129,6 +130,15 @@ struct WelcomeView: View {
             } label: {
                 Text("The Mac doesn't show up")
                     .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            // No Mac at hand (App Review has none): the demo Macs (#174).
+            if let startDemoTour {
+                Button {
+                    startDemoTour()
+                } label: {
+                    Text("Try the Demo")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
             }
         }
     }

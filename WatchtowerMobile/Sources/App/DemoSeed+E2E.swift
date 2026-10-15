@@ -4,9 +4,9 @@ import WatchtowerSync
 
 /// The demo's pairing (mobile E2E): a demo hub and the demo phone share fixed link material, so the seed reaches the
 /// replica sealed and signed the way a Mac's records do, and the demo runs every read and write through E2E. Every
-/// key is derived from a fixed label: the demo holds nothing secret. Demo only: `AppEnvironment` picks these keys for
-/// the demo kind over the in-memory transport alone (never over CloudKit), and the hub half, which only the seed
-/// uses, is compiled into DEBUG builds only.
+/// key is derived from a fixed label: the demo holds nothing secret. Demo only: `HubSession` picks these keys for
+/// the demo kind over the in-memory transport alone (never over CloudKit). The hub half, which only the seed uses,
+/// ships in Release too: the App Store build's demo (`AppRoot.tour`, #174) seeds through it.
 extension DemoSeed {
     static let pairingHubID = UUID(uuid: (0xDE, 0x30, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0x01))
     static let pairingEpoch: UInt32 = 1
@@ -38,7 +38,6 @@ extension DemoSeed {
             payload: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: nil)))
     }
 
-    #if DEBUG
     /// The demo hub sealing over `inner`, its seqs from `seq`.
     static func hubTransport(inner: any CloudSyncTransport & Sendable, seq: SeqAllocator) -> SecureTransport {
         SecureTransport(inner: inner, keys: DemoHubKeys(seq: seq), rollback: InMemoryRollbackGuard())
@@ -64,7 +63,6 @@ extension DemoSeed {
     static func hubSeqCeilingKey(hubID: String) -> String {
         hubID == primary.hubID ? hubSeqCeilingKey : "\(hubSeqCeilingKey).\(hubID)"
     }
-    #endif
 }
 
 /// Fixed demo key material, derived from labels.
@@ -99,7 +97,6 @@ enum DemoPairing {
     }
 }
 
-#if DEBUG
 /// The demo hub's `SecureKeyProvider`: one epoch, the demo phone linked.
 final class DemoHubKeys: SecureKeyProvider, @unchecked Sendable {
     let role: SecureRole = .hub(hubID: DemoSeed.pairingHubID)
@@ -143,4 +140,3 @@ final class DemoHubKeys: SecureKeyProvider, @unchecked Sendable {
     func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { throw SecureTransportError.wrongRole }
     func linkNonce() throws -> Data { throw SecureTransportError.wrongRole }
 }
-#endif
