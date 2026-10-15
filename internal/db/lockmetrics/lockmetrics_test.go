@@ -306,9 +306,13 @@ func TestRotatedOrDeletedElsewhereReopensPath(t *testing.T) {
 	path := setup(t)
 	Record(Event{Kind: KindTx, HoldMS: 1})
 
-	// Another process rotates the file away: the next line goes to a fresh
-	// file at the path, never to the held (now .1) inode.
+	// Another process rotates the file away and already starts the fresh
+	// one: the next line goes to the file now at the path, never to the
+	// held (now .1) inode.
 	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	Record(Event{Kind: KindTx, HoldMS: 2})
