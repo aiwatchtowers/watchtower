@@ -279,6 +279,15 @@ func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *
 				if want := map[State]string{StateUpdated: workbenchSkill().Content, StateDrifted: string(tc.content)}[tc.want]; got != want {
 					t.Fatalf("the skill on disk after a %s install is not what DEV-04 says", tc.want)
 				}
+				// Spec §4.3: an unedited copy gets the preset beside the v9
+				// core; an edited one keeps the single-file layout, no preset.
+				if tc.want == StateUpdated {
+					if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
+						t.Fatalf("unedited %s: flow %+v single=%v, want the preset installed", fixture, rep.Flow, rep.SingleFileLayout)
+					}
+				} else if exists(filepath.Dir(flowSkillFile(folder))) || !rep.SingleFileLayout {
+					t.Fatalf("edited %s: a preset was written beside the single file (single=%v)", fixture, rep.SingleFileLayout)
+				}
 			})
 		}
 	}
@@ -422,8 +431,8 @@ func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 	if ok, err := HasSessionStartHook(folder, 7); err != nil || !ok {
 		t.Fatalf("hook not installed: ok=%v err=%v", ok, err)
 	}
-	if len(rep.Excluded) != 2 {
-		t.Fatalf("expected both exclude lines added, got %v", rep.Excluded)
+	if len(rep.Excluded) != 3 {
+		t.Fatalf("expected the three exclude lines added, got %v", rep.Excluded)
 	}
 	want := []string{"mcp", "add", "--scope", "local", "watchtower-workbench", "--", "/tmp/acme bin/watchtower", "mcp", "--workbench", "7"}
 	if got := f.registered[folder]; strings.Join(got, "\x00") != strings.Join(want, "\x00") {

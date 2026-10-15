@@ -41,9 +41,11 @@ var hiddenNames = []string{".git", ".build", "node_modules", ".DS_Store", ".swif
 var hiddenDirs = []string{
 	".claude/worktrees",
 	".claude/skills/" + devpack.WorkbenchSkillName,
+	".claude/skills/" + devpack.FlowSkillName,
 	".claude/skills/" + devpack.LegacySkillName,
 	".codex",
 	".agents/skills/" + devpack.WorkbenchSkillName,
+	".agents/skills/" + devpack.FlowSkillName,
 }
 
 // File is one text document of the folder.

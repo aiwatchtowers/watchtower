@@ -164,21 +164,22 @@ func TestInstallCodex_Idempotent(t *testing.T) {
 	f := newFakeAppServer(t)
 	st, err := InstallCodex(context.Background(), codexOpts(folder), f.factory())
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateInstalled}, st)
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateInstalled, FlowState: StateInstalled}, st)
 	require.Len(t, f.writes, 1)
 	assert.Len(t, f.writes[0], len(CodexHookSet(codexTestBin)))
 	excludeBefore := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude"))
 
 	st, err = InstallCodex(context.Background(), codexOpts(folder), f.factory())
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged}, st)
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged, FlowState: StateUnchanged}, st)
 	assert.Len(t, f.writes, 1, "the second run must not write the trust again")
 	exclude := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude"))
 	assert.Equal(t, excludeBefore, exclude)
 	assert.Equal(t, 1, strings.Count(exclude, "/.agents/skills/watchtower-workbench/"))
+	assert.Equal(t, 1, strings.Count(exclude, "/.agents/skills/"+FlowSkillName+"/"))
 	entries, err := os.ReadDir(filepath.Join(folder, ".agents", "skills"))
 	require.NoError(t, err)
-	assert.Len(t, entries, 1, "one skill copy")
+	assert.Len(t, entries, 2, "one copy each of the core and the preset")
 }
 
 func ptrTrue() *bool  { v := true; return &v }
