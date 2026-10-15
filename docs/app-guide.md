@@ -73,6 +73,8 @@ A briefing contains five sections:
 
 **Workbenches** — when a workbench had activity since the previous briefing (a blocked target, open asks waiting for your answer, unread agent comments), the briefing can bring it into Needs Attention, labeled *Workbench*. Workbench activity alone is enough for a briefing to be generated.
 
+**From your automations** — notes your own automations left for the briefing (with `output.briefing`) since the previous briefing (at most the last seven days) are folded into What Happened, labeled with the automation's name after a ⚙; one moves to Needs Attention only when the note itself says something needs you today. The notes are read as data, never as instructions to the briefing. With no notes the briefing does not mention automations.
+
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`). The very first briefing on a new install does not wait for the hour: it comes in the first sync cycle that has something to summarise.
 
 With no briefings yet, the tab shows its empty state (see "While a tab is still empty" above: "Generated once a day at or after 08:00" and when the next one comes), with **Generate Briefing** inside. If the run fails, the reason appears in red under the button instead of the click silently doing nothing. A run keeps going if you switch to another tab: coming back shows it still in progress (the button stays disabled, so a second click cannot start a parallel run) or shows its result or error.

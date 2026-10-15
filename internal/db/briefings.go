@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // UpsertBriefing inserts or replaces a briefing based on the unique constraint (user_id, date).
@@ -46,6 +48,24 @@ func (db *DB) HasAnyBriefing() (bool, error) {
 		return false, fmt.Errorf("checking for any briefing: %w", err)
 	}
 	return has, nil
+}
+
+// LastBriefingCreatedAtBefore returns the created_at of userID's latest
+// briefing dated before date (YYYY-MM-DD); ok=false when there is none.
+func (db *DB) LastBriefingCreatedAtBefore(userID, date string) (created time.Time, ok bool, err error) {
+	var s string
+	err = db.QueryRow(`SELECT created_at FROM briefings WHERE user_id = ? AND date < ? ORDER BY date DESC LIMIT 1`,
+		userID, date).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading the last briefing before %s: %w", date, err)
+	}
+	if created, err = time.Parse(time.RFC3339, s); err != nil {
+		return time.Time{}, false, fmt.Errorf("briefing before %s created_at %q: %w", date, s, err)
+	}
+	return created, true, nil
 }
 
 // GetBriefing returns a briefing for a given user and date, or nil if not found.
