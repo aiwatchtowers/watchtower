@@ -98,6 +98,31 @@ func TestProj13_SoftNeverSendsBackAndAlwaysRecords(t *testing.T) {
 	}
 }
 
+// TestProj13_SoftPassesWhenTheRecordFails: under soft a record that fails
+// (a prompt stamped after this Stop makes it stale) passes too — strict
+// sends it back (row 9), soft never does — and nothing is recorded.
+func TestProj13_SoftPassesWhenTheRecordFails(t *testing.T) {
+	for _, tc := range []struct{ name, message, verdict string }{
+		{"chat", e1Message, e1Verdict},
+		{"full", "Please review docs/specs/a.md before I go on.", verdictJSON("full")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopGuardFixture(t)
+			require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardSoft}))
+			_, err := database.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
+				db.AgentStateStamp(time.Now().Add(time.Minute)), row)
+			require.NoError(t, err)
+			useAskGuardGen(t, &stubAskGuardGen{reply: tc.verdict})
+
+			out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(tc.message, false)))
+
+			require.NoError(t, err)
+			assert.Empty(t, out, "soft never sends a failed record back")
+			assert.Nil(t, storedChatQuestion(t, database, row), "nothing recorded")
+		})
+	}
+}
+
 func TestAskGuardFullTextKeepsTheEnd(t *testing.T) {
 	assert.Equal(t, "short", askGuardFullText("  short \n"))
 	long := strings.Repeat("a", 10) + strings.Repeat("b", askGuardFullQuestionRunes)
