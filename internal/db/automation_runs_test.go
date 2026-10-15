@@ -908,3 +908,54 @@ func TestClaimWithin_HonoursTheGlobalRunningBound(t *testing.T) {
 		t.Fatalf("claim under the global bound = (%v, %v); want (true, nil)", ok, err)
 	}
 }
+
+func TestListAutomationOutputsSince_NewestFirstNamedLimitedAndCounted(t *testing.T) {
+	d := openTestDB(t)
+	named, run := seedRunningAutomationRun(t, d) // name "Acme digest"
+	unnamed := seedRunAutomation(t, d, "nameless", 1)
+	if _, err := d.Exec(`UPDATE automations SET name = '' WHERE id = ?`, unnamed); err != nil {
+		t.Fatal(err)
+	}
+	unnamedRun, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: unnamed, Trigger: TriggerManual})
+	since := runTestNow.Add(-time.Hour)
+	insert := func(a, r int64, kind, title, body string, at time.Time) {
+		t.Helper()
+		if _, err := d.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, a, r, kind, title, body, formatAutomationTime(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(named, run, "briefing", "before", "b", since.Add(-time.Second))
+	insert(named, run, "briefing", "at", "b", since)
+	insert(unnamed, unnamedRun, "briefing", "later", "ёжик-long-body", since.Add(20*time.Minute))
+	insert(named, run, "briefing", "middle", "b", since.Add(10*time.Minute))
+	insert(named, run, "inbox", "other kind", "b", since.Add(5*time.Minute))
+
+	got, total, err := d.ListAutomationOutputsSince("briefing", since, 2, 4)
+	if err != nil {
+		t.Fatalf("ListAutomationOutputsSince: %v", err)
+	}
+	var titles, names, bodies []string
+	for _, o := range got {
+		titles = append(titles, o.Title)
+		names = append(names, o.AutomationName)
+		bodies = append(bodies, o.Body)
+	}
+	if want := []string{"later", "middle"}; !reflect.DeepEqual(titles, want) {
+		t.Errorf("titles = %v; want %v (newest first, kind-filtered, limited)", titles, want)
+	}
+	if total != 3 {
+		t.Errorf("total = %d; want 3 (every matching row, since inclusive, not just the limited page)", total)
+	}
+	if want := []string{"nameless", "Acme digest"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v; want %v (an empty name falls back to the slug)", names, want)
+	}
+	if want := []string{"ёжик", "b"}; !reflect.DeepEqual(bodies, want) {
+		t.Errorf("bodies = %v; want %v (cut to maxBodyChars characters)", bodies, want)
+	}
+
+	none, total, err := d.ListAutomationOutputsSince("report", since, 10, 100)
+	if err != nil || none == nil || len(none) != 0 || total != 0 {
+		t.Errorf("no rows = (%v, %d, %v); want an empty, non-nil slice and 0", none, total, err)
+	}
+}
