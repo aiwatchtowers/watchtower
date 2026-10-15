@@ -344,6 +344,44 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertLessThan(event["wait_ms"] as? Int ?? 0, 50)
     }
 
+    /// A deferred transaction whose first write waits for another writer:
+    /// that wait is `wait_ms` only, never also part of `hold_ms`.
+    func testContendedDeferredFirstWriteWaitIsNotCountedAsHold() throws {
+        let sink = try makeSink(thresholdMS: 50)
+        let pool = try makePool(sink: sink)
+        let holder = try holdWriteLock()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { try? self.release(holder) }
+        try pool.writeWithoutTransaction { db in
+            try db.inTransaction(.deferred) {
+                try db.execute(sql: "INSERT INTO t VALUES (1)")
+                Thread.sleep(forTimeInterval: 0.06)
+                return .commit
+            }
+        }
+        sink.flush()
+        let event = try XCTUnwrap(lines().first { $0["kind"] as? String == "tx" })
+        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 250, "the first write waited for the holder")
+        let hold = event["hold_ms"] as? Int ?? 0
+        XCTAssertGreaterThanOrEqual(hold, 60)
+        XCTAssertLessThan(hold, 250, "the first write's wait is not counted again as hold")
+    }
+
+    /// The sink's names and cap are a Go↔Swift dual path; the Go suite
+    /// (TestSinkNamesAndCapAreTheSharedLiterals) asserts the same literals,
+    /// so a rename on one side fails a suite.
+    func testSinkNamesAndCapAreTheSharedLiterals() throws {
+        XCTAssertEqual(DBLockSink.fileName, "dblock.jsonl")
+        XCTAssertEqual(DBLockSink.lockFileName, "dblock.jsonl.lock")
+        XCTAssertEqual(DBLockSink.maxFileBytes, 10_485_760)
+        let sink = try makeSink(maxFileBytes: 10)
+        sink.record(DBLockEvent(kind: DBLockEvent.kindBusy, site: "first"))
+        sink.record(DBLockEvent(kind: DBLockEvent.kindBusy, site: "second"))
+        sink.flush()
+        for name in ["dblock.jsonl", "dblock.jsonl.1", "dblock.jsonl.lock"] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path), name)
+        }
+    }
+
     func testTrackerParsing() {
         XCTAssertEqual(WriteTransactionTracker.writtenTable("INSERT INTO targets (a) VALUES (?)"), "targets")
         XCTAssertEqual(WriteTransactionTracker.writtenTable("INSERT OR REPLACE INTO \"chat_messages\"(a) VALUES (?)"), "chat_messages")

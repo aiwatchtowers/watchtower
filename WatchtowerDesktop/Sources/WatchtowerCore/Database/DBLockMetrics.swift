@@ -128,7 +128,7 @@ package final class DBLockSink: @unchecked Sendable {
     /// Queues one line. Does not apply the threshold — check `isSlow` first.
     package func record(_ event: DBLockEvent) {
         queue.async { [self] in
-            appendLine(line(for: event))
+            if let line = line(for: event) { appendLine(line) }
         }
     }
 
@@ -137,7 +137,9 @@ package final class DBLockSink: @unchecked Sendable {
         queue.sync {}
     }
 
-    func line(for event: DBLockEvent) -> Data {
+    /// The event's JSON line, or nil (after the once-warning) when it cannot
+    /// be encoded. Runs on `queue`, which `warn` is confined to.
+    func line(for event: DBLockEvent) -> Data? {
         // Key order is irrelevant; zero values are omitted like Go's omitempty.
         var obj: [String: Any] = [
             "ts": timestamp(event.ts),
@@ -150,9 +152,14 @@ package final class DBLockSink: @unchecked Sendable {
         if !event.site.isEmpty { obj["site"] = event.site }
         if !event.err.isEmpty { obj["err"] = event.err }
         if event.busyTimeoutMS != 0 { obj["busy_timeout_ms"] = event.busyTimeoutMS }
-        var data = (try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes])) ?? Data()
-        data.append(0x0A)
-        return data
+        do {
+            var data = try JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes])
+            data.append(0x0A)
+            return data
+        } catch {
+            warn("encode", errno: 0)
+            return nil
+        }
     }
 
     /// UTC with exactly three fractional digits, truncated like Go's
@@ -169,7 +176,6 @@ package final class DBLockSink: @unchecked Sendable {
     /// first: a file another process rotated away (or deleted) is closed and
     /// re-opened, and a file past the cap is rotated to .1 before the write.
     private func appendLine(_ line: Data) {
-        guard line.count > 1 else { return }
         var cur = stat()
         let found = stat(path, &cur) == 0
         if fd >= 0, !found || cur.st_dev != heldDev || cur.st_ino != heldIno {
@@ -315,8 +321,10 @@ package enum DBLockInstrumentation {
 /// COMMIT/ROLLBACK done. A deferred BEGIN takes no lock (GRDB runs one on
 /// the writer for every ValueObservation start, `isolated(readOnly:)`): it
 /// is measured only from its first write statement, whose duration is the
-/// wait and whose start opens the hold; a deferred transaction that never
-/// writes records nothing. Confined to the writer connection's queue.
+/// wait and whose end opens the hold (the trace cannot split that statement's
+/// busy wait from its own write, so all of it counts as wait, never as both);
+/// a deferred transaction that never writes records nothing. Confined to the
+/// writer connection's queue.
 final class WriteTransactionTracker {
     static let unknownSite = "desktop:?"
 
@@ -359,8 +367,10 @@ final class WriteTransactionTracker {
                   let written = Self.writtenTable(sql) else { return }
             if table == nil { table = written }
             if lockedAt == nil {
-                // A deferred transaction's first write takes the lock.
-                lockedAt = now &- UInt64(max(0, duration) * 1e9)
+                // A deferred transaction's first write takes the lock; its
+                // duration, busy wait included, is the wait, and the hold
+                // starts when it ends so no millisecond counts as both.
+                lockedAt = now
                 waitMS = Self.milliseconds(duration)
             }
         }
