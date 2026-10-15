@@ -68,6 +68,61 @@ package enum PlanUsagePresentation {
         return ["\(l.label): \(Int(l.percent.rounded()))%", reset, tail].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    /// Banner above the limits for a non-ok state; nil when nothing is wrong.
+    package static func banner(_ s: PlanUsageStatus, now: Date) -> String? {
+        switch s.state {
+        case "unavailable": return "Sign in to Claude Code to see your plan limits."
+        case "stale": return "Your Claude Code sign-in expired — open Claude Code to refresh it."
+        case "disabled": return "Claude plan limits are turned off in Features."
+        case "error":
+            let tail = s.fetchedAt.map { " Showing numbers from \(relative($0, now: now))." } ?? ""
+            return "Couldn't update: \(s.lastError).\(tail)"
+        default: return nil
+        }
+    }
+
+    /// "Updated 2 min. ago" for the header; nil before the first read.
+    package static func updatedText(_ s: PlanUsageStatus, now: Date) -> String? {
+        s.fetchedAt.map { "Updated \(relative($0, now: now))" }
+    }
+
+    /// Chart window length: 5 h for the session, 7 d for the weekly limit.
+    package static func windowLength(key: String) -> TimeInterval? {
+        switch key {
+        case "session": return 5 * 3600
+        case "weekly_all": return 7 * 24 * 3600
+        default: return nil
+        }
+    }
+
+    /// Start of the chart's x range: the reset minus the window length.
+    package static func windowStart(key: String, resetsAt: Date) -> Date? {
+        windowLength(key: key).map { resetsAt.addingTimeInterval(-$0) }
+    }
+
+    /// End point of the dashed projection line from the last sample: the hit
+    /// moment at 100 % for `will_hit`, else the reset at the extrapolated
+    /// percent (clamped to 0...100). Nil when there is nothing to draw.
+    package static func projectedEnd(_ l: PlanUsageLimit, last: PlanUsageSample) -> (at: Date, percent: Double)? {
+        guard let reset = l.resetsAt, reset > last.takenAt else { return nil }
+        switch l.projection.state {
+        case "will_hit":
+            if let hit = l.projection.hitAt, hit > last.takenAt { return (hit, 100) }
+            return nil
+        case "safe":
+            let hours = reset.timeIntervalSince(last.takenAt) / 3600
+            return (reset, min(100, max(0, last.percent + l.projection.ratePerHour * hours)))
+        default:
+            return nil
+        }
+    }
+
+    private static func relative(_ date: Date, now: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: now)
+    }
+
     /// "13:59" today, "Mon 18:59" on another day — local time.
     static func clock(_ date: Date, now: Date) -> String {
         let f = DateFormatter()

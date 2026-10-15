@@ -28,7 +28,7 @@ struct UsageView: View {
 
             switch selectedTab {
             case .plan:
-                Text("Claude plan")
+                ClaudePlanView()
             case .progress:
                 ScrollView {
                     ProgressDetailContent()

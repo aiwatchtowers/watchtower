@@ -66,4 +66,42 @@ final class PlanUsagePresentationTests: XCTestCase {
         XCTAssertNil(PlanUsageDates.parse(nil))
         XCTAssertNil(PlanUsageDates.parse("garbage"))
     }
+
+    func testBanner() {
+        XCTAssertNil(PlanUsagePresentation.banner(status([limit("session", 4)]), now: now))
+        XCTAssertEqual(PlanUsagePresentation.banner(status([], state: "unavailable"), now: now),
+                       "Sign in to Claude Code to see your plan limits.")
+        XCTAssertEqual(PlanUsagePresentation.banner(status([], state: "disabled"), now: now),
+                       "Claude plan limits are turned off in Features.")
+        let err = PlanUsageStatus(state: "error", reason: "", plan: "max", fetchedAt: nil,
+                                  lastError: "HTTP 500", limits: [], breakdown: [])
+        XCTAssertEqual(PlanUsagePresentation.banner(err, now: now), "Couldn't update: HTTP 500.")
+        XCTAssertTrue(PlanUsagePresentation.banner(status([], state: "error"), now: now)?
+            .contains("Showing numbers from") == true)
+    }
+
+    func testWindowStart() {
+        let reset = now.addingTimeInterval(3600)
+        XCTAssertEqual(PlanUsagePresentation.windowStart(key: "session", resetsAt: reset), reset.addingTimeInterval(-5 * 3600))
+        XCTAssertEqual(PlanUsagePresentation.windowStart(key: "weekly_all", resetsAt: reset), reset.addingTimeInterval(-7 * 86400))
+        XCTAssertNil(PlanUsagePresentation.windowStart(key: "weekly_scoped:x", resetsAt: reset))
+    }
+
+    func testProjectedEnd() {
+        let last = PlanUsageSample(takenAt: now, percent: 40, resetsAt: nil)
+        let hit = now.addingTimeInterval(3600)
+        let willHit = limit("session", 40, state: "will_hit", hitAt: hit)
+        XCTAssertEqual(PlanUsagePresentation.projectedEnd(willHit, last: last)?.at, hit)
+        XCTAssertEqual(PlanUsagePresentation.projectedEnd(willHit, last: last)?.percent, 100)
+
+        let safe = PlanUsageLimit(key: "session", label: "5-hour", group: "session", percent: 40,
+                                  resetsAt: now.addingTimeInterval(2 * 3600), severity: nil,
+                                  projection: PlanUsageProjection(state: "safe", hitAt: nil, ratePerHour: 10))
+        let end = PlanUsagePresentation.projectedEnd(safe, last: last)
+        XCTAssertEqual(end?.at, now.addingTimeInterval(2 * 3600))
+        XCTAssertEqual(end?.percent ?? 0, 60, accuracy: 0.001)
+
+        XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "collecting"), last: last))
+        XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "hit"), last: last))
+    }
 }
