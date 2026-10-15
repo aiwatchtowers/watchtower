@@ -67,10 +67,9 @@ Download from [Releases](https://github.com/aiwatchtowers/watchtower/releases) (
 
 ## Getting Started
 
-1. Open **Watchtower.app**. Setup takes three steps; everything in them can be skipped except the AI check in the first:
+1. Open **Watchtower.app**. Setup takes two steps; everything in them can be skipped except the AI check in the first:
    - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI check passes.
    - **Connect** — connect Slack, Google (Gmail + Calendar) and Jira, or skip and do it later from Settings → Connections.
-   - **About you** — your role, manager, reports and peers (shown once Slack is connected).
 2. The app starts the background daemon itself; data appears as the first sync runs.
 
 **Prerequisites:** an AI provider that `watchtower ai test` accepts — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in (setup checks for these), or a local Ollama-compatible server set up beforehand from the CLI (`watchtower config set ai.provider ollama`, then `watchtower config set ai.models.strong <model>`).

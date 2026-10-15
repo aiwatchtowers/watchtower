@@ -67,44 +67,41 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
         XCTAssertEqual(Machine(defaults: defaults).currentStep, .purpose)
     }
 
+    /// About you was removed (#758): someone parked on it on upgrade resumes
+    /// at Connect, whose Continue finishes — not back at Goals.
+    func testRemovedAboutYouStepResumesAtConnect() {
+        defaults.set("aboutYou", forKey: Machine.stepKey)
+        let machine = Machine(defaults: defaults)
+        XCTAssertEqual(machine.currentStep, .connect)
+        XCTAssertEqual(OnboardingRoute(goals: [.workCommunication]).step(after: machine.currentStep), .complete)
+    }
+
     // MARK: - Skips
 
     func testFullRouteRunsEveryStep() {
-        let route = OnboardingRoute(goals: [.workCommunication], hasSlackAccount: true)
+        let route = OnboardingRoute(goals: [.workCommunication])
         let machine = Machine(defaults: defaults)
         machine.advance(route: route)
         XCTAssertEqual(machine.currentStep, .connect)
         machine.advance(route: route)
-        XCTAssertEqual(machine.currentStep, .aboutYou)
-        machine.advance(route: route)
-        XCTAssertEqual(machine.currentStep, .complete)
+        XCTAssertEqual(machine.currentStep, .complete, "Connect is the last step")
         machine.advance(route: route)
         XCTAssertEqual(machine.currentStep, .complete, "advancing past the end stays complete")
     }
 
     func testOnlyDevelopmentSkipsConnect() {
-        let devOnly = OnboardingRoute(goals: [.development], hasSlackAccount: false)
+        let devOnly = OnboardingRoute(goals: [.development])
         XCTAssertTrue(devOnly.skips(.connect))
         XCTAssertEqual(devOnly.step(after: .purpose), .complete)
-        XCTAssertTrue(OnboardingRoute(goals: [], hasSlackAccount: false).skips(.connect), "nothing picked needs no source either")
-        XCTAssertFalse(OnboardingRoute(goals: [.development, .meetings], hasSlackAccount: false).skips(.connect))
-    }
-
-    func testNoSlackAccountSkipsAboutYou() {
-        let noSlack = OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)
-        XCTAssertEqual(noSlack.step(after: .purpose), .connect)
-        XCTAssertEqual(noSlack.step(after: .connect), .complete)
-        // A Slack account connected already (e.g. "Run setup again") keeps
-        // About you even when Connect is skipped.
-        XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: true).step(after: .purpose), .aboutYou)
+        XCTAssertTrue(OnboardingRoute(goals: []).skips(.connect), "nothing picked needs no source either")
+        XCTAssertFalse(OnboardingRoute(goals: [.development, .meetings]).skips(.connect))
+        XCTAssertEqual(OnboardingRoute(goals: [.tasksAndJira]).step(after: .purpose), .connect)
     }
 
     func testIndicatorHidesEverySkippedStep() {
-        XCTAssertEqual(OnboardingRoute(goals: [.meetings], hasSlackAccount: true).indicatorSteps, [.purpose, .connect, .aboutYou])
-        XCTAssertEqual(OnboardingRoute(goals: [.meetings], hasSlackAccount: false).indicatorSteps, [.purpose, .connect])
-        XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: false).indicatorSteps, [.purpose])
-        XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: true).indicatorSteps, [.purpose, .aboutYou])
-        XCTAssertEqual(OnboardingV2Step.allCases.compactMap(\.indicatorTitle), ["Goals", "Connect", "About you"])
+        XCTAssertEqual(OnboardingRoute(goals: [.meetings]).indicatorSteps, [.purpose, .connect])
+        XCTAssertEqual(OnboardingRoute(goals: [.development]).indicatorSteps, [.purpose])
+        XCTAssertEqual(OnboardingV2Step.allCases.compactMap(\.indicatorTitle), ["Goals", "Connect"])
     }
 
     // MARK: - Settle on resume
@@ -112,11 +109,7 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
     func testSettleMovesOffAResumedStepTheRouteSkips() {
         let machine = Machine(defaults: defaults)
         machine.goTo(.connect)
-        machine.settle(route: OnboardingRoute(goals: [.development], hasSlackAccount: true))
-        XCTAssertEqual(machine.currentStep, .aboutYou)
-
-        machine.goTo(.aboutYou)
-        machine.settle(route: OnboardingRoute(goals: [.meetings], hasSlackAccount: false))
+        machine.settle(route: OnboardingRoute(goals: [.development]))
         XCTAssertEqual(machine.currentStep, .complete)
         XCTAssertEqual(Machine(defaults: defaults).currentStep, .complete, "the settled step is persisted")
     }
@@ -124,10 +117,10 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
     func testSettleKeepsAStepTheRouteRuns() {
         let machine = Machine(defaults: defaults)
         machine.goTo(.connect)
-        machine.settle(route: OnboardingRoute(goals: [.meetings], hasSlackAccount: false))
+        machine.settle(route: OnboardingRoute(goals: [.meetings]))
         XCTAssertEqual(machine.currentStep, .connect)
         machine.goTo(.purpose)
-        machine.settle(route: OnboardingRoute(goals: [], hasSlackAccount: false))
+        machine.settle(route: OnboardingRoute(goals: []))
         XCTAssertEqual(machine.currentStep, .purpose, "Goals never skips")
     }
 
@@ -140,7 +133,7 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
         XCTAssertEqual(machine.currentStep, .purpose)
         XCTAssertEqual(Machine(defaults: defaults).currentStep, .purpose)
 
-        machine.reset(to: .aboutYou)
-        XCTAssertEqual(Machine(defaults: defaults).currentStep, .aboutYou)
+        machine.reset(to: .connect)
+        XCTAssertEqual(Machine(defaults: defaults).currentStep, .connect)
     }
 }

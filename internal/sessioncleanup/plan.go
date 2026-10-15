@@ -233,7 +233,35 @@ func (b *builder) loadObserved(ctx context.Context) error {
 		return fmt.Errorf("reading session %d target branches: %w", b.session.ID, err)
 	}
 	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
+	b.observePlacement()
 	return nil
+}
+
+// observePlacement records a placed row's own worktree and branch, each
+// only when born no later than the row (bornByRecord), as seen so they are
+// listed, and as owned by record so W2 and B3 pass them. A non-absolute
+// folder_path places nothing (it would resolve against our own cwd).
+func (b *builder) observePlacement() {
+	if b.session.PlacedCwd == "" || !filepath.IsAbs(b.session.PlacedCwd) {
+		return
+	}
+	created := b.session.CreatedAt
+	b.seen.placedCwd = resolvePath(b.session.PlacedCwd)
+	for _, w := range b.repo.worktrees {
+		if !b.seen.placedWorktree(w, b.repo.worktrees) {
+			continue
+		}
+		if birth, known := b.worktreeBirth(w.Root); bornByRecord(birth, known, created) {
+			b.seen.placedRoot, b.seen.roots[w.Root] = w.Root, true
+		}
+	}
+	name := b.session.PlacedBranch
+	if name == "" {
+		return
+	}
+	if birth, known := b.repo.branchBirth(name); bornByRecord(birth, known, created) {
+		b.seen.placedBranch, b.seen.branches[name] = name, true
+	}
 }
 
 // worktreeItems lists and evaluates the worktree candidates: in session

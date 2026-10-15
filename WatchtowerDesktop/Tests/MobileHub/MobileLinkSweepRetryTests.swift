@@ -33,10 +33,12 @@ final class MobileLinkSweepRetryTests: XCTestCase {
     }
 
     /// The default sleep parks until cancelled.
-    private func makeCenter(sleep: (@Sendable (Duration) async -> Void)? = nil) -> MobileLinkCenter {
+    private func makeCenter(
+        shareTimeout: Duration = .seconds(30), sleep: (@Sendable (Duration) async -> Void)? = nil
+    ) -> MobileLinkCenter {
         MobileLinkCenter(
             sidecar: sidecar, shares: shares, macName: "Mac acme", ownerUser: { "_owner-acme" },
-            sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) })
+            sleep: sleep ?? { _ in try? await Task.sleep(for: .seconds(3600)) }, shareTimeout: shareTimeout)
     }
 
     /// Target 153: a close whose share calls fail retries in the background after `sweepRetryDelays`, and stops
@@ -88,8 +90,9 @@ final class MobileLinkSweepRetryTests: XCTestCase {
     /// A retry cancelled mid-sweep never clears the handle of the retry that replaced it.
     func testACancelledRetryDoesNotClearItsSuccessor() async throws {
         let waits = WaitLog()
-        // The first wait returns at once; later ones park until cancelled.
-        center = makeCenter { wait in
+        // The first wait returns at once; later ones park until cancelled. The second close waits behind the parked
+        // public-link call (one runs at a time) and times out.
+        center = makeCenter(shareTimeout: .milliseconds(100)) { wait in
             waits.append(wait)
             if waits.all.count > 1 { try? await Task.sleep(for: .seconds(3600)) }
         }
@@ -102,7 +105,6 @@ final class MobileLinkSweepRetryTests: XCTestCase {
         await fulfillment(of: [gate.arrived], timeout: 5)
 
         center.cancelSweepRetry()
-        shares.failNext("setPublicLink", times: 1)
         await center.closeLink(reason: .restart)
         let second = try XCTUnwrap(center.sweepRetry)
         gate.release()

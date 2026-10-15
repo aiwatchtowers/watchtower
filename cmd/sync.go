@@ -68,9 +68,10 @@ var syncCmd = &cobra.Command{
 
 --users-only fetches just each Slack account's team, current user and full
 user roster (users.list, every page) into the users table — no search,
-channels, messages or AI pipelines — for the onboarding people picker. It
-ignores the roster's once-a-day throttle and records the fetch, so the next
-regular sync does not fetch the roster again within the day. It takes no
+channels, messages or AI pipelines — the Slack user roster only, e.g. right
+after a Slack connect during onboarding. It ignores the roster's once-a-day
+throttle and records the fetch, so the next regular sync does not fetch the
+roster again within the day. It takes no
 sync lock, so it runs alongside a running daemon. --account <id> limits it to
 one Slack account (default: every enabled account). With --progress-json it
 prints the usual progress lines: while users.list pages arrive,
@@ -919,6 +920,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetImapSyncers(wireImapSyncers(cfg, database, logger))
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
 	d.SetCalDAVSyncers(wireCalDAVSyncers(cfg, database, logger))
+	// Automations: scheduler + executor goroutines, woken by SIGUSR2.
+	wireAutomations(d, cfg, database, gen, logger)
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)

@@ -313,7 +313,11 @@ package enum Constants {
     /// `agentEnvMarkers` in cmd/actions.go. The CLI refuses an approve or an
     /// apply while any is set (AGENT-07), so the app, when launched from such
     /// a shell, must not hand them to the `watchtower` it runs for the owner.
-    package nonisolated static let agentEnvMarkers = ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "WATCHTOWER_TERMINAL_SESSION_ID"]
+    /// WATCHTOWER_AUTOMATION_RUN_ID marks a child an automation run started.
+    package nonisolated static let agentEnvMarkers = [
+        "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "WATCHTOWER_TERMINAL_SESSION_ID",
+        "WATCHTOWER_AUTOMATION_RUN_ID"
+    ]
 
     package nonisolated static func withoutAgentMarkers(_ env: [String: String]) -> [String: String] {
         env.filter { !agentEnvMarkers.contains($0.key) }

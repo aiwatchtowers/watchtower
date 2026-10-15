@@ -311,6 +311,32 @@ struct ConfigServiceTests {
         #expect(svc.briefingHour == 9)
     }
 
+    /// Go's defaults since 2026-10-14 (#757): an absent `enabled` key, or a
+    /// missing section, reads as on; an explicit false is kept.
+    @Test("Absent calendar.enabled and gmail.enabled read as Go's true")
+    func loadCalendarAndGmailEnabledDefaults() {
+        let absent = ConfigService(configPath: makeTempConfig("active_workspace: x\n"))
+        #expect(absent.calendarEnabled == true)
+        #expect(absent.gmailEnabled == true)
+
+        let noKey = ConfigService(configPath: makeTempConfig("""
+        calendar:
+          sync_days_ahead: 5
+        gmail: {}
+        """))
+        #expect(noKey.calendarEnabled == true)
+        #expect(noKey.gmailEnabled == true)
+
+        let off = ConfigService(configPath: makeTempConfig("""
+        calendar:
+          enabled: false
+        gmail:
+          enabled: false
+        """))
+        #expect(off.calendarEnabled == false)
+        #expect(off.gmailEnabled == false)
+    }
+
     @Test("Load parses calendar settings")
     func loadCalendar() {
         let path = makeTempConfig("""
@@ -457,12 +483,12 @@ struct ConfigServiceTests {
 
     /// Degenerate: an empty document — blank, comments only, `null` — is an
     /// empty config (as the Go CLI reads it), not a broken one.
-    @Test("An empty config document reads the switch as off, without an error")
-    func emptyConfigSwitchIsOff() {
+    @Test("An empty config document reads the switch as on (the default), without an error")
+    func emptyConfigSwitchIsOn() {
         for yaml in ["", "  \n", "# just a comment\n", "---\n", "null\n"] {
             let svc = ConfigService(configPath: makeTempConfig(yaml))
             #expect(svc.parseError == nil, "\(yaml.debugDescription) is an empty config")
-            #expect(svc.calendarSyncReadsOff == true)
+            #expect(svc.calendarSyncReadsOff == false)
         }
     }
 

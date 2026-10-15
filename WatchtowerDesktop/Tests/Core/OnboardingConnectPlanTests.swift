@@ -16,7 +16,7 @@ final class OnboardingConnectPlanTests: XCTestCase {
     func testDevelopmentOnlyHasNoCards() {
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.development]), [])
         XCTAssertEqual(OnboardingConnectPlan.sources(for: []), [])
-        XCTAssertTrue(OnboardingRoute(goals: [.development], hasSlackAccount: false).skips(.connect))
+        XCTAssertTrue(OnboardingRoute(goals: [.development]).skips(.connect))
     }
 
     func testNewlyConnectedSlackAccount() {

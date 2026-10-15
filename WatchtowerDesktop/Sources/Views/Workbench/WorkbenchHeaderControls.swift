@@ -15,12 +15,16 @@ struct WorkbenchHeaderControls: View {
     /// is: Terminal and its chevron light up together, as one segment.
     @State private var hoveredView: WorkspaceView?
     @State private var chevronHovered = false
+    @State private var showsWorktreeSetup = false
 
     var body: some View {
         HStack(spacing: 8) {
             viewButtons
             splitToggle
             moreMenu
+        }
+        .sheet(isPresented: $showsWorktreeSetup) {
+            WorktreeSetupSheet(vm: vm, project: project)
         }
     }
 
@@ -77,8 +81,8 @@ struct WorkbenchHeaderControls: View {
                 .disabled(slot == .session(session.id))
             }
             Divider()
-            NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
-                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent) }
+            NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
+                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
             }
         } label: {
             // The Terminal segment's right end: a hairline, then the chevron,
@@ -155,6 +159,12 @@ struct WorkbenchHeaderControls: View {
             .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
             archiveMenu
             archiveNowItems
+            Button {
+                showsWorktreeSetup = true
+            } label: {
+                Label("Worktree Setup Command…", systemImage: "terminal")
+            }
+            .help("A command a new session's worktree runs before the agent starts")
             Divider()
             Button {
                 onCleanUpOldWorktrees()

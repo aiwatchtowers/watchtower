@@ -178,6 +178,7 @@ struct WorkbenchesView: View {
             // The Undo of a session delete (board #480) in its own bar, as
             // under the sessions list at level 2.
             SessionDeleteToast(vm: vm)
+            WorkbenchDeleteNotice(vm: vm)
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
@@ -446,5 +447,34 @@ struct WorkbenchTitleRow: View {
         }
         .disabled(paletteOpen)
         .hidden()
+    }
+}
+
+/// The worktrees a workbench delete kept because work was in them: a
+/// neutral line under the list (not the red error), until dismissed.
+private struct WorkbenchDeleteNotice: View {
+    @Bindable var vm: WorkbenchesViewModel
+
+    var body: some View {
+        if let notice = vm.deleteNotice {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
+                    vm.deleteNotice = nil
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(8)
+            .accessibilityElement(children: .contain)
+        }
     }
 }

@@ -65,7 +65,11 @@ final class ChatViewModel {
     /// owner's comments) and go out together with the typed text as ONE owner
     /// turn in `sendDraft` — never one by one (owner rule).
     private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
-    var errorMessage: String?
+    /// Shown by the thread view only, so an error steps an expanded panel
+    /// aside (#786).
+    var errorMessage: String? {
+        didSet { if errorMessage != nil { isInspectorExpanded = false } }
+    }
     private(set) var selectedProvider: AIProvider
     /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
     var selectedModel = "" {
@@ -94,13 +98,20 @@ final class ChatViewModel {
     /// Survives navigation only within the same conversation — switching or
     /// forgetting a conversation closes it (CHAT-05 storage has no notion of
     /// "panel for a conversation not on screen").
-    private(set) var artifactPanel: ArtifactPanelModel?
+    private(set) var artifactPanel: ArtifactPanelModel? {
+        didSet { collapseInspectorIfClosed() }
+    }
     /// The sources panel (one finished answer's sources); nil = closed. It
     /// shares the inspector with `artifactPanel` under `ChatInspectorPolicy`
     /// and closes with it on a conversation switch.
-    private(set) var sourcesPanel: ChatSourcesSelection?
+    private(set) var sourcesPanel: ChatSourcesSelection? {
+        didSet { collapseInspectorIfClosed() }
+    }
     /// The inspector tab opened last; see `inspectorMode` for what shows.
     var preferredInspectorMode: ChatInspectorMode = .artifacts
+    /// The open panel takes the chat's whole width in place of the
+    /// conversation (#786); it falls back to the column once both panels close.
+    private(set) var isInspectorExpanded = false
     /// Non-edited version numbers per message, for the card badges — reloaded
     /// with the thread (`reload()`).
     private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
@@ -501,6 +512,9 @@ final class ChatViewModel {
     /// start is refused out loud, never silently.
     func sendArtifactComments() {
         guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
+        // The answer — or the reason it was not sent — shows in the
+        // conversation, which an expanded panel covers (#786).
+        isInspectorExpanded = false
         guard !isStreaming else {
             errorMessage = "Wait for the current answer to finish, then send the comments."
             return
@@ -537,6 +551,26 @@ final class ChatViewModel {
     func closeInspector() {
         closeArtifactPanel()
         closeSourcesPanel()
+    }
+
+    /// The panel's expand button: the open panel takes the chat's width, or
+    /// goes back to the inspector column.
+    func toggleInspectorExpanded() {
+        isInspectorExpanded = inspectorMode != nil && !isInspectorExpanded
+    }
+
+    /// The inspector column is on screen: a panel is open and not expanded.
+    var showsInspectorColumn: Bool { inspectorMode != nil && !isInspectorExpanded }
+
+    /// The inspector column was dismissed. Expanding hides the column too,
+    /// which must not close the panel it moves.
+    func inspectorColumnDismissed() {
+        guard !isInspectorExpanded else { return }
+        closeInspector()
+    }
+
+    private func collapseInspectorIfClosed() {
+        if inspectorMode == nil { isInspectorExpanded = false }
     }
 
     /// Fed by the thread view whenever `liveTurn?.text` changes (the view
@@ -737,6 +771,8 @@ final class ChatViewModel {
 
     /// ⌘K hit: open the conversation, make the hit's branch active, scroll to it.
     func open(_ hit: ChatSearchHit) {
+        // The hit shows in the conversation, which an expanded panel covers.
+        isInspectorExpanded = false
         select(conversationID: hit.conversationID)
         guard let messageID = hit.messageID else { return }
         selectVariant(messageID: messageID)
@@ -920,6 +956,9 @@ final class ChatViewModel {
             // versioned this turn's artifacts in the same transaction as the
             // message; drop the live draft and show what was actually stored.
             artifactPanel?.turnFinished()
+            // A failed or cut-off turn rolls the panel back to the stored
+            // version; its error and Retry live in the conversation (#786).
+            if thread.last?.message.status != "complete" { isInspectorExpanded = false }
         }
         reloadConversations()
         requestTitleIfNeeded(conversationID: id)
