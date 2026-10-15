@@ -45,4 +45,14 @@ final class PlanUsageNoticePolicyTests: XCTestCase {
         let n = PlanUsageNoticePolicy.evaluate(st([lim("session", 100, "hit")]), sent: [], now: now).notices
         XCTAssertTrue(n.first?.body.hasPrefix("Limit reached. Resets") == true)
     }
+
+    func testResetJitterAcrossSecondBoundaryKeepsOneKey() {
+        func status(_ jitter: TimeInterval) -> PlanUsageStatus {
+            st([lim("session", 92, "safe", resetIn: 3600 + jitter)])
+        }
+        let first = PlanUsageNoticePolicy.evaluate(status(-0.4), sent: [], now: now)
+        XCTAssertEqual(first.notices.count, 1)
+        let second = PlanUsageNoticePolicy.evaluate(status(0.6), sent: first.sent, now: now)
+        XCTAssertTrue(second.notices.isEmpty)
+    }
 }

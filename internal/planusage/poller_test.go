@@ -176,3 +176,26 @@ func TestClient_Fetch(t *testing.T) {
 	require.ErrorAs(t, err, &he)
 	assert.Equal(t, 401, he.Status)
 }
+
+// A cancelled poll (daemon shutdown) writes nothing and counts no failure.
+func TestPollOnce_CancelledWritesNothing(t *testing.T) {
+	fetch := &fakeFetch{body: load(t, "usage_full.json")}
+	p, d := newPoller(t, validCreds, fetch, at(10, 0))
+	_, err := p.PollOnce(context.Background())
+	require.NoError(t, err)
+	before, _ := d.GetPlanUsageStatus()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.Creds = fakeCreds{err: ctx.Err()}
+	_, err = p.PollOnce(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	p.Creds = validCreds
+	fetch.body, fetch.err = nil, ctx.Err()
+	_, err = p.PollOnce(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+
+	after, _ := d.GetPlanUsageStatus()
+	assert.Equal(t, before, after)
+	assert.Zero(t, p.failures)
+}

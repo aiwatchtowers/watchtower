@@ -69,7 +69,7 @@ struct ClaudePlanView: View {
                 Text(text).foregroundStyle(.secondary)
             }
             Button("Refresh") { Task { await center.refresh() } }
-                .disabled(center.isRefreshing)
+                .disabled(center.isRefreshing || center.status?.state == "disabled")
         }
     }
 

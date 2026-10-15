@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/config"
 	"watchtower/internal/planusage"
 )
 
@@ -45,6 +47,16 @@ type usagePlanJSON struct {
 }
 
 func runUsagePlan(cmd *cobra.Command, _ []string) error {
+	if flagUsagePlanNow {
+		cfg, err := config.Load(flagConfig)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		// Off means no poll and no write: the daemon's disabled row stays.
+		if !cfg.PlanUsage.Enabled {
+			return errors.New("the Claude plan limits feature is turned off (plan_usage.enabled=false)")
+		}
+	}
 	database, err := openDBFromConfig()
 	if err != nil {
 		return err

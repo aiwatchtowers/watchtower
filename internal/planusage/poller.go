@@ -64,6 +64,9 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 
 	creds, err := p.Creds.Load(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return PollInterval, ctx.Err()
+		}
 		p.failures = 0
 		st.State, st.Reason = "unavailable", "no_credentials"
 		return PollInterval, p.save(st, err)
@@ -75,6 +78,9 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 		return PollInterval, p.save(st, nil)
 	}
 	body, err := p.Client.Fetch(ctx, creds.AccessToken)
+	if err != nil && ctx.Err() != nil {
+		return PollInterval, ctx.Err()
+	}
 	if err == nil {
 		var u Usage
 		if u, err = Parse(body); err == nil {

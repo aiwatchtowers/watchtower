@@ -45,15 +45,15 @@ Fields used (shape verified 2026-10-15, values illustrative):
 
 ```json
 {
-  "five_hour":  { "utilization": 4.0,  "resets_at": "2026-10-15T10:59:59Z" },
-  "seven_day":  { "utilization": 59.0, "resets_at": "2026-10-19T15:59:59Z" },
+  "five_hour":  { "utilization": 12.0, "resets_at": "2026-10-15T11:00:00Z" },
+  "seven_day":  { "utilization": 40.0, "resets_at": "2026-10-19T16:00:00Z" },
   "limits": [
-    { "kind": "session",        "group": "session", "percent": 4,  "severity": "normal",
-      "resets_at": "2026-10-15T10:59:59Z", "scope": null, "is_active": false },
-    { "kind": "weekly_all",     "group": "weekly",  "percent": 59, "severity": "normal",
-      "resets_at": "2026-10-19T15:59:59Z", "scope": null, "is_active": true },
-    { "kind": "weekly_scoped",  "group": "weekly",  "percent": 4,  "severity": "normal",
-      "resets_at": "2026-10-19T15:59:59Z",
+    { "kind": "session",        "group": "session", "percent": 12, "severity": "normal",
+      "resets_at": "2026-10-15T11:00:00Z", "scope": null, "is_active": false },
+    { "kind": "weekly_all",     "group": "weekly",  "percent": 40, "severity": "normal",
+      "resets_at": "2026-10-19T16:00:00Z", "scope": null, "is_active": true },
+    { "kind": "weekly_scoped",  "group": "weekly",  "percent": 7,  "severity": "normal",
+      "resets_at": "2026-10-19T16:00:00Z",
       "scope": { "model": { "display_name": "Fable" }, "surface": null } }
   ],
   "seven_day_breakdown": {

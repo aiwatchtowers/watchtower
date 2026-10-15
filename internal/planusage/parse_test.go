@@ -28,7 +28,8 @@ func TestParse_LimitsArray(t *testing.T) {
 	assert.Equal(t, "Weekly · Fable", u.Limits[2].Label)
 	assert.Equal(t, 100.0, u.Limits[2].Percent, "clamped")
 	require.NotNil(t, u.Limits[0].ResetsAt)
-	assert.Equal(t, 10, u.Limits[0].ResetsAt.UTC().Hour())
+	assert.Equal(t, 11, u.Limits[0].ResetsAt.UTC().Hour())
+	assert.Equal(t, 250_000_000, u.Limits[0].ResetsAt.Nanosecond(), "fractional seconds parse")
 	require.Len(t, u.Breakdown, 2)
 	assert.Equal(t, BreakdownRow{Key: "claude_code", Label: "Claude Code", Percent: 80}, u.Breakdown[0])
 }

@@ -32,7 +32,8 @@ package enum PlanUsageNoticePolicy {
         var notices: [PlanUsageNotice] = []
         for limit in s.limits {
             guard let reset = limit.resetsAt else { continue }
-            let iso = PlanUsageDates.format(reset)
+            // Nearest minute: server jitter across a second boundary must not mint a new key.
+            let iso = PlanUsageDates.format(Date(timeIntervalSince1970: (reset.timeIntervalSince1970 / 60).rounded() * 60))
             let resetText = PlanUsagePresentation.clock(reset, now: now)
 
             let will = "will|\(limit.key)|\(iso)"

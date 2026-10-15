@@ -133,4 +133,18 @@ final class PlanUsageCenterTests: XCTestCase {
         await center.reload()
         XCTAssertTrue(notifier.sent.isEmpty)
     }
+
+    func testQuietHoursHoldNoticeUntilTheyEnd() async throws {
+        try await insertStatus(state: "ok", fetchedAt: "2026-10-15T09:59:00Z", percent: 92)
+        defaults.set(true, forKey: "quietHoursEnabled")
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))
+        let notifier = FakeNotifier()
+        let center = PlanUsageCenter(dbPool: pool, runner: nil, notifier: notifier, defaults: defaults) { now }
+        await center.reload()
+        XCTAssertTrue(notifier.sent.isEmpty)
+        XCTAssertNil(defaults.stringArray(forKey: PlanUsageNoticePolicy.sentKey))
+        defaults.set(false, forKey: "quietHoursEnabled")
+        await center.reload()
+        XCTAssertEqual(notifier.sent.count, 1)
+    }
 }

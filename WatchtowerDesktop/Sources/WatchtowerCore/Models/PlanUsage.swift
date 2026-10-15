@@ -134,10 +134,10 @@ package enum PlanUsageDates {
         return d
     }
 
-    private static var formatter: ISO8601DateFormatter {
+    nonisolated(unsafe) private static let formatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         f.timeZone = TimeZone(identifier: "UTC")
         return f
-    }
+    }()
 }

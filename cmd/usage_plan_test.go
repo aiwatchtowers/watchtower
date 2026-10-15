@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -50,4 +51,28 @@ func TestUsagePlanText_NoRowYet(t *testing.T) {
 	writeActionsConfig(t)
 	out := runUsagePlanCmd(t)
 	assert.Contains(t, out, "No Claude plan usage yet")
+}
+
+func TestUsagePlanNow_RefusesWhenFeatureOff(t *testing.T) {
+	database := writeActionsConfig(t)
+	require.NoError(t, os.WriteFile(flagConfig, []byte("active_workspace: test\nplan_usage:\n  enabled: false\n"), 0o600))
+	at := time.Date(2026, 10, 15, 8, 0, 0, 0, time.UTC)
+	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{
+		State: "disabled", Plan: "max", UpdatedAt: at, LimitsJSON: "[]", BreakdownJSON: "[]",
+	}))
+	t.Cleanup(func() {
+		flagUsagePlanJSON, flagUsagePlanNow = false, false
+		rootCmd.SetArgs(nil)
+	})
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs([]string{"usage", "plan", "--now"})
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "turned off")
+	st, err := database.GetPlanUsageStatus()
+	require.NoError(t, err)
+	assert.Equal(t, "disabled", st.State, "the disabled row is left alone")
+	assert.Equal(t, at, st.UpdatedAt)
 }

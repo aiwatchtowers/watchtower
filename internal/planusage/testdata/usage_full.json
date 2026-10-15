@@ -1,11 +1,11 @@
 {
-  "five_hour": {"utilization": 4.0, "resets_at": "2026-10-15T10:59:59.534461+00:00"},
-  "seven_day": {"utilization": 59.0, "resets_at": "2026-10-19T15:59:59.534479+00:00"},
+  "five_hour": {"utilization": 12.0, "resets_at": "2026-10-15T11:00:00.250000+00:00"},
+  "seven_day": {"utilization": 40.0, "resets_at": "2026-10-19T16:00:00+00:00"},
   "some_future_key": {"x": 1},
   "limits": [
-    {"kind": "session", "group": "session", "percent": 4, "severity": "normal", "resets_at": "2026-10-15T10:59:59.534461+00:00", "scope": null, "is_active": false},
-    {"kind": "weekly_all", "group": "weekly", "percent": 59, "severity": "normal", "resets_at": "2026-10-19T15:59:59.534479+00:00", "scope": null, "is_active": true},
-    {"kind": "weekly_scoped", "group": "weekly", "percent": 104, "severity": "critical", "resets_at": "2026-10-19T15:59:59.534620+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
+    {"kind": "session", "group": "session", "percent": 12, "severity": "normal", "resets_at": "2026-10-15T11:00:00.250000+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_all", "group": "weekly", "percent": 40, "severity": "normal", "resets_at": "2026-10-19T16:00:00+00:00", "scope": null, "is_active": true},
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 110, "severity": "critical", "resets_at": "2026-10-19T16:00:00+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}}
   ],
   "seven_day_breakdown": {"rows": [
     {"key": "claude_code", "display_name": "Claude Code", "percent": 80},
