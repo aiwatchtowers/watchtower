@@ -52,17 +52,19 @@ struct MacsView: View {
                 }
                 .moveDisabled(linking.isBusy)
             }
-            Section {
-                Button {
-                    linking.startScan()
-                } label: {
-                    Label("Add Mac", systemImage: "qrcode.viewfinder")
-                }
-                .frame(minHeight: 44)
-                .disabled(!canAdd || linking.isBusy)
-            } footer: {
-                if !canAdd {
-                    Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+            if Self.offersAdd(transportKind: env.transportKind) {
+                Section {
+                    Button {
+                        linking.startScan()
+                    } label: {
+                        Label("Add Mac", systemImage: "qrcode.viewfinder")
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(!canAdd || linking.isBusy)
+                } footer: {
+                    if !canAdd {
+                        Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+                    }
                 }
             }
         }
@@ -70,8 +72,15 @@ struct MacsView: View {
     }
 
     /// The demo has no link to end: only a live build offers Unlink and
-    /// Forget; reorder and Add Mac stay in both.
+    /// Forget; reorder stays in both.
     static func offersRemoval(transportKind: TransportKind) -> Bool {
+        transportKind != .inMemoryDemo
+    }
+
+    /// Nor a link to make: a scan in the demo would run the real link flow
+    /// against the owner's iCloud (the signed build's tour, #174) before
+    /// failing, so only a live build offers Add Mac.
+    static func offersAdd(transportKind: TransportKind) -> Bool {
         transportKind != .inMemoryDemo
     }
 
