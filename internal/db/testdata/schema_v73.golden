@@ -578,6 +578,15 @@ run_id INTEGER, -- the run that wrote it; no FK
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
+table	automation_tool_grants
+CREATE TABLE automation_tool_grants (
+automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+tool TEXT NOT NULL,
+grant_hash TEXT NOT NULL, -- approval_hash the owner granted
+granted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (automation_id, tool)
+)
+
 table	automations
 CREATE TABLE automations (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2899,6 +2908,12 @@ GROUP BY up.ancestor
 1	state_json	TEXT	notnull=1	dflt='{}'	pk=0
 2	run_id	INTEGER	notnull=0	dflt=NULL	pk=0
 3	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## automation_tool_grants
+0	automation_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	tool	TEXT	notnull=1	dflt=NULL	pk=2
+2	grant_hash	TEXT	notnull=1	dflt=NULL	pk=0
+3	granted_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## automations
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
