@@ -49,7 +49,13 @@ func TestStartPlanUsage_RunsAndStops(t *testing.T) {
 func TestStartPlanUsage_OffMarksDisabled(t *testing.T) {
 	d := newPlanUsageTestDaemon(t, false)
 	called := false
-	d.SetPlanUsage(&fakePlanRunner{started: make(chan struct{}), stopped: make(chan struct{})}, func() error { called = true; return nil })
+	r := &fakePlanRunner{started: make(chan struct{}), stopped: make(chan struct{})}
+	d.SetPlanUsage(r, func() error { called = true; return nil })
 	d.startPlanUsage(context.Background())()
 	assert.True(t, called)
+	select {
+	case <-r.started:
+		t.Error("runner started while the feature is off")
+	default:
+	}
 }

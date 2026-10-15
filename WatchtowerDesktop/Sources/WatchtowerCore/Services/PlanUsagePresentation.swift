@@ -17,10 +17,17 @@ package enum PlanUsagePresentation {
         return .normal
     }
 
+    /// The one state gate for the menu bar and the tray: ok/stale/error show
+    /// their numbers, unavailable/disabled/nil show none (rows may still hold old ones).
+    package static func visibleLimits(_ s: PlanUsageStatus?) -> [PlanUsageLimit] {
+        guard let s, ["ok", "stale", "error"].contains(s.state) else { return [] }
+        return s.limits
+    }
+
     package static func menuBarText(_ s: PlanUsageStatus?) -> String? {
-        guard let s, ["ok", "stale", "error"].contains(s.state) else { return nil }
+        let limits = visibleLimits(s)
         let parts = [("session", "5h"), ("weekly_all", "7d")].compactMap { key, short in
-            s.limits.first { $0.key == key }.map { "\(short) \(Int($0.percent.rounded()))%" }
+            limits.first { $0.key == key }.map { "\(short) \(Int($0.percent.rounded()))%" }
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -28,7 +35,7 @@ package enum PlanUsagePresentation {
     /// MenuBarExtra labels render as a template, so the warning is a prefix, not a colour.
     package static func menuBarWarning(_ s: PlanUsageStatus?, now: Date) -> Bool {
         guard let s, !isStale(s, now: now) else { return false }
-        return s.limits.contains { ["session", "weekly_all"].contains($0.key) && tone($0) != .normal }
+        return visibleLimits(s).contains { ["session", "weekly_all"].contains($0.key) && tone($0) != .normal }
     }
 
     package static func resetText(_ l: PlanUsageLimit, now: Date) -> String {
@@ -125,16 +132,28 @@ package enum PlanUsagePresentation {
         "\(Int(percent.rounded())) %"
     }
 
-    private static func relative(_ date: Date, now: Date) -> String {
+    nonisolated(unsafe) private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
-        return f.localizedString(for: date, relativeTo: now)
+        return f
+    }()
+
+    nonisolated(unsafe) private static let timeFormatter = makeClockFormatter("HH:mm")
+    nonisolated(unsafe) private static let weekdayTimeFormatter = makeClockFormatter("EEE HH:mm")
+
+    private static func makeClockFormatter(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.dateFormat = format
+        return f
+    }
+
+    private static func relative(_ date: Date, now: Date) -> String {
+        relativeFormatter.localizedString(for: date, relativeTo: now)
     }
 
     /// "13:59" today, "Mon 18:59" on another day — local time.
     static func clock(_ date: Date, now: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "HH:mm" : "EEE HH:mm"
+        let f = Calendar.current.isDate(date, inSameDayAs: now) ? timeFormatter : weekdayTimeFormatter
         return f.string(from: date)
     }
 }

@@ -124,10 +124,10 @@ final class PlanUsageCenter {
 
     /// The session and weekly rows of the tray.
     var trayLines: [String] {
-        guard let status else { return [] }
+        let limits = PlanUsagePresentation.visibleLimits(status)
         let at = now()
         return ["session", "weekly_all"].compactMap { key in
-            status.limits.first { $0.key == key }.map { PlanUsagePresentation.trayLine($0, now: at) }
+            limits.first { $0.key == key }.map { PlanUsagePresentation.trayLine($0, now: at) }
         }
     }
 }

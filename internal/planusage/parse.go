@@ -43,8 +43,8 @@ type Usage struct {
 	Breakdown []BreakdownRow
 }
 
-// ErrNoLimits means the response carried no usable limit.
-var ErrNoLimits = errors.New("planusage: response has no usable limit")
+// errNoLimits means the response carried no usable limit.
+var errNoLimits = errors.New("planusage: response has no usable limit")
 
 type rawWindow struct {
 	Utilization *float64 `json:"utilization"`
@@ -80,10 +80,10 @@ type rawResponse struct {
 	} `json:"seven_day_breakdown"`
 }
 
-// Parse turns the endpoint's body into limits; unknown keys are ignored and
+// parse turns the endpoint's body into limits; unknown keys are ignored and
 // every field is optional. limits[] wins; the five_hour/seven_day objects are
 // the fallback for responses without it.
-func Parse(body []byte) (Usage, error) {
+func parse(body []byte) (Usage, error) {
 	var r rawResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return Usage{}, fmt.Errorf("planusage: decode: %w", err)
@@ -112,7 +112,7 @@ func Parse(body []byte) (Usage, error) {
 		}
 	}
 	if len(u.Limits) == 0 {
-		return Usage{}, ErrNoLimits
+		return Usage{}, errNoLimits
 	}
 	if r.Breakdown != nil {
 		for _, row := range r.Breakdown.Rows {

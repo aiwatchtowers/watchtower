@@ -3,6 +3,7 @@ package planusage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -51,7 +52,7 @@ func TestPollOnce_OK(t *testing.T) {
 	p, d := newPoller(t, validCreds, fetch, at(10, 0))
 	next, err := p.PollOnce(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, PollInterval, next)
+	assert.Equal(t, pollInterval, next)
 	st, err := d.GetPlanUsageStatus()
 	require.NoError(t, err)
 	assert.Equal(t, "ok", st.State)
@@ -91,7 +92,7 @@ func TestPollOnce_401IsStale(t *testing.T) {
 	p, d := newPoller(t, validCreds, fetch, at(10, 0))
 	next, err := p.PollOnce(context.Background())
 	require.Error(t, err)
-	assert.Equal(t, PollInterval, next)
+	assert.Equal(t, pollInterval, next)
 	st, _ := d.GetPlanUsageStatus()
 	assert.Equal(t, "stale", st.State)
 	assert.Equal(t, "token_expired", st.Reason)
@@ -198,4 +199,44 @@ func TestPollOnce_CancelledWritesNothing(t *testing.T) {
 	after, _ := d.GetPlanUsageStatus()
 	assert.Equal(t, before, after)
 	assert.Zero(t, p.failures)
+}
+
+type failingStore struct {
+	*db.DB
+	err error
+}
+
+func (f failingStore) UpsertPlanUsageStatus(db.PlanUsageStatus) error { return f.err }
+
+// A status-write failure in the no-credentials branch must not hide behind
+// ErrNoCredentials, which Run does not log.
+func TestPollOnce_NoCredentialsWriteFailureIsReported(t *testing.T) {
+	p, d := newPoller(t, fakeCreds{err: ErrNoCredentials}, &fakeFetch{}, at(10, 0))
+	p.Store = failingStore{DB: d, err: errors.New("disk full")}
+	_, err := p.PollOnce(context.Background())
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNoCredentials)
+	assert.ErrorContains(t, err, "disk full")
+}
+
+func TestPollOnce_Reasons(t *testing.T) {
+	cases := map[string]struct {
+		fetch *fakeFetch
+		want  string
+	}{
+		"5xx":     {&fakeFetch{err: &HTTPError{Status: 500}}, "http_500"},
+		"network": {&fakeFetch{err: errors.New("dial tcp: refused")}, "network"},
+		"garbage": {&fakeFetch{body: []byte("not json")}, "parse"},
+		"nolimit": {&fakeFetch{body: []byte("{}")}, "parse"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			p, d := newPoller(t, validCreds, c.fetch, at(10, 0))
+			_, err := p.PollOnce(context.Background())
+			require.Error(t, err)
+			st, _ := d.GetPlanUsageStatus()
+			assert.Equal(t, "error", st.State)
+			assert.Equal(t, c.want, st.Reason)
+		})
+	}
 }

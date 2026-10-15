@@ -56,3 +56,18 @@ func TestCredentials_ErrorsNeverCarryTheToken(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "SECRET")
 }
+
+// A hung `security` call is cut off and the file fallback still answers.
+func TestCredentials_KeychainTimeoutFallsBack(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte(credJSON), 0o600))
+	s := CredentialSource{UseKeychain: true, HomeDir: home, KeychainTimeout: 20 * time.Millisecond,
+		Run: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+	c, err := s.Load(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "tok-SECRET", c.AccessToken)
+}

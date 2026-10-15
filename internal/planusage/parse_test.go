@@ -17,7 +17,7 @@ func load(t *testing.T, name string) []byte {
 }
 
 func TestParse_LimitsArray(t *testing.T) {
-	u, err := Parse(load(t, "usage_full.json"))
+	u, err := parse(load(t, "usage_full.json"))
 	require.NoError(t, err)
 	require.Len(t, u.Limits, 3)
 	assert.Equal(t, "session", u.Limits[0].Key)
@@ -35,7 +35,7 @@ func TestParse_LimitsArray(t *testing.T) {
 }
 
 func TestParse_LegacyFallback(t *testing.T) {
-	u, err := Parse(load(t, "usage_legacy.json"))
+	u, err := parse(load(t, "usage_legacy.json"))
 	require.NoError(t, err)
 	keys := []string{}
 	for _, l := range u.Limits {
@@ -48,7 +48,7 @@ func TestParse_LegacyFallback(t *testing.T) {
 }
 
 func TestParse_IdleWindowHasNilReset(t *testing.T) {
-	u, err := Parse(load(t, "usage_idle.json"))
+	u, err := parse(load(t, "usage_idle.json"))
 	require.NoError(t, err)
 	assert.Nil(t, u.Limits[0].ResetsAt)
 	assert.Equal(t, 0.0, u.Limits[0].Percent)
@@ -61,10 +61,19 @@ func TestParse_Errors(t *testing.T) {
 		"nulls":   `{"five_hour": null, "seven_day": null, "limits": null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(body))
+			_, err := parse([]byte(body))
 			assert.Error(t, err)
 		})
 	}
-	_, err := Parse([]byte("{}"))
-	assert.ErrorIs(t, err, ErrNoLimits)
+	_, err := parse([]byte("{}"))
+	assert.ErrorIs(t, err, errNoLimits)
+}
+
+func TestParse_SurfaceScopedLimits(t *testing.T) {
+	u, err := parse(load(t, "usage_surface.json"))
+	require.NoError(t, err)
+	require.Len(t, u.Limits, 2)
+	assert.Equal(t, "weekly_scoped:claude-design", u.Limits[0].Key, "string surface")
+	assert.Equal(t, "Weekly · Claude Design", u.Limits[0].Label)
+	assert.Equal(t, "weekly_scoped:claude-code", u.Limits[1].Key, "object surface")
 }

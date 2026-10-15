@@ -32,9 +32,11 @@ type CommandRunner func(ctx context.Context, name string, args ...string) ([]byt
 // refreshes or writes them — a refresh rotates the refresh token and would sign
 // Claude Code out (spec "Credentials").
 type CredentialSource struct {
-	Run         CommandRunner
-	HomeDir     string
-	UseKeychain bool
+	Run CommandRunner
+	// KeychainTimeout bounds the `security` call; zero means 5 s.
+	KeychainTimeout time.Duration
+	HomeDir         string
+	UseKeychain     bool
 }
 
 // DefaultCredentialSource reads the real Keychain (macOS) and home directory.
@@ -52,8 +54,18 @@ func DefaultCredentialSource() CredentialSource {
 // Load returns the credentials or ErrNoCredentials.
 func (s CredentialSource) Load(ctx context.Context) (Credentials, error) {
 	if s.UseKeychain && s.Run != nil {
-		if out, err := s.Run(ctx, "/usr/bin/security", "find-generic-password", "-s", keychainService, "-w"); err == nil {
+		timeout := s.KeychainTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		kctx, cancel := context.WithTimeout(ctx, timeout)
+		out, err := s.Run(kctx, "/usr/bin/security", "find-generic-password", "-s", keychainService, "-w")
+		cancel()
+		if err == nil {
 			return decodeCredentials(out)
+		}
+		if ctx.Err() != nil {
+			return Credentials{}, ctx.Err()
 		}
 	}
 	if s.HomeDir != "" {

@@ -9,11 +9,23 @@ package enum PlanUsageQueries {
             FROM plan_usage_status WHERE id = 1
             """) else { return nil }
         let decoder = PlanUsageDates.decoder
-        let limits = (try? decoder.decode([PlanUsageLimit].self, from: Data((row["limits_json"] as String).utf8))) ?? []
-        let breakdown = (try? decoder.decode([PlanUsageBreakdownRow].self, from: Data((row["breakdown_json"] as String).utf8))) ?? []
+        let limits: [PlanUsageLimit] = decodeList(decoder, column: "limits_json", row: row)
+        let breakdown: [PlanUsageBreakdownRow] = decodeList(decoder, column: "breakdown_json", row: row)
         return PlanUsageStatus(state: row["state"], reason: row["reason"], plan: row["plan"],
                                fetchedAt: PlanUsageDates.parse(row["fetched_at"]), lastError: row["last_error"],
                                limits: limits, breakdown: breakdown)
+    }
+
+    /// An undecodable column degrades to `[]` (the state and banner still show)
+    /// but is logged: a read error would freeze the whole status on the old row.
+    private static func decodeList<T: Decodable>(_ decoder: JSONDecoder, column: String, row: Row) -> [T] {
+        let text: String = row[column]
+        do {
+            return try decoder.decode([T].self, from: Data(text.utf8))
+        } catch {
+            NSLog("PlanUsageQueries: %@ is undecodable: %@", column, String(describing: error))
+            return []
+        }
     }
 
     package static func samples(_ db: Database, key: String, since: Date) throws -> [PlanUsageSample] {

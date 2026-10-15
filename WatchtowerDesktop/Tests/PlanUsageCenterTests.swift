@@ -112,6 +112,21 @@ final class PlanUsageCenterTests: XCTestCase {
         XCTAssertTrue(center.trayLines.isEmpty)
     }
 
+    /// Old numbers kept under `disabled` / `unavailable` must not reach the menu bar or the tray.
+    func testGatedStatesWithRealLimitsShowNothing() async throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))
+        for state in ["disabled", "unavailable"] {
+            try await pool.write { db in try db.execute(sql: "DELETE FROM plan_usage_status") }
+            try await insertStatus(state: state, fetchedAt: "2026-10-15T09:59:00Z", percent: 92)
+            let center = PlanUsageCenter(dbPool: pool, runner: nil, defaults: defaults) { now }
+            await center.reload()
+            XCTAssertEqual(center.status?.state, state)
+            XCTAssertEqual(center.status?.limits.count, 2, "\(state): the row really holds limits")
+            XCTAssertNil(center.menuBarLabel(showText: true), state)
+            XCTAssertTrue(center.trayLines.isEmpty, state)
+        }
+    }
+
     func testNotifiesOncePerWindowAcrossReloads() async throws {
         try await insertStatus(state: "ok", fetchedAt: "2026-10-15T09:59:00Z", percent: 92)
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))

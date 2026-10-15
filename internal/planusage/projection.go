@@ -13,25 +13,25 @@ const (
 	sameWindowTol = 60 * time.Second
 )
 
-// Lookback is how far back the rate is fitted: the 5-hour window reacts
+// lookback is how far back the rate is fitted: the 5-hour window reacts
 // within the hour, the weekly one is smoothed over a day.
-func Lookback(group string) time.Duration {
+func lookback(group string) time.Duration {
 	if group == "session" {
 		return time.Hour
 	}
 	return 24 * time.Hour
 }
 
-// Project fits a least-squares line through the limit's samples in the
+// project fits a least-squares line through the limit's samples in the
 // current window and lookback and says whether 100 % comes before the reset.
-func Project(now time.Time, l Limit, samples []db.PlanUsageSample) Projection {
+func project(now time.Time, l Limit, samples []db.PlanUsageSample) Projection {
 	if l.Percent >= 100 {
 		return Projection{State: "hit"}
 	}
 	if l.ResetsAt == nil {
 		return Projection{State: "idle"}
 	}
-	from := now.Add(-Lookback(l.Group))
+	from := now.Add(-lookback(l.Group))
 	var xs, ys []float64
 	var first, last time.Time
 	for _, s := range samples {

@@ -35,4 +35,19 @@ final class PlanUsageQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         XCTAssertNil(try db.read { try PlanUsageQueries.status($0) })
     }
+
+    /// An undecodable column is logged and degrades to [] — the state still reads.
+    func testUndecodableLimitsFallBackToEmpty() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO plan_usage_status (id, state, reason, plan, fetched_at, last_error, limits_json, breakdown_json, updated_at)
+                VALUES (1, 'error', 'parse', 'max', NULL, 'x', '{"not":"a list"}', '[{"key":1}]', '2026-10-15T08:00:00Z')
+                """)
+        }
+        let s = try db.read { try PlanUsageQueries.status($0) }
+        XCTAssertEqual(s?.state, "error")
+        XCTAssertEqual(s?.limits.count, 0)
+        XCTAssertEqual(s?.breakdown.count, 0)
+    }
 }

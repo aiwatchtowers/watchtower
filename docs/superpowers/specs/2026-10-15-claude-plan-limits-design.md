@@ -109,7 +109,7 @@ on its own ticker, independent of the sync cadence:
 
 - Interval 5 min. First poll ~10 s after daemon start.
 - Gated by the feature flag (`claude-plan-limits`, config key
-  `plan_usage.enabled`, default on). Off → no polls, status untouched.
+  `plan_usage.enabled`, default on). Off → no polls; the daemon writes `disabled` once at start (`MarkDisabled`), keeping the last numbers.
 - HTTP timeout 15 s, `User-Agent: watchtower/<version>`.
 - 429 / 5xx / network error: exponential backoff 5 → 10 → 20 → 30 min cap; status
   keeps the last good numbers and records `last_error` + `last_error_at`.
@@ -134,7 +134,7 @@ CREATE TABLE plan_usage_samples (
 
 CREATE TABLE plan_usage_status (
     id               INTEGER PRIMARY KEY CHECK (id = 1),   -- singleton
-    state            TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error')),
+    state            TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
     reason           TEXT NOT NULL DEFAULT '',
     plan             TEXT NOT NULL DEFAULT '',             -- subscriptionType
     fetched_at       TEXT,                                 -- last good fetch
@@ -250,7 +250,7 @@ only, the Usage tab shows "Turned off in Features".
 | Token expired / 401 | stale / token_expired | last numbers grey, "Open Claude Code to refresh" |
 | 429 / 5xx / network | error / http_<code> or network (numbers kept) | grey numbers, "Last updated 25 min ago" |
 | Response without limits | error / parse | same as above |
-| Feature off | (row untouched) | icon only / "Turned off" |
+| Feature off | disabled (numbers kept) | banner "turned off in Features", no menu bar or tray numbers |
 
 `error` keeps the last good `limits_json`; the UI greys values older than 15 min.
 

@@ -48,7 +48,7 @@ func TestProject(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := Project(c.now, c.limit, c.samples)
+			p := project(c.now, c.limit, c.samples)
 			assert.Equal(t, c.state, p.State)
 			if c.hitAt == nil {
 				if c.state != "safe" {
@@ -66,7 +66,7 @@ func TestProject_NewWindowIgnoresOldSamples(t *testing.T) {
 	oldReset, newReset := at(10, 0), at(15, 0)
 	samples := append(series(oldReset, at(9, 0), 10*time.Minute, 50, 70, 90),
 		series(newReset, at(10, 1), 5*time.Minute, 0, 1)...)
-	p := Project(at(10, 6), Limit{Group: "session", Percent: 1, ResetsAt: &newReset}, samples)
+	p := project(at(10, 6), Limit{Group: "session", Percent: 1, ResetsAt: &newReset}, samples)
 	assert.Equal(t, "collecting", p.State)
 }
 
@@ -75,11 +75,11 @@ func TestProject_LookbackDropsOlderSamples(t *testing.T) {
 	// a burst 3 h ago, flat for the last hour → session lookback (1 h) sees flat
 	samples := append(series(reset, at(7, 0), 10*time.Minute, 0, 30, 60),
 		series(reset, at(9, 30), 10*time.Minute, 60, 60, 60, 60)...)
-	p := Project(at(10, 0), Limit{Group: "session", Percent: 60, ResetsAt: &reset}, samples)
+	p := project(at(10, 0), Limit{Group: "session", Percent: 60, ResetsAt: &reset}, samples)
 	assert.Equal(t, "safe", p.State)
 }
 
 func TestLookback(t *testing.T) {
-	assert.Equal(t, time.Hour, Lookback("session"))
-	assert.Equal(t, 24*time.Hour, Lookback("weekly"))
+	assert.Equal(t, time.Hour, lookback("session"))
+	assert.Equal(t, 24*time.Hour, lookback("weekly"))
 }
