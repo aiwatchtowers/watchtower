@@ -318,8 +318,22 @@ final class OwnerAskKeysTests: XCTestCase {
     /// the main queue's turns after it.
     private func removeDrawer(_ page: Page) async throws {
         page.shown.isOn = false
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(catchers(in: page.drawer).isEmpty, "the catcher is gone")
+        try await catcherGone(in: page.drawer)
+    }
+
+    /// Waits until SwiftUI has taken the catcher in `host` down, then for
+    /// the hand-back its `dismantleNSView` queued (board #263): on a slow
+    /// runner the dismantle can land in the turn that resumes the test, so
+    /// a fixed sleep let the test move on — unhide the lender — before the
+    /// hand-back ran. The main queue is FIFO: a turn queued after the
+    /// catcher is seen gone runs after that hand-back.
+    private func catcherGone(in host: NSView) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            try await Task.sleep(for: .milliseconds(10))
+        } while !catchers(in: host).isEmpty && Date() < deadline
+        XCTAssertTrue(catchers(in: host).isEmpty, "the catcher is gone")
+        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
     }
 
     private static let inDrawer = NSPoint(x: 360, y: 200)
@@ -566,8 +580,7 @@ final class OwnerAskKeysTests: XCTestCase {
 
         vm.asks.closeDrawer(projectID: project)
         nextShown.isOn = false
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(catchers(in: next).isEmpty, "the next host's catcher is gone")
+        try await catcherGone(in: next)
     }
 
     /// A hand-back refused (the owner moved the keyboard since) ends the
