@@ -61,6 +61,7 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertEqual(DBLockSettings.parse(""), DBLockSettings(thresholdMS: 200))
         XCTAssertEqual(DBLockSettings.parse(" 0 "), DBLockSettings(thresholdMS: 0))
         XCTAssertEqual(DBLockSettings.parse("750"), DBLockSettings(thresholdMS: 750))
+        XCTAssertEqual(DBLockSettings.parse("500\n"), DBLockSettings(thresholdMS: 500), "trimmed like strings.TrimSpace")
         XCTAssertTrue(DBLockSettings.parse("off").off)
         XCTAssertTrue(DBLockSettings.parse("OFF").off)
         XCTAssertEqual(DBLockSettings.parse("-5"), DBLockSettings(thresholdMS: 200))
@@ -108,6 +109,14 @@ final class DBLockMetricsTests: XCTestCase {
         for ts in stamps {
             XCTAssertNotNil(ts.range(of: #"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$"#, options: .regularExpression), ts)
         }
+    }
+
+    /// Truncated like Go's time.Format, never rounded up.
+    func testTimestampTruncatesSubMilliseconds() throws {
+        let sink = try makeSink()
+        XCTAssertEqual(sink.timestamp(Date(timeIntervalSince1970: 1_760_522_400.9996)), "2025-10-15T10:00:00.999Z")
+        XCTAssertEqual(sink.timestamp(Date(timeIntervalSince1970: 1_760_522_459.0004)), "2025-10-15T10:00:59.000Z")
+        XCTAssertEqual(sink.timestamp(Date(timeIntervalSince1970: 1_760_522_400.123)), "2025-10-15T10:00:00.123Z")
     }
 
     func testRotatesOverTheCapToOneGeneration() throws {
@@ -288,6 +297,53 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertEqual(try lines().count, before + 1)
     }
 
+    /// GRDB's ValueObservation starts run `isolated(readOnly: true)` on the
+    /// writer: a deferred, read-only transaction that never takes the write
+    /// lock. Even at threshold 0 it writes no line.
+    func testDeferredReadOnlyTransactionOnTheWriterRecordsNothing() throws {
+        let sink = try makeSink(thresholdMS: 0)
+        let pool = try makePool(sink: sink)
+        sink.flush()
+        let before = try lines().count
+        try pool.writeWithoutTransaction { db in
+            try db.readOnly {
+                try db.inSavepoint {
+                    _ = try Int.fetchOne(db, sql: "SELECT count(*) FROM t")
+                    Thread.sleep(forTimeInterval: 0.05)
+                    return .commit
+                }
+            }
+        }
+        sink.flush()
+        XCTAssertEqual(try lines().count, before)
+    }
+
+    /// A deferred transaction that writes holds the lock from its first
+    /// write: the read and sleep before it count toward neither wait nor hold.
+    func testDeferredTransactionThatWritesIsMeasuredFromItsFirstWrite() throws {
+        let sink = try makeSink(thresholdMS: 50)
+        let pool = try makePool(sink: sink)
+        try pool.writeWithoutTransaction { db in
+            try db.inTransaction(.deferred) {
+                _ = try Int.fetchOne(db, sql: "SELECT count(*) FROM t")
+                Thread.sleep(forTimeInterval: 0.2)
+                try db.execute(sql: "INSERT INTO t VALUES (1)")
+                Thread.sleep(forTimeInterval: 0.06)
+                return .commit
+            }
+        }
+        sink.flush()
+        let events = try lines()
+        XCTAssertEqual(events.count, 1)
+        let event = try XCTUnwrap(events.first)
+        XCTAssertEqual(event["kind"] as? String, "tx")
+        XCTAssertEqual(event["site"] as? String, "desktop:t")
+        let hold = event["hold_ms"] as? Int ?? 0
+        XCTAssertGreaterThanOrEqual(hold, 60)
+        XCTAssertLessThan(hold, 200, "the hold starts at the first write, not at BEGIN")
+        XCTAssertLessThan(event["wait_ms"] as? Int ?? 0, 50)
+    }
+
     func testTrackerParsing() {
         XCTAssertEqual(WriteTransactionTracker.writtenTable("INSERT INTO targets (a) VALUES (?)"), "targets")
         XCTAssertEqual(WriteTransactionTracker.writtenTable("INSERT OR REPLACE INTO \"chat_messages\"(a) VALUES (?)"), "chat_messages")
@@ -298,10 +354,17 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertNil(WriteTransactionTracker.writtenTable("SELECT * FROM t"))
         XCTAssertNil(WriteTransactionTracker.writtenTable(""))
 
-        XCTAssertEqual(WriteTransactionTracker.boundary("BEGIN IMMEDIATE TRANSACTION"), .begin)
+        XCTAssertEqual(WriteTransactionTracker.boundary("BEGIN IMMEDIATE TRANSACTION"), .begin(locking: true))
+        XCTAssertEqual(WriteTransactionTracker.boundary("begin exclusive"), .begin(locking: true))
+        XCTAssertEqual(WriteTransactionTracker.boundary("BEGIN DEFERRED TRANSACTION"), .begin(locking: false))
+        XCTAssertEqual(WriteTransactionTracker.boundary("BEGIN"), .begin(locking: false))
+        XCTAssertEqual(WriteTransactionTracker.boundary("BEGIN TRANSACTION"), .begin(locking: false))
+        XCTAssertEqual(WriteTransactionTracker.boundary("END"), .end)
         XCTAssertEqual(WriteTransactionTracker.boundary("COMMIT TRANSACTION"), .end)
         XCTAssertEqual(WriteTransactionTracker.boundary("ROLLBACK TRANSACTION"), .end)
         XCTAssertNil(WriteTransactionTracker.boundary("ROLLBACK TRANSACTION TO SAVEPOINT grdb"))
+        XCTAssertNil(WriteTransactionTracker.boundary("ROLLBACK\tTO\nSAVEPOINT grdb"))
         XCTAssertNil(WriteTransactionTracker.boundary("RELEASE SAVEPOINT grdb"))
+        XCTAssertNil(WriteTransactionTracker.boundary("SELECT 1"))
     }
 }

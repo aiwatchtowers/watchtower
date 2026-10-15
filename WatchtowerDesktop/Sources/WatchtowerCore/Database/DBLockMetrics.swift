@@ -23,7 +23,7 @@ package struct DBLockSettings: Equatable, Sendable {
     }
 
     package static func parse(_ raw: String?) -> Self {
-        let value = (raw ?? "").trimmingCharacters(in: .whitespaces)
+        let value = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty { return Self() }
         if value.lowercased() == "off" { return Self(off: true) }
         guard let ms = Int64(value), ms >= 0 else {
@@ -95,9 +95,9 @@ package final class DBLockSink: @unchecked Sendable {
     private var heldDev: dev_t = 0
     private var heldIno: ino_t = 0
     private var warned = false
-    private let tsFormatter: ISO8601DateFormatter = {
+    private let secondsFormatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        fmt.formatOptions = [.withInternetDateTime]
         fmt.timeZone = TimeZone(identifier: "UTC")
         return fmt
     }()
@@ -140,7 +140,7 @@ package final class DBLockSink: @unchecked Sendable {
     func line(for event: DBLockEvent) -> Data {
         // Key order is irrelevant; zero values are omitted like Go's omitempty.
         var obj: [String: Any] = [
-            "ts": tsFormatter.string(from: event.ts),
+            "ts": timestamp(event.ts),
             "pid": Int(pid),
             "proc": Self.proc,
             "kind": event.kind
@@ -153,6 +153,16 @@ package final class DBLockSink: @unchecked Sendable {
         var data = (try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes])) ?? Data()
         data.append(0x0A)
         return data
+    }
+
+    /// UTC with exactly three fractional digits, truncated like Go's
+    /// `Format` (ISO8601DateFormatter's own fraction rounds).
+    func timestamp(_ date: Date) -> String {
+        let ms = Int64((date.timeIntervalSince1970 * 1000).rounded(.down))
+        let (secs, frac) = ms.quotientAndRemainder(dividingBy: 1000)
+        let whole = frac < 0 ? (secs - 1, frac + 1000) : (secs, frac)
+        let base = secondsFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(whole.0)))
+        return String(base.dropLast()) + String(format: ".%03lldZ", whole.1)
     }
 
     /// Writes one line through the held descriptor. The path is stat'ed
@@ -184,7 +194,7 @@ package final class DBLockSink: @unchecked Sendable {
         // One write per line: O_APPEND keeps concurrent writers' lines whole.
         let written = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
         if written != line.count {
-            warn("write")
+            warn(written < 0 ? "write" : "short write (\(written) of \(line.count) bytes)", errno: written < 0 ? errno : 0)
             closeHeld()
         }
     }
@@ -214,8 +224,7 @@ package final class DBLockSink: @unchecked Sendable {
         fd = -1
     }
 
-    private func warn(_ op: String) {
-        let code = errno
+    private func warn(_ op: String, errno code: Int32 = errno) {
         guard !warned else { return }
         warned = true
         Self.log.warning(
@@ -262,6 +271,11 @@ package enum DBLockInstrumentation {
     /// `PRAGMA busy_timeout` (GRDB opens them `readonly`, and their busy
     /// mode would otherwise default to GRDB's 10 s). A nil sink keeps the
     /// waiting behaviour and records nothing.
+    ///
+    /// One difference from the pragma: the busy callback is in place from
+    /// the connection's start, so the writer's own setup pragmas
+    /// (`journal_mode`, `synchronous`) now wait for a busy lock too, where
+    /// they used to fail at once — slightly more tolerant, never less.
     package static func install(
         on config: inout Configuration,
         sink: DBLockSink?,
@@ -295,15 +309,21 @@ package enum DBLockInstrumentation {
     }
 }
 
-/// Measures BEGIN → COMMIT/ROLLBACK on the writer connection from its
-/// profile trace: `wait_ms` is the BEGIN IMMEDIATE's own duration (the
-/// write-lock wait), `hold_ms` runs from BEGIN done to COMMIT/ROLLBACK done.
-/// Confined to the writer connection's queue.
+/// Measures write-lock waits and holds on the writer connection from its
+/// profile trace. A `BEGIN IMMEDIATE`/`EXCLUSIVE` takes the lock: `wait_ms`
+/// is that BEGIN's own duration and `hold_ms` runs from BEGIN done to
+/// COMMIT/ROLLBACK done. A deferred BEGIN takes no lock (GRDB runs one on
+/// the writer for every ValueObservation start, `isolated(readOnly:)`): it
+/// is measured only from its first write statement, whose duration is the
+/// wait and whose start opens the hold; a deferred transaction that never
+/// writes records nothing. Confined to the writer connection's queue.
 final class WriteTransactionTracker {
     static let unknownSite = "desktop:?"
 
     private let sink: DBLockSink
-    private var beganAt: UInt64?
+    private var inTransaction = false
+    /// When the write lock was taken in the open transaction, if it was.
+    private var lockedAt: UInt64?
     private var waitMS: Int64 = 0
     private var table: String?
 
@@ -316,42 +336,66 @@ final class WriteTransactionTracker {
         observe(sql: statement.sql, duration: duration, now: DispatchTime.now().uptimeNanoseconds)
     }
 
+    /// `now` is when the statement finished; `duration` is how long it ran.
     func observe(sql: String, duration: TimeInterval, now: UInt64) {
         switch Self.boundary(sql) {
-        case .begin:
+        case let .begin(locking):
             // A BEGIN that failed busy leaves no transaction; the next BEGIN
             // starts over and no COMMIT ever closes the stale one.
-            beganAt = now
-            waitMS = Int64(duration * 1000)
+            inTransaction = true
+            lockedAt = locking ? now : nil
+            waitMS = locking ? Self.milliseconds(duration) : 0
             table = nil
         case .end:
-            guard let began = beganAt else { return }
-            beganAt = nil
-            let holdMS = Int64((now &- began) / 1_000_000)
+            defer { inTransaction = false; lockedAt = nil }
+            guard inTransaction, let locked = lockedAt else { return }
+            let holdMS = Int64((now &- locked) / 1_000_000)
             guard sink.isSlow(waitMS: waitMS, holdMS: holdMS) else { return }
             sink.record(DBLockEvent(
                 kind: DBLockEvent.kindTx, waitMS: waitMS, holdMS: holdMS,
                 site: table.map { "desktop:\($0)" } ?? Self.unknownSite))
         case nil:
-            if beganAt != nil, table == nil { table = Self.writtenTable(sql) }
+            guard inTransaction, table == nil || lockedAt == nil,
+                  let written = Self.writtenTable(sql) else { return }
+            if table == nil { table = written }
+            if lockedAt == nil {
+                // A deferred transaction's first write takes the lock.
+                lockedAt = now &- UInt64(max(0, duration) * 1e9)
+                waitMS = Self.milliseconds(duration)
+            }
         }
     }
 
-    enum Boundary { case begin, end }
+    private static func milliseconds(_ duration: TimeInterval) -> Int64 {
+        Int64(duration * 1000)
+    }
+
+    enum Boundary: Equatable {
+        /// `locking`: IMMEDIATE or EXCLUSIVE, which takes the write lock.
+        case begin(locking: Bool)
+        case end
+    }
 
     static func boundary(_ sql: String) -> Boundary? {
-        let head = sql.prefix(9).uppercased()
-        if head.hasPrefix("BEGIN") { return .begin }
-        if head.hasPrefix("COMMIT") || head.hasPrefix("END") { return .end }
-        if head.hasPrefix("ROLLBACK") {
-            // ROLLBACK TO SAVEPOINT keeps the transaction open.
-            return sql.range(of: " TO ", options: .caseInsensitive) == nil ? .end : nil
+        let words = sql.prefix(40).split { $0.isWhitespace || $0 == ";" }.prefix(4).map { $0.uppercased() }
+        switch words.first {
+        case "BEGIN":
+            let mode = words.dropFirst().first
+            return .begin(locking: mode == "IMMEDIATE" || mode == "EXCLUSIVE")
+        case "COMMIT", "END":
+            return .end
+        case "ROLLBACK":
+            // ROLLBACK [TRANSACTION] TO [SAVEPOINT] keeps the transaction open.
+            return words.contains("TO") ? nil : .end
+        default:
+            return nil
         }
-        return nil
     }
 
     /// The table an INSERT/REPLACE/UPDATE/DELETE writes, or nil for any
-    /// other statement.
+    /// other statement. Good enough to rank: a schema-qualified name stays
+    /// `main.t`, and a write behind a `WITH` clause is not recognised (its
+    /// transaction falls back to `desktop:?`, or, deferred, to no line).
     static func writtenTable(_ sql: String) -> String? {
         let words = sql.split { $0.isWhitespace || $0 == "(" }.prefix(6).map { String($0) }
         guard let verb = words.first?.uppercased() else { return nil }
