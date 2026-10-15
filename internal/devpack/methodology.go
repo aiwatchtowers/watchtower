@@ -125,7 +125,10 @@ type MethodologyReport struct {
 // SyncMethodology writes or removes the preset per o.PresetNone beside each
 // core skill copy in the folder (.claude/skills, .agents/skills), touching
 // neither the hooks nor the MCP registration: the install a preset change
-// runs (spec §8). A directory without the core skill is left alone.
+// runs (spec §8). Each core copy goes through the install first, so a
+// pre-v9 core of ours becomes the v9 split before the preset follows it (an
+// owner-edited or foreign one is left as it is, DEV-04). A directory without
+// the core skill is left alone.
 func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 	if err := o.validate(); err != nil {
 		return MethodologyReport{}, err
@@ -159,10 +162,8 @@ func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 				errs = append(errs, err)
 			}
 		}
-		flow, single, err := syncFlowSkill(d.dir, core, o.PresetNone)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		_, flow, single, pairErrs := installSkillPair(d.dir, o.PresetNone)
+		errs = append(errs, pairErrs...)
 		*d.out = flow
 		rep.SingleFileLayout = rep.SingleFileLayout || single
 	}

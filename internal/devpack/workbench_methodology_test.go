@@ -206,3 +206,49 @@ func TestFolderMethodologyLayout_SeesASingleFileCore(t *testing.T) {
 	writeTestFile(t, workbenchSkillFile(folder), v8Skill(t)+"\nedited\n")
 	assert.Equal(t, MethodologyLayout{Core: true, SingleFile: true}, FolderMethodologyLayout(folder))
 }
+
+// Spec §4.3: a preset change upgrades a pre-v9 core of ours to the split
+// layout before it syncs the preset (with none, the v8 single file would
+// still carry the whole methodology); an owner-edited core stays as it is
+// (PROJ-04).
+func TestSyncMethodology_UpgradesAPreV9CoreOfOurs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sidecar bool
+	}{{"with the sidecar", true}, {"the shipped bytes without it", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			folder := fakeRepo(t)
+			writeTestFile(t, workbenchSkillFile(folder), v8Skill(t))
+			writeTestFile(t, codexSkillFile(folder), v8Skill(t))
+			if tc.sidecar {
+				require.NoError(t, writeShippedDigest(filepath.Dir(workbenchSkillFile(folder)), v8CoreSHA256))
+				require.NoError(t, writeShippedDigest(filepath.Dir(codexSkillFile(folder)), v8CoreSHA256))
+			}
+			o := workbenchOpts(folder, newFakeClaude())
+			o.PresetNone = true
+
+			rep, err := SyncMethodology(o)
+
+			require.NoError(t, err)
+			assert.Equal(t, workbenchSkill().Content, readTestFile(t, workbenchSkillFile(folder)))
+			assert.Equal(t, workbenchSkill().Content, readTestFile(t, codexSkillFile(folder)))
+			assert.Equal(t, StateMissing, rep.Claude.State)
+			assert.False(t, rep.SingleFileLayout)
+			assert.Equal(t, MethodologyLayout{Core: true}, FolderMethodologyLayout(folder))
+		})
+	}
+	t.Run("an edited v8 is left alone", func(t *testing.T) {
+		folder := fakeRepo(t)
+		edited := v8Skill(t) + "\nMy own note.\n"
+		writeTestFile(t, workbenchSkillFile(folder), edited)
+		require.NoError(t, writeShippedDigest(filepath.Dir(workbenchSkillFile(folder)), v8CoreSHA256))
+		o := workbenchOpts(folder, newFakeClaude())
+
+		rep, err := SyncMethodology(o)
+
+		require.NoError(t, err)
+		assert.Equal(t, edited, readTestFile(t, workbenchSkillFile(folder)))
+		assert.True(t, rep.SingleFileLayout)
+		assert.False(t, exists(filepath.Dir(flowSkillFile(folder))))
+	})
+}
