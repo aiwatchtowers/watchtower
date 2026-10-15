@@ -101,12 +101,14 @@ on the Automations card only, in a workbench recipe also in the workbench header
 
 - `content_hash` — sha256 of the file bytes. Change detection only.
 - `approval_hash` — sha256 of the canonical JSON `{"permissions": [sorted, normalised], "outputs": [sorted],
-  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>", "trigger": <trigger_spec>,
-  "budget": {"tokens": N, "minutes": M}, "concurrency": N}` (keys in that order, no whitespace, no HTML escaping;
-  `trigger` in the `trigger_spec` shape of §9.1 with a `where` map's keys sorted; the budget and concurrency are the
-  effective values after defaults). "What this code may do, when and how much." Owner confirmations and auto
-  grants bind to it (§6.4, §2.5), so a schedule, budget or concurrency edit needs the owner's confirmation again
-  (§20.3 D26, amending D5). Edits to `name`, description, `missed` and `pause_timeout_hours` do not change it.
+  "scope": "personal"|"workbench:<id>", "script": "<exact js block text>", "trigger": <trigger>,
+  "missed": "<policy>", "budget": {"tokens": N, "minutes": M}, "concurrency": N}` (keys in that order, no
+  whitespace, no HTML escaping; `trigger` in the `trigger_spec` shape of §9.1 with a `where` map's keys sorted and
+  without the button's cosmetic `label` — its `confirm` stays; missed, budget and concurrency are the effective
+  values after defaults). "What this code may do, when and how much." Owner confirmations and auto grants bind to
+  it (§6.4, §2.5), so a schedule, missed-policy, budget or concurrency edit needs the owner's confirmation again
+  (§20.3 D26, amending D5). Edits to `name`, description, a button's `label` and `pause_timeout_hours` do not
+  change it.
   Upgrading to D26 re-hashes every recipe once: every recipe confirmed before it shows **Needs your
   confirmation** until the owner confirms it again.
 
@@ -120,7 +122,7 @@ A recipe is **runnable** iff: parsed without error, `enabled = 1`, and `confirme
 `confirmed_hash` is set only by (a) the apply of an owner-approved `save_automation` (§11), (b) a Desktop save
 carrying `--confirm-hash` (§10), or (c) `automations confirm <id> --hash <sha>` — (b) and (c) refuse under an AI
 agent's environment markers (AGENT-07). A recipe new to the index, or one whose `approval_hash` changed by any
-other way (a git pull, a hand edit, another tool — a schedule, budget or concurrency edit included, §20.3 D26), is indexed with its old `confirmed_hash` and therefore not
+other way (a git pull, a hand edit, another tool — a schedule, missed, budget or concurrency edit included, §20.3 D26), is indexed with its old `confirmed_hash` and therefore not
 runnable; the Automations tab and the workbench header show it as **Needs your confirmation** (AUTO-06).
 The store call is `db.ConfirmAutomation(id, hash, now)` (refuses any hash but the current `approval_hash`,
 `ErrHashMismatch`; a missing row `ErrAutomationNotFound`); an insert never sets `confirmed_hash` or `enabled`.
@@ -391,8 +393,8 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
 - First index of a schedule automation sets `last_scheduled_for = now` (no catch-up for times before it existed).
   Enabling a disabled automation does the same (no catch-up for the disabled period). So does a confirm that changes
   `confirmed_hash` (no catch-up for the unconfirmed window; re-confirming the same hash keeps the point), a rescan
-  that makes a row runnable again (its `approval_hash` reverted to the confirmed one, or its trigger became `schedule`
-  — `db.PrimeAutomationSchedule` writes only while the row is not a runnable schedule) and enabling the `automations`
+  that makes a row runnable again (its `approval_hash` reverted to the confirmed one — since §20.3 D26 a trigger edit
+  alone never leaves a row runnable — `db.PrimeAutomationSchedule` writes only while the row is not a runnable schedule) and enabling the `automations`
   feature (FEAT-03 hook `db.FastForwardAutomations`, which also cancels runs queued while it was off, dry runs kept).
 - **Compare-and-set (P1).** The schedule advance is conditional on the `last_scheduled_for` the scheduler read
   (`EnqueueRequest.ExpectLastScheduledFor`, required with `AdvanceScheduleTo`; `db.CompareAndSetAutomationSchedule`);
@@ -870,7 +872,7 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
 - Manifest: `TestManifest_GrammarTable` (valid/invalid strings incl. quoting), `TestManifest_ScopeMatching`
   (exact, case, `*`, absent scope arg needs `@*`), `TestManifest_MCPGlob`, `TestManifest_ShellExactOnly`
   (prefix/suffix/whitespace variants refused), `TestManifest_CoversWidening`, `TestToolCapabilities_CoversEveryAutomationTool`.
-- Hashes: `TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget`, `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
+- Hashes: `TestApprovalHash_IgnoresNameChangesOnScriptPermissionsScheduleBudget`, `TestApprovalHash_ButtonLabelIsCosmetic`, `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`.
 - Sandbox: `TestAuto07_NoRequireFsNetTimers`, `TestAuto08_InterruptOnTimeout` (busy loop stops within 1 s of the
   deadline), `TestAuto08_InterruptOnBudget` (fake generator reporting 30k tokens per call, budget 50k: second call
   crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_NoDailyCapAcrossRuns`,
@@ -953,7 +955,7 @@ section it governs; nothing remains open.
    provider-reported dollar cost is kept in `reported_cost_usd` for display only (§2.3, §7.5, §9.2, §9.3, §12).
 5. **D5 What drops a confirmation/auto.** `approval_hash` = script + permissions + outputs + scope; trigger,
    budget, name and description edits keep confirmation and grants (§2.4). *Amended by §20.3 D26 (ask #294): the
-   trigger, budget and concurrency are in the hash too.*
+   trigger (without a button's label), missed policy, budget and concurrency are in the hash too.*
 6. **D6 Restart.** Interrupted runs end `failed` / `interrupted` with state uncommitted; Rerun is offered; no
    replay-resume in v1 (§7.7).
 7. **D7 `ask()`** only in workbench automations in v1; a personal recipe declaring `ask:owner` fails validation;
@@ -1037,8 +1039,11 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
     stays in the CHECK (no migration) but is no longer produced. The `TestAuto08_DailyCap*` guards are retired with
     the owner's approval; `TestAuto08_NoDailyCapAcrossRuns` pins the new rule.
 26. **D26 (ask #294, amends D5): a schedule or budget change needs the owner's confirmation.** `approval_hash` also
-    covers the whole trigger (`trigger_spec`), the budget (tokens and minutes) and `concurrency` (§2.4), so editing
-    any of them drops a confirmation and auto grants like a script or permission edit does; name, description,
-    `missed` and `pause_timeout_hours` still keep it. The change re-hashes every recipe once: after the upgrade
-    every existing recipe is unconfirmed until the owner confirms it again. Guards
-    `TestApprovalHash_GoldenCanonicalBytes` (new bytes and hex), `TestAuto06_ScheduleBudgetEditNeedsConfirmation`.
+    covers the trigger (`trigger_spec` without a button's cosmetic `label`; `confirm` stays), the `missed` policy
+    (any schedule edit waits for the owner), the budget (tokens and minutes) and `concurrency` (§2.4), so editing
+    any of them drops a confirmation and auto grants like a script or permission edit does; name, description, a
+    button's label and `pause_timeout_hours` still keep it. A rescan makes such a row runnable again only when the
+    file reverts to the confirmed text; otherwise the owner confirms. The change re-hashes every recipe once: after
+    the upgrade every existing recipe is unconfirmed until the owner confirms it again. Guards
+    `TestApprovalHash_GoldenCanonicalBytes` (new bytes and hex), `TestApprovalHash_ButtonLabelIsCosmetic`,
+    `TestAuto06_ScheduleBudgetEditNeedsConfirmation`, `TestAuto06_ButtonLabelEditKeepsConfirmation`.

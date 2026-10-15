@@ -20,13 +20,14 @@ func ContentHash(data []byte) string {
 // D5 as amended by D26, ask #294): the hex sha256 of the canonical JSON
 //
 //	{"permissions":[sorted normalised],"outputs":[sorted],"scope":"<scope>","script":"<js>",
-//	 "trigger":<trigger_spec>,"budget":{"tokens":N,"minutes":M},"concurrency":N}
+//	 "trigger":<trigger>,"missed":"<policy>","budget":{"tokens":N,"minutes":M},"concurrency":N}
 //
 // with the keys in that order, no whitespace and no HTML escaping; the
-// trigger is the indexer's trigger_spec shape (a where map's keys sorted).
-// Owner confirmations and auto grants bind to it, so a schedule, budget or
-// concurrency edit needs the owner's confirmation again; name, description,
-// missed and pause_timeout_hours are deliberately left out.
+// trigger is the trigger_spec shape (a where map's keys sorted) without the
+// button's cosmetic label (its confirm flag stays). Owner confirmations and
+// auto grants bind to it, so a schedule, missed-policy, budget or concurrency
+// edit needs the owner's confirmation again; name, description, the button
+// label and pause_timeout_hours are deliberately left out.
 func ApprovalHash(r *Recipe) string {
 	return ContentHash(approvalCanonical(r))
 }
@@ -44,6 +45,8 @@ func approvalCanonical(r *Recipe) []byte {
 	writeCanonical(&buf, r.Script)
 	buf.WriteString(`,"trigger":`)
 	writeCanonical(&buf, canonicalTrigger(r.Trigger))
+	buf.WriteString(`,"missed":`)
+	writeCanonical(&buf, string(r.Missed))
 	buf.WriteString(`,"budget":`)
 	writeCanonical(&buf, canonicalBudget{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes})
 	buf.WriteString(`,"concurrency":`)
@@ -58,25 +61,30 @@ type canonicalBudget struct {
 	Minutes int `json:"minutes"`
 }
 
-// canonicalTrigger is t in the trigger_spec shape; a trigger of no known kind
-// (only a hand-built Recipe, never a parsed one) is the empty object.
-func canonicalTrigger(t Trigger) triggerSpec {
-	var spec triggerSpec
-	switch t.Kind {
-	case TriggerSchedule:
-		spec.Schedule = t.Schedule
-	case TriggerButton:
-		if t.Button != nil {
-			spec.Button = &triggerSpecButton{Label: t.Button.Label, Confirm: t.Button.Confirm}
-		}
-	case TriggerEvent:
-		if t.Event != nil {
-			spec.Event = &triggerSpecEvent{Type: t.Event.Type, Where: t.Event.Where}
-		}
-	case TriggerManual:
-		spec.Manual = true
+// canonicalTriggerForm is the trigger's place in the approval canonical form:
+// the trigger_spec shape without the button's label.
+type canonicalTriggerForm struct {
+	Schedule string            `json:"schedule,omitempty"`
+	Button   *canonicalButton  `json:"button,omitempty"`
+	Event    *triggerSpecEvent `json:"event,omitempty"`
+	Manual   bool              `json:"manual,omitempty"`
+}
+
+// canonicalButton keeps only what a button changes about a run: whether it
+// asks before starting. The label is cosmetic.
+type canonicalButton struct {
+	Confirm bool `json:"confirm"`
+}
+
+// canonicalTrigger is t's hashed form; a trigger of no known kind (only a
+// hand-built Recipe, never a parsed one) is the empty object.
+func canonicalTrigger(t Trigger) canonicalTriggerForm {
+	spec := triggerSpecOf(t)
+	form := canonicalTriggerForm{Schedule: spec.Schedule, Event: spec.Event, Manual: spec.Manual}
+	if spec.Button != nil {
+		form.Button = &canonicalButton{Confirm: spec.Button.Confirm}
 	}
-	return spec
+	return form
 }
 
 // sortedCopy returns a sorted, deduplicated copy that is never nil: a recipe

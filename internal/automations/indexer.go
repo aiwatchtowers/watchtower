@@ -317,9 +317,12 @@ func (s *folderScan) insert(cand db.Automation) error {
 
 // update re-indexes an existing row. A row this rescan makes runnable as a
 // schedule automation when it was not one before (its approval_hash reverted
-// to the confirmed one, its file came back, its parse error is fixed, or its
-// trigger became a schedule) gets last_scheduled_for = now first, so the
-// scheduler never catches up on the window it spent not runnable. Priming
+// to the confirmed one, its file came back, or its parse error is fixed) gets
+// last_scheduled_for = now first, so the scheduler never catches up on the
+// window it spent not runnable. The trigger is in the approval hash (D26), so
+// a trigger edit never leaves the row runnable on its own: a rescan makes it
+// runnable again only when the file reverts to the confirmed text (the
+// owner's confirm primes the schedule itself, ConfirmAutomation). Priming
 // before the upsert is race-free: the scheduler ignores the row until the
 // upsert makes it runnable, and PrimeAutomationSchedule writes only while
 // the row is still not a runnable schedule, so an indexer working from a
@@ -391,13 +394,34 @@ type triggerSpecEvent struct {
 	Where map[string]string `json:"where,omitempty"`
 }
 
+// triggerSpecOf is t in the trigger_spec shape (the button's label kept); a
+// trigger of no known kind is the empty spec.
+func triggerSpecOf(t Trigger) triggerSpec {
+	var spec triggerSpec
+	switch t.Kind {
+	case TriggerSchedule:
+		spec.Schedule = t.Schedule
+	case TriggerButton:
+		if t.Button != nil {
+			spec.Button = &triggerSpecButton{Label: t.Button.Label, Confirm: t.Button.Confirm}
+		}
+	case TriggerEvent:
+		if t.Event != nil {
+			spec.Event = &triggerSpecEvent{Type: t.Event.Type, Where: t.Event.Where}
+		}
+	case TriggerManual:
+		spec.Manual = true
+	}
+	return spec
+}
+
 func triggerSpecJSON(t Trigger) (string, error) {
 	switch t.Kind {
 	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual:
 	default:
 		return "", fmt.Errorf("encoding trigger: unknown kind %q", t.Kind)
 	}
-	b, err := json.Marshal(canonicalTrigger(t))
+	b, err := json.Marshal(triggerSpecOf(t))
 	if err != nil {
 		return "", fmt.Errorf("encoding trigger: %w", err)
 	}

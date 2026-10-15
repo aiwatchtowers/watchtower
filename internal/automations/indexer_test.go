@@ -345,10 +345,10 @@ func TestRescan_RunnableAgainRestartsScheduleNow(t *testing.T) {
 	}
 }
 
-// TestAuto06_ScheduleBudgetEditNeedsConfirmation: the trigger, budget and
-// concurrency are in the approval hash (D26, ask #294), so editing any of
-// them in the file makes a confirmed recipe wait for the owner again; a name
-// or description edit keeps the confirmation.
+// TestAuto06_ScheduleBudgetEditNeedsConfirmation: the trigger, missed policy,
+// budget and concurrency are in the approval hash (D26, ask #294), so editing
+// any of them in the file makes a confirmed recipe wait for the owner again; a
+// name or description edit keeps the confirmation.
 func TestAuto06_ScheduleBudgetEditNeedsConfirmation(t *testing.T) {
 	base := recipeText("d", `log("hi")`)
 	cases := []struct {
@@ -360,6 +360,7 @@ func TestAuto06_ScheduleBudgetEditNeedsConfirmation(t *testing.T) {
 		{"budget tokens", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nbudget: {tokens: 9000}", 1), false},
 		{"budget minutes", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nbudget: {minutes: 9}", 1), false},
 		{"concurrency", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nconcurrency: 2", 1), false},
+		{"missed", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nmissed: skip", 1), false},
 		{"name", strings.Replace(base, "name: Morning mail", "name: Evening mail", 1), true},
 		{"description", recipeText("other words", `log("hi")`), true},
 	}
@@ -380,6 +381,23 @@ func TestAuto06_ScheduleBudgetEditNeedsConfirmation(t *testing.T) {
 				t.Fatalf("NeedConfirmation = %v, confirmed = %q; want [%d] and the old confirmation kept", rep.NeedConfirmation, a.ConfirmedHash, a.ID)
 			}
 		})
+	}
+}
+
+// TestAuto06_ButtonLabelEditKeepsConfirmation: a button's label is cosmetic
+// and stays out of the approval hash (D26, ask #294); the rename is indexed
+// and the recipe stays runnable.
+func TestAuto06_ButtonLabelEditKeepsConfirmation(t *testing.T) {
+	f := newIndexerFixture(t)
+	button := strings.Replace(recipeText("d", "1"), `schedule: "0 9 * * *"`, "button: {label: Check mail}", 1)
+	f.write(t, "job.md", button)
+	f.rescan(t)
+	f.confirmEnable(t, "job")
+	f.write(t, "job.md", strings.Replace(button, "Check mail", "Mail now", 1))
+	f.rescan(t)
+	a := f.row(t, "job")
+	if !a.Runnable() || !strings.Contains(a.TriggerSpec, "Mail now") {
+		t.Fatalf("runnable=%v trigger_spec=%s; want runnable with the new label", a.Runnable(), a.TriggerSpec)
 	}
 }
 
