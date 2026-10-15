@@ -1518,3 +1518,13 @@ Entry format:
 - weak-dimension: 7. Grace was tested for `.used` only, so the two reasons with different code semantics went untested.
 - rule-gap (candidate, dim 7): *a deferred background task that acts on shared state (a timer sweep) is cancelled or re-checked under the same epoch/ticket by every entry point that starts a new instance of that state, and is not only guarded at wake time.*
 - outcome: TBD
+
+## 2026-10-15 — feature/786-chat-panel-expand (PR #271: the chat's artifact/Sources panel gets an expand button that replaces the conversation and composer with the panel, `isInspectorExpanded` collapsed by `didSet` on both panels, `ChatLiveArtifactFeed` keeps feeding the live turn while the thread view is gone, comment send collapses; Desktop only, 6 Swift files + app-guide; third review round after two lighter ones; panel: prosecutor + codex + 3 specialists, all lanes up; judge verified against d9a75cad8 by reading, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, codex + code-reviewer): `open(_ hit:)` for the conversation already on screen goes through `select`, which returns before touching the panels when not switching. The panel stays expanded, the thread that would jump to `scrollTarget` is hidden, and the ⌘K hit does nothing visible. **A mode that hides a surface needs an exit on every action whose result shows on that surface, including the "same item again" early return, not only on the paths that clear state.** [6]
+- contested (held major, merged silent-failure HIGH + MEDIUM + prosecutor F3): while expanded, `errorMessage`, `persistError` and `actionFeed.lastError` render only in the hidden thread's error strip. A turn that fails while streaming into the panel rolls the panel back with no explanation, and Stop/Retry are hidden too. The earlier round fixed the comment-send case alone, so the fix covered one symptom of the class. [6/9]
+- false-positive: silent-failure LOW (`showLanding` early return keeps a landing draft's panel expanded). A landing draft is cleared on first send (line 668), so it never has panels. Prosecutor F5 is a real nit: the class is already `@MainActor`.
+- miss: the hidden-search-hit path came only from codex and code-reviewer. The prosecutor listed the panel-closing exits but did not check actions that keep the panel open.
+- weak-dimension: 6. Two lighter rounds checked the mode's own transitions (open, close, switch) and missed the actions that leave it in place.
+- rule-gap (candidate, Swift dim 6): *a view mode that replaces a surface lists the actions whose feedback lands on that surface (errors, scroll targets, composer state) and either exits the mode on them or brings the feedback along.*
+- outcome: TBD

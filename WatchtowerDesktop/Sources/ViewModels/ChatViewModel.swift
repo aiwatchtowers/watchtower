@@ -65,7 +65,11 @@ final class ChatViewModel {
     /// owner's comments) and go out together with the typed text as ONE owner
     /// turn in `sendDraft` — never one by one (owner rule).
     private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
-    var errorMessage: String?
+    /// Shown by the thread view only, so an error steps an expanded panel
+    /// aside (#786).
+    var errorMessage: String? {
+        didSet { if errorMessage != nil { isInspectorExpanded = false } }
+    }
     private(set) var selectedProvider: AIProvider
     /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
     var selectedModel = "" {
@@ -767,6 +771,8 @@ final class ChatViewModel {
 
     /// ⌘K hit: open the conversation, make the hit's branch active, scroll to it.
     func open(_ hit: ChatSearchHit) {
+        // The hit shows in the conversation, which an expanded panel covers.
+        isInspectorExpanded = false
         select(conversationID: hit.conversationID)
         guard let messageID = hit.messageID else { return }
         selectVariant(messageID: messageID)
@@ -950,6 +956,9 @@ final class ChatViewModel {
             // versioned this turn's artifacts in the same transaction as the
             // message; drop the live draft and show what was actually stored.
             artifactPanel?.turnFinished()
+            // A failed or cut-off turn rolls the panel back to the stored
+            // version; its error and Retry live in the conversation (#786).
+            if thread.last?.message.status != "complete" { isInspectorExpanded = false }
         }
         reloadConversations()
         requestTitleIfNeeded(conversationID: id)

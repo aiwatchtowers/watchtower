@@ -833,10 +833,11 @@ final class ChatViewModelTests: XCTestCase {
 
     /// With the thread view off screen the expanded panel still gets the
     /// live text (#786): the feed reports every published delta.
-    @MainActor
     func testTheLiveArtifactFeedReportsTheStreamingText() {
         let turn = LiveTurn(messageID: 1, turnID: "t", startedAt: Date(), publishInterval: 0)
         var received: [String] = []
+        // Expanding mid-answer: the text streamed so far arrives at once.
+        turn.appendDelta(":::artifact key=q3", now: Date())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -844,14 +845,53 @@ final class ChatViewModelTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
 
+        spin { !received.isEmpty }
+        XCTAssertEqual(received.first, ":::artifact key=q3", "the text streamed before the feed appeared")
         let expected = ":::artifact key=q3\nline"
-        turn.appendDelta(":::artifact key=q3", now: Date())
         turn.appendDelta("\nline", now: Date())
+        spin { received.last == expected }
+        XCTAssertEqual(received.last, expected)
+    }
+
+    /// Spins the main run loop until `done` holds or two seconds pass.
+    private func spin(until done: () -> Bool) {
         let deadline = Date().addingTimeInterval(2)
-        while received.last != expected, Date() < deadline {
+        while !done(), Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        XCTAssertEqual(received.last, expected)
+    }
+
+    /// What only the conversation shows steps an expanded panel aside
+    /// (#786): an error, a failed turn, a search hit in the chat on screen,
+    /// and the exits that leave the chat. A turn that completes keeps it.
+    func testTheExpandedPanelStepsAsideForWhatOnlyTheConversationShows() async throws {
+        let vm = try makeViewModel()
+        let convID = try XCTUnwrap(vm.newConversation())
+        vm.send(text: "q")
+        vm.openArtifact(key: "plan")
+        vm.toggleInspectorExpanded()
+        let fake = try lastFake()
+        fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .rateLimit, message: "slow", retryable: true)))
+        let failed = await waitForCondition { vm.thread.last?.message.status == "error" }
+        XCTAssertTrue(failed)
+        XCTAssertFalse(vm.isInspectorExpanded, "a failed turn shows its error and Retry")
+
+        vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
+        vm.toggleInspectorExpanded()
+        try await complete(vm, turn: "turn-2", text: "a")
+        XCTAssertTrue(vm.isInspectorExpanded, "a completed turn keeps the expanded panel")
+
+        vm.errorMessage = "Couldn't move the chat."
+        XCTAssertFalse(vm.isInspectorExpanded, "an error shows in the conversation")
+
+        vm.errorMessage = nil
+        vm.toggleInspectorExpanded()
+        vm.open(ChatSearchHit(conversationID: convID, messageID: try XCTUnwrap(vm.thread.last?.id), title: "", snippet: ""))
+        XCTAssertFalse(vm.isInspectorExpanded, "a search hit in the chat on screen shows in the conversation")
+
+        vm.toggleInspectorExpanded()
+        XCTAssertNotNil(vm.createProject(name: "Payments"))
+        XCTAssertFalse(vm.isInspectorExpanded, "the project page closes the panels")
     }
 
     func testOpeningASearchHitShowsItsBranchAndScrollsToIt() async throws {
@@ -1177,8 +1217,11 @@ final class ChatViewModelTests: XCTestCase {
         let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
         XCTAssertTrue(try lastFake().turns.isEmpty, "adding a comment sends nothing")
         let expected = try XCTUnwrap(comments.outgoing()).text
+        vm.toggleInspectorExpanded()
 
         vm.sendArtifactComments()
+
+        XCTAssertFalse(vm.isInspectorExpanded, "the answer shows in the conversation (#786)")
 
         XCTAssertEqual(try lastFake().turns.count, 1)
         XCTAssertEqual(try lastStoredUserText(vm), expected)
