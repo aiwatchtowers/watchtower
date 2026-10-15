@@ -40,6 +40,8 @@
   - Env marker `WATCHTOWER_AUTOMATION_RUN_ID` on every `shell()` and `session()` child (AGENT-07 already refuses approvals under it).
   - Migration **00117** exactly as §9.5 (two `ALTER TABLE … ADD COLUMN automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL`); renumber if `main` took it, verify by column presence.
 
+- **MUST — lift the P2 write gate (spec §6.1, §13).** Until P5 a workbench automation's run may not write: `Registry.workbenchAutomationGate` refuses `Propose`/`Approve`/`Apply` with `tools.ErrWorkbenchAutomationWrite` (a missing run fails closed with `tools.ErrAutomationRunGone`) and `writeTool` throws `NotAvailable` before the dry-run branch. P5 must, in the task that first lets a workbench run write: remove both refusals; make `Apply` of an `automation_run` row (inline and `actions apply`) resolve the workbench from run → `automations.project_id`, run `WorkbenchAlive` and the tool's `Scope` against it and fail when it is gone; keep the missing-run fail-closed; rewrite `TestWorkbenchAutomation_ProposeRefused`, `TestWorkbenchAutomation_BindingWorkbenchAloneRefuses`, `TestWorkbenchAutomation_PreexistingRowCannotBeApplied` and `TestWorkbenchAutomation_WritesNotAvailable` into "a write of a live workbench applies; one whose workbench was deleted after propose fails at Apply", and amend AGENT-01 in `docs/inventory/agent-actions.md`.
+
 ## Review Focus
 
 1. **One session per request**, whether the Desktop's poll sees a request twice, the app quits between creating the session row and attaching it, or two attaches race. Pinned: Task 5 `TestSessionAttach_IsConditional`, Task 10 `testOneLaunchPerRequestUnderRepeatedPolls`, `testCrashBetweenCreateAndAttachAdoptsTheRow`.

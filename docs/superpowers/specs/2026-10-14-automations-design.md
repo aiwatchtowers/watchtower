@@ -280,6 +280,15 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
   `Binding{Surface: "automation", ContextType: "automation_run", ContextID: <run id>, AutomationRunID: <run id>,
   WorkbenchID: <workbench id or 0>}`. `bindingOf` rebuilds `AutomationRunID` from `context_type='automation_run'`.
   `DirectApply` is never set for automations (a workbench automation does not inherit DEV-06's direct apply).
+- **Workbench runs may not write until P5 (controller decision, P2 review).** A run's `agent_actions` row carries
+  the run (`context_type='automation_run'`), not the workbench, so its Apply would run with `WorkbenchID` 0 —
+  without `WorkbenchAlive` and the tool's `Scope`. Until P5, `Registry.workbenchAutomationGate` refuses every
+  write of a workbench automation's run: `Propose` (the binding's `WorkbenchID`, or the run's
+  `automations.project_id`) with `tools.ErrWorkbenchAutomationWrite` and no row; `Approve` (row stays pending)
+  and `Apply` (row lands `failed`, `Execute` never runs) of such a row. A row whose run no longer exists fails
+  closed (`tools.ErrAutomationRunGone`; deleting a workbench cascades its runs). The script sees `NotAvailable`
+  for `tool()` writes and `output.target`/`output.slack`, dry runs included (the SDK refuses before the dry-run
+  branch, so a dry run never reports a write a live run cannot make). Reads are unaffected.
 - Write tools that name the `automation` surface in P2 (each tool's `Surfaces` gains `"automation"`):
   `create_target`, `create_idea`, `create_track`, `remind_me`, `create_jira_issue`, `add_jira_comment`,
   `transition_jira_issue`, `assign_jira_issue`, `update_jira_issue`, `send_slack_message`. Not offered:
@@ -780,6 +789,11 @@ a refusal that still arrives is shown as the CLI's message, nothing is retried).
   way. Runs started elsewhere (schedule, card, buttons) post no notice.
 
 ## 13. Workbench automations (P5)
+
+**P5 must lift the P2 write gate (§6.1).** Before workbench automations ship, P5 removes
+`Registry.workbenchAutomationGate`'s workbench refusal and the SDK's matching dry-run refusal, and makes `Apply`
+(inline and later) of an `automation_run` row resolve the workbench from run → `automations.project_id`, run
+`WorkbenchAlive` and the tool's `Scope` against it, and fail when it is gone; a missing run keeps failing closed.
 
 ### 13.1 `session()` — a visible session
 
