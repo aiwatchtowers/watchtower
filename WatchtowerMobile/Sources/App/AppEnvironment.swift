@@ -546,8 +546,8 @@ final class AppEnvironment {
         recordingsDirectory: URL? = nil,
         sandbox: URL? = nil,
         defaults: UserDefaults = .standard,
-        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge,
-        energy: EnergyCounter? = nil
+        energy: EnergyCounter? = nil,
+        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
     ) throws -> AppEnvironment {
         let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults, setBadge: setBadge)
         let files = try sandbox.map { DemoFiles(replicas: $0, recordings: $0.appendingPathComponent("recordings", isDirectory: true)) }

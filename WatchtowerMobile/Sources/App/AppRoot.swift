@@ -141,6 +141,10 @@ final class AppRoot {
 
     var isDemo: Bool { env.transportKind == .inMemoryDemo }
 
+    /// The tour's hand-off of a link URL to the live root (`DemoTour`); nil
+    /// on every other root.
+    @ObservationIgnored var forwardsLinks: (@MainActor (URL) -> Void)?
+
     /// Welcome and the scan instead of the tabs: a live build with no saved
     /// link, or none on screen (the last one was just removed).
     var showsOnboarding: Bool { !isDemo && (linking.links.isEmpty || env.active == nil) }
@@ -191,6 +195,8 @@ final class AppRoot {
         guard CloudKitTransport.entitlementPresent() else {
             return try demo(try AppEnvironment.demo(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
+        // A demo tour a kill cut short (#174): its files and settings go.
+        clearTourLeftovers()
         let store = LinkStore(defaults: defaults)
         let keys = try PhoneKeychain.store()
         // F14: reads the device id (works while locked), never creates it.
@@ -329,10 +335,15 @@ final class AppRoot {
     }
 
     /// A `watchtower://link` URL from the system Camera app. The demo has no
-    /// link to change.
+    /// link to change: the signed build's tour hands it on (`forwardsLinks`,
+    /// the tour ends and the live root links), the unsigned build drops it.
     func open(_ url: URL) async {
         guard !isDemo else {
-            Self.logger.notice("link URL ignored: the demo build has no link")
+            if let forwardsLinks {
+                forwardsLinks(url)
+            } else {
+                Self.logger.notice("link URL ignored: the demo build has no link")
+            }
             return
         }
         await linking.open(url)
