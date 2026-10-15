@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	"watchtower/internal/db/lockmetrics"
 )
 
 // legacySchemaTip is the last PRAGMA user_version written by the legacy
@@ -37,7 +37,8 @@ func RunSchemaUpgrade(dbPath string) error {
 	// whenever another process (the daemon, the Desktop) holds the write
 	// lock; BEGIN IMMEDIATE makes the tx take that lock before its re-check
 	// read, so the read sees what a concurrent upgrader committed.
-	raw, err := sql.Open("sqlite", sqliteDSN(dbPath, fmt.Sprintf("%s&_pragma=busy_timeout(%d)", immediateTxDSN, busyTimeoutMS)))
+	lockmetrics.Configure(dbPath)
+	raw, err := sql.Open(lockmetrics.DriverName, sqliteDSN(dbPath, fmt.Sprintf("%s&_pragma=busy_timeout(%d)", immediateTxDSN, busyTimeoutMS)))
 	if err != nil {
 		return fmt.Errorf("opening db for schema upgrade: %w", err)
 	}
