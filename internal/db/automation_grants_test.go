@@ -229,3 +229,38 @@ func mustListGrants(t *testing.T, d *DB, id int64) []AutomationToolGrant {
 	}
 	return got
 }
+
+func TestGrant_ListAutomationToolGrantsFor(t *testing.T) {
+	d := openTestDB(t)
+	a := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h1")
+	b := seedAutomationRow(t, d, "weekly", filepath.Join(t.TempDir(), "weekly.md"), "h2")
+	c := seedAutomationRow(t, d, "other", filepath.Join(t.TempDir(), "other.md"), "h3")
+	now := time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC)
+	for _, g := range []struct {
+		id         int64
+		tool, hash string
+	}{{a, "send_slack_message", "h1"}, {a, "create_target", "h1"}, {c, "create_idea", "h3"}} {
+		if err := d.SetAutomationToolGrant(g.id, g.tool, g.hash, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setApprovalHash(t, d, a, "h1b")
+	got, err := d.ListAutomationToolGrantsFor([]int64{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries = %v, want exactly the two asked ids", got)
+	}
+	wantGrants(t, "of a", got[a], []AutomationToolGrant{
+		{AutomationID: a, Tool: "create_target", GrantHash: "h1", GrantedAt: now},
+		{AutomationID: a, Tool: "send_slack_message", GrantHash: "h1", GrantedAt: now},
+	})
+	if got[b] == nil || len(got[b]) != 0 {
+		t.Errorf("grants of b = %#v, want an empty non-nil slice", got[b])
+	}
+	empty, err := d.ListAutomationToolGrantsFor(nil)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Errorf("ListAutomationToolGrantsFor(nil) = (%#v, %v), want an empty map", empty, err)
+	}
+}
