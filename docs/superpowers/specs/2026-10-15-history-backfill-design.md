@@ -92,6 +92,7 @@ CREATE TABLE history_backfill (
     reached_ts  REAL    NOT NULL,  -- fetched and processed down to here
     status      TEXT    NOT NULL DEFAULT 'running'
                 CHECK (status IN ('running', 'paused', 'done', 'off')),
+    waiting     TEXT    NOT NULL DEFAULT '' CHECK (waiting IN ('', 'plan_limit')),
     chunk_failures INTEGER NOT NULL DEFAULT 0,
     last_error  TEXT    NOT NULL DEFAULT '',
     started_at  TEXT    NOT NULL,
@@ -103,7 +104,8 @@ CREATE TABLE history_backfill (
 
 `reached_ts` starts at `upper_ts` and only moves down. `paused` is set when the
 source's auth is revoked (the existing auth-error writers) and cleared when it
-is reconnected; `off` when the source is removed or its feature is off.
+is reconnected; `off` when the source is removed. `waiting = 'plan_limit'`
+while the plan-limit gate holds the row (the Desktop shows it).
 
 ### The daemon phase
 
