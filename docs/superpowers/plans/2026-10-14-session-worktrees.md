@@ -4,7 +4,7 @@
 
 **Goal:** A second (and every further) concurrent agent session of a workbench starts in its own git worktree, prepared from `.worktreeinclude`, the workbench integration and an optional setup command; when the finished session's agent exits, #535's cleanup removes the worktree and branch if nothing can be lost.
 
-**Architecture:** Go owns every git and install write: `internal/workbenchgit/worktree*.go` (create, include, ensure) behind `watchtower workbench worktree create|ensure|forget --json`, which also installs (or unregisters) the workbench integration through `devpack`. `internal/sessioncleanup` learns that a row's own placed worktree and `wt/` branch are the session's by record. The Desktop decides placement with a pure `SessionStartPlacement.decide` (WatchtowerCore) fed by #565's `SessionPlaceCenter`, calls the CLI before inserting the row (migration 00113 stores `worktree_branch`/`worktree_base`), runs the setup command on the first launch, re-adds a cleaned-up worktree on resume, and runs `SessionCleanupCenter.applyCleanup` for the two placed items when a finished placed session's agent exits.
+**Architecture:** Go owns every git and install write: `internal/workbenchgit/worktree*.go` (create, include, ensure) behind `watchtower workbench worktree create|ensure|forget --json`, which also installs (or unregisters) the workbench integration through `devpack`. `internal/sessioncleanup` learns that a row's own placed worktree and `wt/` branch are the session's by record. The Desktop decides placement with a pure `SessionStartPlacement.decide` (WatchtowerCore) fed by #565's `SessionPlaceCenter`, calls the CLI before inserting the row (migration 00114 stores `worktree_branch`/`worktree_base`), runs the setup command on the first launch, re-adds a cleaned-up worktree on resume, and runs `SessionCleanupCenter.applyCleanup` for the two placed items when a finished placed session's agent exits.
 
 **Tech Stack:** Go 1.25 (cobra, `database/sql` + modernc SQLite, goose migrations, `golang.org/x/sys/unix` for `clonefile`), SwiftUI + GRDB (WatchtowerCore / WatchtowerDesktop).
 
@@ -19,7 +19,7 @@
 - Placement code (create, ensure, forget) never runs `worktree remove`, `--force`, `branch -D`/`-d`, `reset`, `clean`, `checkout`, `stash`. Removal is only #535's `workbench cleanup` with every PROJ-18 catch.
 - `devpack.RemoveWorkbench` is never called for a worktree path (it drops shared `info/exclude` lines).
 - CLI: every git outcome is an exit-0 JSON envelope; non-zero only when the workbench/folder does not resolve. Write budget 60 s (`workbenchGitWriteBudget`).
-- Migration `00113_terminal_session_placement.sql` (re-check the next free number before writing it): `terminal_sessions.worktree_branch TEXT`, `terminal_sessions.worktree_base TEXT`, `projects.worktree_setup TEXT NOT NULL DEFAULT ''`.
+- Migration `00114_terminal_session_placement.sql` (re-check the next free number before writing it): `terminal_sessions.worktree_branch TEXT`, `terminal_sessions.worktree_base TEXT`, `projects.worktree_setup TEXT NOT NULL DEFAULT ''`.
 - A placed row stores the worktree cwd as its `folder_path` (spec D9); every other row keeps the workbench folder (#565's pinning tests stay green).
 - Desktop never runs git itself for this feature; it calls the CLI (`WorkbenchCLI`, `SessionCleanupCenter`).
 - Inner loop only per task (`go test ./internal/<pkg>`, `make test-swift FILTER=…`, `make lint-diff`); the full gate runs once at the end (CLAUDE.md). Never `run_in_background` for builds or tests.
@@ -40,12 +40,12 @@ Go lane: 1 → 2 → 3 → 4 → 5 → 6 → 7. Swift lane (after 1 and 5): 8 �
 
 ---
 
-### Task 1: Migration 00113 and the Go/Swift row fields
+### Task 1: Migration 00114 and the Go/Swift row fields
 
 **Depends on:** none.
 
 **Files:**
-- Create: `internal/db/migrations/00113_terminal_session_placement.sql`
+- Create: `internal/db/migrations/00114_terminal_session_placement.sql`
 - Modify: `internal/db/schema.sql` (`terminal_sessions`, `projects`)
 - Modify: `internal/db/terminal_sessions.go` (`TerminalSession.WorktreeBranch`, `GetTerminalSession`'s SELECT/Scan; new `PlacedSessions`)
 - Test: `internal/db/terminal_sessions_placement_test.go`
@@ -60,7 +60,7 @@ Go lane: 1 → 2 → 3 → 4 → 5 → 6 → 7. Swift lane (after 1 and 5): 8 �
 
 - [ ] **Step 1: Write the migration**
 
-Check `ls internal/db/migrations | tail -1` first; if 00113 is taken, use the next free number everywhere in this plan.
+Check `ls internal/db/migrations | tail -1` first; if 00114 is taken, use the next free number everywhere in this plan.
 
 ```sql
 -- +goose Up
@@ -201,7 +201,7 @@ Run: `make test-swift FILTER=TerminalSessionPlacementQueriesTests` → PASS.
 
 ```bash
 git add internal/db WatchtowerDesktop/Sources/WatchtowerCore WatchtowerDesktop/Tests
-git commit -m "feat(db): session placement columns (migration 00113)"
+git commit -m "feat(db): session placement columns (migration 00114)"
 ```
 
 ---

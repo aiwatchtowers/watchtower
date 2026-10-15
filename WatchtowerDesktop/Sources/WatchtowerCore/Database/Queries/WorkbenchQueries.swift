@@ -51,7 +51,7 @@ package enum WorkbenchQueries {
         guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
     }
 
-    /// The workbench's worktree setup command (00113): run in a new session
+    /// The workbench's worktree setup command (00114): run in a new session
     /// worktree before the agent's first launch; "" = none. Stored trimmed.
     package static func setWorktreeSetup(_ db: Database, projectID: Int64, command: String) throws {
         try db.execute(

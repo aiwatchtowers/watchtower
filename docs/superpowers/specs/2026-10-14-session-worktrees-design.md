@@ -135,7 +135,7 @@ worktree when it is removed. Repository-specific fix-ups (for this repo: drop th
 
 ## 7. Session row, start and resume
 
-**Migration `<next free>_terminal_session_placement.sql`** (00113 on main today):
+**Migration `<next free>_terminal_session_placement.sql`** (00114 after rebase):
 - `terminal_sessions.worktree_branch TEXT` — non-NULL = Watchtower created the worktree this row's
   `folder_path` is in, on branch `wt/<slug>`; NULL = every other row (all existing rows).
 - `terminal_sessions.worktree_base TEXT` — the commit it was cut from.

@@ -58,7 +58,7 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
     /// cleared by `WorkbenchQueries.clearArchivedThrough`.
     package let archivedThrough: String?
     /// The command run in a new session worktree before the agent's first
-    /// launch (00113); "" = none. Written by `WorkbenchQueries.setWorktreeSetup`.
+    /// launch (00114); "" = none. Written by `WorkbenchQueries.setWorktreeSetup`.
     package let worktreeSetup: String
 
     package init(row: Row) {

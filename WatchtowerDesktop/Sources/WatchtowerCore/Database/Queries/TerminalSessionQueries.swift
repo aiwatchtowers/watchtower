@@ -30,7 +30,7 @@ package enum TerminalSessionQueries {
         /// The agent's own session id. Required (non-empty) for `.claude`;
         /// nil for a shell, and for a new codex row (Codex mints its id).
         package var claudeSessionID: String?
-        /// Set when Watchtower created the session's worktree (00113).
+        /// Set when Watchtower created the session's worktree (00114).
         package var worktreeBranch: String?
         package var worktreeBase: String?
 

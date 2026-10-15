@@ -41,7 +41,7 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     /// The transcript path the agent's SessionStart hook reported; nil = none.
     package var transcriptPath: String?
     /// The `wt/<slug>` branch of the worktree Watchtower created for this
-    /// session (00113); nil = the session runs in the workbench folder or a
+    /// session (00114); nil = the session runs in the workbench folder or a
     /// checkout Watchtower did not create.
     package var worktreeBranch: String?
     /// The commit that branch was cut from; nil with `worktreeBranch`.
