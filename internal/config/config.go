@@ -65,6 +65,7 @@ type SyncConfig struct {
 	PollInterval       time.Duration `mapstructure:"poll_interval"`
 	SyncThreads        bool          `mapstructure:"sync_threads"`
 	SyncOnWake         bool          `mapstructure:"sync_on_wake"`
+	BackfillDays       int           `mapstructure:"backfill_days"`
 }
 
 type DigestConfig struct {
@@ -446,6 +447,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ai.workers", DefaultAIWorkers)
 	v.SetDefault("sync.workers", DefaultSyncWorkers)
 	v.SetDefault("sync.initial_history_days", DefaultInitialHistDays)
+	v.SetDefault("sync.backfill_days", DefaultBackfillDays)
 	v.SetDefault("sync.poll_interval", DefaultPollInterval)
 	v.SetDefault("sync.sync_threads", DefaultSyncThreads)
 	v.SetDefault("sync.sync_on_wake", DefaultSyncOnWake)

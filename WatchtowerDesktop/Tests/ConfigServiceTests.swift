@@ -97,23 +97,23 @@ struct ConfigServiceTests {
         #expect(svc.initialHistoryDays == 14)
     }
 
-    @Test("Load parses calendar history days with a 14-day fallback")
+    @Test("Load parses calendar history days with a 30-day fallback")
     func loadCalendarHistoryDays() {
         let path = makeTempConfig("""
         calendar:
           enabled: true
           sync_days_ahead: 7
-          history_days: 30
+          history_days: 21
         """)
         let svc = ConfigService(configPath: path)
-        #expect(svc.calendarHistoryDays == 30)
+        #expect(svc.calendarHistoryDays == 21)
 
         let fallbackPath = makeTempConfig("""
         calendar:
           enabled: true
         """)
         let fallback = ConfigService(configPath: fallbackPath)
-        #expect(fallback.calendarHistoryDays == 14)
+        #expect(fallback.calendarHistoryDays == 30)
     }
 
     @Test("Load applies defaults for missing day_plan keys")
