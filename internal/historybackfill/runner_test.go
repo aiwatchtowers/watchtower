@@ -1,0 +1,320 @@
+package historybackfill
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
+)
+
+var _ Store = (*db.DB)(nil)
+
+const day = 86400.0
+
+type fakeStore struct {
+	rows     []db.HistoryBackfill
+	plan     *db.PlanUsageStatus
+	failures int // RecordHistoryBackfillFailure calls
+}
+
+func (s *fakeStore) row(id int64) *db.HistoryBackfill {
+	for i := range s.rows {
+		if s.rows[i].ID == id {
+			return &s.rows[i]
+		}
+	}
+	panic("no row")
+}
+
+func (s *fakeStore) ListHistoryBackfills() ([]db.HistoryBackfill, error) {
+	return append([]db.HistoryBackfill(nil), s.rows...), nil
+}
+
+func (s *fakeStore) AdvanceHistoryBackfill(id int64, reachedTS float64, _ time.Time) error {
+	r := s.row(id)
+	r.ReachedTS, r.ChunkFailures, r.LastError, r.Waiting = reachedTS, 0, "", ""
+	if reachedTS <= r.FloorTS {
+		r.Status = "done"
+	}
+	return nil
+}
+
+func (s *fakeStore) RecordHistoryBackfillFailure(id int64, msg string, _ time.Time) (int, error) {
+	s.failures++
+	r := s.row(id)
+	r.ChunkFailures++
+	r.LastError = msg
+	return r.ChunkFailures, nil
+}
+
+func (s *fakeStore) SetHistoryBackfillStatus(id int64, status string, _ time.Time) error {
+	s.row(id).Status = status
+	return nil
+}
+
+func (s *fakeStore) SetHistoryBackfillWaiting(id int64, waiting string, _ time.Time) error {
+	s.row(id).Waiting = waiting
+	return nil
+}
+
+func (s *fakeStore) GetPlanUsageStatus() (*db.PlanUsageStatus, error) { return s.plan, nil }
+
+type call struct {
+	op       string
+	from, to time.Time
+}
+
+type fakeSource struct {
+	kind       string
+	id         int64
+	fetchErr   error
+	processErr error
+	incomplete bool
+	onProcess  func()
+	calls      []call
+}
+
+func (f *fakeSource) Kind() string     { return f.kind }
+func (f *fakeSource) AccountID() int64 { return f.id }
+
+func (f *fakeSource) Fetch(_ context.Context, from, to time.Time) error {
+	f.calls = append(f.calls, call{"fetch", from, to})
+	return f.fetchErr
+}
+
+func (f *fakeSource) Process(_ context.Context, from, to time.Time) (bool, error) {
+	f.calls = append(f.calls, call{"process", from, to})
+	if f.onProcess != nil {
+		f.onProcess()
+	}
+	return !f.incomplete, f.processErr
+}
+
+func (f *fakeSource) count(op string) int {
+	n := 0
+	for _, c := range f.calls {
+		if c.op == op {
+			n++
+		}
+	}
+	return n
+}
+
+func running(id int64, kind string, acct int64, reached, floor float64) db.HistoryBackfill {
+	return db.HistoryBackfill{ID: id, SourceKind: kind, AccountID: acct, FloorTS: floor,
+		UpperTS: reached, ReachedTS: reached, Status: "running"}
+}
+
+func newRunner(st *fakeStore, srcs ...Source) *Runner {
+	return &Runner{
+		Store:   st,
+		Sources: srcs,
+		Account: func(string, int64) AccountState { return AccountOK },
+		Budget:  5 * time.Minute,
+		Now:     func() time.Time { return time.Unix(1_000_000_000, 0) },
+		Logger:  log.New(io.Discard, "", 0),
+	}
+}
+
+func ts(f float64) time.Time { return time.Unix(int64(f), 0).UTC() }
+
+func TestRunner_NewestChunkFirst(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "slack", id: 1}
+	require.NoError(t, newRunner(st, src).Step(context.Background()))
+	require.Len(t, src.calls, 2)
+	assert.Equal(t, call{"fetch", ts(28 * day), ts(30 * day)}, src.calls[0])
+	assert.Equal(t, call{"process", ts(28 * day), ts(30 * day)}, src.calls[1])
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
+	assert.Equal(t, "running", st.rows[0].Status)
+}
+
+func TestRunner_OneChunkPerSourcePerStep(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{
+		running(1, "slack", 1, 30*day, 0),
+		running(2, "gmail", 7, 20*day, 0),
+	}}
+	a, b := &fakeSource{kind: "slack", id: 1}, &fakeSource{kind: "gmail", id: 7}
+	require.NoError(t, newRunner(st, a, b).Step(context.Background()))
+	assert.Equal(t, 1, a.count("process"))
+	assert.Equal(t, 1, b.count("process"))
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
+	assert.Equal(t, 18*day, st.rows[1].ReachedTS)
+}
+
+func TestRunner_FinishesAtFloor(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 5*day, 5*day)}}
+	src := &fakeSource{kind: "gmail", id: 1}
+	require.NoError(t, newRunner(st, src).Step(context.Background()))
+	assert.Empty(t, src.calls)
+	assert.Equal(t, "done", st.rows[0].Status)
+}
+
+func TestRunner_ThreeFailuresSkipChunk(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "gmail", id: 1, processErr: errors.New("boom")}
+	r := newRunner(st, src)
+	for i := 1; i <= 2; i++ {
+		require.NoError(t, r.Step(context.Background()))
+		assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+		assert.Equal(t, i, st.rows[0].ChunkFailures)
+		assert.Equal(t, "process: boom", st.rows[0].LastError)
+	}
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
+	assert.Equal(t, 0, st.rows[0].ChunkFailures)
+	assert.Equal(t, "running", st.rows[0].Status)
+}
+
+func TestRunner_FetchFailureRecorded(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "imap", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "imap", id: 1, fetchErr: errors.New("net")}
+	require.NoError(t, newRunner(st, src).Step(context.Background()))
+	assert.Equal(t, 0, src.count("process"))
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Equal(t, 1, st.rows[0].ChunkFailures)
+}
+
+func TestRunner_CanceledContextRecordsNoFailure(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 1, 30*day, 0)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	src := &fakeSource{kind: "gmail", id: 1, processErr: context.Canceled, onProcess: cancel}
+	err := newRunner(st, src).Step(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, st.failures)
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+}
+
+func TestRunner_PlanGateHoldsChunk(t *testing.T) {
+	st := &fakeStore{
+		rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)},
+		plan: &db.PlanUsageStatus{State: "ok",
+			LimitsJSON: `[{"key":"session","projection":{"state":"will_hit"}}]`},
+	}
+	a, b := &fakeSource{kind: "slack", id: 1}, &fakeSource{kind: "gmail", id: 1}
+	r := newRunner(st, a, b)
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 1, a.count("fetch"))
+	assert.Equal(t, 0, a.count("process"))
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Equal(t, "plan_limit", st.rows[0].Waiting)
+	assert.Empty(t, b.calls, "the gate stops the whole Step")
+
+	st.plan.LimitsJSON = `[{"key":"session","projection":{"state":"safe"}}]`
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 1, a.count("process"))
+	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
+	assert.Equal(t, "", st.rows[0].Waiting)
+	assert.Equal(t, 1, b.count("process"))
+}
+
+func TestRunner_PlanGateClearsWaitingBeforeFailedProcess(t *testing.T) {
+	r0 := running(1, "gmail", 1, 30*day, 0)
+	r0.Waiting = "plan_limit"
+	st := &fakeStore{rows: []db.HistoryBackfill{r0}}
+	src := &fakeSource{kind: "gmail", id: 1, processErr: errors.New("boom")}
+	require.NoError(t, newRunner(st, src).Step(context.Background()))
+	assert.Equal(t, "", st.rows[0].Waiting)
+}
+
+func TestRunner_IncompleteProcessHolds(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)}}
+	a := &fakeSource{kind: "slack", id: 1, incomplete: true}
+	b := &fakeSource{kind: "gmail", id: 1}
+	require.NoError(t, newRunner(st, a, b).Step(context.Background()))
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Equal(t, 0, st.failures)
+	assert.Empty(t, b.calls, "an incomplete chunk stops the Step")
+}
+
+func TestRunner_RevokedPausesAndResumes(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "gmail", 3, 30*day, 0)}}
+	src := &fakeSource{kind: "gmail", id: 3}
+	r := newRunner(st, src)
+	state := AccountRevoked
+	r.Account = func(kind string, id int64) AccountState {
+		assert.Equal(t, "gmail", kind)
+		assert.Equal(t, int64(3), id)
+		return state
+	}
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, "paused", st.rows[0].Status)
+	assert.Empty(t, src.calls)
+
+	state = AccountOK
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, "running", st.rows[0].Status)
+	assert.Equal(t, 1, src.count("fetch"))
+}
+
+func TestRunner_RemovedAccountTurnsOff(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0)}}
+	src := &fakeSource{kind: "slack", id: 1}
+	r := newRunner(st, src)
+	r.Account = func(string, int64) AccountState { return AccountGone }
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, "off", st.rows[0].Status)
+	assert.Empty(t, src.calls)
+}
+
+func TestRunner_BudgetStopsStep(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)}}
+	now := time.Unix(1_000_000_000, 0)
+	a := &fakeSource{kind: "slack", id: 1, onProcess: func() { now = now.Add(6 * time.Minute) }}
+	b := &fakeSource{kind: "gmail", id: 1}
+	r := newRunner(st, a, b)
+	r.Now = func() time.Time { return now }
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 1, a.count("process"))
+	assert.Empty(t, b.calls)
+	assert.Equal(t, 30*day, st.rows[1].ReachedTS)
+}
+
+func TestRunner_SlackDoneHookOnce(t *testing.T) {
+	done := running(1, "slack", 1, 10*day, 10*day)
+	done.Status = "done"
+	st := &fakeStore{rows: []db.HistoryBackfill{
+		done,
+		running(2, "slack", 2, 4*day, 3*day),
+		running(3, "gmail", 1, 30*day, 0),
+	}}
+	src := &fakeSource{kind: "slack", id: 2}
+	r := newRunner(st, src, &fakeSource{kind: "gmail", id: 1})
+	var floors []time.Time
+	r.OnSlackDone = func(_ context.Context, floor time.Time) { floors = append(floors, floor) }
+
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, "done", st.rows[1].Status)
+	assert.Equal(t, []time.Time{ts(3 * day)}, floors)
+
+	require.NoError(t, r.Step(context.Background()))
+	assert.Len(t, floors, 1)
+}
+
+func TestRunner_SlackDoneHookWaitsForEverySlackRow(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{
+		running(1, "slack", 1, day, 0),
+		running(2, "slack", 2, 30*day, 0),
+	}}
+	r := newRunner(st, &fakeSource{kind: "slack", id: 1}, &fakeSource{kind: "slack", id: 2})
+	called := false
+	r.OnSlackDone = func(context.Context, time.Time) { called = true }
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, "done", st.rows[0].Status)
+	assert.False(t, called)
+}
+
+func TestRunner_NoSourceWiredSkips(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "imap", 9, 30*day, 0)}}
+	other := &fakeSource{kind: "imap", id: 8}
+	require.NoError(t, newRunner(st, other).Step(context.Background()))
+	assert.Empty(t, other.calls)
+	assert.Equal(t, running(1, "imap", 9, 30*day, 0), st.rows[0])
+}
