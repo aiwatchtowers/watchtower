@@ -119,7 +119,8 @@ func (db *DB) GetJiraAccount(id int64) (JiraAccount, error) {
 }
 
 // UpdateJiraAccountConnection updates the resolved site identity for
-// accountID — called once the OAuth flow resolves accessible resources.
+// accountID — called once the OAuth flow resolves accessible resources — and
+// gives a still-unlabeled account its automatic label (JiraAccountLabel).
 func (db *DB) UpdateJiraAccountConnection(id int64, cloudID, siteURL, siteName string) error {
 	res, err := db.Exec(`UPDATE jira_accounts SET cloud_id = ?, site_url = ?, site_name = ? WHERE id = ?`,
 		cloudID, siteURL, siteName, id)
@@ -129,6 +130,7 @@ func (db *DB) UpdateJiraAccountConnection(id int64, cloudID, siteURL, siteName s
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("updating jira account connection: no jira_accounts row %d", id)
 	}
+	db.fillAccountLabelBestEffort("jira_accounts", id, JiraAccountLabel(siteURL, siteName))
 	return nil
 }
 

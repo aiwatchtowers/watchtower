@@ -73,6 +73,15 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	events := expandEvents(rawEvents, winStart, winEnd, s.logger)
 
+	// The owner may have renamed the account (or the daemon's start may have
+	// given it its automatic label) since this syncer was wired; the calendar
+	// row below carries the current name. A failed read keeps the wired one.
+	if fresh, err := s.db.GetCalendarAccount(s.account.ID); err == nil {
+		s.account.Label = fresh.Label
+	} else {
+		s.logger.Printf("caldav: account %d: re-reading label: %v", s.account.ID, err)
+	}
+
 	calID := s.CalendarID()
 	// Register the account's calendar_calendars row (calendar_events.calendar_id
 	// FK). IsSelected stays false: calendar_calendars.is_selected drives the

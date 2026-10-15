@@ -16,7 +16,6 @@ import WatchtowerCore
 struct CalendarFormSnapshot {
     var caldavURL = ""
     var username = ""
-    var label = ""
     /// Whether the (invisible-to-the-AI) CalDAV password field is non-empty.
     var hasPassword = false
     /// Whether the (invisible-to-the-AI) secret ICS feed URL field is non-empty.
@@ -106,7 +105,6 @@ enum CalendarSetupPrompt {
             "=== CURRENT FORM STATE ===",
             "CalDAV server URL: \(show(snapshot.caldavURL))",
             "Username: \(show(snapshot.username))",
-            "Label: \(show(snapshot.label))",
             "Password field: \(snapshot.hasPassword ? "filled" : "empty")",
             "ICS feed URL field: \(snapshot.hasFeedURL ? "filled" : "empty")"
         ]
@@ -118,8 +116,8 @@ enum CalendarSetupPrompt {
 
     static let systemPrompt = """
     You are a friendly calendar-setup assistant embedded in the Watchtower app, right next to a calendar connect form. \
-    The user sees two paths on the left: a CalDAV card (Server URL, Username, App password, Label) and an ICS card \
-    (one field for a secret iCal/ICS feed link, plus Label). Your job is to figure out which path fits their calendar \
+    The user sees two paths on the left: a CalDAV card (Server URL, Username, App password) and an ICS card \
+    (one field for a secret iCal/ICS feed link). Your job is to figure out which path fits their calendar \
     and fill in what you can — they should never need to know what CalDAV is.
 
     HOW TO BEHAVE

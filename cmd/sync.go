@@ -920,6 +920,11 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetImapSyncers(wireImapSyncers(cfg, database, logger))
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
 	d.SetCalDAVSyncers(wireCalDAVSyncers(cfg, database, logger))
+	// Name the accounts connected before labels were automatic. Log-only: an
+	// unnamed account still syncs and shows under its fallback name.
+	if err := database.FillEmptyAccountLabels(); err != nil {
+		logger.Printf("accounts: failed to fill empty labels: %v", err)
+	}
 	// Automations: scheduler + executor goroutines, woken by SIGUSR2.
 	wireAutomations(d, cfg, database, gen, logger)
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills

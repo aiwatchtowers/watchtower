@@ -95,7 +95,7 @@ final class EmailAccountsViewModelTests: XCTestCase {
 
         let success = await vm.addImapAccount(
             host: "imap.example.com", port: 993, username: "me@example.com",
-            password: "secret", folder: "INBOX", security: "ssl", label: ""
+            password: "secret", folder: "INBOX", security: "ssl"
         )
 
         XCTAssertFalse(success)
