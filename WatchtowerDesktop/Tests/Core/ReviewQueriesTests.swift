@@ -26,7 +26,7 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try ReviewQueries.viewed($0, roundID: roundID) }, [:])
     }
 
-    func testCarryCopiesMovedAndOutdatesLost() throws {
+    func testReview03_CarryNeverDropsAComment() throws {
         let db = try TestDatabase.create()
         let r1 = try db.write { try Self.seedRound($0) }
         let a = try draft(db, r1, "a.go", tree: "t1", body: "keep")

@@ -186,7 +186,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.load, .failed("git diff failed"))
     }
 
-    func testSendTwiceTypesOnce() async throws {
+    func testReview04_SendTypesOnce() async throws {
         let h = try harness()
         h.baseScript()
         h.cli.script(["send": #"{"ok":true,"sent":true,"comments":1,"line":"Review round #7 sent (1 comment)."}"#])

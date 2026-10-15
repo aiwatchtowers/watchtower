@@ -22,7 +22,7 @@ func seedReviewSession(t *testing.T, d *DB) (projectID, sessionID int64) {
 	return
 }
 
-func TestReviewRounds_OneOpenPerSessionAndGuardedSend(t *testing.T) {
+func TestReview04_SendIsGuardedAndStoredBeforeTheLine(t *testing.T) {
 	d := openTestDB(t)
 	pid, sid := seedReviewSession(t, d)
 	r := ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/tmp/wb-review", BaseSHA: "b", TreeSHA: "t1"}
