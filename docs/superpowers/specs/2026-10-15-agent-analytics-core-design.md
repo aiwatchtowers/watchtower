@@ -160,8 +160,10 @@ an earlier owner moves the row. This keeps the result independent of scan order.
   breakdown counts as 5m), plus `speed` and `service_tier`.
 - `internal/agentlog/pricing.go` holds a versioned price table keyed by **exact model
   id** with explicit aliases — never a prefix match, so a future model is not priced
-  silently. Rules: cache write 5m = 1.25× input, 1h = 2× input, read = 0.1× input; the
-  >200k-input tier where the model has one; the fast-speed multiplier.
+  silently. Rules: cache write 5m = 1.25× input, 1h = 2× input; the cache-read price
+  is set per model (it is not always 0.1× input — Fable 5.1 reads at $0.25 against $10
+  input, Opus 5.5 at $0.20 against $4); a long-input tier where the model has one
+  (Haiku 5.5 above 100K input); a fast-speed multiplier per model, unknown → estimated.
 - The row stores `cost_usd`, `price_version` and `cost_estimated` (1 for a model or
   tier the table does not know; its cost is then 0 and the flag says so).
 - A price-table change bumps `price_version`; the next scan reprices old rows with one
