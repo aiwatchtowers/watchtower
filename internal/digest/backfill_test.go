@@ -3,6 +3,7 @@ package digest
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,23 +85,171 @@ func TestRunBackfillWindow_DigestsChunk(t *testing.T) {
 	}
 }
 
-func TestRunBackfillWindow_UsageIsThisCallsDeltaOnly(t *testing.T) {
+// apiTokenGenerator answers every call with a fixed usage that includes
+// TotalAPITokens, so the summed usage of a multi-pass call can be checked.
+type apiTokenGenerator struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *apiTokenGenerator) Generate(context.Context, string, string, string) (string, *Usage, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return validDigestJSON(), &Usage{Model: "m", InputTokens: 100, OutputTokens: 50, TotalAPITokens: 150}, "s", nil
+}
+
+// TestRunBackfillWindow_UsageIsThisCallsOwn pins that the returned usage is the
+// sum of this call's own passes — never the pipeline's shared counters, which
+// the forward phase also feeds.
+func TestRunBackfillWindow_UsageIsThisCallsOwn(t *testing.T) {
 	database := testDB(t)
-	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "C1", "busy")
 	seedUser(t, database, "U1", "alice", "Alice")
 	from, to := backfillRange()
-	seedRangeMessages(t, database, "C1", "alpha", from+3600, 5)
+	for i := range db.DefaultTimeRangeLimit + 50 {
+		seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("busy-%d", i))
+	}
 
-	gen := &mockGenerator{response: validDigestJSON()}
+	gen := &apiTokenGenerator{}
 	p := backfillPipeline(t, database, gen)
 	// The forward phase already accumulated usage on the shared pipeline.
 	p.totalInputTokens.Store(1000)
 	p.totalOutputTokens.Store(1000)
+	p.totalAPITokens.Store(1000)
 
-	_, usage, err := p.RunBackfillWindow(context.Background(), from, to)
+	res, usage, err := p.RunBackfillWindow(context.Background(), from, to)
 	require.NoError(t, err)
-	assert.Equal(t, 100, usage.InputTokens)
-	assert.Equal(t, 50, usage.OutputTokens)
+	require.Equal(t, 2, res.Digests, "two passes, two AI calls")
+	require.Equal(t, 2, gen.calls)
+	assert.Equal(t, 200, usage.InputTokens)
+	assert.Equal(t, 100, usage.OutputTokens)
+	assert.Equal(t, 300, usage.TotalAPITokens)
+}
+
+// TestRunBackfillWindow_FailedChannelNotReofferedInTheSameCall pins that a
+// channel whose AI call failed is not re-sent on every later pass of the same
+// call: the healthy channel finishes, the failing one is tried once, and the
+// call then reports the failure so the chunk takes a strike.
+func TestRunBackfillWindow_FailedChannelNotReofferedInTheSameCall(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "C_OK", "steady")
+	seedChannel(t, database, "C_FAIL", "flaky")
+	seedUser(t, database, "U1", "alice", "Alice")
+	from, to := backfillRange()
+	// A backlog over the load cap, so the healthy channel needs a second pass.
+	for i := range db.DefaultTimeRangeLimit + 50 {
+		seedMessage(t, database, "C_OK", fmt.Sprintf("%d.000000", int64(from)+600+int64(i)), "U1", fmt.Sprintf("steady-%d", i))
+	}
+	seedRangeMessages(t, database, "C_FAIL", "flaky", from+3600, 5)
+
+	gen := &channelKeyedGenerator{failChannel: "flaky", response: validDigestJSON()}
+	p := backfillPipeline(t, database, gen)
+	p.cfg.Digest.BatchMaxChannels = 1
+
+	res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+	require.Error(t, err, "a channel left failing is reported, not silently passed")
+	assert.Contains(t, err.Error(), "simulated AI failure")
+	assert.False(t, res.Complete)
+	assert.Equal(t, 2, res.Digests, "the healthy channel still finished its two windows")
+	assert.Len(t, channelDigests(t, database, "C_OK"), 2)
+	assert.Equal(t, 3, gen.calls, "two healthy calls and exactly one call for the failing channel")
+}
+
+// TestRunBackfillWindow_PromptCarriesNoPresentDayContext pins that a backfill
+// channel digest — on both the single-channel and the batch path — is written
+// without the channel's current running summary: a digest of weeks ago must
+// not skip decisions today's summary holds, or claim continuity backwards.
+func TestRunBackfillWindow_PromptCarriesNoPresentDayContext(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		channels []string
+	}{
+		{"single", []string{"C1"}},
+		{"batch", []string{"C1", "C2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := testDB(t)
+			seedUser(t, database, "U1", "alice", "Alice")
+			from, to := backfillRange()
+			now := float64(time.Now().Unix())
+			for _, ch := range tc.channels {
+				seedChannel(t, database, ch, "chan-"+ch)
+				// Medium activity: enough visible messages that the forward
+				// path would load the running summary.
+				seedRangeMessages(t, database, ch, "old-"+ch, from+3600, 35)
+				_, err := database.UpsertDigest(db.Digest{
+					ChannelID: ch, Type: "channel", PeriodFrom: now - 7200, PeriodTo: now - 60,
+					Summary: "forward", MessageCount: 1, Model: "m",
+					RunningSummary: `{"note":"PRESENT-DAY-SUMMARY"}`,
+				})
+				require.NoError(t, err)
+			}
+
+			gen := &promptCapturingGenerator{responses: map[string]string{
+				"digest.channel_batch": batchAnswer(tc.channels...),
+				"digest.channel":       validDigestJSON(),
+			}}
+			p := backfillPipeline(t, database, gen)
+			p.TrackContext = "TRACK-CONTEXT-TODAY"
+
+			res, _, err := p.RunBackfillWindow(context.Background(), from, to)
+			require.NoError(t, err)
+			require.Equal(t, len(tc.channels), res.Digests)
+			require.Positive(t, gen.promptsContaining("old-C1-0"), "the backfill prompt was rendered")
+			assert.Zero(t, gen.promptsContaining("PRESENT-DAY-SUMMARY"))
+			assert.Zero(t, gen.promptsContaining("PREVIOUS CONTEXT"))
+			assert.Zero(t, gen.promptsContaining("TRACK-CONTEXT-TODAY"))
+
+			// The forward path still loads it.
+			assert.Contains(t, p.loadPreviousContext("C1", "channel"), "PRESENT-DAY-SUMMARY",
+				"outside a backfill the running summary is still offered")
+		})
+	}
+}
+
+// TestRunBackfillRollups_PromptCarriesNoPresentDayContext pins the same rule
+// for the daily rollup of a backfilled day — no latest daily running summary
+// and no current track context — while the forward rollup keeps both.
+func TestRunBackfillRollups_PromptCarriesNoPresentDayContext(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "C1", "alpha")
+	seedChannel(t, database, "C2", "beta")
+	from, _ := backfillRange()
+	yesterday := float64(utcDayStart(time.Now().AddDate(0, 0, -1)).Unix())
+	for _, day := range []float64{from, yesterday} {
+		for _, ch := range []string{"C1", "C2"} {
+			_, err := database.UpsertDigest(db.Digest{
+				ChannelID: ch, Type: "channel", PeriodFrom: day + 3600, PeriodTo: day + 7200,
+				Summary: "s " + ch, MessageCount: 3, Model: "m",
+			})
+			require.NoError(t, err)
+		}
+	}
+	// The newest daily rollup, two days ago, carries today's running summary.
+	twoDaysAgo := float64(utcDayStart(time.Now().AddDate(0, 0, -2)).Unix())
+	_, err := database.UpsertDigest(db.Digest{
+		Type: "daily", PeriodFrom: twoDaysAgo, PeriodTo: twoDaysAgo + 86399,
+		Summary: "recent daily", MessageCount: 3, Model: "m",
+		RunningSummary: `{"note":"PRESENT-DAILY-SUMMARY"}`,
+	})
+	require.NoError(t, err)
+
+	gen := &promptCapturingGenerator{responses: map[string]string{"digest.daily": validDigestJSON()}}
+	p := backfillPipeline(t, database, gen)
+	p.TrackContext = "TRACK-CONTEXT-TODAY"
+
+	require.NoError(t, p.RunBackfillRollups(context.Background(), from, from+86400))
+	backfillPrompt := gen.prompt(t, 0)
+	assert.NotContains(t, backfillPrompt, "PRESENT-DAILY-SUMMARY")
+	assert.NotContains(t, backfillPrompt, "PREVIOUS CONTEXT")
+	assert.NotContains(t, backfillPrompt, "TRACK-CONTEXT-TODAY")
+
+	// The forward rollup still carries both.
+	require.NoError(t, p.runDailyRollupForDate(context.Background(), utcDayStart(time.Now().AddDate(0, 0, -1))))
+	forwardPrompt := gen.prompt(t, 1)
+	assert.Contains(t, forwardPrompt, "PRESENT-DAILY-SUMMARY")
+	assert.Contains(t, forwardPrompt, "TRACK-CONTEXT-TODAY")
 }
 
 func TestRunBackfillWindow_OverLoadCap(t *testing.T) {

@@ -31,9 +31,13 @@ type BackfillWindowResult struct {
 // call, and the backfill's digests end below every forward window, so the
 // forward MAX(period_to) is unchanged. The live-edge cooldown is off.
 //
+// A channel whose AI call or store fails is not re-sent in later passes of the
+// same call; the call then returns that failure once nothing else is left.
+// Prompts carry no previous context and no track context (see inBackfill).
+//
 // Lock contention returns {0, false} with no error: the chunk is retried next
-// cycle. The returned usage is this call's delta only — the pipeline (and its
-// usage counters) is shared with the forward phase.
+// cycle. The returned usage is the sum of this call's own passes — never the
+// pipeline's shared counters, which the forward phase also feeds.
 func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (BackfillWindowResult, *Usage, error) {
 	if !p.cfg.Digest.Enabled {
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
@@ -46,17 +50,9 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (Bac
 	}
 	defer unlock()
 
-	startIn, startOut, startAPI := p.totalInputTokens.Load(), p.totalOutputTokens.Load(), p.totalAPITokens.Load()
-	usageDelta := func() *Usage {
-		return &Usage{
-			InputTokens:    int(p.totalInputTokens.Load() - startIn),
-			OutputTokens:   int(p.totalOutputTokens.Load() - startOut),
-			TotalAPITokens: int(p.totalAPITokens.Load() - startAPI),
-		}
-	}
-
 	p.loadCaches()
-	p.backfill = &backfillScope{considered: map[string]float64{}}
+	scope := &backfillScope{considered: map[string]float64{}, failed: map[string]bool{}}
+	p.backfill = scope
 	defer func() { p.backfill = nil }()
 
 	fastForwardTS, err := p.db.GetDigestFastForwardTS()
@@ -66,40 +62,52 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (Bac
 	}
 
 	var res BackfillWindowResult
+	usage := &Usage{}
 	var prev map[string]float64
 	for range maxBackfillPasses {
 		if err := ctx.Err(); err != nil {
-			return res, usageDelta(), err
+			return res, usage, err
 		}
 		windows, err := p.backfillWindows(from, to, fastForwardTS)
 		if err != nil {
-			return res, usageDelta(), err
+			return res, usage, err
 		}
 		if len(windows) == 0 {
+			// A channel that failed in this call is not re-sent; with nothing
+			// else left the chunk takes the failure and is retried next cycle.
+			if len(scope.failed) > 0 {
+				return res, usage, fmt.Errorf("digest backfill [%.0f,%.0f]: %d channel(s) failed: %w",
+					from, to, len(scope.failed), scope.lastErr)
+			}
 			res.Complete = true
-			return res, usageDelta(), nil
+			return res, usage, nil
 		}
 		// advancesWindow's invariant, asserted per pass: a pass that moved no
 		// channel would repeat itself forever.
 		if prev != nil && !backfillProgressed(prev, windows) {
-			return res, usageDelta(), fmt.Errorf("digest backfill: no progress in [%.0f,%.0f]", from, to)
+			return res, usage, fmt.Errorf("digest backfill: no progress in [%.0f,%.0f]", from, to)
 		}
 		prev = make(map[string]float64, len(windows))
 		for _, w := range windows {
 			prev[w.channelID] = w.since
 		}
 
-		n, _, err := p.runChannelWindows(ctx, windows, to)
+		n, u, err := p.runChannelWindows(ctx, windows, to)
 		res.Digests += n
+		if u != nil {
+			usage.InputTokens += u.InputTokens
+			usage.OutputTokens += u.OutputTokens
+			usage.TotalAPITokens += u.TotalAPITokens
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return res, usageDelta(), ctxErr
+			return res, usage, ctxErr
 		}
 		if err != nil {
-			return res, usageDelta(), fmt.Errorf("digest backfill [%.0f,%.0f]: %w", from, to, err)
+			return res, usage, fmt.Errorf("digest backfill [%.0f,%.0f]: %w", from, to, err)
 		}
 	}
 	p.logger.Printf("digest backfill: [%.0f,%.0f] still has work after %d passes — resuming next cycle", from, to, maxBackfillPasses)
-	return res, usageDelta(), nil
+	return res, usage, nil
 }
 
 // backfillWindows resolves the chunk-scoped window of every digestable channel
@@ -116,6 +124,9 @@ func (p *Pipeline) backfillWindows(from, to, fastForwardTS float64) ([]channelWi
 	defer b.mu.Unlock()
 	windows := make([]channelWindow, 0, len(candidates))
 	for _, c := range candidates {
+		if b.failed[c.ChannelID] {
+			continue
+		}
 		since := max(from, c.LastDigestInRange, b.considered[c.ChannelID], fastForwardTS)
 		if c.NewestInRange > since {
 			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since})
@@ -144,7 +155,8 @@ func backfillProgressed(prev map[string]float64, windows []channelWindow) bool {
 
 // RunBackfillRollups generates the daily rollup of every UTC day the backfill
 // chunk [from, to) touches. Every day is tried; the first error is returned.
-// It does not touch the daemon's forward rollup attempt budget.
+// It does not touch the daemon's forward rollup attempt budget, and its
+// prompts carry no previous context and no track context (see inBackfill).
 func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) error {
 	if !p.cfg.Digest.Enabled {
 		return nil
@@ -157,6 +169,8 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 	defer unlock()
 
 	p.loadCaches()
+	p.backfillRollups = true
+	defer func() { p.backfillRollups = false }()
 
 	var firstErr error
 	end := time.Unix(int64(to), 0).UTC()
