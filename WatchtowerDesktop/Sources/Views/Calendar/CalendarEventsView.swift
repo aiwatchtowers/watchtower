@@ -205,7 +205,10 @@ struct CalendarEventsView: View {
     private func openPendingEvent(in vm: CalendarViewModel) {
         guard let eventID = appState.pendingCalendarEventID else { return }
         appState.pendingCalendarEventID = nil
-        guard let db = appState.databaseManager else { return }
+        guard let db = appState.databaseManager else {
+            NSLog("CalendarEventsView: deep-linked event %@ dropped: no database", eventID)
+            return
+        }
         do {
             guard let link = try db.dbPool.read({ try CalendarQueries.fetchEventLink($0, id: eventID) }) else {
                 NSLog("CalendarEventsView: deep-linked event %@ is gone", eventID)

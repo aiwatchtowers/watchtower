@@ -80,7 +80,9 @@ final class HomeViewTests: XCTestCase {
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
         XCTAssertNoThrow(try view.inspect().find(text: "Ready"))
         XCTAssertThrowsError(try view.inspect().find(text: "Ready — Open"))
-        try view.inspect().find(button: "Open").tap()
+        let open = try view.inspect().find(button: "Open")
+        XCTAssertEqual(try open.accessibilityLabel().string(), "Open Digests")
+        try open.tap()
         XCTAssertEqual(tapped, .feature(.digests))
     }
 

@@ -144,6 +144,7 @@ struct GettingReadyCardView: View {
                 Spacer(minLength: 0)
                 Button("Open") { onLink(.feature(card.feature)) }
                     .buttonStyle(.link)
+                    .accessibilityLabel("Open \(card.copy.title)")
             }
         } else if let readiness = card.readiness {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
