@@ -42,8 +42,9 @@ type autoFixture struct {
 }
 
 // newAutoFixture registers ext_write (External), local_write (local),
-// bulk_write (AlwaysAsk) and ext_pick (External whose Ready always fails —
-// several pinned candidates), all on main, target and automation.
+// bulk_write (AlwaysAsk), ext_pick and local_pick (External / local whose
+// Ready always fails — several pinned candidates) and ext_fail (External
+// whose Execute fails), all on main, target and automation.
 func newAutoFixture(t *testing.T) *autoFixture {
 	t.Helper()
 	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
@@ -58,6 +59,13 @@ func newAutoFixture(t *testing.T) *autoFixture {
 		f.tool(t, "local_write", nil),
 		f.tool(t, "bulk_write", func(tl *tools.Tool) { tl.AlwaysAsk = true }),
 		f.tool(t, "ext_pick", func(tl *tools.Tool) { tl.External = true; tl.Ready = notReady }),
+		f.tool(t, "local_pick", func(tl *tools.Tool) { tl.Ready = notReady }),
+		f.tool(t, "ext_fail", func(tl *tools.Tool) {
+			tl.External = true
+			tl.Execute = func(context.Context, *db.DB, tools.Call) (any, error) {
+				return nil, errors.New("the remote side refused")
+			}
+		}),
 	} {
 		require.NoError(t, f.reg.Register(tl))
 	}
@@ -179,6 +187,11 @@ func TestTrustOrder_AutomationSurface(t *testing.T) {
 		{name: "local without a trust row", tool: "local_write", wantTrust: tools.TrustAsk},
 		{name: "local with execute on main only", tool: "local_write",
 			trust: map[string]tools.Trust{"main": tools.TrustExecute}, wantTrust: tools.TrustAsk},
+		{name: "local with an active grant", tool: "local_write", grant: true, wantTrust: tools.TrustExecute, wantAuto: true},
+		{name: "local with a grant and execute trust: the grant decides", tool: "local_write", grant: true,
+			trust: map[string]tools.Trust{tools.AutomationSurface: tools.TrustExecute}, wantTrust: tools.TrustExecute, wantAuto: true},
+		{name: "local execute trust whose Ready fails", tool: "local_pick",
+			trust: map[string]tools.Trust{tools.AutomationSurface: tools.TrustExecute}, wantTrust: tools.TrustAsk},
 		{name: "agent() call under an active grant", tool: "ext_write", grant: true, agent: true, wantTrust: tools.TrustAsk},
 		{name: "agent() call under execute trust", tool: "local_write", agent: true,
 			trust: map[string]tools.Trust{tools.AutomationSurface: tools.TrustExecute}, wantTrust: tools.TrustAsk},
@@ -243,12 +256,25 @@ func TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface(t *testing.T) {
 	rc, row := f.propose(t, "ext_write", autoBinding(otherRun))
 	f.assertPendingAsk(t, rc, row, "a run of another automation")
 
+	// Another surface never reads a grant, and a run's context off the
+	// automation surface is refused outright: no row, nothing executed.
 	for _, surface := range []string{"main", "target"} {
-		b := autoBinding(grantedRun)
-		b.Surface = surface
-		rc, row := f.propose(t, "ext_write", b)
-		f.assertPendingAsk(t, rc, row, "the granted automation's run id on "+surface)
+		withRun := autoBinding(grantedRun)
+		withRun.Surface = surface
+		contextOnly := tools.Binding{Surface: surface, ContextType: tools.AutomationContextType,
+			ContextID: strconv.FormatInt(grantedRun, 10)}
+		for name, b := range map[string]tools.Binding{"run id": withRun, "context only": contextOnly} {
+			_, err := f.reg.Propose(context.Background(), "ext_write", json.RawMessage(autoCallArgs), b)
+			var verr *tools.ValidationError
+			require.ErrorAs(t, err, &verr, surface+" "+name)
+			assert.Contains(t, verr.Msg, "valid only on the automation surface", surface+" "+name)
+		}
+		rc, row := f.propose(t, "ext_write", tools.Binding{Surface: surface})
+		f.assertPendingAsk(t, rc, row, "a plain "+surface+" call of the granted tool")
 	}
+	var rows int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))
+	assert.Equal(t, 3, rows, "only the other automation's call and the two plain calls are recorded")
 }
 
 func TestAgent03_RecipeEditMakesAutoGrantInactive(t *testing.T) {
@@ -340,6 +366,19 @@ func TestAutoGrant_NotReadyRecordsPending(t *testing.T) {
 	f.assertPendingAsk(t, rc, row, "an auto write whose Ready fails waits for the owner's pick")
 }
 
+func TestAutoGrant_FailedExecuteIsNotAuto(t *testing.T) {
+	f := newAutoFixture(t)
+	a := f.seedAuto(t, "failing", `llm("x")`)
+	f.grant(t, a.ID, "ext_fail")
+
+	rc, row := f.propose(t, "ext_fail", autoBinding(f.claimRun(t, a.ID)))
+	assert.Equal(t, "failed", rc.Status)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, string(tools.TrustExecute), row.TrustAtCreate, "the grant decided execute")
+	assert.False(t, rc.Auto, "a failed auto write is no auto=1 step")
+	assert.Contains(t, rc.Error, "the remote side refused")
+}
+
 func TestProposalRow_WorkbenchAutomationKeepsRunContext(t *testing.T) {
 	f := newAutoFixture(t)
 	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
@@ -375,16 +414,19 @@ func TestAutomationBinding_DirectApplyRefused(t *testing.T) {
 	run := f.claimRun(t, a.ID)
 	withRunOnMain := autoBinding(run)
 	withRunOnMain.Surface = "main"
-	for name, b := range map[string]tools.Binding{
-		"automation surface":       autoBinding(run),
-		"automation run on main":   withRunOnMain,
-		"automation surface no id": {Surface: tools.AutomationSurface},
+	for name, tc := range map[string]struct {
+		b    tools.Binding
+		want string
+	}{
+		"automation surface":       {autoBinding(run), "automations never apply directly"},
+		"automation surface no id": {tools.Binding{Surface: tools.AutomationSurface}, "automations never apply directly"},
+		"automation run on main":   {withRunOnMain, "valid only on the automation surface"},
 	} {
-		b.DirectApply = true
-		_, err := f.reg.Propose(context.Background(), "local_write", json.RawMessage(autoCallArgs), b)
+		tc.b.DirectApply = true
+		_, err := f.reg.Propose(context.Background(), "local_write", json.RawMessage(autoCallArgs), tc.b)
 		var verr *tools.ValidationError
 		require.ErrorAs(t, err, &verr, name)
-		assert.Contains(t, verr.Msg, "automations never apply directly", name)
+		assert.Contains(t, verr.Msg, tc.want, name)
 	}
 	var rows int
 	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&rows))

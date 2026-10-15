@@ -721,7 +721,7 @@ func TestSetTrust_RefusesTheWorkbenchSurface(t *testing.T) {
 // automation surface included. Since Automations P2 the automation surface is
 // a trust place for a write tool on it (spec 2026-10-14-automations-design
 // §6.2 step 4; TestSetTrust_AutomationSurfaceIsATrustPlace).
-func TestSetTrust_RefusesReadToolsAndTheAutomationSurface(t *testing.T) {
+func TestSetTrust_RefusesReadToolsAndAcceptsAutomation(t *testing.T) {
 	database := openDB(t)
 	var executed, peeked []Call
 	reg := New(database)

@@ -447,7 +447,9 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	}
 	if trust == TrustExecute {
 		rc, err := r.applyTrusted(ctx, id, b)
-		rc.Auto = auto && err == nil
+		// Auto marks an auto write that landed: a grant-decided call whose
+		// Execute failed is a failed row, not an auto=1 step.
+		rc.Auto = auto && err == nil && rc.Status == "applied"
 		return rc, err
 	}
 	where := "in this chat"
@@ -557,6 +559,9 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 	if err := r.WorkbenchAlive(ctx, b); err != nil {
 		return nil, err
 	}
+	if err := automationBindingGate(b); err != nil {
+		return nil, err
+	}
 	if !visibleOn(t, b.Surface) {
 		// Get is surface-blind: a caller that dispatches by name (a reaction
 		// mapping, a model naming a tool it was never offered) must not reach a
@@ -577,6 +582,21 @@ func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMess
 		return nil, err
 	}
 	return args, nil
+}
+
+// automationBindingGate keeps an automation run's context on the automation
+// surface: a run id or an 'automation_run' context on any other surface (a
+// chat started with `--context-type automation_run`, a caller copying a run's
+// binding) is refused before a row is written, so such a row can never be
+// mistaken for a run's proposal or rebuild a run id at Apply.
+func automationBindingGate(b Binding) error {
+	if b.Surface == AutomationSurface {
+		return nil
+	}
+	if b.AutomationRunID != 0 || b.ContextType == AutomationContextType {
+		return &ValidationError{Msg: "an automation run's context is valid only on the automation surface"}
+	}
+	return nil
 }
 
 // directApplyGate is what keeps DirectApply narrow: it never runs an External
@@ -684,6 +704,12 @@ func (r *Registry) automationGrantOrTrust(t *Tool, b Binding) (Trust, bool, erro
 // automation run's call stores its run instead, even in a workbench
 // automation: the row must reach the Inbox strip with its run label (spec
 // §6.3), so the workbench context is not written for it.
+//
+// Known limit (P5 must close it): such a row's Apply — inline or later — runs
+// with WorkbenchID 0, so WorkbenchAlive and a tool's Scope do not re-check the
+// workbench at apply time the way they do for a workbench row. Before
+// workbench automations ship, Apply of an 'automation_run' row must resolve
+// the workbench from run → automations.project_id and fail when it is gone.
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
 	switch {
