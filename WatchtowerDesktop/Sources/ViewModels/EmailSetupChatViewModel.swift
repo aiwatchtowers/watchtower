@@ -17,7 +17,6 @@ struct ImapFormSnapshot {
     var security = "ssl"
     var username = ""
     var folder = ""
-    var label = ""
     /// Whether the (invisible-to-the-AI) password field is non-empty.
     var hasPassword = false
     /// Last "Test and Connect" failure, if any — safe to share: it is the
@@ -38,11 +37,10 @@ struct ImapSettingsPatch: Equatable {
     var security: String?
     var username: String?
     var folder: String?
-    var label: String?
 
     var isEmpty: Bool {
         host == nil && port == nil && security == nil
-            && username == nil && folder == nil && label == nil
+            && username == nil && folder == nil
     }
 }
 
@@ -97,7 +95,6 @@ enum ImapSettingsParser {
         }
         patch.username = obj["username"] as? String
         patch.folder = obj["folder"] as? String
-        patch.label = obj["label"] as? String
         return patch.isEmpty ? nil : patch
     }
 }
@@ -125,7 +122,6 @@ enum EmailSetupPrompt {
             "Security: \(show(snapshot.security))",
             "Username: \(show(snapshot.username))",
             "Folder: \(show(snapshot.folder))",
-            "Label: \(show(snapshot.label))",
             "Password field: \(snapshot.hasPassword ? "filled" : "empty")"
         ]
         if let err = snapshot.lastConnectionError, !err.isEmpty {
@@ -136,7 +132,7 @@ enum EmailSetupPrompt {
 
     static let systemPrompt = """
     You are a friendly email-setup assistant embedded in the Watchtower app, right next to an IMAP account form. \
-    The user sees a form with fields: Host, Port, Security (SSL / STARTTLS / None), Username, Password, Folder, Label. \
+    The user sees a form with fields: Host, Port, Security (SSL / STARTTLS / None), Username, Password, Folder. \
     Your job is to fill the form FOR the user — they should never need to know what IMAP is.
 
     HOW TO BEHAVE

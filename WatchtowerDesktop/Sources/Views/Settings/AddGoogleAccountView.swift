@@ -19,7 +19,6 @@ struct AddGoogleAccountView: View {
         self.daemonPolicy = daemonPolicy
     }
 
-    @State private var label = ""
     /// The sheet opens with both services checked on every surface,
     /// onboarding included; either can be unchecked (#740).
     static let initialScopes = (calendar: true, gmail: true)
@@ -60,9 +59,6 @@ struct AddGoogleAccountView: View {
                 Button("Close") { dismiss() }
                     .buttonStyle(.plain)
             }
-
-            TextField("Label (optional)", text: $label, prompt: Text("e.g. Work, Personal"))
-                .textFieldStyle(.roundedBorder)
 
             Toggle("Calendar", isOn: $wantCalendar)
             Toggle("Gmail", isOn: $wantGmail)
@@ -141,7 +137,6 @@ struct AddGoogleAccountView: View {
         // onChange below would otherwise wait for a true→false transition
         // that will never come from this attempt.
         connectAttempted = vm?.addAccount(
-            label: label.trimmingCharacters(in: .whitespaces),
             calendar: wantCalendar,
             gmail: wantGmail,
             clientID: clientID.trimmingCharacters(in: .whitespaces),

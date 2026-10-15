@@ -51,6 +51,15 @@ package enum CatchUpQueries {
         ) ?? false
     }
 
+    /// The newest recap `hasUnacknowledgedReady` counts — Home's "Since you
+    /// were away" card. Newest by id, as `fetchRecaps`.
+    package static func newestUnacknowledgedReady(_ db: Database) throws -> CatchUpRecap? {
+        try CatchUpRecap.fetchOne(
+            db,
+            sql: "SELECT * FROM catchup_recaps WHERE status = 'ready' AND acknowledged_at IS NULL ORDER BY id DESC LIMIT 1"
+        )
+    }
+
     // MARK: - Acknowledge (window-scoped mark-read)
 
     /// Why an acknowledge was refused. The Go twin (`Pipeline.Acknowledge`)

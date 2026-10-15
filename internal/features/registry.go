@@ -301,6 +301,21 @@ var registry = []Feature{
 		Cost:      CostMedium,
 		Enabled:   func(cfg *config.Config) bool { return cfg.Automations.Enabled },
 	},
+	{
+		ID:          "claude-plan-limits",
+		Title:       "Claude plan limits",
+		Description: "Shows how much of your Claude plan's 5-hour and weekly limits you have used — chats, Cowork and Claude Code together — and when you will hit them at your current pace. Reads the numbers with your Claude Code sign-in every 5 minutes; no AI, nothing else leaves your Mac.",
+		Tagline:     "Know before you hit the wall",
+		Benefits: []string{
+			"5-hour and weekly usage in the menu bar",
+			"A forecast of when you hit each limit",
+			"A heads-up before you run out",
+		},
+		Icon:      "gauge.with.dots.needle.67percent",
+		ConfigKey: "plan_usage.enabled",
+		Cost:      CostNone,
+		Enabled:   func(cfg *config.Config) bool { return cfg.PlanUsage.Enabled },
+	},
 }
 
 // memorySubToggles surfaces memory's existing semantic/sources/surfaces

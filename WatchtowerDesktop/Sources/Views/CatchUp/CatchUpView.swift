@@ -10,7 +10,7 @@ struct CatchUpView: View {
     @Bindable var vm: CatchUpViewModel
     /// The first sync's line while it runs (`OnboardingFinishPlan.firstSyncText`):
     /// right after onboarding there is nothing to recap yet.
-    var firstSync: (title: String, detail: String)?
+    var firstSync: FirstSyncLine?
     /// The empty pane's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
 
@@ -177,7 +177,7 @@ struct CatchUpView: View {
     /// No recap open: the shared empty state ("Build a recap" builds the
     /// chosen window), with the first sync's line inside while it runs.
     static func emptyPane(
-        firstSync: (title: String, detail: String)?, context: EmptyStateContext, onBuild: @escaping () -> Void
+        firstSync: FirstSyncLine?, context: EmptyStateContext, onBuild: @escaping () -> Void
     ) -> some View {
         TabEmptyState(.catchUp, context: context, onTabAction: onBuild) {
             if let firstSync {

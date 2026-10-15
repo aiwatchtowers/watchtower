@@ -64,29 +64,23 @@ final class GoogleAccountsViewModelTests: XCTestCase {
 
     // MARK: - addArgs (pure)
 
-    func testAddArgsBasicServicesNoLabelNoCustomClient() {
-        let args = GoogleAccountsViewModel.addArgs(label: "", calendar: true, gmail: true, hasCustomClient: false, clientID: "")
+    func testAddArgsBasicServicesNoCustomClient() {
+        let args = GoogleAccountsViewModel.addArgs(calendar: true, gmail: true, hasCustomClient: false, clientID: "")
 
         XCTAssertEqual(args.first, "google")
         XCTAssertEqual(args[1], "add")
         XCTAssertEqual(Set(args), Set(["google", "add", "--app-return", "--calendar", "--gmail"]))
     }
 
-    func testAddArgsIncludesLabelWhenNonEmpty() {
-        let args = GoogleAccountsViewModel.addArgs(label: "L", calendar: true, gmail: true, hasCustomClient: false, clientID: "")
-
-        XCTAssertEqual(Set(args), Set(["google", "add", "--app-return", "--label", "L", "--calendar", "--gmail"]))
-    }
-
     func testAddArgsOmitsServiceFlagsWhenNotSelected() {
-        let args = GoogleAccountsViewModel.addArgs(label: "", calendar: false, gmail: true, hasCustomClient: false, clientID: "")
+        let args = GoogleAccountsViewModel.addArgs(calendar: false, gmail: true, hasCustomClient: false, clientID: "")
 
         XCTAssertFalse(args.contains("--calendar"))
         XCTAssertTrue(args.contains("--gmail"))
     }
 
     func testAddArgsIncludesClientFlagsWhenCustomClientSet() throws {
-        let args = GoogleAccountsViewModel.addArgs(label: "", calendar: true, gmail: false, hasCustomClient: true, clientID: "cid")
+        let args = GoogleAccountsViewModel.addArgs(calendar: true, gmail: false, hasCustomClient: true, clientID: "cid")
 
         XCTAssertTrue(args.contains("--client-id"))
         let idIndex = try XCTUnwrap(args.firstIndex(of: "--client-id"))
@@ -95,7 +89,7 @@ final class GoogleAccountsViewModelTests: XCTestCase {
     }
 
     func testAddArgsOmitsClientFlagsWhenNotCustom() {
-        let args = GoogleAccountsViewModel.addArgs(label: "", calendar: true, gmail: false, hasCustomClient: false, clientID: "")
+        let args = GoogleAccountsViewModel.addArgs(calendar: true, gmail: false, hasCustomClient: false, clientID: "")
 
         XCTAssertFalse(args.contains("--client-id"))
         XCTAssertFalse(args.contains("--client-secret-stdin"))
@@ -166,7 +160,7 @@ final class GoogleAccountsViewModelTests: XCTestCase {
         let vm = GoogleAccountsViewModel(dbPool: pool)
         vm.isConnecting = true
 
-        vm.addAccount(label: "", calendar: true, gmail: false, clientID: "", clientSecret: "")
+        vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
 
         XCTAssertEqual(vm.error, "Another connection is already in progress.")
         XCTAssertTrue(vm.isConnecting, "the guard must not clear an in-flight flag it didn't set")
@@ -212,9 +206,9 @@ extension GoogleAccountsViewModelTests {
 
     private func add(_ vm: GoogleAccountsViewModel, daemonPolicy: DaemonRestartPolicy? = nil) async {
         let started = if let daemonPolicy {
-            vm.addAccount(label: "", calendar: true, gmail: false, clientID: "", clientSecret: "", daemonPolicy: daemonPolicy)
+            vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "", daemonPolicy: daemonPolicy)
         } else {
-            vm.addAccount(label: "", calendar: true, gmail: false, clientID: "", clientSecret: "")
+            vm.addAccount(calendar: true, gmail: false, clientID: "", clientSecret: "")
         }
         XCTAssertTrue(started)
         await vm.addTask?.value

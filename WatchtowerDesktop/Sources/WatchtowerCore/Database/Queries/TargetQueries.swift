@@ -229,6 +229,30 @@ package enum TargetQueries {
         return TargetCounts(active: active, overdue: overdue, dueToday: dueToday, highPriority: highPriority)
     }
 
+    /// Home's "My targets": not on a board (PROJ-01), ownership 'mine', status in
+    /// todo/in_progress/in_review/blocked, and (due_date set and due on or before
+    /// `today`) or status = 'in_progress'. Due/overdue first by due_date, then
+    /// in-progress by updated_at DESC. `today` is "yyyy-MM-dd" (local, like
+    /// `todayDateString()`); the bound is `today + "T24:00"`, as `fetchCounts`.
+    package static func homeSummary(_ db: Database, today: String, limit: Int = 5) throws -> [Target] {
+        // BEHAVIOR PROJ-01 — project targets live only on their board
+        // (WorkbenchQueries.board); Home never sees one.
+        let due = "(due_date != '' AND due_date < ?)"
+        let bound = today + "T24:00"
+        return try Target.fetchAll(
+            db,
+            sql: """
+                SELECT * FROM targets
+                WHERE project_id IS NULL AND ownership = 'mine'
+                AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
+                AND (\(due) OR status = 'in_progress')
+                ORDER BY \(due) DESC, CASE WHEN \(due) THEN due_date END, updated_at DESC, id DESC
+                LIMIT ?
+                """,
+            arguments: [bound, bound, bound, limit]
+        )
+    }
+
     // MARK: - Create
 
     @discardableResult

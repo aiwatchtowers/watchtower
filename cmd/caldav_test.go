@@ -120,6 +120,8 @@ func TestCalDAVAddICS_ReadsFeedURLFromStdin(t *testing.T) {
 	acct := accounts[0]
 	assert.Equal(t, "ics", acct.Provider)
 	assert.Empty(t, acct.URL, "the secret feed URL must never land in the DB url column")
+	// No X-WR-CALNAME: the label is the feed's host — never its secret path.
+	assert.Equal(t, "127.0.0.1", acct.Label)
 
 	creds, err := caldav.NewCredentialStore(cfg.WorkspaceDir(), acct.ID).Load()
 	require.NoError(t, err)
@@ -211,4 +213,34 @@ func TestCreateCalendarAccountWithCredentials_RollsBackOnSaveFailure(t *testing.
 	after, err := database.ListCalendarAccounts()
 	require.NoError(t, err)
 	assert.Equal(t, len(before), len(after), "the orphaned account row must be rolled back on credential-save failure")
+}
+
+// The calendar name a feed declares (X-WR-CALNAME, TEXT escapes undone)
+// becomes the new account's label.
+func TestCalDAVAddICS_LabelsTheAccountByTheFeedName(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	body := strings.Replace(testICSBody(), "PRODID:-//Watchtower Test//EN\r\n",
+		"PRODID:-//Watchtower Test//EN\r\nX-WR-CALNAME:Team\\, Ops\r\n", 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	caldavAddICSCmd.SetIn(strings.NewReader(srv.URL + "\n"))
+	defer caldavAddICSCmd.SetIn(nil)
+	caldavAddICSCmd.SetOut(io.Discard)
+	caldavAddICSCmd.SetErr(io.Discard)
+	require.NoError(t, caldavAddICSCmd.RunE(caldavAddICSCmd, nil))
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	accounts, err := database.ListCalendarAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "Team, Ops", accounts[0].Label)
 }
