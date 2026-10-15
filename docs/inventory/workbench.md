@@ -114,7 +114,7 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for the methodology preset, board #266)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
@@ -194,6 +194,8 @@ marked watchtower by hand" (or the skill's directory to remove);
 beside the hints. `integrate remove --workbench N` and
 `integrate codex --remove` print the same lines under their problems.
 
+Since 2026-10-15 (board #266) the folder removal and the Codex removal also take out our un-edited `watchtower-flow` preset and its exclude lines; an edited copy stays with its line (PROJ-04).
+
 **Why locked:** Owner decision D7. A half-deleted workbench — orphan targets, a
 hook that briefs about a workbench that no longer exists, an MCP server
 registered against a dead id — is worse than no workbench at all, and the owner
@@ -216,6 +218,7 @@ must be able to undo the whole feature for a folder in one step.
 - `cmd/workbench_delete_outside_test.go::TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks` (since 2026-10-14, ask #118: the delete completes, `removal_ok` false, `removal_hints` and stderr name the outside file, which stays byte-identical); supporting: `internal/devpack/skill_symlink_test.go::TestOutsideFolderHints_NameTheLeftovers`, Desktop `WorkbenchCLITests.testDeleteWarningNamesTheFileLinkedOutside`
 - Session cleanup (2026-10-14, board #535): the ledger half is in `TestProj02_DeleteProjectLeavesNoRows` above; supporting `internal/db/session_cleanup_migration_test.go::TestMigrationSessionCleanup_LedgerCascadesWithTheSession` (a session delete leaves no ledger row), `internal/devpack/workbench_cleanup_permission_test.go::TestCleanupPermission_RemoveLeavesNoFileOrOnlyTheOwners`
 - Codex (2026-10-12, board #399): `cmd/integrate_workbench_test.go::TestProj02_WorkbenchDeleteRemovesTheCodexSkill`; supporting: `internal/devpack/codex_install_test.go` (`TestRemoveCodex_RemovesSkillExcludeAndNeverTrust`, `TestRemoveCodex_KeepsAnEditedSkillAndItsExcludeLine`)
+- `internal/devpack/workbench_methodology_test.go::TestProj02_RemoveTakesOurPresetAndKeepsAnEditedOne` (2026-10-15)
 
 **Locked since:** 2026-09-29
 
@@ -304,7 +307,7 @@ owner fix a line by hand.
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156; amended 2026-10-14 for the cleanup allow rule, owner approved 2026-10-12 in ask #193, board #535)
+**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156; amended 2026-10-14 for the cleanup allow rule, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for the two skills, owner approved in ask #146, board #266)
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
@@ -433,6 +436,19 @@ missing rule (`claudeNeedsRepair`), so a folder set up before #535 gets the
 rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
+*2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
+`.agents/skills`: the core `watchtower-workbench` (pack v9) always, and the `watchtower-flow` preset
+unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
+Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
+or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
+before v9 (marker below `v9`) keeps the single-file layout: nothing is written beside it, and
+`resync` says "Your edited skill keeps the old single-file layout; delete it to take the v9 core and
+preset." A core byte-identical to the shipped v8 with no sidecar is adopted as ours. A preset change
+through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the preset only; no hook or
+registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install or
+resync, and the brief names the mismatch. An owner-edited preset copy counts as installed (no
+mismatch line, never rewritten).
+
 **Why locked:** The workbench folder is the owner's repository. An installer
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
 skill, would make every later `integrate` a risk to the owner's own setup.
@@ -457,6 +473,8 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - Codex (2026-10-12, board #399) — in `internal/devpack/codex_install_test.go`: `TestProj04_CodexTrustNeverTouchesOtherConfigKeys`, `TestProj04_DedupeKeepsForeignHooks`, `TestProj04_DedupeDeletesAFileThatWasOursAlone`, `TestProj04_DedupeEditsConfigTOMLInPlace`, `TestProj04_DedupeRefusesATOMLShapeItCannotEdit`, `TestProj04_MalformedImportedHooksNeverWritten`, `TestProj04_MalformedForeignFileIsNoDuplicate`; supporting: `TestCodexTrust_HashedStringsAreTheLaunchStrings` (I5), `TestInstallCodex_SkillBytesEqualClaudeCopy`, `TestInstallCodex_Idempotent`, `TestRemoveCodex_KeepsAnEditedSkillAndItsExcludeLine`, `TestRemoveCodex_RemovesSkillExcludeAndNeverTrust`; `internal/codex/appserver_test.go::TestAppServer_TrustSkipsForeignAndAlreadyTrusted`
 - Session cleanup (2026-10-14, board #535) — in `internal/devpack/workbench_cleanup_permission_test.go`: `TestProj04_CleanupPermissionKeepsOwnerPermissions` (the owner's allow and deny entries, their order and other keys stay next to exactly one rule of ours), `TestProj04_MalformedPermissionsRefusedByEveryWorkbenchStep`, `TestProj04_CleanupPermissionRefusesASymlinkOutsideTheFolder`; supporting: `TestCleanupAllowRuleAndCommandQuoteTheBinaryTheSameWay`, `TestCleanupPermission_IdempotentAndReplacesStaleBin`, `TestCleanupPermission_MalformedSettingsIsAnErrorNotAnOverwrite`, `TestCleanupPermission_WriteKeepsAnEntryAddedMeanwhile`, `TestCleanupPermission_OwnerBareOrRelativeRuleIsNeverOurs`, `TestCleanupPermission_SymlinkInsideTheFolderIsFollowed`, `TestCleanupPermission_DirectoryLinkOutsideWithNoFile`
 - supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept), `TestRemoveAskGuardHooksKeepsTheOwnerEntries`, `TestStatusWorkbench_AskGuardFlagsEachMissingHook` (a marker prompt alone is not installed, Repair replaces it)
+- `internal/devpack/workbench_methodology_test.go::TestProj04_PresetNoneRemovesOnlyOurFlow` (2026-10-15: ours removed, an edited copy and a foreign file byte-identical)
+- `internal/devpack/workbench_methodology_test.go::TestProj04_DriftedV8KeepsSingleFileNoFlow` (Claude Code and Codex copies)
 
 **Locked since:** 2026-09-29
 
@@ -646,7 +664,7 @@ timeout would be worse than none.
 
 ## PROJ-08 — a workbench's documents are searchable only from its own sessions
 
-**Status:** Enforced (amended 2026-10-03 — the folder's text files instead of attached documents)
+**Status:** Enforced (amended 2026-10-03 — the folder's text files instead of attached documents; amended 2026-10-15 for the installed preset directories, board #266, listing only)
 
 **Observable:** Every `.md`/`.markdown`/`.txt` file of the workbench folder
 that git does not ignore (or, outside a git repository, that the walk keeps),
@@ -660,7 +678,9 @@ inside a repository `git ls-files -z --cached --others --exclude-standard`
 a walk that never follows a symlink; both skip the Files tree's hidden names
 (`.git`, `.build`, `node_modules`, `.claude/worktrees`, …) and the installed
 skill directories (`.claude/skills/watchtower-workbench`,
-`.claude/skills/watchtower-project`), list only regular files, and keep the
+`.claude/skills/watchtower-project`, and since 2026-10-15 the installed
+`watchtower-flow` preset in `.claude/skills` and `.agents/skills`, skipped
+like the core), list only regular files, and keep the
 2000 newest by mtime (the cut is logged). A failed git run is an error for
 that pass — logged, the workbench's existing entries kept — never an empty
 set. They are visible only to a search or an open made in
@@ -1267,7 +1287,7 @@ would send the agent to read an answer that is not there — the
 
 ## PROJ-13 — the ask guard never traps a turn
 
-**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-11 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; the business spec that amends PROJ-13 approved 2026-10-11, ask #148; board #395, see the changelog; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-11 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; the business spec that amends PROJ-13 approved 2026-10-11, ask #148; board #395, see the changelog; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-15 for the ask guard modes and the finish check — owner approved in ask #141 (modes) and ask #146 (spec), board #266)
 
 **Observable:** The `Stop` ask guard is the command hook `workbench ask-guard
 --workbench N --stop` (`timeout: 30`). It never blocks when `stop_hook_active`
@@ -1375,6 +1395,26 @@ same read budget; presence names the codex row. The "folder has the core state
 hooks" condition is true for a codex row by construction (its hooks arrive and
 are trusted as one set). The never-traps rules above hold unchanged.
 
+*2026-10-15 (board #266, spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §7):*
+the guard runs under the workbench's ask guard mode and finish check, resolved at run time by
+`workbenchmethod.ResolveSession` (the owner's setting in `projects.ask_guard_mode`/`finish_check`,
+migration `00115`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
+failure to read them — no database, a schema without the columns, a lock, a present but malformed
+terminal-session variable — resolves to `strict` and `on`, silently. `strict` with the finish check on
+is the table above, unchanged (`decideStop`). `soft`:
+the classifier runs; a request is never sent back — a chat request is recorded whatever the presence,
+a full request is recorded with the message's own text (its last 1800 runes, `chat_question.level`
+`full`) and raised as a Full ask with no options; a failed record passes. `off`: no request is checked
+and nothing is recorded or cleared; the classifier runs only for the finish check. The finish phase
+runs only with the finish check on. With `off` and the finish check off the hook returns after
+decoding stdin, before any classifier call. `stop_hook_active` never blocks in any mode. PreToolUse
+(`AskUserQuestion`, `request_user_input`): `strict` denies as above; `soft` denies only while the owner
+is away (the away reason) and lets the tool run while the owner is present in this session; `off` lets
+it run. The PreToolUse mode read runs inside the shared `askGuardReadBudget`, and a panic in it
+recovers to the strict away denial; the Stop mode read is bounded per read by `askGuardBusyTimeout`.
+The classifier text (v4 golden) and the fixed reasons are unchanged. Accepted limit: under `soft` a
+recorded question is raised only while the Desktop runs.
+
 **Why locked:** Owner decision (spec 2026-10-03, decision 3), the PROJ-07
 precedent, and the three ask levels (asks #66, #145, #146): a guard that could
 loop a turn or fail a turn would be worse than none; one that bounced a quick
@@ -1413,6 +1453,13 @@ Watchtower is broken" with v4 (business D1, ask #148).
 - Codex (2026-10-12, board #399) — in `cmd/workbench_codex_hooks_test.go`: `TestProj13_CodexAskGuardStopUsesLastAssistantMessage`, `TestProj13_CodexAskGuardEmptyMessageNoModelCall`, `TestProj13_CodexPreToolUseDeniesRequestUserInput`, `TestProj13_CodexPreToolUseForeignSessionIsAway`; supporting: `cmd/workbench_hook_row_test.go::TestCodexHook_WithoutItsRowWritesNothing` (each codex hook without its row: no output, exit 0); every existing PROJ-13 guard unchanged
 - supporting (escalation): `cmd/workbench_escalate_test.go` (`TestEscalateFilesAQuickAskWithTheSameOptions`, `TestEscalationRaceFilesOneAsk`, `TestEscalateFourOptionsIsFull`, `TestEscalateZeroOptionsIsQuick`, `TestEscalateAtTheOpenCapKeepsTheQuestion`, `TestEscalateEnvelopeShape`); `internal/db/terminal_sessions_test.go::TestTakeChatQuestionIsCompareAndTake`
 - supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench` (now with both reasons), `TestAskToolDenialReasonsAreTheSpecsText`, `TestAskGuardReasonsAreTheSpecsText`, `TestDecideStopTable`, `TestStopWithoutAQuestionClearsTheOlderOne`, `TestAskGuardModelOutputNormalisation`, `TestAskGuardMessageTail`, `TestAskGuardModelChildIsIsolated`, `TestStopGuardReadFailureStillClearsTheOlderQuestion`, `TestStopGuardDeletedWorkbenchPassesSilently`, `TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing`, `TestStopGuardContinuedTurnWithoutASessionCallsNoModel`, `TestStopGuardUnreadableSessionVariableReadsAsAway`, `TestTierForSourceAskGuardIsLight`; `internal/devpack/workbench_ask_guard_test.go::TestAskGuardClassifier_IsTheV4Golden`; `internal/digest/isolated_child_test.go` (`TestIsolateChildKillsTheGroupAndDropsEnv`, `TestIsolateChildCancelAfterTheWaitKillsNothing`); `internal/db/owner_presence_test.go::TestOwnerPresentInStaleWriteIsAbsent`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys` (a prompt-only folder → `ask_guard: false`)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_ModeTable` (2026-10-15: every mode × finish check against the table; strict + on is `decideStop`)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_SoftNeverSendsBackAndAlwaysRecords` (owner away: a chat and a full request pass and are recorded, the full one with its text and level `full`)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_OffWithFinishOffCallsNoModel` (set personally or in the folder file: no model call, the older question kept)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_UnreadableModeIsStrict` (a schema without the columns: strict despite `ask_guard: off` in the file; no database: `strictModes`)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_UnreadableSessionVariableIsStrict` (a malformed terminal-session variable: strict + on in the Stop and PreToolUse hooks)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_PreToolUseFollowsMode` (Claude Code and Codex; an unreadable mode denies)
+- supporting: `TestProj13_CodexStopFollowsTheMode`, `internal/workbenchmethod/resolve_test.go::TestResolve_UnreadableDatabaseIsStrict`, `cmd/workbench_escalate_test.go::TestEscalateZeroOptionsFromAFullRequestIsFull`
 
 **Locked since:** 2026-10-03
 
@@ -2020,6 +2067,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-15 (board #266, configurable methodology; spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §9, plan `docs/superpowers/plans/2026-10-15-workbench-configurable-methodology.md`; **PROJ-13, PROJ-04 and PROJ-02 amended, owner approved in asks #141 (modes), #146 (spec) and #150 (plan)**): **PROJ-13** gains the ask guard modes (`strict`/`soft`/`off`) and the finish check (`on`/`off`) for the Stop and PreToolUse guards, resolution failure → strict + on, and off with the finish check off → no model call. **PROJ-04** — the install writes the v9 core and the `watchtower-flow` preset, removes the preset only when ours, and keeps a drifted pre-v9 single file without a preset. **PROJ-02** — a delete removes our preset too. **PROJ-08** — listing only: the installed preset directories are skipped from the folder's docs index like the core. **PROJ-14** unchanged, noted: with the finish check off a session the agent does not finish ends as Stopped without a summary; only `finish_session` marks a session finished. **PROJ-03** unchanged: the Desktop's "Create workflow.md" runs the CLI on the owner's click and never overwrites a file; the agent never writes `workflow.md` or its own checks (no MCP tool changes them). PROJ-07 and PROJ-11 unchanged. All existing guards kept, none relaxed.
 - 2026-10-15 (Automations P1, board #753): note only, no contract text or guard changed. The owner's `watchtower automations` CLI can write and remove recipe files in a workbench folder's `.watchtower/automations/` (`save --path` atomically through `fsutil.WriteFileAtomic`; `delete` removes only a regular recipe file in that folder); `dry-run --file` and `rescan --workbench N` read it. No Desktop path, workbench MCP tool or daemon code writes the folder in P1, so PROJ-03 (the Desktop's writes) is unchanged; the owner-approved PROJ-03 amendment (ask #272, automations spec §14.6) is written into PROJ-03 with Automations P5, which adds the Desktop save.
 - 2026-10-14 (board #535, session cleanup; spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13, business page `…-business.md`, plan `docs/superpowers/plans/2026-10-12-session-cleanup.md`; **PROJ-18 added, PROJ-11, PROJ-04 and PROJ-02 amended, owner approved 2026-10-12, ask #193**): `watchtower workbench cleanup` (`internal/sessioncleanup`, migration `00111`: `terminal_session_worktrees` + `terminal_sessions.cleanup_result`/`cleanup_at`) plans, then with `--apply` removes, the linked worktrees and local branches a session's agents created — never unsaved, unpushed, in-use or someone else's work (PROJ-18, the approved wording verbatim plus the stricter as-shipped list); the skill pack's finishing step runs it (DEV-04 changelog: pack v8); the Desktop offers it on Delete Session (**Delete and Clean Up**, the default, or **Delete Only**), per session (**Clean Up…**) and as the owner's sweep (**Clean Up Old Worktrees…**, with a one-time hint above 1 GB). **PROJ-11:** the state hooks record each new (worktree root, branch) of any agent of the session, at most 64, without git; a ledger failure never costs the state write. **PROJ-04:** the install adds one `permissions.allow` rule `Bash(<bin> workbench cleanup:*)` (the bin quoted only when unsafe, ours only with an absolute `watchtower` bin, the owner's entries never touched). **PROJ-02:** the folder removal deletes that rule; the ledger goes with the session row by cascade (`TestProj02_RemoveProjectLeavesNothingInstalled` and `TestProj02_DeleteProjectLeavesNoRows` extended, assertions added). **PROJ-17:** note only — `delete` (✕, ⌘⌫, Delete Only) is a no-op and Start fresh refused on a row a cleanup runs on, and every resume of a row whose terminal Delete and Clean Up closed is refused. **PROJ-14** unchanged (the report only reads `cleanup_result`). No guard relaxed.
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).
