@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,4 +90,55 @@ func TestTrackerIssues_OwnerOpenQueryUsesIndexes(t *testing.T) {
 	joined := strings.Join(plan, "\n")
 	assert.Contains(t, joined, "SEARCH ji USING INDEX idx_jira_issues_assignee_status", joined)
 	assert.Contains(t, joined, "SEARCH li USING INDEX idx_linear_issues_assignee_status", joined)
+}
+
+// tracker_accounts lists only enabled, non-removed accounts of both kinds (spec §4.2).
+func TestTrackerAccounts_HidesRemovedAndDisabled(t *testing.T) {
+	d := openTestDB(t)
+	jLive, err := d.CreateJiraAccount(JiraAccount{CloudID: "c1", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
+	require.NoError(t, err)
+	jOff, err := d.CreateJiraAccount(JiraAccount{CloudID: "c2", SiteURL: "https://acme-off.atlassian.net", SiteName: "Off"})
+	require.NoError(t, err)
+	jGone, err := d.CreateJiraAccount(JiraAccount{CloudID: "c3", SiteURL: "https://acme-gone.atlassian.net", SiteName: "Gone"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetJiraAccountEnabled(jOff, false))
+	require.NoError(t, d.SetJiraAccountRemoved(jGone))
+
+	lLive, err := d.CreateLinearAccount("live")
+	require.NoError(t, err)
+	lOff, err := d.CreateLinearAccount("off")
+	require.NoError(t, err)
+	lGone, err := d.CreateLinearAccount("gone")
+	require.NoError(t, err)
+	require.NoError(t, d.SetLinearAccountEnabled(lOff, false))
+	require.NoError(t, d.SetLinearAccountRemoved(lGone))
+
+	rows, err := d.Query(`SELECT tracker, id FROM tracker_accounts ORDER BY tracker, id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var tracker string
+		var id int64
+		require.NoError(t, rows.Scan(&tracker, &id))
+		got = append(got, fmt.Sprintf("%s:%d", tracker, id))
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{fmt.Sprintf("jira:%d", jLive), fmt.Sprintf("linear:%d", lLive)}, got)
+}
+
+// A comment synced under the issue's old key follows the issue's current key.
+func TestTrackerComments_FollowTeamMove(t *testing.T) {
+	d := openTestDB(t)
+	la, err := d.CreateLinearAccount("")
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: la, ID: "i-1", Key: "ENG-12", TeamKey: "ENG",
+		StatusCategory: "todo", UpdatedAt: "2026-10-01T00:00:00.000Z"}))
+	require.NoError(t, d.UpsertLinearComment(LinearComment{AccountID: la, ID: "cm-1", IssueID: "i-1", IssueKey: "ENG-12",
+		CreatedAt: "2026-10-01T00:00:00.000Z", UpdatedAt: "2026-10-01T00:00:00.000Z"}))
+	require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: la, ID: "i-1", Key: "OPS-40", TeamKey: "OPS",
+		StatusCategory: "todo", UpdatedAt: "2026-10-02T00:00:00.000Z"}))
+	var key string
+	require.NoError(t, d.QueryRow(`SELECT issue_key FROM tracker_comments WHERE id = 'cm-1'`).Scan(&key))
+	assert.Equal(t, "OPS-40", key)
 }

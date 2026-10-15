@@ -1257,9 +1257,10 @@ SELECT 'jira' AS tracker, account_id, id, issue_key, author_account_id AS author
        body_text, NULL AS mentioned_ids, created_at, updated_at, synced_at
 FROM jira_comments
 UNION ALL
-SELECT 'linear', account_id, id, issue_key, author_id, author_display_name,
-       body_text, mentioned_user_ids, created_at, updated_at, synced_at
-FROM linear_comments;
+SELECT 'linear', c.account_id, c.id,
+       COALESCE((SELECT i.key FROM linear_issues i WHERE i.account_id = c.account_id AND i.id = c.issue_id), c.issue_key),
+       c.author_id, c.author_display_name, c.body_text, c.mentioned_user_ids, c.created_at, c.updated_at, c.synced_at
+FROM linear_comments c;
 
 CREATE VIEW IF NOT EXISTS tracker_history AS
 SELECT 'jira' AS tracker, account_id, issue_key, history_id AS id, field, from_value, from_string,
@@ -1293,10 +1294,12 @@ SELECT 'linear', linear_user_id, email, slack_user_id, display_name FROM linear_
 CREATE VIEW IF NOT EXISTS tracker_accounts AS
 SELECT 'jira' AS tracker, id, CASE WHEN label != '' THEN label ELSE site_name END AS label, site_url AS url, status, enabled
 FROM jira_accounts
+WHERE enabled = 1 AND status != 'removed'
 UNION ALL
 SELECT 'linear', id, CASE WHEN label != '' THEN label ELSE org_name END,
        CASE WHEN url_key != '' THEN 'https://linear.app/' || url_key ELSE '' END, status, enabled
-FROM linear_accounts;
+FROM linear_accounts
+WHERE enabled = 1 AND status != 'removed';
 
 -- Meeting notes (questions + freeform notes linked to calendar events)
 CREATE TABLE IF NOT EXISTS meeting_notes (
