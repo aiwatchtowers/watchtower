@@ -119,6 +119,7 @@
 		9C53524DCE6BE567C1061D3D /* Parts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B85A2B36DAACBD5D32F41F6 /* Parts.swift */; };
 		9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */; };
 		9CFADFF306242E96A50A2144 /* FileProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 030693C1BC5C1FF96BA914A7 /* FileProtection.swift */; };
+		9D8B8940EB3B69B1B03F6335 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6C3E438CAF4935002C6DAC61 /* PrivacyInfo.xcprivacy */; };
 		9EB2B0C11F51971D49AF4FE1 /* PhoneTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F58018C997D775DD0EAA1 /* PhoneTone.swift */; };
 		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
 		A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */; };
@@ -299,6 +300,7 @@
 		6B82508B1B88A4C9672D4000 /* AccountStatusStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStatusStyle.swift; sourceTree = "<group>"; };
 		6B954B0B07DB7C38EB952181 /* AskViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskViewModel.swift; sourceTree = "<group>"; };
 		6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailModel.swift; sourceTree = "<group>"; };
+		6C3E438CAF4935002C6DAC61 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchFixtures.swift; sourceTree = "<group>"; };
 		6FD08E4A5B5561A03B350B95 /* AskFormModel+Parts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AskFormModel+Parts.swift"; sourceTree = "<group>"; };
 		70E45893536CCF049E743DFC /* FetchCadenceWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FetchCadenceWiringTests.swift; sourceTree = "<group>"; };
@@ -450,6 +452,7 @@
 			isa = PBXGroup;
 			children = (
 				4EF0E3D3509281E6EB30B918 /* Assets.xcassets */,
+				6C3E438CAF4935002C6DAC61 /* PrivacyInfo.xcprivacy */,
 				B49576F65C5F65C311E0CAD8 /* App */,
 				769A2C47AF0A256116B61D76 /* DesignSystem */,
 				CAACBBFD9417C7BE0E2A7C31 /* Features */,
@@ -937,6 +940,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */,
+				9D8B8940EB3B69B1B03F6335 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
