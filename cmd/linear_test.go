@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -117,6 +119,10 @@ func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 	require.NoError(t, linear.NewTokenStore(cfg.WorkspaceDir(), first).Delete())
 	require.NoError(t, database.SetLinearAccountRemoved(first))
 
+	// The workspace was renamed while the account was removed.
+	renamed := acmeViewer
+	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
+	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return renamed, nil }
 	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "")
 	require.NoError(t, err)
 	assert.True(t, revived)
@@ -126,6 +132,8 @@ func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 	assert.Equal(t, "ok", a.Status)
 	assert.True(t, a.Enabled)
 	assert.Equal(t, "Work", a.Label)
+	assert.Equal(t, "Acme Renamed", a.OrgName)
+	assert.Equal(t, "acme-renamed", a.URLKey)
 	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), first).Load()
 	require.NoError(t, err)
 	assert.Equal(t, "new", tok.AccessToken)
@@ -167,8 +175,10 @@ func TestRelinkLinearAccount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "old", tok.AccessToken)
 
-	// Same workspace: saved, status ok.
-	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return acmeViewer, nil }
+	// Same workspace, renamed since: saved, status ok, new name stored.
+	renamed := acmeViewer
+	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
+	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return renamed, nil }
 	require.NoError(t, relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}))
 	tok, err = linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
@@ -176,6 +186,8 @@ func TestRelinkLinearAccount(t *testing.T) {
 	acct, err = database.GetLinearAccount(id)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acct.Status)
+	assert.Equal(t, "Acme Renamed", acct.OrgName)
+	assert.Equal(t, "acme-renamed", acct.URLKey)
 
 	// The viewer check is in memory: no scratch token file is ever written.
 	scratch, err := filepath.Glob(filepath.Join(cfg.WorkspaceDir(), "linear_token_-*"))
@@ -196,4 +208,161 @@ func TestLinearLoginCommands_EmptyClientIDFailsFast(t *testing.T) {
 		err := c.RunE(c, nil)
 		require.EqualError(t, err, "linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)", c.Name())
 	}
+}
+
+// linearCmdFixture is jiraCmdFixture plus the loaded config, for the Linear
+// commands that read token files from the workspace dir.
+func linearCmdFixture(t *testing.T) (*config.Config, *db.DB) {
+	t.Helper()
+	database := jiraCmdFixture(t)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	return cfg, database
+}
+
+// newLinearCmd returns a command with a context and captured stdout/stderr.
+func newLinearCmd(ctx context.Context) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	cmd := &cobra.Command{}
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetContext(ctx)
+	return cmd, &out, &errOut
+}
+
+func setLinearFlagAccount(t *testing.T, id int64) {
+	t.Helper()
+	old := linearFlagAccount
+	linearFlagAccount = id
+	t.Cleanup(func() { linearFlagAccount = old })
+}
+
+func TestRunLinearSync_AccountFailureFailsCommand(t *testing.T) {
+	_, database := linearCmdFixture(t)
+	setLinearFlagAccount(t, 0)
+	bad, err := database.CreateLinearAccount("bad")
+	require.NoError(t, err)
+	good, err := database.CreateLinearAccount("good")
+	require.NoError(t, err)
+	old := linearSyncAccount
+	t.Cleanup(func() { linearSyncAccount = old })
+	linearSyncAccount = func(_ context.Context, _ *config.Config, _ *db.DB, id int64) (int, error) {
+		if id == bad {
+			return 0, errors.New("linear graphql: boom")
+		}
+		return 2, nil
+	}
+
+	cmd, out, errOut := newLinearCmd(context.Background())
+	err = runLinearSync(cmd, nil)
+	require.ErrorContains(t, err, "linear graphql: boom")
+	assert.ErrorContains(t, err, fmt.Sprintf("account %d", bad))
+	assert.Contains(t, errOut.String(), fmt.Sprintf("account %d: sync failed", bad))
+	assert.Contains(t, out.String(), fmt.Sprintf("account %d: 2 issues synced", good))
+	acct, err := database.GetLinearAccount(bad)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status, "a plain failure is not an auth state")
+}
+
+func TestBuildLinearSyncers(t *testing.T) {
+	cfg := wiringTestConfig(t)
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	database := db.OpenTestDB(t)
+	logger := log.New(io.Discard, "", 0)
+	noToken, err := database.CreateLinearAccount("no token")
+	require.NoError(t, err)
+	withToken, err := database.CreateLinearAccount("with token")
+	require.NoError(t, err)
+	require.NoError(t, linear.NewTokenStore(cfg.WorkspaceDir(), withToken).Save(&linear.Token{AccessToken: "a", RefreshToken: "r"}))
+
+	// Disabled: nothing is wired and no account is touched.
+	assert.Empty(t, buildLinearSyncers(cfg, database, logger))
+	acct, err := database.GetLinearAccount(noToken)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+
+	cfg.Linear.Enabled = true
+	syncers := buildLinearSyncers(cfg, database, logger)
+	require.Len(t, syncers, 1)
+	assert.Equal(t, withToken, syncers[0].AccountID())
+	acct, err = database.GetLinearAccount(noToken)
+	require.NoError(t, err)
+	assert.Equal(t, "error", acct.Status, "an ok account without a token file goes to error")
+	acct, err = database.GetLinearAccount(withToken)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+}
+
+func TestRunLinearRemove_DeletesTokenKeepsData(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	setLinearFlagAccount(t, 0)
+	id, err := database.CreateLinearAccount("Work")
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertLinearTeams(id, []db.LinearTeam{{AccountID: id, ID: "t-1", Key: "ENG", Name: "Eng"}}, nil))
+	store := linear.NewTokenStore(cfg.WorkspaceDir(), id)
+	require.NoError(t, store.Save(&linear.Token{AccessToken: "a", RefreshToken: "r"}))
+	old := linearRevoke
+	t.Cleanup(func() { linearRevoke = old })
+	var revoked []string
+	linearRevoke = func(_ context.Context, accessToken string) error {
+		revoked = append(revoked, accessToken)
+		return errors.New("revoke endpoint returned 500")
+	}
+
+	cmd, out, errOut := newLinearCmd(context.Background())
+	require.NoError(t, runLinearRemove(cmd, []string{strconv.FormatInt(id, 10)}))
+	assert.Equal(t, []string{"a"}, revoked)
+	assert.Contains(t, errOut.String(), "Warning: revoking token", "a failed revoke is reported, not fatal")
+	assert.Contains(t, out.String(), "removed")
+	assert.False(t, store.Exists())
+	acct, err := database.GetLinearAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", acct.Status)
+	teams, err := database.ListLinearTeams(id)
+	require.NoError(t, err)
+	assert.Len(t, teams, 1, "synced data is kept")
+}
+
+func TestRunLinearRemove_WaitsForTokenLock(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	setLinearFlagAccount(t, 0)
+	id, err := database.CreateLinearAccount("Work")
+	require.NoError(t, err)
+	store := linear.NewTokenStore(cfg.WorkspaceDir(), id)
+	require.NoError(t, store.Save(&linear.Token{AccessToken: "a", RefreshToken: "r"}))
+	old := linearRevoke
+	t.Cleanup(func() { linearRevoke = old })
+	linearRevoke = func(context.Context, string) error { t.Fatal("revoke must wait for the lock"); return nil }
+	unlock, err := store.Lock(context.Background()) // a refresh in flight
+	require.NoError(t, err)
+	defer unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd, _, _ := newLinearCmd(ctx)
+	require.ErrorContains(t, runLinearRemove(cmd, []string{strconv.FormatInt(id, 10)}), "deleting token")
+	assert.True(t, store.Exists())
+	acct, err := database.GetLinearAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+}
+
+func TestLinearPositionalIDMustMatchAccountFlag(t *testing.T) {
+	setLinearFlagAccount(t, 5)
+	_, err := parseLinearAccountArg("3")
+	require.EqualError(t, err, "--account and the positional id disagree (5 vs 3)")
+	id, err := parseLinearAccountArg("5")
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), id)
+	cmd, _, _ := newLinearCmd(context.Background())
+	require.ErrorContains(t, setLinearAccountEnabled(cmd, "3", false), "disagree")
+	require.ErrorContains(t, runLinearRemove(cmd, []string{"3"}), "disagree")
+}
+
+func TestLinearTeamKeys_ReportsReadFailure(t *testing.T) {
+	database := db.OpenTestDB(t)
+	require.NoError(t, database.Close())
+	var errOut bytes.Buffer
+	assert.Empty(t, linearTeamKeys(database, 7, &errOut))
+	assert.Contains(t, errOut.String(), "account 7: reading teams")
 }

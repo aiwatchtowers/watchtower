@@ -239,6 +239,10 @@ func linearClient(cfg *config.Config, accountID int64) *linear.Client {
 var (
 	linearLogin       = linear.Login
 	linearFetchViewer = linear.FetchViewerWithToken
+	linearRevoke      = linear.Revoke
+	linearSyncAccount = func(ctx context.Context, cfg *config.Config, database *db.DB, accountID int64) (int, error) {
+		return linear.NewSyncer(linearClient(cfg, accountID), database, accountID, cfg.Linear.BackfillDays).Sync(ctx)
+	}
 )
 
 // discardNewLinearAccount undoes a half-created account: its token is deleted
@@ -323,6 +327,9 @@ func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 			return err
 		}
 	}
+	if err := database.UpdateLinearAccountConnection(a.ID, viewer.OrgID, viewer.URLKey, viewer.OrgName); err != nil {
+		return err
+	}
 	if err := database.SetLinearAccountOwner(a.ID, viewer.UserID, viewer.Email, viewer.Name); err != nil {
 		return err
 	}
@@ -399,7 +406,8 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 }
 
 // relinkLinearAccount checks the new token belongs to the account's workspace
-// before saving it, then refreshes the owner and sets the status ok.
+// before saving it, then refreshes the workspace name, the owner and sets the
+// status ok.
 func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token) error {
 	// The viewer is fetched with the new token in memory, before it is saved,
 	// so a wrong-workspace login never overwrites the account's token.
@@ -412,6 +420,10 @@ func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 			viewer.OrgName, account.ID, account.OrgName)
 	}
 	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), account.ID), token); err != nil {
+		return err
+	}
+	// A renamed workspace (name or URL key) is picked up on every re-login.
+	if err := database.UpdateLinearAccountConnection(account.ID, viewer.OrgID, viewer.URLKey, viewer.OrgName); err != nil {
 		return err
 	}
 	if err := database.SetLinearAccountOwner(account.ID, viewer.UserID, viewer.Email, viewer.Name); err != nil {
@@ -466,10 +478,23 @@ func printLinearAccounts(w io.Writer, database *db.DB, asJSON bool) error {
 	return nil
 }
 
-func setLinearAccountEnabled(cmd *cobra.Command, arg string, enabled bool) error {
+// parseLinearAccountArg parses the positional account id of enable, disable
+// and remove; a --account that names a different account is refused.
+func parseLinearAccountArg(arg string) (int64, error) {
 	id, err := strconv.ParseInt(arg, 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid account id %q: %w", arg, err)
+		return 0, fmt.Errorf("invalid account id %q: %w", arg, err)
+	}
+	if linearFlagAccount > 0 && linearFlagAccount != id {
+		return 0, fmt.Errorf("--account and the positional id disagree (%d vs %d)", linearFlagAccount, id)
+	}
+	return id, nil
+}
+
+func setLinearAccountEnabled(cmd *cobra.Command, arg string, enabled bool) error {
+	id, err := parseLinearAccountArg(arg)
+	if err != nil {
+		return err
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
@@ -495,9 +520,9 @@ func setLinearAccountEnabled(cmd *cobra.Command, arg string, enabled bool) error
 }
 
 func runLinearRemove(cmd *cobra.Command, args []string) error {
-	id, err := strconv.ParseInt(args[0], 10, 64)
+	id, err := parseLinearAccountArg(args[0])
 	if err != nil {
-		return fmt.Errorf("invalid account id %q: %w", args[0], err)
+		return err
 	}
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
@@ -507,21 +532,37 @@ func runLinearRemove(cmd *cobra.Command, args []string) error {
 	if _, err := database.GetLinearAccount(id); err != nil {
 		return err
 	}
-	store := linear.NewTokenStore(cfg.WorkspaceDir(), id)
-	if tok, err := store.Load(); err == nil && tok.AccessToken != "" {
-		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
-		if err := linear.Revoke(ctx, tok.AccessToken); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: revoking token: %v\n", err)
-		}
-		cancel()
-	}
-	if err := store.Delete(); err != nil {
-		return fmt.Errorf("deleting token: %w", err)
+	if err := revokeAndDeleteLinearToken(cmd.Context(), linear.NewTokenStore(cfg.WorkspaceDir(), id), cmd.ErrOrStderr()); err != nil {
+		return err
 	}
 	if err := database.SetLinearAccountRemoved(id); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Linear account %d removed. Token deleted; synced data kept.\n", id)
+	return nil
+}
+
+// revokeAndDeleteLinearToken revokes (best effort) and deletes the account's
+// token under its cross-process lock, so a daemon refresh in flight cannot
+// write the file back after the delete.
+func revokeAndDeleteLinearToken(ctx context.Context, store *linear.TokenStore, errOut io.Writer) error {
+	lockCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return fmt.Errorf("deleting token: %w", err)
+	}
+	defer unlock()
+	if tok, err := store.Load(); err == nil && tok.AccessToken != "" {
+		revokeCtx, cancelRevoke := context.WithTimeout(ctx, 10*time.Second)
+		if err := linearRevoke(revokeCtx, tok.AccessToken); err != nil {
+			fmt.Fprintf(errOut, "Warning: revoking token: %v\n", err)
+		}
+		cancelRevoke()
+	}
+	if err := store.Delete(); err != nil {
+		return fmt.Errorf("deleting token: %w", err)
+	}
 	return nil
 }
 
@@ -592,11 +633,14 @@ func setLinearTeamsSelected(cmd *cobra.Command, keys []string, selected bool) er
 	return nil
 }
 
-// linearTeamKeys maps team id to key for the account's sync-state rows.
-func linearTeamKeys(database *db.DB, accountID int64) map[string]string {
+// linearTeamKeys maps team id to key for the account's sync-state rows. A
+// read failure is reported on errOut and leaves the keys empty, so the caller
+// still prints the states.
+func linearTeamKeys(database *db.DB, accountID int64, errOut io.Writer) map[string]string {
 	keys := map[string]string{}
 	teams, err := database.ListLinearTeams(accountID)
 	if err != nil {
+		fmt.Fprintf(errOut, "account %d: reading teams: %v\n", accountID, err)
 		return keys
 	}
 	for _, t := range teams {
@@ -627,24 +671,26 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	var revoked error
+	// Every per-account failure is joined into the returned error (the
+	// runJiraSync rule): the command exits non-zero when any account failed.
+	var errs error
 	for _, a := range accounts {
-		syncer := linear.NewSyncer(linearClient(cfg, a.ID), database, a.ID, cfg.Linear.BackfillDays)
-		n, err := syncer.Sync(cmd.Context())
+		n, err := linearSyncAccount(cmd.Context(), cfg, database, a.ID)
 		if errors.Is(err, linear.ErrAuthRevoked) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: authorization revoked; run 'watchtower linear login --account %d'\n", a.ID, a.ID)
-			revoked = errors.Join(revoked, err)
+			errs = errors.Join(errs, fmt.Errorf("account %d: %w", a.ID, err))
 			if werr := database.SetLinearAccountAuthState(a.ID, "revoked", err.Error()); werr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "account %d: recording revoked state: %v\n", a.ID, werr)
-				revoked = errors.Join(revoked, werr)
+				errs = errors.Join(errs, fmt.Errorf("account %d: recording revoked state: %w", a.ID, werr))
 			}
 			continue
 		}
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: sync failed: %v\n", a.ID, err)
+			errs = errors.Join(errs, fmt.Errorf("account %d: %w", a.ID, err))
 		}
 		fmt.Fprintf(out, "account %d: %d issues synced\n", a.ID, n)
-		keys := linearTeamKeys(database, a.ID)
+		keys := linearTeamKeys(database, a.ID, cmd.ErrOrStderr())
 		states, serr := database.ListLinearSyncStates(a.ID)
 		if serr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: reading sync state: %v\n", a.ID, serr)
@@ -655,7 +701,10 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	return revoked
+	if errs != nil {
+		return fmt.Errorf("syncing: %w", errs)
+	}
+	return nil
 }
 
 func runLinearStatus(cmd *cobra.Command, _ []string) error {
@@ -683,7 +732,7 @@ func runLinearStatus(cmd *cobra.Command, _ []string) error {
 		if len(states) == 0 {
 			continue
 		}
-		keys := linearTeamKeys(database, a.ID)
+		keys := linearTeamKeys(database, a.ID, cmd.ErrOrStderr())
 		fmt.Fprintf(out, "\nAccount %d teams:\n", a.ID)
 		fmt.Fprintf(out, "%-10s %-26s %s\n", "Team", "Last synced", "Error")
 		for _, s := range states {

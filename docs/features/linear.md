@@ -17,6 +17,7 @@ Authorization-code flow with PKCE (no client secret). The client id comes from `
 - Per-team watermark in `linear_sync_state`; issues and comments are queried with `updatedAt gte since` (LINEAR-01). The watermark is the max issue `updatedAt` only; a quiet successful pass records the `since` it queried with.
 - First pass: every open issue plus issues updated within `linear.backfill_days` (default 90).
 - Pages: issues 25 per page (with nested labels 20, relations 20, history 50), comments 50, teams 50, users 100, cycles/projects 50. The client gate waits when remaining requests drop below 5 or complexity below 20000 and refuses waits over 10 minutes (`ErrRateLimited`).
+- `state_changed_at` is the newest history entry that set a state; without one it falls back to the current category's timestamp (`startedAt`, `completedAt` or `canceledAt`).
 - Archived or trashed issues are stored with `is_deleted = 1`. Issues are keyed by UUID; keys move (LINEAR-04).
 - Users are fetched each pass and mapped to Slack by email only (`db.ResolveLinearUsersByEmail`; manual mappings are untouched); Slack ids are back-filled onto issues (assignee and creator; `db.BackfillLinearSlackIDs`); comments keep their Linear author id. Comment mentions are read from the body's `suggestion_userMentions` nodes (`attrs.id`).
 
@@ -33,7 +34,7 @@ Read the migration for the exact column lists; the owner-open query shape is pin
 
 ## CLI
 
-`watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace. Both identify the fresh token's workspace with an in-memory viewer request (`linear.FetchViewerWithToken`: no token file, no refresh); `login` saves the token only after the workspace matches.
+`watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace. Both identify the fresh token's workspace with an in-memory viewer request (`linear.FetchViewerWithToken`: no token file, no refresh); `login` saves the token only after the workspace matches. Both refresh the stored workspace name and URL key, so a renamed workspace shows its new name. `enable`/`disable`/`remove` take the id positionally; an `--account` naming a different id is refused. `remove` revokes (best effort) and deletes the token under the account's token lock, so a daemon refresh in flight cannot write it back. `sync` prints a line per account and exits non-zero when any account failed (the `jira sync` rule).
 
 ## v1 limits
 

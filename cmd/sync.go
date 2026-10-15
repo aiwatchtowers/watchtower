@@ -1476,17 +1476,23 @@ func printProgressJSON(w io.Writer, snap sync.Snapshot, syncErr error) {
 	fmt.Fprintln(w, string(data))
 }
 
-// wireLinearSyncers builds one Linear syncer per enabled account with a token
+// wireLinearSyncers hands the daemon one Linear syncer per enabled account
+// with a token file (buildLinearSyncers).
+func wireLinearSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	d.SetLinearSyncers(buildLinearSyncers(cfg, database, logger))
+}
+
+// buildLinearSyncers builds one Linear syncer per enabled account with a token
 // file. An account without one is flagged "error" (only from "ok", so a
 // revoked account does not churn) — the buildAtlassianClients rule.
-func wireLinearSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) []*linear.Syncer {
 	if !cfg.Linear.Enabled {
-		return
+		return nil
 	}
 	accounts, err := database.ListEnabledLinearAccounts()
 	if err != nil {
 		logger.Printf("linear: failed to list accounts: %v", err)
-		return
+		return nil
 	}
 	oauthCfg := resolveLinearOAuthConfig()
 	var syncers []*linear.Syncer
@@ -1506,5 +1512,5 @@ func wireLinearSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, lo
 		s.SetLogger(subLogger(logger, "[linear] "))
 		syncers = append(syncers, s)
 	}
-	d.SetLinearSyncers(syncers)
+	return syncers
 }
