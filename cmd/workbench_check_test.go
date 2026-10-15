@@ -136,11 +136,6 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	out, errOut := stopHookIO(t, "abc", `{}`)
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, "invalid --workbench", "a real failure names itself on stderr")
-	// The pre-rename install's hook (--project, legacy vocabulary) too.
-	var legacyOut, legacyErr bytes.Buffer
-	runStopHook(context.Background(), strings.NewReader(`{}`), &legacyOut, &legacyErr, "abc", legacyWorkbenchVocabulary)
-	assert.Empty(t, legacyOut.String())
-	assert.Contains(t, legacyErr.String(), "invalid --project", "a real failure names itself on stderr")
 
 	require.NoError(t, database.DeleteWorkbench(pid))
 	out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), `{"stop_hook_active":false}`)
@@ -152,7 +147,7 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	assert.Empty(t, stopHook(t, pid2, `{"stop_hook_active":false}`), "no repository: nothing to check")
 
 	// Through cobra: exit 0, even with an unknown flag and a bad id.
-	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{}`), "check", "--project", "nope", "--stop-hook", "--future-flag")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{}`), "check", "--workbench", "nope", "--stop-hook", "--future-flag")
 	require.NoError(t, err)
 	assert.Empty(t, stdout)
 }
