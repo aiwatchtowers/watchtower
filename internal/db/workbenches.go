@@ -242,6 +242,49 @@ func (db *DB) ClearWorkbenchArchivedThrough(workbenchID int64) error {
 	return requireAffected(res, fmt.Errorf("workbench %d: %w", workbenchID, ErrWorkbenchNotFound))
 }
 
+// WorkbenchMethodology is a workbench's personal methodology overrides
+// (migration 00115, spec 2026-10-15-workbench-configurable-methodology §8):
+// "" = NULL, so the folder's .watchtower/workflow.md, else the built-in
+// default, applies. Read apart from GetWorkbench (workbenchCols leaves the
+// columns out) so a hook running against a database a migration behind fails
+// only this read, which resolves to strict (PROJ-13).
+type WorkbenchMethodology struct {
+	Preset      string // watchtower-flow | none
+	AskGuard    string // strict | soft | off
+	FinishCheck string // on | off
+}
+
+// GetWorkbenchMethodology returns workbench id's overrides, or
+// ErrWorkbenchNotFound.
+func (db *DB) GetWorkbenchMethodology(id int64) (WorkbenchMethodology, error) {
+	var preset, guard, finish sql.NullString
+	err := db.QueryRow(`SELECT methodology_preset, ask_guard_mode, finish_check FROM projects WHERE id = ?`, id).
+		Scan(&preset, &guard, &finish)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkbenchMethodology{}, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
+	}
+	if err != nil {
+		return WorkbenchMethodology{}, fmt.Errorf("reading workbench %d methodology: %w", id, err)
+	}
+	return WorkbenchMethodology{Preset: preset.String, AskGuard: guard.String, FinishCheck: finish.String}, nil
+}
+
+// SetWorkbenchMethodology writes all three overrides of workbench id ("" stores
+// NULL). The only production writer is `watchtower workbench methodology`,
+// which the Desktop runs; the column CHECKs are the value rules.
+func (db *DB) SetWorkbenchMethodology(id int64, m WorkbenchMethodology) error {
+	res, err := db.Exec(`UPDATE projects SET methodology_preset = ?, ask_guard_mode = ?, finish_check = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+		methodologyValue(m.Preset), methodologyValue(m.AskGuard), methodologyValue(m.FinishCheck), id)
+	if err != nil {
+		return fmt.Errorf("setting workbench %d methodology: %w", id, err)
+	}
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound))
+}
+
+// methodologyValue stores "" as NULL.
+func methodologyValue(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
 // sources and comments, and its folder files' search index entries
 // (kb source project_doc, PROJ-08) and its code questions go in the same
