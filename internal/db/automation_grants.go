@@ -8,7 +8,7 @@ import (
 )
 
 // AutomationToolGrant is the owner's auto grant for one (automation, tool)
-// (automation_tool_grants, migration 00115; spec §6.4).
+// (automation_tool_grants, migration 00116; spec §6.4).
 type AutomationToolGrant struct {
 	AutomationID int64
 	Tool         string

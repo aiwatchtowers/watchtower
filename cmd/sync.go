@@ -927,6 +927,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 	// Automations: scheduler + executor goroutines, woken by SIGUSR2.
 	wireAutomations(d, cfg, database, gen, logger)
+	// Claude plan limits: the usage poller (no AI).
+	wirePlanUsage(d, database, logger)
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)

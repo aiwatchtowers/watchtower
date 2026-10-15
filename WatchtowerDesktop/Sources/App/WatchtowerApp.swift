@@ -116,7 +116,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             } else {
                 appState?.selectedDestination = .digests
             }
-        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action":
+        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action", "plan_usage":
             routeNavigation(userInfo["type"] as? String, appState: appState)
         case "voice_label":
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
@@ -176,6 +176,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         case "agent_action":
             // A proposal from a workbench terminal: its card is in Inbox → Actions.
             appState?.selectedDestination = .inbox
+        case "plan_usage":
+            UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
+            appState?.selectedDestination = .usage
         case "update":
             // An update push opens Settings → System, where it installs.
             appState?.settingsTab = .system
@@ -282,6 +285,8 @@ struct WatchtowerApp: App {
     /// Bottom space the recorder pills need, handed to every composer so the
     /// pills never cover what the owner is typing.
     @State private var recordingIndicatorInset: CGFloat = 0
+    /// Settings → Claude plan toggle for the menu bar text; absent = on.
+    @AppStorage(PlanUsageCenter.menuBarKey) private var showPlanUsageInMenuBar = true
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
     /// tray button — so the global hotkey's plain C callback (no SwiftUI
     /// environment of its own) has something to call through `AppState`.
@@ -530,30 +535,36 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .environment(\.dictationCenter, appState.dictationCenter)
         } label: {
-            Image(nsImage: Self.trayIcon)
-                .accessibilityLabel("Watchtower")
-                // The tray label is always mounted — window-independent — so
-                // a login launch that never mounts `rootContent` still wires
-                // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
-                // with rootContent's own assignment.
-                .onAppear {
-                    appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
-                    appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
-                    appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
-                    appState.openSettingsWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        openSettings()
-                    }
-                    appState.voiceRegistryCenter.openWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        appState.openVoicesWindow?()
-                    }
-                    appState.updateService.presentUpdateWindow = {
-                        ActivationPolicyDecision.becomeRegularAndActivate()
-                        openWindow(id: UpdateAvailableView.sceneID)
-                        return true
-                    }
+            let usageText = appState.planUsageCenter?.menuBarLabel(showText: showPlanUsageInMenuBar)
+            HStack(spacing: 4) {
+                Image(nsImage: Self.trayIcon)
+                if let usageText {
+                    Text(usageText).monospacedDigit()
                 }
+            }
+            .accessibilityLabel(usageText.map { "Watchtower, \($0)" } ?? "Watchtower")
+            // The tray label is always mounted — window-independent — so
+            // a login launch that never mounts `rootContent` still wires
+            // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
+            // with rootContent's own assignment.
+            .onAppear {
+                appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
+                appState.openSettingsWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openSettings()
+                }
+                appState.voiceRegistryCenter.openWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    appState.openVoicesWindow?()
+                }
+                appState.updateService.presentUpdateWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openWindow(id: UpdateAvailableView.sceneID)
+                    return true
+                }
+            }
         }
     }
 }

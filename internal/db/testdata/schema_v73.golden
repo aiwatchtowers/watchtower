@@ -1907,6 +1907,29 @@ duration_seconds REAL NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
+table	plan_usage_samples
+CREATE TABLE plan_usage_samples (
+taken_at TEXT NOT NULL,
+limit_key TEXT NOT NULL,
+percent REAL NOT NULL,
+resets_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (limit_key, taken_at)
+)
+
+table	plan_usage_status
+CREATE TABLE plan_usage_status (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+state TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+reason TEXT NOT NULL DEFAULT '',
+plan TEXT NOT NULL DEFAULT '',
+fetched_at TEXT,
+last_error TEXT NOT NULL DEFAULT '',
+last_error_at TEXT,
+limits_json TEXT NOT NULL DEFAULT '[]',
+breakdown_json TEXT NOT NULL DEFAULT '[]',
+updated_at TEXT NOT NULL
+)
+
 table	project_comments
 CREATE TABLE "project_comments" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4093,6 +4116,24 @@ GROUP BY up.ancestor
 13	period_to	REAL	notnull=0	dflt=NULL	pk=0
 14	duration_seconds	REAL	notnull=1	dflt=0	pk=0
 15	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## plan_usage_samples
+0	taken_at	TEXT	notnull=1	dflt=NULL	pk=2
+1	limit_key	TEXT	notnull=1	dflt=NULL	pk=1
+2	percent	REAL	notnull=1	dflt=NULL	pk=0
+3	resets_at	TEXT	notnull=1	dflt=''	pk=0
+
+## plan_usage_status
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	plan	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	last_error	TEXT	notnull=1	dflt=''	pk=0
+6	last_error_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
+8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## project_comments
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

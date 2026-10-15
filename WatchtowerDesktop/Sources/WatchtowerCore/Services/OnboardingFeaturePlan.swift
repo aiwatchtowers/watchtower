@@ -46,10 +46,11 @@ package enum OnboardingFeaturePlan {
     /// Toggleable features onboarding deliberately leaves at whatever state
     /// they have: Confluence in search does nothing until a space is picked
     /// in Settings; Automations runs nothing until the owner confirms a
-    /// recipe, so its default (on) needs no goal. Every non-core registry id is either managed or listed
+    /// recipe, so its default (on) needs no goal; Claude plan limits cost nothing
+    /// and need no goal. Every non-core registry id is either managed or listed
     /// here — `OnboardingFeaturePlanTests` checks it against
     /// `internal/features/registry.go`, so a new feature must be classified.
-    package static let unmanagedFeatureIDs: Set<String> = ["knowledge-connectors", "automations"]
+    package static let unmanagedFeatureIDs: Set<String> = ["knowledge-connectors", "automations", "claude-plan-limits"]
 
     /// Every feature whose state onboarding decides. Anything outside it
     /// (core entries, `unmanagedFeatureIDs`) keeps whatever state it has.

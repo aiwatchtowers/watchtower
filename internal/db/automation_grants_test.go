@@ -45,7 +45,7 @@ func countGrants(t *testing.T, d *DB, id int64) int {
 	return n
 }
 
-func TestMigration00115_GrantsTable(t *testing.T) {
+func TestMigration00116_GrantsTable(t *testing.T) {
 	d := openTestDB(t)
 	var name string
 	if err := d.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'automation_tool_grants'`).Scan(&name); err != nil {
