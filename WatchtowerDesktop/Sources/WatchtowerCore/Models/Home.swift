@@ -80,3 +80,159 @@ package struct GettingReadyStep: Equatable, Sendable {
         self.sawUnready = sawUnready
     }
 }
+
+// MARK: - Today
+
+/// A Today card, in its fixed order.
+package enum TodayCardKind: CaseIterable, Sendable {
+    case waitingOnYou, nextMeeting, briefing, myTargets, agentsWaiting, sinceYouWereAway
+}
+
+/// Where a click goes. Core has no SidebarDestination; AppState.openHomeLink maps these.
+package enum HomeLink: Equatable, Sendable {
+    case inbox
+    case calendarEvent(id: String)
+    case briefing(id: Int)
+    case targets
+    case target(id: Int)
+    case workbench(WorkbenchRoute)
+    case workbenches
+    case catchUp
+    /// Getting ready's Open.
+    case feature(ReadinessFeature)
+    /// Getting ready's Connect row.
+    case connect(ReadinessSource)
+}
+
+/// A target row's status dot.
+package enum TodayItemTone: Equatable, Sendable {
+    case overdue, dueToday, inProgress
+}
+
+/// One row inside a Today card.
+package struct TodayItem: Equatable, Sendable {
+    /// "Proposal", "Failed", "Reminder", "Review", "Check", "Question".
+    package let chip: String?
+    package let title: String
+    /// A workbench name, "Due today", "Overdue · Oct 12", "In progress".
+    package let detail: String?
+    package let tone: TodayItemTone?
+    package let link: HomeLink
+
+    package init(chip: String?, title: String, detail: String?, tone: TodayItemTone?, link: HomeLink) {
+        self.chip = chip
+        self.title = title
+        self.detail = detail
+        self.tone = tone
+        self.link = link
+    }
+}
+
+package struct TodayCard: Equatable, Sendable {
+    package let kind: TodayCardKind
+    /// "WAITING ON YOU · 4", "NEXT MEETING · IN 25 MIN".
+    package let eyebrow: String
+    /// The meeting title.
+    package let title: String?
+    /// The meeting line, the briefing summary or the recap line.
+    package let body: String?
+    package let items: [TodayItem]
+    /// The card's own target (header click).
+    package let link: HomeLink
+
+    package init(
+        kind: TodayCardKind,
+        eyebrow: String,
+        title: String? = nil,
+        body: String? = nil,
+        items: [TodayItem] = [],
+        link: HomeLink
+    ) {
+        self.kind = kind
+        self.eyebrow = eyebrow
+        self.title = title
+        self.body = body
+        self.items = items
+        self.link = link
+    }
+}
+
+/// Every Today source as one read (`HomeQueries.today`) left it.
+package struct HomeTodayData: Equatable, Sendable {
+    package var awaitingCount: Int
+    /// `awaitingOwner(limit: 3)`.
+    package var actions: [AgentAction]
+    /// `fetchDue`.
+    package var reminders: [Reminder]
+    package var nextEvent: CalendarEvent?
+    package var nextEventHasPrep: Bool
+    /// Today's.
+    package var briefing: Briefing?
+    /// `homeSummary`.
+    package var targets: [Target]
+    package var asks: WorkbenchAskRows
+    package var latestRecap: CatchUpRecap?
+    /// A card whose read threw (logged).
+    package var failed: Set<TodayCardKind>
+
+    package init(
+        awaitingCount: Int = 0,
+        actions: [AgentAction] = [],
+        reminders: [Reminder] = [],
+        nextEvent: CalendarEvent? = nil,
+        nextEventHasPrep: Bool = false,
+        briefing: Briefing? = nil,
+        targets: [Target] = [],
+        asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
+        latestRecap: CatchUpRecap? = nil,
+        failed: Set<TodayCardKind> = []
+    ) {
+        self.awaitingCount = awaitingCount
+        self.actions = actions
+        self.reminders = reminders
+        self.nextEvent = nextEvent
+        self.nextEventHasPrep = nextEventHasPrep
+        self.briefing = briefing
+        self.targets = targets
+        self.asks = asks
+        self.latestRecap = latestRecap
+        self.failed = failed
+    }
+}
+
+/// `OnboardingFinishPlan.firstSyncText`'s pair, named.
+package struct FirstSyncLine: Equatable, Sendable {
+    package let title: String
+    package let detail: String
+
+    package init(title: String, detail: String) {
+        self.title = title
+        self.detail = detail
+    }
+}
+
+package struct HomeSnapshot: Equatable, Sendable {
+    package let gettingReady: GettingReadyZone
+    /// Shown on top of a `.shown` zone.
+    package let firstSync: FirstSyncLine?
+    package let today: [TodayCard]
+    /// Every allowed card's read failed.
+    package let todayReadFailed: Bool
+
+    package init(gettingReady: GettingReadyZone, firstSync: FirstSyncLine?, today: [TodayCard], todayReadFailed: Bool) {
+        self.gettingReady = gettingReady
+        self.firstSync = firstSync
+        self.today = today
+        self.todayReadFailed = todayReadFailed
+    }
+
+    /// "Nothing needs you right now.": no card, no failed read, and no
+    /// Getting ready zone still asking for attention.
+    package var nothingNeedsYou: Bool {
+        guard today.isEmpty, !todayReadFailed else { return false }
+        switch gettingReady {
+        case .hidden, .allReady: return true
+        case .shown: return false
+        }
+    }
+}
