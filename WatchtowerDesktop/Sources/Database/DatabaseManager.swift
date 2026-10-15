@@ -19,9 +19,11 @@ final class DatabaseManager: Sendable {
             // M15: match Go CLI pragmas
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
-            try db.execute(sql: "PRAGMA busy_timeout = 5000")
             try db.execute(sql: "PRAGMA foreign_keys = ON")
         }
+        // The 5 s busy wait (formerly `PRAGMA busy_timeout = 5000`) plus the
+        // write-lock metrics in dblock.jsonl (#527).
+        DBLockInstrumentation.install(on: &config, sink: DBLockSink(dbPath: path))
         dbPool = try DatabasePool(path: path, configuration: config)
 
         // H6 + M16: validate schema version and required tables

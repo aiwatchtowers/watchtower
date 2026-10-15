@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -142,6 +143,8 @@ type Daemon struct {
 	noOwnerLoggedDay map[string]string
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
+
+	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -435,6 +438,7 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
+	d.sampleLockStats(ctx)
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
@@ -504,6 +508,15 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseBriefing(ctx)
 
 	d.runDayPlanPhases(ctx, time.Now())
+}
+
+// sampleLockStats writes this cycle's WAL and connection-pool wait sample to
+// the lock-metrics sink (db.SampleLockStats). Never on a cancelled ctx.
+func (d *Daemon) sampleLockStats(ctx context.Context) {
+	if d.db == nil || ctx.Err() != nil {
+		return
+	}
+	d.lockStats = d.db.SampleLockStats(ctx, d.lockStats)
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
