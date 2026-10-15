@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/dop251/goja"
+
+	"watchtower/internal/tools"
 )
 
 // The output kinds P2 registers (spec §5).
@@ -50,9 +52,10 @@ func toolOutput(b Backends, kind, tool string) SDKFunc {
 			if b.Registry == nil {
 				return nil, notAvailable("no tool registry is configured")
 			}
+			// Checked before writeTool so a dry run refuses what a live run would.
 			t, ok := b.Registry.Get(tool)
-			if !ok {
-				return nil, notAvailable(fn + "(): the " + tool + " tool is not available")
+			if !ok || !t.VisibleOn(tools.AutomationSurface) {
+				return nil, notAvailable(fn + "(): the " + tool + " tool is not available to automations")
 			}
 			return writeTool(env, b, step, t, args, false)
 		})

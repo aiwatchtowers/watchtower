@@ -27,7 +27,7 @@ type slackArgs struct {
 
 // fakeSlackSend is an External send_slack_message stand-in on the automation
 // surface (the real one needs Slack accounts and a sender).
-func fakeSlackSend(t *testing.T) *tools.Tool {
+func fakeSlackSend(t *testing.T, surfaces ...string) *tools.Tool {
 	t.Helper()
 	schema, err := jsonschema.For[slackArgs](nil)
 	if err != nil {
@@ -35,7 +35,7 @@ func fakeSlackSend(t *testing.T) *tools.Tool {
 	}
 	return &tools.Tool{
 		Name: "send_slack_message", Description: "fake slack send", InputSchema: schema, Access: tools.AccessWrite,
-		External: true, Surfaces: []string{tools.AutomationSurface},
+		External: true, Surfaces: surfaces,
 		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
 		Execute: func(context.Context, *db.DB, tools.Call) (any, error) {
 			return map[string]any{"sent": true}, nil
@@ -47,10 +47,17 @@ func fakeSlackSend(t *testing.T) *tools.Tool {
 // create_target and a fake External send_slack_message.
 func newOutputFixture(t *testing.T) *writeFixture {
 	t.Helper()
+	return newOutputFixtureSlackOn(t, tools.AutomationSurface)
+}
+
+// newOutputFixtureSlackOn is newOutputFixture with send_slack_message
+// offered on surfaces only.
+func newOutputFixtureSlackOn(t *testing.T, surfaces ...string) *writeFixture {
+	t.Helper()
 	w := &writeFixture{}
 	w.exFixture = newExFixture(t, exOpts{fileDB: true, registry: func(d *db.DB) automations.ToolRegistry {
 		w.reg = tools.New(d)
-		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), fakeSlackSend(t)} {
+		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), fakeSlackSend(t, surfaces...)} {
 			if err := w.reg.Register(tl); err != nil {
 				t.Fatalf("register %s: %v", tl.Name, err)
 			}
@@ -135,6 +142,7 @@ func TestOutput_TargetGateIsOutputsNotTool(t *testing.T) {
 		row.ContextID != fmt.Sprint(r.ID) || row.Reason != "⚙ New mail summary · run #"+fmt.Sprint(r.ID) {
 		t.Fatalf("row = %+v; want a pending create_target of run %d with the default reason", row, r.ID)
 	}
+	mustContain(t, "create_target args", row.ArgsJSON, `"text":"Reply to acme"`)
 	if out := summaryObject(t, r); out["status"] != "proposed" || idOf(t, out) != row.ID {
 		t.Fatalf("script got %v; want {status: proposed, id: %d}", out, row.ID)
 	}
@@ -164,6 +172,8 @@ func TestOutput_SlackIsAProposalUnlessGranted(t *testing.T) {
 		if row.Tool != "send_slack_message" || row.Status != "pending" || row.TrustAtCreate != "ask" {
 			t.Fatalf("row = %+v; want a pending send_slack_message, ask", row)
 		}
+		mustContain(t, "send_slack_message args", row.ArgsJSON, `"channel":"#general"`)
+		mustContain(t, "send_slack_message args", row.ArgsJSON, `"text":"Daily mail summary"`)
 		wantStep(t, w.outputStep(t, r.ID, "slack"), automations.StepProposed, row.ID, false)
 	})
 	t.Run("active grant", func(t *testing.T) {
@@ -177,6 +187,7 @@ func TestOutput_SlackIsAProposalUnlessGranted(t *testing.T) {
 		if row.Status != "applied" || row.TrustAtCreate != "execute" {
 			t.Fatalf("row = %+v; want applied, execute", row)
 		}
+		mustContain(t, "send_slack_message args", row.ArgsJSON, `"text":"Daily mail summary"`)
 		if out := summaryObject(t, r); out["status"] != "applied" || out["result"] == nil {
 			t.Fatalf("script got %v; want {status: applied, id, result}", out)
 		}
@@ -204,10 +215,37 @@ func TestOutput_P2KindsDryRun(t *testing.T) {
 	if n := w.count(t, "automation_outputs"); n != 0 {
 		t.Fatalf("automation_outputs = %d; want none committed by a dry run", n)
 	}
+	wouldBe := map[string]string{"briefing": `"body":"3 new"`, "target": `"text":"Reply to acme"`, "slack": `"text":"hi"`}
 	for _, kind := range []string{"briefing", "target", "slack"} {
-		if s := w.outputStep(t, id, kind); s.Status != automations.StepDryRun || s.ActionID != 0 {
+		s := w.outputStep(t, id, kind)
+		if s.Status != automations.StepDryRun || s.ActionID != 0 {
 			t.Fatalf("%s step = %s action %d; want dry_run, no action", kind, s.Status, s.ActionID)
 		}
+		mustContain(t, kind+" dry-run step summary", s.ResultSummary, wouldBe[kind])
+	}
+}
+
+func TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable(t *testing.T) {
+	for _, trigger := range []string{db.TriggerManual, db.TriggerDryRun} {
+		t.Run(trigger, func(t *testing.T) {
+			w := newOutputFixtureSlackOn(t, "main")
+			a := w.seedOutput(t, "off-surface", []string{"llm:light"}, "slack",
+				`try { output.slack({channel: "#general", text: "hi"}); return "called" } catch (e) { return e.name }`)
+			id := w.enqueue(t, a, trigger)
+			if trigger == db.TriggerDryRun {
+				if _, err := w.e.ExecuteInline(context.Background(), id); err != nil {
+					t.Fatalf("ExecuteInline: %v", err)
+				}
+			} else {
+				w.step(t, 1)
+			}
+			if r := w.run(t, id); r.Summary != automations.ErrNameNotAvailable {
+				t.Fatalf("run = %s, summary %q; want summary %s", r.Status, r.Summary, automations.ErrNameNotAvailable)
+			}
+			if rows := w.actions(t); len(rows) != 0 {
+				t.Fatalf("agent_actions = %+v; want none", rows)
+			}
+		})
 	}
 }
 
