@@ -59,7 +59,7 @@ extension AppState {
     /// there's no view guaranteed to stay mounted for the app's whole
     /// lifetime to drive a SwiftUI `.onChange` here, so AppState re-arms its
     /// own tracking closure after each fire.
-    func observeVoiceRegistryCatchUp() {
+    private func observeVoiceRegistryCatchUp() {
         withObservationTracking {
             _ = meetingRecorderCenter.savedTick
         } onChange: { [weak self] in
