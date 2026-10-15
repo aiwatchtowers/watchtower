@@ -194,6 +194,6 @@ func TestLinearLoginCommands_EmptyClientIDFailsFast(t *testing.T) {
 	}
 	for _, c := range []*cobra.Command{linearAddCmd, linearLoginCmd} {
 		err := c.RunE(c, nil)
-		require.EqualError(t, err, "Linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)", c.Name())
+		require.EqualError(t, err, "linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)", c.Name())
 	}
 }

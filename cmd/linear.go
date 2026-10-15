@@ -35,7 +35,7 @@ func resolveLinearOAuthConfig() linear.OAuthConfig {
 func linearLoginConfig() (linear.OAuthConfig, error) {
 	cfg := resolveLinearOAuthConfig()
 	if cfg.ClientID == "" {
-		return cfg, errors.New("Linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
+		return cfg, errors.New("linear OAuth client id is not configured (set WATCHTOWER_LINEAR_CLIENT_ID)")
 	}
 	return cfg, nil
 }
