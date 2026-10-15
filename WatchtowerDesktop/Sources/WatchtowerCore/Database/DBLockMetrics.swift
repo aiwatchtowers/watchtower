@@ -17,23 +17,24 @@ package struct DBLockSettings: Equatable, Sendable {
     package var off: Bool
     package var thresholdMS: Int64
 
-    package init(off: Bool = false, thresholdMS: Int64 = DBLockSettings.defaultThresholdMS) {
+    package init(off: Bool = false, thresholdMS: Int64 = Self.defaultThresholdMS) {
         self.off = off
         self.thresholdMS = thresholdMS
     }
 
-    package static func parse(_ raw: String?) -> DBLockSettings {
+    package static func parse(_ raw: String?) -> Self {
         let value = (raw ?? "").trimmingCharacters(in: .whitespaces)
-        if value.isEmpty { return DBLockSettings() }
-        if value.lowercased() == "off" { return DBLockSettings(off: true) }
+        if value.isEmpty { return Self() }
+        if value.lowercased() == "off" { return Self(off: true) }
         guard let ms = Int64(value), ms >= 0 else {
-            DBLockSink.log.warning("invalid \(environmentKey, privacy: .public)=\(value, privacy: .public); using the default \(defaultThresholdMS) ms")
-            return DBLockSettings()
+            DBLockSink.log.warning(
+                "invalid \(environmentKey, privacy: .public)=\(value, privacy: .public); using the default \(defaultThresholdMS) ms")
+            return Self()
         }
-        return DBLockSettings(thresholdMS: ms)
+        return Self(thresholdMS: ms)
     }
 
-    package static func fromEnvironment() -> DBLockSettings {
+    package static func fromEnvironment() -> Self {
         parse(ProcessInfo.processInfo.environment[environmentKey])
     }
 }
@@ -52,8 +53,13 @@ package struct DBLockEvent: Equatable, Sendable {
     package var busyTimeoutMS: Int64 = 0
 
     package init(
-        ts: Date = Date(), kind: String, waitMS: Int64 = 0, holdMS: Int64 = 0,
-        site: String = "", err: String = "", busyTimeoutMS: Int64 = 0
+        ts: Date = Date(),
+        kind: String,
+        waitMS: Int64 = 0,
+        holdMS: Int64 = 0,
+        site: String = "",
+        err: String = "",
+        busyTimeoutMS: Int64 = 0
     ) {
         self.ts = ts
         self.kind = kind
@@ -137,7 +143,7 @@ package final class DBLockSink: @unchecked Sendable {
             "ts": tsFormatter.string(from: event.ts),
             "pid": Int(pid),
             "proc": Self.proc,
-            "kind": event.kind,
+            "kind": event.kind
         ]
         if event.waitMS != 0 { obj["wait_ms"] = event.waitMS }
         if event.holdMS != 0 { obj["hold_ms"] = event.holdMS }
@@ -212,7 +218,8 @@ package final class DBLockSink: @unchecked Sendable {
         let code = errno
         guard !warned else { return }
         warned = true
-        Self.log.warning("dblock sink: \(op, privacy: .public) failed for \(self.path, privacy: .public) (errno \(code)); further sink errors are dropped")
+        Self.log.warning(
+            "dblock sink: \(op, privacy: .public) failed for \(self.path, privacy: .public) (errno \(code)); further sink errors are dropped")
     }
 }
 
@@ -258,7 +265,7 @@ package enum DBLockInstrumentation {
     package static func install(
         on config: inout Configuration,
         sink: DBLockSink?,
-        busyTimeoutMS: Int = DBLockInstrumentation.busyTimeoutMS
+        busyTimeoutMS: Int = Self.busyTimeoutMS
     ) {
         config.busyMode = .callback { tries in
             // Every retry of one wait runs synchronously on the thread that
@@ -346,7 +353,7 @@ final class WriteTransactionTracker {
     /// The table an INSERT/REPLACE/UPDATE/DELETE writes, or nil for any
     /// other statement.
     static func writtenTable(_ sql: String) -> String? {
-        let words = sql.split(whereSeparator: { $0.isWhitespace || $0 == "(" }).prefix(6).map { String($0) }
+        let words = sql.split { $0.isWhitespace || $0 == "(" }.prefix(6).map { String($0) }
         guard let verb = words.first?.uppercased() else { return nil }
         var rest = words.dropFirst()
         switch verb {
