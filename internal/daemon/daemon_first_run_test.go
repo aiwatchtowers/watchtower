@@ -162,6 +162,27 @@ func TestDaemon_PeopleFirstDigestEndingNowGeneratesCards(t *testing.T) {
 	assert.False(t, d.lastPeople.IsZero(), "the generating run stamps the throttle")
 }
 
+// A failed situations read is an error, not "no situations yet": the tracked
+// row carries it and the attempt counts, so the retry is bounded.
+func TestDaemon_PeopleSituationsReadErrorIsAFailedAttempt(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	seedFirstRunMessages(t, database)
+	attachPeoplePipeline(d, database)
+	_, err := database.Exec(`DROP TABLE digests`)
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(
+		`SELECT status, error_msg FROM pipeline_runs WHERE pipeline = 'people' ORDER BY id DESC LIMIT 1`,
+	).Scan(&status, &errMsg))
+	assert.Equal(t, "error", status)
+	assert.Contains(t, errMsg, "loading situations")
+	assert.Equal(t, 1, d.peopleAttempts, "a failed read spends an attempt")
+	assert.True(t, d.lastPeople.IsZero(), "a failed run does not stamp")
+}
+
 func TestDaemon_PeopleCoveredRunStamps(t *testing.T) {
 	d, database := firstRunTestSetup(t)
 	seedFirstRunMessages(t, database)

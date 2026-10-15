@@ -263,7 +263,12 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	allSituations, err := p.db.GetSituationsForWindow(from, to)
 	p.logger.Printf("people: GetSituationsForWindow took %s (%d users with situations)", time.Since(t1).Round(time.Millisecond), len(allSituations))
 	if err != nil {
-		p.logger.Printf("people: warning: failed to load situations: %v", err)
+		// The daemon's run must fail here: read as "no situations" it would
+		// be a no-data outcome — no attempt, a "done" row, retried forever.
+		if !p.ForceRegenerate {
+			return 0, fmt.Errorf("loading situations: %w", err)
+		}
+		p.logger.Printf("people: warning: failed to load situations (forced run continues): %v", err)
 		allSituations = make(map[string][]db.ChannelSituations)
 	}
 

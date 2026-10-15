@@ -1261,8 +1261,8 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 				d.recordPeopleAttempt(date)
 			}
 		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
-			// No data despite the pre-check (it failed, the situations read
-			// failed, or the window moved between the two): no stamp, retry.
+			// No data despite the pre-check (a transient pre-check failure,
+			// or the window moved between the two): no stamp, retry.
 			d.logger.Printf("people: run found no data; not stamping")
 		} else {
 			if n > 0 {
