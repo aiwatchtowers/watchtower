@@ -117,10 +117,20 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
-	if lastDate != "" {
-		if _, err := time.Parse(searchDateFormat, lastDate); err != nil {
-			o.logger.Printf("search sync: invalid search_last_date %q, treating as first run", lastDate)
+	_, lastErr := time.Parse(searchDateFormat, lastDate)
+	if lastDate != "" && lastErr != nil {
+		o.logger.Printf("search sync: invalid search_last_date %q, treating as first run", lastDate)
+	}
+	// A first sync (FirstSyncFrom) also needs an account with no stored
+	// messages: one that always fell back to full sync has no watermark but
+	// already holds its history (F5). Read before the search saves anything.
+	firstSync := false
+	if lastErr != nil {
+		has, err := o.db.SlackAccountHasMessages(o.accountID)
+		if err != nil {
+			return fmt.Errorf("search sync: %w", err)
 		}
+		firstSync = !has
 	}
 
 	now := time.Now()
@@ -148,13 +158,15 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		if err := o.db.SetSlackAccountSearchWatermark(o.accountID, today); err != nil {
 			return fmt.Errorf("saving search_last_date: %w", err)
 		}
-		// A completed sync that started with no usable watermark is the
-		// account's first: its window start is where a history backfill
-		// picks up (FirstSyncFrom). after:D is exclusive, so the first
-		// instant this sync covered is D + 1 day (R19); the backfill's top
-		// chunk then digests and rolls up day D itself.
-		if _, perr := time.Parse(searchDateFormat, lastDate); perr != nil {
-			if after, ferr := time.Parse(searchDateFormat, searchAfter); ferr == nil {
+		// A completed sync that started with no usable watermark and no
+		// stored messages is the account's first: its window start is where
+		// a history backfill picks up (FirstSyncFrom). after:D is exclusive,
+		// so the first instant this sync covered is D + 1 day (R19); the
+		// backfill's top chunk then digests and rolls up day D itself. D is
+		// a local date (searchWindow formats a local now), so it is parsed
+		// and advanced in the local zone (F7).
+		if firstSync {
+			if after, ferr := time.ParseInLocation(searchDateFormat, searchAfter, time.Local); ferr == nil {
 				o.firstSyncFrom = after.AddDate(0, 0, 1)
 			}
 		}

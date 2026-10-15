@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
 func TestSlackSearchRange(t *testing.T) {
@@ -111,6 +113,14 @@ func TestBackfillSearch_RevokedTokenStaysDetectable(t *testing.T) {
 }
 
 func TestFirstSyncFrom_FreshAccountCompletedRun(t *testing.T) {
+	// F7: the after: date is a local date (searchWindow formats a local
+	// now), so its day boundary is local midnight. A zone far from UTC makes
+	// a UTC-midnight reading visibly wrong.
+	zone := time.FixedZone("UTC+9", 9*3600)
+	prevLocal := time.Local
+	time.Local = zone
+	t.Cleanup(func() { time.Local = prevLocal })
+
 	var queries []string
 	var mu gosync.Mutex
 	ts := newTestSetup(t, searchAuditMux(oneMatchSearch(&queries, &mu)))
@@ -120,17 +130,37 @@ func TestFirstSyncFrom_FreshAccountCompletedRun(t *testing.T) {
 	from, ok := ts.orch.FirstSyncFrom()
 	require.True(t, ok, "a completed run on an account with no watermark is a first sync")
 	require.NotEmpty(t, queries)
-	after, err := time.Parse(searchDateFormat, queries[0][len("after:"):])
+	after, err := time.ParseInLocation(searchDateFormat, queries[0][len("after:"):], zone)
 	require.NoError(t, err)
 	// R19: after:D is exclusive, so the first instant the first sync covered
-	// is D + 1 day — the backfill's upper bound.
-	assert.Equal(t, after.AddDate(0, 0, 1), from)
-	assert.Equal(t, time.UTC, from.Location())
+	// is local midnight of D + 1 — the backfill's upper bound.
+	want := after.AddDate(0, 0, 1)
+	assert.True(t, want.Equal(from), "want %v, got %v", want, from)
+	assert.Equal(t, 0, from.In(zone).Hour(), "local midnight")
 
 	// The watermark now exists: the next Run is not a first sync.
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	_, ok = ts.orch.FirstSyncFrom()
 	assert.False(t, ok)
+}
+
+// F5: an established account that always fell back to full sync has no
+// search watermark; the first completed search must not read as a first
+// sync, since the account already holds its history.
+func TestFirstSyncFrom_AccountWithStoredMessagesIsNotAFirstSync(t *testing.T) {
+	var queries []string
+	var mu gosync.Mutex
+	ts := newTestSetup(t, searchAuditMux(oneMatchSearch(&queries, &mu)))
+	ts.orch.logger = log.New(io.Discard, "", 0)
+	require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C009"), TS: "1600000000.000001",
+		UserID: ts.ns("U001"), Text: "stored by an earlier full sync"}))
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	_, ok := ts.orch.FirstSyncFrom()
+	assert.False(t, ok)
+	wm, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, wm, "the search itself completed")
 }
 
 func TestFirstSyncFrom_RateLimitedFirstRunIsNotAFirstSync(t *testing.T) {
