@@ -234,3 +234,41 @@ func TestScan_ConcurrentScansBothSucceed(t *testing.T) {
 	assert.NoError(t, errs[0])
 	assert.NoError(t, errs[1])
 }
+
+func TestScan_ParserBumpRereadsPresentFilesOnly(t *testing.T) {
+	f := newFixture(t)
+	keep := f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5)+call(t, "s1", f.folder, "u2", "m2", "r2", 7))
+	gone := f.write(f.folder, "s2.jsonl", call(t, "s2", f.folder, "u3", "m3", "r3", 11))
+	f.scan()
+	require.NoError(t, os.Remove(gone))
+	_, err := f.d.Exec(`UPDATE agent_log_files SET parser_version = ?`, ParserVersion-1)
+	require.NoError(t, err)
+	// A reread from 0 rewrites m1's row; a read from the stored offset would not touch it.
+	_, err = f.d.Exec(`UPDATE agent_log_events SET input_tokens = 0 WHERE src_path = ? AND src_offset = 0`, keep)
+	require.NoError(t, err)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u4", "m4", "r4", 13))
+	r := f.scan()
+	assert.Equal(t, 1, r.FilesScanned)
+	assert.Equal(t, 1, r.MissingFiles)
+	calls, out := f.totals()
+	assert.Equal(t, int64(4), calls) // m1, m2 once each + m4 new + m3 kept (AGENTLOG-03)
+	assert.Equal(t, int64(36), out)
+	var in0 int64
+	require.NoError(t, f.d.QueryRow(`SELECT input_tokens FROM agent_log_events WHERE src_path = ? AND src_offset = 0`, keep).Scan(&in0))
+	assert.Equal(t, int64(10), in0) // restored: the file was reread from offset 0
+
+	kr, err := f.d.GetAgentLogFile(keep)
+	require.NoError(t, err)
+	require.NotNil(t, kr)
+	assert.Equal(t, ParserVersion, kr.ParserVersion)
+	fi, err := os.Stat(keep)
+	require.NoError(t, err)
+	assert.Equal(t, fi.Size(), kr.ReadOffset)
+	assert.Empty(t, kr.MissingAt)
+
+	gr, err := f.d.GetAgentLogFile(gone)
+	require.NoError(t, err)
+	require.NotNil(t, gr)
+	assert.Equal(t, ParserVersion-1, gr.ParserVersion) // not reread
+	assert.NotEmpty(t, gr.MissingAt)
+}
