@@ -527,34 +527,62 @@ final class AppEnvironment {
     /// Support. `recordingsDirectory` is for tests: nil keeps the phone's
     /// own recordings folder.
     static func demoSingle(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
-        let session = try demoSession(DemoSeed.primary, recordingsDirectory: recordingsDirectory, energy: energy)
+        let files = DemoFiles(
+            replicas: try applicationSupportDirectory(),
+            recordings: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+        )
+        let session = try demoSession(DemoSeed.primary, files: files, defaults: .standard, energy: energy)
         return single(session, defaults: .standard)
     }
 
     /// The demo as the app shows it: the two demo Macs (`DemoSeed.hubs`),
     /// each its own session on its own in-memory transport and replica,
-    /// the primary on screen (multi-hub spec §7).
-    static func demo(recordingsDirectory: URL? = nil, energy: EnergyCounter? = nil) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: .standard)
+    /// the primary on screen (multi-hub spec §7). `sandbox` keeps every file
+    /// of the demo (replicas, recordings, the hold) in that one directory
+    /// instead of the app's own places, and `defaults` its settings: the
+    /// signed build's demo (`AppRoot.tour`) never touches a linked Mac's
+    /// files or choices. `setBadge` is the app icon's badge.
+    static func demo(
+        recordingsDirectory: URL? = nil,
+        sandbox: URL? = nil,
+        defaults: UserDefaults = .standard,
+        setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge,
+        energy: EnergyCounter? = nil
+    ) throws -> AppEnvironment {
+        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults, setBadge: setBadge)
+        let files = try sandbox.map { DemoFiles(replicas: $0, recordings: $0.appendingPathComponent("recordings", isDirectory: true)) }
+            ?? DemoFiles(
+                replicas: applicationSupportDirectory(),
+                recordings: recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+            )
         for hub in DemoSeed.hubs {
-            env.add(try demoSession(hub, recordingsDirectory: recordingsDirectory, energy: energy))
+            env.add(try demoSession(hub, files: files, defaults: defaults, energy: energy))
         }
         env.activate(DemoSeed.primary.hubID)
         return env
     }
 
+    /// Where the demo keeps its replicas and its recordings.
+    private struct DemoFiles {
+        let replicas: URL
+        let recordings: URL
+    }
+
     /// One demo Mac's session. The primary keeps today's replica file; the
     /// others get their own, and a recordings folder of their own.
-    private static func demoSession(_ hub: DemoSeed.Hub, recordingsDirectory: URL?, energy: EnergyCounter?) throws -> HubSession {
-        let base = try recordingsDirectory ?? PhoneRecorderController.defaultDirectory()
+    private static func demoSession(
+        _ hub: DemoSeed.Hub, files: DemoFiles, defaults: UserDefaults, energy: EnergyCounter?
+    ) throws -> HubSession {
+        let base = files.recordings
         let isPrimary = hub == DemoSeed.primary
         let recordings = isPrimary ? base : base.appendingPathComponent(hub.hubID, isDirectory: true)
         let replica = isPrimary ? "replica.sqlite" : "replica-\(hub.hubID).sqlite"
         return try HubSession(
             transport: InMemoryCloudTransport(),
-            replicaPath: try applicationSupportDirectory().appendingPathComponent(replica).path,
+            replicaPath: files.replicas.appendingPathComponent(replica).path,
             transportKind: .inMemoryDemo,
             hubID: hub.hubID,
+            defaults: defaults,
             recordingsDirectory: recordings,
             hold: RecordingHold(directory: base.appendingPathComponent(".held", isDirectory: true)),
             startsActive: UIApplication.shared.applicationState == .active,

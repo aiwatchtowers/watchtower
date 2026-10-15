@@ -258,6 +258,9 @@ struct WatchtowerMobileApp: App {
     }
 
     @State private var boot = Boot.make()
+    /// The demo tour over a live root (#174): Welcome's Try the Demo sets
+    /// it, Exit Demo clears it.
+    @State private var tour: AppRoot?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -265,7 +268,15 @@ struct WatchtowerMobileApp: App {
             Group {
                 switch boot {
                 case let .ready(root):
-                    AppRootView(root: root)
+                    if let tour {
+                        AppRootView(root: tour)
+                            .safeAreaInset(edge: .top, spacing: 0) {
+                                DemoTourBanner { exitTour(tour) }
+                            }
+                    } else {
+                        AppRootView(root: root)
+                            .environment(\.startDemoTour, root.isDemo ? nil : startTour)
+                    }
                 case let .failed(message):
                     BootFailureView(message: message)
                 case .waitingForUnlock:
@@ -305,6 +316,25 @@ struct WatchtowerMobileApp: App {
 }
 
 extension WatchtowerMobileApp {
+    /// Welcome's Try the Demo: the tour goes on screen over the live root.
+    @MainActor
+    private func startTour() {
+        do {
+            tour = try AppRoot.tour(energy: BatteryDiagnostics.shared.counter)
+        } catch {
+            Logger(subsystem: "WatchtowerMobile", category: "DemoTour")
+                .error("demo tour not started: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Exit Demo: back to the live root's Welcome, then the tour's sessions
+    /// and files go.
+    @MainActor
+    private func exitTour(_ ending: AppRoot) {
+        tour = nil
+        Task { await ending.endTour() }
+    }
+
     /// The app is active over a built root: its activation work runs.
     @MainActor
     private func becameActive() {
@@ -358,4 +388,32 @@ struct WaitingForUnlockView: View {
             retry()
         }
     }
+}
+
+/// The demo tour's bar above the tabs: what is on screen, and the way out.
+struct DemoTourBanner: View {
+    let exit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "play.rectangle")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("Demo: sample Macs and data")
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Exit Demo", action: exit)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+}
+
+extension EnvironmentValues {
+    /// Welcome's Try the Demo (#174): set by the app over a live root; nil
+    /// (the unsigned build, which is the demo already) hides the button.
+    @Entry var startDemoTour: (@MainActor () -> Void)?
 }

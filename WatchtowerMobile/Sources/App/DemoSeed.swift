@@ -1,14 +1,15 @@
 import Foundation
 import WatchtowerSync
 
-/// The demo replica for unsigned simulator builds: records pushed through
+/// The demo replica for unsigned simulator builds and the signed build's
+/// demo (`AppRoot.tour`, Welcome's Try the Demo): records pushed through
 /// the transport exactly as the hub would publish them, so the hydrator and
 /// every decode path run end to end. Sub-projects B and C extend it with
 /// their slices.
 ///
-/// Runs ONLY on the `.inMemoryDemo` transport kind, and only in DEBUG: the
-/// `.cloudKit` kind starts empty and hydrates from the user's own zone (the
-/// gate lives in `AppEnvironment.bootstrap`). Record names are fixed, so a
+/// Runs ONLY on the `.inMemoryDemo` transport kind: the `.cloudKit` kind
+/// starts empty and hydrates from the user's own zone (the gate lives in
+/// `HubSession.startTransport`). Record names are fixed, so a
 /// re-seed upserts instead of adding rows (ReplicaWiringTests pins the tally).
 enum DemoSeed {
     /// One demo Mac: the identity its heartbeat and grant carry. The demo
