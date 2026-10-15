@@ -29,13 +29,14 @@ struct ChatInspectorContent: View {
                 ArtifactPanelView(
                     model: panel, gmailConnected: chatVM.gmailConnected, slackLinks: chatVM.slackLinks,
                     canSendComments: !chatVM.isStreaming,
+                    expand: expandButton,
                     onSendComments: { chatVM.sendArtifactComments() },
                     onClose: { chatVM.closeArtifactPanel() }
                 )
             }
         case .sources:
             if let selection = chatVM.sourcesPanel {
-                ChatSourcesPanelView(selection: selection) { chatVM.closeSourcesPanel() }
+                ChatSourcesPanelView(selection: selection, expand: expandButton) { chatVM.closeSourcesPanel() }
                     .id(selection.messageID)
             }
         case nil:
@@ -43,8 +44,40 @@ struct ChatInspectorContent: View {
         }
     }
 
+    private var expandButton: ChatInspectorExpandButton {
+        ChatInspectorExpandButton(isExpanded: chatVM.isInspectorExpanded) { chatVM.toggleInspectorExpanded() }
+    }
+
     private var modeBinding: Binding<ChatInspectorMode> {
         Binding(get: { chatVM.inspectorMode ?? chatVM.preferredInspectorMode },
                 set: { chatVM.preferredInspectorMode = $0 })
+    }
+}
+
+/// The panel header's expand button (#786): the open panel takes the chat's
+/// whole width in place of the conversation, or goes back to the column.
+struct ChatInspectorExpandButton: View {
+    let isExpanded: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .buttonStyle(.borderless)
+        .help(isExpanded ? "Show the conversation" : "Expand to the full width")
+        .accessibilityLabel(isExpanded ? "Collapse panel" : "Expand panel")
+    }
+}
+
+/// Hands the live turn's text to the artifact panel: from the live row in the
+/// thread, or from the expanded panel while the thread is off screen (#786).
+/// Only this empty view re-renders per delta.
+struct ChatLiveArtifactFeed: View {
+    let turn: LiveTurn
+    let onText: (String) -> Void
+
+    var body: some View {
+        Color.clear.onChange(of: turn.text, initial: true) { _, text in onText(text) }
     }
 }

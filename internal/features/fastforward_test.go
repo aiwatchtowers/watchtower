@@ -309,3 +309,35 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 	require.NoError(t, FastForward("not-a-real-feature", database, now, Deps{}))
 	assertNoWatermarksWritten(t)
 }
+
+// TestFastForward_Automations pins the automations enable hook (FEAT-03):
+// a schedule automation resumes from now instead of catching up on the off
+// window, and a run queued while the feature was off is cancelled, never run.
+func TestFastForward_Automations(t *testing.T) {
+	database := testDB(t)
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-72 * time.Hour)
+
+	id, err := database.UpsertAutomationIndex(db.Automation{
+		Slug: "nightly", Scope: "personal", Path: "/acme/automations/nightly.md", Name: "Nightly",
+		TriggerKind: "schedule", TriggerSpec: `{"schedule":"0 9 * * *"}`, MissedPolicy: "run_once",
+		Concurrency: 1, BudgetTokens: 50000, BudgetMinutes: 5, PauseTimeoutHours: 72,
+		PermissionsJSON: `["llm:light"]`, OutputsJSON: `["inbox"]`,
+		RecipeText: "---\nname: Nightly\n---\n", ContentHash: "c", ApprovalHash: "h",
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.SetAutomationSchedule(id, &old, nil))
+	runID, _, err := database.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: id, Trigger: db.TriggerManual, Now: old})
+	require.NoError(t, err)
+
+	require.NoError(t, FastForward("automations", database, now, Deps{}))
+
+	a, err := database.GetAutomation(id)
+	require.NoError(t, err)
+	require.NotNil(t, a.LastScheduledFor)
+	assert.True(t, a.LastScheduledFor.Equal(now), "last_scheduled_for = %v, want now", a.LastScheduledFor)
+	run, err := database.GetAutomationRun(runID)
+	require.NoError(t, err)
+	assert.Equal(t, db.RunCancelled, run.Status)
+	assert.Equal(t, db.ErrKindCancelled, run.ErrorKind)
+}

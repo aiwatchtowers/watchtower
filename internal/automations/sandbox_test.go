@@ -435,6 +435,43 @@ func TestSandbox_ReturnValuesAndResults(t *testing.T) {
 	}
 }
 
+// TestSandbox_BackendErrorAfterParentCancelIsAnInterrupt: an SDK call whose
+// backend fails because the parent ctx ended (the daemon stopping under an
+// in-flight model call) ends the run as a cancel interrupt — the script never
+// sees a catchable ToolError, even when the deadline watcher has not yet
+// noticed the cancel.
+func TestSandbox_BackendErrorAfterParentCancelIsAnInterrupt(t *testing.T) {
+	for range 50 {
+		runBackendErrorAfterParentCancel(t)
+	}
+}
+
+func runBackendErrorAfterParentCancel(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopping := funcModule{name: "stopping", fns: map[string]SDKFunc{
+		"call": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+			return env.Call("llm", "light", nil, func(*Step) (any, error) {
+				cancel()
+				return nil, &SDKError{Name: ErrNameTool, Message: "the model call failed: " + context.Canceled.Error()}
+			})
+		},
+	}}
+	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: `try { call() } catch (e) { return "caught " + e.name }`},
+		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, math.MaxInt64, nil),
+		Buffer: NewCommitBuffer(nil)}
+	sb, err := NewSandbox(env, []Module{stopping})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := runWithin(t, sb, 5*time.Second)
+	if v != nil {
+		t.Fatalf("Run returned %v; the script must not see the error", v)
+	}
+	wantInterrupt(t, err, InterruptCancel)
+}
+
 func TestSandbox_ParentCancelInterrupts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: "while (true) {}"}, Journal: NewMemoryJournal(),

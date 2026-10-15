@@ -110,7 +110,7 @@ struct WorkbenchesView: View {
         if let project = vm.drilledWorkbench {
             WorkbenchSessionsPanel(
                 vm: vm, project: project, actions: sessionActions,
-                switcherActions: switcherActions
+                switcherActions: switcherActions, paletteOpen: goToOpen
             )
         } else {
             workbenchList
@@ -158,6 +158,7 @@ struct WorkbenchesView: View {
             // The Undo of a session delete (board #480) in its own bar, as
             // under the sessions list at level 2.
             SessionDeleteToast(vm: vm)
+            WorkbenchDeleteNotice(vm: vm)
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
@@ -354,6 +355,10 @@ struct WorkbenchTitleRow: View {
             .disabled(paletteOpen)
             .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
             .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
+            // The panel hidden: the list is one click away here (board #743).
+            if !vm.panelVisible {
+                WorkbenchBackButton(action: switcherActions.showAll)
+            }
             if let project = vm.headerSwitcherWorkbench {
                 WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
                 Image(systemName: "chevron.right")
@@ -391,6 +396,8 @@ struct WorkbenchTitleRow: View {
         }))
     }
 
+    static let backShortcutID = "workbench.back-shortcut"
+
     /// A bare key the page's catcher offers (board #412): A opens the stack,
     /// never under the open palette; anything else stays the window's.
     static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
@@ -399,8 +406,14 @@ struct WorkbenchTitleRow: View {
 
     /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;
     /// they need a workbench page. ⇧⌘O is Open Quickly's (ruling R26).
+    /// ⌘[ goes back to the workbench list (board #743); like ⌘K, Monaco
+    /// keeps it (Outdent) while the cursor is in the Files editor.
     private var shortcuts: some View {
         Group {
+            Button("") { switcherActions.showAll() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!vm.canShowAllWorkbenches)
+                .accessibilityIdentifier(Self.backShortcutID)
             Group {
                 Button("") { Task { await vm.newSessionOnPage() } }
                     .keyboardShortcut("t", modifiers: .command)
@@ -413,5 +426,34 @@ struct WorkbenchTitleRow: View {
         }
         .disabled(paletteOpen)
         .hidden()
+    }
+}
+
+/// The worktrees a workbench delete kept because work was in them: a
+/// neutral line under the list (not the red error), until dismissed.
+private struct WorkbenchDeleteNotice: View {
+    @Bindable var vm: WorkbenchesViewModel
+
+    var body: some View {
+        if let notice = vm.deleteNotice {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
+                    vm.deleteNotice = nil
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(8)
+            .accessibilityElement(children: .contain)
+        }
     }
 }

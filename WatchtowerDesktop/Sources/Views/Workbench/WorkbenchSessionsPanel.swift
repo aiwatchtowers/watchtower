@@ -13,6 +13,8 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
+    /// The Go to… palette is up: the swipe back is off, as ⌘[ is.
+    var paletteOpen = false
     /// View-local: it is only this list's scroll. The view keeps its identity
     /// when another workbench is opened, so `project.id` resets it.
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
@@ -27,6 +29,7 @@ struct WorkbenchSessionsPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             OwnerAskStackSection(vm: vm, project: project)
+            SessionStartNotice(vm: vm, projectID: project.id)
             Text("SESSIONS")
                 .sidebarSectionLabel()
                 .padding(.horizontal, 12)
@@ -89,6 +92,8 @@ struct WorkbenchSessionsPanel: View {
             SessionDeleteToast(vm: vm)
             WorkbenchFilesSection(vm: vm, root: vm.activeCodeRoot(project: project))
         }
+        // A swipe right over the panel goes back to the list (board #743).
+        .background(WorkbenchBackSwipeCatcher(isEnabled: !paletteOpen, onBack: switcherActions.showAll))
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
     }
 
@@ -130,15 +135,17 @@ struct WorkbenchSessionsPanel: View {
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
-    /// the workbench switcher (board #250): it fills the width, and its
-    /// popover's "All Workbenches" is the way back to level 1.
+    /// the workbench switcher (board #250): it fills the width. `‹` before
+    /// it, ⌘[, a swipe and the popover's "All Workbenches" go back to
+    /// level 1 (board #743).
     private var header: some View {
         HStack(spacing: 6) {
+            WorkbenchBackButton(action: switcherActions.showAll)
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
             // A click starts the default agent; the menu offers each agent.
             Menu {
-                NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
-                    Task { await vm.newSessionOnPage(agent: agent) }
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
+                    Task { await vm.newSessionOnPage(agent: agent, worktree: worktree) }
                 }
             } label: {
                 Image(systemName: "plus")
@@ -164,4 +171,34 @@ struct SessionRowActions {
     let delete: (TerminalSession) -> Void
     /// A workbench session's Clean Up… (board #535); nil = no menu item.
     var cleanUp: ((TerminalSession) -> Void)?
+}
+
+/// The last start's one line (board #229): why a session started in the
+/// folder, or what its worktree did not carry over. Stays until dismissed.
+private struct SessionStartNotice: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let projectID: Int64
+
+    var body: some View {
+        if let notice = vm.startNotice[projectID] {
+            HStack(alignment: .top, spacing: 6) {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
+                    vm.startNotice[projectID] = nil
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .contain)
+        }
+    }
 }

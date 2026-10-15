@@ -176,8 +176,10 @@ final class TerminalCenter {
     /// text. Gone with the next launch attempt or the session.
     @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
-    /// check). One subscriber.
-    @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
+    /// check and placed-session cleanup): session id, exit code, and whether
+    /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
+    /// which drop the process before signalling it). One subscriber.
+    @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, session id,
     /// location.
@@ -216,6 +218,12 @@ final class TerminalCenter {
     var liveAgentIDs: Set<Int64> {
         let live = liveIDs
         return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
+    }
+
+    /// The live agent rows of `projectID`, as they were started.
+    func liveAgentRows(ofWorkbench projectID: Int64) -> [TerminalSession] {
+        let live = liveAgentIDs
+        return rows.values.filter { $0.projectID == projectID && live.contains($0.id) }
     }
 
     func process(for sessionID: Int64) -> (any TerminalSessionProcess)? {
@@ -752,9 +760,10 @@ final class TerminalCenter {
         _ session: TerminalSession,
         fresh: Bool,
         prompt: String? = nil,
-        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        codexResume: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        setup: String? = nil
     ) async -> TerminalLaunch.Mode? {
-        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt) }
+        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt, setup: setup) }
         let id = session.id
         guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
         rows[id] = session
@@ -783,7 +792,15 @@ final class TerminalCenter {
         }
         guard pendingLaunches[id] == token else { return nil }
         pendingLaunches[id] = nil
-        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume)
+        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume, setup: setup)
+    }
+
+    /// Shows `session` as `.unavailable(reason)` without launching it: a
+    /// refusal made before the launch (a worktree that could not return).
+    func refuseLaunch(_ session: TerminalSession, reason: String) {
+        if states[session.id] == .running { return }
+        rows[session.id] = session
+        states[session.id] = .unavailable(reason)
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -809,7 +826,8 @@ final class TerminalCenter {
         fresh: Bool,
         prompt: String? = nil,
         codex: CodexLaunchArgs? = nil,
-        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        codexResume: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        setup: String? = nil
     ) -> TerminalLaunch.Mode? {
         let id = session.id
         if states[id] == .running { return nil }
@@ -827,7 +845,7 @@ final class TerminalCenter {
             states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
             return nil
         }
-        run(session, mode: mode, codex: codex)
+        run(session, mode: mode, codex: codex, setup: setup)
         return mode
     }
 
@@ -857,13 +875,15 @@ final class TerminalCenter {
         }
     }
 
-    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?) {
+    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
         let id = session.id
         let process = processes[id] ?? makeProcess()
-        process.onExit = { [weak self] code in
-            self?.states[id] = .exited(code)
-            self?.answerHints[id] = nil
-            self?.onSessionExit?(id, code)
+        process.onExit = { [weak self, weak process] code in
+            guard let self else { return }
+            let closedByApp = process.map { self.processes[id] !== $0 } ?? true
+            states[id] = .exited(code)
+            answerHints[id] = nil
+            onSessionExit?(id, code, closedByApp)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         // A click into one terminal of a split makes it the active session.
@@ -892,7 +912,7 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
     }
 
     func close(sessionID: Int64) async {

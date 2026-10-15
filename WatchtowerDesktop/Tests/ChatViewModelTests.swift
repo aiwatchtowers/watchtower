@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
@@ -793,6 +795,105 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.inspectorMode)
     }
 
+    /// The inspector can take the chat's whole width (#786): expanded while a
+    /// panel stays open, back to the column once the inspector closes.
+    func testTheInspectorExpandsToTheChatWidthUntilItCloses() throws {
+        let vm = try makeViewModel()
+        XCTAssertNotNil(vm.newConversation())
+        let source = ChatSource(kind: "jira", title: "PAY-1: A", url: nil, ref: "jira:PAY-1", group: "PAY")
+        vm.toggleInspectorExpanded()
+        XCTAssertFalse(vm.isInspectorExpanded, "nothing to expand while the inspector is closed")
+
+        vm.openArtifact(key: "q3")
+        vm.openSources(messageID: 7, sources: [source])
+        XCTAssertTrue(vm.showsInspectorColumn)
+        vm.toggleInspectorExpanded()
+        XCTAssertTrue(vm.isInspectorExpanded)
+        XCTAssertFalse(vm.showsInspectorColumn, "the column steps aside for the expanded panel")
+        vm.inspectorColumnDismissed()
+        XCTAssertEqual(vm.inspectorMode, .sources, "hiding the column to expand closes nothing")
+        vm.closeSourcesPanel()
+        XCTAssertTrue(vm.isInspectorExpanded, "the artifact still open keeps the expanded panel")
+        vm.toggleInspectorExpanded()
+        XCTAssertFalse(vm.isInspectorExpanded, "the button collapses it back")
+
+        vm.toggleInspectorExpanded()
+        vm.closeArtifactPanel()
+        XCTAssertFalse(vm.isInspectorExpanded)
+        vm.openSources(messageID: 7, sources: [source])
+        XCTAssertFalse(vm.isInspectorExpanded, "a panel opened after a close starts in the column")
+
+        vm.toggleInspectorExpanded()
+        XCTAssertNotNil(vm.newConversation())
+        vm.openSources(messageID: 8, sources: [source])
+        XCTAssertFalse(vm.isInspectorExpanded, "a conversation switch closes the expanded panel too")
+        vm.inspectorColumnDismissed()
+        XCTAssertNil(vm.inspectorMode, "dismissing the column closes the panels")
+    }
+
+    /// With the thread view off screen the expanded panel still gets the
+    /// live text (#786): the feed reports every published delta.
+    func testTheLiveArtifactFeedReportsTheStreamingText() {
+        let turn = LiveTurn(messageID: 1, turnID: "t", startedAt: Date(), publishInterval: 0)
+        var received: [String] = []
+        // Expanding mid-answer: the text streamed so far arrives at once.
+        turn.appendDelta(":::artifact key=q3", now: Date())
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { received.append($0) })
+        window.orderFront(nil)
+        defer { window.close() }
+
+        spin { !received.isEmpty }
+        XCTAssertEqual(received.first, ":::artifact key=q3", "the text streamed before the feed appeared")
+        let expected = ":::artifact key=q3\nline"
+        turn.appendDelta("\nline", now: Date())
+        spin { received.last == expected }
+        XCTAssertEqual(received.last, expected)
+    }
+
+    /// Spins the main run loop until `done` holds or two seconds pass.
+    private func spin(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(2)
+        while !done(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    /// What only the conversation shows steps an expanded panel aside
+    /// (#786): an error, a failed turn, a search hit in the chat on screen,
+    /// and the exits that leave the chat. A turn that completes keeps it.
+    func testTheExpandedPanelStepsAsideForWhatOnlyTheConversationShows() async throws {
+        let vm = try makeViewModel()
+        let convID = try XCTUnwrap(vm.newConversation())
+        vm.send(text: "q")
+        vm.openArtifact(key: "plan")
+        vm.toggleInspectorExpanded()
+        let fake = try lastFake()
+        fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .rateLimit, message: "slow", retryable: true)))
+        let failed = await waitForCondition { vm.thread.last?.message.status == "error" }
+        XCTAssertTrue(failed)
+        XCTAssertFalse(vm.isInspectorExpanded, "a failed turn shows its error and Retry")
+
+        vm.retry(messageID: try XCTUnwrap(vm.thread.last?.id))
+        vm.toggleInspectorExpanded()
+        try await complete(vm, turn: "turn-2", text: "a")
+        XCTAssertTrue(vm.isInspectorExpanded, "a completed turn keeps the expanded panel")
+
+        vm.errorMessage = "Couldn't move the chat."
+        XCTAssertFalse(vm.isInspectorExpanded, "an error shows in the conversation")
+
+        vm.errorMessage = nil
+        vm.toggleInspectorExpanded()
+        vm.open(ChatSearchHit(conversationID: convID, messageID: try XCTUnwrap(vm.thread.last?.id), title: "", snippet: ""))
+        XCTAssertFalse(vm.isInspectorExpanded, "a search hit in the chat on screen shows in the conversation")
+
+        vm.toggleInspectorExpanded()
+        XCTAssertNotNil(vm.createProject(name: "Payments"))
+        XCTAssertFalse(vm.isInspectorExpanded, "the project page closes the panels")
+    }
+
     func testOpeningASearchHitShowsItsBranchAndScrollsToIt() async throws {
         let vm = try makeViewModel()
         let convID = try XCTUnwrap(vm.newConversation())
@@ -1116,8 +1217,11 @@ final class ChatViewModelTests: XCTestCase {
         let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
         XCTAssertTrue(try lastFake().turns.isEmpty, "adding a comment sends nothing")
         let expected = try XCTUnwrap(comments.outgoing()).text
+        vm.toggleInspectorExpanded()
 
         vm.sendArtifactComments()
+
+        XCTAssertFalse(vm.isInspectorExpanded, "the answer shows in the conversation (#786)")
 
         XCTAssertEqual(try lastFake().turns.count, 1)
         XCTAssertEqual(try lastStoredUserText(vm), expected)
@@ -1135,9 +1239,12 @@ final class ChatViewModelTests: XCTestCase {
                 BEGIN SELECT RAISE(ABORT, 'boom'); END
                 """)
         }
+        vm.toggleInspectorExpanded()
+        XCTAssertTrue(vm.isInspectorExpanded)
         vm.sendArtifactComments()
         XCTAssertTrue(try lastFake().turns.isEmpty)
         XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(vm.isInspectorExpanded, "the expanded panel steps aside so the error shows (#786)")
         XCTAssertEqual(try commentStatuses(), ["open"])
     }
 
@@ -1146,7 +1253,9 @@ final class ChatViewModelTests: XCTestCase {
         _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
         XCTAssertTrue(vm.send(text: "q"))
         _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        vm.toggleInspectorExpanded()
         vm.sendArtifactComments()
+        XCTAssertFalse(vm.isInspectorExpanded, "the refusal shows in the conversation (#786)")
         XCTAssertEqual(try lastFake().turns.count, 1, "only the first question went out")
         XCTAssertEqual(try commentStatuses(), ["open"])
         XCTAssertNotNil(vm.errorMessage, "a refused send says why instead of doing nothing")

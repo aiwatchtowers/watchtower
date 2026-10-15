@@ -207,6 +207,11 @@ func (s *Sandbox) outcome(_ goja.Value, runErr error) (any, error) {
 	var overflow *goja.StackOverflowError
 	var ex *goja.Exception
 	switch {
+	case runErr == nil && reason != "":
+		// Interrupted during the script's last instructions (an SDK call
+		// that hit the interrupt returns undefined, and the VM may finish
+		// before it checks the flag): the interrupt still decides the run.
+		return nil, &RunInterrupted{Reason: reason}
 	case runErr == nil:
 		return returned, nil
 	case errors.As(runErr, &intr):

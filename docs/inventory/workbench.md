@@ -171,7 +171,13 @@ row delete removes each session's worktree ledger
 (`terminal_session_worktrees`, migration `00111`) by `ON DELETE CASCADE`
 from `terminal_sessions`, with its `cleanup_result`/`cleanup_at` on the row
 itself. The worktrees and branches a cleanup removed are not brought back
-by anything; a workbench delete never runs a cleanup.
+by anything; a workbench delete runs no sweep of the repository (only the placed sessions' own cleanup below).
+*2026-10-14 (board #229, asks #122/#124):* deleting a workbench
+first runs the session cleanup (PROJ-18) for every placed session's
+worktree and `wt/` branch; a worktree the cleanup keeps stays on disk
+and is listed in `kept_worktrees`; every placed session's local MCP entry
+is unregistered — a removed worktree's and a kept one's alike (a kept
+worktree's files stay).
 
 **Exception (owner approved 2026-10-14, ask #118, target 156):** a file or
 directory the removal would write or remove through that is a symlink
@@ -195,6 +201,8 @@ must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
 - `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL; since 2026-10-14, board #535, no `terminal_session_worktrees` row of its sessions is left while another workbench's session's ledger row survives — assertions added, none relaxed)
+- `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_CleansPlacedWorktreesKeepsDirtyOnes` (2026-10-14, board #229)
+- `cmd/workbench_cleanup_test.go::TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList` (2026-10-14, board #229: a kept worktree stays on disk, is listed in `kept_worktrees`, and its local MCP entry is unregistered)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
@@ -1446,6 +1454,7 @@ owner's and the agent's backs.
 - `internal/tools/workbench_finish_test.go::TestProj14_OnlyOwnSessionWritesLink` (no variable, an unknown id, garbage, a negative id and another workbench's session: no link from any write tool)
 - `internal/tools/workbench_finish_test.go::TestProj14_FinishNeedsATerminalSession` (another workbench's session is never marked; no audit row, no link)
 - `internal/sessionreport/report_test.go::TestProj14_ReportNeverWritesTheBoard`
+- `internal/sessionreport/refresh_test.go::TestSessionReport_ReportsAWorktreeBranch` (a placed session's `wt/` branch, board #229)
 - Codex (2026-10-12, board #399): `internal/sessionreport/summary_test.go::TestSessionReport_IncludesCodexSessions`; supporting: `internal/tools/workbench_docs_test.go::TestAgentLabel_CodexRowIsCodexCLI`, `internal/devpack/codex_hooks_test.go::TestCodexMCPOverrides_IncludeApproveAndAgentFlag` (the `env_vars` entry); every existing PROJ-14 guard unchanged
 - supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`, `TestSessionLinks_LegacyBindingLinksTheSame`)
 
@@ -1636,7 +1645,7 @@ PROJ-17 guards above unchanged.
 
 ## PROJ-18 — session cleanup never removes unsaved, unpushed, in-use or someone else's work
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13; the spec's open questions were answered in ask #193: **Delete and Clean Up** is the default button, and the one-time sweep hint ships)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-12, ask #193, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13; the spec's open questions were answered in ask #193: **Delete and Clean Up** is the default button, and the one-time sweep hint ships; amended 2026-10-14 (placed sessions, board #229, asks #122/#124))
 
 **Observable:** `watchtower workbench cleanup` (`internal/sessioncleanup`) removes only linked worktrees of the workbench
 repository and local branches, and only after every catch passes, checked again immediately before the removal:
@@ -1649,6 +1658,8 @@ folder, anything under `~/.claude`, a path that is not a linked worktree, or a r
 uses `--force` or an unconditional ref delete; signals only orphan processes (ppid 1, the current user, inside the
 session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A plan writes nothing; an apply acts
 only on items eligible at that moment and, when items are named, only on those.
+
+*2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch`, when each was born no later than the row (placement creates them first; `created_at` + 1 s) — although both were born before the row. A later-born item of the same name (a reused `wt/<slug>` of a later session), one whose birth is unknown, or a row whose `folder_path` is not absolute owns nothing by record. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
 
 As shipped (each stricter than, never weaker than, the wording above):
 - **Fail closed.** A catch git could not answer keeps the item `check_failed`
@@ -1707,6 +1718,8 @@ loses uncommitted work for good, so every doubt keeps the item.
 - `internal/sessioncleanup/apply_test.go` — `TestProj18_MergedAndPushedWorkIsRemoved` (the positive path: business done-criterion 1), `TestProj18_ClaudeHistoryAndMainBuildUntouched`, `TestProj18_ApplyRechecksAndActsOnlyOnNamedItems`, `TestProj18_BranchThatMovedAfterThePlanIsKept`, `TestProj18_NoForceNoFetchAnywhere`, `TestProj18_LsregisterRunsBeforeWorktreeRemove`, `TestProj18_FailureMidwayLeavesTheRestUntouched`
 - `internal/sessioncleanup/failclosed_test.go` — `TestProj18_UnknownDefaultBranchKeepsEveryBranch`, `TestProj18_OriginHeadReadFailureKeepsEveryBranch`, `TestProj18_PrunableDetachedWorktreeWithUnpushedCommitIsKept`, `TestProj18_PrunableWorktreeWithUnreadableHeadIsKept`, `TestProj18_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt`, `TestProj18_BranchWhoseCreationEntryExpiredIsKept`, `TestProj18_GitFailureInACatchKeepsTheItem`
 - `internal/sessioncleanup/nested_test.go::TestProj18_WorktreeHoldingANestedWorktreeIsKept` (W9)
+- `internal/sessioncleanup/placed_test.go` — `TestCleanupPlacedRowOwnsItsWorktreeAndBranch`, `TestCleanupPlacedSubfolderRowOwnsItsWorktree`, `TestCleanupPlacedRowStillKeepsUncommittedWork`, `TestCleanupUnplacedOldWorktreeStillKept`, `TestCleanupPlacedNameBornAfterTheRowIsNotOwned`, `TestCleanupPlacedUnknownBirthIsNotOwned`, `TestCleanupPlacedRelativeCwdIsIgnored`
+- `internal/workbenchgit/worktree_ensure_test.go` — `TestProj18_PlacementNeverForcesOrDiscards`
 - `internal/sessioncleanup/procs_test.go::TestProj18_OnlyOrphansAreSignalled`
 - `internal/sessioncleanup/untrusted_test.go::TestProj18_PlantedGitConfigRunsNoCommand`
 - `cmd/workbench_cleanup_test.go` — `TestProj18_CallerSessionCannotCleanAnotherSession`, `TestProj18_CallerSessionCannotSweep`, `TestProj18_CallerSessionCannotNameAnotherWorkbench`, `TestProj18_CallerSessionEmptyVariableIsRefused`
@@ -2007,6 +2020,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-15 (Automations P1, board #753): note only, no contract text or guard changed. The owner's `watchtower automations` CLI can write and remove recipe files in a workbench folder's `.watchtower/automations/` (`save --path` atomically through `fsutil.WriteFileAtomic`; `delete` removes only a regular recipe file in that folder); `dry-run --file` and `rescan --workbench N` read it. No Desktop path, workbench MCP tool or daemon code writes the folder in P1, so PROJ-03 (the Desktop's writes) is unchanged; the owner-approved PROJ-03 amendment (ask #272, automations spec §14.6) is written into PROJ-03 with Automations P5, which adds the Desktop save.
 - 2026-10-14 (board #535, session cleanup; spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §13, business page `…-business.md`, plan `docs/superpowers/plans/2026-10-12-session-cleanup.md`; **PROJ-18 added, PROJ-11, PROJ-04 and PROJ-02 amended, owner approved 2026-10-12, ask #193**): `watchtower workbench cleanup` (`internal/sessioncleanup`, migration `00111`: `terminal_session_worktrees` + `terminal_sessions.cleanup_result`/`cleanup_at`) plans, then with `--apply` removes, the linked worktrees and local branches a session's agents created — never unsaved, unpushed, in-use or someone else's work (PROJ-18, the approved wording verbatim plus the stricter as-shipped list); the skill pack's finishing step runs it (DEV-04 changelog: pack v8); the Desktop offers it on Delete Session (**Delete and Clean Up**, the default, or **Delete Only**), per session (**Clean Up…**) and as the owner's sweep (**Clean Up Old Worktrees…**, with a one-time hint above 1 GB). **PROJ-11:** the state hooks record each new (worktree root, branch) of any agent of the session, at most 64, without git; a ledger failure never costs the state write. **PROJ-04:** the install adds one `permissions.allow` rule `Bash(<bin> workbench cleanup:*)` (the bin quoted only when unsafe, ours only with an absolute `watchtower` bin, the owner's entries never touched). **PROJ-02:** the folder removal deletes that rule; the ledger goes with the session row by cascade (`TestProj02_RemoveProjectLeavesNothingInstalled` and `TestProj02_DeleteProjectLeavesNoRows` extended, assertions added). **PROJ-17:** note only — `delete` (✕, ⌘⌫, Delete Only) is a no-op and Start fresh refused on a row a cleanup runs on, and every resume of a row whose terminal Delete and Clean Up closed is refused. **PROJ-14** unchanged (the report only reads `cleanup_result`). No guard relaxed.
 - 2026-10-14 (merging main into feature/533-sessions; no new principle, no guard changed): **PROJ-16** — Ready to check (#534, ask #195) counts as idle for a phone line: it is a resting form of Finished / Waiting for you. **PROJ-17** — renumbered because PROJ-16 is the phone-typing contract (main); the session cleanup of board #535 is PROJ-18 (its inventory entry follows with #535); its phone-list wording now says the row leaves and comes back on the hub's next 30 s full tick, not at once (main's #724 removed the fast nudge).
 - 2026-10-14 (target 156; **approved by the owner 2026-10-14, ask #118**): **PROJ-02 amended — an exception for links leaving the folder.** When the removal refuses a file or directory linked outside the folder (PROJ-04), the delete still completes and names the exact outside file and what to remove by hand: `devpack.OutsideFolderError` (an `ErrSymlinkOutsideFolder` refusal carrying the outside path; the error text is unchanged) and `devpack.OutsideFolderHints`, printed by `workbench delete` (stderr, `--json` `removal_hints`) and `integrate remove --workbench N`, shown by the Desktop's delete warning in place of the raw error. New guard `TestProj02_DeleteWithASettingsLinkOutsideNamesTheLeftoverHooks`; no guard changed.

@@ -2,7 +2,7 @@
 
 **Status:** Approved, 2026-10-14. Owner-approved shape: asks #259–#267; business spec approved in ask #269; the
 open questions decided in ask #270 (§20); the questions the phase plans raised decided in asks #271–#273, the extra local-store read tools in ask #277
-(§20.1).
+(§20.1); the rulings made while P1 was built in asks #280 and #287 (§20.2).
 The AGENT-03 amendment (§14.2) is owner-approved (ask #265); the STRIP-01 and AGENT-04 amendments (§14.4, §14.5)
 are approved with §20 (ask #270); the PROJ-03 and QC-02 amendments (§14.6, §14.7) are approved in ask #272.
 **Business spec:** `2026-10-14-automations-business.md`. **Plans:** one per phase,
@@ -43,6 +43,13 @@ tab, `AgentActionCardView` label, Inbox strip (P3), workbench header buttons and
 - The filename stem is the automation's **slug** (`^[a-z0-9][a-z0-9-]{0,63}$`, the skills name rule); a file
   whose stem does not match is reported by `rescan` and not indexed. Other extensions are ignored.
 - Max file size 256 KiB; larger → parse error, not indexed as runnable.
+- **Only regular files are read (P1 implementation, controller decision).** The indexer lists a folder with lstat
+  semantics and never follows an entry: a symlink (inside, outside or dangling) or a special file (FIFO, socket,
+  device) named `*.md` is skipped with "symlinks and special files are not read; put the recipe file itself in the
+  folder" and never opened; a recipe replaced by a symlink is marked removed; a directory named `*.md` is ignored.
+  A regular file is read Lstat → `open(O_NOFOLLOW|O_NONBLOCK)` → fstat (regular, same inode). The folder path itself
+  is canonicalised (`Abs` + `EvalSymlinks` on the deepest existing ancestor). A slug already used in the scope by a
+  row at another path (a removed one included) is a skip with a message naming that row. P5 follows the same policy.
 
 ### 2.2 Shape
 
@@ -66,7 +73,8 @@ const mail = tool("list_emails", { account: "work", since: state.get("since") })
 ```
 ~~~
 
-Exactly one fenced block with info string `js` (or `javascript`); zero or two+ → parse error. Text outside the
+Exactly one fenced block with info string `js` (or `javascript`); zero or two+ → parse error, and so is an empty
+block (P1: stricter than "exactly one" alone). Text outside the
 block is description. Unknown frontmatter keys → parse error (strict, unlike skills: a typo in `permissions`
 must not silently grant nothing or everything).
 
@@ -109,6 +117,8 @@ carrying `--confirm-hash` (§10), or (c) `automations confirm <id> --hash <sha>`
 agent's environment markers (AGENT-07). A recipe new to the index, or one whose `approval_hash` changed by any
 other way (a git pull, a hand edit, another tool), is indexed with its old `confirmed_hash` and therefore not
 runnable; the Automations tab and the workbench header show it as **Needs your confirmation** (AUTO-06).
+The store call is `db.ConfirmAutomation(id, hash, now)` (refuses any hash but the current `approval_hash`,
+`ErrHashMismatch`; a missing row `ErrAutomationNotFound`); an insert never sets `confirmed_hash` or `enabled`.
 
 A deleted file → index row `removed_at` set, not runnable; its run history stays until the owner deletes the
 automation (`automations delete <id>`, cascades runs/steps/state/outputs/grants).
@@ -164,7 +174,10 @@ Every SDK call is checked before its backend is touched (AUTO-01):
   `list_calendar_events` (ask #277) takes an optional `account`, so it has a real scope: with `account` it needs
   `calendar:read@<that account>`, without it `calendar:read@*`. `list_jira_sprints` is scoped by its `project`
   (or the project of its `board_id`), `list_jira_releases` by its `project`; absent → `jira:read@*`. Scope
-  matching is case-insensitive equality or `*` glob (`path.Match` semantics). A tool missing
+  matching is case-insensitive equality or `*` glob (`path.Match` semantics). A Jira project grant covers what the
+  tool returns with that project's issues, linked issues of other projects included: Jira reads stay scoped by their
+  own `project`/key arguments (owner ruling, ask #287, §20.2). A scope argument spelled in another case (`PROJECT`,
+  `Key`, `Account`) is not read as the scope, so such a call needs `@*` (P1). A tool missing
   from `toolCapabilities` is admitted only by `tool:<name>`. The tool must also be visible on the `automation`
   surface (`Tool.VisibleOn("automation")`), whatever the manifest says. `TestToolCapabilities_CoversEveryAutomationTool`
   pins that every tool visible on `automation` has an entry or is deliberately `tool:`-only.
@@ -218,6 +231,16 @@ and `agent()` processes get the environment of §13.2, never the secret files' c
   `{status:"dry_run"}` (outputs and the would-be args are shown in the steps) and touch nothing; `llm`, read
   `tool`s and `mcp` reads run for real; `agent` runs with its write tools removed from the effective set (AUTO-12).
 - **Determinism** is not promised (Date, Math.random are live). Hence no replay on restart (§7.7).
+- **Hardening (P1 implementation).** No `eval`/`Function`; every function prototype's `.constructor` throws
+  `EvalError`; a script that breaks out of its wrapper function is a parse error. Regex calls running ≥ 2 s throw
+  `RangeError` ("regular expression took too long"); `repeat`, `padStart`/`padEnd`, `String.raw`, `join`, `fill`,
+  `Array(n)` and `Array.from(array-like)` are capped at 16 Mi chars/elements; `JSON.stringify` depth ≤ 1000. Native
+  builtins are not preemptible: a script still in one 2 s (`AbandonGrace`) after an interrupt is abandoned — the run
+  ends with that reason and the automation is disabled ("runaway script — check and re-enable"); the executor
+  claims nothing while two abandoned goroutines are alive. The heap itself stays unbounded (v1 limit). An SDK
+  argument converts only up to 256 KiB; the script's return value is JSON-serialised inside the run (functions,
+  symbols, BigInt → uncaught `ValidationError`; > 256 KiB → `ResultTooLarge`). An interrupt raised before the outcome
+  is read wins over a script that just finished; a backend error after the run's context ended is an interrupt.
 
 ## 5. SDK
 
@@ -225,11 +248,11 @@ Every call writes one step row (§9.3) — start, result summary, tokens, durati
 
 | Call | Phase | Permission | Behaviour |
 |---|---|---|---|
-| `llm(prompt, {input?, schema?, tier?})` | P1 | `llm:<tier>` (default `light`) | One `digest.Generator.Generate` through the resolved provider (`providers.ResolveModelsFor`). Source tag `automation.llm` (light) or `automation.llm.strong` (strong; added to `allowedStrongSources` with reason "the owner chose tier: strong in the recipe"). `input` is JSON-serialised after the prompt. With `schema` (JSON Schema object) the reply must parse and validate (`jsonschema-go`); one retry with the validation error, then `ValidationError`. Returns string, or the parsed object with `schema`. Tokens debited (§7.5). |
+| `llm(prompt, {input?, schema?, tier?})` | P1 | `llm:<tier>` (default `light`) | One `digest.Generator.Generate` through the resolved provider (`providers.ResolveModelsFor`). Source tag `automation.llm` (light) or `automation.llm.strong` (strong; added to `allowedStrongSources` with reason "the owner chose tier: strong in the recipe"). `input` is JSON-serialised after the prompt; the 200 KiB bound covers prompt + serialised input + serialised schema together (P1, stricter than §4's "input after serialisation"); a failed call debits only provider-reported usage. With `schema` (JSON Schema object) the reply must parse and validate (`jsonschema-go`); one retry with the validation error, then `ValidationError`. Returns string, or the parsed object with `schema`. Tokens debited (§7.5). |
 | `tool(name, args, {wait?})` | P1 reads, P2 writes | §3.2 | Read: `Registry.CallRead(ctx, name, args, binding)`. Write: `Registry.Propose(ctx, name, args, binding)` → `{status:"proposed", id}`, or `{status:"applied", id, result}` when trust/auto applied it inline. With `{wait:true}` a proposed write pauses the run (`waiting_reason='approval'`) until the row is `applied` → `{status:"applied", id, result}`, `rejected` → `{status:"rejected", id}`, or `failed` → `{status:"failed", id, error}`. Dry run: a write never reaches the registry → `{status:"dry_run"}` (AUTO-12). |
 | `state.get(key)` / `state.set(key, value)` / `state.all()` | P1 | none | Per-automation JSON object. Reads see the committed state plus this run's own sets; sets are buffered and committed **only** when the run ends `succeeded` (AUTO-04). |
 | `output.inbox({title, body, priority?})` | P1 | `outputs: [inbox]` | Buffered; committed with state on success as an `automation_outputs` row `kind='inbox'`. |
-| `output.report({title, body})` | P1 | `outputs: [report]` | Same, `kind='report'`; shown on the automation card and in the run. |
+| `output.report({title, body})` | P1 | `outputs: [report]` | Same, `kind='report'`; shown on the automation card and in the run. Every `output.*` title is ≤ 200 characters (P1 review decision). |
 | `output.briefing({title, body})` | P2 | `outputs: [briefing]` | Same, `kind='briefing'`; the next daily briefing includes outputs created since the previous briefing (§12.6). |
 | `output.target({...create_target args})` | P2 | `outputs: [target]` | Sugar for `tool("create_target", args)` — a registry write (manifest needs no `tool:create_target`; `outputs` is the gate). |
 | `output.slack({...send_slack_message args})` | P2 | `outputs: [slack]` | Sugar for `tool("send_slack_message", args)` — External, a proposal unless auto (§6). |
@@ -352,7 +375,7 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
 
 - `daemon.Run` starts `automations.Scheduler.Run(ctx)` and `automations.Executor.Run(ctx)` as goroutines next to
   the sync loop; neither is a phase of `runSync`, and neither waits for a sync cycle.
-- The scheduler ticks at every minute boundary (`Clock` interface: `Now()`, `NewTimer`; tests use a fake clock).
+- The scheduler ticks at every minute boundary and on a wake (`Clock` interface: `Now()`, `After(d)`; tests use a fake clock).
   Each tick: rescan the personal folder and unprotected workbench folders by directory mtime (§13.4), then for
   every runnable `schedule` automation compute due times in `(last_scheduled_for, now]`.
 - Grace 2 minutes: a due time within 2 minutes of `now` is **on time** → one `schedule` row. Due times older than
@@ -361,7 +384,23 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
   due time in the window in the same transaction as the insert, so a crash cannot double-insert and a restart does
   not re-catch-up.
 - First index of a schedule automation sets `last_scheduled_for = now` (no catch-up for times before it existed).
-  Enabling a disabled automation does the same (no catch-up for the disabled period).
+  Enabling a disabled automation does the same (no catch-up for the disabled period). So does a confirm that changes
+  `confirmed_hash` (no catch-up for the unconfirmed window; re-confirming the same hash keeps the point), a rescan
+  that makes a row runnable again (its `approval_hash` reverted to the confirmed one, or its trigger became `schedule`
+  — `db.PrimeAutomationSchedule` writes only while the row is not a runnable schedule) and enabling the `automations`
+  feature (FEAT-03 hook `db.FastForwardAutomations`, which also cancels runs queued while it was off, dry runs kept).
+- **Compare-and-set (P1).** The schedule advance is conditional on the `last_scheduled_for` the scheduler read
+  (`EnqueueRequest.ExpectLastScheduledFor`, required with `AdvanceScheduleTo`; `db.CompareAndSetAutomationSchedule`);
+  a row changed meanwhile rolls the transaction back (`db.ErrScheduleChanged`) and is skipped for that tick.
+- **Time zone, DST and clock steps (P1).** The local zone is re-read every tick (`/etc/localtime` link, else
+  `time.Local`), so a zone change applies without a restart. An hour field without `*` is a wall-clock appointment:
+  a time repeated by a fall-back fires once (first occurrence), a time in the skipped spring-forward hour fires once at
+  the jump (02:30 → 03:00); an hour field with `*` follows elapsed time (both passes of a repeated hour; the skipped
+  hour has no due times). Deliberate deviations from Vixie cron: only the hour field decides (`* 2 * * *` is
+  wall-clock), and DST comes from the zone database, not from the size of a clock jump. A clock stepped back waits
+  until it passes `last_scheduled_for` again (no duplicate); a `last_scheduled_for` more than a day ahead of now
+  restarts the schedule from now (no catch-up). v1 limits: a clock set forward by less than a day holds the schedule
+  until real time catches up (that slot is lost); one stepped back by more than a day may repeat a due time.
 
 ### 7.3 Executor
 
@@ -372,6 +411,13 @@ is queued inserts nothing and returns the queued run's id (`run --json` → `{"r
 - `maxConcurrentRuns = 2` runs in `running` at once across all automations (code constant). `waiting` runs do not
   count (they hold no CPU; each is bounded by `pause_timeout_hours`).
 - Wakeups: a 10 s poll of `queued` and `waiting` rows, plus the wake signal (§7.4).
+- **P1 implementation.** The daemon's claim checks the global running bound in the same statement
+  (`ClaimAutomationRunWithin`); a ready wait resumes only into a free running slot (`ResumeAutomationRunIfSlot`) and
+  before queued runs are claimed; a finished run wakes the executor. The daemon never picks up a `dry_run` row
+  (`NextQueuedAutomationRuns` excludes them): the CLI claims and runs its own. At start the executor spares a live CLI
+  dry run (its `started_at` + budget minutes + 1 min still ahead) and on every poll sweeps dry runs past that deadline
+  (`MarkStaleDryRuns`). The run re-parses the claimed snapshot with the scope rebuilt from the index row (`scope` +
+  `project_id`). Ending a run closes its still-open steps in the same transaction.
 - The executor lives in the daemon; the daemon's flock-holding process is the only executor (the CLI's `run`
   only queues).
 
@@ -382,7 +428,11 @@ scheduler/executor only. `automations run`, the Desktop after an approval/ask an
 the Desktop after launching a requested session send it. **Not** the existing `SIGUSR1` trigger channel: that
 one starts a full sync cycle (`TriggerSignal`, `cmd/sync.go`), which would make every Run now cost a sync (§20
 D1). With no daemon running, `run` still queues and prints `daemon not running; the run starts when it does`
-(exit 0); the Desktop respawns the daemon anyway.
+(exit 0); the Desktop respawns the daemon anyway. The daemon advertises the signal in `<pidfile>.caps` (its pid, then
+`automations-wake`, written right after the PID file and removed with it); the CLI signals only a daemon that lists it —
+the caps file tells the CLI whether this daemon actually runs the automations wake. An older daemon, or one with
+automations off, silently ignores SIGUSR2 (a Go process catches it and does nothing), so the run would just wait for its
+next poll; such a daemon is not signalled, and `run`/`wake` print a restart hint (exit 0). `automations wake` ships in P1.
 
 ### 7.5 Budgets
 
@@ -397,7 +447,9 @@ Budgets are in **tokens**, not dollars (§20 D4, ask #270).
   `reported_cost_usd`; nothing compares against it, and it is never estimated.
 - Global daily cap: config `automations.daily_budget_tokens` (default `2000000`), summed over
   `automation_runs.input_tokens + output_tokens` whose `started_at` falls on the local calendar day, dry runs
-  included. A run claimed while the cap is spent ends
+  included. (P1: the day is the local day of the run's own `started_at`, in the scheduler's per-tick zone; the sum is
+  re-read before each model call, so concurrent runs see each other's spend; `0` = automations may spend nothing —
+  every run ends `daily_cap` before its script starts; a negative value logs a warning and uses the default.) A run claimed while the cap is spent ends
   at once `budget_exceeded` with `error_kind='daily_cap'`; a running run that crosses it is interrupted the same
   way. The scheduler keeps inserting rows (they end as above), so the history shows what was skipped.
 
@@ -493,7 +545,7 @@ REFERENCES automation_runs(id) ON DELETE SET NULL; `status` CHECK IN ('queued','
 (display only, sum of provider-reported costs; NULL when none reported); `active_ms` INTEGER DEFAULT 0; `error` TEXT DEFAULT '';
 `error_kind` CHECK IN ('','script','permission','budget','daily_cap','timeout','interrupted','not_runnable',
 'expired','cancelled','backend'); `summary` TEXT DEFAULT '' (last `output.report` title or the script's return
-value, clipped 1 KiB); `queued_at`, `started_at` NULL, `finished_at` NULL.
+value — a string as is, any other value as JSON, `''` for none — clipped 1 KiB); `queued_at`, `started_at` NULL, `finished_at` NULL.
 Indexes: `(automation_id, status)`, `(status, queued_at)`, unique `(automation_id, event_cycle) WHERE event_cycle
 IS NOT NULL`, partial unique `(automation_id, trigger) WHERE status='queued'` (coalescing, §7.1).
 
@@ -536,18 +588,19 @@ through the CLI. The approval-hash function exists only in Go; the Desktop gets 
 | Command | Notes |
 |---|---|
 | `automations list [--json] [--workbench N]` | index rows + next run, last status, 7-day tokens |
-| `automations show <id\|slug> [--json]` | row, parsed recipe, hashes, grants (active/inactive), widening vs confirmed |
+| `automations show <id\|slug> [--json]` | row, parsed recipe, hashes, grants (active/inactive, P2), widening vs confirmed (P1 v1 limit: `[]` when confirmed, else every normalised permission — the index keeps only `confirmed_hash`); a slug is resolved before an id |
 | `automations validate <file> [--json]` | parse + manifest + script pre-parse, no DB write |
 | `automations rescan [--workbench N] [--json]` | index personal folder (+ one workbench); Desktop runs it for protected folders |
 | `automations run <id> [--rerun-of R] [--json]` | queue + SIGUSR2; Run now and buttons |
-| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted; an **unconfirmed** recipe is refused under AGENT-07 markers (owner only, §20.1 D16) |
+| `automations dry-run <id\|--file F> [--json]` | executes in the CLI process, `trigger='dry_run'`; writes `{status:"dry_run"}`; no state/outputs; real `llm` tokens counted; an **unconfirmed** recipe is refused under AGENT-07 markers (owner only, §20.1 D16); the CLI pins the hash its check saw (`ExecuteInlinePinned`) — a recipe changed before the claim cancels the run |
 | `automations cancel <run-id>` | |
 | `automations runs <id> [--limit N] [--json]`, `automations steps <run-id> [--json]` | history |
 | `automations enable\|disable <id>` | |
 | `automations confirm <id> --hash <sha>` | owner only (AGENT-07 markers refused) |
 | `automations auto <id> <tool> on --hash <sha>` / `off` | `on` owner only (AGENT-07) |
 | `automations save --file F [--path P] [--confirm-hash <sha>]` | writes the recipe atomically (temp + rename), indexes it; with `--confirm-hash` (owner only) confirms in the same step |
-| `automations delete <id>` | removes the file and the index row (cascade) |
+| `automations delete <id>` | removes the index row (cascade) in one statement refused while a run is `running`/`waiting` ("cancel it first"), then the file when it is a regular file in its recipe folder |
+| `automations wake` | sends the wake signal (P1); open under agent markers |
 | `automations templates [--json]`, `automations install-template <name> [--workbench N]` | P6 |
 | `automations outputs [--kind K] [--json]` | P1, until the Inbox renders them (P3) |
 
@@ -791,7 +844,7 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
@@ -911,7 +964,8 @@ section it governs; nothing remains open.
 ### 20.1 Decisions (asks #271–#273, #277)
 
 The phase plans raised seven more questions (D16–D22) and the owner added one more scope decision (D23, ask #277), all on 2026-10-14. Each is pinned below and in
-the section it governs.
+the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287 kept the Jira and digests rules of
+§3.2 (§20.2).
 
 16. **D16 Dry run of an unconfirmed recipe — owner only (ask #271).** The owner may dry-run a recipe that is not
     confirmed yet (the Desktop card's **Dry run**, `automations dry-run` without agent markers); an agent may not.
@@ -919,7 +973,7 @@ the section it governs.
     included, so an automation's `shell()`/`session()`/`agent()` child cannot either), and the chat tool
     `draft_automation`, which dry-runs only a draft and refuses when the draft's `approval_hash` is that of an
     indexed unconfirmed recipe (§11, AUTO-06). No MCP tool runs or dry-runs an automation. Dry-running a confirmed
-    recipe stays open to everyone.
+    recipe stays open to everyone. (Reading keyed by `approval_hash` owner-confirmed in ask #280, §20.2.)
 17. **D17 PROJ-03 extended (ask #272).** Watchtower writes recipes into the workbench folder's
     `.watchtower/automations/`, only on the owner's Save or Approve (§14.6; in code with P5).
 18. **D18 Draft dry runs may show clipped mail to the main chat (ask #272).** `draft_automation`'s dry-run journal,
@@ -933,7 +987,8 @@ the section it governs.
     and `get_task_context` are admitted only by an explicit `tool:` entry; there is no `knowledge` capability, so
     `knowledge:read` is a parse error (§3.1).
 22. **D22 `list_messages` in v1 only by `slack:read@*` (ask #273)** (or `tool:list_messages`); no per-account
-    scope in v1. The same holds for `list_upcoming_events` and `calendar:read@*` (§3.2).
+    scope in v1. The same holds for `list_upcoming_events` and `calendar:read@*` (§3.2). (Owner-confirmed in ask
+    #280, §20.2.)
 23. **D23 More local-store reads for automations, all in P1 (ask #277).** New: `list_inbox`,
     `list_calendar_events`, `list_meeting_recaps`, `get_meeting_recap`, `list_meeting_notes`, `list_day_plans`,
     `get_day_plan`, `list_reminders`, `list_jira_sprints`, `list_jira_releases` — automation surface only, not
@@ -945,3 +1000,15 @@ the section it governs.
     `list_inbox`, the memory tools and `get_writing_style` are `tool:`-only (D21's rule applied to cross-source
     and single-purpose tools). `get_confluence_page` is not admitted — it is a live network read and D23 is local
     store only; Confluence content stays reachable through the `tool:`-only knowledge tools (§6.1).
+
+### 20.2 Rulings while P1 was built (asks #280, #287)
+
+- **Ask #280 — owner confirmed both readings.** D16: `draft_automation` refuses a dry run only when the draft's
+  `approval_hash` is that of an indexed unconfirmed recipe (a draft that differs from it is its own new text). D22:
+  `list_messages` is admitted by `slack:read@*` **or** `tool:list_messages` (likewise `list_upcoming_events` by
+  `calendar:read@*` or `tool:list_upcoming_events`).
+- **Ask #287 — spec rules kept.** A Jira project grant covers the tool's linked data: `list_jira_issues`/
+  `get_jira_issue` stay scoped by their own `project`/key prefix (no widening by links, epics or parents in
+  `raw_json`), `get_jira_time_in_status` by `project`, else its `issue_keys` prefixes, else absent, whatever
+  `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
+  stays under `people:read`; neither is `tool:`-only.

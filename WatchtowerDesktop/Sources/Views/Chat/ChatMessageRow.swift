@@ -209,7 +209,7 @@ struct LiveAssistantRow: View {
                              onOpenArtifact: onOpenArtifact,
                              onOpenSources: { onOpenSources(turn.steps.flatMap(\.sources)) })
         // swiftlint:enable trailing_closure
-            .onChange(of: turn.text, initial: true) { _, newValue in onStreamingTextChanged(newValue) }
+            .background { ChatLiveArtifactFeed(turn: turn, onText: onStreamingTextChanged) }
     }
 }
 

@@ -124,11 +124,18 @@ extension WorkbenchesViewModel {
         if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row, ticket: ticket) }
     }
 
-    /// The switcher's "All Workbenches": back to level 1, the panel
-    /// shown if hidden; the page stays on screen.
+    /// The switcher's "All Workbenches" — and the back button, ⌘[ and the
+    /// swipe (board #743): back to level 1, the panel shown if hidden; the
+    /// page stays on screen.
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
         panelVisible = true
+    }
+
+    /// Whether the workbench list is off screen — the panel at level 2, or
+    /// hidden — so the way back to it (board #743) has somewhere to go.
+    var canShowAllWorkbenches: Bool {
+        drilledWorkbenchID != nil || !panelVisible
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
@@ -154,15 +161,6 @@ extension WorkbenchesViewModel {
             return
         }
         await open(session, ticket: ticket)
-    }
-
-    /// Level 2's "New session" (and ⌘T): a fresh agent session of the
-    /// workbench on screen — `agent`, else the default agent — put on screen
-    /// like a panel click. The panel may be hidden or at level 1
-    /// (`drilledWorkbenchID` is nil or this one).
-    func newSessionOnPage(agent: AgentKind? = nil) async {
-        guard let projectID = selectedWorkbenchID else { return }
-        await newSession(projectID: projectID, agent: agent)
     }
 
     // MARK: - Main area (single / split / expand)
@@ -329,11 +327,6 @@ extension WorkbenchesViewModel {
             return
         }
         await open(row, placement: .replacing(slot), ticket: ticket)
-    }
-
-    /// A pane picker's "New … session": starts one in that pane.
-    func newSession(inPane slot: WorkspacePane, projectID: Int64, agent: AgentKind? = nil) async {
-        await newSession(projectID: projectID, placement: .replacing(slot), agent: agent)
     }
 
     func toggleExpand(_ pane: WorkspacePane, projectID: Int64) {

@@ -412,6 +412,12 @@ func triggerSpecJSON(t Trigger) (string, error) {
 	return string(b), nil
 }
 
+// CanonicalDir is the indexer's folder path policy (see Indexer), exported so
+// the CLI can tell whether a path lies in a recipe folder and key a file the
+// way its index row does: filepath.Join(CanonicalDir(filepath.Dir(f)),
+// filepath.Base(f)).
+func CanonicalDir(dir string) (string, error) { return canonicalDir(dir) }
+
 // canonicalDir makes dir absolute and resolves symlinks through its deepest
 // existing ancestor; the part that does not exist yet is appended as is.
 func canonicalDir(dir string) (string, error) {
@@ -482,6 +488,18 @@ func (ix *Indexer) readRecipe(path string) ([]byte, string, error) {
 		ix.big[path] = bigFileHash{size: fi.Size(), mtime: fi.ModTime().UnixNano(), hash: hash}
 	}
 	return data, hash, err
+}
+
+// ReadRecipeFile reads a recipe file the way the indexer does (see
+// readRecipeFile: a regular file only, never through a symlink): its first
+// MaxRecipeBytes+1 bytes and the ContentHash of the whole file. The CLI's
+// validate and save read their input through it.
+func ReadRecipeFile(path string) ([]byte, string, error) {
+	data, hash, _, err := readRecipeFile(path, bigFileHash{})
+	if err != nil {
+		return nil, "", fmt.Errorf("reading recipe %s: %w", path, err)
+	}
+	return data, hash, nil
 }
 
 // readRecipeFile reads a regular file that is not a symlink: lstat, open

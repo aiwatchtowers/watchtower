@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Onboarding v2: Goals → Connect → About you, driven by
+/// Onboarding v2: Goals → Connect, driven by
 /// `AppState.onboarding` (`OnboardingStateMachineV2`); leaving the last step
 /// the route runs finishes onboarding.
 struct OnboardingV2View: View {
@@ -26,16 +26,6 @@ struct OnboardingV2View: View {
                 OnboardingConnectStepView(
                     onBack: { back(to: .purpose) },
                     onContinue: { await leave(.connect, route: appState.onboardingRoute) }
-                )
-            case .aboutYou:
-                OnboardingAboutYouStepView(
-                    onBack: { back(to: appState.onboardingRoute.skips(.connect) ? .purpose : .connect) },
-                    onFinish: { about in
-                        await appState.leaveOnboardingStep(
-                            .aboutYou, route: appState.onboardingRoute, about: about, onRetry: onRetry
-                        )
-                    },
-                    isBusy: appState.isFinishingOnboarding
                 )
             case .complete:
                 EmptyView()
@@ -84,7 +74,7 @@ extension View {
     }
 }
 
-/// Goals · Connect · About you, the steps the route skips left out; every
+/// Goals · Connect, the steps the route skips left out; every
 /// step up to the current one is lit.
 struct OnboardingStepIndicator: View {
     let steps: [OnboardingV2Step]

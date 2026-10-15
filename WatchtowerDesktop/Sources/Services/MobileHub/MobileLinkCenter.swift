@@ -54,6 +54,10 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 /// - Every share call is bounded (`shareTimeout`): offline CloudKit waits
 ///   for connectivity, and `handleDevice` runs inside the relay pass, which a
 ///   hub stop waits for. The close after a link runs outside the pass.
+///   A public-link call is never cancelled (a timed-out one may still
+///   land): one writer reconciles the link to the wanted state, one call at
+///   a time (`setPublicLink(open:reason:)`, #262), and a close it fails
+///   with no caller waiting re-marks the sweep and is retried.
 /// - Mobile E2E (spec §2.3): the QR carries the hub's public keys. A phone
 ///   asks to link with a hello sealed to `hub_kx` under the scanned code's
 ///   nonce; `handleHello(_:)` opens it with each kept code's nonce (F4),
@@ -369,7 +373,7 @@ final class MobileLinkCenter {
             let urls = try await share { try await shares.ensureShares() }
             // Marked before it opens: a crash in between still closes it.
             try markSweepPending()
-            try await share { try await shares.setPublicLink(open: true) }
+            try await setPublicLink(open: true)
             report(.available)
             return urls
         } catch {
@@ -456,6 +460,8 @@ final class MobileLinkCenter {
     @ObservationIgnored private var sweepRetryGeneration = 0
     /// The retry of an answering close's failed public-link close; cancelled with `sweepRetry`.
     @ObservationIgnored private(set) var linkCloseRetry: Task<Void, Never>?
+    /// Counts `scheduleLinkCloseRetry` calls; a retry clears `linkCloseRetry` on exit only if no newer one replaced it.
+    @ObservationIgnored private var linkCloseRetryGeneration = 0
 
     /// Closes the public link while the sweep is pending and leaves the participants to the sweep. false: no sweep
     /// is pending (no link was opened). A failure is logged; the sweep closes the link again.
@@ -467,8 +473,7 @@ final class MobileLinkCenter {
             return true
         }
         do {
-            let shares = self.shares
-            try await share { try await shares.setPublicLink(open: false) }
+            try await setPublicLink(open: false, reason: reason)
         } catch {
             let why = error.localizedDescription
             logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried: \(why, privacy: .public)")
@@ -481,14 +486,18 @@ final class MobileLinkCenter {
     /// longer pending, or a code is being issued or on screen (its link stays open). The grace's sweep closes it too.
     private func scheduleLinkCloseRetry(reason: CloseReason) {
         linkCloseRetry?.cancel()
+        linkCloseRetryGeneration += 1
+        let generation = linkCloseRetryGeneration
         linkCloseRetry = Task { [weak self, sleep] in
+            defer {
+                if let self, self.linkCloseRetryGeneration == generation { self.linkCloseRetry = nil }
+            }
             for delay in Self.linkCloseRetryDelays {
                 await sleep(delay)
                 guard !Task.isCancelled, let self, !self.yieldsToIssue else { return }
                 guard (try? self.sidecar.metaValue(forKey: Self.sweepPendingKey)) == "1" else { return }
                 do {
-                    let shares = self.shares
-                    try await self.share { try await shares.setPublicLink(open: false) }
+                    try await self.setPublicLink(open: false, reason: reason)
                     return
                 } catch {
                     let why = error.localizedDescription
@@ -511,8 +520,9 @@ final class MobileLinkCenter {
             guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return true }
             let epoch = sweepEpoch
             let shares = self.shares
-            try await share { try await shares.setPublicLink(open: false) }
-            if deferred, yieldsToIssue { return true }
+            try await setPublicLink(open: false, reason: reason)
+            // A code being issued kept its link open (`linkWanted`): its own close sweeps.
+            if linkWanted || (deferred && yieldsToIssue) { return true }
             let bound = Set(try sidecar.linkedDevices().filter { $0.scope == .shared }.map(\.userRecordName))
             for zone in [CloudZoneID.data, .relay] {
                 try await share { try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") } }
@@ -552,6 +562,96 @@ final class MobileLinkCenter {
         sweepRetry = nil
         linkCloseRetry?.cancel()
         linkCloseRetry = nil
+        linkRetriesHeld = true
+    }
+
+    /// The public link the center wants: open while a code is being issued or on screen, closed once a close asked
+    /// for it (#262).
+    @ObservationIgnored private var linkWanted = false
+    /// The public link the last write left: unknown before any, while one runs, and after a failed one.
+    private enum LinkWrite: Equatable {
+        case unknown
+        case written(open: Bool)
+    }
+    @ObservationIgnored private var linkWritten = LinkWrite.unknown
+    /// Why the last failed write did not go through.
+    @ObservationIgnored private var linkWriteError: Error?
+    /// The one task writing the public link; nil while none runs.
+    @ObservationIgnored private var linkWriter: Task<Void, Never>?
+    /// Callers waiting for a close: while one waits, a failed close is its to retry.
+    @ObservationIgnored private var linkCloseWaiters = 0
+    @ObservationIgnored private var linkCloseReason: CloseReason = .restart
+    /// The hub stopped (`cancelSweepRetry`): a close failing behind it schedules no retry (the mark stays).
+    @ObservationIgnored private var linkRetriesHeld = false
+
+    /// Opens or closes both shares' public link through the one writer (#262), and waits, bounded by
+    /// `shareTimeout`, until it is written. A public-link call is never cancelled: a timed-out one may still land,
+    /// and the writer then writes the wanted state again, one call at a time. A close yields to a code being issued
+    /// or on screen (it returns without a call) unless `reason` voids that code (`.issueFailed`, `.accountChanged`).
+    /// Throws when the write failed, timed out, or (an open) a close replaced it meanwhile.
+    private func setPublicLink(open: Bool, reason: CloseReason = .restart) async throws {
+        let voidsCode = reason == .issueFailed || reason == .accountChanged
+        linkWanted = open || (yieldsToIssue && !voidsCode)
+        guard linkWanted == open else { return }
+        linkRetriesHeld = false
+        if !open {
+            linkCloseReason = reason
+            linkCloseWaiters += 1
+        }
+        defer { if !open { linkCloseWaiters -= 1 } }
+        // A request writes at least once (a close sweeps again what a half-applied save left); one already running
+        // writes the wanted state again once its call ends, if it differs.
+        if linkWriter == nil {
+            linkWritten = .unknown
+            startLinkWriter()
+        }
+        let settled = await MobileHubService.bounded(shareTimeout) { [self] () -> Bool in
+            while let writer = await linkWriter { await writer.value }
+            return true
+        }
+        guard settled != nil else { throw ShareServiceError.timedOut }
+        guard linkWanted == open else {
+            if open { throw ShareServiceError.superseded }
+            return
+        }
+        guard linkWritten == .written(open: open) else { throw linkWriteError ?? ShareServiceError.superseded }
+    }
+
+    /// Writes `linkWanted` until the last write matches it. A write that fails while its state is still wanted
+    /// ends the run: a failed open is the issue's to report; a failed close keeps the sweep marked pending and,
+    /// when no caller waits for it (a reconciling close), is retried after `linkCloseRetryDelays`.
+    private func startLinkWriter() {
+        let shares = self.shares
+        linkWriter = Task { [weak self] in
+            while let center = self, center.linkWritten != .written(open: center.linkWanted) {
+                let target = center.linkWanted
+                center.linkWritten = .unknown
+                do {
+                    try await shares.setPublicLink(open: target)
+                    center.linkWritten = .written(open: target)
+                } catch {
+                    center.linkWriteError = error
+                    guard center.linkWanted == target else { continue }
+                    if !target { center.linkCloseFailed(error) }
+                    break
+                }
+            }
+            self?.linkWriter = nil
+        }
+    }
+
+    private func linkCloseFailed(_ error: Error) {
+        let reason = linkCloseReason
+        logger.error("share link not closed (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        do {
+            try markSweepPending()
+        } catch {
+            logger.error("share sweep mark not set (\(reason.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        }
+        // A running retry chain owns the close: restarting it would reset its delays (a stuck call that later
+        // fails would turn the bounded retries into an open-ended loop).
+        guard linkCloseWaiters == 0, !linkRetriesHeld, linkCloseRetry == nil else { return }
+        scheduleLinkCloseRetry(reason: reason)
     }
 
     // MARK: - Device records (spec §2.3, §5.1)

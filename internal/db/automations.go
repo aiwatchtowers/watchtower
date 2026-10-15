@@ -470,3 +470,48 @@ func requireAutomationRow(res sql.Result, id int64) error {
 	}
 	return nil
 }
+
+// automationsFeatureOffError is the error FastForwardAutomations writes on the
+// queued runs it cancels.
+const automationsFeatureOffError = "the automations feature was off when this run was queued"
+
+// FastForwardAutomations is the automations feature's enable hook (FEAT-03:
+// enabling resumes from now). In one transaction it sets last_scheduled_for =
+// now on every schedule automation, so no schedule catches up on the window
+// the feature was off, and cancels every queued run except dry runs (those
+// belong to a live CLI): error_kind 'cancelled', error
+// automationsFeatureOffError. A queued run has no steps to close. It returns
+// how many automations it primed and how many runs it cancelled.
+func (db *DB) FastForwardAutomations(now time.Time) (primed, cancelled int, err error) {
+	const what = "fast-forwarding automations"
+	if err := requireRunTime(now, what); err != nil {
+		return 0, 0, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: %w", what, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stamp := formatAutomationTime(now)
+	res, err := tx.Exec(`UPDATE automations SET last_scheduled_for = ? WHERE trigger_kind = 'schedule'`, stamp)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: priming schedules: %w", what, err)
+	}
+	p, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: priming schedules: %w", what, err)
+	}
+	res, err = tx.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled', error = ?,
+		finished_at = ? WHERE status = 'queued' AND trigger <> 'dry_run'`, automationsFeatureOffError, stamp)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: cancelling queued runs: %w", what, err)
+	}
+	c, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: cancelling queued runs: %w", what, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("%s: %w", what, err)
+	}
+	return int(p), int(c), nil
+}

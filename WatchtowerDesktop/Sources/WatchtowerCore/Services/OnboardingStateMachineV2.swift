@@ -1,22 +1,33 @@
 import Foundation
 import Observation
 
-/// Onboarding v2's steps: Goals → Connect → About you → done. Persisted by
-/// raw string under its own key, so no value can be mistaken for the old
-/// flow's `onboarding_current_step` integer. The raw values ARE the persisted format:
-/// renaming a case sends everyone parked on it back to Goals.
+/// Onboarding v2's steps: Goals → Connect → done. Persisted by raw string
+/// under its own key, so no value can be mistaken for the old flow's
+/// `onboarding_current_step` integer. The raw values ARE the persisted
+/// format: renaming a case sends everyone parked on it back to Goals.
 package enum OnboardingV2Step: String, CaseIterable, Sendable {
     case purpose
     case connect
-    case aboutYou
     case complete
+
+    /// The raw value of the About you step, removed 2026-10-14 (#758): an
+    /// install parked on it resumes at Connect, whose Continue finishes.
+    package static let removedAboutYouRawValue = "aboutYou"
+
+    /// The step a persisted raw value resumes at; nil for an unknown value.
+    package init?(persisted raw: String) {
+        if raw == Self.removedAboutYouRawValue {
+            self = .connect
+        } else {
+            self.init(rawValue: raw)
+        }
+    }
 
     /// The step indicator's label; nil for `.complete`.
     package var indicatorTitle: String? {
         switch self {
         case .purpose: "Goals"
         case .connect: "Connect"
-        case .aboutYou: "About you"
         case .complete: nil
         }
     }
@@ -33,20 +44,16 @@ package enum OnboardingV2Step: String, CaseIterable, Sendable {
 /// What decides which steps run, read when moving on.
 package struct OnboardingRoute: Equatable, Sendable {
     package var goals: Set<OnboardingGoal>
-    package var hasSlackAccount: Bool
 
-    package init(goals: Set<OnboardingGoal>, hasSlackAccount: Bool) {
+    package init(goals: Set<OnboardingGoal>) {
         self.goals = goals
-        self.hasSlackAccount = hasSlackAccount
     }
 
     /// Connect is skipped when no chosen goal needs a source (Development
-    /// alone, or nothing picked); About you when no Slack account is
-    /// connected (its people pickers are Slack users).
+    /// alone, or nothing picked).
     package func skips(_ step: OnboardingV2Step) -> Bool {
         switch step {
         case .connect: goals.isSubset(of: [.development])
-        case .aboutYou: !hasSlackAccount
         case .purpose, .complete: false
         }
     }
@@ -57,8 +64,8 @@ package struct OnboardingRoute: Equatable, Sendable {
         OnboardingV2Step.allCases.drop { $0 != step }.dropFirst().first { !skips($0) } ?? .complete
     }
 
-    /// The indicator: Goals · Connect · About you, each left out when this
-    /// route skips it.
+    /// The indicator: Goals · Connect, Connect left out when this route
+    /// skips it.
     package var indicatorSteps: [OnboardingV2Step] {
         OnboardingV2Step.allCases.filter { $0 != .complete && !skips($0) }
     }
@@ -84,7 +91,7 @@ package final class OnboardingStateMachineV2 {
     package init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         if let raw = defaults.string(forKey: Self.stepKey) {
-            currentStep = OnboardingV2Step(rawValue: raw) ?? .purpose
+            currentStep = OnboardingV2Step(persisted: raw) ?? .purpose
             return
         }
         currentStep = defaults.object(forKey: Self.legacyStepKey) == nil
@@ -101,8 +108,7 @@ package final class OnboardingStateMachineV2 {
     }
 
     /// Moves on when the route skips the step a relaunch resumed on (e.g.
-    /// Connect after the goals changed to Development only, About you after
-    /// the Slack account went away).
+    /// Connect after the goals changed to Development only).
     package func settle(route: OnboardingRoute) {
         if route.skips(currentStep) { advance(route: route) }
     }
