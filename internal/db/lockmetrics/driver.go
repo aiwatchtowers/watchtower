@@ -194,13 +194,13 @@ type tx struct {
 	npc   int
 }
 
-func (t *tx) Commit() error   { return t.end(t.base.Commit) }
-func (t *tx) Rollback() error { return t.end(t.base.Rollback) }
+func (t *tx) Commit() error   { return t.end(t.base.Commit()) }
+func (t *tx) Rollback() error { return t.end(t.base.Rollback()) }
 
-// end finishes the transaction and records it: a busy error (a COMMIT that
-// could not get the lock) always, a slow transaction otherwise.
-func (t *tx) end(finish func() error) error {
-	err := finish()
+// end records the finished transaction (err is its COMMIT/ROLLBACK
+// result): a busy error (a COMMIT that could not get the lock) always, a
+// slow transaction otherwise.
+func (t *tx) end(err error) error {
 	hold := time.Since(t.begun)
 	t.c.inTx = false
 	pcs := t.pcs[:t.npc]
