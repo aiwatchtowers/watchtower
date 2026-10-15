@@ -136,4 +136,10 @@ func TestBriefPresetMismatch(t *testing.T) {
 	assert.Empty(t, briefPresetMismatch(flow, folder, 7))
 	assert.Equal(t, "Methodology preset: none is set, but watchtower-flow is still installed — run 'watchtower workbench resync 7'.",
 		briefPresetMismatch(none, folder, 7))
+
+	// An owner-edited preset counts as installed: resync keeps it, so the
+	// line would never clear. With none it is the owner's file, not ours.
+	require.NoError(t, os.WriteFile(flowFileIn(folder), append(body, []byte("\nMy own step.\n")...), 0o644))
+	assert.Empty(t, briefPresetMismatch(flow, folder, 7))
+	assert.Empty(t, briefPresetMismatch(none, folder, 7))
 }

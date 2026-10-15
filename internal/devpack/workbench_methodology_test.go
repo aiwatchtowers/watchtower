@@ -177,7 +177,18 @@ func TestSyncMethodology_FollowsThePresetInBothSkillDirs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StateInstalled, rep.Claude.State)
 	assert.Equal(t, StateInstalled, rep.Codex.State)
-	assert.Equal(t, MethodologyLayout{Core: true, Flow: true}, FolderMethodologyLayout(folder))
+	assert.Equal(t, MethodologyLayout{Core: true, Flow: true, FlowPresent: true}, FolderMethodologyLayout(folder))
+}
+
+// An owner-edited preset is present but not ours (the brief's mismatch check).
+func TestFolderMethodologyLayout_SeesAnEditedPreset(t *testing.T) {
+	ctx := context.Background()
+	folder := fakeRepo(t)
+	_, err := InstallWorkbench(ctx, workbenchOpts(folder, newFakeClaude()))
+	require.NoError(t, err)
+	_, body := FlowSkill()
+	writeTestFile(t, flowSkillFile(folder), string(body)+"\nMy own step.\n")
+	assert.Equal(t, MethodologyLayout{Core: true, FlowPresent: true}, FolderMethodologyLayout(folder))
 }
 
 // A folder without the core skill (never set up) is left alone.

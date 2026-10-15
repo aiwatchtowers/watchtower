@@ -46,7 +46,7 @@ func briefPresetMismatch(e workbenchmethod.Effective, folder string, workbenchID
 	case e.Preset == workbenchmethod.PresetNone && l.Flow:
 		return fmt.Sprintf("Methodology preset: none is set, but %s is still installed — run 'watchtower workbench resync %d'.",
 			devpack.FlowSkillName, workbenchID)
-	case e.Preset == workbenchmethod.PresetFlow && !l.Flow:
+	case e.Preset == workbenchmethod.PresetFlow && !l.FlowPresent: // an edited preset is installed: resync keeps it
 		return fmt.Sprintf("Methodology preset: %s is set, but it is not installed — run 'watchtower workbench resync %d'.",
 			devpack.FlowSkillName, workbenchID)
 	}

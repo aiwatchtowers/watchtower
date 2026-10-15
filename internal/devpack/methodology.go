@@ -172,9 +172,11 @@ func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 // MethodologyLayout is what a folder's skills directories hold, for the
 // brief's preset check (spec §6). Core: a core skill copy of ours or an
 // owner-edited one. Flow: our preset, current or a version behind (an edited
-// one is the owner's). SingleFile: an owner-edited core from before v9.
+// one is the owner's). FlowPresent: any preset copy, an edited or foreign one
+// included — resync keeps those, so the preset counts as installed.
+// SingleFile: an owner-edited core from before v9.
 type MethodologyLayout struct {
-	Core, Flow, SingleFile bool
+	Core, Flow, FlowPresent, SingleFile bool
 }
 
 // FolderMethodologyLayout reads both skills directories of folder, writing
@@ -192,8 +194,9 @@ func FolderMethodologyLayout(folder string) MethodologyLayout {
 				l.SingleFile = true
 			}
 		}
-		if flow, err := statusSkill(dir, flowSkill()); err == nil && (flow.State == StateUnchanged || flow.State == StateUpdated) {
-			l.Flow = true
+		if flow, err := statusSkill(dir, flowSkill()); err == nil && flow.State != StateMissing {
+			l.FlowPresent = true
+			l.Flow = l.Flow || flow.State == StateUnchanged || flow.State == StateUpdated
 		}
 	}
 	return l
