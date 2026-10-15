@@ -33,6 +33,7 @@ import (
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
+	"watchtower/internal/linear"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -906,6 +907,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 	// Wire one Jira syncer per connected, enabled jira_accounts row.
 	wireJiraSyncers(ctx, d, cfg, database, logger)
+	wireLinearSyncers(d, cfg, database, logger)
 	// Seed google_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
 	// a re-login.
@@ -1472,4 +1474,37 @@ func printProgressJSON(w io.Writer, snap sync.Snapshot, syncErr error) {
 	}
 	data, _ := json.Marshal(p)
 	fmt.Fprintln(w, string(data))
+}
+
+// wireLinearSyncers builds one Linear syncer per enabled account with a token
+// file. An account without one is flagged "error" (only from "ok", so a
+// revoked account does not churn) — the buildAtlassianClients rule.
+func wireLinearSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	if !cfg.Linear.Enabled {
+		return
+	}
+	accounts, err := database.ListEnabledLinearAccounts()
+	if err != nil {
+		logger.Printf("linear: failed to list accounts: %v", err)
+		return
+	}
+	oauthCfg := resolveLinearOAuthConfig()
+	var syncers []*linear.Syncer
+	for _, acct := range accounts {
+		store := linear.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if !store.Exists() {
+			if acct.Status == "ok" {
+				if err := database.SetLinearAccountAuthState(acct.ID, "error", "no token — re-login required"); err != nil {
+					logger.Printf("linear: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
+			continue
+		}
+		client := linear.NewClient(oauthCfg, store)
+		client.SetLogger(subLogger(logger, "[linear] "))
+		s := linear.NewSyncer(client, database, acct.ID, cfg.Linear.BackfillDays)
+		s.SetLogger(subLogger(logger, "[linear] "))
+		syncers = append(syncers, s)
+	}
+	d.SetLinearSyncers(syncers)
 }

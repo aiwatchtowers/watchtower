@@ -775,3 +775,11 @@ func TestConfig_DefaultAgentReadsTheRawValue(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_LinearDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.False(t, cfg.Linear.Enabled)
+	assert.Equal(t, 15, cfg.Linear.SyncIntervalMins)
+	assert.Equal(t, 90, cfg.Linear.BackfillDays)
+}

@@ -101,6 +101,11 @@ const (
 	DefaultImapMaxMessagesPerSync = 100
 	DefaultImapMaxBodyBytes       = 51200
 
+	// Linear defaults
+	DefaultLinearEnabled          = false
+	DefaultLinearSyncIntervalMins = 15
+	DefaultLinearBackfillDays     = 90
+
 	// Jira defaults
 	DefaultJiraEnabled          = false
 	DefaultJiraSyncIntervalMins = 15
