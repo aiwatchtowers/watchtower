@@ -186,3 +186,39 @@ func TestReadArgsIn_NoFilterIsReadArgs(t *testing.T) {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }
+
+func TestReadsContent_AddAndPatchDiffTree(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"add", "-A"}, true},
+		{[]string{"diff-tree", "-r", "-p", "a", "b"}, true},
+		{[]string{"diff-tree", "-r", "--name-status", "a", "b"}, false},
+		{[]string{"write-tree"}, false},
+		{[]string{"read-tree", "HEAD"}, false},
+	} {
+		if got := readsContent(tc.args); got != tc.want {
+			t.Errorf("readsContent(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestExecEnv_KeepsCallerIndexDropsInherited(t *testing.T) {
+	t.Setenv("GIT_INDEX_FILE", "/inherited/index")
+	out, _, err := ExecEnv(context.Background(), t.TempDir(), []string{"GIT_INDEX_FILE=/caller/index"}, nil,
+		"/bin/sh", "-c", `printf %s "$GIT_INDEX_FILE"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "/caller/index" {
+		t.Fatalf("GIT_INDEX_FILE = %q, want the caller's", out)
+	}
+	out, _, err = Exec(context.Background(), t.TempDir(), nil, "/bin/sh", "-c", `printf %s "${GIT_INDEX_FILE-unset}"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "unset" {
+		t.Fatalf("Exec leaked the inherited GIT_INDEX_FILE: %q", out)
+	}
+}
