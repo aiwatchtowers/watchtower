@@ -49,9 +49,9 @@ package enum HomeQueries {
         // rows still show in the card.
         if !data.asks.unreadableIDs.isEmpty { data.failed.insert(.agentsWaiting) }
         if let value = readCard(.sinceYouWereAway, db, tables: ["catchup_recaps"], failed: &data.failed, {
-            try CatchUpQueries.fetchRecaps(db, limit: 1).first
+            try CatchUpQueries.newestUnacknowledgedReady(db)
         }) {
-            data.latestRecap = value
+            data.pendingRecap = value
         }
         return data
     }

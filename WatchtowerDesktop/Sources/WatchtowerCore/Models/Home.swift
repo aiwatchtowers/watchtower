@@ -171,7 +171,8 @@ package struct HomeTodayData: Equatable, Sendable {
     /// `homeSummary`.
     package var targets: [Target]
     package var asks: WorkbenchAskRows
-    package var latestRecap: CatchUpRecap?
+    /// `newestUnacknowledgedReady`: the newest ready recap not yet acknowledged.
+    package var pendingRecap: CatchUpRecap?
     /// A card whose read threw (logged).
     package var failed: Set<TodayCardKind>
 
@@ -184,7 +185,7 @@ package struct HomeTodayData: Equatable, Sendable {
         briefing: Briefing? = nil,
         targets: [Target] = [],
         asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
-        latestRecap: CatchUpRecap? = nil,
+        pendingRecap: CatchUpRecap? = nil,
         failed: Set<TodayCardKind> = []
     ) {
         self.awaitingCount = awaitingCount
@@ -195,7 +196,7 @@ package struct HomeTodayData: Equatable, Sendable {
         self.briefing = briefing
         self.targets = targets
         self.asks = asks
-        self.latestRecap = latestRecap
+        self.pendingRecap = pendingRecap
         self.failed = failed
     }
 }

@@ -117,7 +117,7 @@ final class HomeTodayTests: XCTestCase {
         data.briefing = briefing(yourDay: #"[{"text":"Standup at 10"}]"#)
         data.targets = [homeTarget(1, "Ship the release", status: "in_progress")]
         data.asks = try homeAsks([("acme", "Check the build", "check", false)])
-        data.latestRecap = recap(from: now.addingTimeInterval(-86400))
+        data.pendingRecap = recap(from: now.addingTimeInterval(-86400))
         return data
     }
 
@@ -296,11 +296,11 @@ final class HomeTodayTests: XCTestCase {
     func testRecapCardNeedsReadyUnacknowledged() throws {
         let from = try todayAt(hour: 18, minute: 30, days: -1)
         var data = HomeTodayData()
-        data.latestRecap = recap(status: "building", from: from)
+        data.pendingRecap = recap(status: "building", from: from)
         XCTAssertTrue(cards(data).isEmpty)
-        data.latestRecap = recap(acknowledged: true, from: from)
+        data.pendingRecap = recap(acknowledged: true, from: from)
         XCTAssertTrue(cards(data).isEmpty)
-        data.latestRecap = recap(from: from)
+        data.pendingRecap = recap(from: from)
         let card = try XCTUnwrap(cards(data).first)
         XCTAssertEqual(card.eyebrow, "SINCE YOU WERE AWAY · SINCE " + format("EEE", from).uppercased() + " 18:30")
         XCTAssertEqual(card.body, "Two threads need you")

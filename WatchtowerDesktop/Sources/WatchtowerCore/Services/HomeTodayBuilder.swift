@@ -127,9 +127,11 @@ package enum HomeTodayBuilder {
                          link: .workbenches)
     }
 
-    /// The Catch-Up badge's condition: the latest recap is ready and unacknowledged.
+    /// The Catch-Up badge's condition (`CatchUpQueries.hasUnacknowledgedReady`):
+    /// the newest ready, unacknowledged recap — a newer one still building or
+    /// failed does not hide it.
     private static func sinceYouWereAway(_ data: HomeTodayData, calendar: Calendar) -> TodayCard? {
-        guard let recap = data.latestRecap, recap.isReady, !recap.isAcknowledged else { return nil }
+        guard let recap = data.pendingRecap, recap.isReady, !recap.isAcknowledged else { return nil }
         let since = format("EEE HH:mm", Date(timeIntervalSince1970: recap.periodFrom), calendar).uppercased()
         return TodayCard(kind: .sinceYouWereAway, eyebrow: "SINCE YOU WERE AWAY · SINCE \(since)",
                          body: recap.tldr.isEmpty ? nil : recap.tldr, link: .catchUp)

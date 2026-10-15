@@ -203,7 +203,7 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertNil(data.briefing)
         XCTAssertTrue(data.targets.isEmpty)
         XCTAssertTrue(data.asks.rows.isEmpty && data.asks.unreadableIDs.isEmpty)
-        XCTAssertNil(data.latestRecap)
+        XCTAssertNil(data.pendingRecap)
         XCTAssertTrue(data.failed.isEmpty)
     }
 
@@ -232,7 +232,7 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertEqual(data.briefing?.date, try day(0))
         XCTAssertEqual(data.targets.map(\.text), ["Due today"])
         XCTAssertEqual(data.asks.rows.map(\.workbenchName), ["acme"])
-        XCTAssertEqual(data.latestRecap?.tldr, "All quiet")
+        XCTAssertEqual(data.pendingRecap?.tldr, "All quiet")
         XCTAssertTrue(data.failed.isEmpty)
     }
 
@@ -256,6 +256,24 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertNil(data.briefing)
         XCTAssertTrue(data.asks.rows.isEmpty)
         XCTAssertEqual(data.targets.map(\.text), ["Due today"])
+    }
+
+    /// The Catch-Up badge's recap: a newer building or failed recap (or an
+    /// acknowledged one) does not hide an older ready, unacknowledged one.
+    func testSinceYouWereAwayReadsNewestReadyUnacknowledged() throws {
+        let now = Date()
+        let data = try db.write { d in
+            let sql = "INSERT INTO catchup_recaps (period_from, period_to, status, tldr, acknowledged_at) VALUES (?, ?, ?, ?, ?)"
+            let to = now.timeIntervalSince1970
+            try d.execute(sql: sql, arguments: [to - 7200, to - 3600, "ready", "Older ready", nil])
+            try d.execute(sql: sql, arguments: [to - 3600, to - 1800, "ready", "Acknowledged", self.stampAgo(minutesAgo: 1)])
+            try d.execute(sql: sql, arguments: [to - 1800, to, "failed", "Failed", nil])
+            try d.execute(sql: sql, arguments: [to - 1800, to, "building", "Building", nil])
+            return HomeQueries.today(d, now: now, calendar: .current)
+        }
+        XCTAssertEqual(data.pendingRecap?.tldr, "Older ready")
+        let card = HomeTodayBuilder.cards(data, allowed: [.sinceYouWereAway], now: now, calendar: .current).first
+        XCTAssertEqual(card?.body, "Older ready")
     }
 
     /// An unreadable ask is a failed read (never an all-clear); the readable
