@@ -218,6 +218,10 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `EmptyStateCopyTests` (Core); `ReadinessCenterTests`, `FeatureEmptyStateViewTests`,
   `EmptyStateTabWiringTests`, `EmptyStateCopyCoverageTests` (Desktop).
 
+## History backfill
+
+The first cycle stays shallow on purpose; a background phase then loads a month of Slack, Gmail and IMAP history behind it, with a status-bar/tray progress line. See [history-backfill.md](history-backfill.md).
+
 ## Pending
 
 - **P2 Home and P3 Try this** (spec §3–§4) wait for the Home mockup (#784).
