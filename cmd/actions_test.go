@@ -500,3 +500,39 @@ func TestActions_ApproveArgsSHA256MustMatchTheStoredArgs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, `"status": "applied"`)
 }
+
+// An execute set without --surface is meant for the chats: it must not also
+// auto-apply every automation's calls of the tool. The automation surface is
+// set only when named (spec §6.2 step 4 stays reachable explicitly).
+func TestActionsTrust_FanOutSkipsAutomation(t *testing.T) {
+	write := func(surfaces ...string) *tools.Tool {
+		return &tools.Tool{Name: "fake_write", Access: tools.AccessWrite, Surfaces: surfaces}
+	}
+	cases := []struct {
+		name    string
+		tool    *tools.Tool
+		flag    string
+		want    []string
+		wantErr string
+	}{
+		{name: "fan-out leaves automation out", tool: write("main", "reaction", tools.AutomationSurface, tools.WorkbenchSurface),
+			want: []string{"main", "reaction"}},
+		{name: "explicit automation", tool: write("main", tools.AutomationSurface), flag: tools.AutomationSurface,
+			want: []string{tools.AutomationSurface}},
+		{name: "automation-only tool needs the flag", tool: write(tools.AutomationSurface),
+			wantErr: "pass --surface automation"},
+		{name: "workbench-only tool", tool: write(tools.WorkbenchSurface), wantErr: "always apply in their own workbench"},
+		{name: "surface-less tool", tool: write(), wantErr: "names no surface"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := trustTargetSurfaces(tc.tool, tc.flag)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

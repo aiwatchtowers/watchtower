@@ -116,8 +116,19 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	// record proposals (agent_actions) — the tools themselves still never
 	// write domain data on propose (AGENT-01). Dev mode above keeps the
 	// query_only fence (AGENT-02 / DEV-01).
+	return mcpChatOptions(cfg, database, turn, turnFunc)
+}
+
+// mcpChatOptions is `watchtower mcp --chat`: the write-tool registry bound to
+// the chat surface, conversation, turn and context the flags name.
+func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
 	if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
 		return nil, fmt.Errorf("--surface must be main or target")
+	}
+	if mcpFlagContextType == tools.AutomationContextType {
+		// Only the automations executor binds a run (Binding.AutomationRunID);
+		// a chat must not record rows that read as a run's proposals.
+		return nil, fmt.Errorf("--context-type %s is reserved for automation runs", tools.AutomationContextType)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
 		Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
