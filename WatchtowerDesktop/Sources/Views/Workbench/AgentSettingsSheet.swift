@@ -20,6 +20,12 @@ struct AgentSettingsSheet: View {
                 ForEach(WorkbenchMethodologyKey.allCases, id: \.self) { key in
                     setting(key, state: state)
                 }
+                if let note = state.installNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 fileRow(state)
             } else if vm.methodologyErrors[project.id] == nil {

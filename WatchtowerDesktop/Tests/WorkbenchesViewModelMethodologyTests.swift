@@ -65,10 +65,111 @@ final class WorkbenchesViewModelMethodologyTests: XCTestCase {
         XCTAssertEqual(runner.invocations.last, ["workbench", "methodology", "7", "--create-file", "--json"])
     }
 
+    func testAStaleLoadNeverOverwritesANewerChange() async throws {
+        let stale = WorkbenchMethodologyFixtures.envelope
+        let fresh = stale.replacingOccurrences(of: #""ask_guard":"soft","finish_check":"off""#,
+                                               with: #""ask_guard":"off","finish_check":"off""#)
+        XCTAssertNotEqual(stale, fresh)
+        let runner = GatedFirstCallRunner(first: Data(stale.utf8), rest: Data(fresh.utf8))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+
+        let load = Task { await vm.loadMethodology(projectID: 7) }
+        await runner.waitForFirstCall()
+        await vm.setMethodology(.askGuard, to: "off", projectID: 7)
+        runner.releaseFirstCall()
+        await load.value
+
+        XCTAssertEqual(vm.methodology[7]?.effective.askGuard, "off", "the load started first; the change is newer")
+        XCTAssertNil(vm.methodologyErrors[7])
+    }
+
+    func testACancelledLoadStoresNoError() async {
+        let runner = FakeCLIRunner(stdout: Data(WorkbenchMethodologyFixtures.envelope.utf8))
+        runner.blockUntilCancelled = true
+        let vm = viewModel(runner)
+        let load = Task { await vm.loadMethodology(projectID: 7) }
+        load.cancel()
+        await load.value
+        XCTAssertNil(vm.methodologyErrors[7], "a closed sheet is not a failure")
+        XCTAssertNil(vm.methodology[7])
+    }
+
     func testNoCLIIsAnError() async {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         await vm.loadMethodology(projectID: 7)
         XCTAssertNotNil(vm.methodologyErrors[7])
         XCTAssertNil(vm.methodology[7])
+    }
+}
+
+/// Holds its first call until released (returning `first`); later calls
+/// return `rest` at once.
+private final class GatedFirstCallRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let first: Data
+    private let rest: Data
+    private let lock = NSLock()
+    private var calls = 0
+    private var started: CheckedContinuation<Void, Never>?
+    private var startedFired = false
+    private var gate: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    init(first: Data, rest: Data) {
+        self.first = first
+        self.rest = rest
+    }
+
+    func run(args: [String]) async throws -> Data {
+        guard countCall() == 1 else { return rest }
+        signalStarted()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if released {
+                lock.unlock()
+                c.resume()
+            } else {
+                gate = c
+                lock.unlock()
+            }
+        }
+        return first
+    }
+
+    func waitForFirstCall() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if startedFired {
+                lock.unlock()
+                c.resume()
+            } else {
+                started = c
+                lock.unlock()
+            }
+        }
+    }
+
+    func releaseFirstCall() {
+        lock.lock()
+        released = true
+        let waiting = gate
+        gate = nil
+        lock.unlock()
+        waiting?.resume()
+    }
+
+    private func countCall() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        return calls
+    }
+
+    private func signalStarted() {
+        lock.lock()
+        startedFired = true
+        let waiting = started
+        started = nil
+        lock.unlock()
+        waiting?.resume()
     }
 }

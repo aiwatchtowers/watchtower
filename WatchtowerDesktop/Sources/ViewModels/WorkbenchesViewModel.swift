@@ -67,6 +67,9 @@ final class WorkbenchesViewModel {
     /// The Agent settings sheet's last failure per workbench; nil once a call
     /// does everything it ran.
     private(set) var methodologyErrors: [Int64: String] = [:]
+    /// Each workbench's latest methodology call: an older call's answer
+    /// (a sheet's load still in flight when a picker changed) is dropped.
+    @ObservationIgnored private var methodologyCallSeq: [Int64: Int] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -1054,7 +1057,9 @@ final class WorkbenchesViewModel {
 
     /// Runs one methodology call: its answer replaces the shown state and its
     /// failure (if any) is shown; a call that could not run keeps the last
-    /// state and shows why.
+    /// state and shows why. Only the workbench's latest call lands — a stale
+    /// read never overwrites a newer change — and a cancelled call (the
+    /// sheet closed) changes nothing.
     private func runMethodology(
         projectID: Int64,
         _ call: (WorkbenchCLI) async throws -> WorkbenchMethodologyState
@@ -1063,11 +1068,17 @@ final class WorkbenchesViewModel {
             methodologyErrors[projectID] = "The watchtower command-line tool is not available."
             return
         }
+        let seq = (methodologyCallSeq[projectID] ?? 0) + 1
+        methodologyCallSeq[projectID] = seq
         do {
             let state = try await call(cli)
+            guard methodologyCallSeq[projectID] == seq else { return }
             methodology[projectID] = state
             methodologyErrors[projectID] = state.failure
+        } catch is CancellationError {
+            return
         } catch {
+            guard methodologyCallSeq[projectID] == seq else { return }
             methodologyErrors[projectID] = "Could not run watchtower workbench methodology: \(error.localizedDescription)"
         }
     }

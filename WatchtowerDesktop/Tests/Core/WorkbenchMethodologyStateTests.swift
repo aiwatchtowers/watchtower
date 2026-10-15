@@ -58,6 +58,34 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(try decode(notCreated).failure, "Could not create workflow.md: read-only")
     }
 
+    func testInstallNoteForAKeptPresetOrASingleFileCore() throws {
+        XCTAssertNil(try decode().installNote)
+        let none = Self.envelope.replacingOccurrences(of: #""effective":{"preset":"watchtower-flow""#,
+                                                      with: #""effective":{"preset":"none""#)
+        for kept in ["drifted", "foreign"] {
+            let text = none.replacingOccurrences(of: #""install_codex_flow":"""#, with: #""install_codex_flow":"\#(kept)""#)
+            XCTAssertEqual(try decode(text).installNote,
+                           "Your edited watchtower-flow skill was kept; delete it yourself to drop the methodology.")
+        }
+        let removed = none.replacingOccurrences(of: #""install_flow":"""#, with: #""install_flow":"removed""#)
+        XCTAssertNil(try decode(removed).installNote)
+        let editedUnderFlow = Self.envelope.replacingOccurrences(of: #""install_flow":"""#, with: #""install_flow":"drifted""#)
+        XCTAssertNil(try decode(editedUnderFlow).installNote, "under watchtower-flow an edited preset is the preset")
+        let single = Self.envelope.replacingOccurrences(of: #""install_single_file_layout":false"#,
+                                                        with: #""install_single_file_layout":true"#)
+        XCTAssertEqual(try decode(single).installNote,
+                       "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset.")
+    }
+
+    func testDecodesAnEnvelopeWithoutTheInstallReport() throws {
+        let old = Self.envelope.replacingOccurrences(
+            of: #""install_flow":"","install_codex_flow":"","install_single_file_layout":false"#, with: #""unknown":0"#)
+        XCTAssertNotEqual(old, Self.envelope)
+        let state = try decode(old)
+        XCTAssertNil(state.installFlow)
+        XCTAssertNil(state.installNote)
+    }
+
     func testKeysFlagsChoicesAndLabels() {
         XCTAssertEqual(WorkbenchMethodologyKey.allCases.map(\.flag), ["--preset", "--ask-guard", "--finish-check"])
         XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choices, ["file", "strict", "soft", "off"])
@@ -68,6 +96,8 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(WorkbenchMethodologyKey.askGuard.label("soft"), "Soft")
         XCTAssertTrue(WorkbenchMethodologyKey.askGuard.help("soft").contains("Watchtower app running"),
                       "spec §7.1: soft's Desktop-down limit is in the help")
+        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.help("soft").contains("only in sessions run in Watchtower's terminal"),
+                      "soft records nothing outside a Watchtower terminal session")
         for key in WorkbenchMethodologyKey.allCases {
             for choice in key.choices {
                 XCTAssertFalse(key.help(choice).isEmpty, "\(key) \(choice)")

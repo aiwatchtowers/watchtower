@@ -59,7 +59,8 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         case (.askGuard, "strict"):
             "A request left as plain text is sent back until the agent files an ask; a short question may stand while you are in the session."
         case (.askGuard, "soft"):
-            "Nothing is sent back. A question asked in plain text is raised as an ask if it waits. "
+            "Nothing is sent back. A question asked in plain text is raised as an ask if it waits — "
+                + "only in sessions run in Watchtower's terminal; elsewhere it just passes. "
                 + "Raising needs the Watchtower app running: a question asked while it is closed waits until it starts."
         case (.askGuard, "off"):
             "No ask check at the end of a turn, and the agent's own question tool is allowed."
@@ -121,6 +122,13 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     package let installRan: Bool
     package let installOK: Bool
     package let installError: String
+    /// What the install left in `.claude/skills` and `.agents/skills` (a
+    /// devpack state; empty without the core skill there or when no install
+    /// ran) and whether an edited pre-v9 core keeps the single-file layout.
+    /// Optional: a CLI from before these keys omits them.
+    package let installFlow: String?
+    package let installCodexFlow: String?
+    package let installSingleFileLayout: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, ok, error, personal, effective, sources, file
@@ -129,6 +137,9 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
         case installRan = "install_ran"
         case installOK = "install_ok"
         case installError = "install_error"
+        case installFlow = "install_flow"
+        case installCodexFlow = "install_codex_flow"
+        case installSingleFileLayout = "install_single_file_layout"
     }
 
     /// The picker's selection: the personal value, else From folder file.
@@ -151,6 +162,20 @@ package struct WorkbenchMethodologyState: Decodable, Equatable, Sendable {
     package var fileNote: String? {
         if !file.error.isEmpty { return "workflow.md was ignored: \(file.error). The built-in defaults apply." }
         if file.truncated { return "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB." }
+        return nil
+    }
+
+    /// After a preset change: preset none kept an edited or foreign
+    /// watchtower-flow copy (spec §4.3), or an edited pre-v9 core keeps its
+    /// own methodology; nil otherwise. Go's `keptFlowNote` says the same.
+    package var installNote: String? {
+        let kept: Set<String> = ["drifted", "foreign"]
+        if effective.preset == "none", [installFlow, installCodexFlow].contains(where: { kept.contains($0 ?? "") }) {
+            return "Your edited watchtower-flow skill was kept; delete it yourself to drop the methodology."
+        }
+        if installSingleFileLayout == true {
+            return "Your edited skill keeps the old single-file layout; delete it to take the v9 core and preset."
+        }
         return nil
     }
 
