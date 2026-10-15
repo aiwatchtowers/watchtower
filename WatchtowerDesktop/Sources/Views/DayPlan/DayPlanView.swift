@@ -38,7 +38,7 @@ struct DayPlanView: View {
             }
 
             if vm.plan == nil {
-                Self.emptyState(owner: appState.owner, context: appState.emptyStateContext, openConnections: openConnections)
+                DayPlanEmptyState(owner: appState.owner, context: appState.emptyStateContext, openConnections: openConnections)
             } else {
                 planBody(vm)
             }
@@ -203,47 +203,6 @@ struct DayPlanView: View {
             }
             .padding(.bottom, 16)
         }
-    }
-
-    /// OWNER-02: the empty state replaces the plan body only when there is no
-    /// owner identity AND no plan — an existing plan stays readable.
-    static func showsNoOwnerState(owner: Owner, hasPlan: Bool) -> Bool {
-        !owner.isKnown && !hasPlan
-    }
-
-    /// No plan for the date. A fresh install (no day plan at all) gets the
-    /// shared first-run empty state; an established one, whose day plan rows
-    /// make the feature ready, only says when today's comes (owner, ask
-    /// #299). Generate stays in the footer, and with no owner identity the
-    /// way to connect one is inside (OWNER-02).
-    @ViewBuilder
-    static func emptyState(owner: Owner, context: EmptyStateContext, openConnections: @escaping () -> Void) -> some View {
-        if context.readiness(.dayPlan) == .ready {
-            VStack(spacing: 12) {
-                Image(systemName: "calendar.day.timeline.left")
-                    .font(.largeTitle)
-                    .foregroundStyle(.secondary)
-                // No owner, no plan made (OWNER-02): no time promised then.
-                if showsNoOwnerState(owner: owner, hasPlan: false) {
-                    NoOwnerEmptyState(openConnections: openConnections)
-                } else {
-                    Text(todaysPlanLine(hour: context.dayPlanHour))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            TabEmptyState(.dayPlan, context: context) {
-                if showsNoOwnerState(owner: owner, hasPlan: false) {
-                    NoOwnerEmptyState(openConnections: openConnections)
-                }
-            }
-        }
-    }
-
-    static func todaysPlanLine(hour: Int) -> String {
-        "Today's plan at or after \(String(format: "%02d:00", hour))"
     }
 
     private func openConnections() {

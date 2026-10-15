@@ -72,10 +72,10 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// The empty state replaces the plan body only when there is no plan to
     /// show: an existing plan stays readable.
     func testOwner02DayPlanShowsEmptyStateOnlyWithoutOwnerAndPlan() {
-        XCTAssertTrue(DayPlanView.showsNoOwnerState(owner: .unknown, hasPlan: false))
-        XCTAssertFalse(DayPlanView.showsNoOwnerState(owner: .unknown, hasPlan: true))
-        XCTAssertFalse(DayPlanView.showsNoOwnerState(owner: Self.known, hasPlan: false))
-        XCTAssertFalse(DayPlanView.showsNoOwnerState(owner: Self.known, hasPlan: true))
+        XCTAssertTrue(DayPlanEmptyState.showsNoOwnerState(owner: .unknown, hasPlan: false))
+        XCTAssertFalse(DayPlanEmptyState.showsNoOwnerState(owner: .unknown, hasPlan: true))
+        XCTAssertFalse(DayPlanEmptyState.showsNoOwnerState(owner: Self.known, hasPlan: false))
+        XCTAssertFalse(DayPlanEmptyState.showsNoOwnerState(owner: Self.known, hasPlan: true))
     }
 
     // MARK: - Helpers

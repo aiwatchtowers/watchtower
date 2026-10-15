@@ -51,9 +51,9 @@ final class EmptyStateTabWiringTests: XCTestCase {
     }
 
     func testDayPlanEmptyUsesSharedState() throws {
-        try assertSharedState(DayPlanView.emptyState(owner: Self.known, context: context) {}, .dayPlan)
+        try assertSharedState(DayPlanEmptyState(owner: Self.known, context: context) {}, .dayPlan)
         // OWNER-02 stays inside: no owner → the way to connect one.
-        let noOwner = DayPlanView.emptyState(owner: .unknown, context: context) {}
+        let noOwner = DayPlanEmptyState(owner: .unknown, context: context) {}
         XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
     }
 
@@ -63,21 +63,21 @@ final class EmptyStateTabWiringTests: XCTestCase {
         var established = context
         established.readiness = { _ in .ready }
         established.dayPlanHour = 8
-        let view = DayPlanView.emptyState(owner: Self.known, context: established) {}
+        let view = DayPlanEmptyState(owner: Self.known, context: established) {}
         XCTAssertNoThrow(try view.inspect().find(text: "Today's plan at or after 08:00"))
         XCTAssertThrowsError(try view.inspect().find(text: try copy(.dayPlan).title), "not the first-run screen")
 
         established.dayPlanHour = 10
-        let later = DayPlanView.emptyState(owner: Self.known, context: established) {}
+        let later = DayPlanEmptyState(owner: Self.known, context: established) {}
         XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
 
         // No owner: the daemon makes no plan, so no time is promised.
-        let noOwner = DayPlanView.emptyState(owner: .unknown, context: established) {}
+        let noOwner = DayPlanEmptyState(owner: .unknown, context: established) {}
         XCTAssertThrowsError(try noOwner.inspect().find(text: "Today's plan at or after 10:00"))
         XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
 
         // A fresh install keeps the first-run copy.
-        let fresh = DayPlanView.emptyState(owner: Self.known, context: context) {}
+        let fresh = DayPlanEmptyState(owner: Self.known, context: context) {}
         XCTAssertNoThrow(try fresh.inspect().find(text: try copy(.dayPlan).title))
         XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
