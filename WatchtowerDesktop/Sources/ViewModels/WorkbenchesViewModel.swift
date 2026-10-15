@@ -61,6 +61,12 @@ final class WorkbenchesViewModel {
     private(set) var archiveSettingErrors: [Int64: String] = [:]
     /// A failed save of the worktree setup command, per workbench.
     private(set) var worktreeSetupErrors: [Int64: String] = [:]
+    /// Each workbench's methodology as `watchtower workbench methodology`
+    /// last reported it (the Agent settings sheet, board #266).
+    private(set) var methodology: [Int64: WorkbenchMethodologyState] = [:]
+    /// The Agent settings sheet's last failure per workbench; nil once a call
+    /// does everything it ran.
+    private(set) var methodologyErrors: [Int64: String] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -1026,6 +1032,44 @@ final class WorkbenchesViewModel {
         }
         await reload()
         return true
+    }
+
+    /// The Agent settings sheet's read (spec 2026-10-15 §8).
+    func loadMethodology(projectID: Int64) async {
+        await runMethodology(projectID: projectID) { try await $0.methodology(projectID: projectID) }
+    }
+
+    /// One picker's change; `WorkbenchMethodologyKey.fromFile` drops the
+    /// personal setting. Go updates the folder's skills after a preset change.
+    func setMethodology(_ key: WorkbenchMethodologyKey, to choice: String, projectID: Int64) async {
+        await runMethodology(projectID: projectID) {
+            try await $0.setMethodology(projectID: projectID, key: key, choice: choice)
+        }
+    }
+
+    /// "Create workflow.md": the commented template, never over a file.
+    func createWorkflowFile(projectID: Int64) async {
+        await runMethodology(projectID: projectID) { try await $0.createWorkflowFile(projectID: projectID) }
+    }
+
+    /// Runs one methodology call: its answer replaces the shown state and its
+    /// failure (if any) is shown; a call that could not run keeps the last
+    /// state and shows why.
+    private func runMethodology(
+        projectID: Int64,
+        _ call: (WorkbenchCLI) async throws -> WorkbenchMethodologyState
+    ) async {
+        guard let cli else {
+            methodologyErrors[projectID] = "The watchtower command-line tool is not available."
+            return
+        }
+        do {
+            let state = try await call(cli)
+            methodology[projectID] = state
+            methodologyErrors[projectID] = state.failure
+        } catch {
+            methodologyErrors[projectID] = "Could not run watchtower workbench methodology: \(error.localizedDescription)"
+        }
     }
 
     /// The header menu's "Archive Closed Targets Now" (board #415): every
