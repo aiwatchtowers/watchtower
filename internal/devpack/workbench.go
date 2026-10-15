@@ -26,6 +26,10 @@ import (
 var workbenchSkillFS embed.FS
 
 const (
+	// FlowSkillName is the methodology preset skill (spec 2026-10-15 §4.2):
+	// its directory name beside the core skill and the frontmatter name it
+	// carries. Installed unless the workbench's preset is none.
+	FlowSkillName = "watchtower-flow"
 	// WorkbenchSkillName is the skill's directory name inside the workbench
 	// folder's .claude/skills and the frontmatter name it carries.
 	WorkbenchSkillName = "watchtower-workbench"
@@ -148,6 +152,24 @@ func WorkbenchSkill() (name string, body []byte) {
 // the pack.
 func workbenchSkill() Skill {
 	name, body := WorkbenchSkill()
+	sum := sha256.Sum256(body)
+	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
+}
+
+// FlowSkill returns the embedded watchtower-flow preset skill.
+func FlowSkill() (name string, body []byte) {
+	b, err := workbenchSkillFS.ReadFile(path.Join("workbenchskill", FlowSkillName, "SKILL.md"))
+	if err != nil {
+		// An embed failure is a build-time defect, not a runtime condition.
+		panic("devpack: reading embedded flow skill: " + err.Error())
+	}
+	return FlowSkillName, b
+}
+
+// flowSkill wraps FlowSkill in the pack's Skill shape, so the preset goes
+// through the same DEV-04 decision (installSkill/planFor/removeSkill).
+func flowSkill() Skill {
+	name, body := FlowSkill()
 	sum := sha256.Sum256(body)
 	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
 }
