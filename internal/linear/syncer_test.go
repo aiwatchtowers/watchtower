@@ -30,9 +30,10 @@ func TestSyncer_FirstPassStoresIssuesCommentsAndHistory(t *testing.T) {
 	var hist int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM linear_issue_history WHERE field='status'`).Scan(&hist))
 	assert.Equal(t, 1, hist)
-	// Only the viewer's team was selected and synced; the watermark is the newest updatedAt seen.
+	// Only the viewer's team was selected and synced; the watermark is the newest
+	// issue updatedAt (the newer comment does not raise it, ruling R9).
 	st, _ := d.GetLinearSyncState(s.AccountID(), "t-1")
-	assert.Equal(t, "2026-10-03T00:00:00.000Z", st.Watermark)
+	assert.Equal(t, "2026-10-02T00:00:00.000Z", st.Watermark)
 	assert.Empty(t, f.issueFiltersForTeam("t-2"))
 	// First pass asked for open issues too.
 	assert.Contains(t, f.lastIssueFilterJSON("t-1"), `"nin":["completed","canceled"]`)
@@ -235,4 +236,20 @@ func TestMapIssue_HistoryRelationsAndStateChange(t *testing.T) {
 	assert.Empty(t, mapIssue(7, decodeIssue(t, node)).StateChangedAt)
 	node["trashed"] = true
 	assert.True(t, mapIssue(7, decodeIssue(t, node)).IsDeleted)
+}
+
+func TestSyncer_CommentsDoNotRaiseWatermark(t *testing.T) {
+	f := newFakeLinear(t)
+	f.viewerTeams = []string{"t-1"}
+	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
+	f.issuePages = [][]map[string]any{{issueNode("i-1", "ENG-1", "started", "2026-10-02T00:00:00.000Z")}}
+	f.commentPages = [][]map[string]any{{commentNode("c-1", "i-1", "ENG-1", "", "2026-10-06T00:00:00.000Z")}}
+	d, s := newTestSyncer(t, f)
+	_, err := s.Sync(context.Background())
+	require.NoError(t, err)
+	st, _ := d.GetLinearSyncState(s.AccountID(), "t-1")
+	assert.Equal(t, "2026-10-02T00:00:00.000Z", st.Watermark)
+	_, err = s.Sync(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, f.lastIssueFilterJSON("t-1"), `"gte":"2026-10-02T00:00:00.000Z"`)
 }

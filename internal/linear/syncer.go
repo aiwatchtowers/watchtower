@@ -178,14 +178,16 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 	if firstPass {
 		since = now.AddDate(0, 0, -s.backfillDays).Format(timestampLayout)
 	}
-	// The watermark never ends below since: a quiet team records the since it
-	// queried with, so its next pass is incremental, not another first pass.
+	// The watermark is the newest issue updatedAt, never below since: a quiet
+	// team records the since it queried with, so its next pass is incremental.
+	// Comments do not raise it: they are fetched after the issues, so a later
+	// comment would push the watermark past an issue change made mid-pass.
 	maxUpdated := since
 	n, err := s.syncIssues(ctx, t, issueFilter(t.ID, since, firstPass), &maxUpdated)
 	if err != nil {
 		return n, fmt.Errorf("syncing issues of linear team %s: %w", t.Key, err)
 	}
-	if err := s.syncComments(ctx, t, since, &maxUpdated); err != nil {
+	if err := s.syncComments(ctx, t, since); err != nil {
 		return n, fmt.Errorf("syncing comments of linear team %s: %w", t.Key, err)
 	}
 	if err := s.syncPlanning(ctx, t); err != nil {
@@ -248,7 +250,7 @@ func (s *Syncer) storeIssue(n issueNodeJSON) error {
 	return s.db.ReplaceLinearRelations(s.accountID, n.ID, mapRelations(n))
 }
 
-func (s *Syncer) syncComments(ctx context.Context, t db.LinearTeam, since string, maxUpdated *string) error {
+func (s *Syncer) syncComments(ctx context.Context, t db.LinearTeam, since string) error {
 	filter := map[string]any{
 		"issue":     map[string]any{"team": map[string]any{"id": map[string]any{"eq": t.ID}}},
 		"updatedAt": map[string]any{"gte": since},
@@ -265,7 +267,6 @@ func (s *Syncer) syncComments(ctx context.Context, t db.LinearTeam, since string
 			if err := s.db.UpsertLinearComment(mapComment(s.accountID, c)); err != nil {
 				return pageInfo{}, err
 			}
-			keepMax(maxUpdated, c.UpdatedAt)
 		}
 		return out.Comments.PageInfo, nil
 	})
