@@ -72,11 +72,7 @@ func (b *syncBuffer) String() string {
 
 func newExFixture(t *testing.T, o exOpts) *exFixture {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	d := db.OpenTestDB(t)
 	if o.gen == nil {
 		o.gen = &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
 	}
