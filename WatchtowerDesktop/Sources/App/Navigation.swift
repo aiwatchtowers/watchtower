@@ -217,19 +217,6 @@ struct MainNavigationView: View {
         }
     }
 
-    /// Catch-Up's first-sync line; the history depth is read from the
-    /// config only while that sync runs.
-    private var catchUpFirstSync: (title: String, detail: String)? {
-        let daemon = appState.daemonManager
-        guard daemon.lastSyncTime == nil, daemon.syncProgress?.isSyncing() == true else { return nil }
-        return OnboardingFinishPlan.firstSyncText(
-            progress: daemon.syncProgress,
-            lastSyncTime: daemon.lastSyncTime,
-            historyDays: ConfigService().initialHistoryDays ?? AppState.defaultInitialHistoryDays,
-            connected: appState.featureVisibility.connectedSources
-        )
-    }
-
     @ViewBuilder
     private var detailView: some View {
         switch appState.selectedDestination {
@@ -239,7 +226,7 @@ struct MainNavigationView: View {
             ChatView()
         case .catchUp:
             if let vm = appState.catchUpViewModel {
-                CatchUpView(vm: vm, firstSync: catchUpFirstSync, emptyState: appState.emptyStateContext)
+                CatchUpView(vm: vm, firstSync: appState.firstSyncLine, emptyState: appState.emptyStateContext)
             } else {
                 Text("Catch Up unavailable")
                     .foregroundStyle(.secondary)

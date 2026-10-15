@@ -1,0 +1,322 @@
+import XCTest
+import GRDB
+import Observation
+@testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
+
+/// Home's inputs for tests: the owner known, every Today card allowed.
+@MainActor
+final class FakeHomeEnvironment: HomeEnvironment {
+    var now = Date()
+    var calendar = Calendar.current
+    var ownerKnown = true
+    var firstSync: FirstSyncLine?
+    var allowedTodayCards = Set(TodayCardKind.allCases)
+}
+
+@MainActor
+final class HomeCenterTests: XCTestCase {
+    private var poolPaths: [String] = []
+    private var suiteNames: [String] = []
+
+    override func tearDown() {
+        poolPaths.forEach(TestDatabase.cleanup(path:))
+        poolPaths = []
+        suiteNames.forEach { UserDefaults.standard.removePersistentDomain(forName: $0) }
+        suiteNames = []
+        super.tearDown()
+    }
+
+    private func makePool() throws -> DatabasePool {
+        let (pool, path) = try TestDatabase.createPool()
+        poolPaths.append(path)
+        return pool
+    }
+
+    private func makeDefaults() throws -> UserDefaults {
+        let name = "HomeCenterTests.\(UUID().uuidString)"
+        suiteNames.append(name)
+        return try XCTUnwrap(UserDefaults(suiteName: name))
+    }
+
+    private func makeCenter(
+        readiness: ReadinessCenter? = nil,
+        environment: FakeHomeEnvironment? = nil,
+        defaults: UserDefaults,
+        tickInterval: Duration = .seconds(30)
+    ) -> HomeCenter {
+        HomeCenter(readiness: readiness ?? ReadinessCenter(environment: FakeReadinessEnvironment()),
+                   environment: environment ?? FakeHomeEnvironment(),
+                   store: GettingReadyStore(defaults: defaults), tickInterval: tickInterval)
+    }
+
+    /// Waits (bounded) until `condition` holds for the center's snapshot,
+    /// re-checking on every change of it — no sleeping.
+    private func waitUntil(
+        _ center: HomeCenter,
+        timeout: TimeInterval = 5,
+        _ condition: @escaping (HomeSnapshot?) -> Bool
+    ) async {
+        let met = expectation(description: "snapshot condition")
+        func check() {
+            if condition(center.snapshot) {
+                met.fulfill()
+                return
+            }
+            withObservationTracking { _ = center.snapshot } onChange: {
+                Task { @MainActor in check() }
+            }
+        }
+        check()
+        await fulfillment(of: [met], timeout: timeout)
+    }
+
+    private func has(_ kind: TodayCardKind) -> (HomeSnapshot?) -> Bool {
+        { $0?.today.contains { $0.kind == kind } == true }
+    }
+
+    private func insertTargetDueToday(_ pool: DatabasePool, text: String = "Ship the feature") throws {
+        let today = HomeTodayBuilder.dayString(Date(), calendar: .current)
+        try pool.write { db in
+            try TestDatabase.insertTarget(db, text: text, level: "day", periodStart: today, periodEnd: today,
+                                          dueDate: today + "T15:00")
+        }
+    }
+
+    private func cards(_ snapshot: HomeSnapshot?) -> [GettingReadyCard] {
+        if case .shown(let cards, _)? = snapshot?.gettingReady { return cards }
+        return []
+    }
+
+    /// Readiness with two cards in the zone — Slack sync and digests — and
+    /// every other feature off or waiting on a source.
+    private func zoneReadiness() -> FakeReadinessEnvironment {
+        let environment = FakeReadinessEnvironment()
+        environment.disabledFeatureIDs = Set(ReadinessFeature.allCases.compactMap(\.featureID))
+            .subtracting(["slack-digests"])
+        return environment
+    }
+
+    private func startRun(_ pool: DatabasePool, _ pipeline: String) throws {
+        try pool.write { db in
+            try db.execute(sql: "INSERT INTO pipeline_runs (pipeline) VALUES (?)", arguments: [pipeline])
+        }
+    }
+
+    func testFirstReadPublishesSnapshot() async throws {
+        let center = makeCenter(defaults: try makeDefaults())
+        XCTAssertNil(center.snapshot)
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.today, [])
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
+    }
+
+    func testInsertingATargetAddsMyTargets() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults())
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+
+        try insertTargetDueToday(pool)
+        await waitUntil(center, has(.myTargets))
+        XCTAssertEqual(center.snapshot?.today.first?.items.map(\.title), ["Ship the feature"])
+    }
+
+    /// The daemon writes from another process, which the ValueObservation
+    /// never sees: a second pool on the same file stands in for it.
+    func testTickPicksUpWritesTheObservationMisses() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+
+        let daemonPool = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await daemonPool.write { db in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            try TestDatabase.insertOwnerAsk(db, projectID: workbench)
+        }
+        try daemonPool.close()
+        await waitUntil(center, has(.agentsWaiting))
+    }
+
+    func testReadinessChangeRebuildsWithoutDBRead() async throws {
+        let pool = try makePool()
+        try startRun(pool, "slack-sync")
+        try startRun(pool, "digests")
+        let readiness = ReadinessCenter(environment: zoneReadiness())
+        readiness.start(pool: pool)
+        defer { readiness.stop() }
+        let center = makeCenter(readiness: readiness, defaults: try makeDefaults())
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .preparing }
+        let reads = center.todayReads
+
+        // `digests` is not a Home table: only readiness sees this write.
+        try await pool.write { db in try TestDatabase.insertDigest(db) }
+        await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .ready }
+        XCTAssertEqual(center.todayReads, reads)
+    }
+
+    func testHideGettingReadyPersists() async throws {
+        let pool = try makePool()
+        try startRun(pool, "digests")
+        let readiness = ReadinessCenter(environment: zoneReadiness())
+        readiness.start(pool: pool)
+        defer { readiness.stop() }
+        let defaults = try makeDefaults()
+        let center = makeCenter(readiness: readiness, defaults: defaults)
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !self.cards($0).isEmpty }
+        XCTAssertNotNil(GettingReadyStore(defaults: defaults).memory.firstShownAt)
+
+        center.hideGettingReady()
+        XCTAssertEqual(center.snapshot?.gettingReady, .hidden)
+        XCTAssertTrue(GettingReadyStore(defaults: defaults).memory.hiddenByOwner)
+    }
+
+    func testCompletedThisLaunchShowsAllReadyThenGoneOnRelaunch() async throws {
+        let pool = try makePool()
+        try await pool.write { db in try TestDatabase.insertMessage(db) }
+        try startRun(pool, "digests")
+        let readiness = ReadinessCenter(environment: zoneReadiness())
+        readiness.start(pool: pool)
+        defer { readiness.stop() }
+        let defaults = try makeDefaults()
+        let center = makeCenter(readiness: readiness, defaults: defaults)
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .preparing }
+
+        try await pool.write { db in try TestDatabase.insertDigest(db) }
+        await waitUntil(center) { $0?.gettingReady == .allReady }
+        XCTAssertNotNil(GettingReadyStore(defaults: defaults).memory.completedAt)
+
+        let relaunched = makeCenter(readiness: readiness, defaults: defaults)
+        relaunched.start(pool: pool)
+        defer { relaunched.stop() }
+        await waitUntil(relaunched) { $0 != nil }
+        XCTAssertEqual(relaunched.snapshot?.gettingReady, .hidden)
+    }
+
+    /// A `targets` table every read of it fails on (Review Focus 3).
+    private func breakTargets(_ pool: DatabasePool) throws {
+        try pool.write { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE targets")
+            try db.execute(sql: "CREATE TABLE targets (x INTEGER)")
+        }
+    }
+
+    func testAllReadsFailedIsNotAllClear() async throws {
+        let pool = try makePool()
+        try breakTargets(pool)
+        let environment = FakeHomeEnvironment()
+        environment.allowedTodayCards = [.myTargets]
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.todayReadFailed, true)
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+    }
+
+    /// One allowed card's read fails and the rest are empty: the read error,
+    /// not the all-clear.
+    func testOneFailedReadIsNotAllClear() async throws {
+        let pool = try makePool()
+        try breakTargets(pool)
+        let center = makeCenter(defaults: try makeDefaults())
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.todayReadFailed, false)
+        XCTAssertEqual(center.snapshot?.todayFailed, [.myTargets])
+        XCTAssertEqual(center.snapshot?.showsReadError, true)
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+    }
+
+    /// A failed card the owner's tabs hide does not count.
+    func testFailedReadOutsideAllowedIsIgnored() async throws {
+        let pool = try makePool()
+        try breakTargets(pool)
+        let environment = FakeHomeEnvironment()
+        environment.allowedTodayCards = [.agentsWaiting]
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.todayFailed, [])
+        XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
+    }
+
+    func testStopCancelsObservationAndTick() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        center.start(pool: pool)
+        await waitUntil(center) { $0 != nil }
+        center.stop()
+        let reads = center.todayReads
+
+        try insertTargetDueToday(pool)
+        // A second center seeing the write proves it was observable.
+        let witness = makeCenter(defaults: try makeDefaults())
+        witness.start(pool: pool)
+        defer { witness.stop() }
+        await waitUntil(witness, has(.myTargets))
+        XCTAssertFalse(has(.myTargets)(center.snapshot))
+        XCTAssertEqual(center.todayReads, reads)
+    }
+
+    func testStartTwiceKeepsOneObservation() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults())
+        center.start(pool: pool)
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { $0 != nil }
+        let reads = center.todayReads
+
+        try insertTargetDueToday(pool, text: "First")
+        await waitUntil(center) { $0?.today.first?.items.count == 1 }
+        try insertTargetDueToday(pool, text: "Second")
+        await waitUntil(center) { $0?.today.first?.items.count == 2 }
+        XCTAssertEqual(center.todayReads, reads + 2)
+    }
+
+    func testGarbageDefaultsReadAsEmpty() throws {
+        let defaults = try makeDefaults()
+        defaults.set("yesterday", forKey: "home.gettingReady.firstShownAt")
+        defaults.set("never", forKey: "home.gettingReady.completedAt")
+        defaults.set("maybe", forKey: "home.gettingReady.hidden")
+        XCTAssertEqual(GettingReadyStore(defaults: defaults).memory, GettingReadyMemory())
+    }
+
+    func testStoreRoundTrips() throws {
+        let defaults = try makeDefaults()
+        let shown = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded())
+        let store = GettingReadyStore(defaults: defaults)
+        store.memory = GettingReadyMemory(hiddenByOwner: true, firstShownAt: shown, completedAt: nil)
+        XCTAssertEqual(GettingReadyStore(defaults: defaults).memory,
+                       GettingReadyMemory(hiddenByOwner: true, firstShownAt: shown, completedAt: nil))
+    }
+
+    /// Waiting on you, Next meeting, Briefing and Since you were away follow
+    /// their tab; My targets and Agents waiting are always allowed.
+    func testTodayCardsFollowTabVisibility() {
+        let appState = AppState.isolated()
+        appState.featureVisibility.connectedSources = .none
+        appState.featureVisibility.disabledFeatureIDs = ["briefing"]
+        XCTAssertEqual(appState.homeTodayCardsAllowed, [.myTargets, .agentsWaiting])
+
+        appState.featureVisibility.connectedSources = .all
+        appState.featureVisibility.disabledFeatureIDs = []
+        XCTAssertEqual(appState.homeTodayCardsAllowed, Set(TodayCardKind.allCases))
+    }
+}

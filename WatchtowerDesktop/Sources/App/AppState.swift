@@ -57,6 +57,17 @@ final class AppState {
             }
     )
 
+    /// The Home snapshot and the Getting ready memory, here so a read
+    /// survives tab switches. Started with the main app's DB wiring, right
+    /// after `readinessCenter`, whose readings it builds on.
+    /// `homeEnvironmentOverride` and `homeDefaultsOverride`, set before first
+    /// use, replace the live environment and `.standard` in tests.
+    @ObservationIgnored private(set) lazy var homeCenter = HomeCenter(
+        readiness: readinessCenter,
+        environment: homeEnvironmentOverride ?? LiveHomeEnvironment(appState: self),
+        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
+    )
+
     /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
     /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
     /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
@@ -398,6 +409,9 @@ final class AppState {
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
+    /// Test seams: Home's inputs, and the suite its Getting ready memory lives in.
+    @ObservationIgnored var homeEnvironmentOverride: (any HomeEnvironment)?
+    @ObservationIgnored var homeDefaultsOverride: UserDefaults?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `openDatabase` the
@@ -628,6 +642,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.homeCenter.stop()
                     self?.readinessCenter.stop()
                 }
             }
@@ -1439,6 +1454,7 @@ final class AppState {
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
+        homeCenter.start(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never
