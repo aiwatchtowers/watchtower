@@ -2,12 +2,15 @@ package agentlog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +36,8 @@ type Result struct {
 	Repriced       int            `json:"repriced"`
 	Adopted        int64          `json:"adopted"`
 	Incomplete     bool           `json:"incomplete"`
+	FailedFiles    int            `json:"failed_files"` // files whose read or store failed; retried next scan
+	FirstFailure   error          `json:"-"`            // the first of those failures, for the daemon log
 }
 
 // DefaultClaudeDir is ~/.claude. Like cmd's defaultTerminalClaudeDir it never
@@ -45,6 +50,8 @@ func DefaultClaudeDir() string {
 // Scan brings workbench id's analytics up to date: adopt orphaned sessions,
 // read each candidate transcript from its stored offset, mark vanished files,
 // reprice old rows. Safe to run concurrently with itself (CAS + idempotent keys).
+// One file that fails to read or store is counted in FailedFiles and the scan
+// goes on; Scan returns an error only for setup and bookkeeping failures.
 func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 	if o.ClaudeDir == "" {
 		o.ClaudeDir = DefaultClaudeDir()
@@ -68,7 +75,11 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 	for _, w := range all {
 		folders = append(folders, w.FolderPath)
 	}
-	roots := WorktreeRoots(wb.FolderPath)
+	ledger, err := d.WorkbenchSessionWorktrees(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	roots := worktreeRoots(wb.FolderPath, WorktreeRoots(ctx, wb.FolderPath), ledger)
 	dirs, err := CandidateDirs(filepath.Join(o.ClaudeDir, "projects"), append([]string{wb.FolderPath}, roots...))
 	if err != nil {
 		return nil, fmt.Errorf("listing transcript directories: %w", err)
@@ -101,7 +112,10 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 		}
 		sessions[tf.SessionUUID] = true
 		if err := scanFile(d, tf, wb, res); err != nil {
-			return nil, err
+			res.FailedFiles++
+			if res.FirstFailure == nil {
+				res.FirstFailure = err
+			}
 		}
 	}
 	res.Sessions = len(sessions)
@@ -121,6 +135,32 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
 	return res, nil
+}
+
+// worktreeRoots merges git's live worktrees with the roots the workbench's
+// sessions recorded in terminal_session_worktrees (a removed worktree leaves
+// git's list but keeps its transcripts), without the folder or duplicates.
+func worktreeRoots(folder string, git []string, ledger map[string][]int64) []string {
+	seen := map[string]bool{strings.ToLower(resolved(folder)): true}
+	var out []string
+	add := func(r string) {
+		if k := strings.ToLower(resolved(r)); r != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, r)
+		}
+	}
+	for _, r := range git {
+		add(r)
+	}
+	ledgerRoots := make([]string, 0, len(ledger))
+	for r := range ledger {
+		ledgerRoots = append(ledgerRoots, r)
+	}
+	sort.Strings(ledgerRoots)
+	for _, r := range ledgerRoots {
+		add(r)
+	}
+	return out
 }
 
 // ownsSession decides once per session: a stored session keeps the folder it
@@ -166,10 +206,17 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 		return nil // vanished between listing and open: the missing sweep catches it
 	}
 	defer fh.Close()
+	var known []string
+	if start > 0 {
+		if known, err = listedSkills(fh, start); err != nil {
+			return fmt.Errorf("reading %s: %w", tf.Path, err)
+		}
+	}
 	if _, err := fh.Seek(start, io.SeekStart); err != nil {
 		return err
 	}
-	pr, err := ParseClaude(fh, start, ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID})
+	pr, err := ParseClaude(fh, start, ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent,
+		AgentID: tf.AgentID, KnownSkills: known})
 	if err != nil {
 		return err
 	}
@@ -197,6 +244,43 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 	}
 	res.LongLines += pr.LongLines
 	return nil
+}
+
+// listedSkills returns the names of every skill_listing attachment in the
+// first limit bytes of r: the listing usually sits before an incremental
+// read's offset, and slash-skill detection needs it.
+func listedSkills(r io.Reader, limit int64) ([]string, error) {
+	br := bufio.NewReaderSize(io.LimitReader(r, limit), 64<<10)
+	seen := map[string]bool{}
+	var out []string
+	for {
+		raw, _, complete, err := nextLine(br, maxLineBytes)
+		if !complete {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+			return out, nil
+		}
+		if raw == nil || !bytes.Contains(raw, []byte("skill_listing")) {
+			continue
+		}
+		var rec struct {
+			Type       string `json:"type"`
+			Attachment struct {
+				Type  string   `json:"type"`
+				Names []string `json:"names"`
+			} `json:"attachment"`
+		}
+		if json.Unmarshal(raw, &rec) != nil || rec.Type != "attachment" || rec.Attachment.Type != "skill_listing" {
+			continue
+		}
+		for _, n := range rec.Attachment.Names {
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
 }
 
 // firstCWD returns the first non-empty cwd among the first 200 lines of the

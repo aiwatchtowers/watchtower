@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
@@ -70,6 +71,10 @@ type ParseOptions struct {
 	Folder   string
 	Subagent bool
 	AgentID  string
+	// KnownSkills seeds the slash-skill set: names from skill_listing
+	// attachments before the parse's start offset (Claude Code writes the
+	// listing once near the start of a session).
+	KnownSkills []string
 }
 
 type ParseResult struct {
@@ -97,7 +102,10 @@ var knownTypes = map[string]bool{
 // next scan; a bad line never fails the file.
 func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, error) {
 	p := &claudeParser{o: o, res: &ParseResult{Sessions: map[string]*db.AgentLogSession{}, Unknown: map[string]int{}},
-		callIdx: map[string]int{}, toolIdx: map[string]int{}}
+		callIdx: map[string]int{}, toolIdx: map[string]int{}, skills: map[string]bool{}}
+	for _, n := range o.KnownSkills {
+		p.skills[n] = true
+	}
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
@@ -157,8 +165,13 @@ type claudeParser struct {
 	res     *ParseResult
 	callIdx map[string]int  // api_call key → index in res.Events
 	toolIdx map[string]int  // tool_use_id → index in res.Events
-	skills  map[string]bool // names from the latest skill_listing attachment
+	skills  map[string]bool // KnownSkills plus every skill_listing attachment seen
 }
+
+// readTypes are the record types that produce sessions or events; one
+// without a sessionId is counted, never stored (its event would have no
+// session row).
+var readTypes = map[string]bool{"assistant": true, "user": true, "system": true, "pr-link": true, "cost-state": true}
 
 func (p *claudeParser) handle(raw []byte, off int64) {
 	var rec claudeRecord
@@ -170,7 +183,12 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		p.res.Unknown[rec.Type]++
 		return
 	}
-	if rec.SessionID != "" {
+	if rec.SessionID == "" {
+		if readTypes[rec.Type] {
+			p.res.Unknown["<no-session>"]++
+			return
+		}
+	} else {
 		p.touchSession(rec)
 	}
 	switch rec.Type {
@@ -180,7 +198,7 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		p.user(rec, off)
 	case "system":
 		if rec.Subtype == "compact_boundary" {
-			p.add(rec, off, db.AgentLogEvent{Key: "compaction:" + rec.UUID, Kind: "compaction"})
+			p.add(rec, off, db.AgentLogEvent{Key: p.recKey("compaction", rec, off), Kind: "compaction"})
 		}
 	case "pr-link":
 		if rec.PRURL != "" {
@@ -219,6 +237,15 @@ func (p *claudeParser) touchSession(rec claudeRecord) {
 	}
 }
 
+// recKey is "<kind>:<record uuid>", or "<kind>:<src path>:<byte offset>"
+// for a record without a uuid, so such records never share one row.
+func (p *claudeParser) recKey(kind string, rec claudeRecord, off int64) string {
+	if rec.UUID != "" {
+		return kind + ":" + rec.UUID
+	}
+	return kind + ":" + p.o.Path + ":" + strconv.FormatInt(off, 10)
+}
+
 // add fills the common columns of e from rec and appends it.
 func (p *claudeParser) add(rec claudeRecord, off int64, e db.AgentLogEvent) int {
 	e.SessionUUID, e.TS, e.UUID, e.ParentUUID, e.PromptID = rec.SessionID, rec.Timestamp, rec.UUID, rec.ParentUUID, rec.PromptID
@@ -230,7 +257,7 @@ func (p *claudeParser) add(rec claudeRecord, off int64, e db.AgentLogEvent) int 
 
 func (p *claudeParser) assistant(rec claudeRecord, off int64) {
 	if rec.IsAPIError {
-		p.add(rec, off, db.AgentLogEvent{Key: "api_error:" + rec.UUID, Kind: "api_error"})
+		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("api_error", rec, off), Kind: "api_error"})
 		return
 	}
 	m := rec.Message
@@ -279,7 +306,7 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
 			return
 		}
-		p.add(rec, off, db.AgentLogEvent{Key: "owner_turn:" + rec.UUID, Kind: "owner_turn"})
+		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
 		p.slashSkill(rec, off, text) // Task 4
 		return
 	}
@@ -299,7 +326,7 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		p.toolResults(rec) // Task 4
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: "owner_turn:" + rec.UUID, Kind: "owner_turn"})
+	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
 }
 
 func (p *claudeParser) attachment(rec claudeRecord) {
@@ -307,9 +334,8 @@ func (p *claudeParser) attachment(rec claudeRecord) {
 		Type  string   `json:"type"`
 		Names []string `json:"names"`
 	}
-	if json.Unmarshal(rec.Attachment, &a) == nil && a.Type == "skill_listing" && len(a.Names) > 0 {
-		p.skills = map[string]bool{}
-		for _, n := range a.Names {
+	if json.Unmarshal(rec.Attachment, &a) == nil && a.Type == "skill_listing" {
+		for _, n := range a.Names { // union: a later listing never drops an earlier name
 			p.skills[n] = true
 		}
 	}

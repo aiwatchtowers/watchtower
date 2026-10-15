@@ -35,8 +35,8 @@ var aliases = map[string]string{
 	"claude-haiku-4-5-20251001": "claude-haiku-4-5",
 }
 
-// Cost prices one API call. known=false (cost 0) when the model, or its fast
-// multiplier, is not in the table — never guessed.
+// Cost prices one API call. known=false (cost 0) when the model, the speed
+// ("", "standard" or "fast"), or the fast multiplier is not known — never guessed.
 func Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool) {
 	if a, ok := aliases[model]; ok {
 		model = a
@@ -52,11 +52,15 @@ func Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, b
 	}
 	usd := (float64(in)*inRate + float64(out)*outRate + float64(cacheRead)*readRate +
 		float64(cw5m)*inRate*1.25 + float64(cw1h)*inRate*2) / 1e6
-	if speed == "fast" {
+	switch speed {
+	case "", "standard":
+	case "fast":
 		if p.fast == 0 {
 			return 0, false
 		}
 		usd *= p.fast
+	default: // an unknown speed is never priced as standard
+		return 0, false
 	}
 	return usd, true
 }

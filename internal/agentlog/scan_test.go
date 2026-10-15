@@ -272,3 +272,72 @@ func TestScan_ParserBumpRereadsPresentFilesOnly(t *testing.T) {
 	assert.Equal(t, ParserVersion-1, gr.ParserVersion) // not reread
 	assert.NotEmpty(t, gr.MissingAt)
 }
+
+// AGENTLOG-02/03 robustness: a session-less record is counted, not stored,
+// and never stops the files after it.
+func TestScan_SessionlessRecordDoesNotStopOtherFiles(t *testing.T) {
+	f := newFixture(t)
+	bad := assistant("", "u0", "m0", "r0", 5)
+	delete(bad, "sessionId")
+	bad["cwd"] = f.folder
+	f.write(f.folder, "a.jsonl", line(t, bad)+call(t, "a", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "b.jsonl", call(t, "b", f.folder, "u2", "m2", "r2", 7))
+	r := f.scan()
+	assert.Zero(t, r.FailedFiles)
+	assert.Equal(t, 1, r.UnknownRecords["<no-session>"])
+	calls, out := f.totals()
+	assert.Equal(t, int64(2), calls)
+	assert.Equal(t, int64(12), out)
+}
+
+// AGENTLOG-03 robustness: a batch that fails to store is counted and
+// retried next scan; the remaining files are still read.
+func TestScan_FailedBatchSkipsFileAndContinues(t *testing.T) {
+	f := newFixture(t)
+	_, err := f.d.Exec(`CREATE TRIGGER test_fail_a BEFORE INSERT ON agent_log_events WHEN NEW.session_uuid = 'a'
+		BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`)
+	require.NoError(t, err)
+	f.write(f.folder, "a.jsonl", call(t, "a", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "b.jsonl", call(t, "b", f.folder, "u2", "m2", "r2", 7))
+	r := f.scan()
+	assert.Equal(t, 1, r.FailedFiles)
+	calls, out := f.totals()
+	assert.Equal(t, int64(1), calls)
+	assert.Equal(t, int64(7), out)
+	fr, err := f.d.GetAgentLogFile(filepath.Join(f.claude, "projects", Slug(f.folder), "a.jsonl"))
+	require.NoError(t, err)
+	assert.Nil(t, fr, "the failed file keeps no offset, so the next scan retries it")
+}
+
+func TestScan_SlashSkillAfterListingInEarlierScan(t *testing.T) {
+	f := newFixture(t)
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1",
+		"attachment": map[string]any{"type": "skill_listing", "names": []string{"review"}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.scan()
+	f.write(f.folder, "s1.jsonl", line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "cwd": f.folder,
+		"message": map[string]any{"role": "user", "content": "<command-name>/review</command-name>"}}))
+	f.scan()
+	var n int
+	require.NoError(t, f.d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE kind = 'skill' AND name = 'review' AND trigger = 'slash'`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
+
+// A removed worktree known only from terminal_session_worktrees still has
+// its transcripts read.
+func TestScan_LedgerWorktreeRootIsRead(t *testing.T) {
+	f := newFixture(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	gone := filepath.Join(base, "wt-removed")
+	res, err := f.d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id) VALUES (?, 'claude', 's', ?, 's1')`, f.wb, f.folder)
+	require.NoError(t, err)
+	sid, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = f.d.RecordSessionWorktree(context.Background(), nil, sid, gone, "feat/x", "2026-10-12T12:00:00.000Z")
+	require.NoError(t, err)
+	f.write(gone, "s1.jsonl", call(t, "s1", gone, "u1", "m1", "r1", 5))
+	f.scan()
+	calls, _ := f.totals()
+	assert.Equal(t, int64(1), calls)
+}

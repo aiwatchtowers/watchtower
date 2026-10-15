@@ -45,6 +45,9 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 				continue
 			}
 			items += res.EventsWritten
+			if res.FailedFiles > 0 {
+				d.logger.Printf("agent analytics: workbench %d: %d file(s) failed, retrying next cycle; first: %v", id, res.FailedFiles, res.FirstFailure)
+			}
 			if res.Incomplete {
 				d.logger.Printf("agent analytics: workbench %d: cycle budget reached, continuing next cycle", id)
 			}

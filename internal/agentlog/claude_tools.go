@@ -61,7 +61,7 @@ func (p *claudeParser) slashSkill(rec claudeRecord, off int64, text string) {
 	if m == nil || !p.skills[m[1]] {
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: "skill:" + rec.UUID + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
+	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("skill", rec, off) + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
 }
 
 func (p *claudeParser) toolResults(rec claudeRecord) {

@@ -114,3 +114,20 @@ func TestParseClaude_RejectDecisionMarksDenied(t *testing.T) {
 	assert.Equal(t, "denied", r.ToolResults[0].Outcome)
 	assert.Equal(t, "ok", r.ToolResults[1].Outcome)
 }
+
+func TestParseClaude_KnownSkillsSeedAndLaterListingsUnion(t *testing.T) {
+	slash := func(uuid, name string) string {
+		return line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": uuid,
+			"message": map[string]any{"role": "user", "content": "<command-name>/" + name + "</command-name>"}})
+	}
+	s := line(t, map[string]any{"type": "attachment", "sessionId": "s1", "attachment": map[string]any{"type": "skill_listing", "names": []string{"other"}}}) +
+		slash("o1", "review") + slash("o2", "other") + slash("o3", "clear")
+	r := parse(t, s, ParseOptions{KnownSkills: []string{"review"}})
+	var got []string
+	for _, e := range r.Events {
+		if e.Kind == "skill" {
+			got = append(got, e.Name)
+		}
+	}
+	assert.ElementsMatch(t, []string{"review", "other"}, got)
+}

@@ -123,3 +123,29 @@ func TestParseClaude_StoresNoText(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "SENTINEL")
 }
+
+func TestParseClaude_SessionlessRecordProducesNothing(t *testing.T) {
+	a := assistant("", "u1", "m1", "r1", 5)
+	delete(a, "sessionId")
+	s := line(t, a) + line(t, map[string]any{"type": "user", "uuid": "o1", "message": map[string]any{"role": "user", "content": "hi"}})
+	r := parse(t, s, ParseOptions{})
+	assert.Empty(t, r.Events)
+	assert.Empty(t, r.Sessions)
+	assert.Equal(t, 2, r.Unknown["<no-session>"])
+}
+
+func TestParseClaude_UUIDLessRecordsKeepDistinctKeys(t *testing.T) {
+	owner := func(text string) string {
+		return line(t, map[string]any{"type": "user", "sessionId": "s1", "message": map[string]any{"role": "user", "content": text}})
+	}
+	compact := line(t, map[string]any{"type": "system", "subtype": "compact_boundary", "sessionId": "s1"})
+	s := owner("one") + owner("two") + compact + compact
+	r := parse(t, s, ParseOptions{})
+	keys := map[string]bool{}
+	for _, e := range r.Events {
+		keys[e.Key] = true
+	}
+	require.Len(t, r.Events, 4)
+	assert.Len(t, keys, 4, "uuid-less events must not share a key: %v", keys)
+	assert.Equal(t, "owner_turn:/h/.claude/projects/-w/s1.jsonl:0", r.Events[0].Key)
+}

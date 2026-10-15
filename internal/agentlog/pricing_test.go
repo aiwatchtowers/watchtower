@@ -44,3 +44,13 @@ func TestCost_AliasAndLongInputTier(t *testing.T) {
 	usd, _ := Cost("claude-haiku-5-5", "", 200_000, 1e6, 0, 0, 0)
 	assert.InDelta(t, 0.2*0.50+2.50, usd, 1e-9)
 }
+
+func TestCost_UnknownSpeedIsEstimated(t *testing.T) {
+	usd, known := Cost("claude-opus-5-5", "turbo", 1e6, 1e6, 0, 0, 0)
+	assert.False(t, known)
+	assert.Zero(t, usd)
+	for _, speed := range []string{"", "standard", "fast"} {
+		_, known = Cost("claude-opus-5-5", speed, 1, 1, 0, 0, 0)
+		assert.True(t, known, speed)
+	}
+}

@@ -1,6 +1,7 @@
 package agentlog
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestWorktreeRoots(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
-	assert.Nil(t, WorktreeRoots(t.TempDir())) // not a repository
+	assert.Nil(t, WorktreeRoots(context.Background(), t.TempDir())) // not a repository
 	repo := t.TempDir()
 	wt := filepath.Join(t.TempDir(), "wt")
 	for _, args := range [][]string{
@@ -71,9 +72,23 @@ func TestWorktreeRoots(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
 	}
-	got := WorktreeRoots(repo)
+	got := WorktreeRoots(context.Background(), repo)
 	require.Len(t, got, 1)
 	resolved, _ := filepath.EvalSymlinks(wt)
 	gotResolved, _ := filepath.EvalSymlinks(got[0])
 	assert.Equal(t, resolved, gotResolved)
+}
+
+// AGENTLOG-04: a symlinked <sid>/subagents directory is never followed.
+func TestListTranscripts_SymlinkedSubagentsDirSkipped(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "-w")
+	elsewhere := filepath.Join(root, "elsewhere")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "s1"), 0o755))
+	require.NoError(t, os.MkdirAll(elsewhere, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(elsewhere, "agent-a1.jsonl"), []byte("x\n"), 0o600))
+	require.NoError(t, os.Symlink(elsewhere, filepath.Join(dir, "s1", "subagents")))
+	files, err := ListTranscripts([]string{dir})
+	require.NoError(t, err)
+	assert.Empty(t, files)
 }

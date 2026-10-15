@@ -89,6 +89,9 @@ func printAgentsScan(cmd *cobra.Command, database *db.DB) error {
 	if n := len(res.UnknownRecords); n > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), ", %d unknown record types", n)
 	}
+	if res.FailedFiles > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), ", %d files failed (retried next scan)", res.FailedFiles)
+	}
 	fmt.Fprintln(cmd.OutOrStdout())
 	return nil
 }

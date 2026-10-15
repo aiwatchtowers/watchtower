@@ -3,6 +3,7 @@ package agentlog
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +83,9 @@ func ListTranscripts(dirs []string) ([]TranscriptFile, error) {
 			}
 			if e.IsDir() {
 				subDir := filepath.Join(dir, name, "subagents")
+				if fi, err := os.Lstat(subDir); err != nil || !fi.IsDir() { // a symlinked dir is not followed (AGENTLOG-04)
+					continue
+				}
 				subEntries, err := os.ReadDir(subDir)
 				if err != nil {
 					continue
@@ -113,10 +117,16 @@ func statTranscript(path string) (TranscriptFile, bool) {
 	return TranscriptFile{Path: path, Size: fi.Size(), MTime: fi.ModTime().UTC().Format(time.RFC3339Nano)}, true
 }
 
+// worktreeListTimeout bounds `git worktree list`: it runs on every daemon
+// cycle before the scan budget applies, so a hung git must not stall sync.
+const worktreeListTimeout = 5 * time.Second
+
 // WorktreeRoots lists the folder's git worktrees other than the folder
-// itself; nil when the folder is not a repository.
-func WorktreeRoots(folder string) []string {
-	out, err := exec.Command("git", "-C", folder, "worktree", "list", "--porcelain").Output()
+// itself; nil when the folder is not a repository or git fails or times out.
+func WorktreeRoots(ctx context.Context, folder string) []string {
+	ctx, cancel := context.WithTimeout(ctx, worktreeListTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", folder, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return nil
 	}
