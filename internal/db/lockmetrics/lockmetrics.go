@@ -130,7 +130,7 @@ func loadSettings() config {
 			ms, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil || ms < 0 {
 				slog.Warn("lockmetrics: invalid "+thresholdEnv+", using the default",
-					"value", raw, "default_ms", DefaultThreshold.Milliseconds())
+					"value", strconv.Quote(raw), "default_ms", DefaultThreshold.Milliseconds())
 				return
 			}
 			settings.threshold = time.Duration(ms) * time.Millisecond

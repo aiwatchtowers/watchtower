@@ -201,7 +201,8 @@ final class DBLockMetricsTests: XCTestCase {
 
     /// Same waiting behaviour as the `PRAGMA busy_timeout = 5000` it replaces.
     func testBusyWaitGivesUpAfterFiveSeconds() throws {
-        let pool = try makePool(sink: nil)
+        let sink = try makeSink()
+        let pool = try makePool(sink: sink)
         let holder = try holdWriteLock()
         defer { try? release(holder) }
 
@@ -211,7 +212,23 @@ final class DBLockMetricsTests: XCTestCase {
         }
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertGreaterThanOrEqual(elapsed, 5.0)
-        XCTAssertLessThan(elapsed, 7.0)
+        // Only a "did not wait forever" bound: a loaded CI runner has taken
+        // ~9 s here, so the 5 s budget itself is pinned by the event below.
+        XCTAssertLessThan(elapsed, 20.0)
+        sink.flush()
+        let busy = try lines().filter { $0["kind"] as? String == "busy" }
+        XCTAssertEqual(busy.count, 1)
+        let event = try XCTUnwrap(busy.first)
+        XCTAssertEqual(event["busy_timeout_ms"] as? Int, 5000)
+        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 5000)
+    }
+
+    func testNilSinkRecordsNothing() throws {
+        let pool = try makePool(sink: nil, busyTimeoutMS: 100)
+        let holder = try holdWriteLock()
+        defer { try? release(holder) }
+
+        XCTAssertThrowsError(try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") })
         XCTAssertFalse(FileManager.default.fileExists(atPath: sinkPath), "a nil sink records nothing")
     }
 
@@ -326,7 +343,7 @@ final class DBLockMetricsTests: XCTestCase {
         try pool.writeWithoutTransaction { db in
             try db.inTransaction(.deferred) {
                 _ = try Int.fetchOne(db, sql: "SELECT count(*) FROM t")
-                Thread.sleep(forTimeInterval: 0.2)
+                Thread.sleep(forTimeInterval: 0.5)
                 try db.execute(sql: "INSERT INTO t VALUES (1)")
                 Thread.sleep(forTimeInterval: 0.06)
                 return .commit
@@ -340,8 +357,10 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertEqual(event["site"] as? String, "desktop:t")
         let hold = event["hold_ms"] as? Int ?? 0
         XCTAssertGreaterThanOrEqual(hold, 60)
-        XCTAssertLessThan(hold, 200, "the hold starts at the first write, not at BEGIN")
-        XCTAssertLessThan(event["wait_ms"] as? Int ?? 0, 50)
+        // Measured from BEGIN either would be >= 500 ms (the pre-write
+        // sleep); 400 leaves a loaded runner room without losing that.
+        XCTAssertLessThan(hold, 400, "the hold starts at the first write, not at BEGIN")
+        XCTAssertLessThan(event["wait_ms"] as? Int ?? 0, 400)
     }
 
     /// A deferred transaction whose first write waits for another writer:
@@ -350,7 +369,7 @@ final class DBLockMetricsTests: XCTestCase {
         let sink = try makeSink(thresholdMS: 50)
         let pool = try makePool(sink: sink)
         let holder = try holdWriteLock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { try? self.release(holder) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) { try? self.release(holder) }
         try pool.writeWithoutTransaction { db in
             try db.inTransaction(.deferred) {
                 try db.execute(sql: "INSERT INTO t VALUES (1)")
@@ -360,10 +379,12 @@ final class DBLockMetricsTests: XCTestCase {
         }
         sink.flush()
         let event = try XCTUnwrap(lines().first { $0["kind"] as? String == "tx" })
-        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 250, "the first write waited for the holder")
+        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 550, "the first write waited for the holder")
         let hold = event["hold_ms"] as? Int ?? 0
         XCTAssertGreaterThanOrEqual(hold, 60)
-        XCTAssertLessThan(hold, 250, "the first write's wait is not counted again as hold")
+        // Counting the wait again would make the hold >= 610 ms; 500 leaves
+        // a loaded runner room without losing that.
+        XCTAssertLessThan(hold, 500, "the first write's wait is not counted again as hold")
     }
 
     /// The sink's names and cap are a Go↔Swift dual path; the Go suite

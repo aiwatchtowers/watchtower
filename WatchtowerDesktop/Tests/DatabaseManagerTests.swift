@@ -109,7 +109,7 @@ final class DatabaseManagerTests: XCTestCase {
         let sink = ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("dblock.jsonl")
         // The sink writes asynchronously and creates the file before the
         // line lands, so wait for the line itself, not the file.
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(10)
         var text = ""
         repeat {
             text = (try? String(contentsOfFile: sink, encoding: .utf8)) ?? ""
