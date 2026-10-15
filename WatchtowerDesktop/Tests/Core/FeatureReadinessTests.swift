@@ -169,19 +169,6 @@ final class FeatureReadinessTests: XCTestCase {
 
     // MARK: - Throttle stamps
 
-    func testUnknownOwnerDropsOwnerGatedPromises() {
-        let scheduled = Readiness.scheduled(.nextCycle(minutes: 15))
-        for feature in [ReadinessFeature.briefing, .dayPlan, .inbox] {
-            XCTAssertNil(FeatureReadiness.honoringOwner(scheduled, of: feature, ownerKnown: false), "\(feature)")
-            XCTAssertNil(FeatureReadiness.honoringOwner(.waitingForSync(detail: nil), of: feature, ownerKnown: false))
-            XCTAssertEqual(FeatureReadiness.honoringOwner(.off, of: feature, ownerKnown: false), .off, "a fact stays")
-            XCTAssertEqual(FeatureReadiness.honoringOwner(.error(message: "x"), of: feature, ownerKnown: false), .error(message: "x"))
-            XCTAssertEqual(FeatureReadiness.honoringOwner(scheduled, of: feature, ownerKnown: true), scheduled)
-        }
-        XCTAssertEqual(FeatureReadiness.honoringOwner(scheduled, of: .digests, ownerKnown: false), scheduled,
-                       "the owner gates only briefing, day plan and inbox")
-    }
-
     func testPeopleFromStampSaysAboutADay() {
         let now = today(10)
         var input = inputs(now: now)
@@ -207,6 +194,26 @@ final class FeatureReadinessTests: XCTestCase {
             XCTAssertFalse(isPreparing(readiness), status)
             XCTAssertFalse(isError(readiness), status)
         }
+    }
+
+    // MARK: - Owner gate (OWNER-02)
+
+    func testUnknownOwnerDropsOwnerGatedPromises() {
+        let scheduled = Readiness.scheduled(.nextCycle(minutes: 15))
+        for feature in [ReadinessFeature.briefing, .dayPlan, .inbox] {
+            XCTAssertNil(FeatureReadiness.honoringOwner(scheduled, of: feature, ownerKnown: false), "\(feature)")
+            XCTAssertNil(FeatureReadiness.honoringOwner(.waitingForSync(detail: nil), of: feature, ownerKnown: false))
+            XCTAssertEqual(FeatureReadiness.honoringOwner(.off, of: feature, ownerKnown: false), .off, "a fact stays")
+            XCTAssertEqual(FeatureReadiness.honoringOwner(.error(message: "x"), of: feature, ownerKnown: false), .error(message: "x"))
+            XCTAssertEqual(FeatureReadiness.honoringOwner(.ready, of: feature, ownerKnown: false), .ready)
+            XCTAssertEqual(FeatureReadiness.honoringOwner(.preparing(detail: nil), of: feature, ownerKnown: false),
+                           .preparing(detail: nil))
+            XCTAssertEqual(FeatureReadiness.honoringOwner(.needsSource(.anySource), of: feature, ownerKnown: false),
+                           .needsSource(.anySource))
+            XCTAssertEqual(FeatureReadiness.honoringOwner(scheduled, of: feature, ownerKnown: true), scheduled)
+        }
+        XCTAssertEqual(FeatureReadiness.honoringOwner(scheduled, of: .digests, ownerKnown: false), scheduled,
+                       "the owner gates only briefing, day plan and inbox")
     }
 
     // MARK: - Wording
