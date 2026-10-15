@@ -1565,3 +1565,14 @@ Entry format:
 - weak-dimension: 7. The ordering tests use a fake that keeps running after cancellation. The pre-wait is never exercised (deleting it keeps the tests green), and no test covers a failed re-apply.
 - rule-gap (candidate, Swift dim 7): *a fix for a write that "lands late after its caller timed out" is tested with the fake in cancellation-aware mode (the live CloudKit behaviour), and a remote write whose outcome is unknown after a cancel or timeout is reconciled to the wanted state. Do not assume it failed.*
 - outcome: TBD
+
+## 2026-10-15 — feat/778-open-folder (board #778, owner decision ask #281: one "Open Folder…" NSOpenPanel entry (with New Folder) replaces New Workbench… / Add Existing Folder…; `WorkbenchesViewModel.openFolder` switches to the workbench already bound to the folder, otherwise shows the list and creates; no TCC warning for a bound folder; the alert button always says "Open anyway"; `NewWorkbenchFolder` deleted; Desktop only, 13 files +103/−287; panel: prosecutor + 3 specialists, codex DOWN (HTTP 400); judge verified against 3a1cebe01 by reading, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested: the `/private` mismatch (Swift `resolvingSymlinksInPath` strips `/private`, Go `EvalSymlinks` keeps it), raised by 3 lanes. I held it at minor, not major. It only affects folders under /tmp or /var, and the fallback is the CLI's own ErrWorkbenchFolderTaken message. That is the same outcome main's Add Existing Folder… gave for any bound folder, so it is no regression. [6]
+- contested: "TCC skip decided in the View on stale summaries" (3 lanes). I held it at minor. The only harmful interleaving is a bound workbench deleted between the panel and the reload, and that folder already passed the warning once. The reverse case (stale "not bound") only shows one extra warning. [6]
+- false-positive: the "reload failure hidden" MEDIUM is only partly silent. `createWorkbench` then runs the CLI and reports the CLI's own outcome. Only the bound path leaves a stale `errorMessage` off screen. I rated it minor. [9]
+- false-positive: the `!isCreating` race before `await reload` cannot be reached from the UI, because the panel is modal and the entry is disabled while creating. I downgraded it to a nit. [9]
+- miss: none beyond the panel. All lanes converged on the same three points.
+- weak-dimension: 7. The new pure matcher `workbenchID(boundTo:)` has one positive case and no table test of false matches (prefix, child, parent). The bound-folder test uses a literal `/tmp` path, which hides the `/private` mismatch.
+- rule-gap (candidate, Swift dim 6): *Swift code that compares a Desktop-picked path with a Go-stored folder must use the same canonical form as Go. `resolvingSymlinksInPath` and `filepath.EvalSymlinks` disagree on `/private`, so a test seeds a symlinked path such as `/tmp` and asserts the match.*
+- outcome: TBD
