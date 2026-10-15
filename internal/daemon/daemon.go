@@ -1227,9 +1227,12 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 }
 
 // phasePeopleCards (group B) generates per-user people cards from people_signals
-// produced by phaseChannelDigests. Throttled to once per 24h. Compound-gated
-// on Digest.Enabled too: people cards mine people_signals that only
-// phaseChannelDigests produces — starved without them, and gating on
+// produced by phaseChannelDigests. Throttled to once per 24h; a cycle with no
+// data yet (no active users or no situations, the fresh-install first cycle)
+// neither stamps the throttle nor spends the budget nor writes a
+// pipeline_runs row, so cards appear in the first cycle that has situations.
+// Compound-gated on Digest.Enabled too: people cards mine people_signals that
+// only phaseChannelDigests produces — starved without them, and gating on
 // People.Enabled alone would still create an empty pipeline_runs row every
 // throttle window instead of skipping outright.
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
@@ -1250,6 +1253,19 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if d.peopleAttemptsExhausted(date) {
 		return
 	}
+	// Until the first stamped run the window ends now, not at the start of
+	// today: a fresh install's first digests end now, and cards should not
+	// wait for midnight.
+	d.peoplePipe.FirstRun = d.lastPeople.IsZero()
+	// No data yet: skip before trackedPipelineRun so a workspace that stays
+	// without data writes no empty "people" row every cycle (the
+	// phaseCustomTrackScan precedent). A failed check falls through so Run
+	// reports the error in a tracked row.
+	if has, err := d.peoplePipe.HasData(); err != nil {
+		d.logger.Printf("people: data check failed, running anyway: %v", err)
+	} else if !has {
+		return
+	}
 
 	d.trackedPipelineRun("people", func() pipelineRunStats {
 		n, err := d.peoplePipe.Run(ctx)
@@ -1260,6 +1276,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) {
 				d.recordPeopleAttempt(date)
 			}
+		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
+			// No data despite the pre-check (a transient pre-check failure,
+			// or the window moved between the two): no stamp, retry.
+			d.logger.Printf("people: run found no data; not stamping")
 		} else {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
@@ -1753,11 +1773,17 @@ func (d *Daemon) saveLastStreams() {
 	}
 }
 
-// shouldRunBriefing checks if the daily briefing should run.
-// Runs at most once per calendar day, after the configured briefing.hour.
+// shouldRunBriefing checks if the daily briefing should run now.
 func (d *Daemon) shouldRunBriefing() bool {
-	now := time.Now()
+	return d.shouldRunBriefingAt(time.Now())
+}
 
+// shouldRunBriefingAt is the briefing gate at a given clock. Runs at most once
+// per calendar day, after the configured briefing.hour — except the first
+// briefing on a fresh install (briefingFresh), which does not wait for the
+// hour. The budget still applies, so the bypass moves the first run earlier
+// without adding a run.
+func (d *Daemon) shouldRunBriefingAt(now time.Time) bool {
 	if !d.lastBriefing.IsZero() && sameCalendarDay(d.lastBriefing, now) {
 		return false
 	}
@@ -1766,11 +1792,31 @@ func (d *Daemon) shouldRunBriefing() bool {
 	if targetHour <= 0 {
 		targetHour = config.DefaultBriefingHour
 	}
-	if now.Hour() < targetHour {
+	// briefingFresh queries the DB, so it is asked only when the hour refuses.
+	if now.Hour() < targetHour && !d.briefingFresh() {
 		return false
 	}
 
 	return !d.briefingAttemptsExhausted(now.Format("2006-01-02"))
+}
+
+// briefingFresh reports a fresh install: no briefing ever generated, neither
+// a last_briefing.txt stamp nor a briefings row. A nil DB or a DB error reads
+// as not fresh, so the hour gate keeps applying.
+//
+// Dual path: the Desktop's readiness model mirrors this rule in
+// WatchtowerDesktop/Sources/WatchtowerCore/Services/FeatureReadiness.swift —
+// change both together.
+func (d *Daemon) briefingFresh() bool {
+	if d.db == nil || !d.lastBriefing.IsZero() {
+		return false
+	}
+	has, err := d.db.HasAnyBriefing()
+	if err != nil {
+		d.logger.Printf("briefing: fresh-install check failed, keeping the hour gate: %v", err)
+		return false
+	}
+	return !has
 }
 
 func sameCalendarDay(a, b time.Time) bool {
@@ -2014,8 +2060,9 @@ func (d *Daemon) runDayPlanPhases(ctx context.Context, now time.Time) {
 }
 
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a
-// plan: enabled, hour gate passed, real-attempt budget not exhausted today,
-// a known owner, no plan yet for today.
+// plan: enabled, hour gate passed (skipped for the first plan on a fresh
+// install, dayPlanFresh), real-attempt budget not exhausted today, a known
+// owner, no plan yet for today.
 func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if d.dayPlanPipeline == nil {
 		return false
@@ -2028,7 +2075,8 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if targetHour <= 0 {
 		targetHour = config.DefaultDayPlanHour
 	}
-	if now.Hour() < targetHour {
+	// dayPlanFresh queries the DB, so it is asked only when the hour refuses.
+	if now.Hour() < targetHour && !d.dayPlanFresh() {
 		return false
 	}
 	date := now.Format("2006-01-02")
@@ -2046,6 +2094,26 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	}
 	existing, _ := d.db.GetDayPlan(owner.ID, date)
 	return existing == nil
+}
+
+// dayPlanFresh reports a fresh install: no day plan ever generated, no
+// day_plans row at all. DB-only, because lastDayPlanDate is in memory and
+// lost on restart. A nil DB or a DB error reads as not fresh, so the hour
+// gate keeps applying.
+//
+// Dual path: the Desktop's readiness model mirrors this rule in
+// WatchtowerDesktop/Sources/WatchtowerCore/Services/FeatureReadiness.swift —
+// change both together.
+func (d *Daemon) dayPlanFresh() bool {
+	if d.db == nil {
+		return false
+	}
+	has, err := d.db.HasAnyDayPlan()
+	if err != nil {
+		d.logger.Printf("day plan: fresh-install check failed, keeping the hour gate: %v", err)
+		return false
+	}
+	return !has
 }
 
 // runDayPlanPhase is Phase 7: generate today's day plan once per day after

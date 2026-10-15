@@ -11,6 +11,8 @@ struct CatchUpView: View {
     /// The first sync's line while it runs (`OnboardingFinishPlan.firstSyncText`):
     /// right after onboarding there is nothing to recap yet.
     var firstSync: (title: String, detail: String)?
+    /// The empty pane's readiness and actions (`AppState.emptyStateContext`).
+    var emptyState: EmptyStateContext = .neutral
 
     /// Custom-range mode. View-local on purpose: it only decides WHICH control
     /// edits `vm.windowChoice`, and the choice itself — the state that has to
@@ -172,6 +174,26 @@ struct CatchUpView: View {
 
     // MARK: - Right pane
 
+    /// No recap open: the shared empty state ("Build a recap" builds the
+    /// chosen window), with the first sync's line inside while it runs.
+    static func emptyPane(
+        firstSync: (title: String, detail: String)?, context: EmptyStateContext, onBuild: @escaping () -> Void
+    ) -> some View {
+        TabEmptyState(.catchUp, context: context, onTabAction: onBuild) {
+            if let firstSync {
+                VStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(firstSync.title)
+                        .font(.callout)
+                    Text(firstSync.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var rightPane: some View {
         if let recap = vm.selected {
@@ -181,28 +203,10 @@ struct CatchUpView: View {
             // field holding text typed against a different recap.
             CatchUpRecapDocument(recap: recap, vm: vm)
                 .id(recap.id)
-        } else if let firstSync {
-            VStack(spacing: 8) {
-                ProgressView()
-                Text(firstSync.title)
-                    .font(.title3)
-                Text(firstSync.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            VStack(spacing: 8) {
-                Image(systemName: "tray.and.arrow.down")
-                    .font(.system(size: 40))
-                    .foregroundStyle(.secondary)
-                Text("No recaps yet")
-                    .font(.title3)
-                Text("Pick a window and build one.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            Self.emptyPane(firstSync: firstSync, context: emptyState) {
+                if !vm.isBuilding { vm.build() }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

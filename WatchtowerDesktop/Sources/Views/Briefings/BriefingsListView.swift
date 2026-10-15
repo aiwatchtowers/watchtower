@@ -239,43 +239,39 @@ struct BriefingsListView: View {
             onOpenConnections: {
                 appState.settingsTab = .connections
                 openSettings()
-            }
+            },
+            context: appState.emptyStateContext
         )
     }
 }
 
 /// The Briefings list's empty state, split out of `BriefingsListView` so it
 /// takes no `@Environment(AppState.self)` and ViewInspector can drive it (the
-/// `TrayMenuContent` pattern). With no owner identity it offers the way to
-/// connect one instead of a Generate the CLI would refuse (OWNER-02).
+/// `TrayMenuContent` pattern). The shared empty state (what lands here, at
+/// which hour, the readiness line) wraps Generate; with no owner identity it
+/// offers the way to connect one instead of a Generate the CLI would refuse
+/// (OWNER-02).
 struct BriefingsEmptyState: View {
     let owner: Owner
     let isGenerating: Bool
     let generateError: String?
     let onGenerate: () -> Void
     let onOpenConnections: () -> Void
+    /// Last, so the existing `BriefingsEmptyState(…) { openConnections }` call shape keeps working.
+    var context: EmptyStateContext = .neutral
 
     var body: some View {
-        if owner.isKnown {
-            generatePrompt
-        } else {
-            NoOwnerEmptyState(openConnections: onOpenConnections)
+        TabEmptyState(.briefings, context: context) {
+            if owner.isKnown {
+                generateControls
+            } else {
+                NoOwnerEmptyState(openConnections: onOpenConnections)
+            }
         }
     }
 
-    private var generatePrompt: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "sun.max")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("No briefings yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Briefings are generated daily after sync completes.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-
+    private var generateControls: some View {
+        VStack(spacing: 8) {
             Button(action: onGenerate) {
                 if isGenerating {
                     ProgressView()
@@ -286,7 +282,7 @@ struct BriefingsEmptyState: View {
                     Label("Generate Briefing", systemImage: "sparkles")
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .disabled(isGenerating)
             .help("Generate a briefing now")
 
@@ -296,7 +292,5 @@ struct BriefingsEmptyState: View {
                     .foregroundStyle(.red)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }

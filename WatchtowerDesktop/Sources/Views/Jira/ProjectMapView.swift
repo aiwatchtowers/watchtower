@@ -4,6 +4,41 @@ struct ProjectMapView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: ProjectMapViewModel?
 
+    /// A search that hides everything keeps its own state; with Jira data
+    /// but nothing here, the tab's own words; before any, the shared state.
+    @ViewBuilder
+    static func emptyState(isFiltered: Bool, context: EmptyStateContext) -> some View {
+        if isFiltered {
+            ownEmptyState(isFiltered: true)
+        } else {
+            ContentAwareEmptyState(.projectMap, context: context) {
+                ownEmptyState(isFiltered: false)
+            }
+        }
+    }
+
+    private static func ownEmptyState(isFiltered: Bool) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: isFiltered ? "magnifyingglass" : "map")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+
+            Text(isFiltered ? "No matching epics" : "No epics found")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            Text(
+                isFiltered
+                    ? "Try adjusting your search"
+                    : "Epic issues from Jira will appear here"
+            )
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -142,7 +177,7 @@ struct ProjectMapView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if vm.filteredEpics.isEmpty {
-            emptyState(isFiltered: !vm.searchText.isEmpty)
+            Self.emptyState(isFiltered: !vm.searchText.isEmpty, context: appState.emptyStateContext)
         } else {
             listView(vm)
         }
@@ -204,30 +239,6 @@ struct ProjectMapView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(color.opacity(0.1), in: Capsule())
-    }
-
-    // MARK: - Empty State
-
-    private func emptyState(isFiltered: Bool) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: isFiltered ? "magnifyingglass" : "map")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-
-            Text(isFiltered ? "No matching epics" : "No epics found")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-
-            Text(
-                isFiltered
-                    ? "Try adjusting your search"
-                    : "Epic issues from Jira will appear here"
-            )
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
 }

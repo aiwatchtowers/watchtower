@@ -37,8 +37,8 @@ struct DayPlanView: View {
                 generationErrorBanner(errorMsg, vm)
             }
 
-            if Self.showsNoOwnerState(owner: appState.owner, hasPlan: vm.plan != nil) {
-                NoOwnerEmptyState(openConnections: openConnections)
+            if vm.plan == nil {
+                DayPlanEmptyState(owner: appState.owner, context: appState.emptyStateContext, openConnections: openConnections)
             } else {
                 planBody(vm)
             }
@@ -116,8 +116,8 @@ struct DayPlanView: View {
 
     // MARK: - Plan Body
 
-    /// The timeline + backlog body; replaced by `NoOwnerEmptyState` when
-    /// there is neither an owner nor a plan to show.
+    /// The timeline + backlog body; replaced by the empty state while there
+    /// is no plan to show.
     private func planBody(_ vm: DayPlanViewModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -203,12 +203,6 @@ struct DayPlanView: View {
             }
             .padding(.bottom, 16)
         }
-    }
-
-    /// OWNER-02: the empty state replaces the plan body only when there is no
-    /// owner identity AND no plan — an existing plan stays readable.
-    static func showsNoOwnerState(owner: Owner, hasPlan: Bool) -> Bool {
-        !owner.isKnown && !hasPlan
     }
 
     private func openConnections() {

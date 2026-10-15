@@ -6,6 +6,11 @@ struct ChannelStatisticsView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: ChannelStatsViewModel?
 
+    /// Nothing synced to count yet: the shared empty state.
+    static func emptyState(context: EmptyStateContext) -> some View {
+        TabEmptyState(.statistics, context: context)
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -33,6 +38,8 @@ struct ChannelStatisticsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = vm.errorMessage {
                 ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
+            } else if vm.stats.isEmpty {
+                Self.emptyState(context: appState.emptyStateContext)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
@@ -149,7 +156,7 @@ struct ChannelStatisticsView: View {
             }
 
             if top.isEmpty {
-                Text("No data")
+                Text("Nothing to chart yet")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

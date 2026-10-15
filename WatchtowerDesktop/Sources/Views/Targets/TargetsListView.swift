@@ -9,6 +9,18 @@ struct TargetsListView: View {
     @State private var searchText = ""
     @State private var pendingDeleteTarget: Target?
 
+    /// The second way in, under the primary "New target" (R11).
+    static let reactionHint = "React with an emoji in Slack to turn a message into a target."
+
+    static func emptyState(context: EmptyStateContext, onNewTarget: @escaping () -> Void) -> some View {
+        TabEmptyState(.targets, context: context, onTabAction: onNewTarget) {
+            Text(reactionHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if let message = viewModel?.errorMessage {
@@ -481,22 +493,7 @@ struct TargetsListView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "scope")
-                .font(.system(size: 40))
-                .foregroundStyle(.tertiary)
-            Text("No targets yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("Create targets from tracks, digests, or briefings")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-            Button("New Target") { showCreateSheet = true }
-                .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        Self.emptyState(context: appState.emptyStateContext) { showCreateSheet = true }
     }
 
     // MARK: - Helpers

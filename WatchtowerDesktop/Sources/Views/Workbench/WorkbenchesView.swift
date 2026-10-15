@@ -33,6 +33,26 @@ struct WorkbenchesView: View {
     /// The ⌘K palette (board #252). View state: it closes with the tab.
     @State private var goToOpen = false
 
+    /// No workbench yet: the shared empty state ("Add a folder"); some
+    /// exist but none is picked: the tab's own hint.
+    @ViewBuilder
+    static func emptyState(
+        hasWorkbenches: Bool, agentName: String, context: EmptyStateContext, onAddFolder: @escaping () -> Void
+    ) -> some View {
+        let hint = Text("Pick a folder to start a workbench. \(agentName) sets it up from there.")
+            .foregroundStyle(.secondary)
+        if hasWorkbenches {
+            VStack(spacing: 8) {
+                Image(systemName: "folder.badge.gearshape").font(.largeTitle).foregroundStyle(.secondary)
+                hint
+            }
+        } else {
+            TabEmptyState(.workbench, context: context, onTabAction: onAddFolder) {
+                hint.font(.caption)
+            }
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if vm.panelVisible {
@@ -214,11 +234,12 @@ struct WorkbenchesView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "folder.badge.gearshape").font(.largeTitle).foregroundStyle(.secondary)
-            Text("Pick a folder to start a workbench. \(vm.defaultAgent.displayName) sets it up from there.")
-                .foregroundStyle(.secondary)
-        }
+        Self.emptyState(
+            hasWorkbenches: !vm.summaries.isEmpty,
+            agentName: vm.defaultAgent.displayName,
+            context: appState.emptyStateContext,
+            onAddFolder: chooseFolder
+        )
     }
 
     /// Open Folder… (board #778), the one way to a workbench: any folder —

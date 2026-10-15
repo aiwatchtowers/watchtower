@@ -299,22 +299,14 @@ struct TracksListView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if vm.updatedTracks.isEmpty && vm.allTracks.isEmpty && vm.customTracks.isEmpty {
-            VStack(spacing: 12) {
-                Image(systemName: "binoculars")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
-                Text("No tracks yet")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                Text("Tracks are created automatically from your workspace activity")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Self.emptyState(context: appState.emptyStateContext)
         } else {
             trackScrollView(vm)
         }
+    }
+
+    static func emptyState(context: EmptyStateContext) -> some View {
+        TabEmptyState(.tracks, context: context)
     }
 
     private func trackScrollView(_ vm: TracksViewModel) -> some View {
