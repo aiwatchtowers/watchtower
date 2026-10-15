@@ -45,7 +45,6 @@ const (
 	ErrKindScript      = "script"
 	ErrKindPermission  = "permission"
 	ErrKindBudget      = "budget"
-	ErrKindDailyCap    = "daily_cap"
 	ErrKindTimeout     = "timeout"
 	ErrKindInterrupted = "interrupted"
 	ErrKindNotRunnable = "not_runnable"
@@ -593,7 +592,7 @@ type RunUsage struct {
 }
 
 // AddAutomationRunUsage adds u to the run's counters (whatever its status:
-// tokens spent before a cancel still count toward the daily cap).
+// tokens spent before a cancel still count on the run).
 // tokens_estimated sticks once set; reported_cost_usd stays NULL until a
 // provider reports a cost.
 func (db *DB) AddAutomationRunUsage(runID int64, u RunUsage) error {

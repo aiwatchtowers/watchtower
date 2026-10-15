@@ -63,12 +63,10 @@ const (
 	DefaultReactionCommandsEnabled       = true
 	DefaultReactionCommandsIntervalHours = 0
 
-	// Automations defaults (spec 2026-10-14 §20 D12, D4): on — a recipe runs
-	// only after the owner confirms it — with a daily token cap over every
-	// run of one local calendar day. automations.DefaultDailyBudgetTokens
-	// holds the same number for the executor's own fallback.
-	DefaultAutomationsEnabled                 = true
-	DefaultAutomationsDailyBudgetTokens int64 = 2000000
+	// Automations defaults (spec 2026-10-14 §20 D12): on — a recipe runs
+	// only after the owner confirms it. No daily token cap (D25, ask #294):
+	// each run is bounded by its own token and time budget.
+	DefaultAutomationsEnabled = true
 
 	// Tracks and people pipelines
 	DefaultTracksEnabled          = true

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 
 	"watchtower/internal/db"
 )
@@ -31,8 +30,7 @@ type DryRunReport struct {
 
 // DryRunInMemory dry-runs r without writing any row (P3's draft_automation,
 // AGENT-06): a memory journal, a synthetic run with ID 0, no Waiter (a
-// wait-capable call answers dry_run before it would wait), no daily cap (a
-// draft's tokens do not count toward it — a v1 limit) and a commit buffer
+// wait-capable call answers dry_run before it would wait) and a commit buffer
 // that starts empty and is never committed. Backends.DB is touched only by
 // AllowTool's read-only lookups. The error is for an unusable request (no
 // recipe, a manifest that does not parse); how the script ended is in the
@@ -56,7 +54,7 @@ func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptio
 	env := &Env{
 		Ctx: ctx, Run: &db.AutomationRun{ID: 0, Trigger: db.TriggerDryRun}, Recipe: r, Manifest: m, DryRun: true,
 		Journal: NewMemoryJournal().UseClock(clock),
-		Meter:   NewMeter(dryRunBudget(opts.Budget, r.Budget), math.MaxInt64, clock),
+		Meter:   NewMeter(dryRunBudget(opts.Budget, r.Budget), clock),
 		Buffer:  NewCommitBuffer(nil),
 		Trigger: TriggerInfo{Kind: db.TriggerDryRun, DryRun: true},
 	}

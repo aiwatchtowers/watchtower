@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,109 +155,19 @@ func TestAuto08_CatchAllLoopStillEndsOnBudget(t *testing.T) {
 	}
 }
 
-func TestAuto08_DailyCap(t *testing.T) {
-	cases := []struct {
-		name      string
-		priorAt   time.Time
-		prior     int64
-		status    string
-		kind      string
-		wantCalls int
-		wantSteps int
-	}{
-		{"spent before the claim", exStart.Add(-2 * time.Hour), 2000000, db.RunBudgetExceeded, db.ErrKindDailyCap, 0, 0},
-		{"crossed mid-run", exStart.Add(-2 * time.Hour), 1999000, db.RunBudgetExceeded, db.ErrKindDailyCap, 1, 1},
-		{"yesterday does not count", exStart.Add(-24 * time.Hour), 1999000, db.RunSucceeded, "", 2, 2},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gen := usageGen(1500, 500)
-			f := newExFixture(t, exOpts{gen: gen})
-			f.priorTokens(t, f.seed(t, "other", `return 1`, false), tc.priorAt, tc.prior)
-			a := f.seed(t, "digest", `llm("a"); llm("b"); return 1`, false)
-			id := f.enqueue(t, a, db.TriggerManual)
-			f.step(t, 1)
-			f.wantRun(t, id, tc.status, tc.kind)
-			if n, steps := gen.CallCount(), len(f.steps(t, id)); n != tc.wantCalls || steps != tc.wantSteps {
-				t.Fatalf("generator calls = %d, steps = %d; want %d, %d", n, steps, tc.wantCalls, tc.wantSteps)
-			}
-		})
-	}
-}
-
-// TestExecutor_DailyCapZeroSpendsNothing: daily_budget_tokens 0 refuses
-// every run before its script starts, with a reason naming the setting; a
-// negative value falls back to the default cap (the run succeeds).
-func TestExecutor_DailyCapZeroSpendsNothing(t *testing.T) {
-	zero, negative := int64(0), int64(-5)
-	cases := []struct {
-		name   string
-		cap    *int64
-		status string
-		kind   string
-		calls  int
-	}{
-		{"zero", &zero, db.RunBudgetExceeded, db.ErrKindDailyCap, 0},
-		{"negative uses the default", &negative, db.RunSucceeded, "", 1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gen := usageGen(10, 5)
-			f := newExFixture(t, exOpts{gen: gen, dailyBudget: tc.cap})
-			id := f.enqueue(t, f.seed(t, "digest", `llm("a"); return 1`, false), db.TriggerManual)
-			f.step(t, 1)
-			r := f.wantRun(t, id, tc.status, tc.kind)
-			if tc.calls == 0 && !strings.Contains(r.Error, "daily_budget_tokens is 0") {
-				t.Fatalf("error = %q; want it to name automations.daily_budget_tokens", r.Error)
-			}
-			if n := gen.CallCount(); n != tc.calls {
-				t.Fatalf("generator calls = %d; want %d", n, tc.calls)
-			}
-		})
-	}
-}
-
-// spendingGen records another run's spend (as a concurrent run would) during
-// its first call, then replies with 5 tokens.
-type spendingGen struct {
-	usageGen *automationstest.FakeGenerator
-	spend    func()
-	once     sync.Once
-}
-
-func (g *spendingGen) Generate(ctx context.Context, system, user, sid string) (string, *digest.Usage, string, error) {
-	g.once.Do(g.spend)
-	return g.usageGen.Generate(ctx, system, user, sid)
-}
-
-// TestAuto08_DailyCapSeesConcurrentSpend: the daily remainder is re-read on
-// every call, so another run's spend during this run counts.
-func TestAuto08_DailyCapSeesConcurrentSpend(t *testing.T) {
-	gen := &spendingGen{usageGen: usageGen(3, 2)}
+// TestAuto08_NoDailyCapAcrossRuns: there is no token cap across runs (D25,
+// ask #294) — any amount spent today by other runs does not stop this one;
+// only its own budget does.
+func TestAuto08_NoDailyCapAcrossRuns(t *testing.T) {
+	gen := usageGen(1500, 500)
 	f := newExFixture(t, exOpts{gen: gen})
-	other := f.seed(t, "other", `return 1`, false)
-	gen.spend = func() { f.priorTokens(t, other, exStart.Add(-time.Hour), 1999990) }
-	a := f.seed(t, "digest", `llm("a"); llm("b"); llm("c"); return 1`, false)
-	id := f.enqueue(t, a, db.TriggerManual)
-	f.step(t, 1)
-	f.wantRun(t, id, db.RunBudgetExceeded, db.ErrKindDailyCap)
-	if n := gen.usageGen.CallCount(); n != 2 {
-		t.Fatalf("generator calls = %d; want 2 (the second crosses the live total)", n)
-	}
-}
-
-// TestAuto08_DailyCapDayFollowsTheExecutorZone: the cap's calendar day is
-// the zone the executor resolves per run (the scheduler's systemZone), not
-// UTC or a zone fixed at start.
-func TestAuto08_DailyCapDayFollowsTheExecutorZone(t *testing.T) {
-	gen := usageGen(10, 5)
-	f := newExFixture(t, exOpts{gen: gen})
-	automations.SetExecutorZone(f.e, func() *time.Location { return time.FixedZone("UTC+14", 14*3600) })
-	// 09:00 UTC is 23:00 on the 14th at UTC+14; exStart (12:00 UTC) is 02:00 on the 15th.
-	f.priorTokens(t, f.seed(t, "other", `return 1`, false), exStart.Add(-3*time.Hour), 2000000)
-	id := f.enqueue(t, f.seed(t, "digest", `return llm("a")`, false), db.TriggerManual)
+	f.priorTokens(t, f.seed(t, "other", `return 1`, false), exStart.Add(-time.Hour), 50000000)
+	id := f.enqueue(t, f.seed(t, "digest", `llm("a"); llm("b"); return 1`, false), db.TriggerManual)
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
+	if n := gen.CallCount(); n != 2 {
+		t.Fatalf("generator calls = %d; want 2", n)
+	}
 }
 
 func TestBudget_EstimatesTokensWhenUsageMissing(t *testing.T) {
@@ -676,27 +585,6 @@ func TestWaiter_ResumeWaitsForAFreeSlot(t *testing.T) {
 	f.e.Wait()
 	for _, id := range append(waiters, busy...) {
 		f.wantRun(t, id, db.RunSucceeded, "")
-	}
-}
-
-// TestAuto08_DailyCapWindowIsTheRunStartDay: the cap's day is the day the
-// run was claimed (started_at), even when the meter is built after midnight.
-func TestAuto08_DailyCapWindowIsTheRunStartDay(t *testing.T) {
-	gen := usageGen(3, 2)
-	f := newExFixture(t, exOpts{gen: gen})
-	beforeMidnight := time.Date(2026, 10, 14, 23, 59, 30, 0, time.UTC)
-	f.priorTokens(t, f.seed(t, "other", `return 1`, false), exStart, 1999995)
-	id := f.enqueue(t, f.seed(t, "digest", `llm("a"); llm("b"); return 1`, false), db.TriggerManual)
-	f.clock.Set(beforeMidnight)
-	var once sync.Once
-	automations.SetExecutorZone(f.e, func() *time.Location {
-		once.Do(func() { f.clock.Set(beforeMidnight.Add(time.Minute)) }) // midnight passes between claim and meter
-		return time.UTC
-	})
-	f.step(t, 1)
-	f.wantRun(t, id, db.RunBudgetExceeded, db.ErrKindDailyCap)
-	if n := gen.CallCount(); n != 1 {
-		t.Fatalf("generator calls = %d; want 1 (the 14th's total counts)", n)
 	}
 }
 

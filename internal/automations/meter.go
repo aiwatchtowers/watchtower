@@ -5,118 +5,59 @@ import (
 	"time"
 )
 
-// Meter tracks one run's token budget, the daily remainder and the deadline of
-// active time (spec §7.5, §7.6). Time paused on the owner or the app
-// (PauseActive … ResumeActive) does not count toward budget.minutes. It is
-// safe for concurrent use: the script goroutine debits and pauses, the
-// sandbox's deadline watcher reads Deadline.
+// Meter tracks one run's token budget and the deadline of active time (spec
+// §7.5, §7.6). Time paused on the owner or the app (PauseActive …
+// ResumeActive) does not count toward budget.minutes. It is safe for
+// concurrent use: the script goroutine debits and pauses, the sandbox's
+// deadline watcher reads Deadline. There is no daily cap across runs (D25,
+// ask #294).
 type Meter struct {
-	mu             sync.Mutex
-	clock          Clock
-	budget         Budget
-	start          time.Time
-	pausedTotal    time.Duration
-	pausedAt       time.Time // zero = not paused
-	runRemaining   int64
-	dailyRemaining int64
-	crossed        InterruptReason
-	rearm          chan struct{}
-	dailyCap       int64
-	dailySpent     DailySpent // nil = the dailyRemaining given at start only
+	mu           sync.Mutex
+	clock        Clock
+	budget       Budget
+	start        time.Time
+	pausedTotal  time.Duration
+	pausedAt     time.Time // zero = not paused
+	runRemaining int64
+	crossed      InterruptReason
+	rearm        chan struct{}
 }
 
-// DailySpent returns the tokens every automation run spent today, live (the
-// executor passes a db.AutomationTokensBetween over the local day).
-type DailySpent func() (int64, error)
-
-// UseDailyTotal makes the daily remainder live: BeforeCall and Debit re-read
-// spent() and compare it with capTokens, so concurrent runs see each other's
-// spend (each can overshoot the cap by at most the one call it had already
-// been admitted to).
-func (m *Meter) UseDailyTotal(capTokens int64, spent DailySpent) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.dailyCap, m.dailySpent = capTokens, spent
-}
-
-// liveDaily reads the live daily total; ok is false without a source.
-func (m *Meter) liveDaily() (capTokens, spent int64, ok bool, err error) {
-	m.mu.Lock()
-	src, c := m.dailySpent, m.dailyCap
-	m.mu.Unlock()
-	if src == nil {
-		return 0, 0, false, nil
-	}
-	spent, err = src()
-	return c, spent, true, err
-}
-
-// NewMeter starts the meter now. dailyRemaining is the day's cap minus the
-// tokens already spent today; pass math.MaxInt64 for no daily cap.
-func NewMeter(budget Budget, dailyRemaining int64, clock Clock) *Meter {
+// NewMeter starts the meter now.
+func NewMeter(budget Budget, clock Clock) *Meter {
 	if clock == nil {
 		clock = RealClock{}
 	}
 	return &Meter{
-		clock:          clock,
-		budget:         budget,
-		start:          clock.Now(),
-		runRemaining:   int64(budget.Tokens),
-		dailyRemaining: dailyRemaining,
-		rearm:          make(chan struct{}, 1),
+		clock:        clock,
+		budget:       budget,
+		start:        clock.Now(),
+		runRemaining: int64(budget.Tokens),
+		rearm:        make(chan struct{}, 1),
 	}
 }
 
 // BeforeCall is checked before every model call: a spent run budget is a
-// BudgetExceeded SDK error, a spent daily cap a *RunInterrupted
-// (InterruptDailyCap). Either also flags the run for interruption (Crossed),
-// so a script that catches the error still stops. With UseDailyTotal the
-// daily total is re-read first; when it cannot be read the call is refused
-// (BudgetExceeded, not flagged): no model call without a known remainder.
+// BudgetExceeded SDK error that also flags the run for interruption
+// (Crossed), so a script that catches the error still stops.
 func (m *Meter) BeforeCall() error {
-	capTokens, spent, live, err := m.liveDaily()
-	if err != nil {
-		return &SDKError{Name: ErrNameBudget, Message: "cannot read today's automation token total: " + err.Error()}
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if live {
-		m.dailyRemaining = capTokens - spent
-	}
 	if m.runRemaining <= 0 {
 		m.flag(InterruptBudget)
 		return &SDKError{Name: ErrNameBudget, Message: "the run's token budget is spent"}
 	}
-	if m.dailyRemaining <= 0 {
-		m.flag(InterruptDailyCap)
-		return &RunInterrupted{Reason: InterruptDailyCap}
-	}
 	return nil
 }
 
-// Debit charges one model call's tokens. It returns the interrupt the call
-// crossed into (InterruptBudget before InterruptDailyCap), or "". With
-// UseDailyTotal it must run before the call's tokens are recorded on the run
-// (Step.Usage): the live total plus this call is what counts. When the live
-// total cannot be read, the local remainder is debited instead.
+// Debit charges one model call's tokens. It returns InterruptBudget when the
+// call spent the run's budget, else "".
 func (m *Meter) Debit(in, out int64) (crossed InterruptReason) {
-	capTokens, spent, live, err := m.liveDaily()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	n := in + out
-	m.runRemaining -= n
-	if live && err == nil {
-		m.dailyRemaining = capTokens - spent - n
-	} else {
-		m.dailyRemaining -= n
-	}
-	switch {
-	case m.runRemaining <= 0:
+	m.runRemaining -= in + out
+	if m.runRemaining <= 0 {
 		crossed = InterruptBudget
-	case m.dailyRemaining <= 0:
-		crossed = InterruptDailyCap
-	}
-	if crossed != "" {
 		m.flag(crossed)
 	}
 	return crossed

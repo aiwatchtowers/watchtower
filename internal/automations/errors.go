@@ -36,18 +36,17 @@ type InterruptReason string
 
 // Interrupt reasons. None of them is catchable by the script.
 const (
-	InterruptTimeout  InterruptReason = "timeout"
-	InterruptBudget   InterruptReason = "budget"
-	InterruptDailyCap InterruptReason = "daily_cap"
-	InterruptCancel   InterruptReason = "cancel"
+	InterruptTimeout InterruptReason = "timeout"
+	InterruptBudget  InterruptReason = "budget"
+	InterruptCancel  InterruptReason = "cancel"
 	// InterruptExpired: a wait outlasted the recipe's pause_timeout_hours
 	// (the executor's Waiter returns it; the run ends expired).
 	InterruptExpired InterruptReason = "expired"
 )
 
 // RunInterrupted is what Sandbox.Run returns when an interrupt stopped the
-// script. An SDK function may also return it (Meter.BeforeCall on a spent
-// daily cap): the sandbox then interrupts the run instead of throwing.
+// script. An SDK function may also return it (the Waiter on an expired
+// wait): the sandbox then interrupts the run instead of throwing.
 type RunInterrupted struct {
 	Reason InterruptReason
 	// Abandoned: the script goroutine was still inside a native builtin

@@ -182,7 +182,7 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 		Generator: automationsDryRunGenerator(cfg),
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
-	}, automations.ExecutorOptions{DailyBudgetTokens: &cfg.Automations.DailyBudgetTokens})
+	}, automations.ExecutorOptions{})
 	// Pinned to the hash the gate above checked: a rescan in between that
 	// changed the recipe cancels the run instead of running what nobody
 	// checked (D16).

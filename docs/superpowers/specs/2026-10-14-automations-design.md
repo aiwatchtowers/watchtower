@@ -215,7 +215,7 @@ and `agent()` processes get the environment of §13.2, never the secret files' c
 - `trigger` (read-only object): `{kind, run_id, scheduled_for?, catch_up?, button?, events?: [...], dry_run}`.
 - **Interrupt.** Each run has a context with deadline `started_at + budget.minutes` of **active** time (time
   paused on the owner or the app, §7.6, is excluded: the deadline is re-armed on resume). On deadline, budget
-  exhaustion, daily cap or cancel the executor calls `vm.Interrupt(reason)` and cancels the context, so a pending
+  exhaustion or cancel the executor calls `vm.Interrupt(reason)` and cancels the context, so a pending
   SDK call (network, CLI process) stops too. The run ends `timed_out`, `budget_exceeded` or `cancelled`.
 - **Memory.** goja has no heap limit, so size is capped at every edge: an SDK result serialised to more than
   256 KiB fails the call with `ResultTooLarge` (never silently truncated) — the one exception is `shell()`, whose
@@ -445,13 +445,9 @@ Budgets are in **tokens**, not dollars (§20 D4, ask #270).
   / 4)` tokens, so a provider without usage numbers cannot run unbounded.
 - Display only: when the provider reports a dollar cost (claude's `total_cost_usd`), it is stored in
   `reported_cost_usd`; nothing compares against it, and it is never estimated.
-- Global daily cap: config `automations.daily_budget_tokens` (default `2000000`), summed over
-  `automation_runs.input_tokens + output_tokens` whose `started_at` falls on the local calendar day, dry runs
-  included. (P1: the day is the local day of the run's own `started_at`, in the scheduler's per-tick zone; the sum is
-  re-read before each model call, so concurrent runs see each other's spend; `0` = automations may spend nothing —
-  every run ends `daily_cap` before its script starts; a negative value logs a warning and uses the default.) A run claimed while the cap is spent ends
-  at once `budget_exceeded` with `error_kind='daily_cap'`; a running run that crosses it is interrupted the same
-  way. The scheduler keeps inserting rows (they end as above), so the history shows what was skipped.
+- No global daily cap (§20.3 D25, ask #294): each run is bounded only by its own `budget.tokens` and
+  `budget.minutes`. The former `automations.daily_budget_tokens` key is gone (a leftover key in `config.yaml` is
+  ignored); `error_kind='daily_cap'` stays in the CHECK (no migration) but nothing produces it.
 
 ### 7.6 Waiting
 
@@ -621,8 +617,7 @@ confirmed. Removing a recipe file by hand is outside the CLI and not guarded (th
 - `draft_automation` — **read** tool, surfaces `main` and `automation_editor` (§14.5). Args `{recipe_text,
   workbench_id?}`. Validates; computes the widening against the saved version (when editing); dry-runs in memory
   bounded by `min(budget.tokens, 50000 tokens)` and `min(budget.minutes, 5)` with writes as `{status:"dry_run"}`.
-  Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted; its
-  tokens are not counted in the daily cap — a stated v1 limit). Result: `{ok, errors[], manifest, widening[],
+  Writes **nothing** to the database (AGENT-06: its dry-run journal is returned in the result, not persisted). Result: `{ok, errors[], manifest, widening[],
   dry_run: {steps[], outputs[], tokens}}`. The dry-run journal goes back to the chat model as is: a draft that
   reads `list_emails`/`get_email` shows that model the clipped mail of those steps (owner-approved, §20.1 D18).
   `draft_automation` dry-runs a **draft** — text the chat is authoring — never an unconfirmed recipe: when the
@@ -742,7 +737,7 @@ schedule without the daemon touching the folder — except `shell()`, refused th
 | AUTO-05 | Bounded concurrency per automation | At most `concurrency` (default 1) runs of one automation are `running`/`waiting` at once; the claim is one conditional update. | P1 |
 | AUTO-06 | Only confirmed content runs | A run is claimed only when `confirmed_hash = approval_hash`; the executor runs the indexed copy, never the file; a recipe new or changed outside an owner save is not runnable until confirmed. Dry runs are exempt (they write nothing, AUTO-12), but only the owner dry-runs an unconfirmed recipe (ask #271): the CLI refuses it under AI-agent markers (AGENT-07, `WATCHTOWER_AUTOMATION_RUN_ID` included) and `draft_automation` refuses to dry-run a draft whose `approval_hash` is an unconfirmed recipe's. | P1, P3 |
 | AUTO-07 | The script sees the world only through the SDK | No `require`, filesystem, network, timers or promises in the sandbox; no SDK result carries a secret. | P1 |
-| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, the daily token cap holds, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
+| AUTO-08 | Every run is bounded and ends | Active time ≤ `budget.minutes`, tokens ≤ `budget.tokens`, waits ≤ `pause_timeout_hours`; every run reaches exactly one terminal status, including after a daemon restart (`interrupted`). | P1 |
 | AUTO-09 | Triggers only queue | Scheduler, event bus, CLI `run` and Desktop buttons only insert `queued` rows; only the daemon's executor runs them (dry run excepted, which writes nothing outside its journal). | P1, P4 |
 | AUTO-10 | Missed schedules | After a gap covering N ≥ 1 missed due times: `run_once` inserts exactly one `catch_up` run, `skip` none; a restart never repeats it. | P1 |
 | AUTO-11 | Complete journal | Every SDK call, denied ones included, has exactly one step row with its status, tokens and duration. | P1 |
@@ -852,7 +847,7 @@ sharing personal recipes; a visual flow editor; parameterised `shell` commands; 
 
 | Phase | Depends on | Delivers |
 |---|---|---|
-| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; token budgets + daily token cap; Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
+| **P1 core** | none | `internal/automations` recipe + manifest parser, hashes, goja sandbox, SDK `llm`, read `tool`, `state`, `output.inbox`/`report`, `log`; migration 00113; scheduler (cron, `run_once`/`skip`) and executor goroutines in the daemon, SIGUSR2; per-run token budgets (the daily cap was retired by §20.3 D25); Feature Manager feature `automations`, default ON (§20 D12); CLI (`list/show/validate/rescan/run/dry-run/cancel/runs/steps/enable/disable/confirm/save/delete/outputs/wake`); `list_emails`/`get_email` (local store only, §20 D2); the D23 local reads, the memory tools in `buildAutomationRegistry`, `get_writing_style` on the automation surface (§6.1, §20.1 D23, ask #277); source tags; config key; `docs/inventory/automations.md` with AUTO-01, 02 (read side), 04–12; AGENT-07 marker. |
 | **P2 writes** | P1 | `automation` surface on the §6.1 tools; Binding `AutomationRunID`; trust order §6.2; `tool` writes + `{wait}`; `output.target/slack/briefing` + briefing section; migration 00114; `automations auto`; AGENT-03 amendment; AUTO-02 (write side), AUTO-03. |
 | **P3 authoring + UI** | P1, P2 | Skill `create-automation`; `draft_automation`, `save_automation`; Desktop Automations tab, card, history, form, Monaco editor, widening and grant sheets, "change it in words" chat; Inbox labels and output cards; the STRIP-01 / AGENT-04 amendments (approved, ask #270). |
 | **P4 events** | P1 | Bus, publishers in the five sync phases, `Flush` per cycle, `event` trigger, `where` matching, AUTO-09 event half. |
@@ -873,7 +868,7 @@ P2 and P4 may run as parallel lanes after P1 (P4 touches the daemon sync phases,
 - Hashes: `TestApprovalHash_IgnoresNameTriggerBudgetChangesOnScriptAndPermissions`.
 - Sandbox: `TestAuto07_NoRequireFsNetTimers`, `TestAuto08_InterruptOnTimeout` (busy loop stops within 1 s of the
   deadline), `TestAuto08_InterruptOnBudget` (fake generator reporting 30k tokens per call, budget 50k: second call
-  crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_DailyCap`,
+  crosses it → `budget_exceeded`; third never starts), `TestBudget_EstimatesTokensWhenUsageMissing`, `TestAuto08_NoDailyCapAcrossRuns`,
   `TestSandbox_ResultTooLargeIsAnErrorNotATruncation`, `TestSandbox_StateTooLarge`, `TestSandbox_ErrorLineMapsToFile`.
 - Permissions: `TestAuto01_DeniedCallThrowsAndWritesDeniedStep` (backend fake records zero calls).
 - State: `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed_out, budget_exceeded, cancelled
@@ -949,7 +944,7 @@ section it governs; nothing remains open.
    `--surface automation --automation-run N`, `--allowedTools` = the effective tool set, the run marker in its
    environment; runtime B (`internal/agentloop`) for ollama (§6.5).
 4. **D4 Budgets in tokens.** `budget.tokens` (input + output across `llm`/`agent` calls) and `budget.minutes` per
-   run; the global daily cap `automations.daily_budget_tokens` is in tokens too. No dollar budget anywhere; a
+   run (no global daily cap since §20.3 D25, ask #294). No dollar budget anywhere; a
    provider-reported dollar cost is kept in `reported_cost_usd` for display only (§2.3, §7.5, §9.2, §9.3, §12).
 5. **D5 What drops a confirmation/auto.** `approval_hash` = script + permissions + outputs + scope; trigger,
    budget, name and description edits keep confirmation and grants (§2.4).
@@ -1021,7 +1016,7 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
   `include_linked` says. `digests:read` stays (`list_digests`/`get_digest`/`get_today_briefing`) and `find_experts`
   stays under `people:read`; neither is `tool:`-only.
 
-### 20.3 Rulings after P1 (ask #293)
+### 20.3 Rulings after P1 (asks #293, #294)
 
 24. **D24 (ask #293): enable and delete are owner-only.** `automations enable` and `automations delete` are refused
     under every AGENT-07 marker (`agentEnvMarkers`, `WATCHTOWER_AUTOMATION_RUN_ID` included) through the same
@@ -1030,3 +1025,8 @@ the section it governs. Ask #280 confirmed the readings of D16 and D22, ask #287
     `cancel`, `run` (of a confirmed, enabled recipe), `rescan` and a plain `save` stay open: they only reduce
     activity or run what the owner already confirmed. Deleting the recipe file directly is outside Watchtower's
     control; only the CLI verb is guarded. Guard `TestAutomationsCLI_EnableDeleteRefusedUnderAgentMarkers`.
+25. **D25 (ask #294): no daily token cap.** The global per-day cap `automations.daily_budget_tokens` is removed —
+    config key, default, executor wiring (`ExecutorOptions.DailyBudgetTokens`) and the meter's live daily total.
+    Each run stays bounded by its own `budget.tokens` and `budget.minutes` (§7.5, AUTO-08). `error_kind='daily_cap'`
+    stays in the CHECK (no migration) but is no longer produced. The `TestAuto08_DailyCap*` guards are retired with
+    the owner's approval; `TestAuto08_NoDailyCapAcrossRuns` pins the new rule.

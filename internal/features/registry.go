@@ -294,7 +294,7 @@ var registry = []Feature{
 		Benefits: []string{
 			"Recurring checks and summaries run on your schedule",
 			"Nothing runs until you confirm the recipe",
-			"Every run has a token budget and a daily cap",
+			"Every run has its own token and time budget",
 		},
 		Icon:      "gearshape.2",
 		ConfigKey: "automations.enabled",
