@@ -37,19 +37,19 @@ in a small chat attached to the automation, which shows the diff before you save
 
 **When it runs.** On a schedule, from a button, or when new data arrives (new mail, a Jira issue changed, new
 Slack messages, calendar or Confluence changes). If the Mac was asleep or off at the scheduled time, it runs once
-when the Mac is back (or skips, if you chose so). Each run has its own token and time limit; a daily token cap
-covers all automations together. A run that hits a limit stops and says so.
+when the Mac is back (or skips, if you chose so). Each run has its own token and time limit. A run that hits a limit stops and says so.
 
 **Writes stay yours.** Anything that changes the world (create a target, a Jira issue, a Slack message) is a
 proposal card in your Inbox, labelled with the automation and the run number, and needs your Approve — exactly as
 in the chat. The script keeps going after proposing, or, if it asked to, waits for your decision. For a specific
 automation and tool you can grant **auto** (from the Desktop only): then that write happens without a click,
-appears in your Inbox as a done fact, and is logged in the run. Auto is tied to the exact script and permissions:
-any edit — yours or the assistant's — pauses it until you confirm again.
+appears in your Inbox as a done fact, and is logged in the run. Auto is tied to the exact script, permissions, schedule and
+budget: any such edit — yours or the assistant's — pauses it until you confirm again.
 
 **Safety.** The header's permissions are the only thing an automation may do; anything else is refused and shown
 in the run. Widening permissions on save shows you the difference to confirm. A recipe that appears or changes
-outside Watchtower (e.g. pulled from git into a workbench) does not run until you confirm it. The script never
+outside Watchtower (e.g. pulled from git into a workbench) does not run until you confirm it. Changing an
+automation's schedule or budget also waits for your confirmation (ask #294). The script never
 sees a password or token.
 
 **In a workbench.** Recipes live in the repository under `.watchtower/automations/` and are shared with the code.
