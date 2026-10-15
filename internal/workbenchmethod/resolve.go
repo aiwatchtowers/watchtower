@@ -1,6 +1,10 @@
 package workbenchmethod
 
-import "watchtower/internal/db"
+import (
+	"errors"
+
+	"watchtower/internal/db"
+)
 
 // Source is where an effective value came from.
 type Source string
@@ -95,16 +99,31 @@ func Resolve(database *db.DB, workbenchID int64, folder string) Effective {
 // this workbench — a session worktree reads its own workflow.md, spec §5 —
 // else the workbench folder.
 func ResolveSession(database *db.DB, workbenchID, sessionRowID int64) Effective {
-	return Resolve(database, workbenchID, sessionFolder(database, workbenchID, sessionRowID))
+	folder, err := sessionFolder(database, workbenchID, sessionRowID)
+	if err != nil {
+		e := Defaults()
+		e.Err = err
+		return e
+	}
+	return Resolve(database, workbenchID, folder)
 }
 
-func sessionFolder(database *db.DB, workbenchID, rowID int64) string {
+// sessionFolder is the row's folder; "" (the workbench folder) for no row, a
+// gone row or another workbench's row. Any other read error is returned: it
+// must not fall back to a folder file that may say off.
+func sessionFolder(database *db.DB, workbenchID, rowID int64) (string, error) {
 	if rowID <= 0 {
-		return ""
+		return "", nil
 	}
 	row, err := database.GetTerminalSession(rowID)
-	if err != nil || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != workbenchID {
-		return ""
+	if errors.Is(err, db.ErrTerminalSessionNotFound) {
+		return "", nil
 	}
-	return row.FolderPath
+	if err != nil {
+		return "", err
+	}
+	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != workbenchID {
+		return "", nil
+	}
+	return row.FolderPath, nil
 }

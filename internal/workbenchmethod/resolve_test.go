@@ -108,3 +108,21 @@ func TestResolveSession_ReadsTheSessionsFolder(t *testing.T) {
 	assert.Equal(t, AskGuardSoft, ResolveSession(d, id, row+100).AskGuard, "a gone row: the workbench folder")
 	assert.Equal(t, AskGuardStrict, ResolveSession(d, other, row).AskGuard, "another workbench's row is not its session")
 }
+
+// A session read that fails (not a missing row) must not fall back to the
+// workbench folder's file: strict and on, Err set.
+func TestResolveSession_UnreadableSessionIsStrict(t *testing.T) {
+	d := openDB(t)
+	folder := t.TempDir()
+	id, err := d.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+	writeWorkflow(t, folder, "---\nask_guard: off\nfinish_check: off\n---\n")
+	_, err = d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN worktree_branch`)
+	require.NoError(t, err)
+
+	e := ResolveSession(d, id, 1)
+
+	require.Error(t, e.Err)
+	assert.Equal(t, AskGuardStrict, e.AskGuard)
+	assert.True(t, e.FinishOn())
+}
