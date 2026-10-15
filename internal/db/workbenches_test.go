@@ -243,6 +243,11 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		VALUES ('main', ?, 0, 0)`, fmt.Sprintf("%d:x:1", pid))
 	require.NoError(t, err)
 
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s-proj02", "2026-10-01T00:00:00Z", pid)},
+		Events:   []AgentLogEvent{apiCall("s-proj02", "m-proj02:r1", 3)}})
+	require.NoError(t, err)
+
 	require.NoError(t, d.DeleteWorkbench(pid))
 
 	for _, q := range []string{
@@ -311,6 +316,12 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var mainChat int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE context_type IS NULL`).Scan(&mainChat))
 	assert.Equal(t, 1, mainChat, "only code_question rows go, whatever their context_id")
+	// PROJ-02 exception (ask #153): agent analytics outlive the workbench.
+	var orphaned, orphanEvents int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_sessions WHERE session_uuid = 's-proj02' AND project_id IS NULL`).Scan(&orphaned))
+	assert.Equal(t, 1, orphaned, "the analytics session survives with project_id NULL")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = 's-proj02'`).Scan(&orphanEvents))
+	assert.Equal(t, 1, orphanEvents, "the analytics events survive")
 	assert.ErrorIs(t, d.DeleteWorkbench(pid), ErrWorkbenchNotFound)
 }
 

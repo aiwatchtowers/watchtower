@@ -452,6 +452,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
 	d.phaseExternalSync(ctx)
+	d.phaseAgentAnalytics(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
