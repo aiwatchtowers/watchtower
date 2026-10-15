@@ -347,6 +347,7 @@ private extension WorkspaceView {
         case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
+        case .changes: "Review the session's changes"
         }
     }
 }
