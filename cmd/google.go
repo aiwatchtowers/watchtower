@@ -493,8 +493,9 @@ func recordGoogleConnection(out, errOut io.Writer, configPath string, cfg *confi
 // enableGoogleSyncSwitches turns on the global `calendar.enabled` /
 // `gmail.enabled` daemon-phase switches for the given services.
 // `wireGoogleSyncers` wires a syncer only when both the switch and the
-// account's flag are on, and both switches default to off — so without this a
-// newly connected account never syncs. Called from the one connect path every
+// account's flag are on. Both switches default to on (#757), so this matters
+// for a config that carries an explicit `enabled: false` — without it a newly
+// connected account would never sync. Called from the one connect path every
 // surface shares (onboarding, Settings, the Calendar tab, the CLI). A switch
 // already on is not rewritten.
 func enableGoogleSyncSwitches(configPath string, cfg *config.Config, calGranted, gmGranted bool) error {

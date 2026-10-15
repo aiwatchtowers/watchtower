@@ -85,12 +85,12 @@ const (
 	DefaultBatchLowActivityThreshold  = 30  // <30 → triple channel limit per batch
 
 	// Calendar defaults
-	DefaultCalendarEnabled       = false
+	DefaultCalendarEnabled       = true
 	DefaultCalendarSyncDaysAhead = 7
 	DefaultCalendarHistoryDays   = 14
 
 	// Gmail defaults
-	DefaultGmailEnabled            = false
+	DefaultGmailEnabled            = true
 	DefaultGmailInitialHistoryDays = 7
 	DefaultGmailMaxMessagesPerSync = 100
 	DefaultGmailMaxBodyBytes       = 51200
@@ -195,8 +195,8 @@ func DefaultJiraFeatures(role string) JiraFeatureToggles {
 //
 // The IC baseline is seeded, not a per-role set, and deliberately. Load has
 // no DB handle, and the role lives in user_profile.role, which is FREE TEXT
-// (onboarding's About you "Role and team" field). No structured role level
-// is persisted anywhere, so
+// (typed by the owner — onboarding no longer asks for it). No structured role
+// level is persisted anywhere, so
 // DefaultJiraFeatures falls to its IC branch for every real user — `jira
 // features reset` has always reset to IC. Seeding the IC baseline here is
 // therefore not an approximation of the role default; today it IS the role
