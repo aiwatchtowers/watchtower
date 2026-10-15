@@ -32,12 +32,12 @@ The page Watchtower opens on, at the top of the menu. It never builds anything i
 **Getting ready** — while a new install is still filling up, one card per feature that is on and has its source: its name, one sentence on what it makes, and its status line — the same "Preparing now", "Starts after the first sync", "Within ~15 min", "Today at 08:00" or "Didn't work yet — retries automatically" as the tab's own empty page. A feature that is done shows **Ready** with **Open**, which goes to its tab, and stays until every card is ready (or has failed and retries on its own). A source you have not connected is one dashed row instead, naming the tabs it would fill ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with its **Connect** button. While the first sync runs, its progress line sits on top. When everything is ready the zone becomes a single "Everything's ready" line for the rest of that launch and is gone on the next. It also folds by itself 3 days after it first showed, whatever is still waiting, and the **×** hides it for good. An install that was already ready, and a Development-only install, never see it.
 
 **Today** — only the cards that have something, always in this order:
-- **Waiting on you · N** — proposals and failed actions awaiting your decision and due reminders (the Inbox count), the three newest listed. Opens Inbox.
+- **Since you were away** — a Catch-Up recap you have not marked caught up, with its TL;DR. Opens Catch Up.
 - **Next meeting** — the next event starting within 24 hours: "In 25 min", its time or "Tomorrow 09:00", the time range, up to two attendees, and "Prep ready" when meeting prep is there. Opens that event in Calendar.
+- **Waiting on you · N** — proposals and failed actions awaiting your decision and due reminders (the Inbox count), the three newest listed. Opens Inbox.
 - **Briefing** — the first line of today's briefing. Opens it in Briefings.
 - **My targets** — up to five of your own targets that are overdue, due today or in progress (never a Workbench board's), each with "Overdue · Oct 12", "Due today" or "In progress". A row opens that target; the header opens Targets.
 - **Agents waiting · N** — questions and review requests from Claude Code sessions in your workbenches, the three oldest listed with their workbench. A row opens that session's terminal (or the board when the question came from outside the app); the header opens Workbench.
-- **Since you were away** — a Catch-Up recap you have not marked caught up, with its TL;DR. Opens Catch Up.
 
 A card that belongs to a tab you do not see (Inbox, Calendar, Briefings, Catch Up) is not shown either. With nothing to show, Today says "Nothing needs you right now." If reading a card fails it is left out and the others still show; if nothing could be shown because of that, Today says "Couldn't read today's items — see the log." instead.
 

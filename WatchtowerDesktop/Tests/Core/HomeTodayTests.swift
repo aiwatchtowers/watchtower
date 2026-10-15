@@ -134,8 +134,10 @@ final class HomeTodayTests: XCTestCase {
         XCTAssertEqual(cards(data).map(\.kind), [.myTargets])
     }
 
+    /// Owner ask #308: Since you were away leads.
     func testFixedOrder() throws {
-        XCTAssertEqual(cards(try fullData()).map(\.kind), TodayCardKind.allCases)
+        XCTAssertEqual(cards(try fullData()).map(\.kind),
+                       [.sinceYouWereAway, .nextMeeting, .waitingOnYou, .briefing, .myTargets, .agentsWaiting])
     }
 
     func testAllowedFiltersCards() throws {
