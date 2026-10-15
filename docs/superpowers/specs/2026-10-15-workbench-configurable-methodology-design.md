@@ -1,7 +1,7 @@
 # Workbench — configurable methodology (design)
 
 **Board:** #265 (group), #266 (this spec), #267 (custom board columns — a later spec that builds on this one)
-**Status:** draft for owner review
+**Status:** approved by the owner in ask #146 (2026-10-15), with the §12 open points taken as drafted
 **Owner decisions so far:** ask #138 (methodology first, columns later), ask #140 (what becomes configurable; where the rules live), ask #141 (understanding confirmed; ask guard modes `strict / soft / off`), ask #144 (approach B: two skills + rules through the brief)
 
 ## 1. Problem
