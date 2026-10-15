@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"watchtower/internal/db/lockmetrics"
 )
@@ -14,7 +15,8 @@ import (
 // returns the pool stats to pass as prev on the next call (the daemon calls
 // it once per sync cycle):
 //   - a pool_wait event with the time database/sql spent waiting for a free
-//     connection since prev, only when that time is above zero;
+//     connection since prev, only when that time is a millisecond or more
+//     (wait_ms is whole milliseconds and a 0 is omitted);
 //   - a wal event with the size of the -wal file and the result of
 //     PRAGMA wal_checkpoint(PASSIVE), which never waits on or blocks a
 //     writer. An in-memory database has no WAL file and writes none.
@@ -26,7 +28,7 @@ func (db *DB) SampleLockStats(ctx context.Context, prev sql.DBStats) sql.DBStats
 	if !lockmetrics.Enabled() {
 		return cur
 	}
-	if wait := cur.WaitDuration - prev.WaitDuration; wait > 0 {
+	if wait := cur.WaitDuration - prev.WaitDuration; wait >= time.Millisecond {
 		lockmetrics.Record(lockmetrics.Event{Kind: lockmetrics.KindPoolWait, WaitMS: wait.Milliseconds()})
 	}
 	db.recordWALSample(ctx)

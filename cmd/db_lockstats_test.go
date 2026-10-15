@@ -18,7 +18,10 @@ import (
 )
 
 // lockstatsTestEnv sets up a config whose workspace has a DB directory and
-// returns the dblock.jsonl path next to the DB. Flags are reset afterwards.
+// returns the dblock.jsonl path next to the DB, with no log in either
+// generation: the setup's own db.Open measures its migration, and on a loaded
+// machine that crosses the threshold and lands in the very log the tests
+// control. Flags are reset afterwards.
 func lockstatsTestEnv(t *testing.T) string {
 	t.Helper()
 	cleanup := setupWatchTestEnv(t)
@@ -29,7 +32,11 @@ func lockstatsTestEnv(t *testing.T) string {
 
 	cfg, err := config.Load(flagConfig)
 	require.NoError(t, err)
-	return filepath.Join(filepath.Dir(cfg.DBPath()), lockmetrics.FileName)
+	path := filepath.Join(filepath.Dir(cfg.DBPath()), lockmetrics.FileName)
+	for _, p := range []string{path, path + ".1"} {
+		require.NoError(t, os.RemoveAll(p))
+	}
+	return path
 }
 
 // writeLockLog writes synthetic events (seeded from time.Now, no fixed

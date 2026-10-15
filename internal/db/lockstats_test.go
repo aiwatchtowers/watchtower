@@ -148,6 +148,34 @@ func TestSampleLockStats_PoolWaitDelta(t *testing.T) {
 	}
 }
 
+func TestSampleLockStats_SubMillisecondPoolWaitIsDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	events := configureLockSink(t, path)
+	ctx := context.Background()
+
+	// A fabricated prev sets the delta exactly: under a millisecond would be
+	// an event without wait_ms (omitempty), so none is written.
+	prev := database.Stats()
+	prev.WaitDuration -= 999 * time.Microsecond
+	database.SampleLockStats(ctx, prev)
+	if pw := eventsOfKind(events(), lockmetrics.KindPoolWait); len(pw) != 0 {
+		t.Fatalf("a sub-millisecond delta must write no pool_wait event, got %+v", pw)
+	}
+
+	prev = database.Stats()
+	prev.WaitDuration -= time.Millisecond
+	database.SampleLockStats(ctx, prev)
+	pw := eventsOfKind(events(), lockmetrics.KindPoolWait)
+	if len(pw) != 1 || pw[0].WaitMS != 1 {
+		t.Fatalf("a one-millisecond delta writes one pool_wait with wait_ms 1, got %+v", pw)
+	}
+}
+
 func TestSampleLockStats_DisabledSinkWritesNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	database, err := Open(path)
