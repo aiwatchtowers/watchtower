@@ -166,7 +166,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         var announced: [Int64] = []
         vm.onWorkbenchCreated = { project, installed in if installed { announced.append(project.id) } }
 
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
 
         XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [
             ["workbench", "create"], ["integrate", "claude-code"], ["integrate", "status"]
@@ -189,7 +189,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let vm = makeVM(runner)
         var announced: [(Int64, Bool)] = []
         vm.onWorkbenchCreated = { announced.append(($0.id, $1)) }
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertTrue(vm.installErrors[id]?.contains("Repair") == true)
         XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the install error is shown")
@@ -211,7 +211,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
         let vm = makeVM(runner)
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         let note = try XCTUnwrap(vm.installErrors[id])
         XCTAssertFalse(note.contains("Repair"), note)
         XCTAssertTrue(note.contains("replace the link with a regular directory"), note)
@@ -227,12 +227,12 @@ final class WorkbenchesViewModelTests: XCTestCase {
     }
 
     func testCreateFailureShowsTheCLIErrorAndAnnouncesNothing() async {
-        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "/tmp/acme: not a directory"))
         let vm = makeVM(runner)
         var announced = false
         vm.onWorkbenchCreated = { _, _ in announced = true }
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
-        XCTAssertTrue(vm.errorMessage?.contains("already bound") == true)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
+        XCTAssertTrue(vm.errorMessage?.contains("not a directory") == true)
         XCTAssertNil(vm.selectedWorkbenchID)
         XCTAssertFalse(announced)
     }
@@ -249,12 +249,91 @@ final class WorkbenchesViewModelTests: XCTestCase {
         vm.drill(into: acme)
         vm.panelVisible = false
 
-        await vm.openFolder(URL(fileURLWithPath: "/tmp/Beta"))
+        let outcome = await vm.openFolder(URL(fileURLWithPath: "/tmp/Beta"))
 
+        XCTAssertEqual(outcome, .opened)
         XCTAssertTrue(runner.invocations.isEmpty, "\(runner.invocations)")
         XCTAssertEqual(vm.selectedWorkbenchID, beta)
         XCTAssertEqual(vm.drilledWorkbenchID, beta)
+        XCTAssertFalse(vm.panelVisible, "opening a bound workbench leaves the hidden panel hidden")
         XCTAssertNil(vm.errorMessage)
+    }
+
+    /// The bound-folder match (board #778): any case, a trailing slash, and
+    /// `/private` on either side (Go keeps it, Foundation strips it) — but
+    /// the exact folder only, never a parent, child or sibling prefix.
+    func testWorkbenchIDBoundToMatchesTheFolderOnly() async throws {
+        let (tmp, priv) = try await pool.write { d in
+            (try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme"),
+             try TestDatabase.insertWorkbench(d, name: "beta", folder: "/private/tmp/beta"))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        let cases: [(String, Int64?)] = [
+            ("/tmp/acme", tmp), ("/tmp/ACME", tmp), ("/tmp/acme/", tmp), ("/private/tmp/acme", tmp),
+            ("/tmp/beta", priv), ("/private/tmp/Beta/", priv),
+            ("/tmp/acme2", nil), ("/tmp/acme/sub", nil), ("/tmp", nil), ("/private/tmp", nil), ("/tmp/beta2", nil)
+        ]
+        for (path, want) in cases {
+            XCTAssertEqual(vm.workbenchID(boundTo: URL(fileURLWithPath: path)), want, path)
+        }
+    }
+
+    /// The location warning is decided after the reload (board #778): a
+    /// bound folder under ~/Documents opens without it; an unbound one asks
+    /// and creates nothing until `createFromOpenedFolder`.
+    func testOpenFolderWarnsOnlyForANewWorkbenchInASensitiveLocation() async throws {
+        let home = "/Users/owner"
+        let bound = try await pool.write {
+            try TestDatabase.insertWorkbench($0, name: "notes", folder: "\(home)/Documents/notes")
+        }
+        let runner = FakeCLIRunner()
+        let vm = makeVM(runner)
+
+        let opened = await vm.openFolder(URL(fileURLWithPath: "\(home)/Documents/notes"), home: home)
+        XCTAssertEqual(opened, .opened)
+        XCTAssertEqual(vm.selectedWorkbenchID, bound)
+
+        let asked = await vm.openFolder(URL(fileURLWithPath: "\(home)/Documents/other"), home: home)
+        XCTAssertEqual(asked, .confirmLocation("~/Documents"))
+        XCTAssertTrue(runner.invocations.isEmpty, "nothing is created before the owner confirms: \(runner.invocations)")
+    }
+
+    /// A folder bound between the list read and the create (another window,
+    /// the CLI): the CLI's refusal opens that workbench instead of an error.
+    func testCreateRefusedAsAlreadyBoundOpensTheBoundWorkbench() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
+            code: 1, stderr: "Error: /private/tmp/acme: folder is already bound to a workbench"))
+        let vm = makeVM(runner)
+
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
+
+        XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [["workbench", "create"]])
+        XCTAssertEqual(vm.selectedWorkbenchID, id)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertFalse(vm.isCreating)
+    }
+
+    /// A failed reload stops Open Folder…: neither a switch nor a create,
+    /// and the list comes on screen with the reload's error.
+    func testOpenFolderStopsWhenTheReloadFails() async throws {
+        let acme = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = FakeCLIRunner()
+        let vm = makeVM(runner)
+        await vm.reload()
+        vm.drill(into: acme)
+        vm.panelVisible = false
+        try await pool.write { try $0.execute(sql: "ALTER TABLE projects RENAME TO projects_hidden") }
+
+        let outcome = await vm.openFolder(URL(fileURLWithPath: "/tmp/gamma"))
+
+        XCTAssertEqual(outcome, .stopped)
+        XCTAssertTrue(runner.invocations.isEmpty, "\(runner.invocations)")
+        XCTAssertTrue(vm.errorMessage?.contains("Could not load workbenches") == true, vm.errorMessage ?? "nil")
+        XCTAssertTrue(vm.panelVisible)
+        XCTAssertNil(vm.drilledWorkbenchID, "the list, with the error, is on screen")
+        try await pool.write { try $0.execute(sql: "ALTER TABLE projects_hidden RENAME TO projects") }
     }
 
     /// Open Folder… on any other folder creates the workbench, bringing the
@@ -266,8 +345,9 @@ final class WorkbenchesViewModelTests: XCTestCase {
         vm.drill(into: acme)
         vm.panelVisible = false
 
-        await vm.openFolder(URL(fileURLWithPath: "/tmp/gamma"))
+        let outcome = await vm.openFolder(URL(fileURLWithPath: "/tmp/gamma"), home: "/Users/owner")
 
+        XCTAssertEqual(outcome, .created)
         XCTAssertEqual(runner.invocations.first.map { Array($0.prefix(2)) }, ["workbench", "create"])
         XCTAssertTrue(runner.invocations.first?.contains("/tmp/gamma") == true, "\(runner.invocations)")
         XCTAssertTrue(vm.panelVisible)
@@ -358,7 +438,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         ])
         let vm = makeVM(runner)
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         await vm.refreshInstallStatus(projectID: id)
         XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the note still explains Repair")
 
@@ -404,7 +484,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let without = ScriptedCLIRunner(results: [
             .success(createdJSON(id)), .success(Data()), .success(statusJSON(codex: codexMissing))
         ])
-        await makeVM(without).createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await makeVM(without).createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         XCTAssertEqual(without.invocations.map { Array($0.prefix(2)) }, [
             ["workbench", "create"], ["integrate", "claude-code"], ["integrate", "status"]
         ], "no codex: nothing about it runs")
@@ -414,7 +494,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .success(Data()), .success(statusJSON(codex: codexReady))
         ])
         let vm = makeVM(with)
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         XCTAssertEqual(with.invocations, [
             ["workbench", "create", "--folder", "/tmp/acme", "--json"],
             ["integrate", "claude-code", "--workbench", String(id)],
@@ -440,7 +520,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         vm.readDefaultAgent = { .codex }
         var announced: [Bool] = []
         vm.onWorkbenchCreated = { announced.append($1) }
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         XCTAssertEqual(announced, [true])
         XCTAssertTrue(vm.installErrors[id]?.contains("Setting up Codex failed") == true, "\(vm.installErrors)")
         XCTAssertTrue(vm.codexSetupErrors[id]?.contains("timed out") == true, "the failure survives the status read")
@@ -461,7 +541,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         vm.readDefaultAgent = { .codex }
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"))
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertEqual(rows.map(\.kind), [.codex])
         XCTAssertEqual(rows.first?.claudeSessionID, nil, "Codex mints its own id")
@@ -541,7 +621,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         appState.selectedDestination = .workbench
 
-        let run = Task { await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil) }
+        let run = Task { await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme")) }
         await awaitStarted(held)
         XCTAssertTrue(vm.isCreating)
 
@@ -575,7 +655,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
-        await vm.createWorkbench(folder: folder, name: nil)
+        await vm.createWorkbench(folder: folder)
 
         XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertTrue(appState.terminalCenter.states.isEmpty, "no terminal after a failed install")
@@ -666,7 +746,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
-        await vm.createWorkbench(folder: folder, name: nil)
+        await vm.createWorkbench(folder: folder)
 
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         let row = try XCTUnwrap(rows.first)

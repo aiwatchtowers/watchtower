@@ -25,7 +25,7 @@ struct WorkbenchSwitcherPopover: View {
             list
             Divider()
             Button(action: onOpenFolder) {
-                Label("Open Folder…", systemImage: "plus")
+                Label("Open Folder…", systemImage: "folder.badge.plus")
             }
             .buttonStyle(.borderless)
             .disabled(vm.isCreating)

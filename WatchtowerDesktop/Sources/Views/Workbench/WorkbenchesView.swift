@@ -164,7 +164,7 @@ struct WorkbenchesView: View {
             Spacer(minLength: 4)
             if vm.isCreating { ProgressView().controlSize(.small) }
             Button(action: chooseFolder) {
-                Image(systemName: "plus")
+                Image(systemName: "folder.badge.plus")
             }
             .buttonStyle(.borderless)
             .disabled(vm.isCreating)
@@ -222,14 +222,17 @@ struct WorkbenchesView: View {
 
     /// Open Folder… (board #778), the one way to a workbench: any folder —
     /// the panel's New Folder makes a new one — becomes the workbench, or
-    /// opens the one already bound to it (`WorkbenchesViewModel.openFolder`),
-    /// with no TCC warning: that one came when the workbench was created.
+    /// opens the one already bound to it. `WorkbenchesViewModel.openFolder`
+    /// decides on a fresh list; only a new workbench in a TCC-sensitive
+    /// location asks first (a bound folder opens without the warning, owner
+    /// decision #778).
     private func chooseFolder() {
         guard let url = runFolderPanel(title: "Open Folder", prompt: "Open", canCreate: true) else { return }
-        if vm.workbenchID(boundTo: url) != nil {
-            Task { await vm.openFolder(url) }
-        } else {
-            confirmLocation(of: .project(url), path: url.path)
+        Task {
+            if case let .confirmLocation(location) = await vm.openFolder(url) {
+                pendingFolder = .project(url)
+                sensitiveLocation = location
+            }
         }
     }
 
@@ -267,7 +270,7 @@ struct WorkbenchesView: View {
         sensitiveLocation = nil
         switch pending {
         case let .project(folder):
-            Task { await vm.openFolder(folder) }
+            Task { await vm.createFromOpenedFolder(folder) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
         }
