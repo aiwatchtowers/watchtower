@@ -181,6 +181,19 @@ type Pipeline struct {
 	jiraKeyDetector interface {
 		ProcessDigestDecision(digestID int, channelID string, decisionText string) (int, error)
 	}
+
+	// backfill is non-nil only while RunBackfillWindow runs (under the digest
+	// lock); see backfillScope.
+	backfill *backfillScope
+}
+
+// backfillScope is set only while RunBackfillWindow runs: a backfill window
+// sits below every forward mark, so its "considered" stamps stay in memory
+// and the trickle-channel cooldown (meant for the live edge) does not apply.
+// mu guards considered: batch workers stamp concurrently.
+type backfillScope struct {
+	mu         sync.Mutex
+	considered map[string]float64
 }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.
@@ -555,6 +568,16 @@ func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
 	if tsUnix <= 0 {
 		return
 	}
+	if b := p.backfill; b != nil {
+		// Backfill code never writes the forward considered mark: the
+		// backfill window keeps its own in memory.
+		b.mu.Lock()
+		if tsUnix > b.considered[channelID] {
+			b.considered[channelID] = tsUnix
+		}
+		b.mu.Unlock()
+		return
+	}
 	if err := p.db.SetChannelDigestConsideredTS(channelID, tsUnix); err != nil {
 		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", p.channelName(channelID), err)
 	}
@@ -898,6 +921,9 @@ func (p *Pipeline) countVisibleMessages(msgs []db.Message) (visible, botVisible 
 // applyDigestCooldown removes channels digested recently with low activity to
 // avoid frequent small AI calls for trickle channels.
 func (p *Pipeline) applyDigestCooldown(entries []batchEntry) []batchEntry {
+	if p.backfill != nil {
+		return entries
+	}
 	cooldownMins := config.DefaultDigestCooldownMins
 	minMsgs := p.cfg.Digest.MinMessages
 	if minMsgs <= 0 {

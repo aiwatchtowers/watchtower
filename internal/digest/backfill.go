@@ -1,0 +1,177 @@
+package digest
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// maxBackfillPasses bounds the passes one RunBackfillWindow call makes over a
+// chunk. Each pass digests at most DefaultMaxBatchesPerRun batches and one
+// load per channel, so a busy chunk needs several; one that still has work
+// after this many stays incomplete and is resumed next cycle.
+const maxBackfillPasses = 20
+
+// BackfillWindowResult reports one RunBackfillWindow call: how many channel
+// digests it stored, and whether no channel has undigested messages left in
+// the chunk.
+type BackfillWindowResult struct {
+	Digests  int
+	Complete bool
+}
+
+// RunBackfillWindow digests the Slack history inside one backfill chunk
+// (from, to]. Each channel's window is resolved like the forward path's, but
+// scoped to the chunk: it starts at the later of from, the channel's newest
+// digest ending inside the chunk, what this call already considered, and the
+// FEAT-03 fast-forward floor, and loads up to `to`. Passes repeat until no
+// channel has undigested messages in the chunk.
+//
+// Forward marks are never moved: "considered" stamps stay in memory for the
+// call, and the backfill's digests end below every forward window, so the
+// forward MAX(period_to) is unchanged. The live-edge cooldown is off.
+//
+// Lock contention returns {0, false} with no error: the chunk is retried next
+// cycle. The returned usage is this call's delta only — the pipeline (and its
+// usage counters) is shared with the forward phase.
+func (p *Pipeline) RunBackfillWindow(ctx context.Context, from, to float64) (BackfillWindowResult, *Usage, error) {
+	if !p.cfg.Digest.Enabled {
+		return BackfillWindowResult{Complete: true}, &Usage{}, nil
+	}
+
+	_, unlock, err := p.acquireDigestLock()
+	if err != nil {
+		p.logger.Printf("digest backfill: skipping — %v", err)
+		return BackfillWindowResult{}, &Usage{}, nil
+	}
+	defer unlock()
+
+	startIn, startOut, startAPI := p.totalInputTokens.Load(), p.totalOutputTokens.Load(), p.totalAPITokens.Load()
+	usageDelta := func() *Usage {
+		return &Usage{
+			InputTokens:    int(p.totalInputTokens.Load() - startIn),
+			OutputTokens:   int(p.totalOutputTokens.Load() - startOut),
+			TotalAPITokens: int(p.totalAPITokens.Load() - startAPI),
+		}
+	}
+
+	p.loadCaches()
+	p.backfill = &backfillScope{considered: map[string]float64{}}
+	defer func() { p.backfill = nil }()
+
+	fastForwardTS, err := p.db.GetDigestFastForwardTS()
+	if err != nil {
+		p.logger.Printf("digest backfill: reading fast-forward ts: %v", err)
+		fastForwardTS = 0
+	}
+
+	var res BackfillWindowResult
+	var prev map[string]float64
+	for range maxBackfillPasses {
+		if err := ctx.Err(); err != nil {
+			return res, usageDelta(), err
+		}
+		windows, err := p.backfillWindows(from, to, fastForwardTS)
+		if err != nil {
+			return res, usageDelta(), err
+		}
+		if len(windows) == 0 {
+			res.Complete = true
+			return res, usageDelta(), nil
+		}
+		// advancesWindow's invariant, asserted per pass: a pass that moved no
+		// channel would repeat itself forever.
+		if prev != nil && !backfillProgressed(prev, windows) {
+			return res, usageDelta(), fmt.Errorf("digest backfill: no progress in [%.0f,%.0f]", from, to)
+		}
+		prev = make(map[string]float64, len(windows))
+		for _, w := range windows {
+			prev[w.channelID] = w.since
+		}
+
+		n, _, err := p.runChannelWindows(ctx, windows, to)
+		res.Digests += n
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return res, usageDelta(), ctxErr
+		}
+		if err != nil {
+			return res, usageDelta(), fmt.Errorf("digest backfill [%.0f,%.0f]: %w", from, to, err)
+		}
+	}
+	p.logger.Printf("digest backfill: [%.0f,%.0f] still has work after %d passes — resuming next cycle", from, to, maxBackfillPasses)
+	return res, usageDelta(), nil
+}
+
+// backfillWindows resolves the chunk-scoped window of every digestable channel
+// that still has messages in (from, to] past its window start. Muted channels
+// and 1:1 DMs are dropped here, not only inside runChannelWindows: they are
+// never digested, so leaving them in would read as a pass without progress.
+func (p *Pipeline) backfillWindows(from, to, fastForwardTS float64) ([]channelWindow, error) {
+	candidates, err := p.db.ChannelsWithMessagesInRange(from, to)
+	if err != nil {
+		return nil, fmt.Errorf("digest backfill: %w", err)
+	}
+	b := p.backfill
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	windows := make([]channelWindow, 0, len(candidates))
+	for _, c := range candidates {
+		since := max(from, c.LastDigestInRange, b.considered[c.ChannelID], fastForwardTS)
+		if c.NewestInRange > since {
+			windows = append(windows, channelWindow{channelID: c.ChannelID, since: since})
+		}
+	}
+	if len(windows) == 0 {
+		return nil, nil
+	}
+	return p.filterDigestableChannels(windows), nil
+}
+
+// backfillProgressed reports whether any channel's window moved since the
+// previous pass — its start advanced, or it left the candidate set.
+func backfillProgressed(prev map[string]float64, windows []channelWindow) bool {
+	if len(windows) < len(prev) {
+		return true
+	}
+	for _, w := range windows {
+		before, ok := prev[w.channelID]
+		if !ok || w.since > before {
+			return true
+		}
+	}
+	return false
+}
+
+// RunBackfillRollups generates the daily rollup of every UTC day the backfill
+// chunk [from, to) touches. Every day is tried; the first error is returned.
+// It does not touch the daemon's forward rollup attempt budget.
+func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) error {
+	if !p.cfg.Digest.Enabled {
+		return nil
+	}
+
+	_, unlock, err := p.acquireDigestLock()
+	if err != nil {
+		return fmt.Errorf("digest backfill rollups: %w", err)
+	}
+	defer unlock()
+
+	p.loadCaches()
+
+	var firstErr error
+	end := time.Unix(int64(to), 0).UTC()
+	for d := utcDayStart(time.Unix(int64(from), 0)); d.Before(end); d = d.Add(24 * time.Hour) {
+		if err := ctx.Err(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		if err := p.runDailyRollupForDate(ctx, d); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("digest backfill rollup %s: %w", d.Format("2006-01-02"), err)
+		} else if err != nil {
+			p.logger.Printf("digest backfill rollup %s: %v", d.Format("2006-01-02"), err)
+		}
+	}
+	return firstErr
+}
