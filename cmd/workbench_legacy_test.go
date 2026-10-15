@@ -57,8 +57,9 @@ func statusJSON(t *testing.T, p *db.Workbench) workbenchStatusJSON {
 }
 
 // integrate status --json: a never-resynced folder reports legacy, and its
-// old hook and registration still count as installed; after the resync
-// legacy is false.
+// old hook and registration still count in hook/stop_hook/mcp (the wire
+// contract) although they no longer run — the text status says so; after
+// the resync legacy is false.
 func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -69,6 +70,11 @@ func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	assert.True(t, got.Hook && got.StopHook && got.MCP, "%+v", got)
 	assert.Equal(t, "unchanged", got.LegacySkill)
 	assert.Equal(t, "missing", got.Skill)
+
+	var text bytes.Buffer
+	require.NoError(t, runWorkbenchStatus(context.Background(), &text, p, false))
+	assert.Contains(t, text.String(), "legacy   set up under the old Projects name — its hooks and MCP server no longer run with this Watchtower; "+
+		"run 'watchtower workbench resync "+strconv.FormatInt(p.ID, 10)+"' (the Desktop's Re-run Setup) or Repair install")
 
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))

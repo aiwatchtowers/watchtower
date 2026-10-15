@@ -350,7 +350,7 @@ extension WorkbenchInstallStatus {
             + "state hooks \(stateHooks ? "on" : "missing") · "
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · "
             + "cleanup permission \(cleanupPermission ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
-            + (legacy ? "\nSet up under the old Projects name — Repair install migrates it" : "")
+            + (legacy ? "\nSet up under the old Projects name — it no longer runs; Repair install migrates it" : "")
             + (codex.flatMap { $0.found || $0.trustError != nil ? "\n" + $0.summary : nil } ?? "")
     }
 }

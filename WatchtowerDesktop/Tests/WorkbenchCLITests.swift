@@ -272,7 +272,7 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(legacy.needsRepair, "a legacy folder's hooks call commands that are gone")
         XCTAssertTrue(legacy.claudeNeedsRepair)
         XCTAssertTrue(legacy.repairHelp.contains("Skill missing"), legacy.repairHelp)
-        XCTAssertTrue(legacy.repairHelp.contains("Set up under the old Projects name — Repair install migrates it"),
+        XCTAssertTrue(legacy.repairHelp.contains("Set up under the old Projects name — it no longer runs; Repair install migrates it"),
                       legacy.repairHelp)
 
         let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(

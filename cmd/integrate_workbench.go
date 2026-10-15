@@ -428,10 +428,12 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 // workbenchStatusJSON is `integrate status --workbench N --json`, read by the
 // Desktop's WorkbenchCLI. Keys are a wire contract and keep their pre-rename
 // spelling (spec 2026-10-02 A2); new ones are only added. hook, stop_hook
-// and mcp count a pre-rename entry too, so a working folder that was never
-// resynced reads as installed. legacy says such a folder still holds
-// something a resync would migrate (old registration, old hook command, or
-// the old skill as we shipped it); legacy_skill is the old skill's state
+// and mcp count a pre-rename entry too (unchanged contract), although such
+// an entry no longer runs: the old hook commands and `mcp --project` are
+// gone. legacy says the folder still holds something a resync would migrate
+// (old registration, old hook command, or the old skill as we shipped it) —
+// a folder that is not running until it is resynced or repaired;
+// legacy_skill is the old skill's state
 // ("" = absent, "unchanged", "drifted", "foreign").
 type workbenchStatusJSON struct {
 	WorkbenchID int64  `json:"project_id"`
@@ -538,7 +540,8 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 		fmt.Fprintf(w, "  mcp      %v\n", st.MCP)
 	}
 	if st.Legacy {
-		fmt.Fprintf(w, "  legacy   set up by an older Watchtower — run 'watchtower workbench resync %d' (the Desktop's Re-run Setup) to update\n", p.ID)
+		fmt.Fprintf(w, "  legacy   set up under the old Projects name — its hooks and MCP server no longer run with this Watchtower; "+
+			"run 'watchtower workbench resync %d' (the Desktop's Re-run Setup) or Repair install\n", p.ID)
 	}
 	if s := legacySkillState(st.LegacySkill); s != "" {
 		fmt.Fprintf(w, "  old skill %s %s%s (%s)\n", devpack.LegacySkillName, s, skillStateNote(st.LegacySkill.State), st.LegacySkill.Path)
