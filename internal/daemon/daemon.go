@@ -503,6 +503,10 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseBriefing(ctx)
 
 	d.runDayPlanPhases(ctx, time.Now())
+
+	// Last, and alone: it shares the digest pipeline and the ideas lock with
+	// the forward phases above, so it must stay out of any parallel group.
+	d.phaseHistoryBackfill(ctx)
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
@@ -638,6 +642,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
+			if from, ok := o.FirstSyncFrom(); ok {
+				d.startHistoryBackfill("slack", o.AccountID(), from)
+			}
 			switch {
 			case err != nil:
 				d.logger.Printf("sync error: %v", err)
@@ -753,6 +760,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
 		n, err := s.Sync(ctx)
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("gmail", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("gmail sync error: %v", err)
 		} else if n > 0 {
@@ -768,6 +778,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 func (d *Daemon) phaseImapSync(ctx context.Context) {
 	for _, s := range d.imapSyncers {
 		n, err := s.Sync(ctx)
+		if from, ok := s.FirstSyncFrom(); ok {
+			d.startHistoryBackfill("imap", s.AccountID(), from)
+		}
 		if err != nil {
 			d.logger.Printf("imap sync error: %v", err)
 		} else if n > 0 {
@@ -1534,6 +1547,14 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 	if !d.config.Memory.Enabled {
 		d.logger.Printf("memory: disabled, skipping")
 		return
+	}
+	// Extraction is oldest-first behind a watermark: let the history
+	// backfill land its older rows first (docs/features/history-backfill.md).
+	if d.db != nil {
+		if active, err := d.db.HasActiveHistoryBackfill(); err == nil && active {
+			d.logger.Printf("memory: waiting for the history backfill to finish")
+			return
+		}
 	}
 	if d.memoryPipe == nil && d.memoryOpen != nil {
 		p, err := d.memoryOpen()
