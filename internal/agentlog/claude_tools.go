@@ -90,7 +90,7 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 		switch {
 		case tur.Interrupted || strings.HasPrefix(text, "[Request interrupted by user"):
 			r.Outcome = "interrupted"
-		case rec.ToolDenialKind != "" || strings.Contains(text, "doesn't want to proceed with this tool use"):
+		case rec.ToolDenialKind != "" || rejected(rec.PermissionDecision) || strings.Contains(text, "doesn't want to proceed with this tool use"):
 			r.Outcome = "denied"
 		case b.IsError:
 			r.Outcome, r.ErrorClass = "error", errorClass(text)
@@ -174,20 +174,63 @@ func relativeTarget(path, folder string) string {
 	return rel
 }
 
+var (
+	envAssignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	progRe      = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
+	subcmdRe    = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+// skipEnvAssign drops one leading NAME=value (value may be quoted) from s.
+func skipEnvAssign(s string) (string, bool) {
+	loc := envAssignRe.FindStringIndex(s)
+	if loc == nil {
+		return s, false
+	}
+	rest := s[loc[1]:]
+	if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
+		end := strings.IndexByte(rest[1:], rest[0])
+		if end < 0 {
+			return "", true
+		}
+		rest = rest[end+2:]
+	} else if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		rest = rest[i:]
+	} else {
+		rest = ""
+	}
+	return strings.TrimLeft(rest, " \t"), true
+}
+
 func shellTarget(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	for {
+		var ok bool
+		if cmd, ok = skipEnvAssign(cmd); !ok {
+			break
+		}
+	}
 	if i := strings.IndexAny(cmd, "&|;\n"); i >= 0 {
 		cmd = cmd[:i]
 	}
 	fields := strings.Fields(cmd)
-	for len(fields) > 0 && strings.Contains(fields[0], "=") {
-		fields = fields[1:]
-	}
 	if len(fields) == 0 {
 		return ""
 	}
 	prog := filepath.Base(fields[0])
-	if subcommandPrograms[prog] && len(fields) > 1 && !strings.HasPrefix(fields[1], "-") {
+	if !progRe.MatchString(prog) {
+		return ""
+	}
+	if subcommandPrograms[prog] && len(fields) > 1 && subcmdRe.MatchString(fields[1]) && !strings.HasPrefix(fields[1], "-") {
 		return prog + " " + fields[1]
 	}
 	return prog
+}
+
+// rejected reports an owner "reject" permission decision (an object on real
+// records; anything else is treated as no decision).
+func rejected(raw json.RawMessage) bool {
+	var d struct {
+		Decision string `json:"decision"`
+	}
+	return json.Unmarshal(raw, &d) == nil && d.Decision == "reject"
 }

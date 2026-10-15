@@ -20,27 +20,28 @@ const maxLineBytes = 8 << 20
 // claudeRecord is the subset of a Claude Code transcript line the core
 // reads. Every field is optional; unknown fields are ignored.
 type claudeRecord struct {
-	Type             string          `json:"type"`
-	Subtype          string          `json:"subtype"`
-	SessionID        string          `json:"sessionId"`
-	UUID             string          `json:"uuid"`
-	ParentUUID       string          `json:"parentUuid"`
-	PromptID         string          `json:"promptId"`
-	Timestamp        string          `json:"timestamp"`
-	CWD              string          `json:"cwd"`
-	GitBranch        string          `json:"gitBranch"`
-	RequestID        string          `json:"requestId"`
-	IsMeta           bool            `json:"isMeta"`
-	IsSidechain      bool            `json:"isSidechain"`
-	IsAPIError       bool            `json:"isApiErrorMessage"`
-	IsCompactSummary bool            `json:"isCompactSummary"`
-	AttributionSkill string          `json:"attributionSkill"`
-	ToolDenialKind   string          `json:"toolDenialKind"`
-	ToolUseResult    json.RawMessage `json:"toolUseResult"`
-	PRURL            string          `json:"prUrl"`
-	TotalCostUSD     *float64        `json:"totalCostUSD"`
-	Attachment       json.RawMessage `json:"attachment"`
-	Message          claudeMessage   `json:"message"`
+	Type               string          `json:"type"`
+	Subtype            string          `json:"subtype"`
+	SessionID          string          `json:"sessionId"`
+	UUID               string          `json:"uuid"`
+	ParentUUID         string          `json:"parentUuid"`
+	PromptID           string          `json:"promptId"`
+	Timestamp          string          `json:"timestamp"`
+	CWD                string          `json:"cwd"`
+	GitBranch          string          `json:"gitBranch"`
+	RequestID          string          `json:"requestId"`
+	IsMeta             bool            `json:"isMeta"`
+	IsSidechain        bool            `json:"isSidechain"`
+	IsAPIError         bool            `json:"isApiErrorMessage"`
+	IsCompactSummary   bool            `json:"isCompactSummary"`
+	AttributionSkill   string          `json:"attributionSkill"`
+	ToolDenialKind     string          `json:"toolDenialKind"`
+	PermissionDecision json.RawMessage `json:"permissionDecision"`
+	ToolUseResult      json.RawMessage `json:"toolUseResult"`
+	PRURL              string          `json:"prUrl"`
+	TotalCostUSD       *float64        `json:"totalCostUSD"`
+	Attachment         json.RawMessage `json:"attachment"`
+	Message            claudeMessage   `json:"message"`
 }
 
 type claudeMessage struct {

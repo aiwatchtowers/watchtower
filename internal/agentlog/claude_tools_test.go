@@ -87,3 +87,30 @@ func TestErrorClass(t *testing.T) {
 	assert.Equal(t, "timeout", errorClass("Command timed out after 2m"))
 	assert.Equal(t, "other", errorClass("boom"))
 }
+
+func TestShellTarget_ContentSafe(t *testing.T) {
+	cases := map[string]string{
+		`TOKEN="abc def" git status`: "git status",
+		`A='x y' B=2 make test`:      "make test",
+		`/usr/bin/git push`:          "git push",
+		`git -C d commit`:            "git",
+		`"$(evil)" x`:                "",
+		`echo SECRET | tee f`:        "echo",
+	}
+	for in, want := range cases {
+		got := shellTarget(in)
+		assert.Equal(t, want, got, in)
+		for _, bad := range []string{"abc", "def", "SECRET", "x y"} {
+			assert.NotContains(t, got, bad)
+		}
+	}
+}
+
+func TestParseClaude_RejectDecisionMarksDenied(t *testing.T) {
+	s := line(t, assistant("s1", "u1", "m1", "r1", 5, toolUse("t1", "Bash", map[string]any{"command": "make deploy"}))) +
+		toolResultLine(t, "s1", "r1", "t1", "nope", true, map[string]any{"permissionDecision": map[string]any{"decision": "reject"}}) +
+		toolResultLine(t, "s1", "r2", "t1", "fine", false, map[string]any{"permissionDecision": map[string]any{"decision": "accept"}})
+	r := parse(t, s, ParseOptions{})
+	assert.Equal(t, "denied", r.ToolResults[0].Outcome)
+	assert.Equal(t, "ok", r.ToolResults[1].Outcome)
+}
