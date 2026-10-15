@@ -38,6 +38,7 @@ struct SlackConnectionDetail: View {
     @State private var showSlackDisconnectConfirm = false
     @State private var showAddSlackAccountSheet = false
     @State private var slackAccountPendingRemoval: SlackAccount?
+    @State private var accountBeingRenamed: AccountRenameTarget?
     @State private var newReactionEmoji = ""
     @State private var newReactionTool = ReactionDictionaryTools.all[0]
 
@@ -236,6 +237,11 @@ struct SlackConnectionDetail: View {
                             }
                             .help("Sign in to this workspace again (grants new permissions such as sending messages)")
                             .disabled(vm.isConnecting)
+                            Button("Rename…") {
+                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isConnecting)
                             Button("Remove") {
                                 slackAccountPendingRemoval = account
                             }
@@ -268,6 +274,9 @@ struct SlackConnectionDetail: View {
             AddSlackAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
                 .marksAccountSheet(appState)
+        }
+        .accountRenameAlert($accountBeingRenamed) { target, name in
+            Task { await appState.slackAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
         .confirmationDialog(
             "Remove \(slackAccountPendingRemoval?.displayName ?? "this workspace")?",

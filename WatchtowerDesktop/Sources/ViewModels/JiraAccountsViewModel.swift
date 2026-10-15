@@ -68,7 +68,9 @@ final class JiraAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `jira add` args with an optional `--label` and `--site`.
+    /// Builds the `jira add` args with an optional `--site`. No `--label`: the
+    /// CLI names the site after its host (`db.JiraAccountLabel`); the owner
+    /// renames it in Settings.
     /// Pure and side-effect-free so the flag assembly is directly testable
     /// without shelling out to a real process.
     ///
@@ -76,11 +78,8 @@ final class JiraAccountsViewModel {
     /// prompt: a grant that reaches several Atlassian sites cannot be resolved
     /// from a spawned process, so the sheet lets the user name the site up
     /// front.
-    static func addArgs(label: String, site: String = "") -> [String] {
+    static func addArgs(site: String = "") -> [String] {
         var args = ["jira", "add", "--app-return"]
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
         if !site.isEmpty {
             args.append(contentsOf: ["--site", site])
         }
@@ -90,8 +89,8 @@ final class JiraAccountsViewModel {
     /// Connects a new Atlassian site via `watchtower jira add`. The OAuth
     /// consent happens in the loopback browser; the detached Process is held in
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(label: String, site: String = "", daemonPolicy: DaemonRestartPolicy = .restart) async {
-        await runAuthFlow(args: Self.addArgs(label: label, site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
+    func addAccount(site: String = "", daemonPolicy: DaemonRestartPolicy = .restart) async {
+        await runAuthFlow(args: Self.addArgs(site: site), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -170,6 +169,19 @@ final class JiraAccountsViewModel {
             failurePrefix: enabled ? "Enable failed" : "Disable failed",
             daemonPolicy: .restart
         )
+    }
+
+    // MARK: - Rename
+
+    /// Renames account `accountID` via `watchtower jira rename` (`AccountRename`). No
+    /// daemon restart: the daemon reads labels when it needs them.
+    func rename(accountID: Int, to name: String) async {
+        guard !isConnecting else {
+            error = "Another connection is already in progress."
+            return
+        }
+        error = await AccountRename.run(source: "jira", id: accountID, name: name, cliPath: cliPath())
+        if error == nil { await refreshAsync() }
     }
 
     // MARK: - Remove

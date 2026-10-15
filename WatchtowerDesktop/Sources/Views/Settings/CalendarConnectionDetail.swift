@@ -9,6 +9,7 @@ struct CalendarConnectionDetail: View {
     @Environment(AppState.self) private var appState
     @State private var showAddCalendarAccountSheet = false
     @State private var calendarAccountPendingRemoval: CalendarAccount?
+    @State private var accountBeingRenamed: AccountRenameTarget?
 
     var body: some View {
         Form {
@@ -52,6 +53,11 @@ struct CalendarConnectionDetail: View {
                             Circle()
                                 .fill(account.isOK ? Color.green : Color.red)
                                 .frame(width: 8, height: 8)
+                            Button("Rename…") {
+                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isRunning)
                             Button("Remove") {
                                 calendarAccountPendingRemoval = account
                             }
@@ -80,6 +86,9 @@ struct CalendarConnectionDetail: View {
             AddCalendarAccountView()
                 .environment(appState)
                 .marksAccountSheet(appState)
+        }
+        .accountRenameAlert($accountBeingRenamed) { target, name in
+            Task { await appState.calendarAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
         .confirmationDialog(
             "Remove \(calendarAccountPendingRemoval?.displayName ?? "this calendar")?",

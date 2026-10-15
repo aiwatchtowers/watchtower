@@ -123,7 +123,9 @@ func (db *DB) GetSlackAccount(id int64) (SlackAccount, error) {
 }
 
 // UpdateSlackAccountConnection updates the resolved team info and current
-// user id for accountID — called once auth.test/team.info resolve.
+// user id for accountID — called once auth.test/team.info resolve — and gives
+// a still-unlabeled account its automatic label (best effort, after the
+// identity is saved) (SlackAccountLabel).
 func (db *DB) UpdateSlackAccountConnection(id int64, teamID, teamName, teamDomain, currentUserID string) error {
 	res, err := db.Exec(`UPDATE slack_accounts SET team_id = ?, team_name = ?, team_domain = ?,
         current_user_id = ? WHERE id = ?`,
@@ -134,6 +136,7 @@ func (db *DB) UpdateSlackAccountConnection(id int64, teamID, teamName, teamDomai
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("updating slack account connection: no slack_accounts row %d", id)
 	}
+	db.fillAccountLabelBestEffort("slack_accounts", id, SlackAccountLabel(teamName, teamDomain))
 	return nil
 }
 

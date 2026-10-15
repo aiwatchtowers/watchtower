@@ -18,9 +18,12 @@ final class CalendarAccountsViewModel {
     var error: String?
 
     private let dbPool: DatabasePool
+    /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
+    private let cliPath: () -> String?
 
-    init(dbPool: DatabasePool) {
+    init(dbPool: DatabasePool, cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.dbPool = dbPool
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -56,7 +59,7 @@ final class CalendarAccountsViewModel {
     /// pipe (plus a trailing newline), then the pipe is closed. Returns true
     /// on success so the caller can dismiss the connect sheet.
     @discardableResult
-    func addCalDAV(url: String, username: String, password: String, label: String) async -> Bool {
+    func addCalDAV(url: String, username: String, password: String) async -> Bool {
         guard !isRunning else {
             error = "Another connection is already in progress."
             return false
@@ -69,10 +72,7 @@ final class CalendarAccountsViewModel {
         isRunning = true
         error = nil
 
-        var args = ["caldav", "add", "--url", url, "--username", username]
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
+        let args = ["caldav", "add", "--url", url, "--username", username]
 
         let result = await Self.runCLI(path: cliPath, arguments: args, stdin: password + "\n")
         isRunning = false
@@ -98,7 +98,7 @@ final class CalendarAccountsViewModel {
     /// access to the whole calendar) — it goes to the subprocess's stdin,
     /// never argv, and is never stored in the DB row.
     @discardableResult
-    func addICS(feedURL: String, label: String) async -> Bool {
+    func addICS(feedURL: String) async -> Bool {
         guard !isRunning else {
             error = "Another connection is already in progress."
             return false
@@ -111,12 +111,7 @@ final class CalendarAccountsViewModel {
         isRunning = true
         error = nil
 
-        var args = ["caldav", "add-ics"]
-        if !label.isEmpty {
-            args.append(contentsOf: ["--label", label])
-        }
-
-        let result = await Self.runCLI(path: cliPath, arguments: args, stdin: feedURL + "\n")
+        let result = await Self.runCLI(path: cliPath, arguments: ["caldav", "add-ics"], stdin: feedURL + "\n")
         isRunning = false
 
         if result.exitCode == 0 {
@@ -131,6 +126,20 @@ final class CalendarAccountsViewModel {
                 : String(result.stderr.prefix(200))
             return false
         }
+    }
+
+    // MARK: - Rename
+
+    /// Renames account `accountID` via `watchtower caldav rename` — CalDAV or ICS
+    /// (`AccountRename`). No daemon restart: the syncer re-reads the label
+    /// on its next cycle.
+    func rename(accountID: Int, to name: String) async {
+        guard !isRunning else {
+            error = "Another connection is already in progress."
+            return
+        }
+        error = await AccountRename.run(source: "caldav", id: accountID, name: name, cliPath: cliPath())
+        if error == nil { await refreshAsync() }
     }
 
     // MARK: - Remove

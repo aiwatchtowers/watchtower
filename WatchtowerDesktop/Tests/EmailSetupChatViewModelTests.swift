@@ -12,7 +12,7 @@ final class EmailSetupChatViewModelTests: XCTestCase {
     ) -> ImapFormSnapshot {
         ImapFormSnapshot(
             host: host, portText: "993", security: "ssl",
-            username: "user@example.com", folder: "INBOX", label: "",
+            username: "user@example.com", folder: "INBOX",
             hasPassword: hasPassword, lastConnectionError: lastConnectionError
         )
     }
@@ -31,7 +31,7 @@ final class EmailSetupChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(parsed.patch, ImapSettingsPatch(
             host: "imap.gmail.com", port: 993, security: "ssl",
-            username: "u@gmail.com", folder: "INBOX", label: nil
+            username: "u@gmail.com", folder: "INBOX" // leak-check:allow
         ))
         XCTAssertEqual(parsed.text, "Here you go.")
     }

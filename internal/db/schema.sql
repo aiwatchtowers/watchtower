@@ -2498,3 +2498,26 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
+
+-- Claude plan usage: one row per poll per limit (percent of the 5h/7d windows), pruned after 8 days.
+CREATE TABLE IF NOT EXISTS plan_usage_samples (
+    taken_at   TEXT NOT NULL,
+    limit_key  TEXT NOT NULL,
+    percent    REAL NOT NULL,
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (limit_key, taken_at)
+);
+
+-- Claude plan usage: singleton status row (id = 1) the daemon writes; limits_json carries the projection.
+CREATE TABLE IF NOT EXISTS plan_usage_status (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    state          TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason         TEXT NOT NULL DEFAULT '',
+    plan           TEXT NOT NULL DEFAULT '',
+    fetched_at     TEXT,
+    last_error     TEXT NOT NULL DEFAULT '',
+    last_error_at  TEXT,
+    limits_json    TEXT NOT NULL DEFAULT '[]',
+    breakdown_json TEXT NOT NULL DEFAULT '[]',
+    updated_at     TEXT NOT NULL
+);

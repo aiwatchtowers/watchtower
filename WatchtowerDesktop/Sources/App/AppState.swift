@@ -307,6 +307,8 @@ final class AppState {
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
+    /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
+    private(set) var planUsageCenter: PlanUsageCenter?
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
@@ -1459,6 +1461,7 @@ final class AppState {
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         initWorkbenches(dbPool: manager.dbPool)
+        initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -1754,6 +1757,14 @@ final class AppState {
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
         initMobileHub(dbPool: dbPool)
+    }
+
+    /// Claude plan limits: the previous center stopped, a new one polling.
+    private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
+        planUsageCenter?.stop()
+        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
+        planUsageCenter = center
+        center.start()
     }
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")

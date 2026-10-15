@@ -22,7 +22,6 @@ struct AddJiraAccountView: View {
         self.daemonPolicy = daemonPolicy
     }
 
-    @State private var label = ""
     /// Optional site hint passed through as `--site`. The CLI's site picker is
     /// an interactive stdin prompt, and the Process this sheet spawns has no
     /// stdin wired — so when a grant reaches several Atlassian sites, naming
@@ -44,16 +43,13 @@ struct AddJiraAccountView: View {
                     .buttonStyle(.plain)
             }
 
-            TextField("Label (optional)", text: $label, prompt: Text("e.g. Work, Client"))
-                .textFieldStyle(.roundedBorder)
-
             TextField("Site (optional)", text: $site, prompt: Text("e.g. acme.atlassian.net"))
                 .textFieldStyle(.roundedBorder)
 
             Text("""
                 Opens Atlassian's authorization page in your browser. After you approve, \
-                the site is added and syncing starts. Leave Site empty unless your \
-                Atlassian account reaches several sites.
+                the site is added under its address (acme for acme.atlassian.net) and syncing starts. Leave Site \
+                empty unless your Atlassian account reaches several sites.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -88,16 +84,15 @@ struct AddJiraAccountView: View {
             }
         }
         .padding(20)
-        .frame(width: 360, height: 250)
+        .frame(width: 360, height: 220)
     }
 
     private func connect() {
         guard let vm else { return }
         cancelled = false
-        let trimmed = label.trimmingCharacters(in: .whitespaces)
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(label: trimmed, site: trimmedSite, daemonPolicy: daemonPolicy)
+            await vm.addAccount(site: trimmedSite, daemonPolicy: daemonPolicy)
             // addAccount is awaited: on success `error` is nil. A user Cancel
             // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss
             // on `cancelled` to keep the sheet open when the flow was

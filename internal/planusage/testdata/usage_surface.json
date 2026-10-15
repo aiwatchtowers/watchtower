@@ -1,0 +1,6 @@
+{
+  "limits": [
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 20, "severity": "normal", "resets_at": "2026-10-19T16:00:00+00:00", "scope": {"model": null, "surface": "Claude Design"}},
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 30, "severity": "normal", "resets_at": "2026-10-19T16:00:00+00:00", "scope": {"model": null, "surface": {"display_name": "Claude Code"}}}
+  ]
+}
