@@ -20,6 +20,21 @@ package enum FeatureReadiness {
         Dictionary(uniqueKeysWithValues: ReadinessFeature.allCases.map { ($0, readiness(of: $0, inputs)) })
     }
 
+    /// The daemon skips these while the owner is unknown (`logNoOwnerOnce`,
+    /// OWNER-02).
+    package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
+
+    /// With the owner unknown, an owner-gated feature promises no run: a
+    /// scheduled or waiting state reads nil (no line; the tab's own no-owner
+    /// state says why). The other states are facts and stay.
+    package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
+        guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
+        switch readiness {
+        case .scheduled, .waitingForSync: return nil
+        default: return readiness
+        }
+    }
+
     private static func readiness(of feature: ReadinessFeature, _ inputs: ReadinessInputs) -> Readiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }

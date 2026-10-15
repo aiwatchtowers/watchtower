@@ -167,6 +167,19 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(center.readiness, before)
     }
 
+    /// OWNER-02: with no owner identity the daemon makes no briefing, day plan
+    /// or inbox, so the tabs' context promises none.
+    func testUnknownOwnerContextPromisesNoBriefing() async throws {
+        let appState = AppState.isolated()
+        XCTAssertFalse(appState.owner.isKnown)
+        appState.readinessCenter.start(pool: try makePool())
+        defer { appState.readinessCenter.stop() }
+        await waitUntil(appState.readinessCenter) { !$0.isEmpty }
+        XCTAssertNotNil(appState.readinessCenter.readiness(for: .briefing))
+        XCTAssertNil(appState.emptyStateContext.readiness(.briefing))
+        XCTAssertNotNil(appState.emptyStateContext.readiness(.digests))
+    }
+
     func testStateSurvivesNavigation() async throws {
         let appState = AppState.isolated()
         XCTAssertTrue(appState.readinessEnvironmentOverride is FakeReadinessEnvironment, "no live config/stamps in tests")

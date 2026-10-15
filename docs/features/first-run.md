@@ -71,6 +71,12 @@ until the next morning's hour.
   is empty and the empty states show no readiness line and no state-gated
   button (`FeatureEmptyState.swift:106`).
 
+- **Owner gate (OWNER-02).** The daemon skips briefing, day plan and inbox
+  while the owner is unknown, so `AppState.emptyStateContext` passes their
+  readiness through `FeatureReadiness.honoringOwner`: a `scheduled` or
+  `waitingForSync` state reads nil then (no line); off, needs-source, error,
+  preparing and ready stay.
+
 ### Fresh-install rule — Go ↔ Swift dual path
 
 The daemon skips the hour gate for the first briefing and the first day plan;

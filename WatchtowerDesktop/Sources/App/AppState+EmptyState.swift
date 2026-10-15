@@ -7,8 +7,11 @@ extension AppState {
     /// view follows them.
     var emptyStateContext: EmptyStateContext {
         let syncProgress = daemonManager.syncProgress
+        let ownerKnown = owner.isKnown
         return EmptyStateContext(
-            readiness: { [readinessCenter] in readinessCenter.readiness(for: $0) },
+            readiness: { [readinessCenter] in
+                FeatureReadiness.honoringOwner(readinessCenter.readiness(for: $0), of: $0, ownerKnown: ownerKnown)
+            },
             syncLine: syncProgress?.isSyncing() == true ? syncProgress?.summary : nil,
             briefingHour: readinessCenter.briefingHour,
             dayPlanHour: readinessCenter.dayPlanHour,

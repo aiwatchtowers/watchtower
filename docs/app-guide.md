@@ -20,7 +20,7 @@ Setup is three steps and asks for nothing you must have: **Goals → Connect →
 - **Preparing now** — the job that fills the tab is running, with the sync's live progress line under it.
 - **Didn't work yet — retries automatically** — its last run failed (the first line of the reason follows); the background sync tries again by itself.
 - **Starts after the first sync** — Slack is connected and its first sync has not finished yet. Without Slack nothing waits on it.
-- **A time** — when it runs next: "Within ~15 min" (the next sync cycle, from your sync interval), "After this sync", "Today at 08:00" / "Tomorrow at 08:00" (briefing and day plan), "In about a day" (people cards), "In about 6 h" (ideas, stream digests). There are no countdowns.
+- **A time** — when it runs next: "Within ~15 min" (the next sync cycle, from your sync interval), "After this sync", "Today at 08:00" / "Tomorrow at 08:00" (briefing and day plan), "In about a day" (people cards), "In about 6 h" (ideas, stream digests). There are no countdowns. While Watchtower doesn't know who you are yet, Briefings, Day Plan and Inbox show no time — they are not made until an identity is connected, and Briefings and Day Plan say how to connect one.
 
 Once the tab has content the empty state goes and the content shows, even while a newer run is still going. The other buttons: Briefings and Day Plan offer **Open Settings → Features** (where the hour is set), Catch Up **Build a recap**, Targets **New target** (plus "React with an emoji in Slack to turn a message into a target."), Workbench **Add a folder**. What each tab already had stays inside: the first sync's progress on Catch Up, the reaction cheat sheet on Inbox, Generate and the "Connect Slack, Google or Jira so Watchtower knows who you are" box on Briefings and Day Plan, Find Ideas and Create on Ideas, the connect options on Calendar. Blockers, Project Map, Releases and Calendar's list keep their own "nothing here" message once Jira (or the calendar) has data — then it is news, not a first run. Search, Usage, MCP Server and AI Chat keep their own empty pages.
 
@@ -616,7 +616,7 @@ Watchtower runs a daemon (`watchtower sync --detach`) that periodically syncs Sl
 
 When Memory is enabled (see below), a **Memory consolidation** step also runs each cycle, right after attention detection.
 
-**The first cycles after setup** — a new install does not wait a day for its first results. People cards come in the first cycle that has channel digests to work from (a cycle with nothing to work on yet is simply tried again next cycle instead of holding cards back for 24 hours), and the first briefing and the first day plan come in the first cycle that can make them, without waiting for their morning hour. From then on they follow their usual once-a-day schedule. The tabs' empty states say the same ("Within ~15 min" before the first one, "Today at 08:00" after).
+**The first cycles after setup** — a new install does not wait a day for its first results. People cards come in the first cycle that has channel digests to work from (a cycle with nothing to work on yet is simply tried again next cycle instead of holding cards back for 24 hours), and the first briefing and the first day plan come in the first cycle that can make them, without waiting for their morning hour. From then on they follow their usual once-a-day schedule. The tabs' empty states say the same ("Within ~15 min" before the first one).
 
 ## Memory
 
