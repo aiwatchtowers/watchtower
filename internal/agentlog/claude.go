@@ -87,7 +87,8 @@ var knownTypes = map[string]bool{
 	"summary": true, "queue-operation": true, "last-prompt": true, "mode": true, "permission-mode": true,
 	"ai-title": true, "file-history-snapshot": true, "file-history-delta": true, "api-request": true,
 	"api-request-blob": true, "api-request-shape": true, "atis-latch": true, "bridge-session": true,
-	"frame-link": true, "relocated": true, "worktree-state": true,
+	"frame-link": true, "relocated": true, "worktree-state": true, "artifact-autoreact-ledger": true,
+		"artifact-comment-monitor": true,
 }
 
 // ParseClaude reads complete lines from r (positioned at startOffset) and
