@@ -588,7 +588,6 @@ final class HubSession {
         )
         switch transportKind {
         case .inMemoryDemo:
-            #if DEBUG
             do {
                 // Each launch builds a new in-memory transport whose change
                 // cursor restarts, so the persisted replica's tokens must be
@@ -611,7 +610,6 @@ final class HubSession {
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }
-            #endif
         case .cloudKit:
             // A session stopped before its boot ran (a frozen hub, an
             // orphan being cleared) never starts its engine.

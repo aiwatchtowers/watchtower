@@ -45,6 +45,18 @@ final class AppState {
     let daemonManager = DaemonManager()
     var isDBAvailable: Bool { databaseManager != nil }
 
+    /// Live per-feature readiness behind the tabs' empty states, here so a
+    /// reading survives tab switches. Started with the main app's DB wiring.
+    /// Lazy only because it reads `daemonManager` and `featureVisibility`;
+    /// `readinessEnvironmentOverride`, set before first use, replaces the
+    /// live environment in tests.
+    @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
+        environment: readinessEnvironmentOverride
+            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
+                Constants.activeWorkspaceDir()
+            }
+    )
+
     /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
     /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
     /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
@@ -284,6 +296,8 @@ final class AppState {
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
+    /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
+    private(set) var planUsageCenter: PlanUsageCenter?
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
@@ -383,6 +397,9 @@ final class AppState {
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// Test seam: the readiness inputs without the live config, workspace
+    /// directory and stamps.
+    @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `openDatabase` the
@@ -531,73 +548,6 @@ final class AppState {
         }
     }
 
-    /// Hands the MeetingRecorderCenter its voice-registry closures once the
-    /// shared pool opens (the Center is created before the DB). Both degrade
-    /// on failure instead of throwing — voice naming is a progressive
-    /// enhancement like roles themselves: a failed read → nil, identification
-    /// off for that recording (plain "Speaker N" labels, nothing queued or
-    /// learned — spec §2.6); a failed write → nothing queued (the transcript
-    /// is already saved).
-    /// Failures are printed, never silent (the renderRoles diagnostics
-    /// convention). `func`, not `private func`, so @testable tests can wire a
-    /// test DB through it (the initSecretaryProfile precedent).
-    func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
-        meetingRecorderCenter.registryLoader = { eventID in
-            do {
-                return try await dbPool.read { db in try Self.loadVoiceRegistry(db, eventID: eventID) }
-            } catch {
-                print("[AppState] voice registry load failed, identification disabled for this run: "
-                      + error.localizedDescription)
-                return nil
-            }
-        }
-        meetingRecorderCenter.registryWriter = { transcriptID, outcome in
-            do {
-                return try await dbPool.write { db -> Int in
-                    for sample in outcome.autoSamples {
-                        var sample = sample
-                        sample.transcriptID = transcriptID
-                        try VoiceSampleQueries.insertAuto(db, sample)
-                    }
-                    for task in outcome.tasks {
-                        try VoiceLabelQueueQueries.enqueue(
-                            db, transcriptID: transcriptID, clusterLabel: task.label, reason: task.reason,
-                            suggestedPersonID: task.personID, score: task.score)
-                    }
-                    return outcome.tasks.count
-                }
-            } catch {
-                print("[AppState] voice registry write failed for transcript \(transcriptID), nothing queued: "
-                      + error.localizedDescription)
-                return 0
-            }
-        }
-
-        voiceRegistryCenter.attach(dbPool: dbPool)
-        // Launch catch-up: the one full retro pass (spec §4.1), skipped with
-        // "Voice recognition" off (spec §6).
-        let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
-        voiceRegistryCenter.startCatchUp(voiceRecognition: voiceRecognition)
-        observeVoiceRegistryCatchUp()
-    }
-
-    /// Keeps `voiceRegistryCenter` in sync with every meeting-recorder save
-    /// (`MeetingRecorderCenter.savedTick`) via manual Observation tracking —
-    /// there's no view guaranteed to stay mounted for the app's whole
-    /// lifetime to drive a SwiftUI `.onChange` here, so AppState re-arms its
-    /// own tracking closure after each fire.
-    private func observeVoiceRegistryCatchUp() {
-        withObservationTracking {
-            _ = meetingRecorderCenter.savedTick
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                await self.handleMeetingRecorderSaved()
-                self.observeVoiceRegistryCatchUp()
-            }
-        }
-    }
-
     /// What a meeting-recorder save tells `voiceRegistryCenter`: NOT a full
     /// retro pass (spec §4.1 — a new meeting's freshly-minted auto samples
     /// are not one of retro's three triggers), just
@@ -680,6 +630,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
+                    self?.readinessCenter.stop()
                 }
             }
         }
@@ -1087,6 +1038,7 @@ final class AppState {
     static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
     static let featureStagedInSettings =
         "This feature has an unsaved change in Settings → Features — apply or discard it first"
+    static let anotherFeatureTurningOn = "Another feature is turning on — try again in a moment"
 
     /// Offered while an apply runs: merged once it is over.
     @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
@@ -1192,6 +1144,72 @@ final class AppState {
     }
 
     private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+
+    /// Why the last Turn on from a tab's empty state didn't work, per feature
+    /// id, so one tab's error never shows under another's Turn on; cleared
+    /// by that feature's next success. `featureWasOn`: the enable went
+    /// through and only the restart failed.
+    private var emptyStateTurnOnErrors: [String: (message: String, featureWasOn: Bool)] = [:]
+    /// The feature an empty-state Turn on is running for (one at a time).
+    private(set) var turningOnFeatureID: String?
+    var isTurningOnFromEmptyState: Bool { turningOnFeatureID != nil }
+
+    /// An error recorded while the feature was off goes stale once it is
+    /// turned on another way (Settings → Features); a failed restart stays
+    /// until a retry succeeds.
+    func emptyStateTurnOnError(for featureID: String) -> String? {
+        guard let error = emptyStateTurnOnErrors[featureID] else { return nil }
+        let nowOn = featureManager.features.contains { $0.id == featureID && $0.state != "disabled" }
+        return error.featureWasOn || !nowOn ? error.message : nil
+    }
+
+    private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
+        emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
+    }
+
+    /// Turn on from a tab's empty state: `features enable` right away (never
+    /// Settings → Features' staged changes) and one daemon restart, as
+    /// `acceptFeatureSuggestion` does. A retry after a failed restart finds
+    /// the feature on and only restarts.
+    func turnOnFeatureFromEmptyState(_ featureID: String) async {
+        guard turningOnFeatureID == nil else {
+            // Another tab's Turn on is running: say so under this one.
+            recordTurnOnError(featureID, Self.anotherFeatureTurningOn)
+            return
+        }
+        turningOnFeatureID = featureID
+        defer { turningOnFeatureID = nil }
+        let daemon = daemonControl
+        await awaitAccountDaemonRestarts()
+        let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
+        if result.busy {
+            recordTurnOnError(featureID, Self.featureChangesBusy)
+            return
+        }
+        if let error = featureManager.loadError {
+            // enableNow reloaded the list: still disabled means the enable failed.
+            recordTurnOnError(
+                featureID, error, featureWasOn: !featureManager.disabledFeatureIDs.contains(featureID)
+            )
+            return
+        }
+        if result.enabled.isEmpty {
+            if featureManager.disabledFeatureIDs.contains(featureID) {
+                recordTurnOnError(
+                    featureID,
+                    featureManager.pending[featureID] == false ? Self.featureStagedInSettings : Self.featureChangesBusy
+                )
+                return
+            }
+            do {
+                try await daemon.restartWaiting()
+            } catch {
+                recordTurnOnError(featureID, error.localizedDescription, featureWasOn: true)
+                return
+            }
+        }
+        emptyStateTurnOnErrors[featureID] = nil
+    }
 
     /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
     private func land(after route: OnboardingRoute) {
@@ -1427,9 +1445,11 @@ final class AppState {
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         initWorkbenches(dbPool: manager.dbPool)
+        initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
+        readinessCenter.start(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never
@@ -1720,6 +1740,14 @@ final class AppState {
         initMobileHub(dbPool: dbPool)
     }
 
+    /// Claude plan limits: the previous center stopped, a new one polling.
+    private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
+        planUsageCenter?.stop()
+        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
+        planUsageCenter = center
+        center.start()
+    }
+
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
 
     var isMobileSyncEnabled: Bool {
@@ -1911,37 +1939,6 @@ final class AppState {
         let center = MeetingReminderCenter(dbPool: dbPool, recorderCenter: meetingRecorderCenter)
         meetingReminderCenter = center
         center.start()
-    }
-
-    /// Hands the recorder Center its real meetings provider (the Center is
-    /// created before the dbPool exists — the `wireMeetingRecorderLoaders`
-    /// precedent) and starts the warm-engine policy poll. A read failure is
-    /// treated as "no meetings" and logged (the MeetingReminder convention):
-    /// the worst outcome is a missed prewarm or a one-tick-late unload, both
-    /// self-correcting — never a crash, never an unload mid-recording (the
-    /// policy never touches a busy engine regardless of the window).
-    private func startWarmEnginePolicy(dbPool: DatabasePool) {
-        meetingRecorderCenter.configureWarmPolicy { now in
-            do {
-                // Candidate events overlapping the prewarm lookahead:
-                // fetchEvents matches start_time <= to AND end_time >= from,
-                // so this returns both ongoing meetings and ones starting
-                // within the lead; the pure logic sorts out which is which.
-                let events = try dbPool.read { db in
-                    try CalendarQueries.fetchEvents(
-                        db,
-                        from: now,
-                        to: now.addingTimeInterval(WarmEnginePolicy.prewarmLead)
-                    )
-                }
-                return WarmEnginePolicy.window(events: events, now: now)
-            } catch {
-                print("[AppState] warm-policy event read failed, treating as no meetings: "
-                      + error.localizedDescription)
-                return .noMeetings
-            }
-        }
-        meetingRecorderCenter.startWarmPolicy()
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,11 +35,7 @@ func autoTool(name string) *tools.Tool {
 
 func openManifestTestDB(t *testing.T) *db.DB {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	d := db.OpenTestDB(t)
 	return d
 }
 

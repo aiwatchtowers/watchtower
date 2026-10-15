@@ -108,6 +108,7 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		"next-step":            true,
 		"knowledge-connectors": true,
 		"automations":          true, // spec 2026-10-14 §20 D12: on by default
+		"claude-plan-limits":   true,
 	}
 	for id, want := range wantEnabled {
 		feat, ok := ByID(id)
@@ -127,6 +128,17 @@ func TestRegistry_AutomationsEntry(t *testing.T) {
 	assert.Empty(t, f.Parent)
 	assert.Empty(t, f.FeedsInto)
 	assert.False(t, f.Enabled(loadConfig(t, "automations:\n  enabled: false\n")))
+}
+
+func TestRegistry_ClaudePlanLimitsEntry(t *testing.T) {
+	f, ok := ByID("claude-plan-limits")
+	require.True(t, ok)
+	assert.Equal(t, "plan_usage.enabled", f.ConfigKey)
+	assert.Equal(t, CostNone, f.Cost)
+	assert.Equal(t, "gauge.with.dots.needle.67percent", f.Icon)
+	assert.False(t, f.Core)
+	assert.Empty(t, f.FeedsInto)
+	assert.False(t, f.Enabled(loadConfig(t, "plan_usage:\n  enabled: false\n")))
 }
 
 func TestRegistry_InboxIsAttentionDetection(t *testing.T) {

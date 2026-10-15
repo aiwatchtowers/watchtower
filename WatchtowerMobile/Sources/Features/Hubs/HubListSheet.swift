@@ -3,7 +3,7 @@ import SwiftUI
 /// The list of linked Macs the switcher chip opens (multi-hub spec §5.6):
 /// each Mac's name, flavor, online dot (or "Removed this phone"), days
 /// offline, fetch problem and open asks, in registry order; then Add Mac,
-/// off at the limit. Forgetting a Mac is in Settings → Macs.
+/// off at the limit (a live build only: `MacsView.offersAdd`). Forgetting a Mac is in Settings → Macs.
 struct HubListSheet: View {
     enum Choice: Equatable {
         case activate(String)
@@ -51,17 +51,19 @@ struct HubListSheet: View {
                     .accessibilityAddTraits(item.isActive ? .isSelected : [])
                 }
             }
-            Section {
-                Button {
-                    choose(.addMac)
-                } label: {
-                    Label("Add Mac", systemImage: "qrcode.viewfinder")
-                }
-                .frame(minHeight: 44)
-                .disabled(!canAdd)
-            } footer: {
-                if !canAdd {
-                    Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+            if MacsView.offersAdd(transportKind: env.transportKind) {
+                Section {
+                    Button {
+                        choose(.addMac)
+                    } label: {
+                        Label("Add Mac", systemImage: "qrcode.viewfinder")
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(!canAdd)
+                } footer: {
+                    if !canAdd {
+                        Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+                    }
                 }
             }
         }

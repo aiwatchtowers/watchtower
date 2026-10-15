@@ -1,0 +1,192 @@
+import Foundation
+
+/// A tracked feature: an AI or sync output a tab shows, with a readiness.
+package enum ReadinessFeature: String, CaseIterable, Sendable {
+    case slackSync, digests, streamDigests, tracks, peopleCards, briefing,
+         dayPlan, ideas, memory, inbox, knowledgeIndex, calendar, jira
+
+    /// The feature registry id (`internal/features`); nil when the feature
+    /// has no switch of its own.
+    package var featureID: String? {
+        switch self {
+        case .slackSync, .calendar, .jira: nil
+        case .digests: "slack-digests"
+        case .streamDigests: "stream-digests"
+        case .tracks: "tracks"
+        case .peopleCards: "people-cards"
+        case .briefing: "briefing"
+        case .dayPlan: "day-plan"
+        case .ideas: "ideas"
+        case .memory: "memory"
+        case .inbox: "secretary-inbox"
+        case .knowledgeIndex: "knowledge-search"
+        }
+    }
+
+    /// `pipeline_runs.pipeline` as the daemon writes it; nil when the
+    /// feature has no runs to read (calendar).
+    package var pipelineName: String? {
+        switch self {
+        case .slackSync: "slack-sync"
+        case .digests: "digests"
+        case .streamDigests: "stream-digests"
+        case .tracks: "tracks"
+        case .peopleCards: "people"
+        case .briefing: "briefing"
+        case .dayPlan: "day_plan"
+        case .ideas: "ideas"
+        case .memory: "memory"
+        case .inbox: "inbox"
+        case .knowledgeIndex: "knowledge-index"
+        case .calendar: nil
+        case .jira: "jira-boards"
+        }
+    }
+
+    package var source: ReadinessSource {
+        switch self {
+        case .slackSync, .digests, .tracks, .peopleCards, .ideas: .slack
+        case .streamDigests: .jiraOrMail
+        case .briefing, .dayPlan, .memory, .inbox: .anySource
+        case .knowledgeIndex: .none
+        case .calendar: .calendar
+        case .jira: .jira
+        }
+    }
+
+    /// Whether the feature has nothing to work on until the first Slack sync
+    /// finishes (when Slack is connected). Slack sync is that sync itself.
+    package var readsSyncedData: Bool { self != .slackSync }
+}
+
+/// The source a feature reads.
+package enum ReadinessSource: Equatable, Sendable {
+    case none, slack, anySource, calendar, jira, jiraOrMail
+
+    /// What a "Connect …" line or button names.
+    package var displayName: String {
+        switch self {
+        case .slack: "Slack"
+        case .calendar: "a calendar"
+        case .jira: "Jira"
+        case .jiraOrMail: "Jira or mail"
+        case .anySource, .none: "a source"
+        }
+    }
+
+    package func isConnected(in connected: ConnectedSources) -> Bool {
+        switch self {
+        case .none: true
+        case .slack: connected.slack
+        case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
+        case .calendar: connected.calendar
+        case .jira: connected.jira
+        case .jiraOrMail: connected.jira || connected.mail
+        }
+    }
+}
+
+/// When a scheduled feature runs next. A vocabulary, not a duration: the
+/// UI never shows a countdown or minutes beyond the poll interval.
+package enum Eta: Equatable, Sendable {
+    /// A sync is running; the pipeline runs in the same cycle.
+    case afterCurrentSync
+    /// The next daemon cycle, `sync.poll_interval` away.
+    case nextCycle(minutes: Int)
+    /// A daily pipeline's hour gate.
+    case at(hour: Int, tomorrow: Bool)
+    /// The people cards 24 h throttle.
+    case inAboutADay
+    /// The ideas/streams interval, rounded up to whole hours.
+    case inHours(Int)
+}
+
+/// One feature's readiness, in evaluation precedence order.
+package enum Readiness: Equatable, Sendable {
+    case off
+    case needsSource(ReadinessSource)
+    case ready
+    case preparing(detail: String?)
+    case error(message: String)
+    case waitingForSync(detail: String?)
+    case scheduled(Eta)
+}
+
+/// The newest `pipeline_runs` row of one pipeline.
+package struct RunSnapshot: Equatable, Sendable {
+    /// "running" | "done" | "error"
+    package let status: String
+    package let startedAt: Date
+    package let errorMessage: String
+
+    package init(status: String, startedAt: Date, errorMessage: String = "") {
+        self.status = status
+        self.startedAt = startedAt
+        self.errorMessage = errorMessage
+    }
+}
+
+/// The daemon's throttle stamp files (`last_*.txt` in the workspace
+/// directory); nil when missing or unreadable.
+package struct ReadinessStamps: Equatable, Sendable {
+    package var lastPeople: Date?
+    package var lastBriefing: Date?
+    package var lastIdeas: Date?
+    package var lastStreams: Date?
+
+    package init(lastPeople: Date? = nil, lastBriefing: Date? = nil, lastIdeas: Date? = nil, lastStreams: Date? = nil) {
+        self.lastPeople = lastPeople
+        self.lastBriefing = lastBriefing
+        self.lastIdeas = lastIdeas
+        self.lastStreams = lastStreams
+    }
+}
+
+/// Everything `FeatureReadiness.evaluate` reads; no clock, no DB.
+package struct ReadinessInputs: Equatable {
+    package var now: Date
+    package var disabledFeatureIDs: Set<String>
+    package var connected: ConnectedSources
+    package var daemonRunning: Bool
+    package var syncProgress: SyncProgress?
+    /// When the last Slack sync finished (`last_sync.json`, written only by
+    /// the daemon's Slack sync phase); nil = the first Slack sync hasn't
+    /// finished. Without Slack it stays nil forever, so it only gates
+    /// `waitingForSync` while Slack is connected.
+    package var lastSyncTime: Date?
+    /// Keyed by pipeline name.
+    package var latestRuns: [String: RunSnapshot]
+    package var contentPresent: Set<ReadinessFeature>
+    package var stamps: ReadinessStamps
+    package var briefingHour: Int
+    package var dayPlanHour: Int
+    package var pollIntervalMinutes: Int
+
+    package init(
+        now: Date,
+        disabledFeatureIDs: Set<String> = [],
+        connected: ConnectedSources = .none,
+        daemonRunning: Bool = false,
+        syncProgress: SyncProgress? = nil,
+        lastSyncTime: Date? = nil,
+        latestRuns: [String: RunSnapshot] = [:],
+        contentPresent: Set<ReadinessFeature> = [],
+        stamps: ReadinessStamps = ReadinessStamps(),
+        briefingHour: Int = 8,
+        dayPlanHour: Int = 8,
+        pollIntervalMinutes: Int = 15
+    ) {
+        self.now = now
+        self.disabledFeatureIDs = disabledFeatureIDs
+        self.connected = connected
+        self.daemonRunning = daemonRunning
+        self.syncProgress = syncProgress
+        self.lastSyncTime = lastSyncTime
+        self.latestRuns = latestRuns
+        self.contentPresent = contentPresent
+        self.stamps = stamps
+        self.briefingHour = briefingHour
+        self.dayPlanHour = dayPlanHour
+        self.pollIntervalMinutes = pollIntervalMinutes
+    }
+}

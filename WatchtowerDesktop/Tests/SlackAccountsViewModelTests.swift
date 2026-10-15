@@ -58,15 +58,9 @@ final class SlackAccountsViewModelTests: XCTestCase {
 
     // MARK: - addArgs (pure)
 
-    func testAddArgsWithLabel() {
-        let args = SlackAccountsViewModel.addArgs(label: "Personal")
-        XCTAssertEqual(args, ["slack", "add", "--app-return", "--label", "Personal"])
-    }
-
-    func testAddArgsWithoutLabelOmitsFlag() {
-        let args = SlackAccountsViewModel.addArgs(label: "")
-        XCTAssertEqual(args, ["slack", "add", "--app-return"])
-        XCTAssertFalse(args.contains("--label"))
+    // The connect never names the workspace: the CLI labels it after its team.
+    func testAddArgsCarryNoLabel() {
+        XCTAssertEqual(SlackAccountsViewModel.addArgs, ["slack", "add", "--app-return"])
     }
 
     // MARK: - removeArgs (pure)
@@ -119,7 +113,7 @@ extension SlackAccountsViewModelTests {
 
     func testAddRestartsTheDaemonByDefault() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        await vm.addAccount(label: "")
+        await vm.addAccount()
         await vm.daemonRestartTask?.value
         XCTAssertNil(vm.error)
         XCTAssertEqual(daemon.restartCount, 1)
@@ -127,7 +121,7 @@ extension SlackAccountsViewModelTests {
 
     func testDeferredAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
-        await vm.addAccount(label: "", daemonPolicy: .deferred)
+        await vm.addAccount(daemonPolicy: .deferred)
         XCTAssertNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)
@@ -150,9 +144,33 @@ extension SlackAccountsViewModelTests {
         XCTAssertEqual(daemon.restartCount, 0)
     }
 
+    // Rename touches only the label: it reloads the list and never restarts
+    // the daemon; a refused rename leaves the CLI's message on screen.
+    func testRenameReloadsWithoutRestartingTheDaemon() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/true")
+        let account = try await insertAccount(pool)
+        var reloads = 0
+        vm.onAccountsChanged = { reloads += 1 }
+        await vm.rename(accountID: account.id, to: "Work")
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(reloads, 1)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testFailedRenameShowsTheErrorAndDoesNotReload() async throws {
+        let (vm, _, pool) = try makeVM(cli: "/usr/bin/false")
+        let account = try await insertAccount(pool)
+        var reloads = 0
+        vm.onAccountsChanged = { reloads += 1 }
+        await vm.rename(accountID: account.id, to: "Work")
+        XCTAssertEqual(vm.error, "Rename failed (exit 1)")
+        XCTAssertEqual(reloads, 0)
+    }
+
     func testFailedAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
-        await vm.addAccount(label: "")
+        await vm.addAccount()
         XCTAssertNotNil(vm.error)
         XCTAssertNil(vm.daemonRestartTask)
         XCTAssertEqual(daemon.restartCount, 0)

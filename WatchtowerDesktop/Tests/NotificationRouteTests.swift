@@ -145,7 +145,7 @@ final class NotificationRouteTests: XCTestCase {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
             "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
-            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action"
+            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action", "plan_usage"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -238,11 +238,20 @@ final class NotificationRouteTests: XCTestCase {
             ("task_overdue", .targets),
             ("target_extract", .targets),
             ("daily_summary", .digests),
-            ("agent_action", .inbox)
+            ("agent_action", .inbox),
+            ("plan_usage", .usage)
         ]
+        let defaults = UserDefaults.standard
+        let savedTab = defaults.object(forKey: UsageView.selectedTabKey)
+        defer {
+            if let savedTab { defaults.set(savedTab, forKey: UsageView.selectedTabKey) } else {
+                defaults.removeObject(forKey: UsageView.selectedTabKey)
+            }
+        }
 
         for forwarded in [true, false] {
             for (type, destination) in cases {
+                defaults.set(UsageView.Tab.progress.rawValue, forKey: UsageView.selectedTabKey)
                 let appState = AppState.isolated()
                 await NotificationDelegate.route(
                     actionID: UNNotificationDefaultActionIdentifier,
@@ -255,6 +264,12 @@ final class NotificationRouteTests: XCTestCase {
                     destination,
                     "type \(type) (forwarded: \(forwarded))"
                 )
+                if type == "plan_usage" {
+                    XCTAssertEqual(
+                        defaults.string(forKey: UsageView.selectedTabKey),
+                        UsageView.Tab.plan.rawValue
+                    )
+                }
             }
         }
     }

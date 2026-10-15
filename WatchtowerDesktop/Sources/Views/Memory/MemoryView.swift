@@ -9,6 +9,8 @@ import WatchtowerCore
 // backlinks, vault git history, and the owner-edit editor (MEM-03).
 struct MemoryView: View {
     @Bindable var vm: MemoryViewModel
+    /// The empty vault's readiness and actions (`AppState.emptyStateContext`).
+    var emptyState: EmptyStateContext = .neutral
 
     var body: some View {
         content
@@ -262,20 +264,16 @@ struct MemoryView: View {
         }
     }
 
+    /// No vault yet: the shared empty state (Turn on while memory is off),
+    /// with how to build the vault by hand kept inside.
     private var emptyVaultState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "archivebox")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("Memory vault not initialized")
-                .font(.headline)
+        TabEmptyState(.memory, context: emptyState) {
             Text("Enable memory (`memory.enabled`) and let the daemon run, or run `watchtower memory reindex`.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

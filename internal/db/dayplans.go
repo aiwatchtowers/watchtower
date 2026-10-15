@@ -202,6 +202,16 @@ func (db *DB) CreateDayPlan(p *DayPlan) (int64, error) {
 	return res.LastInsertId()
 }
 
+// HasAnyDayPlan reports whether any day plan exists, for any user — the
+// daemon's fresh-install check (no day plan has ever been generated).
+func (db *DB) HasAnyDayPlan() (bool, error) {
+	var has bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM day_plans)`).Scan(&has); err != nil {
+		return false, fmt.Errorf("checking for any day plan: %w", err)
+	}
+	return has, nil
+}
+
 // UpsertDayPlan inserts or updates a day plan keyed on (user_id, plan_date).
 // Returns the id of the row either way. The operation is a single atomic
 // INSERT ... ON CONFLICT DO UPDATE SET statement (no read-modify-write race).

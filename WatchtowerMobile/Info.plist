@@ -37,12 +37,11 @@
 	<false/>
 	<!-- remote-notification: silent CloudKit pushes wake the sync engine.
 	     audio: an active phone recording keeps capturing through lock and background.
-	     fetch: background refresh for the shared database scope. -->
+	     No `fetch`: nothing schedules a background refresh, and App Review rejects an unused mode (2.5.4). -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
 		<string>audio</string>
-		<string>fetch</string>
 	</array>
 </dict>
 </plist>

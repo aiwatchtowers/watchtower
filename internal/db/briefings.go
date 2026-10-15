@@ -38,6 +38,16 @@ func (db *DB) UpsertBriefing(b Briefing) (int64, error) {
 	return id, nil
 }
 
+// HasAnyBriefing reports whether any briefing exists, for any user — the
+// daemon's fresh-install check (no briefing has ever been generated).
+func (db *DB) HasAnyBriefing() (bool, error) {
+	var has bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM briefings)`).Scan(&has); err != nil {
+		return false, fmt.Errorf("checking for any briefing: %w", err)
+	}
+	return has, nil
+}
+
 // GetBriefing returns a briefing for a given user and date, or nil if not found.
 func (db *DB) GetBriefing(userID, date string) (*Briefing, error) {
 	row := db.QueryRow(briefingSelectCols+` FROM briefings WHERE user_id = ? AND date = ?`, userID, date)

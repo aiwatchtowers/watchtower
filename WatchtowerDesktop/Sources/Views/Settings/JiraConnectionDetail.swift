@@ -12,6 +12,7 @@ struct JiraConnectionDetail: View {
     @Environment(AppState.self) private var appState
     @State private var showAddJiraAccountSheet = false
     @State private var jiraAccountPendingRemoval: JiraAccount?
+    @State private var accountBeingRenamed: AccountRenameTarget?
 
     var body: some View {
         Form {
@@ -62,6 +63,11 @@ struct JiraConnectionDetail: View {
                                 }
                                 .disabled(vm.isConnecting)
                             }
+                            Button("Rename…") {
+                                accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isConnecting)
                             Button("Remove") {
                                 jiraAccountPendingRemoval = account
                             }
@@ -94,6 +100,9 @@ struct JiraConnectionDetail: View {
             AddJiraAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
                 .marksAccountSheet(appState)
+        }
+        .accountRenameAlert($accountBeingRenamed) { target, name in
+            Task { await appState.jiraAccountsViewModel?.rename(accountID: target.id, to: name) }
         }
         .confirmationDialog(
             "Remove \(jiraAccountPendingRemoval?.displayName ?? "this site")?",

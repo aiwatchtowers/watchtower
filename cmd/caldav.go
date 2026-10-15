@@ -179,8 +179,16 @@ func runCalDAVAddICS(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "Testing connection...")
 
-	if _, err := caldav.FetchICS(cmdContext(cmd), feedURL); err != nil {
+	cal, err := caldav.FetchICS(cmdContext(cmd), feedURL)
+	if err != nil {
 		return fmt.Errorf("caldav add-ics: connection test failed: %w", err)
+	}
+	// Text() undoes the iCalendar TEXT escapes (`Team\, Ops` → "Team, Ops").
+	calName := ""
+	if p := cal.Props.Get("X-WR-CALNAME"); p != nil {
+		if text, err := p.Text(); err == nil {
+			calName = text
+		}
 	}
 
 	database, err := db.Open(cfg.DBPath())
@@ -193,6 +201,7 @@ func runCalDAVAddICS(cmd *cobra.Command, _ []string) error {
 	// credential file (see internal/db/migrations/00033_calendar_accounts.sql).
 	id, err := createCalendarAccountWithCredentials(database, cfg.WorkspaceDir(), db.CalendarAccount{
 		Provider: "ics", Label: caldavAddICSFlagLabel,
+		LabelHint: db.ICSAccountLabel(calName, feedURL),
 	}, &caldav.Credentials{FeedURL: feedURL}, cmd.ErrOrStderr())
 	if err != nil {
 		return err

@@ -662,6 +662,31 @@ struct CalendarEventsView: View {
                    prominent: event.isUpcoming || event.isHappeningNow)
     }
 
+    /// No calendar connected: the shared empty state (Connect → Settings),
+    /// with the in-place Google / CalDAV connect options kept inside.
+    static func notConnectedState<Options: View>(
+        context: EmptyStateContext, @ViewBuilder connectOptions: () -> Options
+    ) -> some View {
+        TabEmptyState(.calendar, context: context, extra: connectOptions)
+    }
+
+    /// Nothing in the list: with synced events that is just nothing upcoming;
+    /// before any event is synced, the shared empty state.
+    static func noEventsState(context: EmptyStateContext) -> some View {
+        ContentAwareEmptyState(.calendar, context: context) {
+            VStack(spacing: 8) {
+                Image(systemName: "calendar.badge.checkmark")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("No upcoming events")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 40)
+        }
+    }
+
     // MARK: - Sync health
 
     @ViewBuilder
@@ -766,52 +791,65 @@ struct CalendarEventsView: View {
     // MARK: - Empty
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "calendar.badge.checkmark")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("No upcoming events")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 40)
+        Self.noEventsState(context: appState.emptyStateContext)
     }
 
     private var notConnectedView: some View {
+        Group {
+            if case .accountError(let account) = syncHealth {
+                accountErrorView(account)
+            } else {
+                Self.notConnectedState(context: appState.emptyStateContext) {
+                    connectOptions
+                }
+            }
+        }
+        .onAppear {
+            google.refresh()
+            appState.calendarAccountsViewModel?.refresh()
+        }
+        .sheet(isPresented: $showAddEmailAccountSheet) {
+            AddEmailAccountView()
+                .environment(appState)
+        }
+        .sheet(isPresented: $showAddCalendarAccountSheet) {
+            AddCalendarAccountView()
+                .environment(appState)
+        }
+    }
+
+    /// The Google account behind the calendar needs a reconnect: say so,
+    /// with Reconnect first and the other connect options below.
+    private func accountErrorView(_ account: GoogleAccount) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "calendar.badge.exclamationmark")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            if case .accountError(let account) = syncHealth {
-                Text("Google Calendar can't sync")
-                    .font(.headline)
-                Text(accountErrorText(account))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                reconnectButton(account)
-                    .controlSize(.large)
-                if let err = appState.googleAccountsViewModel?.error {
-                    Text(err)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                Text("Or connect another calendar:")
+            Text("Google Calendar can't sync")
+                .font(.headline)
+            Text(accountErrorText(account))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            reconnectButton(account)
+                .controlSize(.large)
+            if let err = appState.googleAccountsViewModel?.error {
+                Text(err)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-            } else {
-                Text("No calendar connected")
-                    .font(.headline)
-                Text("Connect a calendar to see your meetings, prep, and briefings here.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                    .foregroundStyle(.red)
             }
+            Text("Or connect another calendar:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            connectOptions
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 
+    private var connectOptions: some View {
+        VStack(spacing: 14) {
             if google.isRunning {
                 ProgressView("Connecting Google...")
                     .padding(.top, 4)
@@ -858,19 +896,6 @@ struct CalendarEventsView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(.top, 12)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            google.refresh()
-            appState.calendarAccountsViewModel?.refresh()
-        }
-        .sheet(isPresented: $showAddEmailAccountSheet) {
-            AddEmailAccountView()
-                .environment(appState)
-        }
-        .sheet(isPresented: $showAddCalendarAccountSheet) {
-            AddCalendarAccountView()
-                .environment(appState)
         }
     }
 }
