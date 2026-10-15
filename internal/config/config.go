@@ -134,6 +134,12 @@ type AutomationsConfig struct {
 	Enabled bool `mapstructure:"enabled"` // start the scheduler and executor in the daemon (default: true)
 }
 
+// PlanUsageConfig controls Claude plan limits — the daemon polls the owner's
+// 5-hour and weekly Claude limits (spec 2026-10-15). No AI, no cost.
+type PlanUsageConfig struct {
+	Enabled bool `mapstructure:"enabled"` // poll the Claude plan usage endpoint (default: true)
+}
+
 // CatchupConfig controls the on-demand absence recap.
 type CatchupConfig struct {
 	Caps           CatchupCaps `mapstructure:"caps"`
@@ -382,6 +388,7 @@ type Config struct {
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
 	Automations      AutomationsConfig           `mapstructure:"automations"`
+	PlanUsage        PlanUsageConfig             `mapstructure:"plan_usage"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -463,6 +470,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("automations.enabled", DefaultAutomationsEnabled)
+	v.SetDefault("plan_usage.enabled", DefaultPlanUsageEnabled)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)

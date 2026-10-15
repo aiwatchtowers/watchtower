@@ -68,6 +68,9 @@ const (
 	// each run is bounded by its own token and time budget.
 	DefaultAutomationsEnabled = true
 
+	// Claude plan limits (spec 2026-10-15): on — no AI, no cost.
+	DefaultPlanUsageEnabled = true
+
 	// Tracks and people pipelines
 	DefaultTracksEnabled          = true
 	DefaultPeopleEnabled          = true

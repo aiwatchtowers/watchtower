@@ -180,6 +180,15 @@ func TestConfig_AutomationsDefaults(t *testing.T) {
 	assert.False(t, set.Automations.Enabled)
 }
 
+func TestConfig_PlanUsageDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, cfg.PlanUsage.Enabled, "absent block = on")
+	off, err := Load(writeTestConfig(t, "plan_usage:\n  enabled: false\n"))
+	require.NoError(t, err)
+	assert.False(t, off.PlanUsage.Enabled)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",

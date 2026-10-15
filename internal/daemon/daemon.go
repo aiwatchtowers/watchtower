@@ -87,6 +87,8 @@ type Daemon struct {
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
+	planUsage           PlanUsageRunner // nil = Claude plan limits not wired
+	planUsageDisable    func() error
 	pidPath             string
 	db                  *db.DB
 	digestPipe          *digest.Pipeline
@@ -361,6 +363,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// before Run returns (and before the PID file is removed).
 	stopAutomations := d.startAutomations(ctx)
 	defer stopAutomations()
+	stopPlanUsage := d.startPlanUsage(ctx)
+	defer stopPlanUsage()
 
 	// Calendars first on startup: a calendar sync takes seconds, while the
 	// first cycle's Slack sync of a fresh install takes minutes and runSync
