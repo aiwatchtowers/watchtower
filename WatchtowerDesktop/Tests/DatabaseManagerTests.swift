@@ -107,9 +107,15 @@ final class DatabaseManagerTests: XCTestCase {
         // next to the DB unless the environment overrides the threshold.
         guard ProcessInfo.processInfo.environment["WATCHTOWER_DBLOCK_THRESHOLD_MS"] == nil else { return }
         let sink = ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("dblock.jsonl")
+        // The sink writes asynchronously and creates the file before the
+        // line lands, so wait for the line itself, not the file.
         let deadline = Date().addingTimeInterval(2)
-        while !FileManager.default.fileExists(atPath: sink), Date() < deadline { usleep(10_000) }
-        let text = try String(contentsOfFile: sink, encoding: .utf8)
+        var text = ""
+        repeat {
+            text = (try? String(contentsOfFile: sink, encoding: .utf8)) ?? ""
+            if text.contains("\"site\":\"desktop:channels\"") { break }
+            usleep(10_000)
+        } while Date() < deadline
         XCTAssertTrue(text.contains("\"kind\":\"tx\""), text)
         XCTAssertTrue(text.contains("\"site\":\"desktop:channels\""), text)
     }
