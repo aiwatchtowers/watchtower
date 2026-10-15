@@ -329,6 +329,18 @@ final class NotificationService: Sendable {
         ]
     }
 
+    /// A Claude plan limit is close or will be hit before its reset; a click
+    /// opens Usage → Claude plan. One identifier per (kind, limit, window).
+    func sendPlanUsageNotice(_ notice: PlanUsageNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = String(notice.title.prefix(200))
+        content.body = String(notice.body.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "plan_usage"]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil))
+    }
+
     /// Every delivered session banner goes — on launch and on quit, when
     /// none can name a running session. Reads what was delivered; asks for
     /// no authorization.
