@@ -181,6 +181,49 @@ type Pipeline struct {
 	jiraKeyDetector interface {
 		ProcessDigestDecision(digestID int, channelID string, decisionText string) (int, error)
 	}
+
+	// backfill is non-nil only while RunBackfillWindow runs (under the digest
+	// lock); see backfillScope.
+	backfill *backfillScope
+	// backfillRollups is true only while RunBackfillRollups runs (under the
+	// digest lock).
+	backfillRollups bool
+}
+
+// backfillScope is set only while RunBackfillWindow runs: a backfill window
+// sits below every forward mark, so its "considered" stamps stay in memory
+// and the trickle-channel cooldown (meant for the live edge) does not apply.
+// failed holds the channels whose AI call or store failed in this call, so
+// later passes do not re-send them. mu guards all three: batch workers write
+// concurrently.
+type backfillScope struct {
+	mu         sync.Mutex
+	considered map[string]float64
+	failed     map[string]bool
+	lastErr    error
+}
+
+// inBackfill reports whether the pipeline is writing a backfill digest or
+// rollup. Its prompts then carry no previous context and no track context:
+// both describe the present, and a digest of weeks ago would skip decisions
+// today's summary already holds and claim continuity backwards.
+func (p *Pipeline) inBackfill() bool {
+	return p.backfill != nil || p.backfillRollups
+}
+
+// markBackfillFailed records that these channels failed in the running
+// backfill call. A no-op outside a backfill.
+func (p *Pipeline) markBackfillFailed(err error, channelIDs ...string) {
+	b := p.backfill
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, id := range channelIDs {
+		b.failed[id] = true
+	}
+	b.lastErr = err
 }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.
@@ -555,6 +598,16 @@ func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
 	if tsUnix <= 0 {
 		return
 	}
+	if b := p.backfill; b != nil {
+		// Backfill code never writes the forward considered mark: the
+		// backfill window keeps its own in memory.
+		b.mu.Lock()
+		if tsUnix > b.considered[channelID] {
+			b.considered[channelID] = tsUnix
+		}
+		b.mu.Unlock()
+		return
+	}
 	if err := p.db.SetChannelDigestConsideredTS(channelID, tsUnix); err != nil {
 		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", p.channelName(channelID), err)
 	}
@@ -898,6 +951,9 @@ func (p *Pipeline) countVisibleMessages(msgs []db.Message) (visible, botVisible 
 // applyDigestCooldown removes channels digested recently with low activity to
 // avoid frequent small AI calls for trickle channels.
 func (p *Pipeline) applyDigestCooldown(entries []batchEntry) []batchEntry {
+	if p.backfill != nil {
+		return entries
+	}
 	cooldownMins := config.DefaultDigestCooldownMins
 	minMsgs := p.cfg.Digest.MinMessages
 	if minMsgs <= 0 {
@@ -990,6 +1046,7 @@ type batchAggregator struct {
 	errCount    atomic.Int32
 	totalInput  atomic.Int64
 	totalOutput atomic.Int64
+	totalAPI    atomic.Int64
 	lastErrMu   sync.Mutex
 	lastErr     error
 }
@@ -1030,12 +1087,11 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	}
 	wg.Wait()
 
-	_, _, _, accAPITokens := p.AccumulatedUsage()
 	totalUsage := &Usage{
 		InputTokens:    int(agg.totalInput.Load()),
 		OutputTokens:   int(agg.totalOutput.Load()),
 		CostUSD:        0,
-		TotalAPITokens: accAPITokens,
+		TotalAPITokens: int(agg.totalAPI.Load()),
 	}
 
 	gen := int(agg.generated.Load())
@@ -1068,6 +1124,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	if err != nil {
 		p.logger.Printf("digest: error generating digest for #%s: %v", e.channelName, err)
 		agg.recordError(err)
+		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
 		if p.OnProgress != nil {
 			p.OnProgress(done, total, fmt.Sprintf("#%s error: %v", e.channelName, err))
@@ -1085,6 +1142,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
 		p.logger.Printf("digest: error storing digest for #%s: %v", e.channelName, err)
 		agg.recordError(err)
+		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
 		if p.OnProgress != nil {
 			p.OnProgress(done, total, fmt.Sprintf("#%s store error: %v", e.channelName, err))
@@ -1107,6 +1165,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		p.LastStepOutputTokens = usage.OutputTokens
 		agg.totalInput.Add(int64(usage.InputTokens))
 		agg.totalOutput.Add(int64(usage.OutputTokens))
+		agg.totalAPI.Add(int64(usage.TotalAPITokens))
 		p.accumulateUsage(usage)
 	} else {
 		p.LastStepInputTokens = 0
@@ -1152,6 +1211,11 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	if err != nil {
 		p.logger.Printf("digest: error generating batch (%d channels): %v", len(batch), err)
 		agg.recordError(err)
+		ids := make([]string, len(batch))
+		for i, e := range batch {
+			ids[i] = e.channelID
+		}
+		p.markBackfillFailed(err, ids...)
 		agg.completed.Add(int32(len(batch)))
 		return
 	}
@@ -1172,6 +1236,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	if usage != nil {
 		agg.totalInput.Add(int64(usage.InputTokens))
 		agg.totalOutput.Add(int64(usage.OutputTokens))
+		agg.totalAPI.Add(int64(usage.TotalAPITokens))
 		p.accumulateUsage(usage)
 	}
 
@@ -1305,6 +1370,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion, false); err != nil {
 		p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
 		agg.recordError(err)
+		p.markBackfillFailed(err, entry.channelID)
 		return false
 	}
 
@@ -1412,7 +1478,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 	// Prepend chain context if available (decisions grouped into chains are shown
 	// as chain updates rather than repeated individually).
 	channelInput := p.formatDailyRollupChannelInput(channelDigests)
-	if p.TrackContext != "" {
+	if p.TrackContext != "" && !p.inBackfill() {
 		channelInput = p.TrackContext + "\n" + channelInput
 	}
 
@@ -1587,6 +1653,9 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 // if no previous context exists, if the context is too old (>30 days), or on error.
 // Context older than 7 days is included with an "(outdated)" warning.
 func (p *Pipeline) loadPreviousContext(channelID, digestType string) string {
+	if p.inBackfill() {
+		return ""
+	}
 	result, err := p.db.GetLatestRunningSummaryWithAge(channelID, digestType)
 	if err != nil {
 		p.logger.Printf("digest: warning: failed to load running summary for %s/%s: %v", channelID, digestType, err)

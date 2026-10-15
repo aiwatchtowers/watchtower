@@ -437,6 +437,47 @@ func TestChannelsWithUndigestedMessages_ConsideredMark(t *testing.T) {
 	assert.Equal(t, 0.0, candidates[0].LastDigestTo, "declined channels never get a digest row")
 }
 
+// TestChannelsWithMessagesInRange pins the backfill discovery query: only
+// messages inside (from, to] make a channel a candidate, and only a channel
+// digest that ends inside the same range counts as its in-range mark — a
+// forward digest above the range must not hide the range's own messages.
+func TestChannelsWithMessagesInRange(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	for _, m := range []struct{ ch, ts string }{
+		{"C1", "110.000001"}, {"C1", "150.000001"}, {"C1", "190.000001"},
+		{"C2", "250.000001"},
+	} {
+		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
+		require.NoError(t, err)
+	}
+	for _, d := range []struct{ from, to float64 }{{100, 150}, {300, 400}} {
+		_, err = db.UpsertDigest(Digest{
+			ChannelID: "C1", Type: "channel",
+			PeriodFrom: d.from, PeriodTo: d.to,
+			Summary: "s", MessageCount: 1, Model: "haiku",
+		})
+		require.NoError(t, err)
+	}
+
+	candidates, err := db.ChannelsWithMessagesInRange(100, 200)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1, "C2's only message is outside the range")
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, 190.0, candidates[0].NewestInRange)
+	assert.Equal(t, 150.0, candidates[0].LastDigestInRange,
+		"the digest ending at 400 is outside the range and must not count")
+
+	// A range with no in-range digest reports 0.
+	candidates, err = db.ChannelsWithMessagesInRange(200, 300)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "C2", candidates[0].ChannelID)
+	assert.Equal(t, 0.0, candidates[0].LastDigestInRange)
+}
+
 func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
