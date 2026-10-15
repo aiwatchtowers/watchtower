@@ -94,7 +94,6 @@ func testModule() Module {
 
 type sbOpts struct {
 	budget     Budget
-	daily      int64
 	clock      Clock
 	trigger    TriggerInfo
 	scriptLine int
@@ -106,9 +105,6 @@ func newTestSandbox(t *testing.T, script string, o sbOpts) (*Sandbox, *Env) {
 	t.Helper()
 	if o.budget == (Budget{}) {
 		o.budget = Budget{Tokens: 50000, Minutes: 5}
-	}
-	if o.daily == 0 {
-		o.daily = math.MaxInt64
 	}
 	if o.clock == nil {
 		o.clock = RealClock{}
@@ -123,7 +119,7 @@ func newTestSandbox(t *testing.T, script string, o sbOpts) (*Sandbox, *Env) {
 		Ctx:     context.Background(),
 		Recipe:  &Recipe{Script: script, ScriptLine: o.scriptLine},
 		Journal: o.journal,
-		Meter:   NewMeter(o.budget, o.daily, o.clock),
+		Meter:   NewMeter(o.budget, o.clock),
 		Buffer:  NewCommitBuffer(nil),
 		Trigger: o.trigger,
 	}
@@ -215,7 +211,7 @@ func TestSandbox_PreParseReportsTheScriptLine(t *testing.T) {
 		t.Fatalf("PreParse = %v; want line 5", err)
 	}
 	if _, err := NewSandbox(&Env{Ctx: context.Background(), Recipe: &Recipe{Script: "await x"},
-		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, 1, nil)}, nil); !errors.As(err, &pe) {
+		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1, Minutes: 1}, nil)}, nil); !errors.As(err, &pe) {
 		t.Fatalf("NewSandbox = %v; want a *PreParseError", err)
 	}
 }
@@ -253,14 +249,6 @@ func TestSandbox_InterruptIsNotCatchable(t *testing.T) {
 			wantInterrupt(t, err, InterruptBudget)
 		})
 	}
-}
-
-func TestSandbox_DailyCapInterruptsUncatchably(t *testing.T) {
-	sb, _ := newTestSandbox(t, "while (true) { try { spend(10) } catch (e) {} }", sbOpts{daily: 25})
-	_, err := runWithin(t, sb, 5*time.Second)
-	wantInterrupt(t, err, InterruptDailyCap)
-	_, err = runScript(t, "try { refuse() } catch (e) {} return 1", sbOpts{daily: -1})
-	wantInterrupt(t, err, InterruptDailyCap)
 }
 
 func runWithin(t *testing.T, sb *Sandbox, limit time.Duration) (any, error) {
@@ -341,7 +329,7 @@ func TestSandbox_ErrorLineMapsToFile(t *testing.T) {
 
 func TestSandbox_SyntaxErrorLineMapsToFile(t *testing.T) {
 	sbEnv := &Env{Ctx: context.Background(), Recipe: &Recipe{Script: "const a = 1;\nconst = ;\n", ScriptLine: 5},
-		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, math.MaxInt64, nil)}
+		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, nil)}
 	_, err := NewSandbox(sbEnv, nil)
 	var se *ScriptError
 	if !errors.As(err, &se) || se.Name != "SyntaxError" || se.Line != 6 {
@@ -397,7 +385,7 @@ func TestDefiner_InvalidPathRefused(t *testing.T) {
 		return nil, nil
 	}}}
 	env := &Env{Ctx: context.Background(), Recipe: &Recipe{Script: "1"}, Journal: NewMemoryJournal(),
-		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, math.MaxInt64, nil)}
+		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 1}, nil)}
 	if _, err := NewSandbox(env, []Module{bad}); err == nil || !strings.Contains(err.Error(), "state..get") {
 		t.Fatalf("NewSandbox = %v; want an invalid path error", err)
 	}
@@ -459,7 +447,7 @@ func runBackendErrorAfterParentCancel(t *testing.T) {
 		},
 	}}
 	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: `try { call() } catch (e) { return "caught " + e.name }`},
-		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, math.MaxInt64, nil),
+		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil),
 		Buffer: NewCommitBuffer(nil)}
 	sb, err := NewSandbox(env, []Module{stopping})
 	if err != nil {
@@ -475,7 +463,7 @@ func runBackendErrorAfterParentCancel(t *testing.T) {
 func TestSandbox_ParentCancelInterrupts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: "while (true) {}"}, Journal: NewMemoryJournal(),
-		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, math.MaxInt64, nil)}
+		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil)}
 	sb, err := NewSandbox(env, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -492,7 +480,7 @@ func TestSandbox_NewSandboxNeedsEnv(t *testing.T) {
 	for name, env := range map[string]*Env{
 		"nil env":    nil,
 		"no meter":   {Ctx: context.Background(), Recipe: &Recipe{}, Journal: NewMemoryJournal()},
-		"no journal": {Ctx: context.Background(), Recipe: &Recipe{}, Meter: NewMeter(Budget{}, 0, nil)},
+		"no journal": {Ctx: context.Background(), Recipe: &Recipe{}, Meter: NewMeter(Budget{}, nil)},
 	} {
 		if _, err := NewSandbox(env, nil); err == nil {
 			t.Errorf("%s: want an error", name)
@@ -658,7 +646,7 @@ func TestJournal_ClipsArgsAndResult(t *testing.T) {
 func TestMeter_ActiveTimeExcludesPause(t *testing.T) {
 	clock := newSBClock()
 	start := clock.Now()
-	m := NewMeter(Budget{Tokens: 1000, Minutes: 5}, math.MaxInt64, clock)
+	m := NewMeter(Budget{Tokens: 1000, Minutes: 5}, clock)
 	clock.Advance(2 * time.Minute)
 	m.PauseActive()
 	clock.Advance(time.Hour)
@@ -682,7 +670,7 @@ func TestMeter_ActiveTimeExcludesPause(t *testing.T) {
 }
 
 func TestMeter_BeforeCallRefusesWhenSpent(t *testing.T) {
-	m := NewMeter(Budget{Tokens: 1000, Minutes: 5}, math.MaxInt64, nil)
+	m := NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil)
 	if err := m.BeforeCall(); err != nil {
 		t.Fatalf("fresh BeforeCall = %v", err)
 	}
@@ -698,21 +686,6 @@ func TestMeter_BeforeCallRefusesWhenSpent(t *testing.T) {
 	}
 	if m.Crossed() != InterruptBudget || m.Remaining().Tokens != 0 {
 		t.Fatalf("Crossed = %q, Remaining = %+v", m.Crossed(), m.Remaining())
-	}
-}
-
-func TestMeter_DailyRemainderInterrupts(t *testing.T) {
-	m := NewMeter(Budget{Tokens: 50000, Minutes: 5}, 100, nil)
-	if crossed := m.Debit(60, 40); crossed != InterruptDailyCap {
-		t.Fatalf("Debit crossed %q; want daily_cap", crossed)
-	}
-	var ri *RunInterrupted
-	if err := m.BeforeCall(); !errors.As(err, &ri) || ri.Reason != InterruptDailyCap {
-		t.Fatalf("BeforeCall = %v; want a daily-cap interrupt", err)
-	}
-	spent := NewMeter(Budget{Tokens: 50000, Minutes: 5}, 0, nil)
-	if err := spent.BeforeCall(); !errors.As(err, &ri) || spent.Crossed() != InterruptDailyCap {
-		t.Fatalf("spent cap BeforeCall = %v, crossed %q", err, spent.Crossed())
 	}
 }
 

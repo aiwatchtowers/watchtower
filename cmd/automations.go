@@ -61,14 +61,14 @@ func init() {
 		runAutomationsCancel)
 	runs := newAutomationsSubcommand("runs <id>", "List an automation's runs", cobra.ExactArgs(1), runAutomationsRuns)
 	steps := newAutomationsSubcommand("steps <run-id>", "List a run's steps", cobra.ExactArgs(1), runAutomationsSteps)
-	enable := newAutomationsSubcommand("enable <id>", "Enable an automation", cobra.ExactArgs(1), runAutomationsEnable)
+	enable := newAutomationsSubcommand("enable <id>", "Enable an automation (owner only)", cobra.ExactArgs(1), runAutomationsEnable)
 	disable := newAutomationsSubcommand("disable <id>", "Disable an automation", cobra.ExactArgs(1),
 		runAutomationsDisable)
 	confirm := newAutomationsSubcommand("confirm <id>", "Confirm a recipe's permissions and script (owner only)",
 		cobra.ExactArgs(1), runAutomationsConfirm)
 	save := newAutomationsSubcommand("save", "Write a recipe file atomically and index it", cobra.NoArgs,
 		runAutomationsSave)
-	del := newAutomationsSubcommand("delete <id>", "Delete an automation, its recipe file and its history",
+	del := newAutomationsSubcommand("delete <id>", "Delete an automation, its recipe file and its history (owner only)",
 		cobra.ExactArgs(1), runAutomationsDelete)
 	outputs := newAutomationsSubcommand("outputs", "List automation outputs", cobra.NoArgs, runAutomationsOutputs)
 	wake := newAutomationsSubcommand("wake", "Wake the daemon's automation scheduler and executor", cobra.NoArgs,

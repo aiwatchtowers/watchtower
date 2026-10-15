@@ -45,7 +45,6 @@ const (
 	ErrKindScript      = "script"
 	ErrKindPermission  = "permission"
 	ErrKindBudget      = "budget"
-	ErrKindDailyCap    = "daily_cap"
 	ErrKindTimeout     = "timeout"
 	ErrKindInterrupted = "interrupted"
 	ErrKindNotRunnable = "not_runnable"
@@ -593,7 +592,7 @@ type RunUsage struct {
 }
 
 // AddAutomationRunUsage adds u to the run's counters (whatever its status:
-// tokens spent before a cancel still count toward the daily cap).
+// tokens spent before a cancel still count on the run).
 // tokens_estimated sticks once set; reported_cost_usd stays NULL until a
 // provider reports a cost.
 func (db *DB) AddAutomationRunUsage(runID int64, u RunUsage) error {
@@ -809,18 +808,6 @@ func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string)
 		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	return int(n), nil
-}
-
-// AutomationTokensBetween sums input+output tokens of the runs whose
-// started_at is in [from, to) — the caller passes the local day's bounds.
-func (db *DB) AutomationTokensBetween(from, to time.Time) (int64, error) {
-	var n int64
-	err := db.QueryRow(`SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM automation_runs
-		WHERE started_at >= ? AND started_at < ?`, formatAutomationTime(from), formatAutomationTime(to)).Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("summing automation tokens: %w", err)
-	}
-	return n, nil
 }
 
 // AutomationRunStep is one row of automation_run_steps (one SDK call).

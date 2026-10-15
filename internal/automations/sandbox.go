@@ -98,11 +98,9 @@ type ModelUsage struct {
 	ReportedUSD               *float64 // nil = the provider reported no cost
 }
 
-// MeteredModelCall runs one model call under the meter in the one order the
-// live daily total is correct in: Meter.BeforeCall → call → Meter.Debit →
-// step.Usage (Debit must read the day's total before this call's tokens are
-// recorded on the run). The usage call reports is debited even when it also
-// returns an error.
+// MeteredModelCall runs one model call under the meter: Meter.BeforeCall →
+// call → Meter.Debit → step.Usage. The usage call reports is debited even
+// when it also returns an error.
 func (e *Env) MeteredModelCall(step *Step, call func(ctx context.Context) (ModelUsage, error)) error {
 	if err := e.Meter.BeforeCall(); err != nil {
 		return err

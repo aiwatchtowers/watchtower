@@ -102,7 +102,7 @@ func runSDK(t *testing.T, script string, c sdkCase) sdkRun {
 		Manifest:   m,
 		DryRun:     c.dryRun,
 		Journal:    c.journal,
-		Meter:      automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, math.MaxInt64, clock),
+		Meter:      automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock),
 		Buffer:     automations.NewCommitBuffer(json.RawMessage(c.committed)),
 	}
 	sb, err := automations.NewSandbox(env, c.modules)
