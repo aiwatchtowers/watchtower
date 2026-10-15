@@ -136,45 +136,72 @@ func treeSize(root string) (int64, error) {
 	return total, err
 }
 
-// copyTree copies files, directories and symlinks (as links), keeping
-// permission bits; nothing outside root is followed.
-func copyTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+// copyTree copies a file, symlink (as a link) or directory tree, keeping
+// permission bits; nothing is followed. Every filesystem operation below the
+// two top-level paths goes through os.Root handles, so a path swapped for a
+// symlink mid-walk cannot escape either tree.
+func copyTree(src, dst string) (err error) {
+	srcRoot, err := os.OpenRoot(filepath.Dir(src))
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, srcRoot.Close()) }()
+	dstRoot, err := os.OpenRoot(filepath.Dir(dst))
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, dstRoot.Close()) }()
+	srcBase, dstBase := filepath.Base(src), filepath.Base(dst)
+	info, err := srcRoot.Lstat(srcBase)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return copyEntry(srcRoot, dstRoot, srcBase, dstBase, info)
+	}
+	if err := copyEntry(srcRoot, dstRoot, srcBase, dstBase, info); err != nil {
+		return err
+	}
+	return fs.WalkDir(srcRoot.FS(), srcBase, func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
+		if rel == srcBase {
+			return nil
+		}
+		info, err := srcRoot.Lstat(rel)
 		if err != nil {
 			return err
 		}
-		to := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case d.Type()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(target, to)
-		case d.IsDir():
-			return os.MkdirAll(to, info.Mode().Perm())
-		case d.Type().IsRegular():
-			return copyRegular(path, to, info.Mode().Perm())
-		}
-		return nil // sockets, devices: skipped
+		sub := strings.TrimPrefix(rel, srcBase+"/")
+		return copyEntry(srcRoot, dstRoot, rel, dstBase+"/"+sub, info)
 	})
 }
 
-func copyRegular(from, to string, perm fs.FileMode) error {
-	in, err := os.Open(from)
+// copyEntry copies one entry (not its children) between two roots.
+func copyEntry(srcRoot, dstRoot *os.Root, from, to string, info fs.FileInfo) error {
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		target, err := srcRoot.Readlink(from)
+		if err != nil {
+			return err
+		}
+		return dstRoot.Symlink(target, to)
+	case info.IsDir():
+		return dstRoot.Mkdir(to, info.Mode().Perm())
+	case info.Mode().IsRegular():
+		return copyRegular(srcRoot, dstRoot, from, to, info.Mode().Perm())
+	}
+	return nil // sockets, devices: skipped
+}
+
+func copyRegular(srcRoot, dstRoot *os.Root, from, to string, perm fs.FileMode) error {
+	in, err := srcRoot.Open(from)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
+	out, err := dstRoot.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
 	if err != nil {
 		return err
 	}
