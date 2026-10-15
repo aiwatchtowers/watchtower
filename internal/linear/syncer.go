@@ -178,7 +178,9 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 	if firstPass {
 		since = now.AddDate(0, 0, -s.backfillDays).Format(timestampLayout)
 	}
-	maxUpdated := ""
+	// The watermark never ends below since: a quiet team records the since it
+	// queried with, so its next pass is incremental, not another first pass.
+	maxUpdated := since
 	n, err := s.syncIssues(ctx, t, issueFilter(t.ID, since, firstPass), &maxUpdated)
 	if err != nil {
 		return n, fmt.Errorf("syncing issues of linear team %s: %w", t.Key, err)

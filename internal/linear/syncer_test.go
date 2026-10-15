@@ -126,8 +126,24 @@ func TestSyncer_FirstPassSinceIsBackfillWindow(t *testing.T) {
 	_, s := newTestSyncer(t, f)
 	_, err := s.Sync(context.Background())
 	require.NoError(t, err)
-	// now (2026-10-10) - 30 backfill days; no issues seen keeps the watermark empty.
+	// now (2026-10-10) - 30 backfill days.
 	assert.Contains(t, f.lastIssueFilterJSON("t-1"), `"gte":"2026-09-10T00:00:00.000Z"`)
+}
+
+func TestSyncer_QuietTeamRecordsSinceAsWatermark(t *testing.T) {
+	f := newFakeLinear(t)
+	f.viewerTeams = []string{"t-1"}
+	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}}
+	d, s := newTestSyncer(t, f)
+	_, err := s.Sync(context.Background())
+	require.NoError(t, err)
+	st, _ := d.GetLinearSyncState(s.AccountID(), "t-1")
+	assert.Equal(t, "2026-09-10T00:00:00.000Z", st.Watermark) // the backfill since
+	_, err = s.Sync(context.Background())
+	require.NoError(t, err)
+	got := f.lastIssueFilterJSON("t-1")
+	assert.Contains(t, got, `"gte":"2026-09-10T00:00:00.000Z"`)
+	assert.NotContains(t, got, `"nin"`)
 }
 
 func TestSyncer_StoresPlanningAndUsers(t *testing.T) {
