@@ -252,9 +252,12 @@ after `ReadinessCenter` (`AppState.swift:1466`), which both launch and
   the region) sees this process' writes; a 30 s tick re-reads for the daemon's
   writes (another process) and keeps the meeting eyebrow's minutes current. A
   readiness, owner, first-sync or visibility change rebuilds from the last read
-  without touching the DB (`withObservationTracking`). A failed pool read keeps
-  the last snapshot and is logged; the next tick tries again. Before the first
-  read the snapshot is nil and Home shows a spinner.
+  without touching the DB (`withObservationTracking`). A failed pool read is
+  logged and publishes the last read (or an empty one, before any good read)
+  with every card marked failed: Home shows the read error and Getting ready,
+  never an endless spinner, and stale content never passes as the all-clear;
+  the next tick tries again. Until the first read lands the snapshot is nil
+  and Home shows a spinner.
 - **Getting ready memory** — `GettingReadyStore` (`HomeCenter.swift:23`), per
   install in `UserDefaults`; `HomeCenter` is its only writer:
 
@@ -284,11 +287,17 @@ the zone and the memory to persist out. Rules, first match wins:
    `FeatureReadiness.honoringOwner`, OWNER-02) is neither `off` nor
    `needsSource`, in `ReadinessFeature.allCases` order. Each `needsSource`
    feature goes into one row per missing source ("Connect Jira to get Boards,
-   Workload, Blockers, Project Map and Releases", with **Connect Jira**). No
-   card with a source (`source != .none`) → hidden: a Development-only
-   install's lone knowledge-index card does not open the zone.
-6. Every card terminal (ready or error) → `completedAt = now`; "Everything's
-   ready" if the zone showed unready cards during this launch, else hidden.
+   Workload, Blockers, Project Map and Releases", with **Connect Jira**). The
+   zone opens on a card with a source (`source != .none`) or on a Connect row
+   that a switched-on feature (`featureID != nil`) waits for — goals picked,
+   Connect skipped, so every feature waits on a source and there is no card.
+   Neither → hidden: a Development-only install (the knowledge-index card,
+   Connect rows for the bare Slack/Calendar/Jira sources) does not open it.
+6. Some card with a source, and every card terminal (ready or error) →
+   `completedAt = now`; "Everything's ready" if the zone showed unready cards
+   during this launch, else hidden. A zone of Connect rows only (perhaps with
+   the knowledge-index card) is never complete: it stays until a source
+   connects.
 7. Otherwise → shown, `firstShownAt` set once.
 
 A ready card stays in the zone with **Ready** + **Open** until every card is
@@ -319,8 +328,8 @@ waiting have no tab gate).
 | Next meeting | `CalendarQueries.fetchNextEvent` + `hasPrep` | the event starts within 24 h; eyebrow "IN N MIN", "HH:MM" or "TOMORROW HH:MM"; line = time range · up to two attendees +N · "Prep ready" | the event in Calendar (`navigateToCalendarEvent`) |
 | Briefing | `BriefingQueries.fetchByDate(today)` | today's briefing has an item; body = the first item of the first non-empty section | that briefing (`navigateToBriefing`) |
 | My targets | `TargetQueries.homeSummary` (limit 5) | any row; detail "Overdue · Oct 12", "Due today", "Due HH:MM" or "In progress" | the target (`navigateToTarget`); header → Targets |
-| Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`, unreadable rows named and left out) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
-| Since you were away | `CatchUpQueries.fetchRecaps(limit: 1)` | the newest recap is ready and not acknowledged (the Catch-Up badge); eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
+| Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`; an unreadable row is logged, named and left out, and marks the card failed) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
+| Since you were away | `CatchUpQueries.newestUnacknowledgedReady` | a ready, unacknowledged recap exists (the Catch-Up badge, `hasUnacknowledgedReady`) — the newest such, so a newer building or failed run does not hide it; eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
 
 - `TargetQueries.homeSummary` (`TargetQueries.swift:237`): `project_id IS
   NULL` (PROJ-01 — workbench targets stay on their board), ownership `mine`,
@@ -331,7 +340,9 @@ waiting have no tab gate).
   to show and at least one allowed card failed → "Couldn't read today's items
   — see the log." `nothingNeedsYou` (`:247`) — "Nothing needs you right now."
   — only with no card, no failed read and no Getting ready zone shown. One
-  failed card never hides the others and is never read as the all-clear.
+  failed card never hides the others and is never read as the all-clear; an
+  unreadable open ask counts as Agents waiting's failed read, while the
+  readable asks still show.
 
 ### Resolutions made while planning
 
@@ -339,7 +350,9 @@ waiting have no tab gate).
    share a feature, so `featureCard` is keyed by feature: it reuses the tab's
    `landsHere` where one tab owns the feature and has its own sentence for
    Slack sync, stream digests, knowledge index and Jira.
-2. **Development-only installs** show no zone (rule 5), keeping spec §3.1.
+2. **Development-only installs** show no zone (rule 5), keeping spec §3.1;
+   an install whose goals switched features on but connected nothing shows
+   the Connect rows (rule 5, final review ruling 2026-10-15).
 3. **Existing installs** (decision 2) whose cards are all ready at the first
    look never see "Everything's ready"; it shows only when the zone completed
    during this launch.
