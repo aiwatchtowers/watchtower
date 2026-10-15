@@ -3,9 +3,6 @@ import GRDB
 
 /// What a workbench delete removes, for the confirmation dialog (spec §6.1:
 /// "confirmation lists what is removed, incl. the folder cleanup").
-/// `vocabulary` names the skill and MCP server the folder has: a folder set
-/// up before the Workbench rename has the old ones (spec 2026-10-02 §5.5 —
-/// the delete removes both vocabularies, Go `devpack.RemoveWorkbench`).
 package struct WorkbenchDeleteSummary: Equatable {
     package let name: String
     package let folder: String
@@ -14,7 +11,6 @@ package struct WorkbenchDeleteSummary: Equatable {
     package let comments: Int
     /// The AI questions asked about the folder's code (Questions tab).
     package let codeQuestions: Int
-    package let vocabulary: WorkbenchVocabulary
 
     package init(
         name: String,
@@ -22,8 +18,7 @@ package struct WorkbenchDeleteSummary: Equatable {
         targets: Int,
         asks: Int,
         comments: Int,
-        codeQuestions: Int = 0,
-        vocabulary: WorkbenchVocabulary = .current
+        codeQuestions: Int = 0
     ) {
         self.name = name
         self.folder = folder
@@ -31,10 +26,9 @@ package struct WorkbenchDeleteSummary: Equatable {
         self.asks = asks
         self.comments = comments
         self.codeQuestions = codeQuestions
-        self.vocabulary = vocabulary
     }
 
-    package static func fetch(_ db: Database, project: Workbench, vocabulary: WorkbenchVocabulary) throws -> Self {
+    package static func fetch(_ db: Database, project: Workbench) throws -> Self {
         func count(_ table: String) throws -> Int {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table) WHERE project_id = ?",
                              arguments: [project.id]) ?? 0
@@ -45,8 +39,7 @@ package struct WorkbenchDeleteSummary: Equatable {
             targets: try count("targets"),
             asks: try count("owner_asks"),
             comments: try count("project_comments"),
-            codeQuestions: try CodeQuestionList.count(db, workbenchID: project.id),
-            vocabulary: vocabulary
+            codeQuestions: try CodeQuestionList.count(db, workbenchID: project.id)
         )
     }
 
@@ -59,8 +52,8 @@ package struct WorkbenchDeleteSummary: Equatable {
         The files in the folder themselves stay; Watchtower's own \
         copies of images attached to targets are deleted.
 
-        In \(folder) it removes what it installed: the \(vocabulary.skillName) skill, \
-        the SessionStart hook in .claude/settings.local.json, the \(vocabulary.mcpServerName) \
+        In \(folder) it removes what it installed: the \(WorkbenchNames.skill) skill, \
+        the SessionStart hook in .claude/settings.local.json, the \(WorkbenchNames.mcpServer) \
         MCP registration, Codex's copy of the skill in .agents/skills and the \
         Watchtower hooks Codex imported into .codex, and the .git/info/exclude \
         lines it added. A skill you edited is kept, and so is an exclude line \

@@ -221,15 +221,15 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.first?.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launches.first?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))")
         XCTAssertEqual(center.focusOrder.last, row.id)
         XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
     }
 
-    /// A folder set up before the Workbench rename has only the old skill
-    /// (spec 2026-10-02 §5.3): once `integrate status` says so, "Work on it"
-    /// names that skill; before the status is read, the new one.
-    func testWorkOnNamesTheLegacySkillOnceTheStatusSaysSo() async throws {
+    /// "Work on it" always names the current skill, before and after the
+    /// status reports a folder set up before the Workbench rename: such a
+    /// folder needs Repair, which installs that skill.
+    func testWorkOnNamesTheCurrentSkillOnALegacyFolder() async throws {
         let p = try await workbenchWithFolder()
         let first = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "One") }
         let second = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Two") }
@@ -239,14 +239,13 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.titleService = { _ in .init(title: "", written: false) }
         await vm.reload()
 
-        XCTAssertEqual(vm.vocabulary(projectID: p), .current, "unknown status: the new name")
         await vm.workOn(targetID: first, targetText: "One")
         XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(first) using the watchtower-workbench skill.")
 
         await vm.refreshInstallStatus(projectID: p)
-        XCTAssertEqual(vm.vocabulary(projectID: p), .legacy)
+        XCTAssertEqual(vm.installStatus[p]?.legacy, true)
         await vm.workOn(targetID: second, targetText: "Two")
-        XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(second) using the watchtower-project skill.")
+        XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(second) using the watchtower-workbench skill.")
     }
 
     /// A target with sub-targets on its workbench starts with the group
@@ -272,7 +271,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(mine.first?.title, "Group")
         XCTAssertEqual(launches.count, 1)
         XCTAssertEqual(launches.first?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group))")
     }
 
     /// The prompt is chosen at creation: a session started on a task keeps
@@ -291,7 +290,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(mine.count, 1)
         XCTAssertEqual(launches.count, 1)
         XCTAssertEqual(launches.first?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))")
     }
 
     func testAChildInAnotherWorkbenchDoesNotMakeAGroup() async throws {
@@ -306,7 +305,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         await vm.workOn(targetID: target, targetText: "Ship it")
         XCTAssertEqual(launches.first?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))")
     }
 
     func testAPhoneStartOnAGroupGetsTheGroupPromptAndThePlanFirstSuffix() async throws {
@@ -319,12 +318,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         try await vm.startForTarget(targetID: group, prompt: nil, mode: .openExisting, placement: .background, planFirst: true)
-        let expected = "\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .current)) \(TerminalLaunch.planFirstSuffix)"
+        let expected = "\(TerminalLaunch.workOnGroupPrompt(targetID: group)) \(TerminalLaunch.planFirstSuffix)"
         XCTAssertEqual(launches.first?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(expected)")
     }
 
-    /// A legacy folder's group prompt names the old skill, as the task prompt does.
-    func testWorkOnAGroupNamesTheLegacySkillOnceTheStatusSaysSo() async throws {
+    /// A legacy folder's group prompt names the current skill, as the task prompt does.
+    func testWorkOnAGroupNamesTheCurrentSkillOnALegacyFolder() async throws {
         let p = try await workbenchWithFolder()
         let group = try await pool.write { db -> Int64 in
             let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
@@ -337,12 +336,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.titleService = { _ in .init(title: "", written: false) }
         await vm.reload()
         await vm.refreshInstallStatus(projectID: p)
-        XCTAssertEqual(vm.vocabulary(projectID: p), .legacy)
+        XCTAssertEqual(vm.installStatus[p]?.legacy, true)
 
         await vm.workOn(targetID: group, targetText: "Group")
 
         XCTAssertEqual(launches.last?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .legacy))")
+                       "WATCHTOWER_FIRST_PROMPT=Work on group #\(group) using the watchtower-workbench skill.")
     }
 
     /// Board #160: `/clear` moved Claude Code to a new session id, which the
@@ -407,7 +406,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let command = "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
         XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
         XCTAssertEqual(launches.first?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))")
     }
 
     /// The existing-session branch keeps the board in a split too, also

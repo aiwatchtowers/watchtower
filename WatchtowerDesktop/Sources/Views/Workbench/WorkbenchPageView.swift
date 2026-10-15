@@ -159,7 +159,7 @@ struct WorkbenchPageView: View {
     private func confirmDelete() {
         guard let pool = appState.databaseManager?.dbPool else { return }
         do {
-            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project, vocabulary: vm.vocabulary(projectID: project.id)) }
+            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project) }
         } catch {
             // Never confirm a delete against unknown counts.
             deleteSummaryError = error.localizedDescription

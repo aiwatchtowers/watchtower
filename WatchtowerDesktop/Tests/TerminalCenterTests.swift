@@ -139,7 +139,7 @@ final class TerminalCenterTests: XCTestCase {
     func testFreshStartLaunchesTheSessionIDAndPromptInTheFolder() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(center.states[s.id], .running)
         XCTAssertEqual(center.liveIDs, [s.id])
         let launch = try XCTUnwrap(sessions.first?.launches.first)
@@ -149,7 +149,7 @@ final class TerminalCenterTests: XCTestCase {
         let uuid = try XCTUnwrap(s.claudeSessionID)
         XCTAssertEqual(launch.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
-        XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
+        XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt)")
     }
 
     func testNonFreshStartResumesTheStoredSession() throws {
@@ -167,7 +167,7 @@ final class TerminalCenterTests: XCTestCase {
     func testNonFreshStartWithoutATranscriptStartsTheSameIDAnew() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(sessions.first?.launches.first?.args.last,
                        "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID))")
     }
@@ -208,7 +208,7 @@ final class TerminalCenterTests: XCTestCase {
     func testShellRowLaunchesTheLoginShellAlone() throws {
         let center = makeCenter()
         let s = try row(project: nil, kind: .shell)
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         XCTAssertEqual(sessions.first?.launches.first?.args, ["-l"])
         XCTAssertEqual(center.states[s.id], .running)
     }
@@ -234,7 +234,7 @@ final class TerminalCenterTests: XCTestCase {
     func testStartWhileRunningIsANoOp() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         center.start(s, fresh: false)
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(sessions[0].launches.count, 1)
@@ -273,7 +273,7 @@ final class TerminalCenterTests: XCTestCase {
     func testExitShowsExitedAndStartRelaunchesInTheSameProcessViewWithResume() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         transcripts = [try XCTUnwrap(s.claudeSessionID)]
         sessions[0].exit(0)
         XCTAssertEqual(center.states[s.id], .exited(0))
@@ -349,7 +349,7 @@ final class TerminalCenterTests: XCTestCase {
     func testMissingFolderIsUnavailableAndStartsNothing() throws {
         let center = makeCenter()
         let s = try row(folder: "/tmp/does-not-exist-\(UUID().uuidString)")
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
         guard case .unavailable = center.states[s.id] else {
             return XCTFail("expected unavailable, got \(String(describing: center.states[s.id]))")
         }

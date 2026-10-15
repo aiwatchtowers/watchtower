@@ -388,7 +388,7 @@ final class SessionInputHandlersTests: XCTestCase {
 
         XCTAssertEqual(outcome.status, .applied)
         let prompts = processes.flatMap(\.launches).map { $0.environment.last }
-        XCTAssertEqual(prompts, ["WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))"])
+        XCTAssertEqual(prompts, ["WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target))"])
         XCTAssertFalse(prompts.contains { $0?.contains("Delete the tests") == true })
     }
 

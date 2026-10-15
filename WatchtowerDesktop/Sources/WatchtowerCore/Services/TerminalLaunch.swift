@@ -49,11 +49,8 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// The first prompt of a new `claude` session.
     package static let firstPromptEnv = "WATCHTOWER_FIRST_PROMPT"
 
-    /// The first session of a new workbench. `vocabulary` picks the skill the
-    /// folder has installed (spec 2026-10-02 §5.3).
-    package static func firstRunPrompt(_ vocabulary: WorkbenchVocabulary) -> String {
-        "Set up this Watchtower workbench using the \(vocabulary.skillName) skill."
-    }
+    /// The first session of a new workbench.
+    package static let firstRunPrompt = "Set up this Watchtower workbench using the \(WorkbenchNames.skill) skill."
 
     package static let fallbackShell = "/bin/zsh"
 
@@ -187,20 +184,19 @@ package struct TerminalLaunch: Equatable, Sendable {
         }
     }
 
-    package static func workOnTargetPrompt(targetID: Int64, vocabulary: WorkbenchVocabulary) -> String {
-        "Work on target #\(targetID) using the \(vocabulary.skillName) skill."
+    package static func workOnTargetPrompt(targetID: Int64) -> String {
+        "Work on target #\(targetID) using the \(WorkbenchNames.skill) skill."
     }
 
     /// "Work on it" on a target with sub-targets (spec 2026-10-08): the skill's
     /// "Working a group" section keys on this wording.
-    package static func workOnGroupPrompt(targetID: Int64, vocabulary: WorkbenchVocabulary) -> String {
-        "Work on group #\(targetID) using the \(vocabulary.skillName) skill."
+    package static func workOnGroupPrompt(targetID: Int64) -> String {
+        "Work on group #\(targetID) using the \(WorkbenchNames.skill) skill."
     }
 
     /// The first prompt of a Work on It session: the group wording when the target has sub-targets.
-    package static func workOnPrompt(targetID: Int64, isGroup: Bool, vocabulary: WorkbenchVocabulary) -> String {
-        isGroup ? workOnGroupPrompt(targetID: targetID, vocabulary: vocabulary)
-            : workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary)
+    package static func workOnPrompt(targetID: Int64, isGroup: Bool) -> String {
+        isGroup ? workOnGroupPrompt(targetID: targetID) : workOnTargetPrompt(targetID: targetID)
     }
 
     /// Follows a session's brief when the owner asked for a plan first (a

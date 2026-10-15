@@ -854,7 +854,7 @@ final class WorkbenchesViewModel {
         // and MCP server it relies on, so no first-run session.
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
-                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)),
+                                  prompt: TerminalLaunch.firstRunPrompt,
                                   agent: setupAgent(projectID: project.id))
         }
     }
@@ -890,13 +890,6 @@ final class WorkbenchesViewModel {
         defer { repairing.remove(projectID) }
         await installCodexPart(projectID: projectID, failure: "Setting up Codex failed:")
         await refreshInstallStatus(projectID: projectID)
-    }
-
-    /// The skill and server names the workbench's folder answers to
-    /// (`WorkbenchInstallStatus.vocabulary`); the current ones while its status
-    /// is unknown — not read yet, or the read failed (spec 2026-10-02 §5.3).
-    func vocabulary(projectID: Int64) -> WorkbenchVocabulary {
-        installStatus[projectID]?.vocabulary ?? .current
     }
 
     /// Reads `integrate status` for one project. The page runs this in

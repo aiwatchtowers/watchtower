@@ -101,7 +101,7 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertEqual(row.targetID, t)
         XCTAssertEqual(row.title, "Ship it")
         XCTAssertEqual(launches.last?.environment.last,
-                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current))")
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: t))")
         let stored = try await rows(p)
         XCTAssertTrue(stored.contains { $0.id == row.id }, "the row is in its workbench's list")
         XCTAssertTrue(vm.terminalSessions[p]?.contains { $0.id == row.id } == true, "and the panel's list is refreshed")
@@ -195,7 +195,7 @@ final class BackgroundStartTests: XCTestCase {
         _ = try await vm.startForTarget(targetID: t, prompt: "Fix the login", mode: .new, placement: .background,
                                         planFirst: true)
 
-        let base = TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current)
+        let base = TerminalLaunch.workOnTargetPrompt(targetID: t)
         XCTAssertEqual(launches.map { $0.environment.last }, [
             "WATCHTOWER_FIRST_PROMPT=\(base) \(TerminalLaunch.planFirstSuffix)",
             "WATCHTOWER_FIRST_PROMPT=Fix the login \(TerminalLaunch.planFirstSuffix)"
@@ -229,7 +229,7 @@ final class BackgroundStartTests: XCTestCase {
         _ = try await vm.startForTarget(targetID: t, prompt: "  \n ", mode: .new, placement: .background)
         _ = try await vm.startForTarget(targetID: t, prompt: "", mode: .new, placement: .background, planFirst: true)
 
-        let base = TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current)
+        let base = TerminalLaunch.workOnTargetPrompt(targetID: t)
         XCTAssertEqual(launches.map { $0.environment.last }, [
             "WATCHTOWER_FIRST_PROMPT=\(base)",
             "WATCHTOWER_FIRST_PROMPT=\(base) \(TerminalLaunch.planFirstSuffix)"
