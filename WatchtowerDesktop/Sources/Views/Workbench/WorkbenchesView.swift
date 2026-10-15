@@ -238,7 +238,7 @@ struct WorkbenchesView: View {
             hasWorkbenches: !vm.summaries.isEmpty,
             agentName: vm.defaultAgent.displayName,
             context: appState.emptyStateContext,
-            onAddFolder: chooseExistingFolder
+            onAddFolder: chooseFolder
         )
     }
 
