@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
+	"watchtower/internal/reviewdiff"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchcheck"
 )
@@ -202,7 +203,7 @@ func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now, vocab,
-		briefCleanupLine(database, p.ID))
+		joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -229,6 +230,47 @@ func loadBriefAsks(database *db.DB, workbenchID int64) *briefAsks {
 		return &briefAsks{err: err}
 	}
 	return &briefAsks{list: list, others: others}
+}
+
+// briefReviewLines is the brief's review rounds the owner sent to the brief's
+// own session and it has not read yet (get_review), one line each,
+// newline-joined; "" when there are none or the session is not known. A
+// read error is one line, never a silent skip. They ride with the rules and
+// the cleanup line, whose room is set aside before the board is fitted.
+func briefReviewLines(database *db.DB, workbenchID int64) string {
+	sessionID, ok, err := terminalSessionRowID()
+	if err != nil || !ok {
+		return "" // an invalid env var is already reported by recordTerminalSessionID
+	}
+	rounds, err := database.ReviewRoundsWaiting(workbenchID, sessionID)
+	var lines []string
+	for _, r := range rounds {
+		var cs []db.ReviewComment
+		if cs, err = database.ReviewRoundComments(r.ID); err != nil {
+			break
+		}
+		n := 0
+		for _, c := range cs {
+			if c.Status == "sent" {
+				n++
+			}
+		}
+		lines = append(lines, reviewWaitingLine(r.ID, n))
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: review rounds: %v\n", workbenchID, err)
+		return "Review rounds: could not be read (" + briefClip(err.Error(), briefLineChars) + ")"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// joinBriefLines joins the non-empty parts with newlines.
+func joinBriefLines(parts ...string) string {
+	return strings.Join(slices.DeleteFunc(parts, func(s string) bool { return s == "" }), "\n")
+}
+
+func reviewWaitingLine(id int64, n int) string {
+	return fmt.Sprintf("Review round #%d waiting (%s) → get_review %d", id, reviewdiff.CommentCount(n), id)
 }
 
 // briefRecent is the recent-in-workbench-sources input; nil when the
