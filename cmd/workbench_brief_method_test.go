@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchcheck"
 	"watchtower/internal/workbenchmethod"
 )
@@ -125,6 +126,28 @@ func TestBriefMethodSection_MismatchStaysWithinTheSlot(t *testing.T) {
 	e := workbenchmethod.Combine(db.WorkbenchMethodology{AskGuard: workbenchmethod.AskGuardOff, FinishCheck: workbenchmethod.FinishOff},
 		methodFile(body))
 	const mismatch = "Methodology preset: none is set, but watchtower-flow is still installed — run 'watchtower workbench resync 7'."
+
+	section := briefMethodSection(e, mismatch)
+
+	assert.LessOrEqual(t, utf8.RuneCountInString(section), briefMethodChars)
+	assert.Contains(t, section, mismatch)
+	assert.Contains(t, section, "Folder rules: .watchtower/workflow.md (1200 chars) — read it before you start working.")
+}
+
+// The kept-preset line (preset none beside an owner-edited watchtower-flow)
+// shares the slot the same way.
+func TestBriefMethodSection_KeptPresetLineStaysWithinTheSlot(t *testing.T) {
+	folder := t.TempDir()
+	_, core := devpack.WorkbenchSkill()
+	_, flow := devpack.FlowSkill()
+	require.NoError(t, os.MkdirAll(filepath.Dir(coreFileIn(folder)), 0o755))
+	require.NoError(t, os.WriteFile(coreFileIn(folder), core, 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Dir(flowFileIn(folder)), 0o755))
+	require.NoError(t, os.WriteFile(flowFileIn(folder), append(flow, []byte("\nMine.\n")...), 0o644))
+	e := workbenchmethod.Combine(db.WorkbenchMethodology{Preset: workbenchmethod.PresetNone, AskGuard: workbenchmethod.AskGuardOff,
+		FinishCheck: workbenchmethod.FinishOff}, methodFile(strings.Repeat("я", briefFolderRulesInline)))
+	mismatch := briefPresetMismatch(e, folder, 7)
+	require.Contains(t, mismatch, "your edited watchtower-flow skill is kept")
 
 	section := briefMethodSection(e, mismatch)
 

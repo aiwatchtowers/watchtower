@@ -100,6 +100,47 @@ func TestWorkbenchMethodology_PresetChangeRunsTheInstall(t *testing.T) {
 	assert.FileExists(t, flowFileIn(folder))
 }
 
+// Spec §4.3: preset none keeps an owner-edited preset and reports it, so the
+// Desktop can say the copy was kept.
+func TestWorkbenchMethodology_ReportsAKeptEditedPreset(t *testing.T) {
+	database := writeActionsConfig(t)
+	useFakeWorkbenchClaude(t)
+	folder := resyncFolder(t)
+	pid, err := database.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+	id := strconv.FormatInt(pid, 10)
+	_, _, err = runResync(t, id, "--json")
+	require.NoError(t, err)
+	_, body := devpack.FlowSkill()
+	edited := string(body) + "\nMy own step.\n"
+	require.NoError(t, os.WriteFile(flowFileIn(folder), []byte(edited), 0o644))
+
+	out, _, err := runMethodology(t, id, "--preset", "none", "--json")
+
+	require.NoError(t, err)
+	res := decodeMethodology(t, out)
+	assert.True(t, res.InstallRan)
+	assert.Equal(t, string(devpack.StateDrifted), res.InstallFlow)
+	assert.Empty(t, res.InstallCodexFlow, "no Codex skills in this folder")
+	assert.False(t, res.InstallSingleFileLayout)
+	assert.Contains(t, out, `"install_flow": "drifted"`)
+	assert.Contains(t, out, `"install_codex_flow": ""`)
+	assert.Contains(t, out, `"install_single_file_layout": false`)
+	got, err := os.ReadFile(flowFileIn(folder))
+	require.NoError(t, err)
+	assert.Equal(t, edited, string(got))
+
+	out, _, err = runMethodology(t, id)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "was kept", "a read runs no install")
+	out, _, err = runMethodology(t, id, "--preset", "watchtower-flow")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "was kept")
+	out, _, err = runMethodology(t, id, "--preset", "none")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Your edited watchtower-flow skill was kept; delete it yourself to drop the methodology.")
+}
+
 // A new session worktree gets the skills by the workbench's setting.
 func TestInstallWorktreeIntegration_UsesTheWorkbenchPreset(t *testing.T) {
 	database := writeActionsConfig(t)
@@ -138,8 +179,10 @@ func TestBriefPresetMismatch(t *testing.T) {
 		briefPresetMismatch(none, folder, 7))
 
 	// An owner-edited preset counts as installed: resync keeps it, so the
-	// line would never clear. With none it is the owner's file, not ours.
+	// line would never clear. With none resync keeps it too, so the line
+	// says to delete it by hand.
 	require.NoError(t, os.WriteFile(flowFileIn(folder), append(body, []byte("\nMy own step.\n")...), 0o644))
 	assert.Empty(t, briefPresetMismatch(flow, folder, 7))
-	assert.Empty(t, briefPresetMismatch(none, folder, 7))
+	assert.Equal(t, "Methodology preset: none is set, but your edited watchtower-flow skill is kept — delete it yourself to drop the methodology.",
+		briefPresetMismatch(none, folder, 7))
 }

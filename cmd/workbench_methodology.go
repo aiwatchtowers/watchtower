@@ -95,6 +95,12 @@ type workbenchMethodologyJSON struct {
 	InstallRan      bool                  `json:"install_ran"`
 	InstallOK       bool                  `json:"install_ok"`
 	InstallError    string                `json:"install_error"`
+	// What the install left in each skills directory (a devpack state, ""
+	// without the core skill there or when no install ran): "drifted" or
+	// "foreign" under preset none is an edited copy kept, not removed.
+	InstallFlow             string `json:"install_flow"`
+	InstallCodexFlow        string `json:"install_codex_flow"`
+	InstallSingleFileLayout bool   `json:"install_single_file_layout"`
 }
 
 func runWorkbenchMethodology(cmd *cobra.Command, args []string) error {
@@ -183,7 +189,10 @@ func applyWorkbenchMethodology(database *db.DB, p *db.Workbench, changes map[str
 	fillMethodology(&res, personal, e)
 	if e.Preset != before {
 		res.InstallRan = true
-		if err := syncWorkbenchMethodology(p, e.Preset); err != nil {
+		rep, err := syncWorkbenchMethodology(p, e.Preset)
+		res.InstallFlow, res.InstallCodexFlow = string(rep.Claude.State), string(rep.Codex.State)
+		res.InstallSingleFileLayout = rep.SingleFileLayout
+		if err != nil {
 			res.InstallOK, res.InstallError = false, err.Error()
 			errs = append(errs, fmt.Errorf("updating the folder's skills: %w", err))
 		}
@@ -194,15 +203,14 @@ func applyWorkbenchMethodology(database *db.DB, p *db.Workbench, changes map[str
 // syncWorkbenchMethodology is the install a preset change runs (spec §8):
 // the watchtower-flow preset written or removed beside each core skill copy
 // in the workbench folder, nothing else touched. Session worktrees take the
-// setting on their next install.
-func syncWorkbenchMethodology(p *db.Workbench, preset string) error {
+// setting on their next install. The report says what each directory kept.
+func syncWorkbenchMethodology(p *db.Workbench, preset string) (devpack.MethodologyReport, error) {
 	o, err := workbenchInstallOptions(p)
 	if err != nil {
-		return err
+		return devpack.MethodologyReport{}, err
 	}
 	o.PresetNone = preset == workbenchmethod.PresetNone
-	_, err = devpack.SyncMethodology(o)
-	return err
+	return devpack.SyncMethodology(o)
 }
 
 // writeMethodology applies changes over the stored settings.
@@ -252,9 +260,30 @@ func printMethodologyReport(w io.Writer, res workbenchMethodologyJSON) {
 	if res.FileCreated {
 		fmt.Fprintf(w, "Created %s.\n", res.File.Path)
 	}
+	if note := res.keptFlowNote(); note != "" {
+		fmt.Fprintln(w, note)
+	}
+	if res.InstallSingleFileLayout {
+		fmt.Fprintln(w, singleFileLayoutNote)
+	}
 	for _, e := range []string{res.Error, res.FileCreateError, res.InstallError} {
 		if e != "" {
 			fmt.Fprintf(w, "Problem: %s\n", e)
 		}
 	}
+}
+
+// keptFlowNote is the line for preset none beside an edited or foreign
+// watchtower-flow copy the install kept (spec §4.3); "" otherwise. The
+// Desktop's WorkbenchMethodologyState.keptFlowNote says the same.
+func (res workbenchMethodologyJSON) keptFlowNote() string {
+	if res.Effective.Preset != workbenchmethod.PresetNone {
+		return ""
+	}
+	for _, st := range []string{res.InstallFlow, res.InstallCodexFlow} {
+		if st == string(devpack.StateDrifted) || st == string(devpack.StateForeign) {
+			return "Your edited " + devpack.FlowSkillName + " skill was kept; delete it yourself to drop the methodology."
+		}
+	}
+	return ""
 }

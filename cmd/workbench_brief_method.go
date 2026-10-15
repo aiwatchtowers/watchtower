@@ -35,7 +35,8 @@ func briefMethodSection(e workbenchmethod.Effective, mismatch string) string {
 
 // briefPresetMismatch is the brief's line when the effective preset is not
 // what the workbench folder holds (spec §6), so a changed preset: line or
-// setting is never silent; "" when they agree, when the folder has no core
+// setting is never silent — with none beside an edited preset, that resync
+// keeps it and the owner removes it; "" when they agree, when the folder has no core
 // skill, or when its core is an owner-edited single file (which carries its
 // own methodology).
 func briefPresetMismatch(e workbenchmethod.Effective, folder string, workbenchID int64) string {
@@ -46,6 +47,9 @@ func briefPresetMismatch(e workbenchmethod.Effective, folder string, workbenchID
 	case e.Preset == workbenchmethod.PresetNone && l.Flow:
 		return fmt.Sprintf("Methodology preset: none is set, but %s is still installed — run 'watchtower workbench resync %d'.",
 			devpack.FlowSkillName, workbenchID)
+	case e.Preset == workbenchmethod.PresetNone && l.FlowPresent: // an edited or foreign copy: resync keeps it (§4.3)
+		return fmt.Sprintf("Methodology preset: none is set, but your edited %s skill is kept — delete it yourself to drop the methodology.",
+			devpack.FlowSkillName)
 	case e.Preset == workbenchmethod.PresetFlow && !l.FlowPresent: // an edited preset is installed: resync keeps it
 		return fmt.Sprintf("Methodology preset: %s is set, but it is not installed — run 'watchtower workbench resync %d'.",
 			devpack.FlowSkillName, workbenchID)
