@@ -199,6 +199,25 @@ struct CalendarEventsView: View {
         scrollTargetEventID = link.id
     }
 
+    /// Home's Next meeting deep link (`AppState.navigateToCalendarEvent`):
+    /// cleared on first sight, then opened as the recording→event link is.
+    /// It supersedes the Today landing, as the scroll's own deep link does.
+    private func openPendingEvent(in vm: CalendarViewModel) {
+        guard let eventID = appState.pendingCalendarEventID else { return }
+        appState.pendingCalendarEventID = nil
+        guard let db = appState.databaseManager else { return }
+        do {
+            guard let link = try db.dbPool.read({ try CalendarQueries.fetchEventLink($0, id: eventID) }) else {
+                NSLog("CalendarEventsView: deep-linked event %@ is gone", eventID)
+                return
+            }
+            didAutoScrollToToday = true
+            openLinkedEvent(link, in: vm)
+        } catch {
+            NSLog("CalendarEventsView: deep-linked event %@ read failed: %@", eventID, "\(error)")
+        }
+    }
+
     // MARK: - Split view
 
     private func meetingsSplitView(_ vm: CalendarViewModel) -> some View {
@@ -236,8 +255,10 @@ struct CalendarEventsView: View {
             // would likewise never trigger `.onChange(of: recordings)`
             // (`[] == []`). Sections must exist on first appearance regardless.
             rebuildSections(vm)
+            openPendingEvent(in: vm)
             appState.autoDownloadTranscriptionModel()
         }
+        .onChange(of: appState.pendingCalendarEventID) { _, _ in openPendingEvent(in: vm) }
         // Keyed on the save counter, not on the recorder settling: with capture
         // decoupled from the queue, a transcript can land while another job is
         // still queued or a failed one lingers — `phase` never reaches `.idle`

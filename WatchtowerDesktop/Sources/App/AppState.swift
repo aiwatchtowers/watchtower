@@ -366,6 +366,10 @@ final class AppState {
     /// Set to navigate to a specific briefing from anywhere in the app.
     var pendingBriefingID: Int?
 
+    /// Set to open a specific calendar event from anywhere in the app;
+    /// `CalendarEventsView` consumes and clears it.
+    var pendingCalendarEventID: String?
+
     /// Set to navigate to the day plan for a specific date from anywhere in the app.
     var pendingDayPlanDate: String?
 
@@ -502,6 +506,11 @@ final class AppState {
     func navigateToBriefing(_ briefingID: Int) {
         pendingBriefingID = briefingID
         selectedDestination = .briefings
+    }
+
+    func navigateToCalendarEvent(_ eventID: String) {
+        pendingCalendarEventID = eventID
+        selectedDestination = .calendar
     }
 
     func navigateToDayPlan(_ date: String? = nil) {
@@ -1462,7 +1471,9 @@ final class AppState {
         ensureChatSessionPool(manager)
     }
 
-    private func initCalendar(dbPool: DatabasePool) {
+    /// Not marked `private` (the `initIdeas` precedent) so XCTest can mount
+    /// the Calendar tab on a test pool (`HomeLinkTests`).
+    func initCalendar(dbPool: DatabasePool) {
         calendarViewModel = CalendarViewModel(dbPool: dbPool)
     }
 
