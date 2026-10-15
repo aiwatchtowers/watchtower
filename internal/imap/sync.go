@@ -51,7 +51,9 @@ func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 
 // FetchRange stores every message received in [from, to) (IMAP SINCE/BEFORE,
 // day-granular), uncapped, in batches of MaxMessagesPerSync. It writes no
-// watermark and no auth state; the first error stops it.
+// watermark and no auth state, and each row's synced_at is the message's own
+// date, so the inbox detector never sees backfilled mail as new. The first
+// error stops it.
 func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error) {
 	client, uidValidity, err := Dial(s.cfg, s.auth)
 	if err != nil {
@@ -71,7 +73,6 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 	}
 	maxBody := s.maxBodyBytes()
 	upsert := s.upsertFunc()
-	syncedAt := time.Now().UTC().Format(time.RFC3339)
 	count := 0
 	for start := 0; start < len(uids); start += batch {
 		if err := ctx.Err(); err != nil {
@@ -82,7 +83,8 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 			return count, fmt.Errorf("fetching account %d: %w", s.account.ID, err)
 		}
 		for _, m := range msgs {
-			if err := upsert(s.messageRow(m, uidValidity, maxBody), syncedAt); err != nil {
+			// Each row keeps its own date as synced_at (backfillSyncedAt).
+			if err := upsert(s.messageRow(m, uidValidity, maxBody), backfillSyncedAt(m.InternalDate, from)); err != nil {
 				return count, fmt.Errorf("account %d: upsert uid %d: %w", s.account.ID, m.UID, err)
 			}
 			count++
@@ -109,6 +111,17 @@ func (s *Syncer) upsertFunc() func(db.ImapMessage, string) error {
 		return s.upsertImapMessage
 	}
 	return s.db.UpsertImapMessage
+}
+
+// backfillSyncedAt is a backfilled row's synced_at: the message's own date
+// (UTC RFC3339), or from when that is missing or unparseable. The inbox
+// detector reads synced_at as "arrived since my cursor", so a backfilled row
+// stamped now would surface weeks-old mail as new.
+func backfillSyncedAt(internalDate string, from time.Time) string {
+	if t, err := time.Parse(time.RFC3339, internalDate); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	return from.UTC().Format(time.RFC3339)
 }
 
 func (s *Syncer) maxBodyBytes() int {

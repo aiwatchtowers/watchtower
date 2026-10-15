@@ -165,3 +165,64 @@ func TestSync_FirstSyncFromFalseOnListFailure(t *testing.T) {
 		t.Fatal("a failed list is not a first sync")
 	}
 }
+
+// Backfilled mail keeps its own date as synced_at, so the inbox detector's
+// synced_at cursor (GmailMessagesSyncedAfter) never sees it as new mail;
+// a row the forward Sync stores is still stamped now.
+func TestFetchRange_SyncedAtIsTheMessagesOwnDate(t *testing.T) {
+	var queries []string
+	var mu sync.Mutex
+	s, database, accountID := newTestSyncerForMux(t, rangeMux(5, &queries, &mu))
+	cursor := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+
+	if _, err := s.FetchRange(context.Background(), time.Unix(1758200000, 0), time.Unix(1758400000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.GmailMessagesSyncedAfter(accountID, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("backfilled rows visible to the inbox cursor: %d", len(rows))
+	}
+	all, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("stored %d rows, want 5", len(all))
+	}
+	for _, r := range all {
+		if r.SyncedAt != r.InternalDate {
+			t.Fatalf("row %s synced_at = %q, want its internal date %q", r.ID, r.SyncedAt, r.InternalDate)
+		}
+	}
+
+	// The forward Sync stores the two messages past the watermark with now.
+	if err := database.SetGmailAccountWatermark(accountID, 1758300002); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = database.GmailMessagesSyncedAfter(accountID, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != "r3" || rows[1].ID != "r4" {
+		t.Fatalf("rows after Sync = %+v, want r3 and r4", rows)
+	}
+}
+
+func TestBackfillSyncedAtFallsBackToRangeStart(t *testing.T) {
+	from := time.Date(2026, 9, 20, 0, 0, 0, 0, time.FixedZone("x", 3600))
+	if got := backfillSyncedAt("", from); got != "2026-09-19T23:00:00Z" {
+		t.Fatalf("empty date: got %q", got)
+	}
+	if got := backfillSyncedAt("garbage", from); got != "2026-09-19T23:00:00Z" {
+		t.Fatalf("bad date: got %q", got)
+	}
+	if got := backfillSyncedAt("2026-09-21T10:00:00+02:00", from); got != "2026-09-21T08:00:00Z" {
+		t.Fatalf("own date: got %q", got)
+	}
+}

@@ -138,3 +138,50 @@ func TestSyncUIDValidityResetIsNotAFirstSync(t *testing.T) {
 		t.Fatal("a UIDVALIDITY-reset resync must not count as a first sync")
 	}
 }
+
+// Backfilled mail keeps its own date as synced_at, so the inbox detector's
+// synced_at cursor (ImapMessagesSyncedAfter) never sees it as new mail; a row
+// the forward Sync stores is still stamped now.
+func TestFetchRangeSyncedAtIsTheMessagesOwnDate(t *testing.T) {
+	ts := startTestServer(t)
+	for i := range 3 {
+		ts.seedMessageAt(t, rawMessageSubject(fmt.Sprintf("old%d", i)), time.Date(2026, 9, 20, 9, i, 0, 0, time.UTC))
+	}
+	database := db.OpenTestDB(t)
+	syncer, acct := newTestSyncer(t, database, ts)
+	cursor := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+
+	if _, err := syncer.FetchRange(context.Background(),
+		time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("FetchRange: %v", err)
+	}
+	rows, err := database.ImapMessagesSyncedAfter(acct.ID, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("backfilled rows visible to the inbox cursor: %d", len(rows))
+	}
+
+	ts.seedMessage(t, simpleRawMessage) // arrives now; the old ones sit outside Sync's 7-day window
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	rows, err = database.ImapMessagesSyncedAfter(acct.ID, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Subject != "Hello" {
+		t.Fatalf("rows after Sync = %+v, want only Hello", rows)
+	}
+}
+
+func TestBackfillSyncedAtFallsBackToRangeStart(t *testing.T) {
+	from := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	if got := backfillSyncedAt("", from); got != "2026-09-20T00:00:00Z" {
+		t.Fatalf("empty date: got %q", got)
+	}
+	if got := backfillSyncedAt("2026-09-21T08:00:00Z", from); got != "2026-09-21T08:00:00Z" {
+		t.Fatalf("own date: got %q", got)
+	}
+}

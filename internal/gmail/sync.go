@@ -124,7 +124,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	stalled := false // set once a message is lost, so maxSeen stops advancing past the gap
 
 	for _, id := range ids {
-		stored, msgUnix, err := s.storeMessage(ctx, id, syncedAt, maxBody, watermark)
+		stored, msgUnix, err := s.storeMessage(ctx, id, func(string) string { return syncedAt }, maxBody, watermark)
 		if err != nil {
 			s.logger.Printf("gmail: %v", err)
 			if msgUnix == 0 {
@@ -185,8 +185,10 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 }
 
 // FetchRange stores every non-noise inbox message received in [from, to),
-// ignoring MaxMessagesPerSync. It writes no watermark and no auth state; the
-// first error stops it (wrapped, so ErrAuthRevoked stays matchable).
+// ignoring MaxMessagesPerSync. It writes no watermark and no auth state, and
+// each row's synced_at is the message's own date, so the inbox detector never
+// sees backfilled mail as new. The first error stops it (wrapped, so
+// ErrAuthRevoked stays matchable).
 func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error) {
 	query := fmt.Sprintf("in:inbox after:%d before:%d", from.Unix(), to.Unix())
 	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
@@ -194,10 +196,10 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 		return 0, fmt.Errorf("listing gmail messages %q: %w", query, err)
 	}
 	maxBody := s.maxBodyBytes()
-	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	ownDate := func(internalDate string) string { return backfillSyncedAt(internalDate, from) }
 	count := 0
 	for _, id := range ids {
-		stored, _, err := s.storeMessage(ctx, id, syncedAt, maxBody, 0)
+		stored, _, err := s.storeMessage(ctx, id, ownDate, maxBody, 0)
 		if err != nil {
 			return count, err
 		}
@@ -211,8 +213,9 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 // storeMessage fetches message id and upserts it unless it carries a noise
 // label or its internalDate is at or below skipAtOrBelow (0 = no filter).
 // msgUnix is the message's date (0 when the fetch failed or the date did not
-// parse); stored=false with a nil error is a deliberate skip.
-func (s *Syncer) storeMessage(ctx context.Context, id, syncedAt string, maxBody int, skipAtOrBelow float64) (stored bool, msgUnix float64, err error) {
+// parse); stored=false with a nil error is a deliberate skip. syncedAt maps
+// the message's internal date to the row's synced_at.
+func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(internalDate string) string, maxBody int, skipAtOrBelow float64) (stored bool, msgUnix float64, err error) {
 	m, err := s.client.GetMessage(ctx, id)
 	if err != nil {
 		return false, 0, fmt.Errorf("fetch message %s: %w", id, err)
@@ -237,11 +240,22 @@ func (s *Syncer) storeMessage(ctx context.Context, id, syncedAt string, maxBody 
 		BodyText: truncateUTF8(m.BodyText, maxBody), InternalDate: m.InternalDate, LabelsJSON: string(labelsJSON),
 		IsUnread: m.IsUnread, Permalink: m.Permalink,
 	}
-	row.SyncedAt = syncedAt
+	row.SyncedAt = syncedAt(m.InternalDate)
 	if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
 		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
 	}
 	return true, msgUnix, nil
+}
+
+// backfillSyncedAt is a backfilled row's synced_at: the message's own date
+// (UTC RFC3339), or from when that is missing or unparseable. The inbox
+// detector reads synced_at as "arrived since my cursor", so a backfilled row
+// stamped now would surface weeks-old mail as new.
+func backfillSyncedAt(internalDate string, from time.Time) string {
+	if t, err := time.Parse(time.RFC3339, internalDate); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	return from.UTC().Format(time.RFC3339)
 }
 
 func (s *Syncer) maxBodyBytes() int {
