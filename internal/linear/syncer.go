@@ -128,6 +128,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			firstErr = err
 		}
 	}
+	if _, err := s.db.ResolveLinearUsersByEmail(time.Now().UTC().Format(time.RFC3339)); err != nil {
+		s.logger.Printf("%v", err)
+	}
 	if _, err := s.db.BackfillLinearSlackIDs(s.accountID); err != nil {
 		s.logger.Printf("%v", err)
 		if firstErr == nil {

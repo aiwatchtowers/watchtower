@@ -15,11 +15,18 @@ func TestSyncer_FirstPassStoresIssuesCommentsAndHistory(t *testing.T) {
 	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}, {"id": "t-2", "key": "OPS", "name": "Ops"}}
 	f.issuePages = [][]map[string]any{{issueNode("i-1", "ENG-1", "started", "2026-10-02T00:00:00.000Z")}}
 	f.commentPages = [][]map[string]any{{commentNode("c-1", "i-1", "ENG-1", `{"type":"doc","content":[{"type":"suggestion_userMentions","attrs":{"id":"user-9"}}]}`, "2026-10-03T00:00:00.000Z")}}
+	f.users = []map[string]any{{"id": "user-1", "name": "Owner", "displayName": "owner", "email": "owner@example.com"}}
+	f.issuePages[0][0]["assignee"] = map[string]any{"id": "user-1", "name": "Owner", "email": "owner@example.com"}
 	d, s := newTestSyncer(t, f)
+	_, err := d.Exec(`INSERT INTO users (id, name, email) VALUES ('1:U1','owner','Owner@Example.com')`)
+	require.NoError(t, err)
 
 	n, err := s.Sync(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
+	var assigneeSlack string
+	require.NoError(t, d.QueryRow(`SELECT assignee_slack_id FROM linear_issues WHERE id='i-1'`).Scan(&assigneeSlack))
+	assert.Equal(t, "1:U1", assigneeSlack)
 
 	issues, _ := d.GetLinearIssueByKey("ENG-1")
 	require.Len(t, issues, 1)
