@@ -6,10 +6,27 @@
 //
 // The sink is best effort: it never returns an error, never panics and warns
 // at most once per process, so a metrics failure can never break a DB write.
+//
+// Write protocol, shared with the Swift writer (any writer must follow it):
+//   - Each line is one JSON object plus "\n", written with a single write()
+//     on a file opened O_APPEND|O_CREAT|O_WRONLY, mode 0600, so concurrent
+//     processes never interleave. "ts" is UTC with exactly three fractional
+//     digits ("2026-10-15T10:00:00.123Z").
+//   - A writer that keeps the file open stats the path before each write and
+//     re-opens when the path is gone or names another inode.
+//   - Rotation: once the file is over MaxFileBytes, a writer takes a
+//     non-blocking exclusive flock on LockFileName (0600, same directory;
+//     never deleted). Holding it, it re-stats the path and renames it to
+//     FileName+".1" (replacing the previous generation) only if the path is
+//     still the inode it saw over the cap and still over the cap. A writer
+//     that cannot get the lock skips rotation and just appends. The re-check
+//     under the lock is what keeps a second rotator from moving a fresh,
+//     small file over the full generation another one just rotated.
 package lockmetrics
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +34,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -36,6 +54,17 @@ type Event struct {
 	Checkpoint    string    `json:"checkpoint,omitempty"` // "busy=0 log=12 ckpt=12" for KindWAL
 }
 
+// MarshalJSON pins "ts" to UTC with exactly three fractional digits; the
+// default time encoding drops a zero fraction, which a strict
+// fractional-seconds parser (Swift's ISO8601DateFormatter) rejects.
+func (e Event) MarshalJSON() ([]byte, error) {
+	type plain Event // no methods: avoids recursing into MarshalJSON
+	return json.Marshal(struct {
+		TS string `json:"ts"`
+		plain
+	}{TS: e.TS.UTC().Format(tsLayout), plain: plain(e)})
+}
+
 // Event kinds.
 const (
 	KindTx       = "tx"
@@ -48,12 +77,15 @@ const (
 const (
 	// FileName is the sink's name; it lives next to the DB file.
 	FileName = "dblock.jsonl"
+	// LockFileName is the sidecar every writer flocks to rotate the sink.
+	LockFileName = FileName + ".lock"
 	// DefaultThreshold is the wait/hold at or above which a tx/exec is slow.
 	DefaultThreshold = 200 * time.Millisecond
 	// MaxFileBytes is the size past which the sink rotates to FileName+".1".
 	MaxFileBytes = 10 << 20
 
 	thresholdEnv = "WATCHTOWER_DBLOCK_THRESHOLD_MS"
+	tsLayout     = "2006-01-02T15:04:05.000Z07:00" // fixed width; UTC renders "Z"
 	defaultRole  = "cli"
 )
 
@@ -91,7 +123,7 @@ func loadSettings() config {
 		settings = config{threshold: DefaultThreshold}
 		raw := strings.TrimSpace(os.Getenv(thresholdEnv))
 		switch {
-		case raw == "":
+		case raw == "": // default
 		case strings.EqualFold(raw, "off"):
 			settings.off = true
 		default:
@@ -190,12 +222,7 @@ func appendLine(path string, line []byte) {
 		closeHeld()
 	}
 	if err == nil && pfi.Size() > maxFileBytes {
-		// Racing processes may each rename; the loser moves a fresh, small
-		// file over .1 and a few lines are lost — never a torn one. ENOENT
-		// means another process rotated first.
-		if rerr := os.Rename(path, path+".1"); rerr != nil && !os.IsNotExist(rerr) {
-			warn("rotate", path, rerr)
-		}
+		rotate(path, pfi)
 		closeHeld()
 	}
 	if held == nil {
@@ -216,6 +243,35 @@ func appendLine(path string, line []byte) {
 	if _, err := held.Write(line); err != nil {
 		warn("write", path, err)
 		closeHeld()
+	}
+}
+
+// rotate moves the full sink at path to .1 under the sidecar flock (see the
+// package doc). seen is the stat that found it over the cap; the rename runs
+// only if the path still names that inode and is still over the cap, so a
+// process that lost the race never moves the fresh file over the generation
+// the winner just rotated. A held lock means another writer is rotating:
+// skip, never wait.
+func rotate(path string, seen os.FileInfo) {
+	lockPath := filepath.Join(filepath.Dir(path), LockFileName)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		warn("open rotation lock", lockPath, err)
+		return
+	}
+	defer func() { _ = lf.Close() }() // closing releases the flock
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			warn("lock for rotation", lockPath, err)
+		}
+		return
+	}
+	cur, err := os.Stat(path)
+	if err != nil || !os.SameFile(cur, seen) || cur.Size() <= maxFileBytes {
+		return // another writer rotated (or removed) it first
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		warn("rotate", path, err)
 	}
 }
 

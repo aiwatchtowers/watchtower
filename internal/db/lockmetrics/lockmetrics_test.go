@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,8 +124,8 @@ func TestRecordWritesLineWithFilledFieldsAndBindingKeys(t *testing.T) {
 		t.Fatalf("pid = %v, want %d", raw["pid"], os.Getpid())
 	}
 	tsStr := raw["ts"].(string)
-	if !strings.HasSuffix(tsStr, "Z") {
-		t.Fatalf("ts not UTC: %s", tsStr)
+	if !tsPattern.MatchString(tsStr) {
+		t.Fatalf("ts %q is not fixed-width UTC with milliseconds", tsStr)
 	}
 	ts, err := time.Parse(time.RFC3339Nano, tsStr)
 	if err != nil {
@@ -239,6 +240,9 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 			t.Fatalf("start helper: %v", err)
 		}
 		t.Cleanup(func() {
+			if cmd.ProcessState != nil {
+				return // already reaped: its pgid may belong to someone else now
+			}
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			_ = cmd.Wait()
 		})
@@ -335,6 +339,108 @@ func TestRotatedOrDeletedElsewhereReopensPath(t *testing.T) {
 	var e Event
 	if err := json.Unmarshal([]byte(got[0]), &e); err != nil || e.HoldMS != 3 {
 		t.Fatalf("recreated file holds %q (err=%v)", got[0], err)
+	}
+}
+
+var tsPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+
+func TestTimestampKeepsZeroFraction(t *testing.T) {
+	path := setup(t)
+	ts := time.Date(2026, 10, 15, 10, 0, 0, 0, time.FixedZone("plus3", 3*3600))
+	Record(Event{TS: ts, Kind: KindBusy})
+	line := readLines(t, path)[0]
+	if !strings.HasPrefix(line, `{"ts":"2026-10-15T07:00:00.000Z",`) {
+		t.Fatalf("line = %s, want ts 2026-10-15T07:00:00.000Z first", line)
+	}
+}
+
+// writeFull puts n bytes at path so it is over a test-sized cap.
+func writeFull(t *testing.T, path string, n int) os.FileInfo {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", n-1)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi.Size()
+}
+
+// Two writers both saw the full file over the cap. The first rotates it and
+// a fresh file appears at the path; the second, acting on its stale stat,
+// must not move the fresh file over the full generation in .1.
+func TestRotationRaceKeepsFullGeneration(t *testing.T) {
+	path := setup(t)
+	setMaxFileBytesForTest(1024)
+	seen := writeFull(t, path, 4096)
+
+	rotate(path, seen) // writer A
+	if got := fileSize(t, path+".1"); got != 4096 {
+		t.Fatalf(".1 after first rotation = %d bytes, want 4096", got)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rotate(path, seen) // writer B, stale view
+	if got := fileSize(t, path+".1"); got != 4096 {
+		t.Fatalf(".1 after the losing rotation = %d bytes, want the full 4096", got)
+	}
+	if got := fileSize(t, path); got != 3 {
+		t.Fatalf("fresh file = %d bytes, want 3 (left in place)", got)
+	}
+
+	// Even a new file already over the cap is not B's to rotate: it is not
+	// the inode B saw.
+	writeFull(t, path, 2048)
+	rotate(path, seen)
+	if got := fileSize(t, path+".1"); got != 4096 {
+		t.Fatalf(".1 = %d bytes after a stale rotation of another full file, want 4096", got)
+	}
+}
+
+func TestRotationSkippedWhileAnotherWriterHoldsTheLock(t *testing.T) {
+	path := setup(t)
+	setMaxFileBytesForTest(1024)
+	writeFull(t, path, 4096)
+
+	lockPath := filepath.Join(filepath.Dir(path), LockFileName)
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	Record(Event{Kind: KindTx, HoldMS: 1}) // must not block, must not rotate
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("rotated while the lock was held (err=%v)", err)
+	}
+	if got := fileSize(t, path); got <= 4096 {
+		t.Fatalf("line not appended while rotation was skipped: size %d", got)
+	}
+
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	Record(Event{Kind: KindTx, HoldMS: 2})
+	if got := fileSize(t, path+".1"); got <= 4096 {
+		t.Fatalf(".1 = %d bytes, want the full generation once the lock is free", got)
+	}
+	if fi, err := os.Stat(lockPath); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("lock file must stay, mode 0600: %v, %v", fi, err)
 	}
 }
 
@@ -483,6 +589,9 @@ func TestConfigureLastCallWins(t *testing.T) {
 }
 
 func TestUnwritableDirWarnsOnceAndNeverPanics(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the 0500 directory mode")
+	}
 	warns := captureWarnings(t)
 	resetForTest()
 	t.Cleanup(resetForTest)
