@@ -91,7 +91,7 @@ func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) e
 			return err
 		}
 		if bctx.Err() != nil || r.Now().Sub(start) >= r.Budget {
-			return nil
+			return nil //nolint:nilerr // the budget is spent: the rest waits for the next Step, not a failure
 		}
 		stop, err := r.runRow(ctx, bctx, row)
 		if err != nil || stop {
