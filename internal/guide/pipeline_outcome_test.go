@@ -107,6 +107,25 @@ func TestRunForWindow_ForceRegenerateIgnoresNoSituations(t *testing.T) {
 	assert.Equal(t, OutcomeGenerated, pipe.LastOutcome())
 }
 
+// A failed situations read fails the daemon's run but not the CLI's forced
+// one, which goes on without situations.
+func TestRunForWindow_SituationsReadError(t *testing.T) {
+	database := db.OpenTestDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	_, err := database.Exec(`DROP TABLE digests`)
+	require.NoError(t, err)
+
+	pipe := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	_, err = pipe.RunForWindow(context.Background(), from, to)
+	require.ErrorContains(t, err, "loading situations")
+
+	forced := New(database, testConfig(), &mockGenerator{response: outcomeBatchReply}, testLogger())
+	forced.ForceRegenerate = true
+	_, err = forced.RunForWindow(context.Background(), from, to)
+	assert.NotContains(t, fmt.Sprint(err), "loading situations", "the forced run continues past the read")
+}
+
 // HasData is the negation of RunForWindow's OutcomeNoData over Run's window.
 func TestHasData_MatchesNoDataOutcome(t *testing.T) {
 	database := db.OpenTestDB(t)
