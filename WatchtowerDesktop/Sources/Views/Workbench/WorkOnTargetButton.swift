@@ -51,10 +51,12 @@ struct WorkOnTargetButton: View {
 
     /// Opens `target`'s session or starts one: the button's and the target
     /// menu's action. `agent` nil is the default agent (`workOn`).
-    static func start(_ target: Target, vm: WorkbenchesViewModel?, agent: AgentKind? = nil) {
+    static func start(
+        _ target: Target, vm: WorkbenchesViewModel?, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+    ) {
         Task {
             await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.workbenchID,
-                             agent: agent)
+                             agent: agent, worktree: worktree)
         }
     }
 

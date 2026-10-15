@@ -11,9 +11,13 @@ import (
 // named are the branches a target or the agent named: a worktree with one
 // of them checked out is observed too (a subagent whose hooks carried no cwd
 // of its own). A ledger branch alone never adopts a worktree: the session
-// may have had it checked out elsewhere.
+// may have had it checked out elsewhere. placedCwd is a placed row's own
+// folder_path (symlink-resolved); placedRoot and placedBranch are its
+// worktree and worktree_branch owned by record (born no later than the row,
+// observePlacement); all "" for every other row.
 type observed struct {
-	roots, branches, named map[string]bool
+	roots, branches, named              map[string]bool
+	placedCwd, placedRoot, placedBranch string
 }
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
@@ -41,6 +45,23 @@ func (o observed) sawWorktree(w worktree) bool {
 	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
 }
 
+// placedWorktree reports whether w is the row's own placed worktree: a
+// linked worktree, and the longest listed root containing placedCwd.
+// Watchtower created this worktree and branch for this row (board #229); by
+// record they are the session's, although born before the row (spec
+// 2026-10-14-session-worktrees-design.md §9).
+func (o observed) placedWorktree(w worktree, all []worktree) bool {
+	if o.placedCwd == "" || w.Main || w.Bare || !pathWithin(o.placedCwd, w.Root) {
+		return false
+	}
+	for _, other := range all {
+		if len(other.Root) > len(w.Root) && pathWithin(o.placedCwd, other.Root) {
+			return false
+		}
+	}
+	return true
+}
+
 // Ownership reasons.
 const (
 	ReasonNotThisSession       = "not_this_session"
@@ -65,4 +86,13 @@ func bornReason(birth time.Time, known bool, sessionCreated time.Time) string {
 		return ReasonExistedBeforeSession
 	}
 	return ""
+}
+
+// bornByRecord: an item born at birth (known) can be the placed row's own,
+// made by placement before the row was inserted — born no later than the
+// row's created_at+1s (second precision). An unknown birth or session start
+// owns nothing by record (fail closed), and neither does a later-born item:
+// a reused wt/<slug> of a later session is not this row's.
+func bornByRecord(birth time.Time, known bool, sessionCreated time.Time) bool {
+	return known && !sessionCreated.IsZero() && !birth.After(sessionCreated.Add(time.Second))
 }

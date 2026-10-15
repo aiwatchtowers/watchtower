@@ -715,3 +715,40 @@ func TestProjectMCPCommand_MatchesTheDesktopFixture(t *testing.T) {
 		}
 	}
 }
+
+func TestUnregisterWorkbenchMCP_RemovesOnlyTheRegistration(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	exclude := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude"))
+	settings := readTestFile(t, settingsFile(folder))
+	f.calls = nil
+
+	if err := UnregisterWorkbenchMCP(context.Background(), o); err != nil {
+		t.Fatalf("unregister: %v", err)
+	}
+	if len(f.registered) != 0 {
+		t.Fatalf("the registration survived: %v", f.registered)
+	}
+	removed := false
+	for _, c := range f.calls {
+		if c[0] == folder && c[1] == "claude" && strings.Join(c[2:], " ") == "mcp remove --scope local "+WorkbenchMCPServerName {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatalf("no `claude mcp remove --scope local` in %s: %v", folder, f.calls)
+	}
+	if got := readTestFile(t, settingsFile(folder)); got != settings {
+		t.Fatalf("settings.local.json changed:\n%s", got)
+	}
+	if got := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude")); got != exclude {
+		t.Fatalf("the exclude block changed:\n%s", got)
+	}
+	if _, err := os.Stat(workbenchSkillFile(folder)); err != nil {
+		t.Fatalf("the skill must stay: %v", err)
+	}
+}

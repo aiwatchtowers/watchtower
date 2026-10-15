@@ -458,3 +458,25 @@ func TestRefresh_BudgetCutOnTheLastRefIsNoted(t *testing.T) {
 		t.Fatalf("rows %+v, want none", got)
 	}
 }
+
+// TestSessionReport_ReportsAWorktreeBranch pins PROJ-14 for a placed
+// session's wt/ branch (board #229): a branch that exists only as the head of
+// a linked worktree resolves like any other branch.
+func TestSessionReport_ReportsAWorktreeBranch(t *testing.T) {
+	dir := newRepo(t)
+	wtOpen := filepath.Join(t.TempDir(), "open")
+	gitRun(t, dir, "worktree", "add", "-q", "-b", "wt/open", wtOpen, "main")
+	commitFile(t, wtOpen, "w.txt", "work")
+	wtMerged := filepath.Join(t.TempDir(), "merged")
+	gitRun(t, dir, "worktree", "add", "-q", "-b", "wt/merged", wtMerged, "main")
+	commitFile(t, wtMerged, "m.txt", "work")
+	gitRun(t, dir, "merge", "-q", "--no-ff", "-m", "merge wt", "wt/merged")
+	d, id := newWorkbench(t, dir)
+	t.Setenv("PATH", t.TempDir()) // no gh: git alone answers (it is located by gitbin)
+
+	Refresh(context.Background(), d, id, []string{"branch:wt/open", "branch:wt/merged"}, RefreshOptions{Now: fixedNow})
+	got := states(t, d, id)
+	if got["branch:wt/open"].State != "open" || got["branch:wt/merged"].State != "merged" {
+		t.Fatalf("worktree branches %+v / %+v, want open / merged", got["branch:wt/open"], got["branch:wt/merged"])
+	}
+}

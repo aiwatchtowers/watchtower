@@ -178,3 +178,77 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(TerminalLaunch.exitMessage(code: nil), "Claude Code exited.")
     }
 }
+
+// MARK: - Worktree setup command (session worktrees, Task 10)
+
+final class TerminalLaunchSetupTests: XCTestCase {
+    private let uuid = "3f2a1b4c-0000-4000-8000-000000000001"
+    private let owner = "npm install && echo 'it''s' $(id)"
+
+    func testSetupRunsBeforeANewClaudeStart() throws {
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 5, setup: owner)
+        let script = try XCTUnwrap(l.args.last)
+        XCTAssertTrue(script.hasPrefix(TerminalLaunch.setupPrefix + "exec claude --session-id \(uuid)"), script)
+        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=5", "WATCHTOWER_WORKTREE_SETUP=\(owner)"])
+        XCTAssertFalse(script.contains("npm"), "owner text never reaches the login shell")
+        XCTAssertEqual(script.filter { $0 == "'" }.count, 2, "only the literal's own pair")
+        XCTAssertFalse(TerminalLaunch.setupPrefix.contains("\\"))
+        XCTAssertLessThan(try XCTUnwrap(script.range(of: "eval")).lowerBound, try XCTUnwrap(script.range(of: "exec claude")).lowerBound)
+    }
+
+    func testSetupWithAPromptKeepsTheExistingCommand() throws {
+        let plain = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: "hi"))
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: "hi"), setup: "make")
+        XCTAssertEqual(l.args.last, TerminalLaunch.setupPrefix + (plain.args.last ?? ""))
+        XCTAssertEqual(l.environment, plain.environment + ["WATCHTOWER_WORKTREE_SETUP=make"])
+    }
+
+    func testSetupNeverRunsOnResumeOrShell() {
+        for mode in [TerminalLaunch.Mode.resumeClaude(uuid: uuid), .shell] {
+            let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: mode, setup: "npm install")
+            XCTAssertEqual(l, TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: mode))
+        }
+    }
+
+    func testBlankSetupChangesNothing() {
+        let a = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 1)
+        XCTAssertEqual(a, TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 1, setup: "  \n"))
+        XCTAssertEqual(a, TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 1, setup: nil))
+    }
+
+    func testNewCodexStartRunsSetupAndResumeDoesNot() throws {
+        let codex = CodexLaunchArgs(binary: "codex", pathPrepend: "", args: [])
+        let new = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .newAgent(.codex, sessionID: nil, prompt: nil),
+                                      codex: codex, setup: owner)
+        XCTAssertEqual(new.args.last, TerminalLaunch.setupPrefix + TerminalLaunch.codexLoginCommand)
+        XCTAssertTrue(new.environment.contains("WATCHTOWER_WORKTREE_SETUP=\(owner)"))
+        XCTAssertTrue(new.environment.contains { $0.hasPrefix("WATCHTOWER_CODEX_COMMAND=") })
+        let resume = TerminalLaunch.make(shell: "/bin/zsh", folder: "/w", mode: .resumeAgent(.codex, sessionID: uuid),
+                                         codex: codex, setup: owner)
+        XCTAssertEqual(resume.args.last, TerminalLaunch.codexLoginCommand)
+        XCTAssertFalse(resume.environment.contains { $0.hasPrefix("WATCHTOWER_WORKTREE_SETUP=") })
+    }
+
+    /// Runs the prefix for real: a failing setup is reported and the agent
+    /// (here `echo started`) still starts.
+    func testAFailingSetupIsReportedAndTheAgentStillStarts() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", TerminalLaunch.setupPrefix + "exec echo started"]
+        process.environment = ["WATCHTOWER_WORKTREE_SETUP": "exit 3"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        try process.run()
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("the launch did not finish")
+        }
+        let out = String(bytes: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        XCTAssertTrue(out.contains("running the worktree setup command"), out)
+        XCTAssertTrue(out.contains("the worktree setup command failed (exit 3); starting the agent anyway."), out)
+        XCTAssertTrue(out.hasSuffix("started\n"), out)
+    }
+}

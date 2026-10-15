@@ -98,17 +98,27 @@ func catchFolders(_ context.Context, b *builder, w worktree) (string, string, er
 	return "", "", nil
 }
 
-// catchOwnWorktree is W2: observed by the session and born after it.
+// catchOwnWorktree is W2: observed by the session and born after it, or
+// the placed row's own worktree (owned by record, spec 2026-10-14 §9).
 func catchOwnWorktree(_ context.Context, b *builder, w worktree) (string, string, error) {
+	if b.seen.placedRoot != "" && w.Root == b.seen.placedRoot {
+		return "", "", nil
+	}
 	if !b.seen.sawWorktree(w) {
 		return ReasonNotThisSession, "", nil
 	}
+	birth, known := b.worktreeBirth(w.Root)
+	return bornReason(birth, known, b.session.CreatedAt), "", nil
+}
+
+// worktreeBirth is the birth of root's admin dir through Deps.WorktreeBirth
+// (the platform's when nil).
+func (b *builder) worktreeBirth(root string) (time.Time, bool) {
 	birthOf := birthTime
 	if b.deps.WorktreeBirth != nil {
 		birthOf = b.deps.WorktreeBirth
 	}
-	birth, known := b.repo.worktreeBirth(w.Root, birthOf)
-	return bornReason(birth, known, b.session.CreatedAt), "", nil
+	return b.repo.worktreeBirth(root, birthOf)
 }
 
 // catchRecentOwner is the sweep's W2: a session that recorded the worktree
@@ -289,8 +299,12 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 	return "", "", nil
 }
 
-// catchOwnBranch is B3: observed by the session and born after it.
+// catchOwnBranch is B3: observed by the session and born after it, or the
+// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
+	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
+		return "", "", nil
+	}
 	if !b.seen.branches[br.Name] {
 		return ReasonNotThisSession, "", nil
 	}

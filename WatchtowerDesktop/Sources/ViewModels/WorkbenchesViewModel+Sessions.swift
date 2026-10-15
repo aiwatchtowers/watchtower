@@ -189,15 +189,34 @@ extension WorkbenchesViewModel {
 
     // MARK: - Creating
 
+    /// Level 2's "New session" (and ⌘T): a fresh agent session of the
+    /// workbench on screen — `agent`, else the default agent — put on screen
+    /// like a panel click. The panel may be hidden or at level 1
+    /// (`drilledWorkbenchID` is nil or this one).
+    func newSessionOnPage(agent: AgentKind? = nil, worktree: WorktreeChoice = .auto) async {
+        guard let projectID = selectedWorkbenchID else { return }
+        await newSession(projectID: projectID, agent: agent, worktree: worktree)
+    }
+
+    /// A pane picker's "New … session": starts one in that pane.
+    func newSession(
+        inPane slot: WorkspacePane, projectID: Int64, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+    ) async {
+        await newSession(projectID: projectID, placement: .replacing(slot), agent: agent, worktree: worktree)
+    }
+
     /// A new agent session of the workbench: `agent`, or the default agent
-    /// (Settings → Workbench → Default agent, D1) when nil.
-    func newSession(projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil) async {
+    /// (Settings → Workbench → Default agent, D1) when nil. `worktree`:
+    /// where it starts (`placementForNewSession`).
+    func newSession(
+        projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil, worktree: WorktreeChoice = .auto
+    ) async {
         let ticket = beginSwitch(projectID: projectID)
         let agent = agent ?? currentDefaultAgent()
         guard let project = await project(id: projectID) else { return }
         await startNewSession(
             project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
-            agent: agent
+            agent: agent, worktree: worktree
         )
     }
 
@@ -220,21 +239,25 @@ extension WorkbenchesViewModel {
     }
 
     /// Creates an agent session row and starts it fresh: Claude Code with a
-    /// new session id (`--session-id`), Codex with none (it mints its own).
+    /// new session id (`--session-id`), Codex with none (it mints its own),
+    /// in the main folder or its own worktree (`worktree`, spec
+    /// 2026-10-14-session-worktrees §4).
     func startNewSession(
         project: Workbench,
         title: String,
         prompt: String? = nil,
         placement: Placement = .show,
         ticket: Int? = nil,
-        agent: AgentKind
+        agent: AgentKind,
+        worktree: WorktreeChoice = .auto
     ) async {
         await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,
             placement: placement,
-            ticket: ticket ?? beginSwitch(projectID: project.id)
+            ticket: ticket ?? beginSwitch(projectID: project.id),
+            placing: (project, worktree, nil)
         )
     }
 
@@ -259,14 +282,15 @@ extension WorkbenchesViewModel {
         targetText: String,
         projectID: Int64? = nil,
         placement: Placement = .keeping(.board),
-        agent: AgentKind? = nil
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto
     ) async {
         // A failure is on the page already (or logged, if superseded); a
         // second press while this target's start runs (`inProgress`) is
         // dropped silently, as a double click.
         guard let row = try? await startTarget(
             targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
-            askedIn: projectID ?? selectedWorkbenchID, agent: agent
+            askedIn: projectID ?? selectedWorkbenchID, agent: agent, worktree: worktree
         ) else { return }
         await markInProgressOnWorkOn(targetID, session: row)
     }
@@ -319,11 +343,16 @@ extension WorkbenchesViewModel {
     /// there as for Work on it (a refused launch shows in the pane).
     @discardableResult
     func startForTarget(
-        targetID: Int64, prompt: String?, mode: TargetStartMode, placement: Placement, planFirst: Bool = false
+        targetID: Int64,
+        prompt: String?,
+        mode: TargetStartMode,
+        placement: Placement,
+        planFirst: Bool = false,
+        worktree: WorktreeChoice = .auto
     ) async throws -> TerminalSession {
         try await startTarget(
             targetID, title: nil, prompt: prompt, mode: mode, placement: placement,
-            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true
+            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true, worktree: worktree
         )
     }
 
@@ -331,7 +360,8 @@ extension WorkbenchesViewModel {
     /// switch ticket and errors (the target's workbench is known only after
     /// the read; the page's is the one it almost always is). `checkLaunch`:
     /// a launch that did not run throws (`startForTarget`); Work on it leaves
-    /// that to the pane. `agent`: see `workOn`.
+    /// that to the pane. `agent`: see `workOn`. `worktree`: where a new
+    /// session starts; a reopened one runs where its row lives.
     private func startTarget(
         _ targetID: Int64,
         title: String?,
@@ -341,7 +371,8 @@ extension WorkbenchesViewModel {
         askedIn: Int64?,
         planFirst: Bool = false,
         checkLaunch: Bool = false,
-        agent: AgentKind? = nil
+        agent: AgentKind? = nil,
+        worktree: WorktreeChoice = .auto
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
@@ -383,7 +414,8 @@ extension WorkbenchesViewModel {
             prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
             ticket: ticket,
-            checkLaunch: checkLaunch
+            checkLaunch: checkLaunch,
+            placing: (found.project, worktree, text)
         )
     }
 
@@ -586,8 +618,13 @@ extension WorkbenchesViewModel {
     /// The center's exit hook: a relaunch of a stored id (a resume, or a
     /// `--session-id` when no transcript was found) that exits non-zero within
     /// `resumeFailureWindow` of launch is a failed resume. 127 is not: Claude
-    /// Code was not found, and Start fresh would fail the same way.
-    func sessionExited(_ id: Int64, code: Int32?) {
+    /// Code was not found, and Start fresh would fail the same way. An exit
+    /// Watchtower did not cause (`closedByApp` false) also starts the
+    /// automatic cleanup of a finished placed session
+    /// (`startPlacedCleanup`), which decides itself whether the row
+    /// qualifies.
+    func sessionExited(_ id: Int64, code: Int32?, closedByApp: Bool = false) {
+        if !closedByApp { startPlacedCleanup(sessionID: id) }
         guard let started = resumeStarts.removeValue(forKey: id) else { return }
         if let code, code != 0, code != 127, now().timeIntervalSince(started) < Self.resumeFailureWindow {
             resumeFailed.insert(id)
@@ -615,33 +652,95 @@ extension WorkbenchesViewModel {
         return nil
     }
 
+    /// A new agent row's workbench, the owner's worktree choice and the
+    /// target's text (the worktree's name), for `placementForNewSession`.
+    typealias SessionPlacing = (project: Workbench, choice: WorktreeChoice, targetText: String?)
+
     /// The created row, or nil when it could not be written (the error is
     /// reported already).
     @discardableResult
     private func createAndStart(
-        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show, ticket: Int
+        _ new: TerminalSessionQueries.NewSession,
+        prompt: String?,
+        placement: Placement = .show,
+        ticket: Int,
+        placing: SessionPlacing? = nil
     ) async -> TerminalSession? {
-        try? await createAndActivate(new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: false)
+        try? await createAndActivate(
+            new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: false, placing: placing
+        )
     }
 
     /// `createAndStart` that throws `TargetStartError.failed` once the
     /// failure is reported, and with `checkLaunch` also when the launch did
     /// not run (`launchCheck`). `ticket` is nil only for `.background`.
+    /// `placing` (a workbench agent row): the row goes where
+    /// `placementForNewSession` decides, in the workbench's placement turn,
+    /// and a row placed in a new worktree runs the workbench's setup
+    /// command before its agent's first start — when that launch does not
+    /// run, `startNotice` gives the command to run by hand.
     private func createAndActivate(
-        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement, ticket: Int?, checkLaunch: Bool
+        _ new: TerminalSessionQueries.NewSession,
+        prompt: String?,
+        placement: Placement,
+        ticket: Int?,
+        checkLaunch: Bool,
+        placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
         let row: TerminalSession
+        var setup: String?
+        if let placing {
+            let projectID = placing.project.id
+            row = try await inPlacementTurn(projectID) {
+                let place = await placementForNewSession(
+                    project: placing.project, choice: placing.choice, targetID: new.targetID, targetText: placing.targetText
+                )
+                var placed = new
+                placed.folderPath = place.folderPath
+                placed.worktreeBranch = place.worktreeBranch
+                placed.worktreeBase = place.worktreeBase
+                let row: TerminalSession
+                do {
+                    row = try await insertSession(placed, ticket: ticket)
+                } catch {
+                    startNotice[projectID] = nil
+                    throw error
+                }
+                startNotice[projectID] = place.notice
+                startingRows[row.id] = row
+                return row
+            }
+            let command = placing.project.worktreeSetup.trimmingCharacters(in: .whitespacesAndNewlines)
+            if row.worktreeBranch != nil, !command.isEmpty { setup = placing.project.worktreeSetup }
+        } else {
+            row = try await insertSession(new, ticket: ticket)
+        }
+        defer { startingRows[row.id] = nil }
+        await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket, setup: setup)
+        if let setup, let projectID = row.projectID, launchFailure(row) != nil {
+            // The setup runs only on a placed row's first launch; a resume never runs it.
+            let line = "The worktree setup command did not run — run it in the terminal: "
+                + setup.trimmingCharacters(in: .whitespacesAndNewlines)
+            startNotice[projectID] = [startNotice[projectID], line].compactMap { $0 }.joined(separator: " ")
+        }
+        if checkLaunch { try launchCheck(row) }
+        return row
+    }
+
+    /// Writes the new row; a failure is reported and thrown. A row placed in
+    /// a worktree just made names it: the worktree stays on disk.
+    private func insertSession(_ new: TerminalSessionQueries.NewSession, ticket: Int?) async throws -> TerminalSession {
         do {
-            row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
+            return try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
-            let message = "Could not create a terminal session: \(error.localizedDescription)"
+            var message = "Could not create a terminal session: \(error.localizedDescription)"
+            if let branch = new.worktreeBranch {
+                message += " — the worktree \(new.folderPath) on \(branch) was kept."
+            }
             reportStartError(message, projectID: new.projectID, ticket: ticket)
             throw TargetStartError.failed(message)
         }
-        await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
-        if checkLaunch { try launchCheck(row) }
-        return row
     }
 
     /// A launch `TerminalCenter` refused (`.unavailable`: the folder is
@@ -683,14 +782,21 @@ extension WorkbenchesViewModel {
     /// only starts its session: the later switch decides what is focused
     /// and on screen. A background start (`ticket` nil, `.background`) is
     /// never the latest switch: it only starts its session and refreshes the
-    /// list.
-    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int?) async {
+    /// list. `setup`: the worktree setup command, for a placed row's first
+    /// launch only.
+    private func activate(
+        _ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int?, setup: String? = nil
+    ) async {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        if let center = terminalCenter, let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
+        let restorable = fresh ? true : await restoreWorktree(row)
+        if restorable, let center = terminalCenter,
+           let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
-            let mode = await center.launch(row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume)
+            let mode = await center.launch(
+                row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume, setup: setup
+            )
             // Keyed by the mode, whatever the agent (spec 2026-10-12 §7).
             switch mode {
             case .resumeAgent?:
@@ -712,6 +818,79 @@ extension WorkbenchesViewModel {
         }
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// A resume of a placed row whose worktree directory is gone (cleaned
+    /// up, or deleted by hand) re-adds it from its branch at the same path,
+    /// so the agent's transcript resolves by cwd (spec 2026-10-14 §7). False
+    /// — the row `.unavailable`, nothing launches — when the branch is gone
+    /// too or the worktree could not be restored; never a start in the main
+    /// folder. A setup command never runs here. An existing directory
+    /// launches only while it is still on the row's branch: a later session
+    /// may hold that path now (`isOnOwnBranch`).
+    private func restoreWorktree(_ row: TerminalSession) async -> Bool {
+        guard let branch = row.worktreeBranch, let projectID = row.projectID, let center = terminalCenter else { return true }
+        if center.states[row.id] == .running { return true }
+        guard let top = SessionStartPlacement.worktreeTop(ofCwd: row.folderPath) else { return true } // the launch reports the folder
+        let exists = Self.isDirectory(row.folderPath)
+        guard let cli else {
+            let what = exists ? "at \(top) could not be checked" : "\(top) could not be restored"
+            center.refuseLaunch(row, reason: "The worktree \(what): no CLI is available.")
+            return false
+        }
+        if exists { return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top) }
+        do {
+            let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch)
+            if result.created { return true }
+            // An existing directory is a no-op (`created` false, nothing refused).
+            if result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath) {
+                return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top)
+            }
+            if result.refused == "unknown_branch" {
+                center.refuseLaunch(
+                    row, reason: "The worktree and its branch \(branch) were cleaned up — start a new session."
+                )
+            } else {
+                let why = [result.refusedDetail, result.error, result.refused].first { !$0.isEmpty }
+                    ?? "the directory is still missing."
+                center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(why)")
+            }
+        } catch {
+            center.refuseLaunch(row, reason: "The worktree \(top) could not be restored: \(error.localizedDescription)")
+        }
+        return false
+    }
+
+    /// Whether the worktree at the row's folder is still on `branch`; when
+    /// not — another session's worktree now, a branch switched by hand, or a
+    /// status that could not be read — the row is `.unavailable` and false:
+    /// never a launch in somebody else's worktree. Called with `cli` and a
+    /// terminal center present (`restoreWorktree`).
+    private func isOnOwnBranch(_ row: TerminalSession, projectID: Int64, branch: String, top: String) async -> Bool {
+        guard let cli, let center = terminalCenter else { return false }
+        let status: WorkbenchGitStatus
+        do {
+            status = try await cli.gitStatus(projectID: projectID, folder: row.folderPath)
+        } catch {
+            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(error.localizedDescription)")
+            return false
+        }
+        guard status.git, status.statusOK, status.folderScope == .worktree else {
+            let why = [status.statusError, status.note].first { !$0.isEmpty } ?? "it is not a worktree of the workbench."
+            center.refuseLaunch(row, reason: "The worktree at \(top) could not be checked: \(why)")
+            return false
+        }
+        if !status.detached, status.branch == branch { return true }
+        let now = status.detached ? "a detached HEAD" : status.branch
+        center.refuseLaunch(
+            row, reason: "The worktree at \(top) is now on \(now), not \(branch) — start a new session."
+        )
+        return false
+    }
+
+    private static func isDirectory(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     /// The row `activate` launches and, for a Codex row, whether it resumes
