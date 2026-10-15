@@ -44,6 +44,9 @@
 - `internal/agentlog/scan_test.go::TestScan_SubagentReplayOfParentSkipped`
 - `internal/agentlog/scan_test.go::TestScan_ConcurrentWritersCountOnce`
 - `internal/agentlog/scan_test.go::TestScan_ConcurrentScansBothSucceed`
+- `internal/agentlog/claude_test.go::TestParseClaude_UUIDLessRecordsKeepDistinctKeys`
+
+**Robustness note:** a record without a uuid keys on `<src path>:<byte offset>` instead, so distinct records never collapse into one row; a read-type record without a `sessionId` stores nothing and is counted as `<no-session>`.
 
 **Locked since:** 2026-10-15
 
@@ -61,6 +64,10 @@
 - `internal/agentlog/scan_test.go::TestScan_BudgetStopDoesNotMarkUnreadFilesMissing`
 - `internal/db/agent_log_test.go::TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`
 - `cmd/agents_test.go::TestAgentsDisable_KeepsRows`
+- `internal/agentlog/scan_test.go::TestScan_SessionlessRecordDoesNotStopOtherFiles`
+- `internal/agentlog/scan_test.go::TestScan_FailedBatchSkipsFileAndContinues`
+
+**Robustness note:** one bad record or one file whose batch fails to store never stops the scan: the file is counted in `failed_files`, keeps its old offset and is retried next scan, and every other file is still read.
 
 **Locked since:** 2026-10-15
 
@@ -76,6 +83,7 @@
 - `internal/agentlog/discover_test.go::TestCandidateDirs_PrefixOnlyAndNoSymlinks`
 - `internal/agentlog/scan_test.go::TestScan_UnrelatedProjectNeverOpened`
 - `internal/agentlog/scan_test.go::TestScan_NestedWorkbenchesLongestWins`
+- `internal/agentlog/discover_test.go::TestListTranscripts_SymlinkedSubagentsDirSkipped`
 
 **Locked since:** 2026-10-15
 
@@ -94,3 +102,4 @@
 ## Changelog
 
 - 2026-10-15 (board #297): file created, AGENTLOG-01..05.
+- 2026-10-15 (board #297, final review): guards added — `TestParseClaude_UUIDLessRecordsKeepDistinctKeys` (02), `TestScan_SessionlessRecordDoesNotStopOtherFiles` and `TestScan_FailedBatchSkipsFileAndContinues` (03), `TestListTranscripts_SymlinkedSubagentsDirSkipped` (04); robustness notes on 02/03. Nothing relaxed.

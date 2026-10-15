@@ -15,11 +15,11 @@ Turn analytics on for a workbench and see the history of every agent session run
 
 ## Data source
 
-Claude Code writes `~/.claude/projects/<slug>/<session-uuid>.jsonl`; subagents write `<slug>/<session-uuid>/subagents/agent-*.jsonl`. The slug is the cwd with every non-alphanumeric character replaced by `-` (lossy, so only a prefilter). For a workbench folder `F` the candidate directories are those named `slug(F)` or starting with `slug(F)-` (subfolders, Watchtower worktrees under `F/.claude/worktrees/`), plus the same rule for every other worktree root of `F` (`git worktree list --porcelain` and `terminal_session_worktrees`). Symlinks are skipped (`Lstat`).
+Claude Code writes `~/.claude/projects/<slug>/<session-uuid>.jsonl`; subagents write `<slug>/<session-uuid>/subagents/agent-*.jsonl`. The slug is the cwd with every non-alphanumeric character replaced by `-` (lossy, so only a prefilter). For a workbench folder `F` the candidate directories are those named `slug(F)` or starting with `slug(F)-` (subfolders, Watchtower worktrees under `F/.claude/worktrees/`), plus the same rule for every other worktree root of `F`: git's live list (`git worktree list --porcelain`, bounded by a 5 s timeout) merged with every root that a session of the workbench recorded in `terminal_session_worktrees` (`db.WorkbenchSessionWorktrees`), so a worktree removed by cleanup still has its history read. Symlinks are skipped (`Lstat`), including a symlinked `<session-uuid>/subagents` directory.
 
 A session's home is the `cwd` of its first record that has one. It belongs to the workbench whose folder (or worktree root) contains the home, compared after `EvalSymlinks`; nested folders: the longest wins. A later `cd` does not move the session. When `terminal_sessions.claude_session_id` equals the session uuid the row records `terminal_session_id`.
 
-Fields read per record: `message.id`, `requestId`, `message.usage` (incl. `cache_creation.ephemeral_*`, `speed`, `service_tier`), model, `cwd`, uuids, `attributionSkill`, `tool_use`/`tool_result` pairs, `toolUseResult` (interrupted, `structuredPatch` line counts), `cost-state.totalCostUSD`, compaction and API-error markers, `pr-link`. Overlong lines are skipped and counted; unknown record types are counted (`unknown_records`); `<synthetic>` records carry no usage.
+Fields read per record: `message.id`, `requestId`, `message.usage` (incl. `cache_creation.ephemeral_*`, `speed`, `service_tier`), model, `cwd`, uuids, `attributionSkill`, `tool_use`/`tool_result` pairs, `toolUseResult` (interrupted, `structuredPatch` line counts), `cost-state.totalCostUSD`, compaction and API-error markers, `pr-link`. Overlong lines are skipped and counted; unknown record types are counted (`unknown_records`); a record of a read type (`assistant`, `user`, `system`, `pr-link`, `cost-state`) without a `sessionId` is counted as `<no-session>` and stores nothing; `<synthetic>` records carry no usage. Slash skills are recognized against the session's `skill_listing` names (the union of every listing); an incremental read first collects the listings that sit before its offset.
 
 ## Tables and the view
 
@@ -35,21 +35,22 @@ Mirrored into `schema.sql`, `TestAllTablesExist`, the golden snapshot and the ge
 
 ## Dedupe and ownership rules
 
-- `api_call` key `<message.id>:<requestId>` (`<message.id>:<session-uuid>` without a request id); the later record wins for tokens because streaming repeats the call with a growing `output_tokens`. `tool:<tool_use_id>`, `skill:<record uuid>:<n>`, `<kind>:<record uuid>` for the rest. Re-reading any file adds no row.
+- `api_call` key `<message.id>:<requestId>` (`<message.id>:<session-uuid>` without a request id); the later record wins for tokens because streaming repeats the call with a growing `output_tokens`. `tool:<tool_use_id>`, `skill:<record uuid>:<n>`, `<kind>:<record uuid>` for the rest; a record without a uuid uses `<src path>:<byte offset>` in place of the uuid, so such records never share a row. Re-reading any file adds no row.
 - A replayed record (resume, fork) belongs to the session with the earliest `started_at` (tie: smaller uuid); a later scan that finds an earlier owner moves the row, so scan order never matters.
 - A subagent `api_call` whose `message.id` exists in the parent with another `requestId` is a replay and is skipped.
 - Tool outcomes: `ok`, `error` (`exit_code`, `not_found`, `timeout`, `other`), `denied`, `interrupted`; an unpaired `tool_use` stays `pending` until a later scan pairs it.
+- One file that fails to read or store is counted in `failed_files`, keeps its old offset and is retried next scan; the other files are still read. A scan fails only for setup errors.
 - Incremental reads: skip when size and mtime match; read from `read_offset`; reparse from 0 on shrink or an older `parser_version`; parse before the write transaction; advance the offset by compare-and-set. Vanished files get `missing_at`, rows stay.
 
 ## Cost
 
-`internal/agentlog/pricing.go` holds a price table keyed by exact model id with explicit aliases, never a prefix match. Cache write 5m = 1.25x input, 1h = 2x input; the cache-read price is per model; a long-input tier where the model has one; a fast-speed multiplier per model. A model or tier the table does not know costs 0 with `cost_estimated = 1`. Rows store `cost_usd`, `price_version` and `cost_estimated`. Any table change bumps `PriceVersion`; the next scan reprices older rows with one `UPDATE` from stored tokens (no reparse, no transcript needed). `reported_cost_usd` (Claude Code's own `cost-state` total) is kept per session to cross-check our sum; `agents stats` prints both. The Desktop reads `cost_usd` directly, so there is no Swift price table.
+`internal/agentlog/pricing.go` holds a price table keyed by exact model id with explicit aliases, never a prefix match. Cache write 5m = 1.25x input, 1h = 2x input; the cache-read price is per model; a long-input tier where the model has one; a fast-speed multiplier per model. A model, tier or speed (anything but `""`, `standard`, `fast`) the table does not know costs 0 with `cost_estimated = 1`. Rows store `cost_usd`, `price_version` and `cost_estimated`. Any table change bumps `PriceVersion`; the next scan reprices older rows with one `UPDATE` from stored tokens (no reparse, no transcript needed). `reported_cost_usd` (Claude Code's own `cost-state` total) is kept per session to cross-check our sum; `agents stats` prints both. The Desktop reads `cost_usd` directly, so there is no Swift price table.
 
 ## Running it
 
-- `watchtower agents enable --workbench N` sets the column and scans synchronously (`--json`: a line per file batch, then a summary).
+- `watchtower agents enable --workbench N` sets the column and scans synchronously (`--json`: one summary object, the same shape as `agents scan --json`).
 - `watchtower agents disable --workbench N` clears it; nothing is deleted.
-- `watchtower agents scan --workbench N [--json]` — the incremental scan, then reprice. `--json` reports `unknown_records` (the `agentlog.Result` counter of unknown record types), so format drift is visible.
+- `watchtower agents scan --workbench N [--json]` — the incremental scan, then reprice. `--json` reports `unknown_records` (the `agentlog.Result` counter of unknown record types, plus `<invalid>` and `<no-session>`), so format drift is visible, and `failed_files` (files whose read or store failed this scan; the daemon logs the first error).
 - `watchtower agents stats --workbench N --json` — totals and per-session figures with pinned keys (exactly `workbench_id`, `enabled`, `sessions`, `tokens`, `cost_usd`, `cost_estimated_calls`, `reported_cost_usd`, `owner_turns`, `tools`, `outcomes`, `skills`, `per_session`; pinned by `TestAgentsStatsJSON_PinnedKeys`).
 - Daemon phase `phaseAgentAnalytics`: inert unless some workbench has the column set (the `phaseExternalSync` precedent); each cycle runs the incremental scan for every enabled workbench under a 30 s budget and resumes where it stopped. A budget stop never marks unread files missing.
 
