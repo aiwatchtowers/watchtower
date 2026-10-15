@@ -1555,3 +1555,13 @@ Entry format:
 - weak-dimension: none notable. The prosecutor's normalised line-diff method (removed vs added lines per commit) is the right proof that a pure move preserves behaviour.
 - rule-gap (candidate, Swift dim 1): *a split-for-fan-out refactor keeps file-local helpers `private` in the file that uses them, and widens access only where a different file needs the member (with a one-line reason, as with the `internal(set)` actor setters).*
 - outcome: TBD
+
+## 2026-10-15 — feature/779-first-run (first run P1+P4: `FeatureReadiness`/`ReadinessQueries`/`ReadinessCenter`, `EmptyStateCopy` + `FeatureEmptyState` on ~25 tabs, empty-state Turn on, people no-data cycle without stamp/attempt/row, fresh-install briefing/day-plan hour bypass; 54 files +5k; panel: prosecutor + 3 specialists, codex DOWN (API 400); post-panel fixes 43f488d01 (tick re-reads the DB) and 8cfd10ea5 (`Pipeline.FirstRun` window ends now) verified by reading + targeted logs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, 3 lanes): a pre-existing warn-and-continue (`GetSituationsForWindow` error → empty map) became an unbounded false success once the branch made "no data" mean "no stamp, no attempt, retry next cycle". **When a change makes an outcome cheaper (no throttle, no budget), re-check every path that can produce that outcome from an error, not only from real absence.** [9]
+- contested (held major, 2 lanes): a readiness evaluator mirroring Go gates modelled hour, budget-free freshness and sources but not the owner gate the same phases check first, so a pane showed "Within ~15 min" above `NoOwnerEmptyState`. **A Swift mirror of a Go scheduling decision lists every early-return of the Go phase (owner, budget, feature, source) and maps each to an input or a documented limit.** [6/8]
+- false-positive: silent-failure #2 (observation error freezes readiness) — real at panel time, moot after the tick re-read fix; #10 pre-existing.
+- miss: the prosecutor's F1 (GRDB `ValueObservation` never sees the daemon's cross-process writes) was the blocker; no specialist caught it, and the branch's tests wrote through the same pool so they false-greened. Codex absent.
+- weak-dimension: 7. Readiness tests wrote through the observed pool; fixtures seeded digests two days old while real first digests end now (F12) — both encoded the bug's blind spot.
+- rule-gap (candidate, Swift dim 7): *a Desktop center that reacts to rows the Go daemon writes is tested with a write through a second connection (a separate `DatabasePool` on the same file), never through the pool it observes; same-pool writes prove nothing about cross-process visibility.*
+- outcome: TBD
