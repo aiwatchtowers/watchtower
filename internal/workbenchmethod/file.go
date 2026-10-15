@@ -1,7 +1,7 @@
 // Package workbenchmethod resolves a workbench's methodology (spec
 // 2026-10-15-workbench-configurable-methodology-design.md): the preset skill,
 // the ask guard mode and the finish check, from the owner's personal
-// overrides (projects.*, migration 00115), the folder's
+// overrides (projects.*, migration 00116), the folder's
 // .watchtower/workflow.md and the built-in defaults, in that order.
 package workbenchmethod
 

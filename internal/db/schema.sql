@@ -2168,9 +2168,9 @@ CREATE TABLE IF NOT EXISTS projects (
     archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365), -- closed targets older than this leave the board; 0 = never (00103)
     archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105)
     worktree_setup TEXT NOT NULL DEFAULT '', -- the command run in a new session worktree before the agent's first launch; '' = none (00114)
-    methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00115)
-    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00115)
-    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')) -- the owner's finish check; NULL = the folder file, else on (00115)
+    methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), -- the owner's methodology preset; NULL = the folder's .watchtower/workflow.md, else watchtower-flow (00116)
+    ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), -- the owner's ask guard mode; NULL = the folder file, else strict (00116)
+    finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')) -- the owner's finish check; NULL = the folder file, else on (00116)
 );
 
 -- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;

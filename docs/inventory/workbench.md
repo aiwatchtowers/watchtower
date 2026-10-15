@@ -1401,7 +1401,7 @@ are trusted as one set). The never-traps rules above hold unchanged.
 *2026-10-15 (board #266, spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §7):*
 the guard runs under the workbench's ask guard mode and finish check, resolved at run time by
 `workbenchmethod.ResolveSession` (the owner's setting in `projects.ask_guard_mode`/`finish_check`,
-migration `00115`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
+migration `00116`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
 failure to read them — no database, a schema without the columns, a lock, a present but malformed
 terminal-session variable — resolves to `strict` and `on`, silently. `strict` with the finish check on
 is the table above, unchanged (`decideStop`). `soft`:
