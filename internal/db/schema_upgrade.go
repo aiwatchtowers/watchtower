@@ -37,13 +37,17 @@ func RunSchemaUpgrade(dbPath string) error {
 	// whenever another process (the daemon, the Desktop) holds the write
 	// lock; BEGIN IMMEDIATE makes the tx take that lock before its re-check
 	// read, so the read sees what a concurrent upgrader committed.
-	lockmetrics.Configure(dbPath)
 	raw, err := sql.Open(lockmetrics.DriverName, sqliteDSN(dbPath, fmt.Sprintf("%s&_pragma=busy_timeout(%d)", immediateTxDSN, busyTimeoutMS)))
 	if err != nil {
 		return fmt.Errorf("opening db for schema upgrade: %w", err)
 	}
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
+	// Only an open that worked points the lock-metrics sink at its file.
+	if err := raw.Ping(); err != nil {
+		return fmt.Errorf("opening db for schema upgrade: %w", err)
+	}
+	lockmetrics.Configure(dbPath)
 
 	var hasGoose int
 	if err := raw.QueryRow(
