@@ -50,7 +50,8 @@ func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 }
 
 // FetchRange stores every message received in [from, to) (IMAP SINCE/BEFORE,
-// day-granular), uncapped, in batches of MaxMessagesPerSync. It writes no
+// day-granular; the fetch side of the chunk convention in
+// internal/historybackfill/chunk.go), uncapped, in batches of MaxMessagesPerSync. It writes no
 // watermark and no auth state, and each row's synced_at is the message's own
 // date, so the inbox detector never sees backfilled mail as new. The first
 // error stops it.

@@ -201,7 +201,8 @@ func slackSearchRange(from, to time.Time) (after, before string) {
 var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate limit or partial pages)")
 
 // BackfillSearch saves every message Slack's search finds in [from, to)
-// (widened to whole days) without touching the search watermark, the
+// (widened to whole days; the fetch side of the chunk convention in
+// internal/historybackfill/chunk.go) without touching the search watermark, the
 // progress heartbeat or the account's auth/error state. An incomplete search
 // returns an error wrapping ErrBackfillIncomplete.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {

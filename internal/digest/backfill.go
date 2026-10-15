@@ -24,7 +24,8 @@ type BackfillWindowResult struct {
 // RunBackfillWindow digests one Slack account's history inside one backfill
 // chunk (from, to]: only that account's channels, since each account has its
 // own backfill row (another account's messages in the same range wait for
-// its own row). Each channel's window is resolved like the forward path's, but
+// its own row). The interval follows the chunk convention stated once in
+// internal/historybackfill/chunk.go. Each channel's window is resolved like the forward path's, but
 // scoped to the chunk: it starts at the later of from, the channel's newest
 // digest ending inside the chunk, what this call already considered, and the
 // FEAT-03 fast-forward floor, and loads up to `to`. Passes repeat until no

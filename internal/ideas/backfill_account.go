@@ -10,8 +10,9 @@ import (
 
 // BackfillEmail is the history backfill's stage-1 pass for ONE Google
 // account (docs/features/history-backfill.md, R28): it lowers only that
-// account's ideas_email_floor to from, drains its email pre-digests bounded
-// by to, and restores the floor to max(saved, reached). No other account, no
+// account's ideas_email_floor to from, drains its email pre-digests in
+// (from, to] (the process side of the chunk convention in
+// internal/historybackfill/chunk.go), and restores the floor to max(saved, reached). No other account, no
 // Jira pass and no consolidator: the stream digests it writes are
 // consolidated by the regular ideas run, which keeps the ideas.enabled gate.
 // complete is false when the drain hit its cycle cap before the window was

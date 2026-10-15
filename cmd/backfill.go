@@ -26,8 +26,8 @@ func init() {
 	rootCmd.AddCommand(backfillCmd)
 }
 
-// backfillRowJSON is the pinned --json row shape; the Desktop depends on
-// these keys.
+// backfillRowJSON is the pinned --json row shape, kept stable for scripts
+// and agents (the Desktop reads the history_backfill table directly).
 type backfillRowJSON struct {
 	Source    string  `json:"source"`
 	AccountID int64   `json:"account_id"`

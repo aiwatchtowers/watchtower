@@ -117,7 +117,7 @@ type Daemon struct {
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
-	backfillResume map[backfillResumeKey]time.Time
+	backfillResume      map[backfillResumeKey]time.Time
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline

@@ -187,7 +187,8 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// FetchRange stores every non-noise inbox message received in [from, to),
+// FetchRange stores every non-noise inbox message received in [from, to)
+// (the fetch side of the chunk convention in internal/historybackfill/chunk.go),
 // ignoring MaxMessagesPerSync. It writes no watermark and no auth state, and
 // each row's synced_at is the message's own date, so the inbox detector never
 // sees backfilled mail as new. The first error stops it (wrapped, so
