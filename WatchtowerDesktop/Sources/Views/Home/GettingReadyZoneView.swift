@@ -34,11 +34,11 @@ struct GettingReadyZoneView: View {
                     .foregroundStyle(.green)
             }
         case let .shown(cards, sourceRows):
-            shown(cards: cards, sourceRows: sourceRows)
+            shownZone(cards: cards, sourceRows: sourceRows)
         }
     }
 
-    private func shown(cards: [GettingReadyCard], sourceRows: [GettingReadySourceRow]) -> some View {
+    private func shownZone(cards: [GettingReadyCard], sourceRows: [GettingReadySourceRow]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HomeZoneHeader(title: "Getting ready", subtitle: "Watchtower is preparing these from your sources") {
                 Button(action: onHide) {
@@ -67,22 +67,22 @@ struct GettingReadyZoneView: View {
     static func connectLine(_ row: GettingReadySourceRow) -> String {
         var titles: [String] = []
         for feature in row.features {
-            for tab in tabs(for: feature) where !titles.contains(tab.title) {
+            for tab in featureTabs(for: feature) where !titles.contains(tab.title) {
                 titles.append(tab.title)
             }
         }
-        return "Connect \(row.source.displayName) to get \(joined(titles))"
+        return "Connect \(row.source.displayName) to get \(joinedNames(titles))"
     }
 
     /// Jira fills five tabs; every other feature its Open's tab.
-    private static func tabs(for feature: ReadinessFeature) -> [SidebarDestination] {
+    private static func featureTabs(for feature: ReadinessFeature) -> [SidebarDestination] {
         feature == .jira
             ? [.boards, .workload, .blockers, .projectMap, .releases]
             : [AppState.homeDestination(for: feature)]
     }
 
     /// "A", "A and B", "A, B and C".
-    private static func joined(_ items: [String]) -> String {
+    private static func joinedNames(_ items: [String]) -> String {
         guard let last = items.last, items.count > 1 else { return items.first ?? "" }
         return items.dropLast().joined(separator: ", ") + " and " + last
     }

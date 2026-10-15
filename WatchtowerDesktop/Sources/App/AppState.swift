@@ -651,7 +651,7 @@ final class AppState {
                     // Sessions waiting in the Undo batch are deleted now (PROJ-17).
                     self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
-                    self?.homeCenter.stop()
+                    self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
             }
@@ -1463,7 +1463,7 @@ final class AppState {
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
-        homeCenter.start(pool: manager.dbPool)
+        homeCenter.beginReading(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never

@@ -82,11 +82,11 @@ final class HomeCenter {
     @ObservationIgnored private(set) var todayReads = 0
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
-    /// Bumped by `start`/`stop`: a read from an earlier run is dropped.
+    /// Bumped by `beginReading`/`endReading`: a read from an earlier run is dropped.
     @ObservationIgnored private var generation = 0
     /// Bumped by every read: an older read landing after a newer one is dropped.
     @ObservationIgnored private var readToken = 0
-    /// Bumped by every `refresh`: only the newest input tracking may trigger
+    /// Bumped by every `rebuildSnapshot`: only the newest input tracking may trigger
     /// another one, so registrations don't pile up.
     @ObservationIgnored private var trackingToken = 0
 
@@ -105,8 +105,8 @@ final class HomeCenter {
     /// Observes the Today tables that exist in this DB (a table missing
     /// mid-migration is left out of the region; the tick still re-reads it)
     /// and starts the tick. A second call restarts both.
-    func start(pool: DatabasePool) {
-        stop()
+    func beginReading(pool: DatabasePool) {
+        endReading()
         let current = generation
         observationTask = Task { [weak self] in
             do {
@@ -155,11 +155,11 @@ final class HomeCenter {
             NSLog("HomeCenter: reading Today: %@", error.localizedDescription)
         }
         guard generation == current else { return }
-        refresh()
+        rebuildSnapshot()
     }
 
     /// Stops the observation and the tick; the last snapshot stays.
-    func stop() {
+    func endReading() {
         generation += 1
         observationTask?.cancel()
         observationTask = nil
@@ -170,8 +170,8 @@ final class HomeCenter {
 
     /// Rebuilds from the last Today read and the current readiness, owner,
     /// allowed cards and first-sync line, and follows those inputs. A no-op
-    /// until the first read, and after `stop()`.
-    func refresh() {
+    /// until the first read, and after `endReading()`.
+    func rebuildSnapshot() {
         guard let data else { return }
         trackingToken += 1
         let token = trackingToken
@@ -187,7 +187,7 @@ final class HomeCenter {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, self.trackingToken == token else { return }
-                self.refresh()
+                self.rebuildSnapshot()
             }
         }
         let next = makeSnapshot(data, inputs, now: environment.now, calendar: environment.calendar)
@@ -199,7 +199,7 @@ final class HomeCenter {
         var memory = store.memory
         memory.hiddenByOwner = true
         store.memory = memory
-        refresh()
+        rebuildSnapshot()
     }
 
     private struct Inputs {

@@ -19,7 +19,7 @@ final class GettingReadyTests: XCTestCase {
 
     /// Every feature `.off` unless overridden, so only the features a test
     /// names can make cards.
-    private func map(_ overrides: [ReadinessFeature: Readiness]) -> [ReadinessFeature: Readiness] {
+    private func readinessMap(_ overrides: [ReadinessFeature: Readiness]) -> [ReadinessFeature: Readiness] {
         var result = Dictionary(uniqueKeysWithValues: ReadinessFeature.allCases.map { ($0, Readiness.off) })
         result.merge(overrides) { _, new in new }
         return result
@@ -38,7 +38,7 @@ final class GettingReadyTests: XCTestCase {
     }
 
     func testCardsOnlyForEnabledAndSourcedFeatures() {
-        let result = step(map([
+        let result = step(readinessMap([
             .digests: .ready, .memory: .off, .jira: .needsSource(.jira), .tracks: .preparing(detail: nil)
         ]))
         XCTAssertEqual(cards(result.zone).map(\.feature), [.digests, .tracks])
@@ -50,12 +50,12 @@ final class GettingReadyTests: XCTestCase {
             .jira: .scheduled(.nextCycle(minutes: 15)), .briefing: .ready, .slackSync: .preparing(detail: nil),
             .ideas: .waitingForSync(detail: nil), .digests: .error(message: "x")
         ]
-        let result = step(map(named))
+        let result = step(readinessMap(named))
         XCTAssertEqual(cards(result.zone).map(\.feature), ReadinessFeature.allCases.filter { named[$0] != nil })
     }
 
     func testSourceRowsGroupBySource() {
-        let result = step(map([
+        let result = step(readinessMap([
             .slackSync: .preparing(detail: nil),
             .digests: .needsSource(.slack), .tracks: .needsSource(.slack),
             .peopleCards: .needsSource(.slack), .ideas: .needsSource(.slack)
@@ -66,28 +66,28 @@ final class GettingReadyTests: XCTestCase {
     }
 
     func testCollapsesToAllReadyWhenEveryCardReadyOrError() {
-        let first = step(map([.digests: .ready, .tracks: .preparing(detail: nil)]))
+        let first = step(readinessMap([.digests: .ready, .tracks: .preparing(detail: nil)]))
         XCTAssertEqual(cards(first.zone).count, 2)
         XCTAssertTrue(first.sawUnready)
 
         let later = now.addingTimeInterval(60)
         let second = step(
-            map([.digests: .ready, .tracks: .error(message: "boom")]),
+            readinessMap([.digests: .ready, .tracks: .error(message: "boom")]),
             memory: first.memory, sawUnready: first.sawUnready, at: later)
         XCTAssertEqual(second.zone, .allReady)
         XCTAssertEqual(second.memory.completedAt, later)
     }
 
     func testErrorCountsAsTerminal() {
-        let first = step(map([.digests: .preparing(detail: nil), .calendar: .scheduled(.nextCycle(minutes: 15))]))
+        let first = step(readinessMap([.digests: .preparing(detail: nil), .calendar: .scheduled(.nextCycle(minutes: 15))]))
         let second = step(
-            map([.digests: .ready, .calendar: .error(message: "token revoked")]),
+            readinessMap([.digests: .ready, .calendar: .error(message: "token revoked")]),
             memory: first.memory, sawUnready: first.sawUnready)
         XCTAssertEqual(second.zone, .allReady)
     }
 
     func testAllReadyAtFirstLookIsHiddenNotAllReady() {
-        let result = step(map([.digests: .ready, .tracks: .ready, .briefing: .ready]))
+        let result = step(readinessMap([.digests: .ready, .tracks: .ready, .briefing: .ready]))
         XCTAssertEqual(result.zone, .hidden)
         XCTAssertEqual(result.memory.completedAt, now)
         XCTAssertFalse(result.sawUnready)
@@ -96,19 +96,19 @@ final class GettingReadyTests: XCTestCase {
     func testCompletedIsGoneOnNextLaunch() {
         let memory = GettingReadyMemory(
             hiddenByOwner: false, firstShownAt: now.addingTimeInterval(-3600), completedAt: now.addingTimeInterval(-60))
-        let result = step(map([.digests: .preparing(detail: nil)]), memory: memory, sawUnready: false)
+        let result = step(readinessMap([.digests: .preparing(detail: nil)]), memory: memory, sawUnready: false)
         XCTAssertEqual(result.zone, .hidden)
         XCTAssertEqual(result.memory, memory)
     }
 
     func testOwnerHideWins() {
         let memory = GettingReadyMemory(hiddenByOwner: true, firstShownAt: nil, completedAt: nil)
-        let result = step(map([.digests: .preparing(detail: nil), .tracks: .preparing(detail: nil)]), memory: memory)
+        let result = step(readinessMap([.digests: .preparing(detail: nil), .tracks: .preparing(detail: nil)]), memory: memory)
         XCTAssertEqual(result.zone, .hidden)
     }
 
     func testFoldsThreeDaysAfterFirstShown() {
-        let readiness = map([.digests: .scheduled(.nextCycle(minutes: 15))])
+        let readiness = readinessMap([.digests: .scheduled(.nextCycle(minutes: 15))])
         let old = GettingReadyMemory(
             hiddenByOwner: false, firstShownAt: now.addingTimeInterval(-GettingReadyPolicy.foldAfter - 1),
             completedAt: nil)
@@ -121,7 +121,7 @@ final class GettingReadyTests: XCTestCase {
     }
 
     func testFirstShownIsSetOnce() {
-        let readiness = map([.digests: .preparing(detail: nil)])
+        let readiness = readinessMap([.digests: .preparing(detail: nil)])
         let first = step(readiness)
         XCTAssertEqual(first.memory.firstShownAt, now)
         let second = step(readiness, memory: first.memory, sawUnready: first.sawUnready, at: now.addingTimeInterval(600))
@@ -130,7 +130,7 @@ final class GettingReadyTests: XCTestCase {
     }
 
     func testDevelopmentOnlyShowsNothing() {
-        let result = step(map([
+        let result = step(readinessMap([
             .slackSync: .needsSource(.slack), .calendar: .needsSource(.calendar), .jira: .needsSource(.jira),
             .knowledgeIndex: .scheduled(.nextCycle(minutes: 15))
         ]))
@@ -148,7 +148,7 @@ final class GettingReadyTests: XCTestCase {
     }
 
     func testOwnerUnknownCardHasNoLine() throws {
-        let result = step(map([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]), ownerKnown: false)
+        let result = step(readinessMap([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]), ownerKnown: false)
         let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .briefing })
         XCTAssertNil(card.readiness)
         XCTAssertEqual(card.tone, .waiting)

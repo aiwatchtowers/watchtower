@@ -20,7 +20,7 @@ package enum HomeQueries {
         let nowUTC = ISO8601DateFormatter().string(from: now)
         let day = HomeTodayBuilder.dayString(now, calendar: calendar)
 
-        if let value = read(.waitingOnYou, db, tables: ["agent_actions", "reminders"], failed: &data.failed, {
+        if let value = readCard(.waitingOnYou, db, tables: ["agent_actions", "reminders"], failed: &data.failed, {
             (try AgentActionQueries.awaitingOwnerCount(db),
              try AgentActionQueries.awaitingOwner(db, limit: 3),
              try ReminderQueries.fetchDue(db, nowUTC: nowUTC))
@@ -28,24 +28,24 @@ package enum HomeQueries {
             (data.awaitingCount, data.actions, data.reminders) = value
         }
         let calendarTables = ["calendar_events", "calendar_calendars", "google_accounts", "meeting_prep_cache"]
-        if let value = read(.nextMeeting, db, tables: calendarTables, failed: &data.failed, {
+        if let value = readCard(.nextMeeting, db, tables: calendarTables, failed: &data.failed, {
             let event = try CalendarQueries.fetchNextEvent(db)
             return (event, try event.map { try CalendarQueries.hasPrep(db, eventID: $0.id) } ?? false)
         }) {
             (data.nextEvent, data.nextEventHasPrep) = value
         }
-        if let value = read(.briefing, db, tables: ["briefings"], failed: &data.failed, {
+        if let value = readCard(.briefing, db, tables: ["briefings"], failed: &data.failed, {
             try BriefingQueries.fetchByDate(db, date: day)
         }) {
             data.briefing = value
         }
-        data.targets = read(.myTargets, db, tables: ["targets"], failed: &data.failed) {
+        data.targets = readCard(.myTargets, db, tables: ["targets"], failed: &data.failed) {
             try TargetQueries.homeSummary(db, today: day)
         } ?? []
-        data.asks = read(.agentsWaiting, db, tables: ["owner_asks", "projects"], failed: &data.failed) {
+        data.asks = readCard(.agentsWaiting, db, tables: ["owner_asks", "projects"], failed: &data.failed) {
             try OwnerAskQueries.openAsksAllWorkbenches(db)
         } ?? WorkbenchAskRows(rows: [], unreadableIDs: [])
-        if let value = read(.sinceYouWereAway, db, tables: ["catchup_recaps"], failed: &data.failed, {
+        if let value = readCard(.sinceYouWereAway, db, tables: ["catchup_recaps"], failed: &data.failed, {
             try CatchUpQueries.fetchRecaps(db, limit: 1).first
         }) {
             data.latestRecap = value
@@ -55,7 +55,7 @@ package enum HomeQueries {
 
     /// One card's read: nil when a table it needs is missing (no content) or
     /// when it throws (logged, `kind` added to `failed`).
-    private static func read<T>(
+    private static func readCard<T>(
         _ kind: TodayCardKind,
         _ db: Database,
         tables: [String],

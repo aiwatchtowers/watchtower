@@ -72,7 +72,7 @@ final class HomeCenterTests: XCTestCase {
         await fulfillment(of: [met], timeout: timeout)
     }
 
-    private func has(_ kind: TodayCardKind) -> (HomeSnapshot?) -> Bool {
+    private func snapshotHas(_ kind: TodayCardKind) -> (HomeSnapshot?) -> Bool {
         { $0?.today.contains { $0.kind == kind } == true }
     }
 
@@ -107,8 +107,8 @@ final class HomeCenterTests: XCTestCase {
     func testFirstReadPublishesSnapshot() async throws {
         let center = makeCenter(defaults: try makeDefaults())
         XCTAssertNil(center.snapshot)
-        center.start(pool: try makePool())
-        defer { center.stop() }
+        center.beginReading(pool: try makePool())
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.today, [])
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
@@ -117,12 +117,12 @@ final class HomeCenterTests: XCTestCase {
     func testInsertingATargetAddsMyTargets() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults())
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
 
         try insertTargetDueToday(pool)
-        await waitUntil(center, has(.myTargets))
+        await waitUntil(center, snapshotHas(.myTargets))
         XCTAssertEqual(center.snapshot?.today.first?.items.map(\.title), ["Ship the feature"])
     }
 
@@ -131,8 +131,8 @@ final class HomeCenterTests: XCTestCase {
     func testTickPicksUpWritesTheObservationMisses() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
 
         let daemonPool = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
@@ -141,7 +141,7 @@ final class HomeCenterTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: workbench)
         }
         try daemonPool.close()
-        await waitUntil(center, has(.agentsWaiting))
+        await waitUntil(center, snapshotHas(.agentsWaiting))
     }
 
     func testReadinessChangeRebuildsWithoutDBRead() async throws {
@@ -152,8 +152,8 @@ final class HomeCenterTests: XCTestCase {
         readiness.start(pool: pool)
         defer { readiness.stop() }
         let center = makeCenter(readiness: readiness, defaults: try makeDefaults())
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .preparing }
         let reads = center.todayReads
 
@@ -171,8 +171,8 @@ final class HomeCenterTests: XCTestCase {
         defer { readiness.stop() }
         let defaults = try makeDefaults()
         let center = makeCenter(readiness: readiness, defaults: defaults)
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { !self.cards($0).isEmpty }
         XCTAssertNotNil(GettingReadyStore(defaults: defaults).memory.firstShownAt)
 
@@ -190,8 +190,8 @@ final class HomeCenterTests: XCTestCase {
         defer { readiness.stop() }
         let defaults = try makeDefaults()
         let center = makeCenter(readiness: readiness, defaults: defaults)
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { self.cards($0).first { $0.feature == .digests }?.tone == .preparing }
 
         try await pool.write { db in try TestDatabase.insertDigest(db) }
@@ -199,8 +199,8 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertNotNil(GettingReadyStore(defaults: defaults).memory.completedAt)
 
         let relaunched = makeCenter(readiness: readiness, defaults: defaults)
-        relaunched.start(pool: pool)
-        defer { relaunched.stop() }
+        relaunched.beginReading(pool: pool)
+        defer { relaunched.endReading() }
         await waitUntil(relaunched) { $0 != nil }
         XCTAssertEqual(relaunched.snapshot?.gettingReady, .hidden)
     }
@@ -220,8 +220,8 @@ final class HomeCenterTests: XCTestCase {
         let environment = FakeHomeEnvironment()
         environment.allowedTodayCards = [.myTargets]
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.todayReadFailed, true)
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
@@ -233,8 +233,8 @@ final class HomeCenterTests: XCTestCase {
         let pool = try makePool()
         try breakTargets(pool)
         let center = makeCenter(defaults: try makeDefaults())
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.todayReadFailed, false)
         XCTAssertEqual(center.snapshot?.todayFailed, [.myTargets])
@@ -249,8 +249,8 @@ final class HomeCenterTests: XCTestCase {
         let environment = FakeHomeEnvironment()
         environment.allowedTodayCards = [.agentsWaiting]
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.todayFailed, [])
         XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
@@ -259,27 +259,27 @@ final class HomeCenterTests: XCTestCase {
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
-        center.start(pool: pool)
+        center.beginReading(pool: pool)
         await waitUntil(center) { $0 != nil }
-        center.stop()
+        center.endReading()
         let reads = center.todayReads
 
         try insertTargetDueToday(pool)
         // A second center seeing the write proves it was observable.
         let witness = makeCenter(defaults: try makeDefaults())
-        witness.start(pool: pool)
-        defer { witness.stop() }
-        await waitUntil(witness, has(.myTargets))
-        XCTAssertFalse(has(.myTargets)(center.snapshot))
+        witness.beginReading(pool: pool)
+        defer { witness.endReading() }
+        await waitUntil(witness, snapshotHas(.myTargets))
+        XCTAssertFalse(snapshotHas(.myTargets)(center.snapshot))
         XCTAssertEqual(center.todayReads, reads)
     }
 
     func testStartTwiceKeepsOneObservation() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults())
-        center.start(pool: pool)
-        center.start(pool: pool)
-        defer { center.stop() }
+        center.beginReading(pool: pool)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         let reads = center.todayReads
 

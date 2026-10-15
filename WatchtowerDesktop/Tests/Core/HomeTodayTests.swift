@@ -19,7 +19,7 @@ final class HomeTodayTests: XCTestCase {
 
     private func iso(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 
-    private func at(hour: Int, minute: Int = 0, days: Int = 0) throws -> Date {
+    private func todayAt(hour: Int, minute: Int = 0, days: Int = 0) throws -> Date {
         let day = try XCTUnwrap(calendar.date(byAdding: .day, value: days, to: now))
         return try XCTUnwrap(calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day))
     }
@@ -32,7 +32,7 @@ final class HomeTodayTests: XCTestCase {
         return fmt.string(from: date)
     }
 
-    private func action(
+    private func homeAction(
         _ id: Int64,
         status: String,
         reason: String = "Draft a reply",
@@ -69,7 +69,7 @@ final class HomeTodayTests: XCTestCase {
         ]))
     }
 
-    private func target(_ id: Int, _ text: String, status: String = "todo", due: String = "") -> Target {
+    private func homeTarget(_ id: Int, _ text: String, status: String = "todo", due: String = "") -> Target {
         Target(row: Row(["id": id, "text": text, "status": status, "due_date": due]))
     }
 
@@ -82,7 +82,7 @@ final class HomeTodayTests: XCTestCase {
         return CatchUpRecap(row: Row(values), now: now)
     }
 
-    private func asks(_ specs: [(workbench: String, title: String, kind: String, session: Bool)]) throws
+    private func homeAsks(_ specs: [(workbench: String, title: String, kind: String, session: Bool)]) throws
         -> WorkbenchAskRows {
         try db.write { d in
             var projects: [String: Int64] = [:]
@@ -112,11 +112,11 @@ final class HomeTodayTests: XCTestCase {
     private func fullData() throws -> HomeTodayData {
         var data = HomeTodayData()
         data.awaitingCount = 1
-        data.actions = [action(1, status: "pending", minutesAgo: 5)]
+        data.actions = [homeAction(1, status: "pending", minutesAgo: 5)]
         data.nextEvent = event(start: now.addingTimeInterval(3600))
         data.briefing = briefing(yourDay: #"[{"text":"Standup at 10"}]"#)
-        data.targets = [target(1, "Ship the release", status: "in_progress")]
-        data.asks = try asks([("acme", "Check the build", "check", false)])
+        data.targets = [homeTarget(1, "Ship the release", status: "in_progress")]
+        data.asks = try homeAsks([("acme", "Check the build", "check", false)])
         data.latestRecap = recap(from: now.addingTimeInterval(-86400))
         return data
     }
@@ -130,7 +130,7 @@ final class HomeTodayTests: XCTestCase {
 
     func testCardShowsOnlyWithContent() {
         var data = HomeTodayData()
-        data.targets = [target(1, "Ship the release", status: "in_progress")]
+        data.targets = [homeTarget(1, "Ship the release", status: "in_progress")]
         XCTAssertEqual(cards(data).map(\.kind), [.myTargets])
     }
 
@@ -153,9 +153,9 @@ final class HomeTodayTests: XCTestCase {
         data.awaitingCount = 3
         // `awaitingOwner(limit: 3)` order: newest first.
         data.actions = [
-            action(3, status: "failed", reason: "Post the summary", minutesAgo: 10),
-            action(2, status: "pending", reason: "", tool: "create_target", minutesAgo: 20),
-            action(1, status: "pending", reason: "Old", minutesAgo: 30)
+            homeAction(3, status: "failed", reason: "Post the summary", minutesAgo: 10),
+            homeAction(2, status: "pending", reason: "", tool: "create_target", minutesAgo: 20),
+            homeAction(1, status: "pending", reason: "Old", minutesAgo: 30)
         ]
         data.reminders = [reminder(1, note: "", minutesAgo: 25), reminder(2, note: "Call back", minutesAgo: 5)]
         let card = try XCTUnwrap(cards(data).first)
@@ -180,7 +180,7 @@ final class HomeTodayTests: XCTestCase {
 
     func testAsksAcrossAllWorkbenches() throws {
         var data = HomeTodayData()
-        data.asks = try asks([("acme", "Review the spec", "review", true), ("beta", "Which way?", "question", false)])
+        data.asks = try homeAsks([("acme", "Review the spec", "review", true), ("beta", "Which way?", "question", false)])
         let card = try XCTUnwrap(cards(data).first)
         XCTAssertEqual(card.kind, .agentsWaiting)
         XCTAssertEqual(card.eyebrow, "AGENTS WAITING · 2")
@@ -196,7 +196,7 @@ final class HomeTodayTests: XCTestCase {
 
     func testAgentsWaitingShowsThreeOldestAndCountsAll() throws {
         var data = HomeTodayData()
-        data.asks = try asks((0..<4).map { ("acme", "Ask \($0)", "check", false) })
+        data.asks = try homeAsks((0..<4).map { ("acme", "Ask \($0)", "check", false) })
         let card = try XCTUnwrap(cards(data).first)
         XCTAssertEqual(card.eyebrow, "AGENTS WAITING · 4")
         XCTAssertEqual(card.items.map(\.title), ["Ask 0", "Ask 1", "Ask 2"])
@@ -208,9 +208,9 @@ final class HomeTodayTests: XCTestCase {
         XCTAssertEqual(HomeTodayBuilder.meetingEyebrow(start: now.addingTimeInterval(25 * 60), now: now,
                                                        calendar: calendar),
                        "NEXT MEETING · IN 25 MIN")
-        XCTAssertEqual(HomeTodayBuilder.meetingEyebrow(start: try at(hour: 11), now: now, calendar: calendar),
+        XCTAssertEqual(HomeTodayBuilder.meetingEyebrow(start: try todayAt(hour: 11), now: now, calendar: calendar),
                        "NEXT MEETING · 11:00")
-        XCTAssertEqual(HomeTodayBuilder.meetingEyebrow(start: try at(hour: 9, days: 1), now: now, calendar: calendar),
+        XCTAssertEqual(HomeTodayBuilder.meetingEyebrow(start: try todayAt(hour: 9, days: 1), now: now, calendar: calendar),
                        "NEXT MEETING · TOMORROW 09:00")
     }
 
@@ -227,7 +227,7 @@ final class HomeTodayTests: XCTestCase {
              {"email":"c@example.com","display_name":"","response_status":"","slack_user_id":""}]
             """
         var data = HomeTodayData()
-        data.nextEvent = event(start: try at(hour: 10), end: try at(hour: 10, minute: 30), attendees: attendees)
+        data.nextEvent = event(start: try todayAt(hour: 10), end: try todayAt(hour: 10, minute: 30), attendees: attendees)
         data.nextEventHasPrep = true
         let card = try XCTUnwrap(cards(data).first)
         XCTAssertEqual(card.kind, .nextMeeting)
@@ -239,7 +239,7 @@ final class HomeTodayTests: XCTestCase {
     func testNextMeetingLineNamesEmailWhenBlankAndOmitsPrep() throws {
         let attendees = #"[{"email":"colleague.a@example.com","display_name":"","response_status":"","slack_user_id":""}]"#
         var data = HomeTodayData()
-        data.nextEvent = event(start: try at(hour: 10), end: try at(hour: 11), attendees: attendees)
+        data.nextEvent = event(start: try todayAt(hour: 10), end: try todayAt(hour: 11), attendees: attendees)
         XCTAssertEqual(try XCTUnwrap(cards(data).first).body, "10:00–11:00 · colleague.a")
     }
 
@@ -267,23 +267,23 @@ final class HomeTodayTests: XCTestCase {
         let today = format("yyyy-MM-dd", now)
         let twoDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: now))
         let overdue = HomeTodayBuilder.targetDetail(
-            target(1, "Late", due: format("yyyy-MM-dd", twoDaysAgo) + "T09:00"), today: today)
+            homeTarget(1, "Late", due: format("yyyy-MM-dd", twoDaysAgo) + "T09:00"), today: today)
         XCTAssertEqual(overdue.0, "Overdue · " + format("MMM d", twoDaysAgo))
         XCTAssertEqual(overdue.1, .overdue)
-        let dueToday = HomeTodayBuilder.targetDetail(target(2, "Today", due: today), today: today)
+        let dueToday = HomeTodayBuilder.targetDetail(homeTarget(2, "Today", due: today), today: today)
         XCTAssertEqual(dueToday.0, "Due today")
         XCTAssertEqual(dueToday.1, .dueToday)
-        let dueAtTime = HomeTodayBuilder.targetDetail(target(3, "At three", due: today + "T15:00"), today: today)
+        let dueAtTime = HomeTodayBuilder.targetDetail(homeTarget(3, "At three", due: today + "T15:00"), today: today)
         XCTAssertEqual(dueAtTime.0, "Due 15:00")
         XCTAssertEqual(dueAtTime.1, .dueToday)
-        let inProgress = HomeTodayBuilder.targetDetail(target(4, "Going", status: "in_progress"), today: today)
+        let inProgress = HomeTodayBuilder.targetDetail(homeTarget(4, "Going", status: "in_progress"), today: today)
         XCTAssertEqual(inProgress.0, "In progress")
         XCTAssertEqual(inProgress.1, .inProgress)
     }
 
     func testMyTargetsCardLinks() throws {
         var data = HomeTodayData()
-        data.targets = [target(4, "Going", status: "in_progress")]
+        data.targets = [homeTarget(4, "Going", status: "in_progress")]
         let card = try XCTUnwrap(cards(data).first)
         XCTAssertEqual(card.eyebrow, "MY TARGETS")
         XCTAssertEqual(card.link, .targets)
@@ -294,7 +294,7 @@ final class HomeTodayTests: XCTestCase {
     // MARK: - Since you were away
 
     func testRecapCardNeedsReadyUnacknowledged() throws {
-        let from = try at(hour: 18, minute: 30, days: -1)
+        let from = try todayAt(hour: 18, minute: 30, days: -1)
         var data = HomeTodayData()
         data.latestRecap = recap(status: "building", from: from)
         XCTAssertTrue(cards(data).isEmpty)
@@ -309,7 +309,7 @@ final class HomeTodayTests: XCTestCase {
 
     // MARK: - Snapshot
 
-    private func snapshot(
+    private func todaySnapshot(
         _ zone: GettingReadyZone,
         today: [TodayCard] = [],
         failed: Bool = false,
@@ -322,19 +322,19 @@ final class HomeTodayTests: XCTestCase {
     func testEmptyDataIsNothingNeedsYou() {
         let today = cards(HomeTodayData())
         XCTAssertTrue(today.isEmpty)
-        XCTAssertTrue(snapshot(.hidden, today: today).nothingNeedsYou)
+        XCTAssertTrue(todaySnapshot(.hidden, today: today).nothingNeedsYou)
     }
 
     func testAllReadyZoneStillNothingNeedsYou() {
-        XCTAssertTrue(snapshot(.allReady).nothingNeedsYou)
+        XCTAssertTrue(todaySnapshot(.allReady).nothingNeedsYou)
     }
 
     func testShownZoneIsNotNothingNeedsYou() {
-        XCTAssertFalse(snapshot(.shown(cards: [], sourceRows: [])).nothingNeedsYou)
+        XCTAssertFalse(todaySnapshot(.shown(cards: [], sourceRows: [])).nothingNeedsYou)
     }
 
     func testFailedReadIsNotNothingNeedsYou() {
-        let all = snapshot(.hidden, failed: true, failedKinds: Set(TodayCardKind.allCases))
+        let all = todaySnapshot(.hidden, failed: true, failedKinds: Set(TodayCardKind.allCases))
         XCTAssertFalse(all.nothingNeedsYou)
         XCTAssertTrue(all.showsReadError)
     }
@@ -346,7 +346,7 @@ final class HomeTodayTests: XCTestCase {
         data.failed = [.briefing]
         let today = cards(data)
         XCTAssertTrue(today.isEmpty)
-        let partial = snapshot(.hidden, today: today, failedKinds: [.briefing])
+        let partial = todaySnapshot(.hidden, today: today, failedKinds: [.briefing])
         XCTAssertFalse(partial.todayReadFailed)
         XCTAssertFalse(partial.nothingNeedsYou)
         XCTAssertTrue(partial.showsReadError)
@@ -354,8 +354,8 @@ final class HomeTodayTests: XCTestCase {
 
     func testFailedReadBesideACardIsNoReadError() {
         var data = HomeTodayData()
-        data.targets = [target(1, "Ship the release", status: "in_progress")]
-        let partial = snapshot(.hidden, today: cards(data), failedKinds: [.briefing])
+        data.targets = [homeTarget(1, "Ship the release", status: "in_progress")]
+        let partial = todaySnapshot(.hidden, today: cards(data), failedKinds: [.briefing])
         XCTAssertFalse(partial.nothingNeedsYou)
         XCTAssertFalse(partial.showsReadError)
     }

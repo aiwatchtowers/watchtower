@@ -26,7 +26,7 @@ final class HomeViewTests: XCTestCase {
         HomeContent(snapshot: snapshot, today: today, onLink: onLink, onHideGettingReady: onHide)
     }
 
-    private func snapshot(
+    private func viewSnapshot(
         _ zone: GettingReadyZone = .hidden,
         firstSync: FirstSyncLine? = nil,
         today: [TodayCard] = [],
@@ -48,9 +48,9 @@ final class HomeViewTests: XCTestCase {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEEE, MMMM d"
-        let view = makeContent(snapshot())
+        let view = makeContent(viewSnapshot())
         XCTAssertNoThrow(try view.inspect().find(text: "Home"))
-        XCTAssertNoThrow(try makeContent(snapshot(), today: now).inspect().find(text: formatter.string(from: now)))
+        XCTAssertNoThrow(try makeContent(viewSnapshot(), today: now).inspect().find(text: formatter.string(from: now)))
         // Before the first snapshot: the header and a spinner, no all-clear.
         let loading = makeContent(nil)
         XCTAssertNoThrow(try loading.inspect().find(text: "Home"))
@@ -66,7 +66,7 @@ final class HomeViewTests: XCTestCase {
             Self.card(.digests, "Digests", .preparing(detail: nil)),
             Self.card(.tracks, "Tracks", .scheduled(.afterCurrentSync))
         ]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: [])))
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: [])))
         let all = try texts(view)
         XCTAssertEqual(all.filter(["Briefing", "Digests", "Tracks"].contains), ["Briefing", "Digests", "Tracks"])
         XCTAssertTrue(all.contains("Getting ready"))
@@ -77,7 +77,7 @@ final class HomeViewTests: XCTestCase {
     func testReadyCardShowsOpenAndCallsLink() throws {
         var tapped: HomeLink?
         let cards = [Self.card(.digests, "Digests", .ready), Self.card(.tracks, "Tracks", .preparing(detail: nil))]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
         XCTAssertNoThrow(try view.inspect().find(text: "Ready"))
         XCTAssertThrowsError(try view.inspect().find(text: "Ready — Open"))
         try view.inspect().find(button: "Open").tap()
@@ -87,7 +87,7 @@ final class HomeViewTests: XCTestCase {
     func testPreparingCardShowsReadinessLine() throws {
         let preparing = Readiness.preparing(detail: "Messages · 3/10 channels")
         let cards = [Self.card(.digests, "Digests", preparing), Self.card(.memory, "Memory", nil)]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: [])))
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: [])))
         XCTAssertNoThrow(try view.inspect().find(text: FeatureReadiness.line(preparing)))
         // A nil readiness shows no line and no Open.
         XCTAssertThrowsError(try view.inspect().find(button: "Open"))
@@ -96,7 +96,7 @@ final class HomeViewTests: XCTestCase {
 
     func testFirstSyncLineOnTop() throws {
         let cards = [Self.card(.digests, "Digests", .waitingForSync(detail: nil))]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: []), firstSync: Self.firstSync))
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []), firstSync: Self.firstSync))
         let all = try texts(view)
         let title = try XCTUnwrap(all.firstIndex(of: Self.firstSync.title))
         let detail = try XCTUnwrap(all.firstIndex(of: Self.firstSync.detail))
@@ -104,14 +104,14 @@ final class HomeViewTests: XCTestCase {
         XCTAssertLessThan(title, detail)
         XCTAssertLessThan(detail, digests)
         // No zone, no line.
-        XCTAssertThrowsError(try makeContent(snapshot(.hidden, firstSync: Self.firstSync))
+        XCTAssertThrowsError(try makeContent(viewSnapshot(.hidden, firstSync: Self.firstSync))
             .inspect().find(text: Self.firstSync.title))
     }
 
     func testJiraSourceRowText() throws {
         var tapped: HomeLink?
         let rows = [GettingReadySourceRow(source: .jira, features: [.jira])]
-        let view = makeContent(snapshot(.shown(cards: [], sourceRows: rows))) { tapped = $0 }
+        let view = makeContent(viewSnapshot(.shown(cards: [], sourceRows: rows))) { tapped = $0 }
         XCTAssertNoThrow(try view.inspect().find(text: "Connect Jira to get Boards, Workload, Blockers, Project Map and Releases"))
         try view.inspect().find(button: "Connect Jira").tap()
         XCTAssertEqual(tapped, .connect(.jira))
@@ -125,7 +125,7 @@ final class HomeViewTests: XCTestCase {
     func testHideButtonCallsHide() throws {
         var hidden = 0
         let cards = [Self.card(.digests, "Digests", .preparing(detail: nil))]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: []))) { _ in } onHide: { hidden += 1 }
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { _ in } onHide: { hidden += 1 }
         let hide = try view.inspect().find(ViewType.Button.self) {
             try $0.accessibilityLabel().string() == "Hide Getting ready"
         }
@@ -134,10 +134,10 @@ final class HomeViewTests: XCTestCase {
     }
 
     func testAllReadyLine() throws {
-        let view = makeContent(snapshot(.allReady))
+        let view = makeContent(viewSnapshot(.allReady))
         XCTAssertNoThrow(try view.inspect().find(text: "Everything's ready"))
         XCTAssertThrowsError(try view.inspect().find(text: "Getting ready"))
-        let hidden = makeContent(snapshot(.hidden))
+        let hidden = makeContent(viewSnapshot(.hidden))
         XCTAssertThrowsError(try hidden.inspect().find(text: "Everything's ready"))
         XCTAssertThrowsError(try hidden.inspect().find(text: "Getting ready"))
     }
@@ -163,7 +163,7 @@ final class HomeViewTests: XCTestCase {
     ]
 
     func testTodayCardsInSnapshotOrder() throws {
-        let view = makeContent(snapshot(today: Self.todayCards))
+        let view = makeContent(viewSnapshot(today: Self.todayCards))
         let eyebrows = Self.todayCards.map(\.eyebrow)
         XCTAssertEqual(try texts(view).filter(eyebrows.contains), eyebrows)
         XCTAssertNoThrow(try view.inspect().find(text: "Today"))
@@ -175,7 +175,7 @@ final class HomeViewTests: XCTestCase {
 
     func testItemRowCallsItsLink() throws {
         var tapped: [HomeLink] = []
-        let view = makeContent(snapshot(today: Self.todayCards)) { tapped.append($0) }
+        let view = makeContent(viewSnapshot(today: Self.todayCards)) { tapped.append($0) }
         try view.inspect().find(button: "Review feedback").tap()
         XCTAssertEqual(tapped, [.target(id: 12)])
         // The card's own header goes to the card's link.
@@ -184,7 +184,7 @@ final class HomeViewTests: XCTestCase {
     }
 
     func testNothingNeedsYouLine() throws {
-        let view = makeContent(snapshot(.hidden))
+        let view = makeContent(viewSnapshot(.hidden))
         XCTAssertNoThrow(try view.inspect().find(text: "Nothing needs you right now."))
         XCTAssertNoThrow(try view.inspect().find(ViewType.Image.self) {
             try $0.actualImage().name() == "checkmark.circle"
@@ -193,7 +193,7 @@ final class HomeViewTests: XCTestCase {
     }
 
     func testReadFailedIsNotAllClear() throws {
-        for failed in [snapshot(readFailed: true, failed: [.myTargets]), snapshot(failed: [.briefing])] {
+        for failed in [viewSnapshot(readFailed: true, failed: [.myTargets]), viewSnapshot(failed: [.briefing])] {
             XCTAssertTrue(failed.showsReadError)
             let view = makeContent(failed)
             XCTAssertNoThrow(try view.inspect().find(text: "Couldn't read today's items — see the log."))
@@ -210,7 +210,7 @@ final class HomeViewTests: XCTestCase {
             Self.card(.memory, "Memory", .error(message: "CLI timed out"))
         ]
         let rows = [GettingReadySourceRow(source: .jira, features: [.jira])]
-        let view = makeContent(snapshot(.shown(cards: cards, sourceRows: rows), firstSync: Self.firstSync))
+        let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: rows), firstSync: Self.firstSync))
         let counter = try NSRegularExpression(pattern: #"\d+ of \d+"#)
         for text in try texts(view) {
             let range = NSRange(text.startIndex..., in: text)
@@ -227,8 +227,8 @@ final class HomeViewTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let appState = AppState.isolated()
         appState.databaseManager = manager
-        appState.homeCenter.start(pool: manager.dbPool)
-        defer { appState.homeCenter.stop() }
+        appState.homeCenter.beginReading(pool: manager.dbPool)
+        defer { appState.homeCenter.endReading() }
 
         let landed = expectation(description: "snapshot landed")
         func check() {

@@ -21,7 +21,7 @@ final class HomeQueriesTests: XCTestCase {
     }
 
     /// A `created_at`/`updated_at` `minutes` before now, in the column's UTC form.
-    private func stamp(minutesAgo minutes: Double) -> String {
+    private func stampAgo(minutesAgo minutes: Double) -> String {
         ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutes * 60))
     }
 
@@ -95,10 +95,10 @@ final class HomeQueriesTests: XCTestCase {
         let (result, older, newer) = try db.write { d in
             let acme = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
             let beta = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
-            let newer = try TestDatabase.insertOwnerAsk(d, projectID: acme, createdAt: self.stamp(minutesAgo: 1))
-            let older = try TestDatabase.insertOwnerAsk(d, projectID: beta, createdAt: self.stamp(minutesAgo: 5))
+            let newer = try TestDatabase.insertOwnerAsk(d, projectID: acme, createdAt: self.stampAgo(minutesAgo: 1))
+            let older = try TestDatabase.insertOwnerAsk(d, projectID: beta, createdAt: self.stampAgo(minutesAgo: 5))
             try TestDatabase.insertOwnerAsk(d, projectID: acme, status: "answered", answer: "{}",
-                                            createdAt: self.stamp(minutesAgo: 10))
+                                            createdAt: self.stampAgo(minutesAgo: 10))
             return (try OwnerAskQueries.openAsksAllWorkbenches(d), older, newer)
         }
         XCTAssertEqual(result.rows.map(\.ask.id), [older, newer])
@@ -109,7 +109,7 @@ final class HomeQueriesTests: XCTestCase {
     func testOpenAsksAllWorkbenchesNamesUnreadableRows() throws {
         let (result, good, bad) = try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
-            let good = try TestDatabase.insertOwnerAsk(d, projectID: p, createdAt: self.stamp(minutesAgo: 2))
+            let good = try TestDatabase.insertOwnerAsk(d, projectID: p, createdAt: self.stampAgo(minutesAgo: 2))
             // The column's CHECK refuses 'poll'; a newer Go could still widen it.
             try d.execute(sql: "PRAGMA ignore_check_constraints = ON")
             try d.execute(
@@ -134,15 +134,15 @@ final class HomeQueriesTests: XCTestCase {
     func testAwaitingOwnerMatchesTheBadgeCount() throws {
         let (rows, count) = try db.write { d in
             try TestDatabase.insertAgentAction(d, turnID: "pending-old", status: "pending",
-                                               createdAt: self.stamp(minutesAgo: 30))
+                                               createdAt: self.stampAgo(minutesAgo: 30))
             try TestDatabase.insertAgentAction(d, turnID: "failed-new", status: "failed",
-                                               createdAt: self.stamp(minutesAgo: 10))
+                                               createdAt: self.stampAgo(minutesAgo: 10))
             try TestDatabase.insertAgentAction(d, turnID: "applied", status: "applied",
-                                               createdAt: self.stamp(minutesAgo: 5))
+                                               createdAt: self.stampAgo(minutesAgo: 5))
             try TestDatabase.insertAgentAction(d, turnID: "executing", status: "executing",
-                                               createdAt: self.stamp(minutesAgo: 4))
+                                               createdAt: self.stampAgo(minutesAgo: 4))
             try TestDatabase.insertAgentAction(d, contextType: "project", contextID: "7", turnID: "workbench",
-                                               status: "pending", createdAt: self.stamp(minutesAgo: 1))
+                                               status: "pending", createdAt: self.stampAgo(minutesAgo: 1))
             return (try AgentActionQueries.awaitingOwner(d, limit: 10),
                     try AgentActionQueries.awaitingOwnerCount(d))
         }
@@ -153,7 +153,7 @@ final class HomeQueriesTests: XCTestCase {
     func testAwaitingOwnerLimit() throws {
         let rows = try db.write { d in
             for i in 0..<5 {
-                try TestDatabase.insertAgentAction(d, turnID: "t\(i)", createdAt: self.stamp(minutesAgo: Double(i)))
+                try TestDatabase.insertAgentAction(d, turnID: "t\(i)", createdAt: self.stampAgo(minutesAgo: Double(i)))
             }
             return try AgentActionQueries.awaitingOwner(d, limit: 3)
         }
@@ -203,11 +203,11 @@ final class HomeQueriesTests: XCTestCase {
     func testTodayReadsEverySource() throws {
         let now = Date()
         let data = try db.write { d in
-            try TestDatabase.insertAgentAction(d, turnID: "pending", createdAt: self.stamp(minutesAgo: 3))
+            try TestDatabase.insertAgentAction(d, turnID: "pending", createdAt: self.stampAgo(minutesAgo: 3))
             try d.execute(sql: "INSERT INTO reminders (note, remind_at) VALUES ('Call back', ?)",
-                          arguments: [self.stamp(minutesAgo: 1)])
-            try TestDatabase.insertCalendarEvent(d, id: "evt-home", startTime: self.stamp(minutesAgo: -60),
-                                                 endTime: self.stamp(minutesAgo: -90))
+                          arguments: [self.stampAgo(minutesAgo: 1)])
+            try TestDatabase.insertCalendarEvent(d, id: "evt-home", startTime: self.stampAgo(minutesAgo: -60),
+                                                 endTime: self.stampAgo(minutesAgo: -90))
             try TestDatabase.insertMeetingPrep(d, eventID: "evt-home", resultJSON: #"{"talking_points":[]}"#)
             try TestDatabase.insertBriefing(d, date: self.day(0), attention: #"[{"text":"Reply to acme"}]"#)
             try self.insertTarget(d, "Due today", dueDate: self.day(0) + "T15:00")

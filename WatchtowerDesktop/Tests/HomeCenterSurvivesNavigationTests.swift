@@ -14,8 +14,8 @@ final class HomeCenterSurvivesNavigationTests: XCTestCase {
         let appState = AppState.isolated()
         appState.databaseManager = manager
         appState.selectedDestination = .home
-        appState.homeCenter.start(pool: manager.dbPool)
-        defer { appState.homeCenter.stop() }
+        appState.homeCenter.beginReading(pool: manager.dbPool)
+        defer { appState.homeCenter.endReading() }
         appState.selectedDestination = .targets
         XCTAssertNil(appState.homeCenter.snapshot)
 
