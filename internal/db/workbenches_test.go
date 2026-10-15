@@ -449,3 +449,10 @@ func TestProjectFolder_RefusesLineBreaks(t *testing.T) {
 	_, err = d.CreateWorkbench("acme", "/work/evil\rline")
 	assert.ErrorIs(t, err, ErrWorkbenchFolderNotAllowed)
 }
+
+// The Desktop's Open Folder… matches this text in the CLI's stderr to open the
+// workbench a folder was bound to since its last read (WorkbenchesViewModel
+// isFolderTaken, #778); rewording it breaks that fallback.
+func TestWorkbenchFolderTakenMessageIsTheDesktopContract(t *testing.T) {
+	assert.Equal(t, "folder is already bound to a workbench", ErrWorkbenchFolderTaken.Error())
+}
