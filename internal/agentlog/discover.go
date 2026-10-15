@@ -82,31 +82,39 @@ func ListTranscripts(dirs []string) ([]TranscriptFile, error) {
 				continue
 			}
 			if e.IsDir() {
-				subDir := filepath.Join(dir, name, "subagents")
-				if fi, err := os.Lstat(subDir); err != nil || !fi.IsDir() { // a symlinked dir is not followed (AGENTLOG-04)
-					continue
-				}
-				subEntries, err := os.ReadDir(subDir)
-				if err != nil {
-					continue
-				}
-				for _, se := range subEntries {
-					sn := se.Name()
-					if se.Type()&os.ModeSymlink != 0 || se.IsDir() || !strings.HasPrefix(sn, "agent-") || !strings.HasSuffix(sn, ".jsonl") {
-						continue
-					}
-					if f, ok := statTranscript(filepath.Join(subDir, sn)); ok {
-						f.SessionUUID, f.Subagent = name, true
-						f.AgentID = strings.TrimSuffix(strings.TrimPrefix(sn, "agent-"), ".jsonl")
-						subs = append(subs, f)
-					}
-				}
+				subs = append(subs, listSubagentFiles(dir, name)...)
 			}
 		}
 	}
 	sort.Slice(mains, func(i, j int) bool { return mains[i].Path < mains[j].Path })
 	sort.Slice(subs, func(i, j int) bool { return subs[i].Path < subs[j].Path })
 	return append(mains, subs...), nil
+}
+
+// listSubagentFiles lists the agent-*.jsonl transcripts under
+// <dir>/<sessionDir>/subagents.
+func listSubagentFiles(dir, sessionDir string) []TranscriptFile {
+	subDir := filepath.Join(dir, sessionDir, "subagents")
+	if fi, err := os.Lstat(subDir); err != nil || !fi.IsDir() { // a symlinked dir is not followed (AGENTLOG-04)
+		return nil
+	}
+	subEntries, err := os.ReadDir(subDir)
+	if err != nil {
+		return nil
+	}
+	var out []TranscriptFile
+	for _, se := range subEntries {
+		sn := se.Name()
+		if se.Type()&os.ModeSymlink != 0 || se.IsDir() || !strings.HasPrefix(sn, "agent-") || !strings.HasSuffix(sn, ".jsonl") {
+			continue
+		}
+		if f, ok := statTranscript(filepath.Join(subDir, sn)); ok {
+			f.SessionUUID, f.Subagent = sessionDir, true
+			f.AgentID = strings.TrimSuffix(strings.TrimPrefix(sn, "agent-"), ".jsonl")
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func statTranscript(path string) (TranscriptFile, bool) {

@@ -67,13 +67,9 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 	if res.Adopted, err = d.AdoptAgentLogSessions(id, wb.FolderPath); err != nil {
 		return nil, fmt.Errorf("adopting sessions: %w", err)
 	}
-	all, err := d.ListWorkbenches()
+	folders, err := allWorkbenchFolders(d)
 	if err != nil {
 		return nil, err
-	}
-	folders := make([]string, 0, len(all))
-	for _, w := range all {
-		folders = append(folders, w.FolderPath)
 	}
 	ledger, err := d.WorkbenchSessionWorktrees(ctx, id)
 	if err != nil {
@@ -92,14 +88,33 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 	if o.Budget > 0 {
 		deadline = o.Now().Add(o.Budget)
 	}
-	sessions := map[string]bool{}
 	present := map[string]bool{} // every listed file, read or not: a budget stop must not mark the rest missing
 	for _, tf := range files {
 		present[tf.Path] = true
 	}
+	sessions, err := scanOwnedFiles(ctx, d, files, wb, folders, roots, deadline, o.Now, res)
+	if err != nil {
+		return nil, err
+	}
+	res.Sessions = len(sessions)
+	if err := markMissingFiles(d, dirs, present, o.Now(), res); err != nil {
+		return nil, err
+	}
+	if res.Repriced, err = d.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
+		return nil, fmt.Errorf("repricing: %w", err)
+	}
+	return res, nil
+}
+
+// scanOwnedFiles scans every listed transcript this workbench owns until the
+// deadline or ctx ends (then res.Incomplete) and returns the owned session
+// uuids.
+func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *db.Workbench, folders, roots []string,
+	deadline time.Time, now func() time.Time, res *Result) (map[string]bool, error) {
 	owned := map[string]bool{} // session uuid → owned by this workbench
+	sessions := map[string]bool{}
 	for _, tf := range files {
-		if ctx.Err() != nil || (!deadline.IsZero() && o.Now().After(deadline)) {
+		if ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) {
 			res.Incomplete = true
 			break
 		}
@@ -118,23 +133,38 @@ func Scan(ctx context.Context, d *db.DB, id int64, o Options) (*Result, error) {
 			}
 		}
 	}
-	res.Sessions = len(sessions)
-	known, err := d.AgentLogFilesUnder(dirs)
+	return sessions, nil
+}
+
+// allWorkbenchFolders lists every workbench's folder path.
+func allWorkbenchFolders(d *db.DB) ([]string, error) {
+	all, err := d.ListWorkbenches()
 	if err != nil {
 		return nil, err
 	}
+	folders := make([]string, 0, len(all))
+	for _, w := range all {
+		folders = append(folders, w.FolderPath)
+	}
+	return folders, nil
+}
+
+// markMissingFiles marks known ledger files under dirs that no longer exist
+// on disk (not in present) as missing.
+func markMissingFiles(d *db.DB, dirs []string, present map[string]bool, now time.Time, res *Result) error {
+	known, err := d.AgentLogFilesUnder(dirs)
+	if err != nil {
+		return err
+	}
 	for _, f := range known {
 		if !present[f.Path] && f.MissingAt == "" {
-			if err := d.MarkAgentLogFileMissing(f.Path, o.Now().UTC().Format(time.RFC3339)); err != nil {
-				return nil, err
+			if err := d.MarkAgentLogFileMissing(f.Path, now.UTC().Format(time.RFC3339)); err != nil {
+				return err
 			}
 			res.MissingFiles++
 		}
 	}
-	if res.Repriced, err = d.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
-		return nil, fmt.Errorf("repricing: %w", err)
-	}
-	return res, nil
+	return nil
 }
 
 // worktreeRoots merges git's live worktrees with the roots the workbench's
@@ -190,16 +220,10 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 	if err != nil {
 		return err
 	}
-	start, expect := int64(0), int64(-1)
-	if stored != nil {
-		expect = stored.ReadOffset
-		if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && stored.ParserVersion == ParserVersion {
-			res.FilesSkipped++
-			return nil
-		}
-		if tf.Size >= stored.ReadOffset && stored.ParserVersion == ParserVersion {
-			start = stored.ReadOffset
-		}
+	start, expect, unchanged := resumePoint(stored, tf)
+	if unchanged {
+		res.FilesSkipped++
+		return nil
 	}
 	fh, err := os.Open(tf.Path)
 	if err != nil {
@@ -223,14 +247,7 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 	b := db.AgentLogBatch{File: db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
 		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}, ExpectOffset: expect,
 		Events: pr.Events, ToolResults: pr.ToolResults}
-	pid := wb.ID
-	for _, s := range pr.Sessions {
-		s.ProjectID, s.FolderPath = &pid, wb.FolderPath
-		if tf.Subagent {
-			s.SourcePath = filepath.Dir(filepath.Dir(tf.Path)) + ".jsonl"
-		}
-		b.Sessions = append(b.Sessions, *s)
-	}
+	b.Sessions = ownedSessions(pr.Sessions, tf, wb)
 	applied, err := d.ApplyAgentLogBatch(b)
 	if err != nil {
 		return fmt.Errorf("storing %s: %w", tf.Path, err)
@@ -244,6 +261,38 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 	}
 	res.LongLines += pr.LongLines
 	return nil
+}
+
+// resumePoint decides where to read a transcript from: the stored offset
+// when the file only grew under the same parser, else 0; expect is the
+// offset the ledger must still hold (-1 for a new file) and unchanged says
+// the file needs no read at all.
+func resumePoint(stored *db.AgentLogFile, tf TranscriptFile) (start, expect int64, unchanged bool) {
+	if stored == nil {
+		return 0, -1, false
+	}
+	if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && stored.ParserVersion == ParserVersion {
+		return 0, stored.ReadOffset, true
+	}
+	if tf.Size >= stored.ReadOffset && stored.ParserVersion == ParserVersion {
+		start = stored.ReadOffset
+	}
+	return start, stored.ReadOffset, false
+}
+
+// ownedSessions stamps the parsed sessions with the workbench's project id
+// and folder (and a subagent's parent transcript path).
+func ownedSessions(parsed map[string]*db.AgentLogSession, tf TranscriptFile, wb *db.Workbench) []db.AgentLogSession {
+	pid := wb.ID
+	var out []db.AgentLogSession
+	for _, s := range parsed {
+		s.ProjectID, s.FolderPath = &pid, wb.FolderPath
+		if tf.Subagent {
+			s.SourcePath = filepath.Dir(filepath.Dir(tf.Path)) + ".jsonl"
+		}
+		out = append(out, *s)
+	}
+	return out
 }
 
 // listedSkills returns the names of every skill_listing attachment in the
