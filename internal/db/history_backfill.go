@@ -126,6 +126,17 @@ func (db *DB) SetHistoryBackfillWaiting(id int64, waiting string, now time.Time)
 	return nil
 }
 
+// SetHistoryBackfillLastError sets last_error alone. The runner calls it
+// after skipping a chunk, so `backfill status` shows the skip until the next
+// advance clears it.
+func (db *DB) SetHistoryBackfillLastError(id int64, msg string, now time.Time) error {
+	if _, err := db.Exec(`UPDATE history_backfill SET last_error = ?, updated_at = ? WHERE id = ?`,
+		msg, planTime(now), id); err != nil {
+		return fmt.Errorf("history backfill: set last error: %w", err)
+	}
+	return nil
+}
+
 // HasActiveHistoryBackfill reports whether any row is running or paused.
 func (db *DB) HasActiveHistoryBackfill() (bool, error) {
 	var n int

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
@@ -49,6 +50,14 @@ func seedDigestTopicIdeasAt(t *testing.T, d *db.DB, channelID, title string, ide
 	var topicID int64
 	require.NoError(t, d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, digestID).Scan(&topicID))
 	return topicID
+}
+
+// backfillCfg is testCfg with the ideas registry on, so Backfill runs its
+// stage-2 consolidator (R17 skips it when ideas.enabled=false).
+func backfillCfg() *config.Config {
+	cfg := testCfg()
+	cfg.Ideas.Enabled = true
+	return cfg
 }
 
 // TestBackfill_DrainRespectsBoundAndRestoresAboveHighWaterMark covers three
@@ -91,7 +100,7 @@ func TestBackfill_DrainRespectsBoundAndRestoresAboveHighWaterMark(t *testing.T) 
 		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
 			"mentions":[{"source":"slack","ref":%q,"quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, midRef), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -143,7 +152,7 @@ func TestBackfill_SecondIdenticalRun_ProposedZero(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
 			"mentions":[{"source":"slack","ref":%q,"quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, ref), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result1, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -202,7 +211,7 @@ func TestBackfill_CoverageSkip_LeavesCoveredAccountsAlone(t *testing.T) {
 		"We should add a caching layer.", db.FormatJiraTime(from.Add(time.Hour)))
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -267,7 +276,7 @@ func TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins(t *testing.T) {
 			return `{"ops":[]}`, nil
 		}
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -319,7 +328,7 @@ func TestGB1_BackfillConsolidatesItsOwnStage1Output(t *testing.T) {
 		// The stage-1 gmail digest call.
 		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, gmailAcct), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -373,7 +382,7 @@ func TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps(t *testing.T) {
 		}
 		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-0"}],"decisions":[]}]}`, gmailAcct), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -427,7 +436,7 @@ func TestGB3_Backfill_RegeneratedOldDigestNotSweptIntoWindow(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
 			"mentions":[{"source":"slack","ref":%q,"quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, inWindowRef), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -453,7 +462,7 @@ func TestBackfill_EmptyWindow_CleanNoOpFloorsRestored(t *testing.T) {
 		t.Fatal("an empty window must never call the generator")
 		return "", nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	beforeDigest, beforeStream, beforeTranscript, err := d.GetIdeasFloors()
 	require.NoError(t, err)
@@ -488,7 +497,7 @@ func TestBackfill_ToDefaultsToNow(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
 			"mentions":[{"source":"slack","ref":%q,"quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, ref), nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	result, err := p.Backfill(context.Background(), from, time.Time{}, nil)
 	require.NoError(t, err)
@@ -506,7 +515,7 @@ func TestBackfill_ProgressCallback_ReportsEachCycle(t *testing.T) {
 	to := from.Add(30 * time.Minute)
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	var seen []int
 	result, err := p.Backfill(context.Background(), from, to, func(cycle int) {
@@ -573,7 +582,7 @@ func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		return `{"ops":[]}`, nil // clean no-op: advance floors, mint nothing
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	_, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -800,7 +809,7 @@ func TestBackfill_JiraSavedFloorLaterThanReached_SavedWins(t *testing.T) {
 		}
 		return `{"ops":[]}`, nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, backfillCfg(), gen, testLogger())
 
 	_, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
@@ -823,4 +832,40 @@ func TestMaxJiraFloor(t *testing.T) {
 	assert.Equal(t, newer, maxJiraFloor("", newer), "an uninitialized saved floor loses to a reached one")
 	assert.Equal(t, older, maxJiraFloor(older, ""), "an unreached account keeps its saved floor")
 	assert.Equal(t, "", maxJiraFloor("", ""))
+}
+
+// R17: with ideas.enabled=false a backfill still runs the stage-1 stream
+// digests (the caller gates those on streams.enabled) but never the stage-2
+// consolidator — a feature that is off spends nothing.
+func TestBackfill_IdeasDisabledSkipsConsolidator(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	gmailAcct := seedGoogleAccount(t, d, float64(now.Unix()))
+	setIdeasEmailFloorRaw(t, d, gmailAcct, float64(from.Add(-time.Hour).Unix()))
+	seedGmailMessageIdeas(t, d, gmailAcct, "m1", "thr-1", "a@example.com", "Ann", "Subj", "we should try X",
+		from.Add(time.Hour).UTC().Format(time.RFC3339))
+
+	stage1, stage2 := 0, 0
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== REGISTRY ===") {
+			stage2++
+			return `{"ops":[]}`, nil
+		}
+		stage1++
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, gmailAcct), nil
+	}}
+	cfg := testCfg()
+	cfg.Ideas.Enabled = false
+	p := New(d, cfg, gen, testLogger())
+
+	result, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	assert.Positive(t, stage1, "stage 1 still digests the window")
+	assert.Zero(t, stage2, "ideas off: no consolidator call")
+	assert.Zero(t, result.Proposed)
 }

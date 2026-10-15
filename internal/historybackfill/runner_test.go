@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +64,11 @@ func (s *fakeStore) SetHistoryBackfillStatus(id int64, status string, _ time.Tim
 
 func (s *fakeStore) SetHistoryBackfillWaiting(id int64, waiting string, _ time.Time) error {
 	s.row(id).Waiting = waiting
+	return nil
+}
+
+func (s *fakeStore) SetHistoryBackfillLastError(id int64, msg string, _ time.Time) error {
+	s.row(id).LastError = msg
 	return nil
 }
 
@@ -181,6 +188,32 @@ func TestRunner_ThreeFailuresSkipChunk(t *testing.T) {
 	assert.Equal(t, "running", st.rows[0].Status)
 	assert.Contains(t, buf.String(), "SKIPPING gmail account 1 chunk ["+
 		ts(28*day).Format(time.RFC3339)+", "+ts(30*day).Format(time.RFC3339)+") after 3 failures: process: boom")
+	assert.Equal(t, "skipped "+ts(28*day).Format(time.RFC3339)+".."+ts(30*day).Format(time.RFC3339)+": process: boom",
+		st.rows[0].LastError, "R23: the skip leaves a trace until the next successful chunk")
+
+	src.processErr = nil
+	require.NoError(t, r.Step(context.Background()))
+	assert.Empty(t, st.rows[0].LastError, "the next successful chunk clears the trace")
+}
+
+// R23: a source's ErrHold (a Slack rate limit) holds the chunk like the
+// budget deadline: no strike, no advance, the Step ends.
+func TestRunner_FetchHoldIsNotAFailure(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "imap", 1, 30*day, 0)}}
+	a := &fakeSource{kind: "slack", id: 1, fetchErr: fmt.Errorf("search: %w", ErrHold)}
+	b := &fakeSource{kind: "imap", id: 1}
+	r := newRunner(st, a, b)
+	var buf bytes.Buffer
+	r.Logger = log.New(&buf, "", 0)
+	require.NoError(t, r.Step(context.Background()))
+	assert.Equal(t, 0, a.count("process"))
+	assert.Equal(t, 0, st.failures)
+	assert.Equal(t, 0, st.rows[0].ChunkFailures)
+	assert.Empty(t, st.rows[0].LastError)
+	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
+	assert.Empty(t, b.calls, "the hold stops the Step")
+	assert.Equal(t, 1, strings.Count(buf.String(), "\n"), "one log line")
+	assert.Contains(t, buf.String(), "slack account 1")
 }
 
 func TestRunner_FetchFailureRecorded(t *testing.T) {
@@ -367,6 +400,30 @@ func TestRunner_SlackDoneHookNotCalled(t *testing.T) {
 			assert.Empty(t, *floors)
 		})
 	}
+}
+
+// R21: the hook runs under the Step's budget deadline, and not at all once
+// the rows used the budget up.
+func TestRunner_SlackDoneHookRunsUnderBudget(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{withStatus(running(1, "slack", 1, 0, 0), "done")}}
+	r := newRunner(st)
+	var hasDeadline bool
+	r.OnSlackDone = func(ctx context.Context, _ time.Time) error {
+		_, hasDeadline = ctx.Deadline()
+		return nil
+	}
+	require.NoError(t, r.Step(context.Background()))
+	assert.True(t, hasDeadline, "the hook gets the budget ctx")
+
+	st = &fakeStore{rows: []db.HistoryBackfill{
+		withStatus(running(1, "slack", 1, 0, 0), "done"),
+		running(2, "gmail", 1, 30*day, 0),
+	}}
+	r = newRunner(st, &fakeSource{kind: "gmail", id: 1, block: true})
+	r.Budget = 50 * time.Millisecond
+	floors := recordHook(r, nil)
+	require.NoError(t, r.Step(context.Background()))
+	assert.Empty(t, *floors, "the budget is spent: the hook waits for the next Step")
 }
 
 func TestRunner_SlackDoneHookSkippedOnCanceledContext(t *testing.T) {

@@ -399,3 +399,200 @@ func TestPhaseHistoryBackfill_NoRowsNoRun(t *testing.T) {
 	_, err := os.Stat(filepath.Join(d.config.WorkspaceDir(), "history_backfill_hooks_done.txt"))
 	assert.True(t, os.IsNotExist(err))
 }
+
+// R20: sync.backfill_days <= 0 pauses running backfills — the phase does
+// not run and the rows stay as they are; setting it back resumes them.
+func TestPhaseHistoryBackfill_BackfillDaysZeroPauses(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	_, err := database.StartHistoryBackfill("slack", 7, 0, 3*86400, time.Now()) // no such account: Gone once it runs
+	require.NoError(t, err)
+
+	d.config.Sync.BackfillDays = 0
+	d.phaseHistoryBackfill(context.Background())
+	assert.Empty(t, pipelineRunNames(t, database), "paused: no Step")
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	assert.Equal(t, "running", rows[0].Status, "the row is left as it is")
+
+	d.config.Sync.BackfillDays = 30
+	d.phaseHistoryBackfill(context.Background())
+	assert.Equal(t, []string{"history-backfill"}, pipelineRunNames(t, database), "resumed")
+}
+
+// R24: slack rows that are all off (none done) leave the hooks nothing to
+// do, so the phase is not due.
+func TestPhaseHistoryBackfill_OnlyOffSlackRowsNotDue(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	_, err := database.StartHistoryBackfill("slack", 1, 0, 100, time.Now())
+	require.NoError(t, err)
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.NoError(t, database.SetHistoryBackfillStatus(rows[0].ID, "off", time.Now()))
+
+	d.phaseHistoryBackfill(context.Background())
+	assert.Empty(t, pipelineRunNames(t, database))
+}
+
+// setNearLimit writes a plan status whose 5-hour limit is projected to hit.
+func setNearLimit(t *testing.T, database *db.DB, near bool) {
+	t.Helper()
+	state := "ok"
+	if near {
+		state = "will_hit"
+	}
+	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{State: "ok", UpdatedAt: time.Now(),
+		LimitsJSON: fmt.Sprintf(`[{"key":"session","group":"x","percent":90,"projection":{"state":%q}}]`, state)}))
+}
+
+// R21: the one-time hooks wait while the plan limit is near — no people
+// run, no stamp — and run once the gate opens.
+func TestOnSlackBackfillDone_HeldByPlanGate(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	wirePeopleBackfill(t, d, database)
+	floor := time.Now().AddDate(0, 0, -30)
+
+	setNearLimit(t, database, true)
+	require.NoError(t, d.onSlackBackfillDone(context.Background(), floor), "held, not failed")
+	assert.Empty(t, pipelineRunNames(t, database), "no people run near the limit")
+	_, err := os.Stat(d.historyBackfillHooksStampPath())
+	assert.True(t, os.IsNotExist(err), "held: no stamp")
+
+	setNearLimit(t, database, false)
+	require.NoError(t, d.onSlackBackfillDone(context.Background(), floor))
+	assert.Equal(t, []string{"people-backfill"}, pipelineRunNames(t, database))
+	_, err = os.Stat(d.historyBackfillHooksStampPath())
+	require.NoError(t, err)
+}
+
+// R23: an incomplete Slack search (rate limit) maps to the runner's hold.
+func TestHistoryBackfill_SlackSourceIncompleteIsHold(t *testing.T) {
+	assert.ErrorIs(t, slackFetchErr(fmt.Errorf("x: %w", sync.ErrBackfillIncomplete)), historybackfill.ErrHold)
+	other := fmt.Errorf("boom")
+	assert.Equal(t, other, slackFetchErr(other))
+	assert.NoError(t, slackFetchErr(nil))
+}
+
+// stageGen answers stage-1 stream digest calls and stage-2 consolidator
+// calls, counting each. acct is the seeded Gmail account the stage-1 idea
+// cites, so stage 1 writes a stream digest for stage 2 to read.
+type stageGen struct {
+	mu             gosync.Mutex
+	acct           int64
+	stage1, stage2 int
+}
+
+func (g *stageGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if strings.Contains(user, "=== REGISTRY ===") {
+		g.stage2++
+		return `{"ops":[]}`, &digest.Usage{}, "", nil
+	}
+	g.stage1++
+	return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, g.acct),
+		&digest.Usage{}, "", nil
+}
+
+// seedGmailForIdeas seeds one Gmail account with a message inside [from, to]
+// and an initialized ideas floor below it, and returns the account id.
+func seedGmailForIdeas(t *testing.T, database *db.DB, from time.Time) int64 {
+	t.Helper()
+	_, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'acme')`)
+	require.NoError(t, err)
+	res, err := database.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date, ideas_email_floor)
+		VALUES ('a@example.com', 'Test', 1, ?, ?)`, float64(time.Now().Unix()), float64(from.Add(-time.Hour).Unix()))
+	require.NoError(t, err)
+	acct, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+		VALUES (?, 'm1', 'thr-1', 'b@example.com', 'Ann', 'Subj', 'we should try X', ?)`,
+		acct, from.Add(time.Hour).UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+	return acct
+}
+
+// R17: the Gmail chunk's AI is gated per flag — streams.enabled gates the
+// stage-1 stream digests, ideas.enabled the consolidator.
+func TestHistoryBackfill_GmailSourceFlags(t *testing.T) {
+	cases := []struct {
+		name              string
+		streams, ideasOn  bool
+		wantStage1, want2 bool
+	}{
+		{"streams off", false, true, false, false},
+		{"ideas off", true, false, true, false},
+		{"both on", true, true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, database, _ := newBackfillDaemon(t)
+			d.config.Streams.Enabled = tc.streams
+			d.config.Ideas.Enabled = tc.ideasOn
+			gen := &stageGen{}
+			d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+			from := time.Now().AddDate(0, 0, -20)
+			gen.acct = seedGmailForIdeas(t, database, from)
+
+			complete, err := gmailSource{d: d}.Process(context.Background(), from, from.Add(48*time.Hour))
+			require.NoError(t, err)
+			assert.True(t, complete)
+			assert.Equal(t, tc.wantStage1, gen.stage1 > 0, "stage 1")
+			assert.Equal(t, tc.want2, gen.stage2 > 0, "stage 2")
+		})
+	}
+}
+
+// M4: N Gmail rows walking the same window pay for its ideas drain once.
+func TestHistoryBackfill_GmailWindowDrainedOnce(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Streams.Enabled = true
+	d.config.Ideas.Enabled = true
+	gen := &stageGen{}
+	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+	from := time.Now().AddDate(0, 0, -20)
+	to := from.Add(48 * time.Hour)
+	gen.acct = seedGmailForIdeas(t, database, from)
+
+	complete, err := gmailSource{d: d}.Process(context.Background(), from, to)
+	require.NoError(t, err)
+	require.True(t, complete)
+	calls := gen.stage1 + gen.stage2
+	require.Positive(t, calls)
+
+	complete, err = gmailSource{d: d}.Process(context.Background(), from, to) // a second account's row
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Equal(t, calls, gen.stage1+gen.stage2, "the window was already drained: no AI")
+}
+
+func TestUncoveredSpan(t *testing.T) {
+	at := func(h int) time.Time { return time.Unix(int64(h)*3600, 0).UTC() }
+	spans := []timeSpan{{at(10), at(20)}}
+	cases := []struct {
+		name             string
+		from, to         int
+		wantFrom, wantTo int
+		ok               bool
+	}{
+		{"inside", 12, 18, 0, 0, false},
+		{"same", 10, 20, 0, 0, false},
+		{"below", 0, 5, 0, 5, true},
+		{"overlaps top", 15, 25, 20, 25, true},
+		{"overlaps bottom", 5, 15, 5, 10, true},
+		{"spans it", 5, 25, 5, 25, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, to, ok := uncoveredSpan(spans, at(tc.from), at(tc.to))
+			assert.Equal(t, tc.ok, ok)
+			if ok {
+				assert.Equal(t, at(tc.wantFrom), f)
+				assert.Equal(t, at(tc.wantTo), to)
+			}
+		})
+	}
+	f, to, ok := uncoveredSpan([]timeSpan{{at(10), at(20)}, {at(20), at(30)}}, at(15), at(35))
+	assert.True(t, ok)
+	assert.Equal(t, at(30), f, "adjacent spans clip in turn")
+	assert.Equal(t, at(35), to)
+}

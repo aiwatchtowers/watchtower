@@ -77,3 +77,23 @@ func TestHistoryBackfill_FailuresCountAndActive(t *testing.T) {
 	active, _ = d.HasActiveHistoryBackfill()
 	assert.False(t, active)
 }
+
+// R23: a skipped chunk leaves a trace in last_error after the advance
+// cleared it; the next advance clears it again.
+func TestHistoryBackfill_SetLastErrorAfterAdvance(t *testing.T) {
+	d := OpenTestDB(t)
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	_, _ = d.StartHistoryBackfill("slack", 1, 0, 400000, now)
+	rows, _ := d.ListHistoryBackfills()
+	id := rows[0].ID
+
+	require.NoError(t, d.AdvanceHistoryBackfill(id, 300000, now))
+	require.NoError(t, d.SetHistoryBackfillLastError(id, "skipped a..b: boom", now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.Equal(t, "skipped a..b: boom", rows[0].LastError)
+	assert.Equal(t, 0, rows[0].ChunkFailures)
+
+	require.NoError(t, d.AdvanceHistoryBackfill(id, 200000, now))
+	rows, _ = d.ListHistoryBackfills()
+	assert.Empty(t, rows[0].LastError, "the next successful chunk clears the trace")
+}

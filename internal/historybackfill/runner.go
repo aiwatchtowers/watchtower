@@ -5,6 +5,7 @@ package historybackfill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -13,6 +14,11 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/planusage"
 )
+
+// ErrHold is what a Source returns (wrapped) for a transient condition such
+// as a Slack rate limit: the runner holds the chunk for a later cycle like a
+// passed budget deadline — no strike, no advance, the Step ends (R23).
+var ErrHold = errors.New("history backfill: hold the chunk")
 
 // Source fetches one account's raw data for a range. Process runs the AI
 // steps over that range. Auth reports whether the account can be used now.
@@ -39,6 +45,7 @@ type Store interface {
 	RecordHistoryBackfillFailure(id int64, msg string, now time.Time) (int, error)
 	SetHistoryBackfillStatus(id int64, status string, now time.Time) error
 	SetHistoryBackfillWaiting(id int64, waiting string, now time.Time) error
+	SetHistoryBackfillLastError(id int64, msg string, now time.Time) error
 	GetPlanUsageStatus() (*db.PlanUsageStatus, error)
 }
 
@@ -47,7 +54,7 @@ type Runner struct {
 	Store       Store
 	Sources     []Source                                         // the cycle's wired sources
 	Account     func(kind string, id int64) AccountState         // auth/removal lookup
-	OnSlackDone func(ctx context.Context, floor time.Time) error // each Step while every slack row is done/off; the caller owns run-once
+	OnSlackDone func(ctx context.Context, floor time.Time) error // each Step while every slack row is done/off, under the budget ctx; the caller owns run-once
 	Budget      time.Duration                                    // 5 min
 	Now         func() time.Time
 	Logger      *log.Logger
@@ -56,24 +63,25 @@ type Runner struct {
 const waitingPlanLimit = "plan_limit"
 
 // Step runs one cycle: at most one chunk per running source, within Budget.
+// Fetch, Process and the Slack-done hook all run under the Budget deadline.
 func (r *Runner) Step(ctx context.Context) error {
 	rows, err := r.Store.ListHistoryBackfills()
 	if err != nil {
 		return err
 	}
-	err = r.runRows(ctx, rows)
-	if ctx.Err() == nil {
-		r.slackDone(ctx, rows)
+	bctx, cancel := context.WithTimeout(ctx, r.Budget)
+	defer cancel()
+	err = r.runRows(ctx, bctx, rows)
+	if ctx.Err() == nil && bctx.Err() == nil {
+		r.slackDone(bctx, rows)
 	}
 	return err
 }
 
 // runRows walks the rows in id order, updating each row's in-memory copy as
-// it changes it. Fetch and Process run under the Budget deadline.
-func (r *Runner) runRows(ctx context.Context, rows []db.HistoryBackfill) error {
+// it changes it.
+func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) error {
 	start := r.Now()
-	bctx, cancel := context.WithTimeout(ctx, r.Budget)
-	defer cancel()
 	for i := range rows {
 		row := &rows[i]
 		if row.Status == "done" || row.Status == "off" {
@@ -154,8 +162,9 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
-// canceled context is a shutdown and a passed Budget deadline holds the chunk
-// for the next cycle: neither is a failure, and both stop the Step.
+// canceled context is a shutdown, and a passed Budget deadline or a source's
+// ErrHold holds the chunk for the next cycle: none is a failure, and all
+// stop the Step.
 func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS float64, from, to time.Time, err error) (stop bool, _ error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return true, ctxErr
@@ -164,6 +173,11 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	case <-bctx.Done(): // the Budget deadline passed: hold the chunk
 		return true, nil
 	default:
+	}
+	if errors.Is(err, ErrHold) {
+		r.logf("history backfill: %s account %d chunk [%s, %s) held for a later cycle: %v",
+			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+		return true, nil
 	}
 	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
 	if recErr != nil {
@@ -178,7 +192,17 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	}
 	r.logf("history backfill: SKIPPING %s account %d chunk [%s, %s) after %d failures: %v",
 		row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), n, err)
-	return false, r.advance(row, fromTS)
+	if advErr := r.advance(row, fromTS); advErr != nil {
+		return false, advErr
+	}
+	// The advance cleared last_error; keep a trace of the skip until the
+	// next successful chunk clears it (R23).
+	trace := fmt.Sprintf("skipped %s..%s: %v", from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	if setErr := r.Store.SetHistoryBackfillLastError(row.ID, trace, r.Now()); setErr != nil {
+		return false, setErr
+	}
+	row.LastError = trace
+	return false, nil
 }
 
 func (r *Runner) advance(row *db.HistoryBackfill, reachedTS float64) error {

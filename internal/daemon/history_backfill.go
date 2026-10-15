@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
 	"watchtower/internal/imap"
+	"watchtower/internal/planusage"
 	"watchtower/internal/sync"
 )
 
@@ -49,8 +51,11 @@ func (d *Daemon) startHistoryBackfill(kind string, accountID int64, from time.Ti
 // the ideas lock with the forward phases, so it never runs beside them. It
 // also runs once all rows are done until the one-time Slack-done hooks have
 // stamped (R14), so a hook failure is retried on later cycles.
+// sync.backfill_days <= 0 is the kill switch (R20): the phase does not run
+// and the rows stay as they are; setting it back resumes them. Memory keeps
+// waiting while a row is still running or paused.
 func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
-	if d.db == nil {
+	if d.db == nil || d.config.Sync.BackfillDays <= 0 {
 		return
 	}
 	if !d.historyBackfillDue() {
@@ -96,7 +101,9 @@ func (d *Daemon) historyBackfillUsage() pipelineRunStats {
 }
 
 // historyBackfillDue reports whether the phase has work: a running or paused
-// row, or slack rows whose one-time hooks have not stamped yet.
+// row, or a done slack row whose one-time hooks have not stamped yet (R24:
+// slack rows that are all off give the hooks nothing to do, as in the
+// runner's slackDone).
 func (d *Daemon) historyBackfillDue() bool {
 	active, err := d.db.HasActiveHistoryBackfill()
 	if err != nil {
@@ -115,7 +122,7 @@ func (d *Daemon) historyBackfillDue() bool {
 		return false
 	}
 	for _, row := range rows {
-		if row.SourceKind == "slack" {
+		if row.SourceKind == "slack" && row.Status == "done" {
 			return true
 		}
 	}
@@ -193,9 +200,18 @@ func (d *Daemon) historyBackfillHooksDone() bool {
 // is done: the mention backfill and a people-card run over [floor, now]. The
 // runner calls it on every Step while that holds; the stamp file makes it
 // run-once, and is written only when both succeeded, so a failure is retried
-// on the next Step. Neither touches lastPeople nor the attempt budgets.
+// on the next Step. Neither touches lastPeople nor the attempt budgets. The
+// runner calls it under its budget ctx, and while the Claude plan limit is
+// near the hooks wait — held, not failed, no stamp — for a later Step (R21).
 func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error {
 	if d.historyBackfillHooksDone() {
+		return nil
+	}
+	st, err := d.db.GetPlanUsageStatus()
+	if err != nil {
+		d.logger.Printf("history backfill: plan usage status: %v", err) // unreadable: does not block
+	} else if planusage.NearLimit(st) {
+		d.logger.Printf("history backfill: Claude plan limit near, the Slack-done follow-ups wait")
 		return nil
 	}
 	var firstErr error
@@ -247,6 +263,15 @@ func (s slackSource) AccountID() int64 { return s.o.AccountID() }
 
 func (s slackSource) Fetch(ctx context.Context, from, to time.Time) error {
 	_, err := s.o.BackfillSearch(ctx, from, to)
+	return slackFetchErr(err)
+}
+
+// slackFetchErr maps an incomplete search (a rate limit or partial pages) to
+// the runner's hold: transient, so no strike (R23).
+func slackFetchErr(err error) error {
+	if errors.Is(err, sync.ErrBackfillIncomplete) {
+		return fmt.Errorf("%w: %w", historybackfill.ErrHold, err)
+	}
 	return err
 }
 
@@ -267,7 +292,10 @@ func (s slackSource) Process(ctx context.Context, from, to time.Time) (bool, err
 }
 
 // gmailSource backfills one Google account's mail: range fetch, then the
-// ideas stream digests and consolidator over the chunk.
+// ideas stream digests (streams.enabled) and consolidator (ideas.enabled,
+// gated inside ideas.Backfill) over the chunk. ideas.Backfill drains a
+// window for every Google and Jira account at once, so a window already
+// drained by another Gmail row is not drained again (M4).
 type gmailSource struct {
 	s *gmail.Syncer
 	d *Daemon
@@ -286,6 +314,10 @@ func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, err
 	if d.ideasPipe == nil || !d.config.Streams.Enabled {
 		return true, nil
 	}
+	from, to, ok := uncoveredSpan(d.ideasDrained, from, to)
+	if !ok {
+		return true, nil // another Gmail row's chunk already drained this window
+	}
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon history backfill")
 	if errors.Is(err, ideas.ErrBackfillLockHeld) {
 		d.logger.Printf("history backfill: gmail chunk waits — %v", err)
@@ -298,7 +330,33 @@ func (g gmailSource) Process(ctx context.Context, from, to time.Time) (bool, err
 	if _, err := d.ideasPipe.Backfill(ctx, from, to, nil); err != nil {
 		return false, err
 	}
+	d.ideasDrained = append(d.ideasDrained, timeSpan{from, to})
 	return true, nil
+}
+
+// timeSpan is a [from, to) window.
+type timeSpan struct{ from, to time.Time }
+
+// uncoveredSpan clips [from, to) by the spans that cover either end of it
+// and reports what is left; ok is false when nothing is. A span strictly
+// inside the window leaves it whole: a hole in the middle is drained again
+// rather than split.
+func uncoveredSpan(spans []timeSpan, from, to time.Time) (time.Time, time.Time, bool) {
+	for changed := true; changed && from.Before(to); {
+		changed = false
+		for _, s := range spans {
+			switch {
+			case !s.from.After(from) && s.to.After(from): // covers the bottom end
+				from, changed = s.to, true
+			case s.from.Before(to) && !s.to.Before(to): // covers the top end
+				to, changed = s.from, true
+			}
+			if !from.Before(to) {
+				break
+			}
+		}
+	}
+	return from, to, from.Before(to)
 }
 
 // imapSource backfills one IMAP mailbox: fetch only (no AI step).

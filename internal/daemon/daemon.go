@@ -97,6 +97,7 @@ type Daemon struct {
 	briefingPipe        *briefing.Pipeline
 	inboxPipe           *inbox.Pipeline
 	ideasPipe           *ideas.Pipeline
+	ideasDrained        []timeSpan // windows the history backfill's ideas drain already covered (this process)
 	memoryPipe          *memory.Pipeline
 	memoryOpen          func() (*memory.Pipeline, error)
 	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
