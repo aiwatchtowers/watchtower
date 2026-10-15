@@ -92,7 +92,7 @@ func init() {
 	run.Flags().Int64Var(&autoFlags.RerunOf, "rerun-of", 0, "the run this one reruns")
 	runs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many runs (default 20)")
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
-	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, report)")
+	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, briefing, report)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
 		confirm, save, del, outputs, wake, auto)
 }
