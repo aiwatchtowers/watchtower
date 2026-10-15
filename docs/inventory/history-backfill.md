@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message; IMAP: first sync; Jira: no project watermark before a `Sync` that returned nil and left one), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
+**Observable:** A history backfill row is created only from a source's first sync (Slack: a completed search sync that began with no usable watermark, upper = the day after its exclusive `after:` date; Gmail: watermark 0 and the ID list succeeded with at least one message, upper = when that sync started; IMAP: first sync; Jira: no project watermark before a `Sync` that returned nil and left one), with floor = now − `sync.backfill_days`. A source that already had a cursor never gets one, `backfill_days <= 0` creates none, a first sync that already reached the floor creates none, and a repeated signal never creates a second row or resets an existing one (insert-if-absent). A rate-limited or partial first Slack sync is not a first sync.
 
 **Why locked:** Existing installs must be untouched, and nothing may re-digest a period that was already digested.
 
@@ -70,3 +70,4 @@
 - 2026-10-15: file created with 3 contracts (BACKFILL-01..03), introduced by the history backfill feature (spec `docs/superpowers/specs/2026-10-15-history-backfill-design.md`).
 - 2026-10-16 (final fix wave, controller rulings R19/R25): BACKFILL-01 sharpened, not weakened — the Slack upper is the day after the exclusive `after:` date (`TestFirstSyncFrom_FreshAccountCompletedRun` now expects D + 1 day), and a Gmail first sync needs a non-empty listing (new guard `TestSync_FirstSyncFromFalseOnEmptyList`; `TestSync_FirstSyncFrom` unchanged).
 - 2026-10-16 (R28/R29): Jira joins BACKFILL-01 as a source (`source_kind` 'jira', `jira.Syncer.FirstSyncFrom`, new guards `TestSync_FirstSyncFrom` in `internal/jira` and `TestPhaseJiraSync_FirstSyncStartsBackfill`). The Gmail backfill's AI step is now account-scoped (`ideas.BackfillEmail`); no contract weakened.
+- 2026-10-16 (R30): the Gmail upper is when the first sync started, so the first sync's own week is mined too; `TestSync_FirstSyncFrom` (gmail) now expects ≈ the sync start. Not weakened: the start conditions are unchanged.

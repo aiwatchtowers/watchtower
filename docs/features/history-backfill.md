@@ -11,7 +11,7 @@ A fresh install stays useful in minutes: the first daemon cycle is unchanged (Sl
 Only the first sync of a source, and only through the daemon path:
 
 - Slack: `Orchestrator.FirstSyncFrom()` (`internal/sync/search_sync.go`) is set by a completed search sync that began with no usable `search_last_date`; a rate-limited or partial first run is not a first sync. Its value is the first instant that sync covered: `after:D` is exclusive, so it is UTC midnight of D + 1 day (R19) — otherwise day D would be fetched but never digested or rolled up.
-- Gmail: `Syncer.FirstSyncFrom()` (`internal/gmail/sync.go`) — watermark 0 and the ID list call succeeded with at least one message; an empty inbox has nothing to backfill (R25).
+- Gmail: `Syncer.FirstSyncFrom()` (`internal/gmail/sync.go`) — watermark 0 and the ID list call succeeded with at least one message; an empty inbox has nothing to backfill (R25). Its value is when that first `Sync` started, not the start of its `newer_than` window (R30): the forward stream pass initializes the account's `ideas_email_floor` at the newest synced message (`initEmailFloor`) and never mines the first sync's own week, so the Gmail row covers `[first sync − backfill_days, first sync)` and its first chunks re-fetch that week (upserts; the own-date `synced_at` keeps it out of inbox detection) and mine it. The "first sync already reached the floor" guard therefore never fires for Gmail.
 - IMAP: `Syncer.FirstSyncFrom()` (`internal/imap/sync.go`).
 - Jira: `Syncer.FirstSyncFrom()` (`internal/jira/sync.go`) — no project of the account had a `jira_sync_state` watermark before the `Sync`, it returned nil, and at least one project has one after; the value is when that `Sync` started (the forward ideas Jira floor is initialized later, at the first stream pass). `phaseJiraSync` reads it after every `Sync` (R29).
 
@@ -95,7 +95,7 @@ Memory extraction is oldest-first behind a timestamp watermark, so it would skip
 - Memory for a source connected after the memory watermark has moved does not get its older month.
 - The hooks stamp is global: a Slack workspace connected later never gets the mentions/people hooks, and the stamp is written even when inbox and people are both off.
 - Only the daemon path starts a backfill; the first sync of a foreground `watchtower sync` does not (a later daemon cycle sees a cursor and no first sync).
-- Gmail mail inside the first sync's own window (the newest `gmail.initial_history_days`) is not stage-1 mined: the forward stream pass initializes the account's `ideas_email_floor` at the newest synced message before the backfill phase runs (`initEmailFloor`, pre-existing), and the backfill only walks below the first sync's window.
+- Jira: issues updated between the first `Sync`'s start (the row's upper) and the moment the forward stream pass initializes the account's `ideas_jira_floor` later in the same cycle (seconds to minutes) are mined by neither (R31).
 - A Jira first sync counts once any project wrote a watermark; a project that failed it and syncs later has its older issues mined only where the row has not walked yet.
 - An inbox empty at first sync starts no backfill (R25). Its watermark stays 0, so the first sync that lists mail later counts as the first sync and starts one.
 - Re-enabling a source whose row turned `off` (Slack account re-enabled, Gmail switched back on) does not resume it; `off` is final. IMAP ends only on deleting the account.

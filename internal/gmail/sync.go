@@ -22,7 +22,7 @@ type Syncer struct {
 	logger    *log.Logger
 	accountID int64
 
-	// firstSyncFrom is the window start of the last Sync when it was the
+	// firstSyncFrom is when the last Sync started (listing), if it was the
 	// account's first (watermark 0) and its ID list succeeded; zero
 	// otherwise. Sync resets it; the daemon reads it via FirstSyncFrom to
 	// start a history backfill.
@@ -33,8 +33,8 @@ type Syncer struct {
 func (s *Syncer) AccountID() int64 { return s.accountID }
 
 // FirstSyncFrom reports whether the last Sync was the account's first
-// (watermark 0, ID list succeeded and non-empty) and, if so, the start of
-// its newer_than window.
+// (watermark 0, ID list succeeded and non-empty) and, if so, when it started
+// (R30: the backfill also covers the first sync's own window).
 func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
 }
@@ -95,7 +95,10 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 	s.recordAuthResult(ctx, nil)
 	if watermark == 0 && len(ids) > 0 { // an empty inbox has nothing to backfill (R25)
-		s.firstSyncFrom = listedAt.AddDate(0, 0, -days)
+		// R30: the backfill starts at this Sync, not at its newer_than window
+		// start: the forward ideas floor is initialized at the newest synced
+		// message (initEmailFloor), so the backfill must mine this window too.
+		s.firstSyncFrom = listedAt
 	}
 
 	// Gmail returns newest-first; reverse so we process oldest-first. This

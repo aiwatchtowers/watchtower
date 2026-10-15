@@ -614,6 +614,42 @@ func TestHistoryBackfill_TwoGmailRowsOneStep(t *testing.T) {
 	}
 }
 
+// R30: a fresh Gmail account's first-sync window — which the forward stream
+// pass skipped by initializing the ideas floor at the newest synced message
+// — is stream-digested by the backfill's first chunk.
+func TestHistoryBackfill_GmailFirstSyncWeekIsMined(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.config.Gmail.Enabled = true
+	d.config.Streams.Enabled = true
+	gen := &stageGen{}
+	d.SetIdeasPipeline(ideas.New(database, d.config, gen, d.logger))
+
+	acct := seedGmailAccountForIdeas(t, database, "a@example.com")
+	newest := time.Now().Add(-24 * time.Hour)
+	seedGmailMail(t, database, acct, "m1", "first sync week mail", newest)
+	// The forward pass's initEmailFloor: the floor sits at the newest message.
+	_, err := database.Exec(`UPDATE google_accounts SET gmail_last_internal_date = ?, ideas_email_floor = ? WHERE id = ?`,
+		float64(newest.Unix()), float64(newest.Unix()), acct)
+	require.NoError(t, err)
+
+	syncStart := time.Now() // what gmail.Syncer.FirstSyncFrom now reports
+	d.startHistoryBackfill("gmail", acct, syncStart)
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "upper = sync start is never below the floor: the row starts")
+
+	src := fetchingGmail{gmailSource{id: acct, d: d}, func() {}}
+	r := &historybackfill.Runner{
+		Store: database, Sources: []historybackfill.Source{src}, Account: d.accountState,
+		Budget: time.Minute, Now: time.Now, Logger: d.logger,
+	}
+	require.NoError(t, r.Step(context.Background()))
+	assert.True(t, gen.saw("first sync week mail"), "the first-sync window is mined by the first chunk")
+	floor, err := database.IdeasEmailFloor(acct)
+	require.NoError(t, err)
+	assert.Equal(t, float64(newest.Unix()), floor, "the forward floor is restored")
+}
+
 func seedJiraIssueForIdeas(t *testing.T, database *db.DB, acct int64, key, desc string, updated time.Time) {
 	t.Helper()
 	u := db.FormatJiraTime(updated)

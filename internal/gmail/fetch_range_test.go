@@ -136,7 +136,7 @@ func TestSync_FirstSyncFrom(t *testing.T) {
 	if !ok {
 		t.Fatal("a successful list with watermark 0 is a first sync, even when nothing was stored")
 	}
-	want := before.AddDate(0, 0, -s.cfg.Gmail.InitialHistoryDays)
+	want := before // R30: when the first Sync started, so the backfill covers its window too
 	if d := from.Sub(want); d < -time.Second || d > time.Second {
 		t.Fatalf("FirstSyncFrom = %v, want ≈ %v", from, want)
 	}
