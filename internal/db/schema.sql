@@ -2608,3 +2608,55 @@ SELECT session_uuid,
   SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
   SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
 FROM agent_log_events GROUP BY session_uuid;
+
+-- Diff reviewer rounds (00117, spec 2026-10-16-workbench-diff-reviewer-design.md)
+CREATE TABLE IF NOT EXISTS review_rounds (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+  source         TEXT NOT NULL DEFAULT 'session' CHECK (source IN ('session','pr')),
+  folder_root    TEXT NOT NULL,
+  base_sha       TEXT NOT NULL,
+  base_label     TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL, -- snapshot tree the round reviews; moved by Refresh while open
+  prev_round_id  INTEGER REFERENCES review_rounds(id) ON DELETE SET NULL, -- the round this one follows up
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','sent','delivered')), -- open -> sent (owner sends) -> delivered (agent read it via get_review)
+  mode           TEXT NOT NULL DEFAULT 'quick' CHECK (mode IN ('quick','deep')),
+  phase          TEXT NOT NULL DEFAULT '',
+  chapter_key    TEXT NOT NULL DEFAULT '',
+  active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  sent_at        TEXT,
+  delivered_at   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
+
+CREATE TABLE IF NOT EXISTS review_comments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path           TEXT, -- NULL = design comment (Plan 2)
+  side           TEXT NOT NULL DEFAULT 'new' CHECK (side IN ('old','new')),
+  start_line     INTEGER NOT NULL DEFAULT 0,
+  end_line       INTEGER NOT NULL DEFAULT 0,
+  quote          TEXT NOT NULL DEFAULT '',
+  quote_prefix   TEXT NOT NULL DEFAULT '',
+  quote_suffix   TEXT NOT NULL DEFAULT '',
+  tree_sha       TEXT NOT NULL DEFAULT '',
+  lens           TEXT NOT NULL DEFAULT '',
+  body           TEXT NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','carried','resolved','outdated')), -- draft/carried are sent with the round; outdated never is
+  carried_from   INTEGER REFERENCES review_comments(id) ON DELETE SET NULL, -- the earlier-round comment this one was carried from
+  agent_reply    TEXT NOT NULL DEFAULT '',
+  agent_reply_at TEXT,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id);
+
+CREATE TABLE IF NOT EXISTS review_viewed (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,
+  content_sha TEXT NOT NULL, -- file content hash when marked Viewed
+  PRIMARY KEY (round_id, path)
+);
