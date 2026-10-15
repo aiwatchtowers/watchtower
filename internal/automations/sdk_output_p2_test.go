@@ -20,9 +20,10 @@ const outputRecipe = "---\nname: New mail summary\ntrigger:\n  manual: true\nper
 
 // slackArgs is what the fake send_slack_message write tool takes.
 type slackArgs struct {
-	Channel string `json:"channel"`
-	Text    string `json:"text"`
-	Reason  string `json:"reason"`
+	AccountID int64  `json:"account_id"`
+	Channel   string `json:"channel"`
+	Text      string `json:"text"`
+	Reason    string `json:"reason"`
 }
 
 // fakeSlackSend is an External send_slack_message stand-in on the automation
@@ -64,8 +65,14 @@ func newOutputFixtureSlackOn(t *testing.T, surfaces ...string) *writeFixture {
 		}
 		return w.reg
 	}})
+	if _, err := w.d.Exec(`INSERT INTO slack_accounts (id, label, team_domain) VALUES (1, 'work', 'acme-work'), (2, 'home', 'acme-home')`); err != nil {
+		t.Fatalf("seeding slack accounts: %v", err)
+	}
 	return w
 }
+
+// slackWork is the permission that covers the fixture's work account (id 1).
+var slackWork = []string{"slack:write@work"}
 
 // seedOutput indexes, confirms and enables slug with perms, outputs and script.
 func (w *writeFixture) seedOutput(t *testing.T, slug string, perms []string, outputs, script string) db.Automation {
@@ -162,23 +169,27 @@ func TestOutput_TargetGateIsOutputsNotTool(t *testing.T) {
 	}
 }
 
-const slackOutputScript = `return JSON.stringify(output.slack({channel: "#general", text: "Daily mail summary"}))`
+const slackOutputScript = `return JSON.stringify(output.slack({account_id: 1, channel: "#general", text: "Daily mail summary"}))`
 
 func TestOutput_SlackIsAProposalUnlessGranted(t *testing.T) {
 	t.Run("no grant", func(t *testing.T) {
 		w := newOutputFixture(t)
-		r := w.runToEnd(t, w.seedOutput(t, "slack", []string{"llm:light"}, "slack", slackOutputScript))
+		r := w.runToEnd(t, w.seedOutput(t, "slack", slackWork, "slack", slackOutputScript))
 		row := w.onlyAction(t)
 		if row.Tool != "send_slack_message" || row.Status != "pending" || row.TrustAtCreate != "ask" {
 			t.Fatalf("row = %+v; want a pending send_slack_message, ask", row)
 		}
 		mustContain(t, "send_slack_message args", row.ArgsJSON, `"channel":"#general"`)
 		mustContain(t, "send_slack_message args", row.ArgsJSON, `"text":"Daily mail summary"`)
-		wantStep(t, w.outputStep(t, r.ID, "slack"), automations.StepProposed, row.ID, false)
+		s := w.outputStep(t, r.ID, "slack")
+		wantStep(t, s, automations.StepProposed, row.ID, false)
+		if s.Permission != "output:slack, slack:write@work" {
+			t.Fatalf("step permission = %q; want output:slack, slack:write@work", s.Permission)
+		}
 	})
 	t.Run("active grant", func(t *testing.T) {
 		w := newOutputFixture(t)
-		a := w.seedOutput(t, "slack", []string{"llm:light"}, "slack", slackOutputScript)
+		a := w.seedOutput(t, "slack", slackWork, "slack", slackOutputScript)
 		if err := w.d.SetAutomationToolGrant(a.ID, "send_slack_message", a.ApprovalHash, exStart); err != nil {
 			t.Fatal(err)
 		}
@@ -197,10 +208,10 @@ func TestOutput_SlackIsAProposalUnlessGranted(t *testing.T) {
 
 func TestOutput_P2KindsDryRun(t *testing.T) {
 	w := newOutputFixture(t)
-	a := w.seedOutput(t, "dry", []string{"llm:light"}, "briefing, target, slack", `return JSON.stringify([
+	a := w.seedOutput(t, "dry", slackWork, "briefing, target, slack", `return JSON.stringify([
 		output.briefing({title: "Mail", body: "3 new"}),
 		output.target({text: "Reply to acme"}),
-		output.slack({channel: "#general", text: "hi"})])`)
+		output.slack({account_id: 1, channel: "#general", text: "hi"})])`)
 	id := w.enqueue(t, a, db.TriggerDryRun)
 	r, err := w.e.ExecuteInline(context.Background(), id)
 	if err != nil || r.Status != db.RunSucceeded {
@@ -229,7 +240,7 @@ func TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable(t *testing.T) {
 	for _, trigger := range []string{db.TriggerManual, db.TriggerDryRun} {
 		t.Run(trigger, func(t *testing.T) {
 			w := newOutputFixtureSlackOn(t, "main")
-			a := w.seedOutput(t, "off-surface", []string{"llm:light"}, "slack",
+			a := w.seedOutput(t, "off-surface", slackWork, "slack",
 				`try { output.slack({channel: "#general", text: "hi"}); return "called" } catch (e) { return e.name }`)
 			id := w.enqueue(t, a, trigger)
 			if trigger == db.TriggerDryRun {
@@ -244,6 +255,36 @@ func TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable(t *testing.T) {
 			}
 			if rows := w.actions(t); len(rows) != 0 {
 				t.Fatalf("agent_actions = %+v; want none", rows)
+			}
+		})
+	}
+}
+
+func TestOutput_SlackNeedsSlackWriteScope(t *testing.T) {
+	const try = `try { return JSON.stringify(output.slack(ARGS)) } catch (e) { return e.name + "|" + e.needed }`
+	cases := []struct {
+		name  string
+		perms []string
+		args  string
+		want  string // the summary prefix
+	}{
+		{"outputs slack without slack:write", []string{"llm:light"}, `{channel: "#general", text: "hi"}`, "PermissionDenied|slack:write@*"},
+		{"slack:write@work, work account", slackWork, `{account_id: 1, channel: "#general", text: "hi"}`, `{"id":`},
+		{"slack:write@work, home account", slackWork, `{account_id: 2, channel: "#general", text: "hi"}`, "PermissionDenied|slack:write@home"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newOutputFixture(t)
+			r := w.runToEnd(t, w.seedOutput(t, "scope", c.perms, "slack", strings.Replace(try, "ARGS", c.args, 1)))
+			if !strings.HasPrefix(r.Summary, c.want) {
+				t.Fatalf("summary = %q; want prefix %q", r.Summary, c.want)
+			}
+			wantRows := 0
+			if !strings.HasPrefix(c.want, "PermissionDenied") {
+				wantRows = 1
+			}
+			if rows := w.actions(t); len(rows) != wantRows {
+				t.Fatalf("agent_actions = %+v; want %d rows", rows, wantRows)
 			}
 		})
 	}

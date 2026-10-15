@@ -2,10 +2,12 @@ package automations
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -27,7 +29,8 @@ func registerP2OutputKinds(m *OutputMod, b Backends) {
 
 // toolOutput is output.<kind>(args) for a kind that is sugar for a registry
 // write (spec §5): outputs: [<kind>] is the gate (the manifest needs no
-// tool:<tool> entry), then the call takes tool()'s write path — dry run,
+// tool:<tool> entry; output.slack also needs slack:write over the call's
+// account, D28), then the call takes tool()'s write path — dry run,
 // default reason, Registry.Propose with the run's binding — so trust and an
 // auto grant on <tool> apply as to a tool() write. It takes exactly one
 // argument and never waits.
@@ -49,17 +52,38 @@ func toolOutput(b Backends, kind, tool string) SDKFunc {
 			if err != nil {
 				return nil, err
 			}
-			if b.Registry == nil {
-				return nil, notAvailable("no tool registry is configured")
-			}
-			// Checked before writeTool so a dry run refuses what a live run would.
-			t, ok := b.Registry.Get(tool)
-			if !ok || !t.VisibleOn(tools.AutomationSurface) {
-				return nil, notAvailable(fn + "(): the " + tool + " tool is not available to automations")
+			t, err := admitOutputTool(env, b, step, m, kind, tool, args)
+			if err != nil {
+				return nil, err
 			}
 			return writeTool(env, b, step, t, args, false)
 		})
 	}
+}
+
+// admitOutputTool resolves tool and runs the manifest's full shortcut check
+// (AllowOutputTool: for output.slack also slack:write over the call's
+// account, D28), recording the admitting entries on the step. It runs before
+// writeTool, so a dry run refuses what a live run would. A denial whose scope
+// lookup failed keeps its Cause on the step's error, as for tool().
+func admitOutputTool(env *Env, b Backends, step *Step, m *Manifest, kind, tool string, args json.RawMessage) (*tools.Tool, error) {
+	if b.Registry == nil {
+		return nil, notAvailable("no tool registry is configured")
+	}
+	t, ok := b.Registry.Get(tool)
+	if !ok || !t.VisibleOn(tools.AutomationSurface) {
+		return nil, notAvailable("output." + kind + "(): the " + tool + " tool is not available to automations")
+	}
+	entry, err := m.AllowOutputTool(env.Ctx, b.DB, kind, t, args)
+	if err != nil {
+		var pd *PermissionDenied
+		if errors.As(err, &pd) && pd.Cause != nil {
+			step.Finish(db.StepFinish{Status: StepDenied, Permission: pd.Needed, Error: pd.Error()})
+		}
+		return nil, err
+	}
+	step.SetPermission(entry)
+	return t, nil
 }
 
 // toolOutputArgs validates the one object argument of a registry-backed
