@@ -24,6 +24,19 @@ package struct EmptyStateCopy: Equatable, Sendable {
     }
 }
 
+/// A Getting ready card's text: the feature's name and what it makes.
+package struct FeatureCardCopy: Equatable, Sendable {
+    /// "Digests"
+    package let title: String
+    /// One sentence; any hour is already filled in.
+    package let whatItIs: String
+
+    package init(title: String, whatItIs: String) {
+        self.title = title
+        self.whatItIs = whatItIs
+    }
+}
+
 package enum EmptyStateAction: Equatable, Sendable {
     /// Shown only when readiness is `.off`.
     case turnOn(featureID: String)
@@ -124,4 +137,59 @@ package enum EmptyStateCopyTable {
             landsHere: "Activity across channels.",
             feature: .slackSync, primaryAction: nil)
     ]
+}
+
+extension EmptyStateCopyTable {
+    /// The Getting ready card text per tracked feature. Where a tab's row shows
+    /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
+    /// four features with no tab row of their own (slackSync, streamDigests,
+    /// knowledgeIndex, jira) have their own sentence here.
+    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int, dayPlanHour: Int) -> FeatureCardCopy {
+        let title = cardTitle(feature)
+        let tab: String
+        switch feature {
+        case .slackSync:
+            return FeatureCardCopy(
+                title: title,
+                whatItIs: "Your Slack channels and messages, synced so everything else has something to read.")
+        case .streamDigests:
+            return FeatureCardCopy(title: title, whatItIs: "Summaries of what moved in Jira and mail.")
+        case .knowledgeIndex:
+            return FeatureCardCopy(
+                title: title,
+                whatItIs: "A search index over your messages, documents and notes for the assistant.")
+        case .jira:
+            return FeatureCardCopy(title: title, whatItIs: "Your Jira boards, issues and releases.")
+        case .digests: tab = "digests"
+        case .tracks: tab = "tracks"
+        case .peopleCards: tab = "people"
+        case .briefing: tab = "briefings"
+        case .dayPlan: tab = "dayPlan"
+        case .ideas: tab = "ideas"
+        case .memory: tab = "memory"
+        case .inbox: tab = "inbox"
+        case .calendar: tab = "calendar"
+        }
+        // Every tab above has a row in `rows`.
+        let landsHere = copy(for: tab, briefingHour: briefingHour, dayPlanHour: dayPlanHour)?.landsHere ?? ""
+        return FeatureCardCopy(title: title, whatItIs: landsHere)
+    }
+
+    private static func cardTitle(_ feature: ReadinessFeature) -> String {
+        switch feature {
+        case .slackSync: "Slack sync"
+        case .digests: "Digests"
+        case .streamDigests: "Stream digests"
+        case .tracks: "Tracks"
+        case .peopleCards: "People cards"
+        case .briefing: "Briefing"
+        case .dayPlan: "Day plan"
+        case .ideas: "Ideas"
+        case .memory: "Memory"
+        case .inbox: "Inbox"
+        case .knowledgeIndex: "Knowledge search"
+        case .calendar: "Calendar"
+        case .jira: "Jira"
+        }
+    }
 }
