@@ -7,6 +7,7 @@ struct ArtifactPanelView: View {
     let slackLinks: SlackLinkResolver?
     /// No answer is streaming (the chat refuses a second turn anyway).
     let canSendComments: Bool
+    var expand: ChatInspectorExpandButton?
     /// "Send N comments" — the chat sends them as the owner's message.
     let onSendComments: () -> Void
     var onClose: () -> Void
@@ -62,6 +63,7 @@ struct ArtifactPanelView: View {
                 .labelsHidden()
                 .frame(width: 100)
             }
+            if let expand { expand }
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
                 .help("Close")

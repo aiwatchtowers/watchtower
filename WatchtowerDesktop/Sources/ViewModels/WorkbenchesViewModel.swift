@@ -59,6 +59,8 @@ final class WorkbenchesViewModel {
     /// Why the last "Archive Closed Targets After" write failed, per
     /// workbench; the next successful write clears it.
     private(set) var archiveSettingErrors: [Int64: String] = [:]
+    /// A failed save of the worktree setup command, per workbench.
+    private(set) var worktreeSetupErrors: [Int64: String] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -123,6 +125,9 @@ final class WorkbenchesViewModel {
     /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
     /// Up… apply), per session: a view going away never cancels one.
     @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The automatic cleanups of finished placed sessions whose agent
+    /// exited (session worktrees spec §9), per session; gone when done.
+    @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
     /// The sessions whose Clean Up… sheet is on screen: an apply ending
     /// while it is not shows its failure on the page instead.
     @ObservationIgnored var openCleanupSheets: Set<Int64> = []
@@ -245,6 +250,18 @@ final class WorkbenchesViewModel {
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    /// Per workbench, one line about where its last new session started
+    /// when that was not the plain choice (spec 2026-10-14-session-worktrees
+    /// §7: "Started in the folder: …", a `base_dirty` or worktree warning);
+    /// nil once a start had nothing to say. Shown above the sessions panel.
+    var startNotice: [Int64: String] = [:]
+    /// Per workbench, the last start's placement turn (decide, make the
+    /// worktree, insert the row): the next start awaits it before deciding,
+    /// so two starts at one moment do not both see the folder free (§4).
+    @ObservationIgnored var placementTurns: [Int64: Task<Void, Never>] = [:]
+    /// Rows a start inserted whose launch has not returned yet, by id: they
+    /// count as live for the next start's decision.
+    @ObservationIgnored var startingRows: [Int64: TerminalSession] = [:]
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
@@ -329,6 +346,10 @@ final class WorkbenchesViewModel {
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
+    /// The worktrees the last delete kept because work was in them
+    /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
+    /// until the owner dismisses it or the next delete replaces it.
+    var deleteNotice: String?
     /// The last board drift check per workbench (PROJ-07, `workbench check`).
     /// Kept here, not on the board pane, so a result survives navigation.
     private(set) var drift: [Int64: WorkbenchDriftReport] = [:]
@@ -432,7 +453,9 @@ final class WorkbenchesViewModel {
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
-        terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
+        terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
+            self?.sessionExited(id, code: code, closedByApp: closedByApp)
+        }
         terminalCenter?.onPathLink = { [weak self] workbenchID, sessionID, location in
             Task { await self?.openTerminalLink(location, workbenchID: workbenchID, sessionID: sessionID) }
         }
@@ -562,8 +585,8 @@ final class WorkbenchesViewModel {
     /// removes the rows and the folder install, then the list reloads. A CLI
     /// failure keeps the project listed and reports the CLI's error. A folder
     /// cleanup failure (`removal_ok == false`) still deletes the project and
-    /// leaves a non-blocking warning in `errorMessage`. A second call while one
-    /// runs is refused.
+    /// leaves a non-blocking warning in `errorMessage`; kept worktrees go to
+    /// `deleteNotice`. A second call while one runs is refused.
     @discardableResult
     func deleteWorkbench(_ id: Int64) async -> Bool {
         guard deletingWorkbenchID == nil else { return false }
@@ -587,9 +610,8 @@ final class WorkbenchesViewModel {
         onWorkbenchRemoved?(id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
-        if let warning = result.cleanupWarning {
-            errorMessage = warning
-        }
+        if let warning = result.cleanupWarning { errorMessage = warning }
+        deleteNotice = result.keptWorktreesNotice
         if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         await reload()
         return true
@@ -904,6 +926,22 @@ final class WorkbenchesViewModel {
             return
         }
         await reload()
+    }
+
+    /// The header menu's "Worktree Setup Command…" (board #229): the command
+    /// a new session's worktree runs before the agent starts; empty = none.
+    /// Returns whether it was saved, so the sheet stays open on a failure.
+    @discardableResult
+    func setWorktreeSetup(_ command: String, projectID: Int64) async -> Bool {
+        do {
+            try await dbPool.write { try WorkbenchQueries.setWorktreeSetup($0, projectID: projectID, command: command) }
+            worktreeSetupErrors[projectID] = nil
+        } catch {
+            worktreeSetupErrors[projectID] = "Could not save the worktree setup command: \(error.localizedDescription)"
+            return false
+        }
+        await reload()
+        return true
     }
 
     /// The header menu's "Archive Closed Targets Now" (board #415): every

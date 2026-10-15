@@ -30,6 +30,9 @@ package enum TerminalSessionQueries {
         /// The agent's own session id. Required (non-empty) for `.claude`;
         /// nil for a shell, and for a new codex row (Codex mints its id).
         package var claudeSessionID: String?
+        /// Set when Watchtower created the session's worktree (00114).
+        package var worktreeBranch: String?
+        package var worktreeBase: String?
 
         package init(
             projectID: Int64?,
@@ -37,7 +40,9 @@ package enum TerminalSessionQueries {
             title: String,
             targetID: Int64? = nil,
             folderPath: String,
-            claudeSessionID: String? = nil
+            claudeSessionID: String? = nil,
+            worktreeBranch: String? = nil,
+            worktreeBase: String? = nil
         ) {
             self.projectID = projectID
             self.kind = kind
@@ -45,6 +50,8 @@ package enum TerminalSessionQueries {
             self.targetID = targetID
             self.folderPath = folderPath
             self.claudeSessionID = claudeSessionID
+            self.worktreeBranch = worktreeBranch
+            self.worktreeBase = worktreeBase
         }
     }
 
@@ -57,10 +64,14 @@ package enum TerminalSessionQueries {
         try db.execute(
             sql: """
                 INSERT INTO terminal_sessions
-                    (project_id, kind, title, target_id, folder_path, claude_session_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (project_id, kind, title, target_id, folder_path, claude_session_id,
+                     worktree_branch, worktree_base)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath, new.claudeSessionID]
+            arguments: [
+                new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
+                new.claudeSessionID, new.worktreeBranch, new.worktreeBase
+            ]
         )
         let id = db.lastInsertedRowID
         guard let row = try fetch(db, id: id) else { throw TerminalSessionQueryError.notFound(id) }
@@ -69,6 +80,15 @@ package enum TerminalSessionQueries {
 
     package static func fetch(_ db: Database, id: Int64) throws -> TerminalSession? {
         try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
+    }
+
+    /// Whether row `id`'s agent called `finish_session` and has not worked
+    /// since (`finished_at` set; Go clears it on any `working` write). False
+    /// for a missing row. Read-only: Go writes the column.
+    package static func isFinished(_ db: Database, id: Int64) throws -> Bool {
+        try Bool.fetchOne(
+            db, sql: "SELECT finished_at IS NOT NULL FROM terminal_sessions WHERE id = ?", arguments: [id]
+        ) ?? false
     }
 
     package static func fetchForWorkbench(_ db: Database, projectID: Int64) throws -> [TerminalSession] {

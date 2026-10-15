@@ -217,6 +217,27 @@ final class WorkbenchCLITests: XCTestCase {
         )
     }
 
+    /// `kept_worktrees` (board #229): worktrees with work in them that the
+    /// delete left on disk; an envelope without the key keeps none.
+    func testDeleteDecodesKeptWorktrees() async throws {
+        let runner = FakeCLIRunner(stdout: Data(
+            #"{"id":3,"deleted":true,"removal_ok":true,"removal_error":"","kept_worktrees":["/tmp/a/wt1","/tmp/a/wt2"]}"#.utf8
+        ))
+        let result = try await WorkbenchCLI(runner: runner).delete(projectID: 3)
+        XCTAssertEqual(result.keptWorktrees, ["/tmp/a/wt1", "/tmp/a/wt2"])
+        XCTAssertEqual(result.keptWorktreesNotice, "Kept 2 worktrees with work in them: /tmp/a/wt1, /tmp/a/wt2")
+        XCTAssertEqual(
+            WorkbenchDeleted(id: 3, deleted: true, removalOK: true, removalError: "", keptWorktrees: ["/tmp/a/wt1"])
+                .keptWorktreesNotice,
+            "Kept 1 worktree with work in it: /tmp/a/wt1"
+        )
+        let bare = try JSONDecoder().decode(
+            WorkbenchDeleted.self, from: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8)
+        )
+        XCTAssertEqual(bare.keptWorktrees, [])
+        XCTAssertNil(bare.keptWorktreesNotice)
+    }
+
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)
@@ -335,6 +356,29 @@ final class WorkbenchCLITests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("already bound"))
         }
+    }
+
+    // MARK: - workbench worktree
+
+    func testWorktreeCreateEnsureForgetArgumentsAndDecoding() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"workbench_id":3,"created":true,"path":"/tmp/acme/wt","cwd":"/tmp/acme/wt/app","branch":"wt/a","base":"abc"}"#.utf8)),
+            .success(Data(#"{"workbench_id":3,"created":false,"path":"/tmp/acme/wt","branch":"wt/a","refused":"unborn"}"#.utf8)),
+            .success(Data(#"{"workbench_id":3,"forgot":true}"#.utf8))
+        ])
+        let cli = WorkbenchCLI(runner: runner)
+        let created = try await cli.worktreeCreate(projectID: 3, name: "a")
+        let ensured = try await cli.worktreeEnsure(projectID: 3, path: "/tmp/acme/wt", branch: "wt/a")
+        let forgot = try await cli.worktreeForget(projectID: 3, path: "/tmp/acme/wt")
+        XCTAssertEqual(runner.invocations, [
+            ["workbench", "worktree", "create", "--workbench", "3", "--name", "a", "--json"],
+            ["workbench", "worktree", "ensure", "--workbench", "3", "--path", "/tmp/acme/wt", "--branch", "wt/a", "--json"],
+            ["workbench", "worktree", "forget", "--workbench", "3", "--path", "/tmp/acme/wt", "--json"]
+        ])
+        XCTAssertTrue(created.created)
+        XCTAssertEqual(created.cwd, "/tmp/acme/wt/app")
+        XCTAssertEqual(ensured.refused, "unborn")
+        XCTAssertTrue(forgot.forgot)
     }
 
     // MARK: - workbench git (#233)

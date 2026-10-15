@@ -126,12 +126,23 @@ final class SessionCleanupCenter {
     /// the plan is for the Delete dialog, which closes the session's
     /// terminal before it applies — the session's own id is then not passed
     /// as live, or Go would keep its worktree for "a session works in it".
-    /// Ignored while the scope applies.
-    func planCleanup(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) async {
+    /// Ignored while the scope applies. Returns the run's serial when its
+    /// outcome became the scope's phase (compare `latestRun(for:)` to tell
+    /// it from a later run's); nil when it was ignored, superseded or
+    /// cancelled.
+    @discardableResult
+    func planCleanup(sessionID: Int64, workbenchID: Int64, closingSession: Bool = false) async -> Int? {
         var live = liveSessionIDs()
         if closingSession { live.remove(sessionID) }
         let args = Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: live)
-        await runPlan(.session(sessionID), args: args)
+        return await runPlan(.session(sessionID), args: args)
+    }
+
+    /// The serial of the scope's newest run (a plan, an apply, or a
+    /// `forgetCleanup`): a run a caller started is still the scope's while
+    /// this equals the serial it got.
+    func latestRun(for scope: SessionCleanupScope) -> Int {
+        runSerials[scope, default: 0]
     }
 
     /// Plans the sweep of workbench `workbenchID` (writes nothing): every
@@ -142,20 +153,23 @@ final class SessionCleanupCenter {
         await runPlan(.workbench(workbenchID), args: Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs()))
     }
 
-    private func runPlan(_ scope: SessionCleanupScope, args: [String]) async {
-        guard cleanupPhase(for: scope) != .applying else { return }
+    /// The run's serial once its outcome is the scope's phase; nil otherwise.
+    @discardableResult
+    private func runPlan(_ scope: SessionCleanupScope, args: [String]) async -> Int? {
+        guard cleanupPhase(for: scope) != .applying else { return nil }
         let serial = beginRun(scope, phase: .planning)
         let outcome = await runCleanup(args)
-        guard runSerials[scope] == serial else { return }
+        guard runSerials[scope] == serial else { return nil }
         // A cancelled caller is not a failed plan: nothing to show.
         guard !Task.isCancelled else {
             phases[scope] = nil
-            return
+            return nil
         }
         switch outcome {
         case let .success(plan): phases[scope] = .ready(plan)
         case let .failure(message): phases[scope] = .failed(message)
         }
+        return serial
     }
 
     /// Applies exactly `items` (the planned `remove` keys the owner saw) to
