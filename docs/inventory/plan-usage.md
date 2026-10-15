@@ -42,7 +42,7 @@
 
 **Status:** Enforced
 
-**Observable:** The Desktop posts a `will` notice (projection `will_hit`) and a `p90` notice (percent at or above 90) at most once each per `(limit_key, resets_at)`. The dedupe key is `<kind>|<limit_key>|<resets_at ISO>`; a new window gives a new key. Keys are stored in `planUsage.sentNotices` and pruned once their window is past.
+**Observable:** The Desktop posts a `will` notice (projection `will_hit`) and a `p90` notice (percent at or above 90) at most once each per `(limit_key, resets_at)`. The dedupe key is `<kind>|<limit_key>|<resets_at ISO>`, with `resets_at` rounded to the nearest minute; a new window gives a new key. A limit whose `resets_at` is already past never notifies (the row holds the old window until the next poll). Keys are stored in `planUsage.sentNotices` and pruned a minute after their (rounded) reset.
 
 **Why locked:** The status row refreshes every few minutes; without the key, a limit sitting above 90 % would notify on every refresh.
 
@@ -53,4 +53,5 @@
 
 ## Changelog
 
+- 2026-10-15: PLANUSAGE-03 wording — the key's reset time is rounded to the minute, past windows never notify; same contract.
 - 2026-10-15: file created with 3 contracts (PLANUSAGE-01..03), introduced by the Claude plan limits feature (spec `docs/superpowers/specs/2026-10-15-claude-plan-limits-design.md`).

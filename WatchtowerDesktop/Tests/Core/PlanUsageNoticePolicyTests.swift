@@ -55,4 +55,22 @@ final class PlanUsageNoticePolicyTests: XCTestCase {
         let second = PlanUsageNoticePolicy.evaluate(status(0.6), sent: first.sent, now: now)
         XCTAssertTrue(second.notices.isEmpty)
     }
+
+    func testWindowPastItsResetNeverRenotifies() {
+        // Notified during the window; the row still carries it 10 s after the reset.
+        let during = PlanUsageNoticePolicy.evaluate(st([lim("session", 92, "will_hit", resetIn: 20)]), sent: [], now: now)
+        XCTAssertEqual(during.notices.count, 2)
+        let after = PlanUsageNoticePolicy.evaluate(
+            st([lim("session", 92, "will_hit", resetIn: 20)]), sent: during.sent, now: now.addingTimeInterval(30))
+        XCTAssertTrue(after.notices.isEmpty)
+    }
+
+    func testRoundedKeyOutlivesAnEarlierRoundedTime() {
+        // Reset at :25 s rounds the key down to :00; 10 s before the real reset
+        // the key must still be held.
+        let s = st([lim("session", 92, "safe", resetIn: 25)])
+        let first = PlanUsageNoticePolicy.evaluate(s, sent: [], now: now)
+        XCTAssertEqual(first.notices.count, 1)
+        XCTAssertTrue(PlanUsageNoticePolicy.evaluate(s, sent: first.sent, now: now.addingTimeInterval(15)).notices.isEmpty)
+    }
 }

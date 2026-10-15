@@ -22,16 +22,20 @@ package enum PlanUsageNoticePolicy {
     package static func evaluate(
         _ s: PlanUsageStatus, sent: Set<String>, now: Date
     ) -> (notices: [PlanUsageNotice], sent: Set<String>) {
-        // Entries of windows that already reset can never match again.
+        // Entries of windows that already reset can never match again. A key's
+        // time is rounded to the minute, so keep it a minute past that time:
+        // until then the real reset may still be ahead.
         var kept = sent.filter { entry in
             guard let reset = PlanUsageDates.parse(entry.split(separator: "|").last.map(String.init)) else { return false }
-            return reset >= now
+            return reset.addingTimeInterval(60) >= now
         }
         guard !PlanUsagePresentation.isStale(s, now: now) else { return (notices: [], sent: kept) }
 
         var notices: [PlanUsageNotice] = []
         for limit in s.limits {
-            guard let reset = limit.resetsAt else { continue }
+            // A window that already reset is old data until the next poll;
+            // its pruned key must not notify it a second time.
+            guard let reset = limit.resetsAt, reset > now else { continue }
             // Nearest minute: server jitter across a second boundary must not mint a new key.
             let iso = PlanUsageDates.format(Date(timeIntervalSince1970: (reset.timeIntervalSince1970 / 60).rounded() * 60))
             let resetText = PlanUsagePresentation.clock(reset, now: now)
