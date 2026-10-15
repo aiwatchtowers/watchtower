@@ -127,6 +127,24 @@ func TestPhaseMemory_SkipsWhileBackfillActive(t *testing.T) {
 	assert.Equal(t, 1, opens, "a done backfill lets memory run")
 }
 
+// F3: a failing backfill query must not fail open — memory skips the cycle
+// and the error is logged.
+func TestPhaseMemory_SkipsWhenBackfillQueryFails(t *testing.T) {
+	d, database, buf := newBackfillDaemon(t)
+	d.config.Memory = enabledMemoryConfig()
+	opens := 0
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		return nil, fmt.Errorf("vault unavailable in test")
+	})
+	_, err := database.Exec(`ALTER TABLE history_backfill RENAME TO history_backfill_gone`)
+	require.NoError(t, err)
+
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 0, opens, "memory does not run when the backfill state is unknown")
+	assert.Contains(t, buf.String(), "memory: skipping cycle, history backfill check failed")
+}
+
 // countingGenerator answers every call with a valid digest and counts calls.
 type countingGenerator struct {
 	mu    gosync.Mutex

@@ -1570,7 +1570,15 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 	// Extraction is oldest-first behind a watermark: let the history
 	// backfill land its older rows first (docs/features/history-backfill.md).
 	if d.db != nil {
-		if active, err := d.db.HasActiveHistoryBackfill(); err == nil && active {
+		active, err := d.db.HasActiveHistoryBackfill()
+		if err != nil {
+			// Unknown backfill state: skip rather than fail open — running
+			// extraction past an unfinished backfill moves its watermark
+			// over rows that have not landed yet.
+			d.logger.Printf("memory: skipping cycle, history backfill check failed: %v", err)
+			return
+		}
+		if active {
 			d.logger.Printf("memory: waiting for the history backfill to finish")
 			return
 		}
