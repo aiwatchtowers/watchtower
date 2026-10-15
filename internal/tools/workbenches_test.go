@@ -511,3 +511,17 @@ func TestWorkbenchInfo_ShowsTheMethodology(t *testing.T) {
 	assert.Contains(t, got, `"methodology":{"preset":"watchtower-flow","ask_guard":"soft","finish_check":"on",`+
 		`"sources":{"preset":"default","ask_guard":"personal","finish_check":"default"}}`)
 }
+
+// A methodology that cannot be read shows the built-in defaults, with the
+// reason, instead of failing workbench_info (as the hooks fall back).
+func TestWorkbenchInfo_UnreadableMethodologyShowsTheDefaults(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	_, err := fx.d.Exec(`ALTER TABLE projects DROP COLUMN ask_guard_mode`)
+	require.NoError(t, err)
+
+	got := callReadIn(t, reg, fx.a, "workbench_info", `{}`)
+
+	assert.Contains(t, got, `"methodology":{"preset":"watchtower-flow","ask_guard":"strict","finish_check":"on",`+
+		`"sources":{"preset":"default","ask_guard":"default","finish_check":"default"},"error":"`)
+}

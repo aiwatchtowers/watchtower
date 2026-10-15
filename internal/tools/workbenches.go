@@ -104,12 +104,14 @@ type sourceView struct {
 }
 
 // methodologyView is the effective methodology and where each value comes
-// from (default, personal or file).
+// from (default, personal or file); Error names why the settings could not
+// be read, and the built-in defaults are shown then.
 type methodologyView struct {
 	Preset      string             `json:"preset"`
 	AskGuard    string             `json:"ask_guard"`
 	FinishCheck string             `json:"finish_check"`
 	Sources     methodologySources `json:"sources"`
+	Error       string             `json:"error,omitempty"`
 }
 
 type methodologySources struct {
@@ -119,9 +121,13 @@ type methodologySources struct {
 }
 
 func methodologyOf(e workbenchmethod.Effective) methodologyView {
-	return methodologyView{Preset: e.Preset, AskGuard: e.AskGuard, FinishCheck: e.FinishCheck,
+	v := methodologyView{Preset: e.Preset, AskGuard: e.AskGuard, FinishCheck: e.FinishCheck,
 		Sources: methodologySources{Preset: string(e.Sources.Preset), AskGuard: string(e.Sources.AskGuard),
 			FinishCheck: string(e.Sources.FinishCheck)}}
+	if e.Err != nil {
+		v.Error = "reading the methodology: " + e.Err.Error()
+	}
+	return v
 }
 
 type workbenchInfoView struct {
@@ -175,15 +181,12 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing comments: %w", err)
 	}
-	personal, err := d.GetWorkbenchMethodology(p.ID)
-	if err != nil {
-		return nil, fmt.Errorf("reading the methodology: %w", err)
-	}
 	v := &workbenchInfoView{
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
 		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
 		Targets: map[string]int{}, Archived: db.CountArchived(board), NewComments: len(fresh),
-		Methodology: methodologyOf(workbenchmethod.Combine(personal, workbenchmethod.ReadFile(p.FolderPath))),
+		// An unreadable setting shows the defaults the hooks then run under.
+		Methodology: methodologyOf(workbenchmethod.Resolve(d, p.ID, p.FolderPath)),
 	}
 	for _, s := range sources {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
