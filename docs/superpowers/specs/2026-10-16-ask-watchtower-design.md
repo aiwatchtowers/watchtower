@@ -270,9 +270,10 @@ Owner, ask #195: check the guide's accuracy on every release.
 - Panel size, animation, empty-state copy.
 - Starter questions: whether v1 ships any.
 
-## Open questions for the owner
+## Settled after review
 
-1. **Where does "Watchtower User Guide" lead?** The owner said the Help menu
-   should go to the website (ask #195), but no guide pages exist on the site
-   yet. Proposal: link to `docs/guide/README.md` on GitHub now, and switch
-   the base URL to the site when it publishes the guide.
+1. **Where "Watchtower User Guide" leads.** The owner wants the Help menu to
+   go to the website (ask #195), but the site has no guide pages yet. The
+   spec was approved with the proposal (ask #240): link to
+   `docs/guide/README.md` on GitHub now, and switch the base URL to the site
+   once it publishes the guide. One constant holds the base URL.
