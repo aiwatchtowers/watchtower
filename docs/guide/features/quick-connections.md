@@ -4,11 +4,15 @@ Quick Connections let the [AI Chat](ai-chat.md) read from a tool Watchtower does
 
 ## Why use it
 
-Slack, Gmail, Calendar and Jira are synced and searchable. For anything else, you would otherwise copy and paste. Add the tool as a Quick Connection and ask "what's on my Trello board for this sprint?" in the chat; the assistant calls the tool live. Nothing is synced or stored beyond the connection itself.
+Slack, Gmail, Calendar and Jira are synced and searchable. For anything else, you would otherwise copy and paste. Add the tool as a Quick Connection.
+
+Then ask "what's on my Trello board for this sprint?" in the chat; the assistant calls the tool live. Nothing is synced or stored beyond the connection itself.
 
 ## How it works
 
-**Read-only by design.** A connection is never handed to the assistant whole. When you enable it, Watchtower lists the server's tools once and allows only those the server marks read-only. If the server does not say, a tool is allowed when its name starts with get, list, search, read, find, describe or lookup and does not go on to create, update, delete, send or the like. Every other tool stays hidden. Tools the server declares as writes can never be allowed.
+**Read-only by design.** A connection is never handed to the assistant whole. When you enable it, Watchtower lists the server's tools once and allows only those the server marks read-only.
+
+If the server does not say, a tool is allowed when its name starts with get, list, search, read, find, describe or lookup and does not go on to create, update, delete, send or the like. Every other tool stays hidden, and tools the server declares as writes can never be allowed.
 
 **Where it works.** Only chats that can use tools see a connection: the main AI Chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work only with the Claude AI provider; under Codex or Ollama the Settings card says so, and enabled connections do nothing.
 

@@ -8,7 +8,9 @@ The assistant in the [AI Chat](ai-chat.md) can do more than answer: it can creat
 
 ## How it works
 
-**A proposal, not an action.** A write tool never acts by itself. Calling it records a proposal and shows a card in the chat saying what it wants to do and why. **Approve** runs it once; **Reject** discards it. A failed card offers **Retry**, and a done card links to what was created or changed. Proposals left from an interrupted reply gather at the bottom of the chat, and proposals from other places (reactions, automations, a workbench terminal) wait in the Inbox.
+**A proposal, not an action.** A write tool never acts by itself. Calling it records a proposal and shows a card saying what it wants to do and why. **Approve** runs it once; **Reject** discards it.
+
+A failed card offers **Retry**, and a done card links to what was created or changed. Proposals left from an interrupted reply gather at the bottom of the chat, and proposals from other places (reactions, automations, a workbench terminal) wait in the Inbox.
 
 **What needs a click.** Anything that writes outside your Mac always waits for Approve, whatever the settings: every Jira tool, Slack send, Confluence edits. Two tools, `create_idea` and `remind_me`, run at once by default and just show what they did. **Settings → Profile → Assistant tools** lists every write tool with **Run without approval in:** checkboxes per place it is offered. External tools stay locked to Approve there.
 
@@ -35,12 +37,14 @@ Everything the edit does not touch stays byte for byte as it was. A block whose 
 
 ### Draft an automation
 
-Describe the routine ("every weekday at 9, summarise the mail that needs a reply"). The assistant drafts a recipe, dry-runs it without writing anything and shows what it would have done. When you are happy it proposes **Save automation <name>**, with **Show the whole recipe**. Approving saves and confirms it, but a new recipe stays off until you turn it on in the Automations tab. See [Automations](automations.md).
+Describe the routine ("every weekday at 9, summarise the mail that needs a reply"). The assistant drafts a recipe, dry-runs it without writing anything and shows what it would have done. When you are happy it proposes **Save automation <name>**, with **Show the whole recipe**. Approving saves and confirms it.
+
+A new recipe stays off until you turn it on in the Automations tab. See [Automations](automations.md).
 
 ## When it's empty or wrong
 
 - **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**.
-- **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Settings → Connections → Jira → Confluence**. If Confluence sync (Knowledge connectors) is off, the section is hidden; run the command the assistant names instead.
+- **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Settings → Connections → Jira → Confluence**. If Confluence sync is off, that section says "Confluence sync is turned off"; click its **Enable** button first.
 - **An archived page.** It can be read but not edited; restore it in Confluence first.
 - **A Confluence card says the edit "may have been saved".** The page moved one version but not to this edit. Ask the assistant to read the page again before trying again.
 - **A chat offers no proposals.** You are in a draft-only chat. Use the main chat or the target's chat.

@@ -10,7 +10,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 
 **Plain files you can read.** The memory is markdown files in a git repository in your workspace folder (`memory/`). The files are the memory; the app's database only keeps a search index, which can be rebuilt from them at any time. Open the folder in Obsidian or any editor if you like. Before each run Watchtower saves your manual edits as a separate "owner edit" entry, so nothing you wrote is overwritten and history shows who changed what.
 
-**How it fills itself.** Each daemon cycle, after the inbox phase, one consolidation pass seeds skeleton pages (a person needs about 20 messages in the last 30 days) and extracts notable episodes from channel history in bounded chunks, so a long backlog is worked off gradually. While the history backfill of a new source is still running, memory waits and does nothing, so expect no pages for the first stretch after connecting a source. Every message link is validated before a note is written.
+**How it fills itself.** Each daemon cycle, after inbox detection and the ideas phase, one consolidation pass seeds skeleton pages (a person needs about 20 messages in the last 30 days) and extracts notable episodes from channel history in bounded chunks, so a long backlog is worked off gradually. While the history backfill of a new source is still running, memory waits and does nothing, so expect no pages for the first stretch after connecting a source. Every message link is validated before a note is written.
 
 **Beyond Slack.** In **Settings → Features → Memory → Advanced** each switch below is off by default.
 
@@ -18,7 +18,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 - **Gmail source**: each email thread becomes one episode; senders become person pages (matched to Slack colleagues by email).
 - **Calendar source**: each ended meeting becomes one episode, with its recap folded in when one exists. Capture happens soon after the meeting ends, because the calendar keeps only about a day of past events.
 - **Jira source**: episodes from Jira issues.
-- **Chats source**: lets a target or track Discuss chat pin a fact. Start a line with `remember this:` (or `remember:`); the rest becomes your own recorded statement. Without the prefix a chat turn is treated as drafting and never becomes memory. It also needs the **Chat surface** switch and the Semantic tier.
+- **Chats source**: lets a target's or track's chat pin a fact. Start a line with `remember this:` (or `remember:`); the rest becomes your own recorded statement. Without the prefix a chat turn is treated as drafting and never becomes memory. It also needs the **Chat surface** switch and the Semantic tier.
 - **Targets & Tracks mirrors**: each target and track gets a page with status, next step and an **Open loops** list, kept in sync and cleared when done. Nothing is written back into your targets.
 
 **Where memory reaches you.** Five **surface** switches decide whether memory may show up elsewhere:
@@ -34,7 +34,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 1. Turn on **Memory** in **Settings → Features** (setup turns it on if you pick the **Work communication** goal). Add the sources and surfaces you want.
 2. Open the **Memory** tab. Search the pages and beliefs, and sort by **Recent** or **Important**. Select one to see its links, history and importance.
 3. Click **Edit** on a page to change it. The next memory run saves your change as an owner edit; keep the frontmatter lines intact, or the file is skipped (not deleted).
-4. Click **Focus** to steer ranking. Under **Now**, list people, channels or projects as `- ` bullets to rank them higher; under **Cooled**, lower. A bullet matches a page whose name or title contains it, so keep bullets specific. It applies on the next run and only while `memory.focus.enabled` is on (off by default).
+4. Click **Focus** to steer ranking. Under **Now**, list people, channels or projects as `- ` bullets to rank them higher; under **Cooled**, lower. A bullet matches a page whose name or title contains it, so keep bullets specific. It applies on the next run and only while focus is on. It is off by default; turn it on with `watchtower config set memory.focus.enabled true`.
 5. From a terminal: `watchtower memory status` shows counts and the remaining backlog, `watchtower memory recall <query>` searches, `watchtower memory consolidate` runs a pass now, and `watchtower memory reindex` rebuilds the search index.
 
 ## When it's empty or wrong

@@ -16,7 +16,9 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat component appears in a target's **Discuss** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Change in words**, and the setup assistant in Settings. They have no attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
+**Other assistant chats.** The same chat component appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Change in words**, and the setup assistant in Settings. They have no attachments, @-mentions or branches.
+
+Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 
 ## Using it
 
@@ -28,7 +30,11 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 ### Artifacts
 
-A document, table, email or Slack draft, event or code opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it as .md, .csv or .txt. Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version. Drafts are never sent by Watchtower: an email opens in Gmail compose, a Slack draft is copied with its channel opened, an event opens Google Calendar's new-event page.
+A document, table, email or Slack draft, event or code opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
+
+Select a passage and choose **Comment** to leave a note. Notes stay drafts until you click **Send N comments**, which sends them together; the assistant answers with a new version.
+
+Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
 ### Quote in reply
 
@@ -36,11 +42,13 @@ Hover a finished answer and choose **Quote in reply** to pick the exact passage 
 
 ### Projects
 
-A project groups chats that share context: instructions given in every chat, files, and pinned sources (Jira projects, Slack channels, Confluence spaces, targets, tracks, people). Pinned channels, projects and spaces rank first in the project's knowledge search. Use **+** next to PROJECTS, then **New chat in this project**. An edit reaches every chat in the project on its next message. Deleting a project deletes its files and keeps its chats.
+A project groups chats that share context: instructions given in every chat, files, and pinned sources (Jira projects, Slack channels, Confluence spaces, targets, tracks, people). Pinned channels, projects and spaces rank first in the project's knowledge search.
+
+Use **+** next to PROJECTS, then **New chat in this project**. An edit reaches every chat in the project on its next message. Deleting a project deletes its files and keeps its chats.
 
 ### Question cards
 
-When your request can be read two ways, the assistant asks with a card of one to four questions. Pick an option, or write your own under **Other**, then **Send answers**. A card can be answered on the latest reply only.
+When your request can be read two ways, the assistant asks with a card of one to four questions. Pick an option, or write your own in the **Other…** field, then **Send answers**. A card can be answered on the latest reply only.
 
 ## When it's empty or wrong
 
