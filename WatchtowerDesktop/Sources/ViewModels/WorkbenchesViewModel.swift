@@ -446,6 +446,13 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
     /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
     @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
+    /// The workbenches with a rescan running, and those asked for again
+    /// meanwhile (one follow-up rescan, not one per ask).
+    @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
+    @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The `automations` feature is on per a successful Feature Manager
+    /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
+    @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }
 
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.

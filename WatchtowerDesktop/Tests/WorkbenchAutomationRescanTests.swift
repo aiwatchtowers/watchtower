@@ -90,6 +90,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanOnPageOpen() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        vm.isAutomationsFeatureOn = { true }
 
         vm.workbenchPageOpened(projectID: 7)
 
@@ -100,6 +101,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanOnRecipeFolderChangeDebounced() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        vm.isAutomationsFeatureOn = { true }
         vm.automationRescanDelay = .milliseconds(400)
         let root = watchedRoot(vm, id: 7)
 
@@ -119,6 +121,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testNoRescanForOtherPaths() async throws {
         let runner = FakeCLIRunner()
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        vm.isAutomationsFeatureOn = { true }
         vm.automationRescanDelay = .milliseconds(50)
         let root = watchedRoot(vm, id: 7)
 
@@ -141,6 +144,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
     func testRescanSurvivesNavigation() async throws {
         let runner = GatedRescanRunner()
         let appState = AppState()
+        appState.featureVisibility.isLoaded = true
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
@@ -162,5 +166,51 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         XCTAssertTrue(appState.workbenchesViewModel === vm)
         vm.workbenchPageOpened(projectID: 7)
         await waitUntil { runner.finished == 2 }
+    }
+
+    /// Off, or before the Feature Manager's first successful load, no
+    /// rescan runs: the view model asks AppState's loaded-and-on predicate.
+    func testNoRescanUnlessTheFeatureIsLoadedOn() async throws {
+        let runner = FakeCLIRunner()
+        let appState = AppState()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+                                 sessionNotifier: RecordingSessionNotifier())
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
+        defer { vm.asks.stop() }
+
+        vm.workbenchPageOpened(projectID: 7)
+        appState.featureVisibility.isLoaded = true
+        appState.featureVisibility.disabledFeatureIDs = ["automations"]
+        vm.workbenchPageOpened(projectID: 7)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(rescans(runner).isEmpty, "not loaded, then off")
+
+        appState.featureVisibility.disabledFeatureIDs = []
+        vm.workbenchPageOpened(projectID: 7)
+        await waitUntil { self.rescans(runner).count == 1 }
+    }
+
+    /// One rescan per workbench at a time: asks while it runs collapse into
+    /// one follow-up after it; another workbench is not held up.
+    func testRescanInFlightIsNotDuplicated() async throws {
+        let runner = GatedRescanRunner()
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        vm.isAutomationsFeatureOn = { true }
+
+        vm.workbenchPageOpened(projectID: 7)
+        await waitUntil { runner.started == 1 }
+        vm.workbenchPageOpened(projectID: 7)
+        vm.workbenchPageOpened(projectID: 7)
+        vm.workbenchPageOpened(projectID: 8)
+        await waitUntil { runner.started == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(runner.started, 2, "workbench 7 once, workbench 8 once")
+
+        runner.release()
+        await waitUntil { runner.finished == 3 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(runner.started, 3, "one follow-up for the two asks on workbench 7")
+        XCTAssertTrue(vm.automationRescansInFlight.isEmpty)
     }
 }

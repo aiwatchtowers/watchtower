@@ -532,6 +532,7 @@ final class AutomationSessionCenterTests: XCTestCase {
     func testAppStateRunsTheCenterOnlyWhileTheFeatureIsOn() async throws {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
+        appState.featureVisibility.isLoaded = true
         appState.featureVisibility.disabledFeatureIDs = ["automations"]
         appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
@@ -543,9 +544,49 @@ final class AutomationSessionCenterTests: XCTestCase {
         appState.syncAutomationSessionCenter()
         XCTAssertTrue(center.isRunning)
 
+        // The fail-open empty set before any load is not "on".
+        appState.featureVisibility.isLoaded = false
+        appState.syncAutomationSessionCenter()
+        XCTAssertFalse(center.isRunning)
+        appState.featureVisibility.isLoaded = true
+
         appState.featureVisibility.disabledFeatureIDs = ["automations"]
         appState.syncAutomationSessionCenter()
         XCTAssertFalse(center.isRunning)
+    }
+
+    /// The feature state is unknown until `features list` loads: the center
+    /// neither reconciles nor polls before that, a failed load leaves it
+    /// stopped, and the first successful one (the feature on) starts it.
+    func testCenterWaitsForASuccessfulFeatureLoad() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt asc \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
+        _ = try await request(workbench: p)
+        let features = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8), error: CLIRunnerError.binaryNotFound)
+        let manager = FeatureManagerService(runner: features)
+        let appState = AppState(featureManager: manager)
+        appState.wireFeatureVisibility()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
+                                 sessionNotifier: RecordingSessionNotifier())
+        defer { stopWorkbenchWiring(appState) }
+        let center = try XCTUnwrap(appState.automationSessionCenter)
+        XCTAssertFalse(center.isRunning, "no load yet")
+
+        await manager.load()
+        XCTAssertNotNil(manager.loadError)
+        XCTAssertFalse(center.isRunning, "a failed load leaves it stopped")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(go.invocations.isEmpty, "nothing launched: \(go.invocations)")
+
+        features.shouldThrow = nil
+        await manager.load()
+        XCTAssertNil(manager.loadError)
+        XCTAssertTrue(center.isRunning)
+        await waitUntil { self.go.invocations.contains { $0[1] == "session-launched" } }
     }
 
     // MARK: - Navigation
@@ -572,6 +613,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
         appState.terminalCenter.shell = { "/bin/zsh" }
         appState.selectedDestination = .workbench
+        appState.featureVisibility.isLoaded = true
         appState.initWorkbenches(dbPool: pool, cliRunner: go, notifier: RecordingWorkbenchNotifier(),
                                  sessionNotifier: RecordingSessionNotifier())
         defer { stopWorkbenchWiring(appState) }

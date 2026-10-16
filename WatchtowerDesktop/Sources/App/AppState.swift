@@ -835,11 +835,18 @@ final class AppState {
         // Every successful service load (launch, post-apply, failure-path
         // reload) pushes the fresh disabled set into the visibility store
         // the sidebar/navigation/banner read.
+        wireFeatureVisibility()
+        Task { await featureManager.load() }
+    }
+
+    /// Every successful Feature Manager load pushes the disabled set into
+    /// the visibility store and marks it loaded; a failed one changes nothing.
+    func wireFeatureVisibility() {
         featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
             featureVisibility.disabledFeatureIDs = ids
+            featureVisibility.isLoaded = true
             self?.syncAutomationSessionCenter()
         }
-        Task { await featureManager.load() }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1794,6 +1801,7 @@ final class AppState {
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.isAutomationsFeatureOn = { [weak self] in self?.isAutomationsFeatureLoadedOn ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)

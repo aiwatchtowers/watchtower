@@ -36,6 +36,12 @@ extension AppState {
         !featureVisibility.disabledFeatureIDs.contains("automations")
     }
 
+    /// On per a Feature Manager load that succeeded — never the fail-open
+    /// empty set before one. Gates the work automations start on their own.
+    var isAutomationsFeatureLoadedOn: Bool {
+        featureVisibility.isLoaded && isAutomationsFeatureEnabled
+    }
+
     /// "Run Automation…" (⌃⌘R): the same palette whatever tab is selected.
     /// With no main window visible (the Settings window is key, tray-only
     /// mode) one is opened first. `windows` and `activate` are test seams.
@@ -100,11 +106,12 @@ extension AppState {
         return center
     }
 
-    /// Polls while the `automations` feature is on; off, requests stay
+    /// Polls while the `automations` feature is on per a successful load;
+    /// off, or before one (a failed load leaves it so), requests stay
     /// pending (their run waits, bounded by its pause timeout).
     func syncAutomationSessionCenter() {
         guard let center = automationSessionCenter else { return }
-        if isAutomationsFeatureEnabled { center.start() } else { center.stop() }
+        if isAutomationsFeatureLoadedOn { center.start() } else { center.stop() }
     }
 
     // MARK: - Tray "Run automation ▸" (spec §12.7)

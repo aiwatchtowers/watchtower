@@ -29,14 +29,27 @@ extension WorkbenchesViewModel {
     }
 
     /// Best effort, logged: a failed rescan leaves the index as it was.
+    /// Only while the feature is on; one at a time per workbench — an ask
+    /// while one runs becomes one more rescan after it, which sees a change
+    /// the running one may have missed.
     private func startAutomationRescan(workbenchID: Int64) {
-        guard let rescanAutomations else { return }
-        Task {
+        guard let rescanAutomations, isAutomationsFeatureOn() else { return }
+        guard !automationRescansInFlight.contains(workbenchID) else {
+            automationRescansAgain.insert(workbenchID)
+            return
+        }
+        automationRescansInFlight.insert(workbenchID)
+        Task { [weak self] in
             do {
                 try await rescanAutomations(workbenchID)
             } catch {
                 NSLog("WorkbenchesViewModel: automations rescan of workbench %lld failed: %@",
                       workbenchID, error.localizedDescription)
+            }
+            guard let self else { return }
+            automationRescansInFlight.remove(workbenchID)
+            if automationRescansAgain.remove(workbenchID) != nil {
+                startAutomationRescan(workbenchID: workbenchID)
             }
         }
     }
