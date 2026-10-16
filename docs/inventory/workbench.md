@@ -538,6 +538,8 @@ at a glance.
 
 **Locked since:** 2026-09-30
 
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — the rollup reads statuses only; a column move inside one status never moves a parent.
+
 ## PROJ-06 — every workbench target status transition is recorded with time and actor
 
 **Status:** Enforced (Go and Desktop — one implementation, in SQLite)
@@ -583,6 +585,8 @@ dual path.
 - `WatchtowerDesktop/Tests/Core/TargetStatusHistoryTests.swift::testDesktopStatusWritesAreRecordedAsTheOwners`
 
 **Locked since:** 2026-09-30
+
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — a move between columns of one status records no transition; a status change still records exactly one, whichever writer made it.
 
 ## PROJ-07 — board drift is surfaced, and the Stop hook never traps a turn
 
@@ -671,6 +675,8 @@ timeout would be worse than none.
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
+
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — the drift check reads statuses and never a column.
 
 ## PROJ-08 — a workbench's documents are searchable only from its own sessions
 
@@ -1797,6 +1803,26 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 **Locked since:** 2026-10-14
 
+## PROJ-19 — board columns never contradict the status
+
+**Status:** Enforced (Go and Desktop — one implementation, in SQLite; owner approved: spec review ask #209, plan ask #211, decisions ask #202; spec `docs/superpowers/specs/2026-10-16-workbench-board-columns-design.md` §8)
+
+**Observable:** A workbench may define board columns (migration `00124`: `workbench_board_columns`, `targets.board_column_id`, `projects.board_hidden_statuses`). A target's column is always one of its own workbench and of its current status: SQLite triggers refuse a column of another workbench or another status (`board column does not match the target`) for every writer, and a status or workbench change clears a column that no longer fits (the target then sits in the first column of its status). A move between two columns of one status writes only the column: progress is kept and no status-history row is written (PROJ-06 is not touched); a move that changes the status writes status and column in one statement. A status cannot be hidden and have columns at once. The agent may move a card with `update_target column` (and, as before, `status`), but a hidden `in_review` or `blocked` is refused on the workbench MCP surface with a text that says what to do instead; the owner's writers (CLI, Desktop) and the system writers are not refused. With no columns defined and nothing hidden, every agent-facing text (the brief, `workbench_board`, `get_target`, `workbench_info`, the skill's behaviour) and the Desktop board are as before: `column`, `columns` and `hidden_statuses` appear only when defined.
+
+**Why locked:** Owner decision (board #267): the owner lays out the board with their own column names, and the agent and the owner both move cards. If a column could disagree with the status, the board would show a card as "Review" while PROJ-05's parent rollup, PROJ-06's history and the drift check (PROJ-07) read it as `todo`. The categories stay the contract; the column is only a name and a place inside one.
+
+**Test guards:**
+- `internal/db/proj19_board_columns_test.go` — `TestProj19_ColumnMustMatchStatusAndWorkbench`, `TestProj19_StatusChangeClearsForeignColumn`, `TestProj19_StatusAndColumnInOneStatement`, `TestProj19_ColumnMoveWritesNoHistory`, `TestProj19_SameStatusColumnMoveKeepsProgress`, `TestProj19_DeletedColumnFallsBack`, `TestProj19_SnoozeClearsColumn`
+- `internal/tools/workbench_columns_test.go::TestProj19_NoDefinitionAgentOutputsUnchanged` (outputs byte-identical without a definition); the hidden-status refusal texts in the same file
+- `cmd/workbench_brief_columns_test.go` — `TestBriefColumns_NoneLeavesBriefUnchanged`, `TestBriefColumns_MaximalRulesStayWithinTheBrief` (the section stays within its 1000-character budget)
+- `WatchtowerDesktop/Tests/Core/BoardColumnLayoutTests.swift::testEmptyDefinitionIsTodaysColumns` (an empty definition lays the board out as before), with `testHiddenEmptyStatusIsSkipped`, `testHiddenStatusWithCardsStillShows`
+- `WatchtowerDesktop/Tests/Core/WorkbenchBoardColumnWritesTests.swift` — `testMoveToColumnWritesStatusAndColumnOnce`, `testMoveBetweenColumnsOfOneStatusWritesNoHistory`, `testMoveWithinOneStatusKeepsProgress`, `testMismatchedColumnIsRefusedByTheTrigger`
+- `WatchtowerDesktop/Tests/Core/BoardColumnsDraftTests.swift::testDraftRejectsHideWithColumns`
+
+**P5 note (Automations):** any future agent-facing writer of a workbench target's status (an automation tool, a new MCP tool) must call `hiddenStatusRefusal` (`internal/tools/workbench_columns.go`) for a hidden status, exactly as `update_target` does.
+
+**Locked since:** 2026-10-16
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -2089,6 +2115,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-16 (board #267, workbench board columns; spec `docs/superpowers/specs/2026-10-16-workbench-board-columns-design.md` §8, plan `docs/superpowers/plans/2026-10-16-workbench-board-columns.md`; **PROJ-19 added, owner approved: spec ask #209, plan ask #211, decisions ask #202**): migration `00124` (`workbench_board_columns`, `targets.board_column_id`, `projects.board_hidden_statuses`, the match triggers); `watchtower workbench columns <id> [--json] [--set -]`; `update_target` takes `column`; a hidden `in_review`/`blocked` is refused on the workbench MCP surface; `column` appears in `workbench_board`/`get_target` and `columns`/`hidden_statuses` in `workbench_info` only when defined; the brief gets a Board columns section (at most 1000 characters, else one fallback line) and a Turned off line. **PROJ-04:** the workbench skill is pack **v11** (the column and turned-off rules; an unedited earlier copy upgrades, an edited one is kept, as for every bump). **PROJ-05, PROJ-06, PROJ-07:** note only, columns do not touch them. The Desktop gets the **Board Columns…** sheet, drag between columns and a column picker in the target panel; the phone shows the column title in place of the status label. No guard relaxed.
 - 2026-10-16 (board #411, Desktop New Task): note only — **no contract, guard test or status changed**. The Desktop board creates targets too (header **New Task**, under the current scope; card menu **New Sub-task…**): `WorkbenchBoardViewModel.createTarget` runs `watchtower workbench target add`, the phone's owner writer, so the creation is recorded as `owner` (PROJ-06), Go does the PROJ-09 parent check and the PROJ-05 rollup, and the new target plus every parent whose status moved are reported through `onOwnerWrite` so the owner is never notified about their own change.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.
