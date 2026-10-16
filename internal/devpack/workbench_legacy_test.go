@@ -479,11 +479,14 @@ func TestLegacyPermissionRules_ReportsAnUnreadableFile(t *testing.T) {
 }
 
 // Without the claude CLI the install of a legacy folder names the manual
-// removal of the old registration along with the manual registration.
+// removal of the old registration along with the manual registration, and
+// still migrates the files (ask #312): the old setup no longer runs, so
+// nothing is kept for it.
 func TestInstallWorkbench_LegacyFolderWithoutClaudeNamesBothCommands(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
 	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	before := decodeSettings(t, folder)
 	f.missing = true
 
 	rep, err := InstallWorkbench(context.Background(), legacyOpts(folder, f))
@@ -496,9 +499,12 @@ func TestInstallWorkbench_LegacyFolderWithoutClaudeNamesBothCommands(t *testing.
 	if !strings.Contains(rep.MCPCommand, "mcp add --scope local watchtower-workbench") || rep.MCPRegistered {
 		t.Fatalf("the report must carry the manual registration: %+v", rep)
 	}
-	assertLegacySetupKept(t, folder, rep, err)
-	if rep.LegacySkill.State != StateUnchanged {
-		t.Fatalf("without claude nothing is migrated: %+v", rep)
+	assertLegacyFilesMigrated(t, folder, rep, before)
+	// Nothing legacy is left that status can see without claude, so the
+	// Desktop's Repair is not offered again for the same folder.
+	st, err := StatusWorkbench(context.Background(), legacyOpts(folder, f))
+	if err != nil || st.ClaudeFound || st.Legacy || st.Skill.State != StateUnchanged || !st.Hook || !st.StopHook {
+		t.Fatalf("status after the resync without claude: %+v err=%v", st, err)
 	}
 }
 
@@ -526,8 +532,9 @@ func TestLooksLikeOurHook_RecognisesBothVocabularies(t *testing.T) {
 	}
 }
 
-// A failed `mcp add` must not cost a not-yet-migrated folder its working old
-// server: the old registration stays, and the failure is reported.
+// A failed `mcp add` keeps the old registration (it goes only once the new
+// one is in, so status still reports the folder legacy and Repair stays
+// offered), and the failure is reported.
 func TestInstallWorkbench_FailedAddKeepsTheLegacyRegistration(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
@@ -570,52 +577,65 @@ func TestInstallWorkbench_UnreadableHooksWithoutClaudeNameTheLegacyRemoval(t *te
 	}
 }
 
-// TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup: the new skill and
-// hooks name tools only the new server serves, so a pre-rename folder whose
-// `mcp add` failed keeps its old skill, hooks and registration — one
-// vocabulary — instead of new hooks over an old server.
-func TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup(t *testing.T) {
+// TestInstallWorkbench_FailedAddStillMigratesTheFiles (ask #312): a
+// pre-rename folder whose `mcp add` failed still gets the new skill, hooks
+// and allow rule and loses the old skill, hooks and exclude line, as a
+// successful migration does — the old setup no longer runs, so there is
+// nothing to keep. The failed registration is reported on its own, as for
+// any folder.
+func TestInstallWorkbench_FailedAddStillMigratesTheFiles(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
 	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	before := decodeSettings(t, folder)
 	f.failAdd = true
 	o := legacyOpts(folder, f)
 
 	rep, err := InstallWorkbench(context.Background(), o)
-	assertLegacySetupKept(t, folder, rep, err)
-	if rep.LegacySkill.State != StateUnchanged || rep.LegacyPermissionRules != 0 {
-		t.Fatalf("report: %+v", rep)
+	if err == nil || !strings.Contains(err.Error(), "claude mcp add") {
+		t.Fatalf("the failed add must be reported: %v", err)
+	}
+	if strings.Contains(err.Error(), "left on that setup") {
+		t.Fatalf("nothing of the old setup is kept any more: %v", err)
+	}
+	assertLegacyFilesMigrated(t, folder, rep, before)
+	if rep.LegacyPermissionRules != 2 {
+		t.Fatalf("two allow rules name the old server, got %d", rep.LegacyPermissionRules)
 	}
 
 	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || st.CurrentMCP || !st.LegacyMCP || !st.Legacy || !st.Hook || !st.StopHook ||
-		st.Skill.State != StateMissing || st.LegacySkill.State != StateUnchanged {
+		st.Skill.State != StateUnchanged || st.LegacySkill.State != StateMissing {
 		t.Fatalf("status after the failed resync: %+v err=%v", st, err)
+	}
+
+	// Once the registration can succeed, the next install finishes the job.
+	f.failAdd = false
+	rep, err = InstallWorkbench(context.Background(), o)
+	if err != nil || !rep.MCPRegistered || !rep.LegacyMCPRemoved {
+		t.Fatalf("the retry must register and drop the old server: %+v err=%v", rep, err)
+	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.CurrentMCP || st.LegacyMCP || st.Legacy {
+		t.Fatalf("status after the retry: %+v err=%v", st, err)
 	}
 }
 
-// assertLegacySetupKept checks a pre-rename folder was left on its old setup
-// by an install whose registration did not go in.
-func assertLegacySetupKept(t *testing.T, folder string, rep WorkbenchInstallReport, err error) {
+// assertLegacyFilesMigrated checks a pre-rename folder's files were migrated
+// by an install whose registration did not go in: the new skill in, the old
+// one and its exclude line out, the hooks replaced in place (before is the
+// settings decoded before the install), and no registration reported.
+func assertLegacyFilesMigrated(t *testing.T, folder string, rep WorkbenchInstallReport, before map[string]any) {
 	t.Helper()
-	if err == nil || !strings.Contains(err.Error(), "was left on that setup") ||
-		!strings.Contains(err.Error(), "the old watchtower-project skill, hooks and MCP registration kept") {
-		t.Fatalf("the error must name the kept setup: %v", err)
+	if rep.Skill.State != StateInstalled || rep.LegacySkill.State != StateRemoved {
+		t.Fatalf("skills: new %+v, legacy %+v", rep.Skill, rep.LegacySkill)
 	}
-	if got := readTestFile(t, filepath.Join(legacySkillDir(folder), "SKILL.md")); got != legacySkillContent {
-		t.Fatalf("the legacy skill changed:\n%s", got)
+	if _, err := os.Lstat(legacySkillDir(folder)); !os.IsNotExist(err) {
+		t.Fatalf("the legacy skill directory survived (err=%v)", err)
 	}
-	if _, statErr := os.Lstat(filepath.Dir(workbenchSkillFile(folder))); !os.IsNotExist(statErr) {
-		t.Fatalf("the new skill must not be installed next to the old setup (err=%v)", statErr)
-	}
-	if got := readTestFile(t, settingsFile(folder)); got != legacyOwnerSettings {
-		t.Fatalf("the settings (legacy hooks) must stay byte-identical:\n%s", got)
-	}
-	if !strings.Contains(excludeOf(t, folder), "/.claude/skills/watchtower-project/") {
-		t.Fatalf("the kept legacy skill's exclude line must stay:\n%s", excludeOf(t, folder))
-	}
-	if rep.MCPRegistered || rep.LegacyMCPRemoved || rep.HookChanged || rep.LegacyHooksReplaced || rep.Skill.State != "" {
-		t.Fatalf("nothing may be reported migrated: %+v", rep)
+	assertLegacyHooksReplaced(t, folder, rep, before)
+	assertLegacyExcludeReplaced(t, folder)
+	if rep.MCPRegistered || rep.LegacyMCPRemoved {
+		t.Fatalf("no registration may be reported: %+v", rep)
 	}
 }
 

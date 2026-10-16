@@ -140,10 +140,12 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
 
-// A resync whose `mcp add` failed leaves a legacy folder entirely on its old
-// setup (old skill, hooks and registration): mcp and hook still read true
-// (the old entries are there), legacy stays true and current_mcp says the
-// new registration is missing. A later install that registers it migrates the folder.
+// A resync whose `mcp add` failed still migrates a legacy folder's files
+// (ask #312): the new skill and hooks are in, the old skill is gone, and
+// only the old registration is left — it goes once the new one is in. So
+// mcp and hook read true, legacy stays true (Repair stays offered) and
+// current_mcp says the new registration is missing. A later install that
+// registers it finishes the migration.
 func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -154,10 +156,10 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	var out bytes.Buffer
 	assert.Error(t, runWorkbenchInstall(context.Background(), &out, p))
 	got := statusJSON(t, p)
-	assert.Equal(t, "missing", got.Skill, "the new skill is not installed over an old registration")
-	assert.Equal(t, "unchanged", got.LegacySkill, "the old skill is kept")
-	assert.True(t, got.Hook && got.StopHook, "the old hooks are kept: %+v", got)
-	assert.True(t, got.MCP, "the old registration still serves the folder")
+	assert.Equal(t, "unchanged", got.Skill, "the new skill is installed although the registration failed")
+	assert.Equal(t, "", got.LegacySkill, "the old skill is removed")
+	assert.True(t, got.Hook && got.StopHook, "the new hooks are in: %+v", got)
+	assert.True(t, got.MCP, "the old registration is still there")
 	assert.False(t, got.CurrentMCP)
 	assert.True(t, got.Legacy)
 
@@ -170,9 +172,10 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 }
 
 // The resync's suggestions name the new skill and tools once the new server
-// is registered, and no tool at all when it is not: a pre-rename folder left
-// on its old setup has no server that still runs (the `mcp --project N`
-// alias is gone), and neither has a fresh folder without a registration.
+// is registered, and no tool at all when it is not: a pre-rename folder whose
+// registration failed has its new skill but no server that lists our tools
+// (its old `mcp --project N` only answers with the Repair line), and neither
+// has a fresh folder without a registration.
 func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 	sourcesLine := func(t *testing.T, res workbenchResyncJSON) string {
 		t.Helper()
@@ -205,7 +208,7 @@ func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
 		assert.Contains(t, sourcesLine(t, res), "(add_workbench_source)")
 		assert.Contains(t, strings.Join(res.Suggestions, "\n"), "run the watchtower-workbench skill's setup")
 	})
-	t.Run("legacy folder kept on its old setup", func(t *testing.T) {
+	t.Run("legacy folder whose registration failed", func(t *testing.T) {
 		res := resync(t, true, true)
 		require.False(t, res.MCPRegistered)
 		line := sourcesLine(t, res)

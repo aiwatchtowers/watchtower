@@ -65,8 +65,9 @@ type workbenchResyncJSON struct {
 
 	// The migration of a folder set up before the Workbench rename (spec
 	// 2026-10-02 §5.4). LegacySkill is a devpack state: removed, drifted or
-	// foreign (both kept), unchanged (the whole old setup was left because
-	// the new MCP registration did not go in), "" = there was none.
+	// foreign (both kept), "" = there was none. Until 2026-10-16 it could
+	// also be unchanged (the old setup was kept when the registration
+	// failed); the files now migrate either way (ask #312).
 	LegacySkill           string `json:"legacy_skill"`
 	LegacyMCPRemoved      bool   `json:"legacy_mcp_removed"`
 	LegacyHooksReplaced   bool   `json:"legacy_hooks_replaced"`

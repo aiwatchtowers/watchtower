@@ -584,7 +584,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     }
 
     /// The Claude Code part. Without `claude` an unregistered MCP server is
-    /// not repairable from here — see `manualMCPCommand`.
+    /// not repairable from here — see `manualMCPCommand`. `legacy` and a
+    /// missing skill are: the resync Repair runs migrates the files whether
+    /// or not the registration goes in (ask #312), and without `claude`
+    /// `legacy` sees only those files, so one Repair settles them.
     var claudeNeedsRepair: Bool {
         legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
             || !askGuard || !askToolBlock || !cleanupPermission

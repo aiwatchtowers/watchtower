@@ -297,6 +297,24 @@ final class WorkbenchCLITests: XCTestCase {
                        "without claude the registration is not repairable from here")
     }
 
+    /// Ask #312: a legacy folder without `claude` is offered Repair, and the
+    /// Repair settles it — the resync migrates the files although nothing
+    /// can be registered, and without `claude` status sees no old
+    /// registration — so Repair is not offered again in a loop.
+    func testLegacyFolderWithoutClaudeRepairSettles() throws {
+        let before = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"skill":"missing","hook":true,"stop_hook":true,"mcp":false,"claude_found":false,
+             "legacy":true,"legacy_skill":"unchanged","current_mcp":false}
+            """#.utf8))
+        XCTAssertTrue(before.claudeNeedsRepair, "the old setup no longer runs")
+        let after = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"skill":"unchanged","hook":true,"stop_hook":true,"mcp":false,"claude_found":false,
+             "legacy":false,"legacy_skill":"","current_mcp":false}
+            """#.utf8))
+        XCTAssertFalse(after.claudeNeedsRepair, "nothing left that Repair can fix without claude")
+        XCTAssertFalse(after.needsRepair)
+    }
+
     /// An older CLI sends no `current_mcp`: the decision falls back to `mcp`.
     func testStatusWithoutCurrentMCPKeepsTheOldRule() throws {
         let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
