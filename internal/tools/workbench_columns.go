@@ -55,14 +55,9 @@ func resolveTargetColumn(d *db.DB, t *db.Target, a updateTargetArgs) (*columnMov
 		}
 		return nil, nil
 	}
-	var stored sql.NullInt64
-	var parent bool
-	if err := d.QueryRow(`SELECT board_column_id, EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = t.id)
-		FROM targets t WHERE t.id = ?`, t.ID).Scan(&stored, &parent); err != nil {
-		return nil, fmt.Errorf("reading target %d column: %w", t.ID, err)
-	}
-	if parent {
-		return nil, &ValidationError{Msg: "columns apply to leaf targets"}
+	stored, err := leafTargetColumn(d, t.ID)
+	if err != nil {
+		return nil, err
 	}
 	// column "" alone keeps the status and clears the column.
 	mv := columnMove{status: t.Status}
@@ -71,14 +66,9 @@ func resolveTargetColumn(d *db.DB, t *db.Target, a updateTargetArgs) (*columnMov
 	}
 	name := strings.TrimSpace(*a.Column)
 	if name != "" {
-		status, id, ok := def.Resolve(name)
-		if !ok {
-			return nil, &ValidationError{Msg: fmt.Sprintf("no column %q on this board; its columns: %s", name,
-				strings.Join(columnNames(def), ", "))}
-		}
-		if a.Status != "" && a.Status != status {
-			return nil, &ValidationError{Msg: fmt.Sprintf("column %q is in %s, status says %s — send one of them",
-				columnTitle(def, status, id), status, a.Status)}
+		status, id, err := resolveNamedColumn(def, name, a.Status)
+		if err != nil {
+			return nil, err
 		}
 		mv.status, mv.columnID = status, id
 	}
@@ -87,6 +77,36 @@ func resolveTargetColumn(d *db.DB, t *db.Target, a updateTargetArgs) (*columnMov
 	}
 	mv.same = mv.status == t.Status && sameColumn(stored, mv.columnID)
 	return &mv, nil
+}
+
+// leafTargetColumn reads targetID's stored column, refusing a target that
+// has children: columns apply to leaf targets only.
+func leafTargetColumn(d *db.DB, targetID int) (sql.NullInt64, error) {
+	var stored sql.NullInt64
+	var parent bool
+	if err := d.QueryRow(`SELECT board_column_id, EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = t.id)
+		FROM targets t WHERE t.id = ?`, targetID).Scan(&stored, &parent); err != nil {
+		return stored, fmt.Errorf("reading target %d column: %w", targetID, err)
+	}
+	if parent {
+		return stored, &ValidationError{Msg: "columns apply to leaf targets"}
+	}
+	return stored, nil
+}
+
+// resolveNamedColumn resolves a non-empty column name on the board and
+// checks it agrees with the requested status (empty = no status given).
+func resolveNamedColumn(def db.BoardColumns, name, wantStatus string) (string, *int64, error) {
+	status, id, ok := def.Resolve(name)
+	if !ok {
+		return "", nil, &ValidationError{Msg: fmt.Sprintf("no column %q on this board; its columns: %s", name,
+			strings.Join(columnNames(def), ", "))}
+	}
+	if wantStatus != "" && wantStatus != status {
+		return "", nil, &ValidationError{Msg: fmt.Sprintf("column %q is in %s, status says %s — send one of them",
+			columnTitle(def, status, id), status, wantStatus)}
+	}
+	return status, id, nil
 }
 
 func sameColumn(stored sql.NullInt64, id *int64) bool {

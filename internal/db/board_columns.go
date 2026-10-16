@@ -246,30 +246,16 @@ func validateBoardColumns(in BoardColumns) ([]BoardColumn, []string, error) {
 	for _, c := range in.Columns {
 		c.Title = strings.TrimSpace(c.Title)
 		c.Description = strings.TrimSpace(c.Description)
-		if _, known := BoardStatusLabels[c.Status]; !known {
-			return nil, nil, columnsErrorf("column %q: unknown status %q", c.Title, c.Status)
-		}
-		if c.Title == "" {
-			return nil, nil, columnsErrorf("a %s column has an empty title", c.Status)
-		}
-		if utf8.RuneCountInString(c.Title) > maxColumnTitleLen {
-			return nil, nil, columnsErrorf("column %q: title is longer than %d characters", c.Title, maxColumnTitleLen)
-		}
-		if strings.Trim(c.Title, "0123456789") == "" {
-			return nil, nil, columnsErrorf("column %q: a title cannot be only digits", c.Title)
-		}
-		if utf8.RuneCountInString(c.Description) > maxColumnDescLen {
-			return nil, nil, columnsErrorf("column %q: description is longer than %d characters", c.Title, maxColumnDescLen)
+		if err := checkColumnFields(c); err != nil {
+			return nil, nil, err
 		}
 		key := strings.ToLower(c.Title)
 		if seen[key] {
 			return nil, nil, columnsErrorf("column %q: title is used twice", c.Title)
 		}
 		seen[key] = true
-		for s, label := range BoardStatusLabels {
-			if s != c.Status && strings.EqualFold(label, c.Title) {
-				return nil, nil, columnsErrorf("column %q: title is the label of another status (%s)", c.Title, s)
-			}
+		if err := checkColumnTitleNotOtherLabel(c); err != nil {
+			return nil, nil, err
 		}
 		c.Position = perStatus[c.Status]
 		perStatus[c.Status]++
@@ -285,6 +271,38 @@ func validateBoardColumns(in BoardColumns) ([]BoardColumn, []string, error) {
 		}
 	}
 	return cols, hidden, nil
+}
+
+// checkColumnFields checks one trimmed column's status, title and
+// description against the spec §3 limits.
+func checkColumnFields(c BoardColumn) error {
+	if _, known := BoardStatusLabels[c.Status]; !known {
+		return columnsErrorf("column %q: unknown status %q", c.Title, c.Status)
+	}
+	if c.Title == "" {
+		return columnsErrorf("a %s column has an empty title", c.Status)
+	}
+	if utf8.RuneCountInString(c.Title) > maxColumnTitleLen {
+		return columnsErrorf("column %q: title is longer than %d characters", c.Title, maxColumnTitleLen)
+	}
+	if strings.Trim(c.Title, "0123456789") == "" {
+		return columnsErrorf("column %q: a title cannot be only digits", c.Title)
+	}
+	if utf8.RuneCountInString(c.Description) > maxColumnDescLen {
+		return columnsErrorf("column %q: description is longer than %d characters", c.Title, maxColumnDescLen)
+	}
+	return nil
+}
+
+// checkColumnTitleNotOtherLabel refuses a title equal to another status's
+// standard label.
+func checkColumnTitleNotOtherLabel(c BoardColumn) error {
+	for s, label := range BoardStatusLabels {
+		if s != c.Status && strings.EqualFold(label, c.Title) {
+			return columnsErrorf("column %q: title is the label of another status (%s)", c.Title, s)
+		}
+	}
+	return nil
 }
 
 // writeBoardColumns applies cols over the stored columns of projectID inside
