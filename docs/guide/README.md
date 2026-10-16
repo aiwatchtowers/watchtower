@@ -65,3 +65,8 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 ## Troubleshooting
 
 ## Reference
+
+- [Settings](reference/settings.md) — what each Settings tab does that the screen doesn't say.
+- [Keyboard shortcuts](reference/keyboard-shortcuts.md) — every key equivalent, by area.
+- [Command line](reference/cli.md) — the `watchtower` commands, grouped.
+- [Glossary](reference/glossary.md) — the terms the guide uses, one line each.
