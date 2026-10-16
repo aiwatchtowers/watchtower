@@ -2,11 +2,19 @@ import SwiftUI
 import WatchtowerCore
 
 /// One journal step of an expanded run: "✓ list_emails — 23 messages" with
-/// its tokens and duration on the right. A proposal links to its Inbox card;
-/// an ask or a session shows as plain text in P3 (P5 makes them links).
+/// its tokens and duration on the right. A proposal links to its Inbox card,
+/// a workbench run's session and ask to the workbench page (P5); with no
+/// link to follow each shows as plain text.
 struct AutomationStepRow: View {
+    /// Where the step's ids lead; nil leaves that id as text.
+    struct Links {
+        var openInbox: ((Int64) -> Void)?
+        var openSession: ((Int64) -> Void)?
+        var openAsk: ((Int64) -> Void)?
+    }
+
     let step: AutomationRunStep
-    let onOpenInbox: ((Int64) -> Void)?
+    let links: Links
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -20,7 +28,7 @@ struct AutomationStepRow: View {
                     .monospacedDigit()
             }
             if step.actionID != nil || step.askID != nil || step.sessionID != nil {
-                links
+                linkRow
             }
         }
         .font(.callout)
@@ -41,25 +49,30 @@ struct AutomationStepRow: View {
         return parts.joined(separator: " · ")
     }
 
-    private var links: some View {
+    private var linkRow: some View {
         HStack(spacing: 12) {
             if let actionID = step.actionID {
-                if let onOpenInbox {
-                    Button("Open in Inbox (proposal #\(actionID))") { onOpenInbox(actionID) }
-                        .buttonStyle(.link)
-                } else {
-                    Text("Proposal #\(actionID)")
-                }
+                link("Open in Inbox (proposal #\(actionID))", text: "Proposal #\(actionID)", id: actionID, links.openInbox)
             }
             if let askID = step.askID {
-                Text("Ask #\(askID)")
+                link("Open ask #\(askID)", text: "Ask #\(askID)", id: askID, links.openAsk)
             }
             if let sessionID = step.sessionID {
-                Text("Session #\(sessionID)")
+                link("Open session #\(sessionID)", text: "Session #\(sessionID)", id: sessionID, links.openSession)
             }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.leading, 18)
+    }
+
+    @ViewBuilder
+    private func link(_ title: String, text: String, id: Int64, _ open: ((Int64) -> Void)?) -> some View {
+        if let open {
+            Button(title) { open(id) }
+                .buttonStyle(.link)
+        } else {
+            Text(text)
+        }
     }
 }

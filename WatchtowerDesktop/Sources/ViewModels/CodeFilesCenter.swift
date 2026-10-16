@@ -139,6 +139,9 @@ final class CodeFilesCenter {
     /// Code questions at the selection (on `AppState`); the editor page
     /// reports its `selection`, `scroll` and `askAI` there.
     @ObservationIgnored weak var questions: CodeQuestionCenter?
+    /// A batch of a workbench folder touched its automation recipes
+    /// (`touchesAutomationRecipes`): the workbench view model rescans them.
+    @ObservationIgnored var onAutomationRecipesChanged: ((_ workbenchID: Int64) -> Void)?
 
     init(
         defaults: UserDefaults = .standard,
@@ -271,6 +274,8 @@ final class CodeFilesCenter {
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, root: CodeRoot) {
         guard watched.contains(root) else { return }
+        // Go indexes the workbench folder's recipes, not a worktree's copy.
+        if root.isMain, Self.touchesAutomationRecipes(batch) { onAutomationRecipesChanged?(root.workbenchID) }
         if !root.isMain, batch.mustRescan || batch.paths.contains(""), !CodeRootPolicy.directoryExists(root.folder) {
             rootRemoved(root)
             return
@@ -289,6 +294,15 @@ final class CodeFilesCenter {
             }
         }
         if !batch.isEmpty { refreshGit(root) }
+    }
+
+    /// A change under `.watchtower/automations/` (the folder itself, or
+    /// `.watchtower` created or removed), or events lost (anything may have
+    /// changed).
+    nonisolated static func touchesAutomationRecipes(_ batch: FolderWatcher.Batch) -> Bool {
+        batch.mustRescan || batch.paths.contains {
+            $0 == ".watchtower" || $0 == ".watchtower/automations" || $0.hasPrefix(".watchtower/automations/")
+        }
     }
 
     private func refreshAllGit() {

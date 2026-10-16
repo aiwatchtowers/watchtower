@@ -150,6 +150,9 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let createdAt: String
     package let answeredAt: String
     package let deliveredAt: String
+    /// The automation run that filed it through `ask()` (00122); nil = an
+    /// agent's ask, or the run was deleted since.
+    package let automationRunID: Int64?
 
     /// Throws on a kind, level, origin, status, payload or answer it cannot
     /// read: such a row is broken, and showing it as something else would
@@ -193,6 +196,7 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
         createdAt = row["created_at"] ?? ""
         answeredAt = row["answered_at"] ?? ""
         deliveredAt = row["delivered_at"] ?? ""
+        automationRunID = row["automation_run_id"]
     }
 
     package var isOpen: Bool { status == .open }
