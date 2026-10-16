@@ -22,14 +22,18 @@ struct HelpChatPanel: View {
                 placeholder: "Ask how Watchtower works…",
                 maxHeight: 120,
                 // Esc stops a running answer first, then closes the panel.
-                onEscape: escape
+                onEscape: escape,
+                autoFocus: true
             ))
         }
         .frame(width: 420, height: 560)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
         .shadow(radius: 12, y: 4)
-        .background(FocusComposerOnAppear())
+        .onExitCommand(perform: escape)
+        .onChange(of: chatVM.draft) { old, new in
+            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Ask Watchtower")
     }
@@ -65,18 +69,4 @@ struct HelpChatPanel: View {
             chatVM.draft = ""
         }
     }
-}
-
-/// Puts the caret in the composer once the panel is on screen.
-private struct FocusComposerOnAppear: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { [weak view] in
-            guard let window = view?.window else { return }
-            HelpChatFocus.focusComposer(in: window)
-        }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {}
 }

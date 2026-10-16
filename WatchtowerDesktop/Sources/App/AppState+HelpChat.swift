@@ -3,14 +3,19 @@ import WebKit
 
 extension AppState {
     func toggleHelpChat() {
-        if !isHelpChatShown { ensureChatViewModels() }
-        isHelpChatShown.toggle()
+        if isHelpChatShown {
+            isHelpChatShown = false
+            return
+        }
+        ensureChatViewModels()
+        isHelpChatShown = chatViewModel != nil
     }
 
     /// Opens the popup with `prefill` typed into its composer (Search's Ask in chat).
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
-        chatViewModel?.draft = prefill
+        guard let chatViewModel else { return }
+        chatViewModel.draft = prefill
         isHelpChatShown = true
     }
 
@@ -19,7 +24,7 @@ extension AppState {
         let webView = Self.webViewWithKeyboard()
         switch HelpChatPolicy.action(destination: selectedDestination, editorHasKeyboard: webView != nil) {
         case .focusChatComposer:
-            HelpChatFocus.focusComposer(in: NSApp.keyWindow)
+            chatComposerFocusTick += 1
         case .editorToggleComment:
             // A web view without a focused Monaco text (a diff, a recipe form)
             // answers false: the popup opens instead.
@@ -39,24 +44,6 @@ extension AppState {
         while let current = view {
             if let web = current as? WKWebView { return web }
             view = current.superview
-        }
-        return nil
-    }
-}
-
-enum HelpChatFocus {
-    /// Puts the caret in the first editable text view under `window`'s content.
-    @MainActor
-    static func focusComposer(in window: NSWindow?) {
-        guard let window, let field = firstEditableTextView(in: window.contentView) else { return }
-        window.makeFirstResponder(field)
-    }
-
-    private static func firstEditableTextView(in view: NSView?) -> NSTextView? {
-        guard let view else { return nil }
-        if let text = view as? NSTextView, text.isEditable { return text }
-        for sub in view.subviews {
-            if let found = firstEditableTextView(in: sub) { return found }
         }
         return nil
     }

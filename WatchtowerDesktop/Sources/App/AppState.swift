@@ -19,6 +19,8 @@ final class AppState {
     var selectedDestination: SidebarDestination = .home
     /// The ⌘/ chat popup over the current tab (in-app help).
     var isHelpChatShown = false
+    /// Bumped by ⌘/ on the AI Chat tab: its composer takes the caret.
+    var chatComposerFocusTick = 0
 
     /// Which feature ids are currently disabled — drives sidebar visibility,
     /// navigation fallback, and the Dashboard banner. Populated by the

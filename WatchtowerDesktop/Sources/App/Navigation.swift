@@ -182,7 +182,11 @@ struct MainNavigationView: View {
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
         // Direct writes (deep links, Day Plan, the action strip, Catch-Up
         // cards) must not land on a hidden tab either.
-        .onChange(of: appState.selectedDestination) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.selectedDestination) { _, new in
+            applyFeatureFallback()
+            // The AI Chat tab shows the same thread; one view of it at a time.
+            if new == .chat { appState.isHelpChatShown = false }
+        }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
