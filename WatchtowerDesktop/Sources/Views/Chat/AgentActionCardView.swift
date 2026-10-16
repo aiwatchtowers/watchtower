@@ -27,6 +27,13 @@ struct AgentActionCardView: View {
     /// (`SlackSendProposal.reconnectAccountID`) and returns why it failed, nil
     /// on success. Nil hides the button.
     var onReconnectSlack: ((Int64) async -> String?)?
+    /// Where the proposal came from, above the card — "⚙ <automation> · run
+    /// #<n>" for a row an automation run proposed (`ActionStripViewModel.actionLabels`).
+    /// Nil shows nothing.
+    var contextLabel: String?
+    /// Opens what `contextLabel` names (the automation's card, run open).
+    /// Nil renders the label as plain text.
+    var onOpenContext: (() -> Void)?
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -202,6 +209,9 @@ struct AgentActionCardView: View {
         // One args decode per render for a save_automation card.
         let save = action.tool == SaveAutomationCardModel.tool ? SaveAutomationCardModel(action: action) : nil
         VStack(alignment: .leading, spacing: 8) {
+            if let contextLabel {
+                contextLine(contextLabel)
+            }
             header(title: save?.title ?? Self.title(for: action))
             if let save {
                 SaveAutomationCardDetails(model: save)
@@ -283,6 +293,22 @@ struct AgentActionCardView: View {
         guard let message = gestureError?.message, !message.isEmpty, !action.isTerminal else { return nil }
         if !action.error.isEmpty, message.contains(action.error) || action.error.contains(message) { return nil }
         return message
+    }
+
+    @ViewBuilder
+    private func contextLine(_ label: String) -> some View {
+        if let onOpenContext {
+            Button(label, action: onOpenContext)
+                .buttonStyle(.link)
+                .font(.caption)
+                .help("Open the automation run")
+                .accessibilityIdentifier("agentAction.contextLabel")
+        } else {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("agentAction.contextLabel")
+        }
     }
 
     private func header(title: String) -> some View {

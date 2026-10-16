@@ -147,6 +147,11 @@ package enum AutomationQueries {
 
     // MARK: - Labels
 
+    /// The automation a run belongs to; nil when the run is gone.
+    package static func automationID(_ db: Database, runID: Int64) throws -> Int64? {
+        try Int64.fetchOne(db, sql: "SELECT automation_id FROM automation_runs WHERE id = ?", arguments: [runID])
+    }
+
     /// "⚙ <name> · run #<id>" for each run that exists; a missing run is
     /// absent from the map.
     package static func runLabels(_ db: Database, runIDs: [Int64]) throws -> [Int64: String] {

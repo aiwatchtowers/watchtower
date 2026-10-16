@@ -32,6 +32,13 @@ package final class AutomationsViewModel {
     package private(set) var items: [AutomationListItem] = []
     /// The sidebar badge: automations needing confirmation + runs waiting on the owner.
     package private(set) var attentionCount = 0
+    /// Unread inbox outputs — the Inbox badge's automation share. The daemon
+    /// writes them from another process, so this poll is what notices them.
+    package private(set) var inboxOutputCount = 0
+    /// Runs when `inboxOutputCount` changes, so the Inbox sidebar badge
+    /// (`SidebarCountsViewModel`, which sees only this process's writes)
+    /// re-reads.
+    @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
     /// Run ids whose steps are shown in the history.
@@ -152,6 +159,7 @@ package final class AutomationsViewModel {
     private struct Snapshot {
         var items: [AutomationListItem]
         var attentionCount: Int
+        var inboxOutputCount: Int
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
 
@@ -179,6 +187,7 @@ package final class AutomationsViewModel {
             return Self(
                 items: try AutomationQueries.fetchList(db, now: now),
                 attentionCount: try AutomationQueries.attentionCount(db),
+                inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
                 card: card,
                 steps: steps
             )
@@ -188,6 +197,10 @@ package final class AutomationsViewModel {
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
         attentionCount = snapshot.attentionCount
+        if snapshot.inboxOutputCount != inboxOutputCount {
+            inboxOutputCount = snapshot.inboxOutputCount
+            onInboxOutputCountChanged?()
+        }
         for (runID, runSteps) in snapshot.steps { steps[runID] = runSteps }
         // The selection may have moved while the read ran; keep only what matches it.
         if let card = snapshot.card, card.automationID == selectedID {

@@ -174,6 +174,32 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.attentionCount, 1)
     }
 
+    /// The daemon writes inbox outputs from another process; the poll is what
+    /// tells the Inbox sidebar badge to re-read, and only when the count moved.
+    func testInboxOutputCountChangeNotifiesTheInboxBadge() throws {
+        let (automationID, runID) = try pool.write { db -> (Int64, Int64) in
+            let id = try TestDatabase.insertAutomation(db)
+            return (id, try TestDatabase.insertAutomationRun(db, automationID: id))
+        }
+        let vm = makeViewModel()
+        var notified = 0
+        vm.onInboxOutputCountChanged = { notified += 1 }
+
+        vm.refresh()
+        XCTAssertEqual(notified, 0, "no outputs, no change")
+
+        try pool.write { db in
+            try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
+            try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID, kind: "report")
+        }
+        vm.refresh()
+        XCTAssertEqual(vm.inboxOutputCount, 1)
+        XCTAssertEqual(notified, 1)
+
+        vm.refresh()
+        XCTAssertEqual(notified, 1, "an unchanged count does not refresh the badge again")
+    }
+
     func testSelectLoadsCardAndToggleRunLoadsSteps() throws {
         let (id, runID) = try pool.write { db -> (Int64, Int64) in
             let id = try TestDatabase.insertAutomation(db)

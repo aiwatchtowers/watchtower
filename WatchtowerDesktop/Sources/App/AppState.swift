@@ -549,6 +549,21 @@ final class AppState {
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
+    /// An Inbox proposal card's automation label: opens the run's
+    /// automation with the run expanded. A run that is gone (its automation
+    /// was deleted) opens nothing; a failed read still opens the tab, where
+    /// the list's own read reports what is wrong.
+    func openAutomationRun(runID: Int64) {
+        guard let pool = databaseManager?.dbPool else { return }
+        do {
+            guard let automationID = try pool.read({ db in try AutomationQueries.automationID(db, runID: runID) })
+            else { return }
+            openAutomationRun(automationID: automationID, runID: runID)
+        } catch {
+            selectedDestination = .automations
+        }
+    }
+
     /// "Change it in words" for one automation: its engine comes from
     /// `embeddedChatCenter`, so a turn outlives the sheet. Nil while the
     /// database is not open or the automation is gone.
@@ -1356,6 +1371,11 @@ final class AppState {
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
         let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
+        // Daemon-written inbox outputs never fire the counts VM's observation.
+        // Resolved at call time: the counts VM may be built after this one.
+        vm.onInboxOutputCountChanged = { [weak self] in
+            Task { await self?.sidebarCountsViewModel?.refresh() }
+        }
         vm.start()
         automationsViewModel = vm
         automationEditorCenter = AutomationEditorCenter(
@@ -1752,7 +1772,13 @@ final class AppState {
     }
 
     func initActionStrip(dbPool: DatabasePool) {
-        let vm = ActionStripViewModel(dbPool: dbPool)
+        // A decision on an automation run's proposal wakes the daemon's
+        // automations loop (spec §7.4); the runner resolves per call, like
+        // the feed's own.
+        let vm = ActionStripViewModel(dbPool: dbPool) {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            try await AutomationsCLI(runner: runner).wake()
+        }
         vm.refresh()
         actionStripViewModel = vm
     }
