@@ -46,6 +46,28 @@ final class ReviewQueriesTests: XCTestCase {
         XCTAssertEqual(now.first { $0.carriedFrom == b }?.status, .outdated)
     }
 
+    /// An outdated comment goes on as outdated with its quote; a resolved one stays behind.
+    func testCarryKeepsOutdatedAndLeavesResolvedBehind() throws {
+        let db = try TestDatabase.create()
+        let r1 = try db.write { try Self.seedRound($0) }
+        let lost = try draft(db, r1, "a.go", tree: "t1", body: "still lost")
+        let done = try draft(db, r1, "b.go", tree: "t1", body: "done")
+        try db.write {
+            try $0.execute(sql: "UPDATE review_rounds SET status='sent' WHERE id=?", arguments: [r1])
+            try ReviewQueries.markOutdated($0, id: lost)
+            try $0.execute(sql: "UPDATE review_comments SET status='resolved' WHERE id=?", arguments: [done])
+        }
+        let r2 = try db.write { try Self.seedRound($0) }
+        let prev = try db.read { try ReviewQueries.comments($0, roundID: r1) }
+        try db.write { try ReviewQueries.carry($0, from: prev, into: r2, plan: .init(), treeSHA: "t2") }
+        let now = try db.read { try ReviewQueries.comments($0, roundID: r2) }
+        XCTAssertEqual(now.count, 1)
+        XCTAssertEqual(now.first?.carriedFrom, lost)
+        XCTAssertEqual(now.first?.status, .outdated)
+        XCTAssertEqual(now.first?.quote, "q")
+        XCTAssertEqual(now.first?.body, "still lost")
+    }
+
     func testReplaceMovesAndMarkOutdatedKeepsTheRow() throws {
         let db = try TestDatabase.create()
         let roundID = try db.write { try Self.seedRound($0) }

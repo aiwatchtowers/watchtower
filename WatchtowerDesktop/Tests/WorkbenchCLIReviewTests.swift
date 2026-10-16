@@ -33,19 +33,24 @@ final class WorkbenchCLIReviewTests: XCTestCase {
     func testDiffDecodesHunks() async throws {
         let runner = RecordingCLIRunner(output: """
         {"ok":true,"diff":{"files":[{"path":"a.go","status":"modified","additions":1,"deletions":1,"binary":false,
+         "new_blob":"blob","new_mode":"100644",
          "hunks":[{"hunk_id":"h","header":"@@ -1 +1 @@","old_start":1,"old_lines":1,"new_start":1,"new_lines":1,"lines":["-a","+b"]}]}],
          "truncated":false},"from":"b","to":"t"}
         """)
         let env = try await WorkbenchCLI(runner: runner).reviewDiff(projectID: 1, roundID: 7, since: true)
         XCTAssertEqual(runner.lastArgs.suffix(3), ["7", "--since", "--json"])
         XCTAssertEqual(env.diff?.files.first?.hunks.first?.hunkId, "h")
+        XCTAssertEqual(env.diff?.files.first?.newBlob, "blob")
     }
 
     func testFileSendAndContextBuildArgs() async throws {
         let runner = RecordingCLIRunner(output: #"{"ok":true}"#)
         let cli = WorkbenchCLI(runner: runner)
-        _ = try await cli.reviewFile(projectID: 1, roundID: 7, path: "a b.go", since: false)
+        _ = try await cli.reviewFile(projectID: 1, roundID: 7, path: "a b.go", oldPath: nil, since: false)
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "file", "--workbench", "1", "--round", "7", "--path", "a b.go", "--json"])
+        _ = try await cli.reviewFile(projectID: 1, roundID: 7, path: "new.go", oldPath: "old.go", since: true)
+        XCTAssertEqual(runner.lastArgs, ["workbench", "review", "file", "--workbench", "1", "--round", "7", "--path", "new.go",
+                                         "--old-path", "old.go", "--since", "--json"])
         _ = try await cli.reviewSend(projectID: 1, roundID: 7)
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "send", "--workbench", "1", "--round", "7", "--json"])
         _ = try await cli.reviewContext(projectID: 1, sessionID: 4)

@@ -197,12 +197,7 @@ extension WorkbenchesViewModel {
         case .files:
             updated.showWorkbenchView(.files)
         case .report, .changes:
-            // The session on screen, else the active one, else the first
-            // listed agent session; with none there is nothing to report on
-            // (or to review).
-            let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id)
-                ?? orderedSessions(projectID: project.id).first { $0.kind.isAgent }?.id
-            guard let id else { return }
+            guard let id = sessionViewTarget(projectID: project.id) else { return }
             Self.placeBesideItsSession(view == .report ? .sessionReport(id) : .changes(id), sessionID: id, in: &updated)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
@@ -217,6 +212,15 @@ extension WorkbenchesViewModel {
         }
         beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
+    }
+
+    /// The session the Session and Changes views open on: the one on screen,
+    /// else the active one, else the first listed agent session; nil = none,
+    /// nothing to report on or review (the header's Changes button is then
+    /// disabled).
+    func sessionViewTarget(projectID: Int64) -> Int64? {
+        layout(projectID: projectID).sessionIDs.first ?? activeSessionID(projectID: projectID)
+            ?? orderedSessions(projectID: projectID).first { $0.kind.isAgent }?.id
     }
 
     /// A session row's Review Changes (board #328): its workbench on screen,

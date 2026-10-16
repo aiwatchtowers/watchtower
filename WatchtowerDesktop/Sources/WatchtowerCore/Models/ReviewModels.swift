@@ -5,7 +5,8 @@ import GRDB
 
 package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     package let id: Int64
-    package let status: String
+    /// open | sent | delivered; the model marks its copy sent after a Send.
+    package var status: String
     package let mode: String
     package let folderRoot: String
     package let baseSha: String
@@ -50,10 +51,13 @@ package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
     package let deletions: Int
     package let binary: Bool
     package let collapsedReason: String?
+    /// The new side's blob id and mode ("" for a deleted file): the Viewed key.
+    package let newBlob: String
+    package let newMode: String
     package let hunks: [ReviewHunk]
 
     private enum CodingKeys: String, CodingKey {
-        case path, oldPath, status, additions, deletions, binary, collapsedReason, hunks
+        case path, oldPath, status, additions, deletions, binary, collapsedReason, newBlob, newMode, hunks
     }
 
     /// Go emits `"hunks": null` for collapsed, binary and unchanged files.
@@ -66,6 +70,8 @@ package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
         deletions = try c.decode(Int.self, forKey: .deletions)
         binary = try c.decode(Bool.self, forKey: .binary)
         collapsedReason = try c.decodeIfPresent(String.self, forKey: .collapsedReason)
+        newBlob = try c.decode(String.self, forKey: .newBlob)
+        newMode = try c.decode(String.self, forKey: .newMode)
         hunks = try c.decodeIfPresent([ReviewHunk].self, forKey: .hunks) ?? []
     }
 }

@@ -6,7 +6,8 @@ import XCTest
 
 /// Answers `workbench review <sub> …` from a script keyed by the subcommand
 /// (`args[2]`): one answer per call, the last repeating. A served `start`
-/// makes the round row exist, as Go's does.
+/// makes the round row exist, and a served `send` that sent closes the round
+/// and its drafts, as Go's do.
 private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [String: [String]] = [:]
@@ -67,7 +68,18 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
             if !wait { c.resume() }
         }
         if sub == "start" { try seedRound(answer) }
+        if sub == "send", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
+            try markSent(id)
+        }
         return Data(answer.utf8)
+    }
+
+    private func markSent(_ id: Int64) throws {
+        try db.write { db in
+            try db.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = ?", arguments: [id])
+            try db.execute(sql: "UPDATE review_comments SET status = 'sent' WHERE round_id = ? AND status IN ('draft','carried')",
+                           arguments: [id])
+        }
     }
 
     private func seedRound(_ json: String) throws {
@@ -148,12 +160,14 @@ private func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
     """
 }
 
+/// One modified file per path; its new blob follows the hunk name, so a
+/// changed `hunk` is changed content.
 private func diffJSON(_ paths: [String], hunk: String = "h") -> String {
     let hunkFields = #""header":"@@ -1 +1 @@","old_start":1,"old_lines":1,"new_start":1,"new_lines":1,"lines":["-a","+b"]"#
     let entries: [String] = paths.map { path in
         """
         {"path":"\(path)","status":"modified","additions":1,"deletions":1,"binary":false,
-         "hunks":[{"hunk_id":"\(hunk)-\(path)",\(hunkFields)}]}
+         "new_blob":"\(hunk)-\(path)","new_mode":"100644","hunks":[{"hunk_id":"\(hunk)-\(path)",\(hunkFields)}]}
         """
     }
     let files = entries.joined(separator: ",")
@@ -245,7 +259,89 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.send()
         XCTAssertTrue(h.sink.lines.isEmpty)
         XCTAssertNil(h.model.lastSend)
-        XCTAssertNil(h.model.lastError)
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
+        XCTAssertEqual(h.model.round?.status, "sent", "a round Go calls sent is not open here either")
+    }
+
+    /// REVIEW-03 across a Send: the sent round takes no new comment, and the
+    /// next Refresh opens the next round (never a refresh of the sent one),
+    /// carrying the unresolved comments and the Viewed marks.
+    func testSendThenRefreshOpensTheNextRoundAndCarries() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 8, prev: 7)])
+        h.cli.script(["file": fileJSON(old: "x\n", new: "one\ntwo\n"),
+                      "send": #"{"ok":true,"sent":true,"comments":1,"line":"Review round #7 sent (1 comment)."}"#])
+        await h.model.open()
+        await h.model.select("a.go")
+        try h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
+        try h.model.toggleViewed("a.go")
+        await h.model.send()
+        XCTAssertEqual(h.model.round?.status, "sent")
+
+        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "late")) {
+            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundNotOpen)
+        }
+        XCTAssertNotNil(h.model.lastError)
+        let sentRows = try await h.comments(7)
+        XCTAssertEqual(sentRows.map(\.body), ["why two?"], "nothing written into the sent round")
+        XCTAssertThrowsError(try h.model.editComment(id: try XCTUnwrap(sentRows.first).id, body: "edited")) {
+            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundNotOpen)
+        }
+
+        await h.model.refresh()
+        XCTAssertEqual(h.cli.calls("start").map { $0.contains("--refresh") }, [false, false], "the next round, not a refresh")
+        XCTAssertEqual(h.model.round?.id, 8)
+        XCTAssertEqual(h.model.round?.status, "open")
+        let carried = try await h.comments(8)
+        XCTAssertEqual(carried.map(\.status), [.carried])
+        XCTAssertEqual(carried.first?.carriedFrom, sentRows.first?.id)
+        XCTAssertEqual(carried.first?.startLine, 2)
+        XCTAssertTrue(h.model.isViewed("a.go"), "an unchanged file keeps its Viewed mark")
+        try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "next round")
+        let next = try await h.comments(8)
+        XCTAssertEqual(next.count, 2)
+    }
+
+    /// The Viewed key follows the file's new blob and mode: a binary file
+    /// (no hunks) changed again loses its mark, an unchanged one keeps it.
+    func testViewedKeyFollowsTheBlobForBinaryFiles() async throws {
+        func binary(_ blobs: [String: String]) -> String {
+            let entries = blobs.keys.sorted().map { path in
+                """
+                {"path":"\(path)","status":"modified","additions":0,"deletions":0,"binary":true,
+                 "new_blob":"\(blobs[path] ?? "")","new_mode":"100644","hunks":null}
+                """
+            }
+            return #"{"ok":true,"diff":{"files":[\#(entries.joined(separator: ","))],"truncated":false},"from":"b","to":"t"}"#
+        }
+        let h = try harness()
+        h.baseScript()
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("diff", [binary(["img.png": "b1", "logo.png": "c1"]), binary(["img.png": "b2", "logo.png": "c1"])])
+        await h.model.open()
+        try h.model.toggleViewed("img.png")
+        try h.model.toggleViewed("logo.png")
+        await h.model.refresh()
+        XCTAssertFalse(h.model.isViewed("img.png"))
+        XCTAssertTrue(h.model.isViewed("logo.png"))
+    }
+
+    /// A renamed file's old side is read at its old path.
+    func testRenamedFileReadsItsOldSideAtTheOldPath() async throws {
+        let h = try harness()
+        h.baseScript()
+        let renamed = """
+            {"ok":true,"diff":{"files":[{"path":"new.go","old_path":"old.go","status":"renamed","additions":0,"deletions":0,
+             "binary":false,"new_blob":"n","new_mode":"100644","hunks":null}],"truncated":false},"from":"b","to":"t"}
+            """
+        h.cli.script(["diff": renamed, "file": fileJSON(old: "x\n", new: "x\n")])
+        await h.model.open()
+        await h.model.select("new.go")
+        let args = try XCTUnwrap(h.cli.calls("file").last)
+        let i = try XCTUnwrap(args.firstIndex(of: "--old-path"))
+        XCTAssertEqual(args[i + 1], "old.go")
+        XCTAssertEqual(h.model.currentSides?.old.text, "x\n")
     }
 
     func testRefusedSendSetsLastError() async throws {
@@ -284,13 +380,13 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertTrue(h.cli.calls("diff").last?.contains("--since") == true)
     }
 
-    func testNewRoundKeepsViewedMarksWhoseHunksAreUnchanged() async throws {
+    func testNewRoundKeepsViewedMarksWhoseContentIsUnchanged() async throws {
         let h = try harness()
         let r6 = try await h.db.write { db -> Int64 in
             try db.execute(sql: Self.sentRoundSQL, arguments: [h.projectID, h.sessionID])
             return db.lastInsertedRowID
         }
-        // The previous round marked a.go (key of hunk "h-a.go") and b.go (a stale key).
+        // The previous round marked a.go (key of its blob "h-a.go") and b.go (a stale key).
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let env = try decoder.decode(ReviewEnvelope.self, from: Data(diffJSON(path: "a.go").utf8))
@@ -370,7 +466,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertNotNil(h.model.lastError)
     }
 
-    func testViewedMarkGoesStaleWhenTheHunksChange() async throws {
+    func testViewedMarkGoesStaleWhenTheContentChanges() async throws {
         let h = try harness()
         h.baseScript()
         h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])

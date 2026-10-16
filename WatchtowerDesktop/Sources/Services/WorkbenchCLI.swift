@@ -757,8 +757,10 @@ struct WorkbenchCLI {
             + (since ? ["--since"] : []))
     }
 
-    func reviewFile(projectID: Int64, roundID: Int64, path: String, since: Bool) async throws -> ReviewEnvelope {
+    /// `oldPath`: a renamed file's old path, where its old side is read.
+    func reviewFile(projectID: Int64, roundID: Int64, path: String, oldPath: String?, since: Bool) async throws -> ReviewEnvelope {
         try await review(["file", "--workbench", String(projectID), "--round", String(roundID), "--path", path]
+            + (oldPath.map { ["--old-path", $0] } ?? [])
             + (since ? ["--since"] : []))
     }
 

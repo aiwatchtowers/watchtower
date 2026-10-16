@@ -69,7 +69,9 @@ package enum ReviewQueries {
     }
 
     /// Carries the previous round's unresolved comments into roundID: moved →
-    /// `carried` at the new lines, lost → `outdated` (REVIEW-03: none dropped).
+    /// `carried` at the new lines, lost → `outdated`, an `outdated` one stays
+    /// `outdated` with its quote; only `resolved` ones stay behind (REVIEW-03:
+    /// none dropped).
     package static func carry(
         _ db: Database,
         from previous: [ReviewComment],
@@ -77,9 +79,9 @@ package enum ReviewQueries {
         plan: ReviewCommentAnchor.Plan,
         treeSHA: String
     ) throws {
-        for c in previous where c.status == .sent || c.status == .carried {
+        for c in previous where c.status == .sent || c.status == .carried || c.status == .outdated {
             let place = plan.moved[c.id]
-            let status = plan.lost.contains(c.id) ? "outdated" : "carried"
+            let status = c.status == .outdated || plan.lost.contains(c.id) ? "outdated" : "carried"
             try db.execute(sql: """
                 INSERT INTO review_comments (round_id, path, side, start_line, end_line, quote, quote_prefix, quote_suffix,
                     tree_sha, lens, body, status, carried_from, agent_reply)

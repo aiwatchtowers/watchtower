@@ -34,10 +34,12 @@ final class ReviewChangesModel {
         case fileNotLoaded(String)
         case unknownFile(String)
         case oldSideInSinceView
+        case roundNotOpen
 
         var errorDescription: String? {
             switch self {
             case .noRound: "No review round is open."
+            case .roundNotOpen: "This round was sent. Refresh to open the next round."
             case .fileNotLoaded(let path): "The file \(path) is not open, so its lines cannot be anchored."
             case .unknownFile(let path): "The file \(path) is not part of this diff."
             case .oldSideInSinceView: "Switch to All changes to comment on removed lines"
@@ -105,15 +107,19 @@ final class ReviewChangesModel {
 
     var draftCount: Int { comments.filter { $0.status == .draft }.count }
 
+    /// The message when Go answers that the round was already sent.
+    static let alreadySentMessage = "This round was already sent"
+
     /// Whether `path` is marked Viewed at its current content.
     func isViewed(_ path: String) -> Bool {
         guard let file = allFiles.first(where: { $0.path == path }) else { return false }
         return viewed[path] == Self.contentKey(file)
     }
 
-    /// A file's content key: sha256 of its hunk ids joined by newlines.
+    /// A file's content key: sha256 of its new side's mode and blob id, so a
+    /// binary, too-large, truncated or mode-only change moves it too.
     static func contentKey(_ file: ReviewDiffFile) -> String {
-        let joined = file.hunks.map(\.hunkId).joined(separator: "\n")
+        let joined = file.newMode + "\n" + file.newBlob
         return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -144,6 +150,8 @@ final class ReviewChangesModel {
             comments = rows
             viewed = marks
             load = .ready
+            // The next round after a Send keeps the file on screen: its sides come from the new tree.
+            if selectedPath != nil { await reloadSides() }
         } catch {
             load = .failed(Self.message(error))
         }
@@ -152,9 +160,15 @@ final class ReviewChangesModel {
     /// Re-reads the folder's tree: new diff, and this round's drafts and
     /// carried comments re-placed on it (moved, or outdated when lost). One
     /// runs at a time: a call while one runs makes exactly one more run after
-    /// it, so the last tree read always wins.
+    /// it, so the last tree read always wins. A round that is no longer open
+    /// gives way to the next one through `open()`, the single path that
+    /// creates a round and carries the comments and Viewed marks into it.
     func refresh() async {
         guard load == .ready, !sending else { return }
+        guard round?.status == "open" else {
+            await open()
+            return
+        }
         guard !refreshing else {
             refreshAgain = true
             return
@@ -225,6 +239,8 @@ final class ReviewChangesModel {
     func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String) throws {
         try run {
             guard let info = round else { throw ModelError.noRound }
+            // A sent round is closed: a draft written into it would never be sent.
+            guard info.status == "open" else { throw ModelError.roundNotOpen }
             // Old-side lines of the since view belong to the previous tree, not to base.
             guard !(side == "old" && view == .sinceLastRound) else { throw ModelError.oldSideInSinceView }
             guard selectedPath == path, let sides = currentSides else { throw ModelError.fileNotLoaded(path) }
@@ -240,6 +256,8 @@ final class ReviewChangesModel {
 
     func editComment(id: Int64, body: String) throws {
         try run {
+            guard let info = round else { throw ModelError.noRound }
+            guard info.status == "open" else { throw ModelError.roundNotOpen }
             try db.write { try ReviewQueries.updateDraft($0, id: id, body: body) }
             try reloadComments()
         }
@@ -275,7 +293,10 @@ final class ReviewChangesModel {
 
     /// Sends the round once: Go marks the drafts sent, and only the call that
     /// did it types the line. A second call while one runs does nothing; nor
-    /// does one during a refresh (the drafts may be re-placed).
+    /// does one during a refresh (the drafts may be re-placed). After it the
+    /// round is no longer open here either: no comment is added to it, and
+    /// Refresh opens the next round. Go answering "already sent" says so in
+    /// `lastError`.
     func send() async {
         guard !sending, !refreshing, let info = round else { return }
         sending = true
@@ -283,8 +304,14 @@ final class ReviewChangesModel {
         lastError = nil
         do {
             let env = try Self.checked(await cli.reviewSend(projectID: projectID, roundID: info.id))
-            if env.sent == true, let line = env.line, !line.isEmpty {
-                lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
+            // Either way the round is closed now: sent by this call, or already before it.
+            round?.status = "sent"
+            if env.sent == true {
+                if let line = env.line, !line.isEmpty {
+                    lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
+                }
+            } else {
+                lastError = Self.alreadySentMessage
             }
             try reloadComments()
         } catch {
@@ -337,8 +364,9 @@ final class ReviewChangesModel {
             return
         }
         let since = view == .sinceLastRound
+        let oldPath = files.first { $0.path == path }?.oldPath
         do {
-            let loaded = try await fetchSides(path: path, round: info, since: since)
+            let loaded = try await fetchSides(path: path, oldPath: oldPath, round: info, since: since)
             guard selectedPath == path, since == (view == .sinceLastRound), round?.treeSha == info.treeSha else { return }
             sides = LoadedSides(path: path, treeSHA: info.treeSha, view: view, old: loaded.old, new: loaded.new)
         } catch {
@@ -348,14 +376,17 @@ final class ReviewChangesModel {
         }
     }
 
-    private func fetchSides(path: String, round info: ReviewRoundInfo, since: Bool) async throws -> Sides {
-        let env = try Self.checked(await cli.reviewFile(projectID: projectID, roundID: info.id, path: path, since: since))
+    /// `oldPath`: a renamed file's old path, where its old side is read.
+    private func fetchSides(path: String, oldPath: String?, round info: ReviewRoundInfo, since: Bool) async throws -> Sides {
+        let env = try Self.checked(await cli.reviewFile(projectID: projectID, roundID: info.id, path: path, oldPath: oldPath,
+                                                        since: since))
         guard let old = env.old, let new = env.new else { throw Failure(message: "The file sides are missing from the answer.") }
         return (old, new)
     }
 
-    /// Carries the previous round's sent and carried comments, and the Viewed
-    /// marks whose content key still matches, into the new round.
+    /// Carries the previous round's sent, carried and outdated comments, and
+    /// the Viewed marks whose content key still matches, into the new round;
+    /// outdated ones stay outdated, so only sent and carried ones are placed.
     private func carryOver(from previousID: Int64, into info: ReviewRoundInfo) async throws {
         let previous = try await db.read { try ReviewQueries.comments($0, roundID: previousID) }
         let open = previous.filter { $0.status == .sent || $0.status == .carried }
@@ -374,7 +405,8 @@ final class ReviewChangesModel {
     private func plan(_ list: [ReviewComment], round info: ReviewRoundInfo) async throws -> ReviewCommentAnchor.Plan {
         var loaded: [String: Sides] = [:]
         for path in Set(list.compactMap(\.path)).sorted() {
-            loaded[path] = try await fetchSides(path: path, round: info, since: false)
+            let oldPath = allFiles.first { $0.path == path }?.oldPath
+            loaded[path] = try await fetchSides(path: path, oldPath: oldPath, round: info, since: false)
         }
         var result = ReviewCommentAnchor.Plan()
         for side in ["old", "new"] {
