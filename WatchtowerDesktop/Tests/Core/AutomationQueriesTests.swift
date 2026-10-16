@@ -257,4 +257,31 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual([AutomationRunStatus.queued, .running, .waiting].filter(\.isActive).count, 3)
         XCTAssertFalse(AutomationRunStatus.succeeded.isActive)
     }
+
+    /// The quick-run finish watch reads its runs by id: only the asked ids,
+    /// a missing id absent, and no query at all for none.
+    func testFetchRunsByIDs() throws {
+        let queue = try TestDatabase.create()
+        let (first, second, other) = try queue.write { db -> (Int64, Int64, Int64) in
+            let id = try TestDatabase.insertAutomation(db)
+            let first = try TestDatabase.insertAutomationRun(db, automationID: id, status: "succeeded")
+            let second = try TestDatabase.insertAutomationRun(db, automationID: id, status: "running")
+            let other = try TestDatabase.insertAutomationRun(db, automationID: id, status: "failed")
+            return (first, second, other)
+        }
+        let runs = try queue.read { db in try AutomationQueries.fetchRuns(db, ids: [second, first, 9999]) }
+        XCTAssertEqual(Set(runs.map(\.id)), [first, second])
+        XCTAssertFalse(runs.contains { $0.id == other })
+        XCTAssertEqual(runs.first { $0.id == second }?.status, .running)
+
+        var statements = 0
+        let none = try queue.read { db -> [AutomationRun] in
+            db.trace { _ in statements += 1 }
+            defer { db.trace(options: [], nil) }
+            return try AutomationQueries.fetchRuns(db, ids: [])
+        }
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(statements, 0, "no ids, no query")
+    }
+
 }

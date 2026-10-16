@@ -168,6 +168,15 @@ struct AutomationsView: View {
             }, onClose: { browsingTemplates = false })
         }
         .onChange(of: vm.pendingEditID, initial: true) { _, _ in openInstalledTemplate() }
+        .onChange(of: vm.pendingConfirmID, initial: true) { _, _ in openPendingConfirmation() }
+    }
+
+    /// An unconfirmed row picked in the "Run Automation…" palette: the same
+    /// confirmation sheet as the card's "Needs your confirmation".
+    private func openPendingConfirmation() {
+        guard editor != nil, let id = vm.pendingConfirmID else { return }
+        vm.pendingConfirmID = nil
+        confirming = SheetTarget(id: id)
     }
 
     private func openPendingSheet() {

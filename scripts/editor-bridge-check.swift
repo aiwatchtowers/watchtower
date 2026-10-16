@@ -719,12 +719,13 @@ func tokenChecks(_ page: Page) async {
 @MainActor
 func navigationChecks(_ page: Page) async {
     // The §10 chords: Monaco's own bindings for them are removed (ruling R28),
-    // so a keystroke in the editor reaches the app's menu.
+    // so a keystroke in the editor reaches the app's menu. ⌃⌘R is "Run
+    // Automation…" (automations spec §12.7), which Monaco never bound.
     let bindings = await page.eval("__h.keybindings()") as? [String] ?? []
     check("keybindings: the probe reads Monaco's bindings", bindings.count > 100 && bindings.contains("cmd+f\tactions.find"),
           "\(bindings.count) bindings")
     let chords = ["shift+cmd+o", "shift+cmd+f", "ctrl+cmd+j", "shift+cmd+u", "ctrl+6", "ctrl+cmd+left",
-                  "ctrl+cmd+right", "cmd+i", "alt+cmd+enter"]
+                  "ctrl+cmd+right", "cmd+i", "alt+cmd+enter", "ctrl+cmd+r"]
     for chord in chords {
         let owners = bindings.filter { $0.hasPrefix(chord + "\t") }.map { String($0.dropFirst(chord.count + 1)) }
         check("keybindings: Monaco binds nothing to \(chord)", owners.isEmpty, "still bound to \(owners)")

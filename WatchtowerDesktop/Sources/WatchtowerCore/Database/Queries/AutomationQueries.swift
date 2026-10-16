@@ -67,6 +67,15 @@ package enum AutomationQueries {
             """, arguments: [automationID, limit])
     }
 
+    /// The runs with these ids in one SELECT (the quick-run finish watch);
+    /// a missing id is absent, and no ids run no query.
+    package static func fetchRuns(_ db: Database, ids: [Int64]) throws -> [AutomationRun] {
+        guard !ids.isEmpty else { return [] }
+        let marks = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        return try AutomationRun.fetchAll(db, sql: "SELECT * FROM automation_runs WHERE id IN (\(marks))",
+                                          arguments: StatementArguments(ids))
+    }
+
     package static func fetchSteps(_ db: Database, runID: Int64) throws -> [AutomationRunStep] {
         try AutomationRunStep.fetchAll(db, sql: """
             SELECT * FROM automation_run_steps WHERE run_id = ? ORDER BY seq

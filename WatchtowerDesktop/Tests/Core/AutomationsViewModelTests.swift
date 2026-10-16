@@ -91,6 +91,22 @@ private final class SteppedSleep {
 }
 
 @MainActor
+private final class CountingNotifier: AutomationRunNotifying {
+    private(set) var runIDs: [Int64] = []
+
+    func runFinished(
+        name: String,
+        status: AutomationRunStatus,
+        summary: String,
+        error: String,
+        automationID: Int64,
+        runID: Int64
+    ) {
+        runIDs.append(runID)
+    }
+}
+
+@MainActor
 final class AutomationsViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var path = ""
@@ -529,4 +545,47 @@ final class AutomationsViewModelTests: XCTestCase {
         await waitUntil { sleeper.intervals.count == 2 }
         XCTAssertEqual(sleeper.intervals.last, .seconds(10))
     }
+
+    /// Quick run's finish watch rides this poll: each tick checks the
+    /// watched runs, the cadence is 2 s while one is watched, and once it
+    /// ended (tab hidden) the badge cadence is back.
+    func testPollChecksWatchedRuns() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db, name: "Notes") }
+        let pool = try XCTUnwrap(self.pool)
+        runner.on("run") { _ in
+            // The daemon queues the run from another process.
+            let runID = try pool.write { db in try TestDatabase.insertAutomationRun(db, automationID: id, status: "queued") }
+            return Self.json(#"{"run_id":\#(runID),"coalesced":false,"daemon_running":true}"#)
+        }
+        let runID: Int64 = 1
+        let sleeper = SteppedSleep()
+        let vm = makeViewModel { await sleeper.sleep($0) }
+        let notifier = CountingNotifier()
+        let center = QuickRunCenter(dbPool: pool, viewModel: vm, cli: AutomationsCLI(runner: runner),
+                                    notifier: notifier) { true }
+        center.reload()
+        let row = try XCTUnwrap(center.rows.first { $0.id == id })
+        let outcome = await center.activate(row, origin: .palette)
+        XCTAssertEqual(outcome, .started(runID: runID))
+        // The daemon finished the run before the poll looked at it: no
+        // active run is left, only the watch keeps the cadence fast.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automation_runs SET status = 'succeeded' WHERE id = ?", arguments: [runID])
+        }
+        vm.refresh()
+        XCTAssertNil(vm.items.first?.activeRun)
+
+        vm.start()
+        defer { vm.stop() }
+        await waitUntil { sleeper.intervals.count == 1 }
+        XCTAssertEqual(sleeper.intervals, [.seconds(2)], "a watched run polls fast with the tab hidden")
+        XCTAssertEqual(notifier.runIDs, [])
+
+        sleeper.wake()
+        await waitUntil { sleeper.intervals.count == 2 }
+        XCTAssertEqual(notifier.runIDs, [runID], "the tick checked the watched run")
+        XCTAssertFalse(center.hasWatchedRuns)
+        XCTAssertEqual(sleeper.intervals.last, .seconds(60), "nothing watched, tab hidden: badge cadence")
+    }
+
 }

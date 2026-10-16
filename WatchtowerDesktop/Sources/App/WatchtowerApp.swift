@@ -357,6 +357,8 @@ struct WatchtowerApp: App {
             .overlay(alignment: .top) {
                 UpcomingMeetingBannerView()
             }
+            // "Run Automation…" (⌃⌘R) over every destination, never per tab.
+            .modifier(RunAutomationPaletteHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so
@@ -438,6 +440,16 @@ struct WatchtowerApp: App {
                     TrayAppDelegate.requestQuit()
                 }
                 .keyboardShortcut("q", modifiers: .command)
+            }
+            // Spec §12.7, owner ruling 2026-10-15: its own key equivalent,
+            // the same on every tab and window (⌘K stays Go to… / Search Chats).
+            CommandGroup(after: .newItem) {
+                if RunAutomationCommand.isAvailable(featureEnabled: appState.isAutomationsFeatureEnabled,
+                                                    hasCenter: appState.quickRunCenter != nil) {
+                    Button(RunAutomationCommand.title) { appState.showRunAutomationPalette() }
+                        .keyboardShortcut(KeyEquivalent(RunAutomationCommand.key),
+                                          modifiers: RunAutomationCommand.modifiers)
+                }
             }
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or

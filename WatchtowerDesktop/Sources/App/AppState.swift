@@ -312,6 +312,10 @@ final class AppState {
     /// The Automations edit form's drafts, saves and the confirmation
     /// sheet's confirm; owned here so a save finishes after the form closes.
     private(set) var automationEditorCenter: AutomationEditorCenter?
+    /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
+    private(set) var quickRunCenter: QuickRunCenter?
+    /// The "Run Automation…" palette (⌃⌘R) is up.
+    var isRunAutomationPaletteShown = false
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -540,28 +544,6 @@ final class AppState {
     func navigateToWorkbench(_ route: WorkbenchRoute) {
         pendingWorkbenchRoute = route
         selectedDestination = .workbench
-    }
-
-    /// Opens an automation's card, with one run's steps open when given
-    /// (a run notification, an Inbox card's label).
-    func openAutomationRun(automationID: Int64, runID: Int64?) {
-        selectedDestination = .automations
-        automationsViewModel?.open(automationID: automationID, runID: runID)
-    }
-
-    /// An Inbox proposal card's automation label: opens the run's
-    /// automation with the run expanded. A run that is gone (its automation
-    /// was deleted) opens nothing; a failed read still opens the tab, where
-    /// the list's own read reports what is wrong.
-    func openAutomationRun(runID: Int64) {
-        guard let pool = databaseManager?.dbPool else { return }
-        do {
-            guard let automationID = try pool.read({ db in try AutomationQueries.automationID(db, runID: runID) })
-            else { return }
-            openAutomationRun(automationID: automationID, runID: runID)
-        } catch {
-            selectedDestination = .automations
-        }
     }
 
     /// "Change it in words" for one automation: its engine comes from
@@ -1378,6 +1360,12 @@ final class AppState {
         }
         vm.start()
         automationsViewModel = vm
+        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
+                                      notifier: NoopAutomationRunNotifier()) { [weak self] in
+            self?.isAutomationsFeatureEnabled ?? false
+        }
+        quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
+        quickRunCenter = quickRun
         automationEditorCenter = AutomationEditorCenter(
             cli: cli,
             grants: { id in try await dbPool.read { db in try AutomationQueries.fetchGrants(db, automationID: id) } },

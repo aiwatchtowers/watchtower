@@ -83,6 +83,13 @@ package final class AutomationsViewModel {
     /// the form is up; held here so an install finishing while the tab is
     /// off screen still opens the form on return.
     package var pendingEditID: Int64?
+    /// An unconfirmed recipe picked in the "Run Automation…" palette: the
+    /// tab opens its confirmation sheet and clears this (held here so the
+    /// sheet opens when the tab appears).
+    package var pendingConfirmID: Int64?
+    /// Quick run's finish watch (`QuickRunCenter` registers itself): each
+    /// poll tick checks it, and the poll stays fast while it watches a run.
+    @ObservationIgnored package weak var runWatcher: QuickRunCenter?
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
@@ -139,11 +146,16 @@ package final class AutomationsViewModel {
     }
 
     private var pollInterval: Duration {
-        AutomationsPollPolicy.interval(hasActiveRuns: hasActiveRuns, tabVisible: tabVisible)
+        AutomationsPollPolicy.interval(
+            hasActiveRuns: hasActiveRuns,
+            hasWatchedRuns: runWatcher?.hasWatchedRuns ?? false,
+            tabVisible: tabVisible
+        )
     }
 
     /// (Re)starts the loop: sleep for the interval the current state calls
-    /// for, then read. Restarting makes a new cadence take effect at once.
+    /// for, then read and check quick run's watched runs. Restarting makes
+    /// a new cadence take effect at once.
     private func schedulePoll() {
         pollTask?.cancel()
         let sleep = self.sleep
@@ -153,6 +165,7 @@ package final class AutomationsViewModel {
                 await sleep(interval)
                 guard !Task.isCancelled, let self else { return }
                 self.refresh()
+                await self.runWatcher?.checkWatched()
             }
         }
     }
@@ -402,6 +415,12 @@ package final class AutomationsViewModel {
         return succeeded
     }
 
+    /// Quick run started a run through its own CLI call: read now and take
+    /// the fast cadence at once.
+    package func noteRunStarted() {
+        afterCLICall()
+    }
+
     /// A CLI call may have started a run: read now, and restart the poll so
     /// an active run gets the fast cadence at once.
     private func afterCLICall() {
@@ -409,7 +428,8 @@ package final class AutomationsViewModel {
         if pollTask != nil { schedulePoll() }
     }
 
-    private static func message(for error: Error) -> String {
+    /// A failed CLI call in words: its stderr, else the exit code.
+    package static func message(for error: Error) -> String {
         if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
             let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? "watchtower exited with code \(code)" : text
