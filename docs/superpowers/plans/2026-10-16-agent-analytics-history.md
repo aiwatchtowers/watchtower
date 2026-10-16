@@ -75,7 +75,7 @@ Plus a line in the existing AGENTLOG-01 sentinel test (`TestParseClaude_StoresNo
 **Depends on:** Task 1
 
 **Files:**
-- Create: `internal/db/migrations/00124_agent_analytics_history.sql`
+- Create: `internal/db/migrations/00125_agent_analytics_history.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/agent_log.go` (`AgentLogEvent`, `AgentToolResult`, `upsertAgentLogEvent`, the pairing `UPDATE` in `ApplyAgentLogBatch`), `internal/agentlog/claude.go` (`user`)
 - Regenerate: golden snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
 - Test: `internal/db/agent_log_test.go`, `internal/agentlog/claude_test.go`
@@ -94,7 +94,7 @@ Use the `add-migration` skill.
 - [ ] **Step 3: Write the migration** (`-- +goose Up`: two `ALTER TABLE … ADD COLUMN`, `DROP VIEW` + `CREATE VIEW` with the new `owner_turns`; `-- +goose Down`: recreate the 00116 view; SQLite drops columns with `ALTER TABLE … DROP COLUMN`). Mirror into `schema.sql`; regenerate golden + Swift test schema.
 - [ ] **Step 4: Implement** the `trigger` classification in `claudeParser.user` (a `turnTrigger(text string) string` helper; prefixes from Step 1) and the new fields in the db layer.
 - [ ] **Step 5: Run** `go test ./internal/db ./internal/agentlog` — PASS.
-- [ ] **Step 6: Commit** `feat(agentlog): owner-turn triggers and Agent-call columns (00124) (#298)`.
+- [ ] **Step 6: Commit** `feat(agentlog): owner-turn triggers and Agent-call columns (00125) (#298)`.
 
 ### Task 3: Agent calls and board targets in the parser; ParserVersion 2
 

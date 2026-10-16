@@ -62,9 +62,9 @@ Mirrored into `schema.sql`, `TestAllTablesExist`, the golden snapshot and the ge
 - Analytics survive a workbench delete (below).
 - The JSONL format is undocumented; the parser degrades by skipping and counting.
 
-## Parser v2 (#298, `internal/agentlog`, `ParserVersion` 2, migration `00124_agent_analytics_history.sql`)
+## Parser v2 (#298, `internal/agentlog`, `ParserVersion` 2, migration `00125_agent_analytics_history.sql`)
 
-The bump makes the next scan reparse every present file from 0 (idempotent keys, no duplicates). Migration 00124 adds `agent_log_events.spawned_agent_id` and `background` and rebuilds `agent_log_session_totals` so that `owner_turns` counts only `owner_turn` rows whose `trigger` is not `notification` or `hook` (a v1 row with `trigger = ''` still counts as owner).
+The bump makes the next scan reparse every present file from 0 (idempotent keys, no duplicates). Migration 00125 adds `agent_log_events.spawned_agent_id` and `background` and rebuilds `agent_log_session_totals` so that `owner_turns` counts only `owner_turn` rows whose `trigger` is not `notification` or `hook` (a v1 row with `trigger = ''` still counts as owner).
 
 - **Shell verb** (`shellTarget`): the first real command of the line. It splits on `&&`, `||`, `;` and newline, cuts a pipeline at the first `|`, and skips `cd`, `pushd`, `popd`, `export`, `set`, `source`, `.`, leading env assignments and the `env`/`time`/`nice`/`timeout <n>` wrappers. Shape unchanged (program, plus the first argument for `git`, `gh`, `go`, `make`, `npm`, `swift`); `bash`/`sh`/`zsh` with a script argument store `bash <script base name>` (`bash dev-health.sh`), never a path or other arguments. A program name that fails the safe-name check stores nothing.
 - **Owner turn `trigger`** (`turnTrigger`, leading whitespace ignored): `notification` when the text starts with `<task-notification>` or `<agent-message`; `hook` when it starts with `<system-reminder>` or `Stop hook feedback:`; otherwise `owner`. Reusing `trigger` avoided widening the `kind` CHECK.

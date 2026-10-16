@@ -2971,3 +2971,13 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   content_sha TEXT NOT NULL, -- file content hash when marked Viewed
   PRIMARY KEY (round_id, path)
 );
+
+CREATE TABLE IF NOT EXISTS review_checks (
+  round_id    INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+  chapter_key TEXT NOT NULL,
+  lens        TEXT NOT NULL,
+  item_key    TEXT NOT NULL, -- first 16 hex of sha256 of the question text
+  state       TEXT NOT NULL CHECK (state IN ('checked','commented','done','partial','not_done')), -- unticking deletes the row
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (round_id, chapter_key, lens, item_key)
+);
