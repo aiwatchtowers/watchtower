@@ -126,6 +126,30 @@ final class SpeechGateTranscriberTests: XCTestCase {
         XCTAssertEqual(output.text, "spoken")
     }
 
+    func testModelNotReadyFallsBackPerWindowAndAsksAgain() async throws {
+        // Board #564: a model still downloading decides that window by energy
+        // and is asked again on the next one, never pinned off for the recording.
+        final class LoadingDetector: SpeechDetector, @unchecked Sendable {
+            let ready = FakeSpeechDetector()
+            private let lock = NSLock()
+            private var asked = 0
+            var calls: Int { lock.withLock { asked } }
+            func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
+                let call = lock.withLock { asked += 1; return asked }
+                if call == 1 { throw SpeechDetectorNotReady() }
+                return try await ready.speechRanges(in: samples)
+            }
+        }
+        let engine = SegmentEngine()
+        engine.script = [.success([segment("one", 0, 1)]), .success([segment("three", 0, 1)])]
+        let detector = LoadingDetector()
+        let output = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
+            .transcribe(samples: audio([0.1...0.6, nil, 0.2...0.8])) { _, _ in }
+        XCTAssertEqual(detector.calls, 3, "the model is asked for every window")
+        XCTAssertEqual(detector.ready.calls, 2, "window 1 was decided by the energy fallback")
+        XCTAssertEqual(output.text, "one\nthree")
+    }
+
     func testCancellationIsNotADetectorFailure() async throws {
         // A cancelled detector call must not switch the recording to the
         // energy fallback (nor log a failure) and must not open the window.

@@ -22,12 +22,16 @@ enum WindowSpeech: Equatable {
 /// `EnergySpeechDetector` — never "no gate", so a broken model cannot quietly
 /// restore the hallucinating path, and no per-window retry of a model that
 /// failed to load. The gate lives for one transcribe/run call, so the next
-/// recording tries the detector again. The switch is logged once and the
-/// gate's counts once at the end, never text.
+/// recording tries the detector again. A detector whose model is still
+/// loading (`SpeechDetectorNotReady`) is not a failure: that window goes to
+/// the energy detector and the next window asks the model again (board
+/// #564). The switch is logged once and the gate's counts once at the end,
+/// never text.
 struct WindowSpeechGate {
     private let detector: SpeechDetector?
     private let fallback = EnergySpeechDetector()
     private var detectorFailed = false
+    private var notReadyLogged = false
     private var silentWindows = 0
     private var fallbackWindows = 0
     private var droppedSegments = 0
@@ -49,9 +53,16 @@ struct WindowSpeechGate {
                 // batch and the whole-buffer engines throw CancellationError,
                 // the live loops return their partial output (discarded).
                 if error is CancellationError || Task.isCancelled { return .silent }
-                detectorFailed = true
-                NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
-                      String(describing: type(of: error)))
+                if error is SpeechDetectorNotReady {
+                    if !notReadyLogged {
+                        notReadyLogged = true
+                        NSLog("SpeechGate: speech detector model not ready — energy fallback until it loads")
+                    }
+                } else {
+                    detectorFailed = true
+                    NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
+                          String(describing: type(of: error)))
+                }
             }
         }
         if ranges == nil { fallbackWindows += 1 }

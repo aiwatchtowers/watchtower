@@ -120,7 +120,7 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
                 for (minSpeech, padding) in [(0.25, 0.25), (0.3, 0.3)] {
                     detectors.append(("silero t\(threshold) min\(minSpeech) pad\(padding)",
                                       SileroSpeechDetector(threshold: threshold, minSpeechSec: minSpeech,
-                                                           minSilenceSec: 0.5, paddingSec: padding)))
+                                                           minSilenceSec: 0.5, paddingSec: padding, loadWait: nil)))
                 }
             }
         }

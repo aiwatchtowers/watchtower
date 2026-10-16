@@ -13,11 +13,19 @@ protocol SpeechDetector: Sendable {
 
 extension EnergySpeechDetector: SpeechDetector {}
 
+/// The detector's model is still loading (or downloading): the gate decides
+/// this window with the energy detector and asks the model again on the next
+/// one (board #564).
+struct SpeechDetectorNotReady: Error {}
+
 /// The production detector: FluidAudio's Silero VAD (CoreML) and its
 /// segmentation. The model loads on the first window, downloading on first
-/// use like the diarizer, and stays loaded. A load failure is not
-/// remembered: the gate moves that recording to the energy fallback, and the
-/// next recording tries the model again.
+/// use like the diarizer, and stays loaded. The load runs in the background
+/// and a window waits for it at most `loadWait`: past that it throws
+/// `SpeechDetectorNotReady` and the load goes on, so a slow download never
+/// stalls the live loop. A load failure is not remembered: the gate moves
+/// that recording to the energy fallback, and the next recording tries the
+/// model again.
 actor SileroSpeechDetector: SpeechDetector {
     /// Model probability that opens speech. FluidAudio's 0.85 is tuned for
     /// ASR chunking and drops quiet speech.
@@ -36,19 +44,26 @@ actor SileroSpeechDetector: SpeechDetector {
     static let defaultMinSpeechSec = 0.3
     static let defaultMinSilenceSec = 0.5
     static let defaultPaddingSec = 0.3
+    /// How long one window waits for the model before the energy detector
+    /// decides it. Loading from disk (with a cold CoreML compile) fits well
+    /// inside; a download does not, and goes on in the background.
+    static let defaultLoadWait: Duration = .seconds(5)
 
-    private let threshold: Float
     private let segmentation: VadSegmentationConfig
-    private var manager: VadManager?
+    private let manager: BackgroundLoad<VadManager>
+    private let loadWait: Duration?
 
-    /// The parameters are for the corpus tuning bench; production uses the defaults.
+    /// The parameters are for the corpus tuning bench (which waits for the
+    /// model: `loadWait` nil); production uses the defaults.
     init(
         threshold: Float = defaultThreshold,
         minSpeechSec: Double = defaultMinSpeechSec,
         minSilenceSec: Double = defaultMinSilenceSec,
-        paddingSec: Double = defaultPaddingSec
+        paddingSec: Double = defaultPaddingSec,
+        loadWait: Duration? = defaultLoadWait
     ) {
-        self.threshold = threshold
+        manager = BackgroundLoad { try await VadManager(config: VadConfig(defaultThreshold: threshold)) }
+        self.loadWait = loadWait
         segmentation = VadSegmentationConfig(
             minSpeechDuration: minSpeechSec,
             minSilenceDuration: minSilenceSec,
@@ -63,19 +78,12 @@ actor SileroSpeechDetector: SpeechDetector {
     }
 
     func speechRanges(in samples: [Float]) async throws -> [Range<Int>] {
-        let manager = try await loadedManager()
+        guard let manager = try await manager.value(waitingUpTo: loadWait) else { throw SpeechDetectorNotReady() }
         let segments = try await manager.segmentSpeech(samples, config: segmentation)
         let rate = TranscriptionConfig.sampleRate
         return SpeechGate.merged(segments.map {
             let start = min(max(0, $0.startSample(sampleRate: rate)), samples.count)
             return start..<min(max(start, $0.endSample(sampleRate: rate)), samples.count)
         })
-    }
-
-    private func loadedManager() async throws -> VadManager {
-        if let manager { return manager }
-        let loaded = try await VadManager(config: VadConfig(defaultThreshold: threshold))
-        manager = loaded
-        return loaded
     }
 }
