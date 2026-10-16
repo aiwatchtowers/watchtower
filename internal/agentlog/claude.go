@@ -14,7 +14,7 @@ import (
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
 // so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 1
+const ParserVersion = 2
 
 const maxLineBytes = 8 << 20
 

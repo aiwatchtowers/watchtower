@@ -271,6 +271,8 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  cache_write_1h_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_1h_tokens ELSE agent_log_events.cache_write_1h_tokens END,
 		  cost_usd = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cost_usd ELSE agent_log_events.cost_usd END,
 		  output_tokens = MAX(agent_log_events.output_tokens, excluded.output_tokens),
+		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
+		  background = MAX(agent_log_events.background, excluded.background),
 		  outcome = CASE WHEN agent_log_events.outcome IN ('', 'pending') THEN excluded.outcome ELSE agent_log_events.outcome END`,
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,

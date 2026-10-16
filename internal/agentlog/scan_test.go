@@ -341,3 +341,29 @@ func TestScan_LedgerWorktreeRootIsRead(t *testing.T) {
 	calls, _ := f.totals()
 	assert.Equal(t, int64(1), calls)
 }
+
+func TestScan_ParserVersionBumpReparsesNewTargets(t *testing.T) {
+	f := newFixture(t)
+	a := assistant("s1", "u1", "m1", "r1", 5,
+		toolUse("t1", "Agent", map[string]any{"subagent_type": "Explore"}),
+		toolUse("t2", "mcp__watchtower-workbench__update_target", map[string]any{"target_id": 298}))
+	a["cwd"] = f.folder
+	f.write(f.folder, "s1.jsonl", line(t, a)+toolResultLine(t, "s1", "r2", "t1", "ok", false,
+		map[string]any{"toolUseResult": map[string]any{"agentId": "a1"}}))
+	f.scan()
+	_, err := f.d.Exec(`UPDATE agent_log_files SET parser_version = 1`)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE agent_log_events SET target = '', spawned_agent_id = '' WHERE kind = 'tool'`)
+	require.NoError(t, err)
+	f.scan()
+	rows, err := f.d.Query(`SELECT name, target, spawned_agent_id FROM agent_log_events WHERE kind = 'tool' ORDER BY name`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var n, tg, sp string
+		require.NoError(t, rows.Scan(&n, &tg, &sp))
+		got = append(got, n+"|"+tg+"|"+sp)
+	}
+	assert.Equal(t, []string{"Agent|Explore|a1", "mcp__watchtower-workbench__update_target|#298|"}, got)
+}
