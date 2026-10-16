@@ -84,6 +84,12 @@ struct AutomationTemplateGalleryView: View {
             Text(AutomationTemplateGallery.summaryLine(template))
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            ForEach(AutomationTemplateGallery.paramLines(template) + template.notes, id: \.self) { line in
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
             if isWorkbench {
                 Button("Coming with workbench automations") {}

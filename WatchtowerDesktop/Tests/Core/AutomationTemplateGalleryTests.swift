@@ -88,12 +88,16 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         }
     }
 
+    /// The shape `watchtower automations templates --json` prints (P6 part 2).
     private static let mailJSON = #"""
     [{"name":"new-mail-summary","title":"New mail summary","description":"Every morning.",
       "scope":"personal","trigger_text":"Weekdays 09:00","permissions":["reads mail"],"outputs":["inbox"],
-      "files":["new-mail-summary.md"],"installed":false},
+      "files":["new-mail-summary"],"params":[],"notes":["Run it by hand until P4."]},
      {"name":"release-buttons","title":"Release buttons","description":"Buttons.","scope":"workbench",
-      "trigger_text":"Button","permissions":[],"outputs":[]}]
+      "trigger_text":"Button","permissions":[],"outputs":[],"files":["release","deploy-test"],"params":[],"notes":[]},
+     {"name":"jira-state-report","title":"Jira state report","description":"Weekly.","scope":"personal",
+      "trigger_text":"Mondays 09:00","permissions":["jira:read@<PROJECT>"],"outputs":["report"],
+      "files":["jira-state-report"],"params":[{"key":"PROJECT","label":"Jira project key","example":"PAY"}],"notes":[]}]
     """#
 
     private static func ok(_ text: String) -> Result<Data, CLIRunnerError> { .success(Data(text.utf8)) }
@@ -107,9 +111,15 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         runner.answer("templates", Self.ok(Self.mailJSON))
         let vm = makeViewModel()
         await vm.loadTemplates()
-        XCTAssertEqual(vm.templates.map(\.name), ["new-mail-summary", "release-buttons"])
-        XCTAssertEqual(vm.templates.map(\.scope), ["personal", "workbench"])
+        XCTAssertEqual(vm.templates.map(\.name), ["new-mail-summary", "release-buttons", "jira-state-report"])
+        XCTAssertEqual(vm.templates.map(\.scope), ["personal", "workbench", "personal"])
         XCTAssertEqual(vm.templates[0].permissions, ["reads mail"])
+        XCTAssertEqual(vm.templates[0].notes, ["Run it by hand until P4."])
+        XCTAssertEqual(vm.templates[2].params,
+                       [AutomationTemplate.Param(key: "PROJECT", label: "Jira project key", example: "PAY")])
+        XCTAssertEqual(AutomationTemplateGallery.paramLines(vm.templates[2]),
+                       ["After installing, replace <PROJECT> (Jira project key, e.g. PAY) in the recipe."])
+        XCTAssertEqual(AutomationTemplateGallery.paramLines(vm.templates[0]), [])
         XCTAssertEqual(AutomationTemplateGallery.summaryLine(vm.templates[0]), "Weekdays 09:00 · reads mail")
         XCTAssertEqual(AutomationTemplateGallery.summaryLine(vm.templates[1]), "Button")
         XCTAssertEqual(runner.invocations, [["automations", "templates", "--json"]])
@@ -150,11 +160,12 @@ final class AutomationTemplateGalleryTests: XCTestCase {
     }
 
     func testFailedInstallKeepsTheStderrAndOpensNothing() async throws {
-        runner.answer("install-template", .failure(.nonZeroExit(code: 1, stderr: "template exists\n")))
+        let refusal = "not installed: automation #3 already uses the slug new-mail-summary (/x/a.md); delete it first"
+        runner.answer("install-template", .failure(.nonZeroExit(code: 1, stderr: refusal + "\n")))
         let vm = makeViewModel()
         let installed = await vm.installTemplate(try template())
         XCTAssertFalse(installed)
-        XCTAssertEqual(vm.installError, "template exists")
+        XCTAssertEqual(vm.installError, refusal)
         XCTAssertNil(vm.pendingEditID)
         XCTAssertNil(vm.selectedID)
     }
@@ -165,6 +176,16 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         await vm.loadTemplates()
         XCTAssertEqual(vm.templates, [])
         XCTAssertNil(vm.templatesError, "an unknown command is the empty gallery, not an error")
+    }
+
+    /// What a CLI older than P6 part 2 really prints: the parent command takes
+    /// "templates" as an argument and refuses the flag.
+    func testUnknownFlagFromAnOlderCLIShowsEmptyState() async {
+        runner.answer("templates", .failure(.nonZeroExit(code: 1, stderr: "unknown flag: --json\n")))
+        let vm = makeViewModel()
+        await vm.loadTemplates()
+        XCTAssertEqual(vm.templates, [])
+        XCTAssertNil(vm.templatesError)
     }
 
     func testOtherTemplateFailureIsShown() async {

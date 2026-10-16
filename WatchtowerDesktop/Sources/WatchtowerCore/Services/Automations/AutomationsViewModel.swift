@@ -300,8 +300,10 @@ package final class AutomationsViewModel {
 
     // MARK: - Templates
 
-    /// Reads the gallery's templates. A CLI without the subcommand (P6 not
-    /// shipped) is the empty gallery, not an error.
+    /// Reads the gallery's templates. A CLI without the subcommand (older than
+    /// P6 part 2) is the empty gallery, not an error: cobra answers
+    /// `automations templates --json` there with "unknown flag: --json" (the
+    /// parent takes any word, not the flag).
     package func loadTemplates() async {
         templatesLoading = true
         defer { templatesLoading = false }
@@ -311,7 +313,8 @@ package final class AutomationsViewModel {
         } catch {
             templates = []
             let message = Self.message(for: error)
-            templatesError = message.localizedCaseInsensitiveContains("unknown command") ? nil : message
+            let unknown = ["unknown command", "unknown flag"].contains { message.localizedCaseInsensitiveContains($0) }
+            templatesError = unknown ? nil : message
         }
     }
 
