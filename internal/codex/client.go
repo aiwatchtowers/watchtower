@@ -82,8 +82,9 @@ func (c *Client) childEnviron() []string {
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // SetNoTools makes the run tool-less (`ai query --no-tools`, the ⌘/ help
-// chat): the watchtower MCP server is never mounted whatever dbPath is, and
-// web search is off on top of execArgs' disabled local tools. The model
+// chat): the watchtower MCP server is never mounted whatever dbPath is, the
+// owner's own codex config servers are cleared (mcp_servers={}), and web
+// search is off on top of execArgs' disabled local tools. The model
 // answers from the prompt alone and can reach none of the owner's data.
 func (c *Client) SetNoTools() { c.noTools = true }
 
@@ -212,7 +213,9 @@ func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) (
 // read-only sandbox with the shell on (SetReadFolder).
 func (c *Client) execArgs() []string {
 	if c.noTools {
-		return append(execArgs(c.model), "-c", `web_search="disabled"`)
+		// mcp_servers={} also drops servers from the owner's own
+		// ~/.codex/config.toml: a help run loads no MCP server at all.
+		return append(execArgs(c.model), "-c", `web_search="disabled"`, "-c", "mcp_servers={}")
 	}
 	if c.readFolder == "" {
 		return execArgs(c.model)

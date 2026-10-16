@@ -281,8 +281,9 @@ func TestClient_NoToolsMountsNothing(t *testing.T) {
 		t.Fatalf("workDir() = %q, %v; want no MCP dir", dir, err)
 	}
 	args := c.ArgsForTest("sys", "msg")
+	assertContains(t, args, "mcp_servers={}")
 	for _, a := range args {
-		if strings.Contains(a, "mcp_servers") || strings.Contains(a, "/tmp/test.db") {
+		if (strings.Contains(a, "mcp_servers") && a != "mcp_servers={}") || strings.Contains(a, "/tmp/test.db") {
 			t.Errorf("no-tools args mount an MCP server: %q in %v", a, args)
 		}
 	}

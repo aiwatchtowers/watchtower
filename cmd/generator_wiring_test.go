@@ -265,7 +265,9 @@ func TestNewQueryClientNoToolsMountsNoMCP(t *testing.T) {
 			assert.NotContains(t, args, "--allowedTools")
 			for _, a := range args {
 				assert.NotContains(t, a, dbPath)
-				assert.NotContains(t, a, "mcp_servers")
+				if a != "mcp_servers={}" { // codex: the owner's own servers cleared
+					assert.NotContains(t, a, "mcp_servers")
+				}
 			}
 		})
 	}
