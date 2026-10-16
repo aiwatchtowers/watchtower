@@ -19,7 +19,7 @@ Text outside the settings and the script is the description. The script is one b
 Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Shortcuts (symlinks) are never read; put the real file there.
 
 ### Workbench recipes
-A recipe can also live in a Workbench folder, in `.watchtower/automations/`, where it may run a command or start an agent session. The app shows these read-only: no form editing and no **Change in words**.
+A recipe can also live in a Workbench folder, in `.watchtower/automations/`, where it may run a command. The app shows these read-only: no form editing and no **Change in words**.
 
 ## Using it
 1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).
@@ -33,16 +33,16 @@ A recipe can also live in a Workbench folder, in `.watchtower/automations/`, whe
 | `new-mail-summary` | personal | by hand | summarises new mail, at most 600 messages per mailbox per run |
 | `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing; needs your project key |
 | `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
-| `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh`, starts a review session for each |
+| `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` |
 | `release-buttons` | workbench | three buttons | release, deploy to test, deploy to stage, each asking first |
 
-`new-mail-summary` is written for new-mail events, which are not available yet. Run it by hand after listing your mailboxes in the script's `scheduledAccounts`, or switch its trigger to a schedule.
+`new-mail-summary` is written for new-mail events, which are not available. Run it by hand after listing your mailboxes in the script's `scheduledAccounts`, or switch its trigger to a schedule.
 
 ## When it's empty or wrong
 - **"No templates yet."** The command-line tool is older than the app; update Watchtower.
 - **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is left half-installed.
 - **The form opens on a parse error.** The placeholder is still in the file; replace it.
-- **A workbench template cannot be installed.** The gallery installs personal templates only.
+- **A workbench template cannot be installed.** In the app the gallery installs personal templates only; the command line installs workbench ones with `--workbench`.
 
 ## Related
 - [Automations](automations.md)

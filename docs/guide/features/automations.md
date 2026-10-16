@@ -8,7 +8,7 @@ Some chores repeat: a Monday Jira summary, a digest of new mail, a Friday team r
 A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot.
 
 ### Why you must confirm a recipe
-A recipe never runs until you confirm it. Watchtower fingerprints everything that decides what a recipe can do: schedule, permissions, outputs, budget, runs at a time and the script. If any of these changes, the fingerprint changes and the recipe stops until you confirm again. Renaming it or editing its description does not count.
+A recipe never runs until you confirm it. Watchtower fingerprints everything that decides what a recipe can do: schedule, missed-slot policy, permissions, outputs, budget, runs at a time and the script. If any of these changes, the fingerprint changes and the recipe stops until you confirm again. Renaming it or editing its description does not count.
 
 This also covers a file that arrives from outside, such as a recipe pulled in with `git pull`: it shows **Needs your confirmation** and waits.
 
@@ -19,14 +19,14 @@ Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens
 Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They appear in **Inbox**, **Actions**, labelled with the automation and run number, and wait for your approval. A run waiting on you pauses and resumes after you decide; after its pause timeout (72 hours by default) it ends as expired.
 
 ### Auto grants
-You can let one automation apply one kind of write without asking, with that tool's **Auto** toggle in the edit form. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**). The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
+You can let one automation apply one kind of write without asking, with that tool's checkbox under the "Auto" caption in the edit form. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**). The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
 
 ## Using it
 ### Make one
-1. Open **Automations** in the sidebar and click **New automation**.
+1. Open **Automations** in the sidebar and click **+ New**.
 2. Pick **Describe in words** and tell the assistant what you want, or **Template** (see [Recipes and templates](automations-recipes.md)). **Form** is the manual route.
 3. Check the **Draft** panel: when it runs, **Each run may spend**, what it asks to do. **Dry run** shows what it would do and writes nothing.
-4. Save. The confirmation sheet lists what the recipe may do and the script; **Confirm** turns it on.
+4. Save. The confirmation sheet lists what the recipe may do and the script; **Confirm** approves it; a disabled recipe also offers **Confirm and enable**.
 
 ### Run one now
 Press **⌃⌘R** (menu item **Run Automation…**) on any tab, type a few letters and press Return. Unconfirmed or disabled recipes are dimmed, and Return opens their confirmation sheet or card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first. The tray menu has the same list under **Run automation**. When a run you started ends, you get a notice: "<name> finished", "<name> failed" or "<name> stopped: ...".
@@ -43,14 +43,14 @@ On the card, **Run now** does the same, and **Dry run** works even before you co
 
 ## When it's empty or wrong
 - **Tab missing.** The feature is off (Settings, Features). That also hides **Run Automation…** and the tray submenu.
-- **"No automations yet".** You have none; click **New automation**.
+- **"No automations yet".** You have none; click **New automation** (or **+ New** in the header).
 - **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **Disabled.** Use **⋯**, then **Enable**.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it, or before you turned the feature on, are never made up.
 - **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
-- **Event triggers.** "On new mail / message" is greyed out: no event trigger runs yet.
+- **Event triggers.** "On new mail / message" is greyed out: no event trigger runs.
 
 ## Related
 - [Recipes and templates](automations-recipes.md)
