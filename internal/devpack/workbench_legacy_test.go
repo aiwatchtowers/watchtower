@@ -603,15 +603,30 @@ func TestInstallWorkbench_FailedAddStillMigratesTheFiles(t *testing.T) {
 		t.Fatalf("two allow rules name the old server, got %d", rep.LegacyPermissionRules)
 	}
 
+	assertStatusAfterFailedAdd(t, o)
+
+	// Once the registration can succeed, the next install finishes the job.
+	f.failAdd = false
+	assertRetryFinishesTheMigration(t, o)
+}
+
+// assertStatusAfterFailedAdd checks the status of a pre-rename folder whose
+// files migrated while its `mcp add` failed: the new skill and hooks in, the
+// old server still the only one registered, so the folder still reads legacy.
+func assertStatusAfterFailedAdd(t *testing.T, o WorkbenchInstallOptions) {
+	t.Helper()
 	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || st.CurrentMCP || !st.LegacyMCP || !st.Legacy || !st.Hook || !st.StopHook ||
 		st.Skill.State != StateUnchanged || st.LegacySkill.State != StateMissing {
 		t.Fatalf("status after the failed resync: %+v err=%v", st, err)
 	}
+}
 
-	// Once the registration can succeed, the next install finishes the job.
-	f.failAdd = false
-	rep, err = InstallWorkbench(context.Background(), o)
+// assertRetryFinishesTheMigration runs the install again with a working
+// `mcp add` and checks it registers the new server and drops the old one.
+func assertRetryFinishesTheMigration(t *testing.T, o WorkbenchInstallOptions) {
+	t.Helper()
+	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil || !rep.MCPRegistered || !rep.LegacyMCPRemoved {
 		t.Fatalf("the retry must register and drop the old server: %+v err=%v", rep, err)
 	}
