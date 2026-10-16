@@ -54,6 +54,12 @@ Detailed per-feature notes — architecture, contracts, dual paths, v1 limits �
 
 ---
 
+## User guide
+
+The user-facing guide lives in `docs/guide/` (start at `docs/guide/README.md`). A user-facing change updates its page in the same PR, following `docs/guide/WRITING.md`. `docs/app-guide.md` is gone.
+
+---
+
 ## Build & Test
 
 **Inner loop (while iterating — this is the default, full runs are NOT):**
