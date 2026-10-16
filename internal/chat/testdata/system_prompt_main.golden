@@ -154,19 +154,108 @@ Hot map:
 - The payments team ships refunds in Q4
 Use memory_recall / memory_open for more; treat these notes as possibly outdated.
 
-=== WATCHTOWER APP (answer questions about the app from this) ===
-Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it. Sidebar:
-- AI Chat — this chat: history on the left, projects, attachments, artifacts in a side panel, proposals the owner approves.
-- Catch Up — a recap of everything since the owner last caught up.
-- Briefings — the daily briefing; Day Plan — today's time-blocked plan.
-- Inbox — the action strip: proposals awaiting approval and due reminders.
-- Ideas — ideas and notes mined from conversations; Digests — Slack/mail/Jira digests and the Decisions journal.
-- Calendar — events with meeting prep, and Recordings (transcripts, recaps, notes).
-- Targets — the owner's goals and tasks; Tracks — narratives of ongoing work.
-- People — people cards; Memory — the assistant's long-term memory.
-- Workload, Blockers, Project Map, Releases, Boards — Jira views.
-- Statistics, Search (full-text over Slack), Usage (AI cost), MCP Server (connect Watchtower to coding agents).
-Settings hold the connected accounts (Slack, Google, Jira, Quick Connections), features, the AI provider and models, prompts and skills.
+=== WATCHTOWER APP ===
+For any question about how Watchtower works, search the user guide first: search_knowledge with sources ["guide"]. Answer from what you find and link the section you used. The guide's catalogue:
+# Watchtower user guide
+
+Watchtower is a macOS app that mirrors your Slack, Google, Jira and meetings into a database on your Mac. It puts AI on top: briefings, a day plan, an inbox of what needs you, and a chat that knows your work. Its Workbench lets Claude Code or Codex work from a board of targets you control.
+
+Every page of the guide is listed below, once, grouped by what it helps with.
+
+## Start here
+
+- [Your first week](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/start/first-week.md) — a short tour of what to try, in the order it pays off, from setup to your first automation
+- [Set up Watchtower](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/start/setup.md) — pick your goals, connect sources and get through the two setup screens, and run setup again later
+
+## How Watchtower works
+
+- [How Watchtower works](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/how-watchtower-works.md) — the local database, the sync cycle and a table of what runs when, so you know why a tab is empty
+- [Sources and accounts](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/sources-and-accounts.md) — what each connected source gives, several accounts of one kind, what removing one does, and why Watchtower needs to know who you are
+- [History backfill](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/history-backfill.md) — how the first month of a new source loads in the background, and what it skips
+- [Turning features on and off](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/features-on-and-off.md) — the switches, what feeds what, and how to read an empty tab's status line
+- [AI providers, models and cost](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
+- [Privacy](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
+
+## Troubleshooting
+
+- [Troubleshooting](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/README.md) — find what you see on the screen and open the page that fixes it
+- [A tab is empty](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/tab-is-empty.md) — which switch and source each tab waits for, and what its status line wants
+- [Sync is stuck or slow](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/sync-stuck-or-slow.md) — "Sync daemon not running", a sync that never ends, data that stops arriving
+- [No briefing or day plan today](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/no-briefing-or-day-plan.md) — the gates a daily job waits behind, and how to generate one now
+- [The Claude or Codex tool is not found or not signed in](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/ai-tool-not-found-or-not-signed-in.md) — the red cross, "isn't signed in", and Test Connection
+- [An account needs attention](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/account-needs-attention.md) — red dots, Re-login, and which accounts you must remove and add again
+- [Calendar events are missing](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
+- [Recording or transcript problems](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
+- [A Workbench session or ask is stuck](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
+- [The iPhone is not syncing](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
+- [Plan limits and high cost](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [Known issues](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
+
+## Focus
+
+- [Home](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/home.md) — what needs you right now, setup progress, and how the menu works
+- [Catch Up](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
+- [Briefings](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/briefings.md) — one morning read of your attention items, day, channels and people
+- [Day Plan](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/day-plan.md) — today as time blocks plus a backlog, with calendar conflicts flagged
+- [Inbox](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/inbox.md) — reminders, proposals to approve, Slack reaction commands and attention detection
+- [Ideas & Decisions](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage
+- [Mail](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
+
+## Execution
+
+- [Targets](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/targets.md) — your own to-do list, with a next step per target and an assistant that breaks work down on your instruction
+- [Tracks](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe
+- [Jira and Linear](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards, and connect Linear
+
+## Insights
+
+- [Digests](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/digests.md) — per-channel, daily, mail, Jira and meeting summaries in one feed, with a journal of decisions
+- [People](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/people.md) — a card per colleague with style, role and tips, plus a team summary
+- [Statistics](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/statistics.md) — channel and user activity, and the mute switch that decides what the AI reads
+- [Search and knowledge](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/search-and-knowledge.md) — find a Slack message, or let the assistant search everything you have synced
+
+## Workbench
+
+- [Workbench](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/README.md) — a folder, a board, agent sessions and asks: what a workbench is and how to start one
+- [Board and targets](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/board-and-targets.md) — the plan the agent and you share: Kanban, grouping, archive and the git drift check
+- [Sessions](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/sessions.md) — what each session's state means, and how to start, find, resume and clear them
+- [Asks](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back
+- [Code viewer](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
+- [Worktrees and cleanup](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
+- [Diff review](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
+- [Methodology](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
+- [Codex](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
+- [Agent analytics](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, from the command line
+
+## Automations & AI
+
+- [AI Chat](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/ai-chat.md) — ask the assistant about your work, attach files, get documents back, organize chats into projects
+- [Writing and changing things from the AI Chat](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
+- [Quick Connections](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
+- [Memory](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
+- [Automations](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/automations.md) — recipes the daemon runs on a schedule or on demand, with confirmation, budgets and auto grants
+- [Automations: recipes and templates](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/automations-recipes.md) — the parts of a recipe and the five ready-made templates
+
+## Meetings & calendar
+
+- [Calendar and meeting prep](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/calendar-and-meeting-prep.md) — one timeline of meetings and recordings, plus an AI brief on the people before you join
+- [Meeting recording](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/meeting-recording.md) — record a call locally and get a transcript, recap, action items and named speakers
+- [Voice dictation](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/voice-dictation.md) — speak instead of typing in chats, ideas and notes, or capture an idea from anywhere
+
+## Apps & integration
+
+- [iPhone](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
+- [Menu bar and updates](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
+- [Claude Code integration](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
+
+## Reference
+
+- [Settings](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/reference/settings.md) — what each Settings tab does that the screen doesn't say
+- [Keyboard shortcuts](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/reference/keyboard-shortcuts.md) — every key equivalent, by area
+- [Command line](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/reference/cli.md) — the `watchtower` commands, grouped
+- [Glossary](https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/reference/glossary.md) — the terms the guide uses, one line each
+
+===
 
 === RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.
