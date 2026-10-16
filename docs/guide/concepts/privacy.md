@@ -10,7 +10,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Search.** Knowledge search is a local index and uses no AI.
 - **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
 
-Removing an account deletes its sign-in file. In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes everything.
+Removing an account deletes its sign-in file. In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits. It leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
 
 ## What goes to your AI provider
 
@@ -21,13 +21,14 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
 - **Meeting recaps and the meeting chat:** the transcript.
 - **AI Chat:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
+- **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
 
 With **Ollama / Local** on a server on your own machine, the text never leaves it. Point it at a remote server and it goes there.
 
-Mute noisy or sensitive channels with **Mute for AI** in Statistics, and switch features off in **Settings → Features**; an off feature sends nothing.
+**Mute for AI** in Statistics keeps a channel out of digests, tracks and the briefing. It does not stop the chat, Catch Up or Memory from reading it. To stop a kind of data going to the provider, switch the feature off in **Settings → Features**; an off feature sends nothing.
 
-Slack is read-only. The assistant sends or edits something only after you approve it. A Quick Connection (an outside tool server you add) receives only what the assistant sends it when you use it in chat.
+Slack is read-only. The assistant sends or edits something only after you approve it, unless you gave a confirmed automation an automatic grant for that action. A Quick Connection (an outside tool server you add) receives what the assistant sends it when you use it in chat, and what a confirmed automation sends it through `mcp()` on its schedule.
 
 Other network traffic: calls to each source's own service, a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
 
@@ -41,7 +42,7 @@ It is end-to-end encrypted.
 
 Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink this Mac** on the phone, or removing the phone on the Mac, deletes the Mac's data from the phone.
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** on the phone (Settings → Macs), or removing the phone on the Mac, deletes the Mac's data from the phone.
 
 ## Related
 

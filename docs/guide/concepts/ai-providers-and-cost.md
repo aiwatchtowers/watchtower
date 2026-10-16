@@ -30,10 +30,10 @@ Override either tier in **Light Model** and **Strong Model**, or press **Default
 ## What drives cost
 
 - **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory and Next Step are medium. Briefing and Day Plan are light, once a day. Attention detection, Knowledge search and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
-- **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are left out of AI processing.
+- **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are skipped by digests, tracks and the briefing, but the chat, Catch Up and Memory can still read them.
 - **Chat and Workbench.** They cost nothing until you send a message or start a session.
 - **A fresh connection.** The first month of history is processed by AI too. See [History backfill](history-backfill.md).
-- **Parallelism.** The **Workers** field (default 5) caps parallel AI calls.
+- **Parallelism.** **Settings → System → AI → Workers** (default 5; the **Workers** field under Sync is separate and not about AI) caps parallel AI calls.
 
 On a local Ollama model nothing is billed, but speed and quality depend on the model you run.
 
@@ -54,7 +54,7 @@ Watchtower reads the numbers every 5 minutes with Claude Code's existing sign-in
 It never refreshes that sign-in, so if Claude Code's token has expired the tab shows the last numbers marked stale until you use Claude Code again. The source is an undocumented endpoint and can change. Codex and API-key accounts have no plan numbers.
 
 - The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
-- Notifications fire once per limit per window, when a limit is projected to be hit before it resets and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notification Types**.
+- Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notification Types**.
 - **Refresh** polls once now.
 - When a limit is projected to be hit, history backfill pauses ("Loading history paused — Claude plan limit"). Nothing else is held back.
 - The feature is **Claude plan limits** in Settings → Features; off stops the polling.
