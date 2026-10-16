@@ -17,6 +17,20 @@ final class ReviewWrapUpTests: XCTestCase {
         XCTAssertEqual(items.map(\.text), ["Add X", "Fix Y"])
     }
 
+    func testIntentItemsFromCoverage() {
+        let context = [ReviewContextItem(targetId: 12, text: "Add X")]
+        let a = ReviewWrapUp.intentItems(context, coverage: [(item: "Ship X", status: "covered"), (item: "Docs", status: "missing")])
+        let b = ReviewWrapUp.intentItems(context, coverage: [(item: "Docs", status: "partial")])
+        XCTAssertEqual(a.map(\.text), ["Ship X", "Docs"])
+        XCTAssertEqual(a.map(\.aiStatus), ["covered", "missing"])
+        XCTAssertTrue(a[0].key.hasPrefix("cov:"))
+        XCTAssertEqual(a[0].key.count, 4 + 16)
+        XCTAssertEqual(a[1].key, b[0].key)
+        let fallback = ReviewWrapUp.intentItems(context, coverage: [])
+        XCTAssertEqual(fallback.map(\.key), ["target:12"])
+        XCTAssertNil(fallback[0].aiStatus)
+    }
+
     func testCommentsGroupedByChapterInChapterOrder() {
         let chapters = [
             ReviewChapter(key: "dir:a", title: "a", paths: ["a/x.go"], changedLines: 1, core: false),

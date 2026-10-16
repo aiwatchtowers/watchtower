@@ -98,4 +98,85 @@ final class ReviewChaptersTests: XCTestCase {
         XCTAssertEqual(progress.totalLines, 10)
         XCTAssertEqual(progress.viewedLines, 10)
     }
+
+    // MARK: chapter sources
+
+    private func spec(_ title: String, _ paths: [String], core: Bool = false, lenses: [String]? = nil) -> ReviewChapterSpec {
+        ReviewChapterSpec(title: title, paths: paths, core: core, lenses: lenses)
+    }
+
+    private func lens(_ id: String, builtin: Bool) -> ReviewLens {
+        ReviewLens(id: id, name: id, builtin: builtin, items: [])
+    }
+
+    func testAgentChaptersWinOverAI() {
+        let files = [file("a/x.go"), file("b/y.go")]
+        let out = ReviewChapters.resolve(files, agent: [spec("A", ["a/x.go"])], ai: [spec("B", ["b/y.go"])])
+        XCTAssertEqual(out.first?.key, "agent:1")
+        XCTAssertEqual(out.first?.source, .agent)
+        XCTAssertEqual(out.map(\.key), ["agent:1", "dir:b"])
+    }
+
+    func testAIChaptersWhenNoAgentChapters() {
+        let out = ReviewChapters.resolve([file("a/x.go"), file("b/y.go")], agent: [], ai: [
+            spec("One", ["a/x.go"], lenses: ["tests"]), spec("Two", ["b/y.go"])
+        ])
+        XCTAssertEqual(out.map(\.key), ["ai:1", "ai:2"])
+        XCTAssertEqual(out[0].lenses, ["tests"])
+        XCTAssertEqual(out[0].source, .ai)
+    }
+
+    func testUnknownPathsDroppedAndEmptyChapterSkipped() {
+        let out = ReviewChapters.resolve([file("a/x.go"), file("a/x.go")], agent: [], ai: [
+            spec("Ghost", ["nope.go"]), spec("Real", ["nope.go", "a/x.go"]), spec("Dup", ["a/x.go"])
+        ])
+        XCTAssertEqual(out.map(\.key), ["ai:2"])
+        XCTAssertEqual(out[0].paths, ["a/x.go"])
+        XCTAssertEqual(out[0].changedLines, 10)
+    }
+
+    func testLeftoverFilesGoToMechanicalChaptersAfter() {
+        let out = ReviewChapters.resolve([file("a/x.go"), file("b/y.go")], agent: [spec("A", ["a/x.go"])], ai: [])
+        XCTAssertEqual(out.map(\.key), ["agent:1", "dir:b"])
+        XCTAssertEqual(out[1].source, .mechanical)
+    }
+
+    func testCoreFirstAndTestsFirstInside() {
+        let files = [file("a/x.go"), file("a/x_test.go"), file("b/y.go")]
+        let out = ReviewChapters.resolve(files, agent: [], ai: [
+            spec("Later", ["b/y.go"]), spec("Main", ["a/x.go", "a/x_test.go"], core: true)
+        ])
+        XCTAssertEqual(out.map(\.title), ["Main", "Later"])
+        XCTAssertEqual(out[0].paths, ["a/x_test.go", "a/x.go"])
+    }
+
+    func testAllSourcesEmptyIsMechanical() {
+        let files = [file("a/x.go"), file("b/y.go", collapsed: "lock")]
+        XCTAssertEqual(ReviewChapters.resolve(files, agent: [], ai: []), ReviewChapters.mechanical(files))
+        XCTAssertEqual(ReviewChapters.resolve(files, agent: [], ai: [spec("G", ["zzz"])]), ReviewChapters.mechanical(files))
+    }
+
+    func testLensesForAIChapterKeepHouseRulesAndOwnerLenses() {
+        let all = [
+            lens("correctness", builtin: true), lens("tests", builtin: true),
+            lens("house_rules", builtin: true), lens("docs", builtin: false)
+        ]
+        let ai = ReviewChapter(key: "ai:1", title: "t", paths: [], changedLines: 0, core: false, source: .ai, lenses: ["tests"])
+        XCTAssertEqual(ReviewChapters.lenses(for: ai, all: all).map(\.id), ["tests", "house_rules", "docs"])
+    }
+
+    func testLensesForMechanicalAreAll() {
+        let all = [lens("correctness", builtin: true), lens("tests", builtin: true)]
+        let agent = ReviewChapter(key: "agent:1", title: "t", paths: [], changedLines: 0, core: false, source: .agent, lenses: ["tests"])
+        let mech = ReviewChapter(key: "dir:a", title: "t", paths: [], changedLines: 0, core: false)
+        XCTAssertEqual(ReviewChapters.lenses(for: agent, all: all), all)
+        XCTAssertEqual(ReviewChapters.lenses(for: mech, all: all), all)
+    }
+
+    func testEstimateMinutes() {
+        XCTAssertEqual(ReviewChapters.estimateMinutes(changedLines: 0), 0)
+        XCTAssertEqual(ReviewChapters.estimateMinutes(changedLines: 1), 1)
+        XCTAssertEqual(ReviewChapters.estimateMinutes(changedLines: 400), 60)
+        XCTAssertEqual(ReviewChapters.estimateMinutes(changedLines: 1000), 150)
+    }
 }
