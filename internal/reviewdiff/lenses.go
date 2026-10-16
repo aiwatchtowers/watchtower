@@ -1,6 +1,7 @@
 package reviewdiff
 
 import (
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -78,6 +79,7 @@ func ParseLenses(folderFile []byte) (lenses []Lens, notes []string) {
 
 func parseLensesInto(lenses []Lens, data []byte, builtin bool) ([]Lens, []string) {
 	var notes []string
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	const (
 		noLens      = -1 // before the first heading
 		skippedLens = -2 // under a heading that was skipped; its bullets are dropped silently
@@ -113,7 +115,7 @@ func parseLensesInto(lenses []Lens, data []byte, builtin bool) ([]Lens, []string
 				continue
 			}
 			if cur == skippedLens {
-				continue
+				continue // the skipped heading's own note already covers these bullets // the skipped heading's own note already covers these bullets
 			}
 			q := strings.TrimSpace(strings.TrimPrefix(line, "-"))
 			if q == "" {

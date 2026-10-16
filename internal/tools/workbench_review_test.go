@@ -104,7 +104,7 @@ func TestGetReview_TextShowsLens(t *testing.T) {
 	rid := seedSentReviewRound(t, fx.d, fx.a, "a.go", 3, 4, "q", "tests missing")
 	_, err := fx.d.Exec(`UPDATE review_comments SET lens = 'tests' WHERE round_id = ?`, rid)
 	require.NoError(t, err)
-	// a second round-less insert is not allowed after send, so add the others before reading
+	// add a lens-tagged comment and a plain file comment to the sent round before reading
 	_, err = fx.d.Exec(`INSERT INTO review_comments (round_id, body, lens, status) VALUES (?, 'why this shape', 'intent', 'sent')`, rid)
 	require.NoError(t, err)
 	_, err = fx.d.Exec(`INSERT INTO review_comments (round_id, path, start_line, end_line, body, status) VALUES (?, 'b.go', 1, 1, 'plain', 'sent')`, rid)
