@@ -328,7 +328,7 @@ func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 	}
 	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, unavailable)
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, SkillState: StateUnchanged,
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, SkillState: StateUnchanged, GroupPrompt: true,
 		TrustError: "codex hook trust unavailable: no answer within 10s"}, st)
 
 	f := newFakeAppServer(t)
@@ -373,7 +373,7 @@ func TestStatusCodex_ReportsEachPartAndWritesNothing(t *testing.T) {
 	require.NoError(t, err)
 	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged}, st)
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged, GroupPrompt: true}, st)
 
 	// An owner-edited skill is theirs and counts as installed (PROJ-04).
 	writeTestFile(t, codexSkillFile(folder), readTestFile(t, codexSkillFile(folder))+"\nmy note\n")

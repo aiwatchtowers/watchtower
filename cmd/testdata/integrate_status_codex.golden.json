@@ -14,11 +14,13 @@
   "ask_guard": true,
   "ask_tool_block": true,
   "cleanup_permission": true,
+  "group_prompt": true,
   "codex": {
     "found": true,
     "skill": true,
     "skill_state": "unchanged",
     "hooks_trusted": true,
-    "imported_duplicates": false
+    "imported_duplicates": false,
+    "group_prompt": true
   }
 }
