@@ -233,4 +233,17 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertEqual(try OwnerAskQueries.replacements(d, projectID: p), [old: new])
         }
     }
+    func testDecodesAutomationRunID() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let automation = try TestDatabase.insertAutomation(d, workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(d, automationID: automation, status: "waiting",
+                                                           waitingReason: "ask")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "From the run", automationRunID: run)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "From an agent")
+            let asks = try OwnerAskQueries.openAsks(d, projectID: p).asks
+            XCTAssertEqual(asks.map(\.title), ["From the run", "From an agent"])
+            XCTAssertEqual(asks.map(\.automationRunID), [run, nil])
+        }
+    }
 }

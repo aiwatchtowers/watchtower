@@ -912,7 +912,8 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id, codex: codex, setup: setup,
+                            automationRunID: session.automationRunID))
     }
 
     func close(sessionID: Int64) async {

@@ -33,6 +33,8 @@ package enum TerminalSessionQueries {
         /// Set when Watchtower created the session's worktree (00114).
         package var worktreeBranch: String?
         package var worktreeBase: String?
+        /// The automation run starting this session (00122); nil = the owner.
+        package var automationRunID: Int64?
 
         package init(
             projectID: Int64?,
@@ -42,7 +44,8 @@ package enum TerminalSessionQueries {
             folderPath: String,
             claudeSessionID: String? = nil,
             worktreeBranch: String? = nil,
-            worktreeBase: String? = nil
+            worktreeBase: String? = nil,
+            automationRunID: Int64? = nil
         ) {
             self.projectID = projectID
             self.kind = kind
@@ -52,6 +55,7 @@ package enum TerminalSessionQueries {
             self.claudeSessionID = claudeSessionID
             self.worktreeBranch = worktreeBranch
             self.worktreeBase = worktreeBase
+            self.automationRunID = automationRunID
         }
     }
 
@@ -65,12 +69,12 @@ package enum TerminalSessionQueries {
             sql: """
                 INSERT INTO terminal_sessions
                     (project_id, kind, title, target_id, folder_path, claude_session_id,
-                     worktree_branch, worktree_base)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     worktree_branch, worktree_base, automation_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [
                 new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
-                new.claudeSessionID, new.worktreeBranch, new.worktreeBase
+                new.claudeSessionID, new.worktreeBranch, new.worktreeBase, new.automationRunID
             ]
         )
         let id = db.lastInsertedRowID
