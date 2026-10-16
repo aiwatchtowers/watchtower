@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -28,6 +29,9 @@ type Usage struct {
 	InputTokens    int
 	OutputTokens   int
 	TotalAPITokens int
+	// CostUSD is the CLI's total_cost_usd when it reports one (QuerySync);
+	// 0 = not reported.
+	CostUSD float64
 }
 
 // cliUsage is the nested usage object in the Claude CLI JSON response.
@@ -220,21 +224,37 @@ const GroupKillGrace = time.Second
 // ConfigureChild applies the cancel policy to cmd: SIGINT then SIGKILL after
 // grace via WaitDelay, or, with group, a process group of its own that is
 // interrupted and then killed as a whole (the leader's grandchildren
-// included) after GroupKillGrace. Shared with the codex client.
-func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) {
-	if group {
-		grace = GroupKillGrace
-	}
-	cmd.WaitDelay = grace
+// included) after GroupKillGrace — group mode ignores grace. Shared with the
+// codex client. The caller runs the returned reap once cmd.Wait has
+// returned (or the child never started): a cancelled group's pending
+// SIGKILL is then sent at once and its timer stopped, so the group is dead
+// when the call returns — even when WaitDelay ended the wait first — and no
+// timer outlives the call to signal a reused process group id later.
+func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) (reap func()) {
 	if !group {
+		cmd.WaitDelay = grace
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-		return
+		return func() {}
 	}
+	cmd.WaitDelay = GroupKillGrace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var mu sync.Mutex
+	var kill *time.Timer
+	var pgid int
 	cmd.Cancel = func() error {
-		pgid := cmd.Process.Pid // Setpgid: the leader's pid is the group id
-		time.AfterFunc(grace, func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+		mu.Lock()
+		defer mu.Unlock()
+		leader := cmd.Process.Pid // Setpgid: the leader's pid is the group id
+		pgid = leader
+		kill = time.AfterFunc(GroupKillGrace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
 		return syscall.Kill(-pgid, syscall.SIGINT)
+	}
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if kill != nil && kill.Stop() {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
 	}
 }
 
@@ -704,7 +724,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
 		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
-		ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		defer reap()
 		cmd.Dir = c.workDir()
 		cmd.Env = c.childEnviron()
 
@@ -830,7 +851,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	defer reap()
 	cmd.Dir = c.workDir()
 	cmd.Env = c.childEnviron()
 
@@ -869,6 +891,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		InputTokens:    resp.Usage.InputTokens,
 		OutputTokens:   resp.Usage.OutputTokens,
 		TotalAPITokens: totalAPI,
+		CostUSD:        resp.CostUSD,
 	}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil

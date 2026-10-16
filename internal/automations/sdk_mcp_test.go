@@ -2,6 +2,7 @@ package automations_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -59,6 +60,29 @@ func TestMCPModule_NotAvailable(t *testing.T) {
 				mcpCase(m, "mcp:github/*"), "NotAvailable")
 		})
 	}
+
+	// The caller's cause reaches the script and the journal.
+	m := &automationstest.FakeMCP{Err: fmt.Errorf("%w: %q's tools were never listed — `watchtower connections tools 3 --refresh`",
+		automations.ErrMCPNotAvailable, "github")}
+	want := "Quick Connection \"github\" is not available: \"github\"'s tools were never listed — `watchtower connections tools 3 --refresh`"
+	r := mustReturn(t, `try { mcp("github", "list_prs"); return "called" } catch (e) { return e.name + "|" + e.message }`,
+		mcpCase(m, "mcp:github/*"), "NotAvailable|"+want)
+	if steps := r.env.Journal.Steps(); len(steps) != 1 || !strings.Contains(steps[0].Error, want) {
+		t.Fatalf("steps = %+v; want the cause journalled", steps)
+	}
+}
+
+// A malformed call journals a placeholder name, never "/"; any other caller
+// failure (a database read) is a ToolError carrying its cause.
+func TestMCPModule_MalformedCallAndOtherFailures(t *testing.T) {
+	r := mustReturn(t, `try { mcp("", 1); return "called" } catch (e) { return e.name }`,
+		mcpCase(&automationstest.FakeMCP{}, "mcp:github/*"), "ValidationError")
+	if steps := r.env.Journal.Steps(); len(steps) != 1 || steps[0].Name != "invalid" {
+		t.Fatalf("steps = %+v; want one step named invalid", steps)
+	}
+	m := &automationstest.FakeMCP{Err: fmt.Errorf("listing Quick Connections: %w", errors.New("database is locked"))}
+	mustReturn(t, `try { mcp("github", "list_prs"); return "called" } catch (e) { return e.name + "|" + e.message }`,
+		mcpCase(m, "mcp:github/*"), "ToolError|github/list_prs: listing Quick Connections: database is locked")
 }
 
 func TestMCPModule_ToolErrorAndValidation(t *testing.T) {

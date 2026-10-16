@@ -249,6 +249,12 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 		if u.InputTokens+u.OutputTokens > 0 {
 			u.Estimated, u.ReportedUSD = r.Estimated, r.ReportedCostUSD
 		}
+		// A runner metered only after the fact (a CLI child) can overshoot
+		// the carve: its reply is then not returned.
+		if spent := spentIn + spentOut + u.InputTokens + u.OutputTokens; err == nil && spent > int64(req.budget.Tokens) {
+			err = &SDKError{Name: ErrNameBudget,
+				Message: fmt.Sprintf("agent(): it spent %d tokens, over its budget of %d", spent, req.budget.Tokens)}
+		}
 		return u, agentError(err)
 	})
 	if err != nil {

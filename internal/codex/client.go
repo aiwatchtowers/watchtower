@@ -24,6 +24,8 @@ type Client struct {
 	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
 	// passes through `ai query --tools chat`. Empty = the read-only dev server.
 	mcpArgs []string
+	// mcpEnvVars are passed through to the MCP server (SetMCPEnvVars).
+	mcpEnvVars []string
 	// stdinOnly routes the system prompt and user message through stdin only
 	// (see SetStdinOnly) — never through argv.
 	stdinOnly bool
@@ -79,6 +81,10 @@ func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
+
+// SetMCPEnvVars names environment variables codex passes through to the
+// watchtower MCP server (its env_vars; codex otherwise filters them out).
+func (c *Client) SetMCPEnvVars(names []string) { c.mcpEnvVars = names }
 
 // SetStdinOnly makes every subsequent call route the system prompt and user
 // message through stdin ONLY (CHAT-04, spec §9: no content on any process's
@@ -209,7 +215,7 @@ func (c *Client) workDir() (dir string, cleanup func(), err error) {
 	if c.dbPath == "" {
 		return "", func() {}, nil
 	}
-	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs)
+	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs, c.mcpEnvVars)
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -253,7 +259,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
-		ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		defer reap()
 		cmd.Dir = c.processDir()
 		cmd.Env = c.childEnviron()
 
@@ -353,7 +360,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ai.ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	defer reap()
 	cmd.Dir = c.processDir()
 	cmd.Env = c.childEnviron()
 

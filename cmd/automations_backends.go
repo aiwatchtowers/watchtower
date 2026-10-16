@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,8 +24,9 @@ import (
 	"watchtower/internal/tools"
 )
 
-// automationMCPTimeout bounds one automation tool call (connect, call, stop).
-const automationMCPTimeout = 30 * time.Second
+// automationMCPTimeout bounds one automation tool call (connect, call, stop);
+// a var so tests can hit it.
+var automationMCPTimeout = 30 * time.Second
 
 // callServerTool is externalmcp.CallTool; a var so tests can probe the call.
 var callServerTool = externalmcp.CallTool
@@ -49,7 +51,8 @@ func newAutomationMCPCaller(cfg *config.Config, database *db.DB) automations.MCP
 func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, args json.RawMessage) (json.RawMessage, error) {
 	conns, err := m.database.ListEnabledExternalConnections()
 	if err != nil {
-		return nil, fmt.Errorf("%w: listing connections: %v", automations.ErrMCPNotAvailable, err)
+		// A read failure, not an absent connection (a ToolError).
+		return nil, fmt.Errorf("listing Quick Connections: %w", err)
 	}
 	i := slices.IndexFunc(conns, func(c db.ExternalConnection) bool { return c.Name == server })
 	if i < 0 {
@@ -69,11 +72,15 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 	}
 	spec, err := connectionServer(m.cfg, m.database, c)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %q's credentials: %v", automations.ErrMCPNotAvailable, server, err)
+		return nil, fmt.Errorf("%w: %q's credentials: %w", automations.ErrMCPNotAvailable, server, err)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, automationMCPTimeout)
 	defer cancel()
-	return callServerTool(callCtx, serverSpec(spec), tool, args)
+	res, err := callServerTool(callCtx, serverSpec(spec), tool, args)
+	if err != nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil, fmt.Errorf("the call hit the %s mcp() time limit: %w", automationMCPTimeout, err)
+	}
+	return res, err
 }
 
 // automationBackends are the backends of every executor that runs recipes:
@@ -85,7 +92,7 @@ func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
 		MCP:       newAutomationMCPCaller(cfg, database),
-		Agent:     newAutomationAgentRunner(cfg, cfg.DBPath(), database),
+		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}
 }
 
@@ -101,13 +108,15 @@ const automationAgentSystemPrompt = "You are one step of an automation script th
 // newAutomationAgentRunner is agent()'s runner for the configured provider:
 // claude and codex run a headless CLI child bound to the automation-run MCP
 // server (spec §20 D3); any other provider runs the runtime-B loop in
-// process.
-func newAutomationAgentRunner(cfg *config.Config, dbPath string, database *db.DB) automations.AgentRunner {
+// process. configPath is the config file this process loaded (--config):
+// the child's `watchtower mcp` is pointed at it, since the allowlisted env
+// drops WATCHTOWER_CONFIG_PATH.
+func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, database *db.DB) automations.AgentRunner {
 	switch cfg.AI.Provider {
 	case "", "claude":
-		return &cliAgentRunner{cfg: cfg, dbPath: dbPath, provider: "claude"}
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "claude"}
 	case "codex":
-		return &cliAgentRunner{cfg: cfg, dbPath: dbPath, provider: "codex"}
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "codex"}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -128,10 +137,13 @@ func tierModel(cfg *config.Config, provider, tier string) string {
 // a scrubbed per-run home: codexAgentHome), runs in its own
 // process group (killed as a group on cancel or deadline), and is metered
 // once: BeforeModelCall before it starts, its usage — or an estimate — after.
+// Its server runs under this process's config and workspace (--config,
+// --workspace), not whatever the default config path would resolve to.
 type cliAgentRunner struct {
-	cfg      *config.Config
-	dbPath   string
-	provider string // "claude" | "codex"
+	cfg        *config.Config
+	configPath string // "" = the child's default
+	dbPath     string
+	provider   string // "claude" | "codex"
 }
 
 func (r *cliAgentRunner) Name() string { return r.provider }
@@ -140,8 +152,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
 	defer cancel()
 	model := tierModel(r.cfg, r.provider, req.Tier)
-	mcpArgs := []string{"--chat", "--surface", tools.AutomationSurface,
-		"--automation-run", strconv.FormatInt(req.RunID, 10), "--automation-tools", strings.Join(req.Tools, ",")}
+	mcpArgs := r.mcpArgs(req)
 	env := automationAgentEnv(req.RunID)
 	var client ai.Provider
 	if r.provider == "codex" {
@@ -152,6 +163,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		defer func() { _ = os.RemoveAll(home) }()
 		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
 		c.SetMCPArgs(mcpArgs)
+		c.SetMCPEnvVars(codexAgentServerEnv)
 		// codex only: CODEX_HOME joins the env allowlist, pointing at the
 		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
 		c.SetChildEnv(append(env, "CODEX_HOME="+home))
@@ -171,10 +183,36 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	}
 	text, usage, err := client.QuerySync(ctx, automationAgentSystemPrompt, req.Instruction, "")
 	if err != nil {
-		return automations.AgentResult{}, err
+		// A child that failed or was killed (cancel, deadline) reports no
+		// usage; it still read the instruction, so a provider without usage
+		// numbers cannot run unbounded (spec §7.5).
+		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
 	return agentResult(req.Instruction, text, usage), nil
 }
+
+// mcpArgs are the flags of the child's `watchtower mcp` server: the
+// automation-run binding, then this process's config file and workspace.
+func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
+	args := []string{"--chat", "--surface", tools.AutomationSurface,
+		"--automation-run", strconv.FormatInt(req.RunID, 10), "--automation-tools", strings.Join(req.Tools, ",")}
+	if r.configPath != "" {
+		path := r.configPath
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		args = append(args, "--config", path)
+	}
+	if r.cfg.ActiveWorkspace != "" {
+		args = append(args, "--workspace", r.cfg.ActiveWorkspace)
+	}
+	return args
+}
+
+// codexAgentServerEnv is what codex passes through to the agent's watchtower
+// server: codex starts MCP servers with a filtered environment, and the
+// server refuses to start without the run marker (mcpAutomationOptions).
+var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
 // temp folder the caller removes after the run. Its config.toml turns web
@@ -189,17 +227,7 @@ func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("creating the agent's codex home: %w", err)
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		exe = "watchtower"
-	}
-	args := append([]string{"mcp", "--db-path", dbPath}, mcpArgs...)
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = strconv.Quote(a)
-	}
-	config := fmt.Sprintf("web_search = \"disabled\"\n\n[mcp_servers.watchtower]\ncommand = %s\nargs = [%s]\n",
-		strconv.Quote(exe), strings.Join(quoted, ", "))
+	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("writing the agent's codex config: %w", err)
@@ -236,11 +264,15 @@ func automationAgentEnv(runID int64) []string {
 	return append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
 }
 
-// agentResult is a finished agent() loop: the provider's usage, or, when it
-// reported none, an estimate of ceil(len(instruction+text)/4) tokens (the
-// reply's share as output).
+// agentResult is a finished agent() loop: the provider's usage and cost
+// (claude's total_cost_usd), or, when it reported no tokens, an estimate of
+// ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
+	if u != nil && u.CostUSD > 0 {
+		cost := u.CostUSD
+		res.ReportedCostUSD = &cost
+	}
 	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
 		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
 		return res

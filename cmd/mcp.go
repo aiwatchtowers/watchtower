@@ -103,6 +103,10 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if mcpFlagChatProject != 0 && !mcpFlagChat {
 		return nil, errors.New("--chat-project requires --chat")
 	}
+	if mcpFlagWorkbench != 0 && (mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) {
+		// Never a workbench DirectApply server for an automation's agent.
+		return nil, errors.New("--workbench and the automation flags (--surface automation, --automation-run, --automation-tools) are mutually exclusive")
+	}
 	if (mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil) && !mcpFlagChat {
 		return nil, errors.New("--automation-run and --automation-tools require --chat --surface automation")
 	}

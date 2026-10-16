@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dop251/goja"
 
@@ -18,7 +19,11 @@ import (
 func MCPModule(b Backends) Module {
 	return sdkModule{name: "mcp", fns: map[string]SDKFunc{"mcp": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		req, reqErr := parseMCPCall(env, rt, call)
-		return env.Call(StepKindMCP, req.server+"/"+req.tool, req.args, func(step *Step) (any, error) {
+		name := req.server + "/" + req.tool
+		if req.server == "" || req.tool == "" {
+			name = "invalid" // a malformed call names no server/tool pair
+		}
+		return env.Call(StepKindMCP, name, req.args, func(step *Step) (any, error) {
 			if reqErr != nil {
 				return nil, reqErr
 			}
@@ -87,11 +92,18 @@ func parseMCPCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (mcpCall, 
 	return req, nil
 }
 
-// mcpError maps a MCPCaller failure to the SDK error the script sees.
+// mcpError maps a MCPCaller failure to the SDK error the script sees, the
+// caller's cause (the refresh hint, the credential failure) kept in the
+// message.
 func mcpError(req mcpCall, err error) error {
 	switch {
 	case errors.Is(err, ErrMCPNotAvailable):
-		return notAvailable(fmt.Sprintf("Quick Connection %q is not available", req.server))
+		msg := fmt.Sprintf("Quick Connection %q is not available", req.server)
+		// The caller wraps the sentinel first: "<sentinel>: <cause>".
+		if cause := strings.TrimPrefix(strings.TrimPrefix(err.Error(), ErrMCPNotAvailable.Error()), ": "); cause != "" {
+			msg += ": " + cause
+		}
+		return notAvailable(msg)
 	case errors.Is(err, ErrMCPToolNotAllowed):
 		needed := "mcp:" + req.server + "/" + req.tool
 		return &SDKError{Name: ErrNamePermissionDenied, Needed: needed,

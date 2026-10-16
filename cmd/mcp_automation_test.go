@@ -174,6 +174,47 @@ func TestAgentMCPServer_WriteIsPendingProposalWithRunContext(t *testing.T) {
 	assert.Zero(t, targets, "nothing applied")
 }
 
+// S8: an execute trust row for the tool on the automation surface does not
+// apply an agent's write either: it stays a pending proposal.
+func TestAgentMCPServer_ExecuteTrustStillPending(t *testing.T) {
+	s := newAgentMCP(t)
+	run := s.running(t, db.TriggerManual)
+	require.NoError(t, s.d.SetToolTrust("create_target", tools.AutomationSurface, "execute"))
+
+	_, ls := s.session(t, run, "create_target")
+	text, isErr, err := ls.Call(context.Background(), "create_target", map[string]any{"text": "Follow up", "reason": "agent"})
+	require.NoError(t, err)
+	require.False(t, isErr, text)
+
+	var status, trust string
+	require.Equal(t, 1, countAgentActions(t, s.d))
+	require.NoError(t, s.d.QueryRow(`SELECT status, trust_at_create FROM agent_actions`).Scan(&status, &trust))
+	assert.Equal(t, "pending", status)
+	assert.Equal(t, "ask", trust)
+	var targets int
+	require.NoError(t, s.d.QueryRow(`SELECT COUNT(*) FROM targets`).Scan(&targets))
+	assert.Zero(t, targets, "nothing applied")
+}
+
+// --workbench never combines with the automation flags: that would start a
+// workbench DirectApply server for an automation's agent.
+func TestMCP_WorkbenchWithAutomationFlagsRefused(t *testing.T) {
+	for name, set := range map[string]func(){
+		"surface":          func() { mcpFlagSurface = tools.AutomationSurface },
+		"automation-run":   func() { mcpFlagAutomationRun = 7 },
+		"automation-tools": func() { mcpFlagAutomationTools = []string{"list_targets"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			resetMCPFlags(t)
+			database := openMCPTestDB(t)
+			mcpFlagWorkbench = 1
+			set()
+			_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "", nil)
+			require.ErrorContains(t, err, "--workbench and the automation flags")
+		})
+	}
+}
+
 func TestAgentMCPServer_CallAfterRunEndedRefused(t *testing.T) {
 	s := newAgentMCP(t)
 	run := s.running(t, db.TriggerManual)

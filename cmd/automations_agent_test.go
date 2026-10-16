@@ -229,7 +229,8 @@ func TestAgent_DryRunRemovesWriteTools(t *testing.T) {
 
 // claudeStub is a fake claude (or codex) CLI: it records its environment,
 // its argv and a codex --cd folder's config.toml, writes its pid, sleeps
-// ignoring SIGINT when its dir holds a "sleep" file, and prints reply.
+// ignoring SIGINT when its dir holds a "sleep" file, exits 1 with no output
+// when it holds a "fail" file, and prints reply.
 type claudeStub struct {
 	dir, path string
 }
@@ -249,6 +250,7 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"readlink \"$CODEX_HOME/auth.json\" > '" + dir + "/codex-auth-link'; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
+		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
 		"cat '" + dir + "/reply'\n"
 	require.NoError(t, os.WriteFile(s.path, []byte(script), 0o700))
 	t.Cleanup(func() {
@@ -335,6 +337,7 @@ func TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	t.Setenv("USER", "acme")
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("WT_FAKE_SECRET", "s3cret")
+	configPath := setFlagConfig(t)
 	f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
 	_, err := f.d.InsertExternalConnection(db.ExternalConnection{Name: "github", Kind: "stdio", Command: "/bin/false", Enabled: true})
 	require.NoError(t, err)
@@ -367,19 +370,37 @@ func TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	assert.Equal(t, runID, flagAfter(t, mcpArgs, "--automation-run"))
 	assert.Equal(t, "create_target,list_targets", flagAfter(t, mcpArgs, "--automation-tools"))
 	assert.Contains(t, mcpArgs, "--chat")
+	// The env drops WATCHTOWER_CONFIG_PATH: the server is pointed at this
+	// process's config file and workspace instead.
+	assert.Equal(t, configPath, flagAfter(t, mcpArgs, "--config"))
+	assert.Equal(t, "acme", flagAfter(t, mcpArgs, "--workspace"))
+}
+
+// setFlagConfig points --config at a file in a temp dir for the test and
+// returns its path.
+func setFlagConfig(t *testing.T) string {
+	t.Helper()
+	original := flagConfig
+	t.Cleanup(func() { flagConfig = original })
+	flagConfig = filepath.Join(t.TempDir(), "config.yaml")
+	return flagConfig
 }
 
 func TestAgent_CLIUsageDebitedOrEstimated(t *testing.T) {
-	stub := newClaudeStub(t, `{"type":"result","result":"done","usage":{"input_tokens":120,"output_tokens":30}}`)
+	stub := newClaudeStub(t, `{"type":"result","result":"done","total_cost_usd":0.0125,"usage":{"input_tokens":120,"output_tokens":30}}`)
 	f := newAgentFixture(t, stub.config(t), `return agent("triage the inbox").text`, "")
 	run := f.run(t, db.TriggerManual)
 	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
 	assert.Equal(t, int64(120), run.InputTokens)
 	assert.Equal(t, int64(30), run.OutputTokens)
 	assert.False(t, run.TokensEstimated)
+	require.NotNil(t, run.ReportedCostUSD, "claude's total_cost_usd is stored")
+	assert.InDelta(t, 0.0125, *run.ReportedCostUSD, 1e-9)
 	step := f.agentStep(t, run.ID)
 	assert.Equal(t, "claude", step.Name)
 	assert.Equal(t, int64(120), step.InputTokens)
+	require.NotNil(t, step.ReportedCostUSD)
+	assert.InDelta(t, 0.0125, *step.ReportedCostUSD, 1e-9)
 
 	require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "reply"), []byte(`{"type":"result","result":"done","usage":{}}`), 0o600))
 	run = f.run(t, db.TriggerManual)
@@ -388,6 +409,14 @@ func TestAgent_CLIUsageDebitedOrEstimated(t *testing.T) {
 	assert.Equal(t, want, run.InputTokens+run.OutputTokens, "ceil(len(instruction+text)/4)")
 	assert.True(t, run.TokensEstimated)
 	assert.True(t, f.agentStep(t, run.ID).TokensEstimated)
+
+	// A child that fails (or is killed) reports nothing: its instruction is
+	// still debited as an estimate.
+	require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "fail"), nil, 0o600))
+	run = f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunFailed, run.Status)
+	assert.Equal(t, int64(len("triage the inbox")+3)/4, run.InputTokens+run.OutputTokens, "ceil(len(instruction)/4)")
+	assert.True(t, run.TokensEstimated)
 }
 
 func TestAgent_CancelKillsCLIChild(t *testing.T) {
@@ -455,6 +484,9 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	toml, err := os.ReadFile(filepath.Join(stub.dir, "codex.toml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(toml), `"--surface", "automation", "--automation-run", "`+runID+`", "--automation-tools", "create_target,list_targets"`)
+	// codex starts MCP servers with a filtered environment: the run marker
+	// the server checks is passed through by name.
+	assert.Contains(t, string(toml), `env_vars = ["`+automations.RunEnvMarker+`"]`)
 
 	// CODEX_HOME is a scrubbed per-run home: web search off, only the
 	// watchtower server, the owner's sign-in linked; gone after the run.
@@ -469,6 +501,7 @@ func TestAgent_CodexChildBoundToRun(t *testing.T) {
 	assert.Contains(t, string(homeTOML), "[mcp_servers.watchtower]")
 	assert.Equal(t, 1, strings.Count(string(homeTOML), "[mcp_servers."), "no server of the owner's: %s", homeTOML)
 	assert.Contains(t, string(homeTOML), `"--automation-run", "`+runID+`"`)
+	assert.Contains(t, string(homeTOML), `env_vars = ["`+automations.RunEnvMarker+`"]`)
 	link, err := os.ReadFile(filepath.Join(stub.dir, "codex-auth-link"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(ownerHome, "auth.json"), strings.TrimSpace(string(link)))

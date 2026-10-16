@@ -225,4 +225,30 @@ func TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded(t *testing.T) {
 		agentCase(t, a, nil, "agent:run", "llm:light"), "BudgetExceeded|agent(): its time budget is spent|ok")
 	assert.Empty(t, r.env.Meter.Crossed())
 	require.Len(t, a.Requests(), 1)
+
+	// The run's own deadline stays uncatchable: when it ends before the
+	// carve's minutes, the run is interrupted on time, not handed a
+	// catchable BudgetExceeded.
+	clock := automationstest.NewFakeClock(time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC))
+	c := agentCase(t, &automationstest.FakeAgent{UntilDone: true}, nil, "agent:run", "llm:light")
+	c.backends.Clock = clock
+	c.meter = automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock)
+	clock.Advance(5*time.Minute - time.Second) // one real second of the run is left
+	r = runSDK(t, `try { agent("x", {budget: {minutes: 2}}); return "ran" } catch (e) { return "caught " + e.name }`, c)
+	var ri *automations.RunInterrupted
+	require.ErrorAs(t, r.err, &ri, "out = %v", r.out)
+	assert.Equal(t, automations.InterruptTimeout, ri.Reason)
+}
+
+// A runner metered only after the fact (a CLI child) that overshoots its
+// carve throws a catchable BudgetExceeded; its reply is not returned.
+func TestAgent_OvershotCarveThrowsCatchableBudgetExceeded(t *testing.T) {
+	a := &automationstest.FakeAgent{RunnerName: "claude", Result: automations.AgentResult{Text: "secret reply", InputTokens: 900, OutputTokens: 200}}
+	r := mustReturn(t, `try { return agent("x", {budget: {tokens: 1000}}).text } catch (e) { return e.name + "|" + e.message + "|" + llm("after") }`,
+		agentCase(t, a, nil, "agent:run", "llm:light"), "BudgetExceeded|agent(): it spent 1100 tokens, over its budget of 1000|ok")
+	assert.Empty(t, r.env.Meter.Crossed(), "the run's budget was not crossed")
+	steps := r.env.Journal.Steps()
+	require.Len(t, steps, 2)
+	assert.Equal(t, 1100, stepTokens(steps[0]), "what it spent is debited")
+	assert.NotContains(t, steps[0].ResultSummary, "secret reply")
 }

@@ -235,3 +235,31 @@ func TestMCPCaller_ThirtySecondBound(t *testing.T) {
 	assert.Equal(t, "https://example.com/mcp", gotSpec.URL)
 	assert.Equal(t, "k", gotSpec.Headers["X-Api-Key"], "the static secret reaches the call")
 }
+
+// A failure keeps its cause: a database read is not "not available", and a
+// call that runs out of time names the mcp() limit.
+func TestMCPCaller_ErrorsKeepTheirCause(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	cacheReadOnlyTool(t, database, id)
+
+	original, originalTimeout := callServerTool, automationMCPTimeout
+	callServerTool = func(ctx context.Context, _ externalmcp.ServerSpec, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	automationMCPTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { callServerTool, automationMCPTimeout = original, originalTimeout })
+	_, err = newAutomationMCPCaller(cfg, database).Call(context.Background(), "acme", "get_item", nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "hit the 50ms mcp() time limit")
+	assert.NotErrorIs(t, err, automations.ErrMCPNotAvailable)
+
+	require.NoError(t, database.Close())
+	_, err = newAutomationMCPCaller(cfg, database).Call(context.Background(), "acme", "get_item", nil)
+	require.ErrorContains(t, err, "listing Quick Connections")
+	assert.NotErrorIs(t, err, automations.ErrMCPNotAvailable, "a read failure is not an absent connection")
+}
