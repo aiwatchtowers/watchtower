@@ -63,6 +63,11 @@ func TestMain(m *testing.M) {
 	if os.Getenv(runCLIEnv) == "1" {
 		os.Exit(Execute())
 	}
+	// The test binary as a stdio MCP server, a Quick Connection's command
+	// in the automation MCP caller tests.
+	if os.Getenv(fakeMCPServerEnv) == "1" {
+		serveFakeMCP()
+	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" || os.Getenv("GO_WANT_HELPER_PROCESS_DELAYED") == "1" {
 		os.Exit(m.Run())
 	}

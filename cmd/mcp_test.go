@@ -41,10 +41,13 @@ func TestMCPTurnBinding(t *testing.T) {
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
 	chat, project, chatProject, agent := mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent
+	surface, run, runTools, ready := mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile
 	t.Cleanup(func() {
 		mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = chat, project, chatProject, agent
+		mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile = surface, run, runTools, ready
 	})
 	mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = false, 0, 0, ""
+	mcpFlagSurface, mcpFlagAutomationRun, mcpFlagAutomationTools, mcpFlagAutomationReadyFile = "main", 0, nil, ""
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
@@ -209,7 +212,7 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 
 // Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
 // rename) serves the renamed workbench tools under their old names only;
-// `mcp --workbench N` the new names only. Fifteen workbench tools either way.
+// `mcp --workbench N` the new names only. Sixteen workbench tools either way.
 func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 	resetMCPFlags(t)
 	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
@@ -236,7 +239,7 @@ func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 				workbenchTools++
 			}
 		}
-		assert.Equal(t, 15, workbenchTools, "legacy=%v", legacy)
+		assert.Equal(t, 16, workbenchTools, "legacy=%v", legacy)
 		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
@@ -346,16 +349,17 @@ func TestMCP_SurfaceFlagAcceptsAutomationEditor(t *testing.T) {
 	assert.False(t, names["create_target"], "no other write tool on automation_editor")
 }
 
-// Any surface value other than main, target and automation_editor is
-// refused before a server starts.
+// Any surface value other than main, target, automation (the P6 agent()
+// server, routed to mcpAutomationOptions) and automation_editor is refused
+// before a server starts.
 func TestMCP_SurfaceFlagRejectsUnknown(t *testing.T) {
 	resetMCPFlags(t)
 	resetMCPChatBindingFlags(t)
 	database := openMCPTestDB(t)
 	mcpFlagChat = true
-	for _, surface := range []string{"automation", "x"} {
+	for _, surface := range []string{"x", "automation_edit"} {
 		mcpFlagSurface = surface
 		_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
-		require.ErrorContains(t, err, "--surface must be main, target or automation_editor", surface)
+		require.ErrorContains(t, err, "--surface must be main, target, automation or automation_editor", surface)
 	}
 }

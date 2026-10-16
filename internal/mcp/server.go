@@ -53,6 +53,13 @@ type Server struct {
 	registry    *tools.Registry
 	binding     tools.Binding
 	mountWrites bool
+
+	// toolFilter, callGate and resultCheck narrow a chat-mode server further
+	// (an automation agent()'s server, `mcp --chat --surface automation`):
+	// nil on every other server, which then mounts and dispatches as before.
+	toolFilter  func(t *tools.Tool) bool
+	callGate    func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)
+	resultCheck func(result []byte) error
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -80,6 +87,26 @@ func WithMemoryRetrieveCompare(shadowDB *db.DB) ServerOption {
 // tool set must not vary between sessions — but reports skills as unavailable.
 func WithSkillsDir(path string) ServerOption {
 	return func(srv *Server) { srv.skillsDir = path }
+}
+
+// WithToolFilter mounts only the registry tools filter admits; the others are
+// never listed nor callable. get_action is not a registry tool and is not
+// filtered.
+func WithToolFilter(filter func(t *tools.Tool) bool) ServerOption {
+	return func(srv *Server) { srv.toolFilter = filter }
+}
+
+// WithCallGate runs gate before every registry tool call reaches CallRead or
+// Propose: its args are the ones dispatched, its error is the call's error
+// result (nothing dispatched, no row written).
+func WithCallGate(gate func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)) ServerOption {
+	return func(srv *Server) { srv.callGate = gate }
+}
+
+// WithResultCheck runs check over every registry tool call's result text
+// before it is returned; its error replaces the result with an error result.
+func WithResultCheck(check func(result []byte) error) ServerOption {
+	return func(srv *Server) { srv.resultCheck = check }
 }
 
 // NewServer builds an MCP server over the given database and registers every
@@ -119,7 +146,9 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	// per-domain register* handler — the registry is the single source both
 	// server modes share. mountWrites gates the write tools + get_action to
 	// chat mode.
-	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites)
+	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites, callHooks{
+		filter: srv.toolFilter, gate: srv.callGate, resultCheck: srv.resultCheck,
+	})
 
 	return srv
 }

@@ -177,12 +177,7 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 	automationsBeforeDryRunClaim()
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	exec := automations.NewExecutor(database, automations.Backends{
-		DB:        database,
-		Generator: automationsDryRunGenerator(cfg),
-		Registry:  buildAutomationRegistry(cfg, database),
-		Clock:     automations.RealClock{},
-	}, automations.ExecutorOptions{})
+	exec := automations.NewExecutor(database, automationBackends(cfg, database, automationsDryRunGenerator(cfg)), automations.ExecutorOptions{})
 	// Pinned to the hash the gate above checked: a rescan in between that
 	// changed the recipe cancels the run instead of running what nobody
 	// checked (D16).

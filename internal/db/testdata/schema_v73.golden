@@ -539,6 +539,15 @@ CREATE INDEX idx_voice_samples_person_status ON voice_samples(person_id, status)
 index	idx_voice_samples_transcript
 CREATE INDEX idx_voice_samples_transcript ON voice_samples(transcript_id)
 
+index	review_comments_round
+CREATE INDEX review_comments_round ON review_comments(round_id, id)
+
+index	review_rounds_one_open
+CREATE UNIQUE INDEX review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL
+
+index	review_rounds_project
+CREATE INDEX review_rounds_project ON review_rounds(project_id, id)
+
 table	agent_actions
 CREATE TABLE agent_actions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2359,6 +2368,57 @@ status TEXT NOT NULL DEFAULT 'pending'
 CHECK(status IN ('pending','done','dismissed')),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 done_at TEXT NOT NULL DEFAULT ''
+)
+
+table	review_comments
+CREATE TABLE review_comments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+path TEXT,
+side TEXT NOT NULL DEFAULT 'new' CHECK (side IN ('old','new')),
+start_line INTEGER NOT NULL DEFAULT 0,
+end_line INTEGER NOT NULL DEFAULT 0,
+quote TEXT NOT NULL DEFAULT '',
+quote_prefix TEXT NOT NULL DEFAULT '',
+quote_suffix TEXT NOT NULL DEFAULT '',
+tree_sha TEXT NOT NULL DEFAULT '',
+lens TEXT NOT NULL DEFAULT '',
+body TEXT NOT NULL,
+status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','carried','resolved','outdated')),
+carried_from INTEGER REFERENCES review_comments(id) ON DELETE SET NULL,
+agent_reply TEXT NOT NULL DEFAULT '',
+agent_reply_at TEXT,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	review_rounds
+CREATE TABLE review_rounds (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+source TEXT NOT NULL DEFAULT 'session' CHECK (source IN ('session','pr')),
+folder_root TEXT NOT NULL,
+base_sha TEXT NOT NULL,
+base_label TEXT NOT NULL DEFAULT '',
+tree_sha TEXT NOT NULL,
+prev_round_id INTEGER REFERENCES review_rounds(id) ON DELETE SET NULL,
+status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','sent','delivered')),
+mode TEXT NOT NULL DEFAULT 'quick' CHECK (mode IN ('quick','deep')),
+phase TEXT NOT NULL DEFAULT '',
+chapter_key TEXT NOT NULL DEFAULT '',
+active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+sent_at TEXT,
+delivered_at TEXT
+)
+
+table	review_viewed
+CREATE TABLE review_viewed (
+round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
+path TEXT NOT NULL,
+content_sha TEXT NOT NULL,
+PRIMARY KEY (round_id, path)
 )
 
 table	situation_signals
@@ -4864,6 +4924,50 @@ GROUP BY up.ancestor
 5	status	TEXT	notnull=1	dflt='pending'	pk=0
 6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 7	done_at	TEXT	notnull=1	dflt=''	pk=0
+
+## review_comments
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	round_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	path	TEXT	notnull=0	dflt=NULL	pk=0
+3	side	TEXT	notnull=1	dflt='new'	pk=0
+4	start_line	INTEGER	notnull=1	dflt=0	pk=0
+5	end_line	INTEGER	notnull=1	dflt=0	pk=0
+6	quote	TEXT	notnull=1	dflt=''	pk=0
+7	quote_prefix	TEXT	notnull=1	dflt=''	pk=0
+8	quote_suffix	TEXT	notnull=1	dflt=''	pk=0
+9	tree_sha	TEXT	notnull=1	dflt=''	pk=0
+10	lens	TEXT	notnull=1	dflt=''	pk=0
+11	body	TEXT	notnull=1	dflt=NULL	pk=0
+12	status	TEXT	notnull=1	dflt='draft'	pk=0
+13	carried_from	INTEGER	notnull=0	dflt=NULL	pk=0
+14	agent_reply	TEXT	notnull=1	dflt=''	pk=0
+15	agent_reply_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_rounds
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	source	TEXT	notnull=1	dflt='session'	pk=0
+4	folder_root	TEXT	notnull=1	dflt=NULL	pk=0
+5	base_sha	TEXT	notnull=1	dflt=NULL	pk=0
+6	base_label	TEXT	notnull=1	dflt=''	pk=0
+7	tree_sha	TEXT	notnull=1	dflt=NULL	pk=0
+8	prev_round_id	INTEGER	notnull=0	dflt=NULL	pk=0
+9	status	TEXT	notnull=1	dflt='open'	pk=0
+10	mode	TEXT	notnull=1	dflt='quick'	pk=0
+11	phase	TEXT	notnull=1	dflt=''	pk=0
+12	chapter_key	TEXT	notnull=1	dflt=''	pk=0
+13	active_seconds	INTEGER	notnull=1	dflt=0	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+15	sent_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	delivered_at	TEXT	notnull=0	dflt=NULL	pk=0
+
+## review_viewed
+0	round_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	path	TEXT	notnull=1	dflt=NULL	pk=2
+2	content_sha	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## situation_signals
 0	situation_id	INTEGER	notnull=1	dflt=NULL	pk=0

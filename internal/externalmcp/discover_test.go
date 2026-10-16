@@ -115,7 +115,11 @@ func TestListTools_Stdio(t *testing.T) {
 	tools, err := ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,
 		Env: map[string]string{fakeStdioServerEnv: "1"}})
 	require.NoError(t, err)
-	assert.Equal(t, []db.ExternalTool{{Name: "list_things"}}, tools)
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	assert.ElementsMatch(t, []string{"list_things", "get_thing", "text_thing", "fail_thing", "slow_thing"}, names)
 }
 
 // TestListTools_StdioStartupFailureQuotesStderr: a server that dies at

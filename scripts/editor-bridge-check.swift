@@ -107,6 +107,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var selections: [SelectionMessage] = []
     var scrolls: [String] = []
     var askAIs: [String] = []
+    /// The diff page's `comment {startLine, endLine, side}` posts.
+    var comments: [[String: Any]] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -119,8 +121,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         webView.navigationDelegate = self
     }
 
-    func load() {
-        webView.load(URLRequest(url: URL(string: "wtcode://editor/index.html")!))
+    func load(_ page: String = "index.html") {
+        webView.load(URLRequest(url: URL(string: "wtcode://editor/\(page)")!))
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -181,6 +183,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             askAIs.append(id)
+        case "comment":
+            // Decoded as MonacoDiffView.Coordinator does.
+            guard body["startLine"] is Int, body["endLine"] is Int, body["side"] is String else {
+                errors.append("malformed comment message: \(body)")
+                return
+            }
+            comments.append(body)
         case "error":
             errors.append((body["message"] as? String) ?? "error without a message")
         default:
@@ -1053,6 +1062,50 @@ func readOnlyChecks(_ page: Page) async {
     page.texts.removeAll()
 }
 
+/// The Changes pane's diff page (CodeEditorWeb/diff.html), driven the way
+/// MonacoDiffView.Coordinator drives it: `wt.showDiff`, `wt.setComments`,
+/// the Comment action's post. Comment text must land as text, never HTML.
+@MainActor
+func diffPageChecks(root: URL) async {
+    let page = Page(root: root)
+    page.load("diff.html")
+    let loaded = await wait(30) { page.ready || page.loadError != nil || !page.errors.isEmpty }
+    check("diff page: posts ready with no error", loaded && page.ready && page.errors.isEmpty,
+          page.loadError ?? page.errors.joined(separator: "; "))
+    guard page.ready else { return }
+    let comment: [String: Any] = ["id": 1, "startLine": 2, "endLine": 2, "body": "<b>bold?</b>", "status": "draft", "reply": ""]
+    await page.call("wt.showDiff", [
+        "path": "main.go", "original": "package main\n\nfunc a() {}\n", "modified": "package main\n\nfunc b() {}\n",
+        "inline": false, "comments": [comment],
+    ] as [String: Any])
+    await pause(0.3)
+    let sides = await page.eval(
+        "(function () { var m = monaco.editor.getDiffEditors()[0].getModel();"
+            + " return [m.original.getLanguageId(), m.modified.getValue()]; })()"
+    ) as? [String]
+    check("showDiff: both sides, the language from the path",
+          sides == ["go", "package main\n\nfunc b() {}\n"], "\(String(describing: sides))")
+    let zone = await page.eval(
+        "(function () { var n = document.querySelector('.wt-comment');"
+            + " return n ? [n.textContent, n.querySelectorAll('b').length] : null; })()"
+    ) as? [Any]
+    check("showDiff: the comment shows as text, not HTML",
+          zone?.first as? String == "<b>bold?</b>" && zone?.last as? Int == 0, "\(String(describing: zone))")
+    await page.call("wt.setComments", [Any]())
+    let left = await page.evalInt("document.querySelectorAll('.wt-comment').length")
+    check("setComments: an empty list clears the comments", left == 0, "\(String(describing: left))")
+    _ = await page.eval(
+        "(function () { var e = monaco.editor.getDiffEditors()[0].getModifiedEditor();"
+            + " e.setSelection(new monaco.Range(1, 1, 3, 4)); e.getAction('wt.comment').run(); return true; })()"
+    )
+    let posted = await wait(3) { !page.comments.isEmpty }
+    let first = page.comments.first
+    check("Comment: posts the selection's lines and side",
+          posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
+          "\(page.comments)")
+    check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
+}
+
 // MARK: - Main
 
 @MainActor
@@ -1074,6 +1127,7 @@ func run(root: URL) async -> Int32 {
     await detectionChecks(page)
     await tokenChecks(page)
     await readOnlyChecks(page)
+    await diffPageChecks(root: root)
 
     check("no error posted by the page during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
     print("\n\(passes) passed, \(failures) failed")

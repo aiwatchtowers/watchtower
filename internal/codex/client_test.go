@@ -256,7 +256,7 @@ func assertNotContains(t *testing.T, args []string, unwanted string) {
 }
 
 func TestMCPWorkDir_WritesExtraArgs(t *testing.T) {
-	dir, err := mcpWorkDir("/tmp/w.db", []string{"--chat", "--surface", "target"})
+	dir, err := mcpWorkDir("/tmp/w.db", []string{"--chat", "--surface", "target"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

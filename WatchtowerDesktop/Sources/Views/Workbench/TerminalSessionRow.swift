@@ -71,6 +71,9 @@ struct TerminalSessionRow: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
                 }
             }
+            if session.projectID != nil, let reviewChanges = actions.reviewChanges {
+                Button("Review Changes") { reviewChanges(session) }
+            }
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
