@@ -50,9 +50,10 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, [.terminal, .report, .changes].contains(WorkspaceView(pane)) {
+            if isHidden, [.terminal, .report, .changes, .analytics].contains(WorkspaceView(pane)) {
                 // A hidden Session view leaves the screen too: its report
-                // stops refreshing until it is back; so does a Changes pane.
+                // stops refreshing until it is back; so do a Changes pane
+                // and the Analytics pane.
                 Color.clear
             } else {
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -148,7 +149,8 @@ struct WorkspacePaneView: View {
             CodeFilesPaneView(files: vm.codeFiles, project: project, root: vm.activeCodeRoot(project: project))
                 .id(project.id)
         case .analytics:
-            Text("Analytics")
+            AgentAnalyticsPaneView(vm: vm, project: project)
+                .id(project.id)
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
                 .id(id)

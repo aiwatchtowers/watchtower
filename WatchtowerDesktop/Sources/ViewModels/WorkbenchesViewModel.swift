@@ -114,6 +114,14 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Agent analytics (#298): the Analytics pane's reports. AppState wires
+    /// its own; nil = a pane with nothing to show.
+    @ObservationIgnored weak var agentAnalytics: AgentAnalyticsCenter?
+    /// The Analytics pane's period per workbench (7 days until picked).
+    var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The session (its uuid) whose detail the Analytics pane shows per
+    /// workbench; none = the overview.
+    var analyticsSession: [Int64: String] = [:]
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete

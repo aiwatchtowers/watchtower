@@ -1873,7 +1873,7 @@ final class AppState {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
         agentAnalyticsCenter?.stop()
-        agentAnalyticsCenter = analytics
+        (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.
