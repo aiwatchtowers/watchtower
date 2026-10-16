@@ -7,7 +7,7 @@ A template gives you a working recipe to adapt instead of a blank page. Knowing 
 ## How it works
 ### The settings block
 The top of the file holds the settings:
-- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**; it draws no button anywhere. It only makes the recipe appear under its label in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu.
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**; it draws no button anywhere. It only makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`.
 - **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
