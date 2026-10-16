@@ -1,33 +1,6 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Serializes the chat's polls: a refresh requested while one is running is
-/// folded into one more run right after it, so two reads never overlap and
-/// move the store's cursor back.
-@MainActor
-final class SessionChatPoller {
-    private let store: SessionFeedStore
-    private var running = false
-    private var again = false
-
-    init(store: SessionFeedStore) {
-        self.store = store
-    }
-
-    func refresh() async {
-        if running {
-            again = true
-            return
-        }
-        running = true
-        defer { running = false }
-        repeat {
-            again = false
-            await store.refresh()
-        } while again && !Task.isCancelled
-    }
-}
-
 /// The dialog of an agent session as a chat (`.sessionChat`): the owner
 /// right in a tinted bubble, the agent left without one, Watchtower's own
 /// lines marked "via Watchtower", subagents as cards opening a sheet.
@@ -37,7 +10,7 @@ struct SessionChatView: View {
     let projectID: Int64
 
     @StateObject private var store: SessionFeedStore
-    @State private var poller: SessionChatPoller
+    @State private var poller: SessionFeedPoller
     @State private var openedSubagent: SessionFeedEntry?
     private let runnerMissing: Bool
 
@@ -49,7 +22,7 @@ struct SessionChatView: View {
         runnerMissing = runner == nil
         let store = SessionFeedStore(sessionID: sessionID, runner: runner ?? UnavailableRunner())
         _store = StateObject(wrappedValue: store)
-        _poller = State(initialValue: SessionChatPoller(store: store))
+        _poller = State(initialValue: SessionFeedPoller { await store.refresh() })
     }
 
     /// The agent works or has background subagents running: poll every 3 s.
