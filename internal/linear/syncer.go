@@ -122,7 +122,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	reconcileSince, err := s.reconcileSince(teams)
+	preWatermark, err := s.oldestSelectedWatermark(teams)
 	if err != nil {
 		return 0, err
 	}
@@ -148,7 +148,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			firstErr = err
 		}
 	}
-	if err := s.reconcileMoved(ctx, teams, reconcileSince); err != nil {
+	if err := s.reconcileMoved(ctx, teams, preWatermark); err != nil {
 		s.logger.Printf("moved issues: %v", err)
 		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
 			return total, err
@@ -240,9 +240,9 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 	return n, nil
 }
 
-// reconcileSince is the oldest watermark among the selected teams before
-// this pass, or empty when none has one yet (nothing stored can have moved).
-func (s *Syncer) reconcileSince(teams []db.LinearTeam) (string, error) {
+// oldestSelectedWatermark is the oldest watermark among the selected teams,
+// or empty when none has one yet.
+func (s *Syncer) oldestSelectedWatermark(teams []db.LinearTeam) (string, error) {
 	since := ""
 	for _, t := range teams {
 		if !t.IsSelected {
@@ -264,12 +264,34 @@ const reconcileChunk = 50
 
 // reconcileMoved refreshes stored issues that now live outside the selected
 // teams: an issue moved to an unselected team no longer matches any team
-// filter, so it is found account-wide by id among the issues changed since.
-// Issues of unselected teams that were never stored are not fetched.
-func (s *Syncer) reconcileMoved(ctx context.Context, teams []db.LinearTeam, since string) error {
-	if since == "" {
-		return nil
+// filter, so it is found account-wide by id among the issues changed since
+// the account's moved watermark. Issues of unselected teams that were never
+// stored are not fetched. The moved watermark advances to the oldest selected
+// team watermark only on success, so a failed reconcile is retried from the
+// same point though the team watermarks moved on. Before the first reconcile
+// it starts at fallback (the oldest selected watermark before this pass;
+// empty on a first pass, when nothing stored can have moved yet).
+func (s *Syncer) reconcileMoved(ctx context.Context, teams []db.LinearTeam, fallback string) error {
+	since, err := s.db.GetLinearMovedWatermark(s.accountID)
+	if err != nil {
+		return err
 	}
+	if since == "" {
+		since = fallback
+	}
+	if since != "" {
+		if err := s.refreshMovedSince(ctx, teams, since); err != nil {
+			return err
+		}
+	}
+	next, err := s.oldestSelectedWatermark(teams)
+	if err != nil || next == "" {
+		return err
+	}
+	return s.db.SetLinearMovedWatermark(s.accountID, next)
+}
+
+func (s *Syncer) refreshMovedSince(ctx context.Context, teams []db.LinearTeam, since string) error {
 	selected := []string{}
 	for _, t := range teams {
 		if t.IsSelected {

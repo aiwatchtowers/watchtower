@@ -1605,6 +1605,7 @@ owner_email TEXT NOT NULL DEFAULT '',
 owner_display_name TEXT NOT NULL DEFAULT '',
 memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
 ideas_floor TEXT NOT NULL DEFAULT '',
+moved_watermark TEXT NOT NULL DEFAULT '', -- moved-issue reconcile cursor; advances only on success
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
@@ -4103,7 +4104,8 @@ GROUP BY up.ancestor
 10	owner_display_name	TEXT	notnull=1	dflt=''	pk=0
 11	memory_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 12	ideas_floor	TEXT	notnull=1	dflt=''	pk=0
-13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+13	moved_watermark	TEXT	notnull=1	dflt=''	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## linear_comments
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1

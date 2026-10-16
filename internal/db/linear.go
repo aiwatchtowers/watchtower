@@ -113,6 +113,25 @@ func (db *DB) RecordLinearSyncError(accountID int64, teamID, errMsg string) erro
 	return nil
 }
 
+// GetLinearMovedWatermark returns the account's moved-issue reconcile cursor
+// ("" until the first reconcile).
+func (db *DB) GetLinearMovedWatermark(accountID int64) (string, error) {
+	var w string
+	err := db.QueryRow(`SELECT moved_watermark FROM linear_accounts WHERE id = ?`, accountID).Scan(&w)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("getting linear moved watermark: %w", err)
+	}
+	return w, nil
+}
+
+// SetLinearMovedWatermark stores the moved-issue reconcile cursor.
+func (db *DB) SetLinearMovedWatermark(accountID int64, watermark string) error {
+	if _, err := db.Exec(`UPDATE linear_accounts SET moved_watermark = ? WHERE id = ?`, watermark, accountID); err != nil {
+		return fmt.Errorf("setting linear moved watermark: %w", err)
+	}
+	return nil
+}
+
 // ListLinearSyncStates returns every sync state of the account, by team id.
 func (db *DB) ListLinearSyncStates(accountID int64) ([]LinearSyncState, error) {
 	rows, err := db.Query(`SELECT account_id, team_id, watermark, last_synced_at, last_error

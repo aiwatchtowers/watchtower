@@ -178,6 +178,43 @@ func TestLinear04_MoveToUnselectedTeamIsReconciled(t *testing.T) {
 	assert.JSONEq(t, `{"team":{"id":{"nin":["t-1"]}},"updatedAt":{"gte":"2026-10-02T00:00:00.000Z"}}`, string(b))
 }
 
+func TestLinear04_FailedReconcileIsRetriedFromTheSamePoint(t *testing.T) {
+	f := newFakeLinear(t)
+	f.viewerTeams = []string{"t-1"}
+	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}, {"id": "t-2", "key": "OPS", "name": "Ops"}}
+	f.issuePages = [][]map[string]any{{issueNode("i-1", "ENG-12", "unstarted", "2026-10-02T00:00:00.000Z")}}
+	d, s := newTestSyncer(t, f)
+	_, err := s.Sync(context.Background())
+	require.NoError(t, err)
+	moved := issueNode("i-1", "OPS-40", "started", "2026-10-05T00:00:00.000Z")
+	moved["team"] = map[string]any{"id": "t-2", "key": "OPS"}
+	// The team keeps moving (ENG-13) while the reconcile fails once.
+	f.issuePages = [][]map[string]any{{moved, issueNode("i-2", "ENG-13", "unstarted", "2026-10-07T00:00:00.000Z")}}
+	f.failIssueIDs = true
+	_, err = s.Sync(context.Background())
+	require.Error(t, err)
+	st, _ := d.GetLinearSyncState(s.AccountID(), "t-1")
+	require.Equal(t, "2026-10-07T00:00:00.000Z", st.Watermark, "the team watermark moved on")
+	f.failIssueIDs = false
+	_, err = s.Sync(context.Background())
+	require.NoError(t, err)
+	var key string
+	require.NoError(t, d.QueryRow(`SELECT key FROM linear_issues WHERE id='i-1'`).Scan(&key))
+	assert.Equal(t, "OPS-40", key)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	last := ""
+	for _, r := range f.requests {
+		if r.Kind == "issueIDs" {
+			b, _ := json.Marshal(r.Vars["filter"])
+			last = string(b)
+		}
+	}
+	assert.Contains(t, last, `"gte":"2026-10-02T00:00:00.000Z"`, "the retry starts where the failed reconcile did")
+	w, _ := d.GetLinearMovedWatermark(s.AccountID())
+	assert.Equal(t, "2026-10-07T00:00:00.000Z", w)
+}
+
 func TestSyncer_ArchivedIssueIsDeleted(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}

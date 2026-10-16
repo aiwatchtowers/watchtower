@@ -1729,6 +1729,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     owner_display_name       TEXT NOT NULL DEFAULT '',
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
     ideas_floor              TEXT NOT NULL DEFAULT '',
+    moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE TABLE IF NOT EXISTS linear_teams (

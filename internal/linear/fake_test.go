@@ -35,6 +35,7 @@ type fakeLinear struct {
 	failComments       bool // every comments call answers a GraphQL error
 	failPlanning       bool // every planning (team cycles/projects) call answers a GraphQL error
 	alwaysUnauthorized bool
+	failIssueIDs       bool // every moved-issue id lookup answers a GraphQL error
 }
 
 type fakeRequest struct {
@@ -114,6 +115,10 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		data = map[string]any{"issues": pageAt(filterIssuePages(f.issuePages, req.Variables["filter"]), req.Variables["after"])}
 	case "issueIDs":
+		if f.failIssueIDs {
+			writeGraphQLError(w, "issue ids unavailable")
+			return
+		}
 		data = map[string]any{"issues": pageAt(filterIssuePages(f.issuePages, req.Variables["filter"]), req.Variables["after"])}
 	case "comments":
 		if f.failComments {
