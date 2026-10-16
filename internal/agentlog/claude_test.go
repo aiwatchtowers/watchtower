@@ -150,3 +150,31 @@ func TestParseClaude_UUIDLessRecordsKeepDistinctKeys(t *testing.T) {
 	assert.Len(t, keys, 4, "uuid-less events must not share a key: %v", keys)
 	assert.Equal(t, "owner_turn:/h/.claude/projects/-w/s1.jsonl:0", r.Events[0].Key)
 }
+
+func TestParseClaude_OwnerTurnTriggers(t *testing.T) {
+	cases := []struct {
+		content any
+		want    string
+	}{
+		{"hello", "owner"},
+		{"<task-notification>x</task-notification>", "notification"},
+		{"<agent-message from=\"a\">x", "notification"},
+		{"<system-reminder>x</system-reminder>", "hook"},
+		{"Stop hook feedback: x", "hook"},
+		{"<command-name>/foo</command-name>", "owner"},
+		{[]map[string]any{{"type": "text", "text": "<task-notification>x"}}, "notification"},
+		{[]map[string]any{{"type": "text", "text": "hi"}}, "owner"},
+	}
+	for i, c := range cases {
+		s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
+			"message": map[string]any{"role": "user", "content": c.content}})
+		r := parse(t, s, ParseOptions{})
+		var got []string
+		for _, e := range r.Events {
+			if e.Kind == "owner_turn" {
+				got = append(got, e.Trigger)
+			}
+		}
+		assert.Equal(t, []string{c.want}, got, "case %d", i)
+	}
+}

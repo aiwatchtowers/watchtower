@@ -1774,7 +1774,7 @@ CREATE TABLE IF NOT EXISTS agent_log_events (
   lines_removed  INTEGER NOT NULL DEFAULT 0,
   src_path       TEXT NOT NULL,
   src_offset     INTEGER NOT NULL
-);
+, spawned_agent_id TEXT NOT NULL DEFAULT '', background INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS automation_tool_grants (
     automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
     tool          TEXT NOT NULL,
@@ -2013,24 +2013,6 @@ SELECT up.ancestor AS target_id,
 FROM up
 JOIN projects p ON p.id = up.project_id
 GROUP BY up.ancestor;
-CREATE VIEW IF NOT EXISTS agent_log_session_totals AS
-SELECT session_uuid,
-  SUM(CASE WHEN kind = 'api_call' THEN 1 ELSE 0 END)   AS api_calls,
-  SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
-  SUM(cache_read_tokens) AS cache_read_tokens,
-  SUM(cache_write_5m_tokens) AS cache_write_5m_tokens,
-  SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
-  SUM(cost_usd) AS cost_usd,
-  SUM(cost_estimated) AS cost_estimated_calls,
-  SUM(CASE WHEN kind = 'owner_turn' THEN 1 ELSE 0 END) AS owner_turns,
-  SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END)       AS tool_calls,
-  SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END)       AS tool_errors,
-  SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END)      AS tool_denials,
-  SUM(CASE WHEN kind = 'tool' AND outcome = 'interrupted' THEN 1 ELSE 0 END) AS tool_interrupts,
-  SUM(CASE WHEN kind = 'skill' THEN 1 ELSE 0 END)      AS skill_activations,
-  SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
-  SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
-FROM agent_log_events GROUP BY session_uuid;
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2117,6 +2099,24 @@ SELECT 'linear', id, CASE WHEN label != '' THEN label ELSE org_name END,
        CASE WHEN url_key != '' THEN 'https://linear.app/' || url_key ELSE '' END, status, enabled
 FROM linear_accounts
 WHERE enabled = 1 AND status != 'removed';
+CREATE VIEW IF NOT EXISTS agent_log_session_totals AS
+SELECT session_uuid,
+  SUM(CASE WHEN kind = 'api_call' THEN 1 ELSE 0 END)   AS api_calls,
+  SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+  SUM(cache_read_tokens) AS cache_read_tokens,
+  SUM(cache_write_5m_tokens) AS cache_write_5m_tokens,
+  SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
+  SUM(cost_usd) AS cost_usd,
+  SUM(cost_estimated) AS cost_estimated_calls,
+  SUM(CASE WHEN kind = 'owner_turn' AND trigger NOT IN ('notification','hook') THEN 1 ELSE 0 END) AS owner_turns,
+  SUM(CASE WHEN kind = 'tool' THEN 1 ELSE 0 END)       AS tool_calls,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'error' THEN 1 ELSE 0 END)       AS tool_errors,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'denied' THEN 1 ELSE 0 END)      AS tool_denials,
+  SUM(CASE WHEN kind = 'tool' AND outcome = 'interrupted' THEN 1 ELSE 0 END) AS tool_interrupts,
+  SUM(CASE WHEN kind = 'skill' THEN 1 ELSE 0 END)      AS skill_activations,
+  SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
+  SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
+FROM agent_log_events GROUP BY session_uuid;
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);

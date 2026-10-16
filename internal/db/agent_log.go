@@ -38,13 +38,17 @@ type AgentLogEvent struct {
 	SrcPath                                                                            string
 	SrcOffset                                                                          int64
 	MessageID                                                                          string // api_call only, not stored
-	SubagentReplayCheck                                                                bool   // skip when the session already has this message.id under another key
+	SpawnedAgentID                                                                     string // Agent tool call: the sub-agent's id, set when the result pairs
+	Background                                                                         bool
+	SubagentReplayCheck                                                                bool // skip when the session already has this message.id under another key
 }
 
 // AgentToolResult pairs a tool_result with its stored `tool:<ToolUseID>` event.
 type AgentToolResult struct {
 	ToolUseID, TS, Outcome, ErrorClass string
 	LinesAdded, LinesRemoved           int
+	SpawnedAgentID                     string
+	Background                         bool
 }
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
@@ -196,6 +200,12 @@ func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				WHERE key = ?`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.TS, "tool:"+r.ToolUseID); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
+			if r.SpawnedAgentID != "" {
+				if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ?, background = ? WHERE key = ?`,
+					r.SpawnedAgentID, r.Background, "tool:"+r.ToolUseID); err != nil {
+					return fmt.Errorf("pairing spawned agent: %w", err)
+				}
+			}
 		}
 		applied = true
 		return nil
@@ -246,8 +256,8 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	_, err := tx.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, uuid, parent_uuid, prompt_id, agent_id,
 		is_sidechain, name, target, trigger, outcome, error_class, skill, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_5m_tokens, cache_write_1h_tokens, speed, service_tier, cost_usd, price_version, cost_estimated,
-		lines_added, lines_removed, src_path, src_offset)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		lines_added, lines_removed, src_path, src_offset, spawned_agent_id, background)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key) DO UPDATE SET
 		  session_uuid = CASE WHEN (SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
 		                           < (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
@@ -265,7 +275,7 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,
 		e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.Speed, e.ServiceTier, e.CostUSD, e.PriceVersion, e.CostEstimated,
-		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset)
+		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset, e.SpawnedAgentID, e.Background)
 	if err != nil {
 		return fmt.Errorf("upserting agent log event: %w", err)
 	}

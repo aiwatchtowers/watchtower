@@ -306,27 +306,43 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
 			return
 		}
-		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
 		p.slashSkill(rec, off, text) // Task 4
 		return
 	}
 	var blocks []struct {
 		Type string `json:"type"`
+		Text string `json:"text"`
 	}
 	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
 		return
 	}
-	hasResult := false
+	hasResult, firstText := false, ""
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			hasResult = true
+		}
+		if b.Type == "text" && firstText == "" {
+			firstText = b.Text
 		}
 	}
 	if hasResult {
 		p.toolResults(rec) // Task 4
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(firstText)})
+}
+
+// turnTrigger tells the owner's own turn from a system-injected one: a task or
+// sub-agent notification, or a hook / reminder block.
+func turnTrigger(text string) string {
+	switch {
+	case strings.HasPrefix(text, "<task-notification>"), strings.HasPrefix(text, "<agent-message"):
+		return "notification"
+	case strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "Stop hook feedback:"):
+		return "hook"
+	}
+	return "owner"
 }
 
 func (p *claudeParser) attachment(rec claudeRecord) {
