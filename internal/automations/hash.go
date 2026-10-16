@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 )
 
 // ContentHash is the hex sha256 of a recipe file's raw bytes (spec §2.4). It
@@ -53,6 +54,40 @@ func approvalCanonical(r *Recipe) []byte {
 	writeCanonical(&buf, r.Concurrency)
 	buf.WriteByte('}')
 	return buf.Bytes()
+}
+
+// ApprovalField is one field ApprovalHash binds, as comparable text: the
+// trigger, outputs and permissions in their canonical JSON (the trigger
+// without a button's label), the missed policy, scope and script as they
+// are, the numbers in decimal.
+type ApprovalField struct {
+	Name  string
+	Value string
+}
+
+// ApprovalFields lists the fields ApprovalHash binds, in the order the
+// confirmation sheet's Changed block shows them (spec §12.2, D26): trigger,
+// missed, budget_tokens, budget_minutes, concurrency, outputs, permissions,
+// scope, script. Two recipes with equal fields have equal approval hashes.
+func ApprovalFields(r *Recipe) []ApprovalField {
+	return []ApprovalField{
+		{"trigger", canonicalText(canonicalTrigger(r.Trigger))},
+		{"missed", string(r.Missed)},
+		{"budget_tokens", strconv.Itoa(r.Budget.Tokens)},
+		{"budget_minutes", strconv.Itoa(r.Budget.Minutes)},
+		{"concurrency", strconv.Itoa(r.Concurrency)},
+		{"outputs", canonicalText(sortedCopy(r.Outputs))},
+		{"permissions", canonicalText(normalizedPermissions(r.Permissions))},
+		{"scope", r.Scope.String()},
+		{"script", r.Script},
+	}
+}
+
+// canonicalText is v's canonical JSON as a string.
+func canonicalText(v any) string {
+	var buf bytes.Buffer
+	writeCanonical(&buf, v)
+	return buf.String()
 }
 
 // canonicalBudget is the budget's place in the approval canonical form.
