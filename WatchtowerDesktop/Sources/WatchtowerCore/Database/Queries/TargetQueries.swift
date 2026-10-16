@@ -336,6 +336,30 @@ package enum TargetQueries {
                 """,
             arguments: [status, id]
         )
+        try afterStatusWrite(db, id: id, status: status)
+    }
+
+    /// `updateStatus` that also places the target in board column
+    /// `boardColumnID` (nil = the status's first column), in the same
+    /// statement so the PROJ-19 check sees the new status and column
+    /// together. A column of another status or workbench is refused by the
+    /// trigger; a move between columns of one status writes no history
+    /// (PROJ-06 fires on a status change only). Twin of Go
+    /// `SetTargetColumnTx` (internal/db/board_columns.go).
+    package static func updateStatus(_ db: Database, id: Int, status: String, boardColumnID: Int64?) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET status = ?, board_column_id = ?, status_actor = 'owner',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [status, boardColumnID, id]
+        )
+        try afterStatusWrite(db, id: id, status: status)
+    }
+
+    /// The follow-ups of an owner status write, right after its UPDATE.
+    private static func afterStatusWrite(_ db: Database, id: Int, status: String) throws {
         try requireUpdated(db, id: id)
         try applyStatusProgress(db, id: id, status: status)
 

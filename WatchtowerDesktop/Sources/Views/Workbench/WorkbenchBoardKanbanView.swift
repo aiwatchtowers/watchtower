@@ -100,7 +100,7 @@ struct WorkbenchBoardKanbanView: View {
             ForEach(board.columns) { column in
                 HStack {
                     Text(column.title).font(.subheadline.weight(.semibold))
-                    Text("\(board.totals[column.status] ?? 0)")
+                    Text("\(board.totals[column.key] ?? 0)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
