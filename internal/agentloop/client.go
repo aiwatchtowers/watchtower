@@ -70,6 +70,9 @@ type Options struct {
 	// Gate runs before each offered tool call and returns the args to
 	// dispatch; its error is fed back to the model as the call's result.
 	Gate func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)
+	// ResultCheck sees each successful tool result as encoded for the model;
+	// its error replaces the result (fed back as the call's error).
+	ResultCheck func(result []byte) error
 	// MaxIterations caps the model calls; 0 = defaultMaxIterations.
 	MaxIterations int
 	// BeforeModelCall runs before every model call; its error stops the loop
@@ -268,20 +271,28 @@ func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
 		}
 		args = gated
 	}
+	var result any
 	switch t.Access {
 	case tools.AccessWrite:
 		rc, err := c.reg.Propose(ctx, name, args, c.binding)
 		if err != nil {
 			return errJSON(err.Error())
 		}
-		return marshalResult(rc)
+		result = rc
 	default:
 		data, err := c.reg.CallRead(ctx, name, args, c.binding)
 		if err != nil {
 			return errJSON(err.Error())
 		}
-		return marshalResult(data)
+		result = data
 	}
+	out := marshalResult(result)
+	if c.opts.ResultCheck != nil {
+		if err := c.opts.ResultCheck([]byte(out)); err != nil {
+			return errJSON(err.Error())
+		}
+	}
+	return out
 }
 
 // buildTools renders the registry's surface-visible tools (narrowed to

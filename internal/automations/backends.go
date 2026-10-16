@@ -37,6 +37,45 @@ type Backends struct {
 	Shell     ShellRunner
 	Workbench WorkbenchResolver
 	MCP       MCPCaller
+	Agent     AgentRunner
+}
+
+// AgentRequest is one agent() call (P6, spec §6.5) as its runner gets it.
+// Tools is the effective set (EffectiveAgentTools); Budget is the carve from
+// the run's remainder and Deadline the earlier of the run's and the carve's.
+// Binding is the run's, marked AutomationAgent; Manifest is the run's, for
+// GateAgentCall. A runner calls BeforeModelCall before each model call (its
+// error ends the call with that error) and reports each call's usage to
+// AfterModelCall.
+type AgentRequest struct {
+	Instruction     string
+	Tools           []string
+	DryRun          bool
+	Tier            string
+	Budget          Budget
+	Deadline        time.Time
+	Binding         tools.Binding
+	RunID           int64
+	Manifest        *Manifest
+	BeforeModelCall func() error
+	AfterModelCall  func(in, out int)
+}
+
+// AgentResult is what an agent() runner returns. The tokens are the call's
+// whole usage; the part AfterModelCall did not already report (a CLI child's
+// usage, an estimate) is debited once after the call.
+type AgentResult struct {
+	Text                      string
+	InputTokens, OutputTokens int64
+	Estimated                 bool
+	ReportedCostUSD           *float64
+}
+
+// AgentRunner runs agent() calls; Name ("claude", "codex", "runtime-b") is
+// the step's name.
+type AgentRunner interface {
+	Name() string
+	Run(ctx context.Context, req AgentRequest) (AgentResult, error)
 }
 
 // MCPCaller calls one tool of an enabled Quick Connection (P6). Only a tool

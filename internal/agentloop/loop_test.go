@@ -392,3 +392,31 @@ func TestAgentLoop_ModelCallHooks(t *testing.T) {
 	assert.Equal(t, 2, *calls, "the refused third call never reaches the model")
 	assert.Equal(t, [][2]int{{100, 10}, {200, 20}}, after)
 }
+
+// Options.ResultCheck sees every tool result before the model does; its
+// error replaces the result (an automation's 256 KiB ResultTooLarge).
+func TestAgentLoop_ResultCheckRefusesResult(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()},
+		readData: map[string]string{"text": strings.Repeat("x", 64)}}
+	srv, reqs := requestRecorder(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	var checked []string
+	c := NewClientWithOptions("m", srv.URL, nil, tools.Binding{Surface: "main"}, Options{
+		ResultCheck: func(result []byte) error {
+			checked = append(checked, string(result))
+			if len(result) > 32 {
+				return errors.New("ResultTooLarge: the result is too large")
+			}
+			return nil
+		},
+	})
+	c.reg = reg
+
+	text, _, err := c.run(context.Background(), "", "go", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	require.Len(t, checked, 1)
+	assert.Contains(t, checked[0], strings.Repeat("x", 64), "the check sees the encoded result")
+	require.Len(t, *reqs, 2)
+	last := (*reqs)[1].Messages[len((*reqs)[1].Messages)-1]
+	assert.Equal(t, `{"error":"ResultTooLarge: the result is too large"}`, last.Content)
+}

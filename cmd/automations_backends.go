@@ -4,13 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
+	"watchtower/internal/agentloop"
+	"watchtower/internal/ai"
 	"watchtower/internal/automations"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/providers"
+	"watchtower/internal/tools"
 )
 
 // automationMCPTimeout bounds one automation tool call (connect, call, stop).
@@ -64,4 +73,162 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 	callCtx, cancel := context.WithTimeout(ctx, automationMCPTimeout)
 	defer cancel()
 	return callServerTool(callCtx, serverSpec(spec), tool, args)
+}
+
+// automationBackends are the backends of every executor that runs recipes:
+// the daemon's and `automations dry-run`'s.
+func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generator) automations.Backends {
+	return automations.Backends{
+		DB:        database,
+		Generator: gen,
+		Registry:  buildAutomationRegistry(cfg, database),
+		Clock:     automations.RealClock{},
+		MCP:       newAutomationMCPCaller(cfg, database),
+		Agent:     newAutomationAgentRunner(cfg, cfg.DBPath(), database),
+	}
+}
+
+// automationAgentMaxTurns bounds an agent() loop's model calls (spec §6.5).
+const automationAgentMaxTurns = 12
+
+// automationAgentSystemPrompt frames every agent() loop: the instruction is
+// the task, the tools are the only way to act, writes are proposals.
+const automationAgentSystemPrompt = "You are one step of an automation script the owner wrote. " +
+	"Carry out the owner's instruction using only the tools you are given, then reply with a short result. " +
+	"A write tool records a proposal the owner reviews later; do not wait for it and do not ask the owner anything."
+
+// newAutomationAgentRunner is agent()'s runner for the configured provider:
+// claude and codex run a headless CLI child bound to the automation-run MCP
+// server (spec §20 D3); any other provider runs the runtime-B loop in
+// process.
+func newAutomationAgentRunner(cfg *config.Config, dbPath string, database *db.DB) automations.AgentRunner {
+	switch cfg.AI.Provider {
+	case "", "claude":
+		return &cliAgentRunner{cfg: cfg, dbPath: dbPath, provider: "claude"}
+	case "codex":
+		return &cliAgentRunner{cfg: cfg, dbPath: dbPath, provider: "codex"}
+	}
+	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
+}
+
+// tierModel is the provider's model for an agent() tier.
+func tierModel(cfg *config.Config, provider, tier string) string {
+	light, strong := providers.ResolveModelsFor(cfg, provider)
+	if tier == "strong" {
+		return strong
+	}
+	return light
+}
+
+// cliAgentRunner runs agent() as one headless claude/codex query whose only
+// tools are the `mcp --chat --surface automation --automation-run N` server's
+// (the effective set plus get_action; never a Quick Connection). The child
+// gets only PATH, HOME, LANG, USER and the run marker, runs in its own
+// process group (killed as a group on cancel or deadline), and is metered
+// once: BeforeModelCall before it starts, its usage — or an estimate — after.
+type cliAgentRunner struct {
+	cfg      *config.Config
+	dbPath   string
+	provider string // "claude" | "codex"
+}
+
+func (r *cliAgentRunner) Name() string { return r.provider }
+
+func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
+	defer cancel()
+	model := tierModel(r.cfg, r.provider, req.Tier)
+	mcpArgs := []string{"--chat", "--surface", tools.AutomationSurface,
+		"--automation-run", strconv.FormatInt(req.RunID, 10), "--automation-tools", strings.Join(req.Tools, ",")}
+	env := automationAgentEnv(req.RunID)
+	var client ai.Provider
+	if r.provider == "codex" {
+		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
+		c.SetMCPArgs(mcpArgs)
+		c.SetChildEnv(env)
+		c.SetProcessGroup(true)
+		client = c
+	} else {
+		c := ai.NewClient(model, r.dbPath, r.cfg.ClaudePath)
+		c.SetMCPArgs(mcpArgs)
+		c.SetWatchtowerTools(append(slices.Clone(req.Tools), "get_action"))
+		c.SetMaxTurns(automationAgentMaxTurns)
+		c.SetChildEnv(env)
+		c.SetProcessGroup(true)
+		client = c
+	}
+	if err := req.BeforeModelCall(); err != nil {
+		return automations.AgentResult{}, err
+	}
+	text, usage, err := client.QuerySync(ctx, automationAgentSystemPrompt, req.Instruction, "")
+	if err != nil {
+		return automations.AgentResult{}, err
+	}
+	return agentResult(req.Instruction, text, usage), nil
+}
+
+// automationAgentEnv is an agent() child's environment besides PATH (the
+// clients append the rich PATH): HOME, LANG and USER from this process when
+// set, and the run marker (AGENT-07).
+func automationAgentEnv(runID int64) []string {
+	var env []string
+	for _, k := range []string{"HOME", "LANG", "USER"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
+}
+
+// agentResult is a finished agent() loop: the provider's usage, or, when it
+// reported none, an estimate of ceil(len(instruction+text)/4) tokens (the
+// reply's share as output).
+func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
+	res := automations.AgentResult{Text: text}
+	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
+		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
+		return res
+	}
+	total := int64(len(instruction)+len(text)+3) / 4
+	res.OutputTokens = min(total, int64(len(text)+3)/4)
+	res.InputTokens, res.Estimated = total-res.OutputTokens, true
+	return res
+}
+
+// runtimeBAgentRunner runs agent() on the in-process runtime-B loop
+// (agentloop) for the OpenAI-compatible providers: the effective set only,
+// every call through GateAgentCall, every result through CheckAgentResult,
+// at most automationAgentMaxTurns model calls, each metered by the request's
+// hooks.
+type runtimeBAgentRunner struct {
+	cfg      *config.Config
+	database *db.DB
+	reg      *tools.Registry
+}
+
+func (r *runtimeBAgentRunner) Name() string { return "runtime-b" }
+
+func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
+	defer cancel()
+	allowed := req.Tools
+	if allowed == nil {
+		allowed = []string{} // nil would offer every surface tool
+	}
+	c := agentloop.NewClientWithOptions(tierModel(r.cfg, r.cfg.AI.Provider, req.Tier), r.cfg.AI.OllamaURL, r.reg, req.Binding,
+		agentloop.Options{
+			Tools: allowed,
+			Gate: func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error) {
+				return automations.GateAgentCall(ctx, r.database, req.Manifest, req.RunID, t, args)
+			},
+			ResultCheck:     automations.CheckAgentResult,
+			MaxIterations:   automationAgentMaxTurns,
+			BeforeModelCall: req.BeforeModelCall,
+			AfterModelCall:  req.AfterModelCall,
+		})
+	text, usage, err := c.QuerySync(ctx, automationAgentSystemPrompt, req.Instruction, "")
+	if err != nil {
+		return automations.AgentResult{}, err
+	}
+	return agentResult(req.Instruction, text, usage), nil
 }

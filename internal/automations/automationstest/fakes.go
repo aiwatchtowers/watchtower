@@ -214,3 +214,64 @@ func (m *FakeMCP) Calls() []FakeMCPCall {
 	defer m.mu.Unlock()
 	return append([]FakeMCPCall(nil), m.calls...)
 }
+
+// FakeAgent is an automations.AgentRunner that records its requests. OnRun,
+// when set, runs first; then each ModelCalls entry is one model call through
+// the request's hooks — BeforeModelCall (its error is returned at once),
+// then AfterModelCall with the entry's input and output tokens. It returns
+// Result or Err.
+type FakeAgent struct {
+	RunnerName string // "" = "fake"
+	ModelCalls [][2]int
+	OnRun      func(req automations.AgentRequest)
+	Result     automations.AgentResult
+	Err        error
+
+	mu         sync.Mutex
+	reqs       []automations.AgentRequest
+	afterCalls int
+}
+
+var _ automations.AgentRunner = (*FakeAgent)(nil)
+
+// Name is RunnerName, "fake" when empty.
+func (a *FakeAgent) Name() string {
+	if a.RunnerName == "" {
+		return "fake"
+	}
+	return a.RunnerName
+}
+
+// Run records req and plays the scripted model calls.
+func (a *FakeAgent) Run(_ context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	a.mu.Lock()
+	a.reqs = append(a.reqs, req)
+	a.mu.Unlock()
+	if a.OnRun != nil {
+		a.OnRun(req)
+	}
+	for _, u := range a.ModelCalls {
+		if err := req.BeforeModelCall(); err != nil {
+			return automations.AgentResult{}, err
+		}
+		req.AfterModelCall(u[0], u[1])
+		a.mu.Lock()
+		a.afterCalls++
+		a.mu.Unlock()
+	}
+	return a.Result, a.Err
+}
+
+// Requests returns a copy of the requests received so far.
+func (a *FakeAgent) Requests() []automations.AgentRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]automations.AgentRequest(nil), a.reqs...)
+}
+
+// AfterCalls is how many scripted model calls completed.
+func (a *FakeAgent) AfterCalls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.afterCalls
+}
