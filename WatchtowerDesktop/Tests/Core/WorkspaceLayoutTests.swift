@@ -133,8 +133,8 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(Data(expanded.utf8)), .default)
     }
 
-    func testTheHeaderViewsAreTerminalSessionBoardFilesAndChanges() {
-        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files, .changes])
+    func testTheHeaderViewsAreTerminalSessionBoardFilesAnalyticsAndChanges() {
+        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files, .analytics, .changes])
         XCTAssertEqual(WorkspaceView(.sessionReport(4)), .report)
     }
 
@@ -403,6 +403,27 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceView(.files), .files)
         XCTAssertTrue(l.isShowing(.files))
         XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+    }
+
+    // #298: Analytics is a project-wide header view placed exactly like the Board.
+    func testAnalyticsPlacesLikeTheBoardAndRoundTrips() throws {
+        var l = split()
+        l.showWorkbenchView(.analytics)
+        XCTAssertEqual(l.visiblePanes, [.analytics, .session(1)])
+        XCTAssertTrue(l.isShowing(.analytics))
+        XCTAssertEqual(WorkspaceView(.analytics), .analytics)
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+
+        var single = WorkspaceLayout.default
+        single.show(.analytics)
+        XCTAssertEqual(single.primary, .analytics)
+        var viaBoard = WorkspaceLayout.default
+        viaBoard.show(.files)
+        var viaAnalytics = viaBoard
+        viaBoard.showWorkbenchView(.board)
+        viaAnalytics.showWorkbenchView(.analytics)
+        XCTAssertEqual(viaAnalytics.primary, .analytics)
+        XCTAssertEqual(viaBoard.primary, .board)
     }
 
     // MARK: - ⌘↵ in the go-to palette

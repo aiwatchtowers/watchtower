@@ -50,9 +50,10 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, [.terminal, .report, .changes].contains(WorkspaceView(pane)) {
+            if isHidden, [.terminal, .report, .changes, .analytics].contains(WorkspaceView(pane)) {
                 // A hidden Session view leaves the screen too: its report
-                // stops refreshing until it is back; so does a Changes pane.
+                // stops refreshing until it is back; so do a Changes pane
+                // and the Analytics pane.
                 Color.clear
             } else {
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,6 +95,7 @@ struct WorkspacePaneView: View {
         Menu {
             Button("Board") { show(.board) }.disabled(pane == .board)
             Button("Files") { show(.files) }.disabled(pane == .files)
+            Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
                 Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
             }
@@ -145,6 +147,9 @@ struct WorkspacePaneView: View {
                 .id(id)
         case .files:
             CodeFilesPaneView(files: vm.codeFiles, project: project, root: vm.activeCodeRoot(project: project))
+                .id(project.id)
+        case .analytics:
+            AgentAnalyticsPaneView(vm: vm, project: project)
                 .id(project.id)
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
@@ -266,6 +271,7 @@ extension WorkspaceView {
         case .report: "Session"
         case .board: "Board"
         case .files: "Files"
+        case .analytics: "Analytics"
         case .changes: "Changes"
         }
     }
@@ -276,6 +282,7 @@ extension WorkspaceView {
         case .report: "list.bullet.rectangle"
         case .board: "square.grid.2x2"
         case .files: "chevron.left.forwardslash.chevron.right"
+        case .analytics: "chart.bar.xaxis"
         case .changes: "plus.forwardslash.minus"
         }
     }

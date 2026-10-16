@@ -17,6 +17,9 @@ package struct OwnerAskStack: Equatable, Sendable {
     /// An ask the app saw bound to a session that has since been deleted
     /// (board #542); in the DB it is session-less like one filed outside.
     package static let sessionDeletedTitle = "Session deleted"
+    /// The line of the automation runs' closed asks (spec §13.3); each row
+    /// of its list names its run.
+    package static let automationsTitle = "⚙ Automations"
 
     /// Open asks by `created_at`, then id.
     package let asks: [OwnerAsk]

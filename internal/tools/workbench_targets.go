@@ -248,8 +248,10 @@ func targetInputs(items []newTargetItem) []db.WorkbenchTargetInput {
 // ---- update_target -----------------------------------------------------
 
 type updateTargetArgs struct {
-	TargetID int64    `json:"target_id" jsonschema:"the workbench target to change"`
-	Status   string   `json:"status,omitempty" jsonschema:"todo | in_progress | in_review | blocked | done | dismissed"`
+	TargetID int64  `json:"target_id" jsonschema:"the workbench target to change"`
+	Status   string `json:"status,omitempty" jsonschema:"todo | in_progress | in_review | blocked | done | dismissed"`
+	// Column moves the card to a board column (PROJ-19): nil leaves it.
+	Column   *string  `json:"column,omitempty" jsonschema:"move the card to this board column (title from the brief or workbench_info, or its id); sets the status to the column's category; \"\" = first column of its status"`
 	Progress *float64 `json:"progress,omitempty" jsonschema:"0.0 to 1.0; set after status (a status change resets a leaf's progress)"`
 	Text     string   `json:"text,omitempty" jsonschema:"new title, at most 200 characters"`
 	Intent   string   `json:"intent,omitempty" jsonschema:"new intent"`
@@ -276,7 +278,8 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			"attach images (add_images: absolute paths of PNG, JPEG, GIF or WebP files, at most 5 MB each) or detach them " +
 			"(remove_image_ids, from get_target); set the git branch / pull request carrying the work (branch, pr; " +
 			"\"\" clears one); move it under another target of this workbench (parent_id; 0 = top level — never under " +
-			"itself or one of its sub-targets). Applied immediately.",
+			"itself or one of its sub-targets); move the card to a board column the owner defined (column: its title or id; it sets " +
+			"the status too). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -295,7 +298,11 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			if _, err := workbenchOf(ctx, d, b); err != nil {
 				return err
 			}
-			if _, err := targetInWorkbench(d, b.WorkbenchID, a.TargetID); err != nil {
+			t, err := targetInWorkbench(d, b.WorkbenchID, a.TargetID)
+			if err != nil {
+				return err
+			}
+			if _, err := resolveTargetColumn(d, t, a); err != nil {
 				return err
 			}
 			if err := scopeTargetMove(d, b.WorkbenchID, a); err != nil {
@@ -320,7 +327,7 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 
 func validateTargetUpdate(a updateTargetArgs) error {
 	if nothingToUpdate(a) {
-		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority, parent_id, add_images, remove_image_ids, branch, pr"}
+		return &ValidationError{Msg: "give at least one of status, column, progress, text, intent, priority, parent_id, add_images, remove_image_ids, branch, pr"}
 	}
 	if a.ParentID != nil && *a.ParentID < 0 {
 		return &ValidationError{Msg: "parent_id must be a target id, or 0 for the top level"}
@@ -347,7 +354,7 @@ func validateTargetUpdate(a updateTargetArgs) error {
 }
 
 func nothingToUpdate(a updateTargetArgs) bool {
-	return a.Status == "" && a.Progress == nil && a.Priority == "" && a.ParentID == nil && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
+	return a.Status == "" && a.Column == nil && a.Progress == nil && a.Priority == "" && a.ParentID == nil && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
 		a.Branch == nil && a.PR == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == ""
 }
 
@@ -361,13 +368,19 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 	if err != nil {
 		return nil, err
 	}
+	// Read before the write transaction: the column definition and the
+	// target's stored column.
+	move, err := resolveTargetColumn(d, t, a)
+	if err != nil {
+		return nil, err
+	}
 	images, err := ingestImages(d, store, workbenchID, a.AddImages)
 	if err != nil {
 		return nil, err
 	}
 	var detached []string
 	err = d.WithTx(func(tx *sql.Tx) error {
-		if err := applyTargetFields(d, tx, t, a); err != nil {
+		if err := applyTargetFields(d, tx, t, a, move); err != nil {
 			return err
 		}
 		for _, id := range a.RemoveImageIDs {
@@ -390,7 +403,9 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 	return out, nil
 }
 
-func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) error {
+// applyTargetFields writes a's fields; move is a resolved column (nil = none),
+// written in place of the plain status write.
+func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs, move *columnMove) error {
 	if err := applyTargetMove(d, tx, t, a.ParentID); err != nil {
 		return err
 	}
@@ -405,7 +420,12 @@ func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) e
 	if err := d.UpdateTargetGitLinksTx(tx, t.ID, trimmed(a.Branch), trimmed(a.PR)); err != nil {
 		return err
 	}
-	if a.Status != "" && a.Status != t.Status {
+	switch {
+	case move != nil:
+		if err := applyColumnMove(d, tx, t, move); err != nil {
+			return err
+		}
+	case a.Status != "" && a.Status != t.Status:
 		if err := d.UpdateTargetStatusAsTx(tx, t.ID, a.Status, db.ActorAgent); err != nil {
 			return fmt.Errorf("updating status: %w", err)
 		}

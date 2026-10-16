@@ -1,12 +1,15 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The workbench header's trailing controls: `Terminal ▾ | Session | Board |
+/// The workbench header's trailing controls: the automation buttons, then `Terminal ▾ | Session | Board |
 /// Files | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report Part 7, the
 /// owner's pick on board #357).
 struct WorkbenchHeaderControls: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
+    /// The workbench's automation buttons, built by the page (nil: none —
+    /// the Automations view model is not up yet).
+    var automationButtons: WorkbenchAutomationButtons?
     /// The ⋯ menu's Delete…: the page reads the counts and confirms.
     let onDelete: () -> Void
     /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
@@ -17,9 +20,11 @@ struct WorkbenchHeaderControls: View {
     @State private var chevronHovered = false
     @State private var showsWorktreeSetup = false
     @State private var showsAgentSettings = false
+    @State private var showsBoardColumns = false
 
     var body: some View {
         HStack(spacing: 8) {
+            if let automationButtons { automationButtons }
             viewButtons
             splitToggle
             moreMenu
@@ -29,6 +34,9 @@ struct WorkbenchHeaderControls: View {
         }
         .sheet(isPresented: $showsAgentSettings) {
             AgentSettingsSheet(vm: vm, project: project)
+        }
+        .sheet(isPresented: $showsBoardColumns) {
+            BoardColumnsSheet(vm: vm, project: project)
         }
     }
 
@@ -177,6 +185,12 @@ struct WorkbenchHeaderControls: View {
                 Label("Agent Settings…", systemImage: "slider.horizontal.3")
             }
             .help("The methodology, the ask guard and the finish check this workbench's agents run under")
+            Button {
+                showsBoardColumns = true
+            } label: {
+                Label("Board Columns…", systemImage: "rectangle.split.3x1")
+            }
+            .help("Name the board's columns inside each status, and hide In Review or Blocked")
             Divider()
             Button {
                 onCleanUpOldWorktrees()
@@ -359,6 +373,7 @@ private extension WorkspaceView {
         case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
+        case .analytics: "Agent time, cost and hints for this workbench"
         case .changes: "Review the session's changes"
         }
     }

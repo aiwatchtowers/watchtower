@@ -54,3 +54,13 @@ func TestCost_UnknownSpeedIsEstimated(t *testing.T) {
 		assert.True(t, known, speed)
 	}
 }
+
+func TestModelTiers_ByOutputPriceHighestFirst(t *testing.T) {
+	tiers := ModelTiers()
+	assert.Len(t, tiers, len(prices))
+	assert.Equal(t, []string{"claude-fable-5", "claude-fable-5-1"}, tiers[:2])
+	assert.Equal(t, "claude-haiku-5-5", tiers[len(tiers)-1])
+	for i := 1; i < len(tiers); i++ {
+		assert.GreaterOrEqual(t, prices[tiers[i-1]].output, prices[tiers[i]].output)
+	}
+}

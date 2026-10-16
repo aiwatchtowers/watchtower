@@ -231,7 +231,7 @@ must be able to undo the whole feature for a folder in one step.
 
 ## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #568)
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents; amended 2026-10-12 to the session's worktree, owner approved in ask #188, board #568; amended 2026-10-16 — Watchtower writes automation recipes in `.watchtower/automations/` only on the owner's Save or Approve, owner approved in ask #272; amended 2026-10-16 — and on the owner's template install, owner approved in ask #188 (2026-10-16, install-template))
 
 **Observable:** The Desktop writes files of the workbench folder only through
 the code viewer — the owner's own actions there: the Files pane editor's saves
@@ -294,6 +294,33 @@ that path does not unlock them. A worktree recreated at that path that the
 session's place resolves to shows again with new, writable buffers; the old
 ones stay locked.
 
+**Amended 2026-10-16 (Automations P5, board #753; spec
+`docs/superpowers/specs/2026-10-14-automations-design.md` §14.6, owner
+approved in ask #272):** Watchtower writes one more kind of file in the
+workbench folder: automation recipes, only at
+`<folder>/.watchtower/automations/<slug>.md`, only on the owner's Save (the
+Automations form/Monaco save through `automations save --confirm-hash`) or on
+the owner's Approve of a `save_automation` card, each refusing to overwrite a
+file whose content changed since the owner saw it (`--expect-content-hash`,
+the pinned `existing_content_hash`); `automations delete` removes only such a
+file; the write is atomic (`fsutil.WriteFileAtomic`); no other path of the
+folder is written, no workbench MCP tool writes a recipe, and the daemon never
+writes the folder.
+
+**Amended 2026-10-16 (Automations P5/P6 templates, board #753; owner approved
+in ask #188 (2026-10-16, install-template) — not the 2026-10-12 ask #188 of
+board #565/#568, a colliding number):** the owner's template install is one
+more explicit owner action that writes automation recipes:
+`automations install-template <name> --workbench N` (and the Desktop
+gallery's install, which calls it) writes recipe files only under
+`<folder>/.watchtower/automations/`, refuses a slug that is already taken (a
+file in the folder or an index row of the workbench, a removed one included)
+before anything is written and so never overwrites a file, writes each file
+atomically (`fsutil.WriteFileAtomic`), refuses a recipe folder with a symlink
+in its existing path (`automations.RefuseLinkedRecipeDir`), and installs every
+recipe unconfirmed and disabled. A failed install removes only the files that
+call wrote. No other path of the folder is written.
+
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop — would race and lose either the agent's or
 the owner's edits. The 2026-10-02 amendment keeps that promise for the
@@ -309,6 +336,8 @@ owner fix a line by hand.
 - Board #565, the session's worktree (2026-10-12, ask #188) — in `WatchtowerDesktop/Tests/CodeFilesCenterRootTests.swift`: `testProj03_ABufferNeverWritesIntoAnotherWorktree`, `testProj03_UnsentEditsLandInTheOldWorktreeOnASessionSwitch`, `testProj03_ARemovedWorktreeIsNeverWritten`; supporting (same file): `testARecreatedWorktreeShowsAgainAndTheOldBufferStaysLocked`, `testTreeOperationsRefuseAWorktreeWhoseFolderIsGone`, `testTreeOperationsRefuseARemovedWorktreeWhoseFolderCameBack`, `testOpenInAThenBThenBackKeepsAsTabs`; `WatchtowerDesktop/Tests/Core/CodeRootTests.swift::testExistingAndDeletedFolderShareTheKey`, `WatchtowerDesktop/Tests/Core/CodeRootPolicyTests.swift::testRootTable`; every `testProj03*` in `CodeFileBufferTests.swift` and `TestProj03_AskOwnerNeverWritesTheFolder` unchanged
 - Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go internal/tools/workbench_asks.go`
 (expected: no match).
+- Automation recipes (2026-10-16, ask #272): `internal/automations/authoring/save_workbench_test.go::TestSaveAutomation_WorkbenchWritesIntoItsFolder` (an approved save writes only `.watchtower/automations/<slug>.md`, nothing at propose), `cmd/automations_test.go::TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused` (`save --path` anywhere else in the folder is refused, nothing written); supporting: `TestSaveAutomation_WorkbenchUnknownRefused`, `TestSaveAutomation_WorkbenchSymlinkedRecipeDirRefused` (same file as the first), `cmd/automations_test.go::TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `internal/automations/authoring/save_test.go::TestSaveAutomation_RefusesWhenFileChangedSincePropose`
+- Template install (2026-10-16, ask #188 (2026-10-16, install-template)) — in `cmd/automations_templates_test.go`: `TestInstallTemplate_WorkbenchScopeRules`, `TestInstallTemplate_RefusesExistingSlug`, `TestInstallTemplate_RefusesLinkedWorkbenchDir`, `TestInstallTemplate_InstalledUnconfirmedAndDisabled`, `TestInstallTemplate_FailedWriteRollsBack`, `TestInstallTemplate_FailedRescanRollsBack`
 
 **Locked since:** 2026-09-29
 
@@ -444,15 +473,15 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v10) always, and the `watchtower-flow` preset
+`.agents/skills`: the core `watchtower-workbench` (pack v11) always, and the `watchtower-flow` preset
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
 before v10 (marker below `v10`) keeps the single-file layout: nothing is written beside it, and
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
-preset." A core byte-identical to the shipped v8 or v9 with no sidecar is adopted as ours. A preset change
+preset." A core byte-identical to the shipped v8, v9 or v10 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v10 core of ours becomes v10, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v11, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
@@ -538,6 +567,8 @@ at a glance.
 
 **Locked since:** 2026-09-30
 
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — the rollup reads statuses only; a column move inside one status never moves a parent.
+
 ## PROJ-06 — every workbench target status transition is recorded with time and actor
 
 **Status:** Enforced (Go and Desktop — one implementation, in SQLite)
@@ -583,6 +614,8 @@ dual path.
 - `WatchtowerDesktop/Tests/Core/TargetStatusHistoryTests.swift::testDesktopStatusWritesAreRecordedAsTheOwners`
 
 **Locked since:** 2026-09-30
+
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — a move between columns of one status records no transition; a status change still records exactly one, whichever writer made it.
 
 ## PROJ-07 — board drift is surfaced, and the Stop hook never traps a turn
 
@@ -671,6 +704,8 @@ timeout would be worse than none.
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
+
+*2026-10-16 note (PROJ-19, board #267):* board columns do not change this contract — the drift check reads statuses and never a column.
 
 ## PROJ-08 — a workbench's documents are searchable only from its own sessions
 
@@ -1797,6 +1832,29 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 **Locked since:** 2026-10-14
 
+## PROJ-19 — board columns never contradict the status
+
+**Status:** Enforced (Go and Desktop — one implementation, in SQLite; owner approved: spec review ask #209, plan ask #211, decisions ask #202; spec `docs/superpowers/specs/2026-10-16-workbench-board-columns-design.md` §8)
+
+**Observable:** A workbench may define board columns (migration `00125`: `workbench_board_columns`, `targets.board_column_id`, `projects.board_hidden_statuses`). A target's column is always one of its own workbench and of its current status: SQLite triggers refuse a column of another workbench or another status (`board column does not match the target`) for every writer, and a status or workbench change clears a column that no longer fits (the target then sits in the first column of its status). A move between two columns of one status writes only the column: progress is kept and no status-history row is written (PROJ-06 is not touched); a move that changes the status writes status and column in one statement. A status cannot be hidden and have columns at once. The agent may move a card with `update_target column` (and, as before, `status`), but a hidden `in_review` or `blocked` is refused on the workbench MCP surface with a text that says what to do instead; the owner's writers (CLI, Desktop) and the system writers are not refused. With no columns defined and nothing hidden, every agent-facing text (the brief, `workbench_board`, `get_target`, `workbench_info`, the skill's behaviour) and the Desktop board are as before: `column`, `columns` and `hidden_statuses` appear only when defined.
+
+**Why locked:** Owner decision (board #267): the owner lays out the board with their own column names, and the agent and the owner both move cards. If a column could disagree with the status, the board would show a card as "Review" while PROJ-05's parent rollup, PROJ-06's history and the drift check (PROJ-07) read it as `todo`. The categories stay the contract; the column is only a name and a place inside one.
+
+**Test guards:**
+- `internal/db/proj19_board_columns_test.go` — `TestProj19_ColumnMustMatchStatusAndWorkbench`, `TestProj19_StatusChangeClearsForeignColumn`, `TestProj19_StatusAndColumnInOneStatement`, `TestProj19_ColumnMoveWritesNoHistory`, `TestProj19_SameStatusColumnMoveKeepsProgress`, `TestProj19_DeletedColumnFallsBack`, `TestProj19_SnoozeClearsColumn`
+- `internal/tools/workbench_columns_test.go::TestProj19_NoDefinitionAgentOutputsUnchanged` (outputs byte-identical without a definition); the hidden-status refusal texts in the same file
+- `cmd/workbench_brief_columns_test.go` — `TestBriefColumns_NoneLeavesBriefUnchanged`, `TestBriefColumns_MaximalRulesStayWithinTheBrief` (the section stays within its 1000-character budget)
+- `WatchtowerDesktop/Tests/Core/BoardColumnLayoutTests.swift::testEmptyDefinitionIsTodaysColumns` (an empty definition lays the board out as before), with `testHiddenEmptyStatusIsSkipped`, `testHiddenStatusWithCardsStillShows`
+- `WatchtowerDesktop/Tests/Core/WorkbenchBoardColumnWritesTests.swift` — `testMoveToColumnWritesStatusAndColumnOnce`, `testMoveBetweenColumnsOfOneStatusWritesNoHistory`, `testMoveWithinOneStatusKeepsProgress`, `testMismatchedColumnIsRefusedByTheTrigger`
+- `WatchtowerDesktop/Tests/Core/BoardColumnsDraftTests.swift::testDraftRejectsHideWithColumns`
+- `WatchtowerDesktop/Tests/MobileHub/WorkbenchTargetSliceTests.swift::testColumnOnlyWithDefinition` (the slice carries `column` only with a definition)
+- `WatchtowerKit/Tests/WatchtowerKitTests/WorkbenchTargetTests.swift::testDecodesWithAndWithoutColumn`
+- `WatchtowerMobile/Tests/BoardModelTests.swift::testRowShowsColumnTitle`
+
+**P5 note (Automations):** any future agent-facing writer of a workbench target's status (an automation tool, a new MCP tool) must call `hiddenStatusRefusal` (`internal/tools/workbench_columns.go`) for a hidden status, exactly as `update_target` does.
+
+**Locked since:** 2026-10-16
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -2089,6 +2147,10 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## Changelog
 
+- 2026-10-16 (board #267, workbench board columns; spec `docs/superpowers/specs/2026-10-16-workbench-board-columns-design.md` §8, plan `docs/superpowers/plans/2026-10-16-workbench-board-columns.md`; **PROJ-19 added, owner approved: spec ask #209, plan ask #211, decisions ask #202**): migration `00125` (`workbench_board_columns`, `targets.board_column_id`, `projects.board_hidden_statuses`, the match triggers); `watchtower workbench columns <id> [--json] [--set -]`; `update_target` takes `column`; a hidden `in_review`/`blocked` is refused on the workbench MCP surface; `column` appears in `workbench_board`/`get_target` and `columns`/`hidden_statuses` in `workbench_info` only when defined; the brief gets a Board columns section (at most 1000 characters, else one fallback line) and a Turned off line. **PROJ-04:** the workbench skill is pack **v11** (the column and turned-off rules; an unedited earlier copy upgrades, an edited one is kept, as for every bump). **PROJ-05, PROJ-06, PROJ-07:** note only, columns do not touch them. The Desktop gets the **Board Columns…** sheet, drag between columns and a column picker in the target panel; the phone shows the column title in place of the status label. A column title made only of digits is refused (`validateBoardColumns`, mirrored in the Desktop draft), so a column can be named by id or by title without ambiguity. Guard note: the PROJ-15 supporting test `TestMigration00105_ArchivedThroughStartsNull` now checks only the archive view at its `DownTo(104)` step (the board reader needs 00125's table, a schema state `db.Open` never produces); the full `requireArchived` check after Up is unchanged; acknowledged by the owner in ask #229 (2026-10-16).
+- 2026-10-16 (Automations P5 part 2, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13.1, §13.3): **PROJ-12/PROJ-13 strengthened — the Desktop half.** An automation's ask is never typed, held or queued into a terminal, whatever session it names: `OwnerAsksViewModel.answer` skips `SessionLineDelivery` when `automation_run_id` is set and wakes the automations loop instead (`automations wake`, best effort); `deliverHeldAnswers` has no entry for it. Guard `WatchtowerDesktop/Tests/OwnerAsksAutomationTests.swift::testAutomationAskIsNeverDeliveredToATerminal`; every existing PROJ-12/PROJ-13 guard green unmodified. The stack names such an ask "⚙ <automation> · run #N" and its closed ones leave "Outside the app" for a "⚙ Automations" line (`OwnerAskQueries.closedCounts` counts no session-less automation ask; `closedAutomationCount`; `testClosedAutomationAskNamesItsRun`, `testClosedAutomationAsksAreNotOutsideTheApp`). **PROJ-03:** the ask #272 amendment written in Task 8 is present with its guards (entry below); the Desktop's edit form and Change in words reach it only through `automations save` and `save_automation` — no new Desktop write path. **PROJ-11 note, no text changed:** a session `AutomationSessionCenter` launches is an ordinary session started in the background (R-P5-7); its agent launches, Resume included, carry `WATCHTOWER_AUTOMATION_RUN_ID`. No guard relaxed.
+- 2026-10-16 (Automations P6 templates, board #753; **PROJ-03 amended, owner approved in ask #188 (2026-10-16, install-template)** — a different ask from the 2026-10-12 ask #188 of board #565/#568): `automations install-template <name> --workbench N`, and the Desktop gallery install that calls it, count as an explicit owner write of automation recipes: only under `<folder>/.watchtower/automations/`, a taken slug refused, never an overwrite, atomic writes, a symlinked path component refused, every recipe installed unconfirmed and disabled. Amendment text in PROJ-03 next to the ask #272 one (kept as it was); the existing `TestInstallTemplate_*` guards are listed under PROJ-03; no code or guard changed.
+- 2026-10-16 (Automations P5 Task 8, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §14.6, D17; **PROJ-03 amended, owner approved in ask #272**): P3's ruling R-P3-5 is lifted — `save_automation` takes `workbench_id`: Normalize resolves the workbench through `Deps.Workbench` (an unknown one, or a recipe folder with a symlink in its existing path, is refused with no row) and pins `path = <folder>/.watchtower/automations/<slug>.md` (canonical) and scope `workbench:<id>`; Execute, in the owner's `actions apply` process after Approve, re-checks the path, the symlink rule and the pinned content hash, writes atomically (creating `.watchtower/automations/` 0755), rescans that folder and confirms. `automations save --path` already wrote only that folder's `<slug>.md` of a known workbench (P1); the shared symlink check moved to `automations.RefuseLinkedRecipeDir`. The amendment text is in PROJ-03; new guards `TestSaveAutomation_WorkbenchWritesIntoItsFolder`, `TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused`; every existing PROJ-03 guard (`TestProj03_AskOwnerNeverWritesTheFolder`, the code viewer's `testProj03*`) unchanged. The Desktop form's workbench rows become editable in Task 12.
 - 2026-10-16 (board #411, Desktop New Task): note only — **no contract, guard test or status changed**. The Desktop board creates targets too (header **New Task**, under the current scope; card menu **New Sub-task…**): `WorkbenchBoardViewModel.createTarget` runs `watchtower workbench target add`, the phone's owner writer, so the creation is recorded as `owner` (PROJ-06), Go does the PROJ-09 parent check and the PROJ-05 rollup, and the new target plus every parent whose status moved are reported through `onOwnerWrite` so the owner is never notified about their own change.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.

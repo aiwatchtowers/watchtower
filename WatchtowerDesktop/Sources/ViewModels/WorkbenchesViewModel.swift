@@ -114,6 +114,14 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Agent analytics (#298): the Analytics pane's reports. AppState wires
+    /// its own; nil = a pane with nothing to show.
+    @ObservationIgnored weak var agentAnalytics: AgentAnalyticsCenter?
+    /// The Analytics pane's period per workbench (7 days until picked).
+    var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The session (its uuid) whose detail the Analytics pane shows per
+    /// workbench; none = the overview.
+    var analyticsSession: [Int64: String] = [:]
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete
@@ -439,6 +447,24 @@ final class WorkbenchesViewModel {
     /// view's body, hence not observed.
     @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
 
+    /// `automations rescan --workbench N` (spec §13.4); nil without a CLI.
+    /// A seam for tests.
+    @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
+    /// How long recipe-folder changes settle before one rescan runs.
+    @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
+    @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
+    /// The workbenches with a rescan running, and those asked for again
+    /// meanwhile (one follow-up rescan, not one per ask).
+    @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
+    @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The workbenches asked for a rescan while the feature was not on
+    /// (or its state not loaded yet): rescanned once it comes on.
+    @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
+    /// The `automations` feature is on per a successful Feature Manager
+    /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
+    @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }
+
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
     let cli: WorkbenchCLI?
@@ -467,7 +493,11 @@ final class WorkbenchesViewModel {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
+            let automations = AutomationsCLI(runner: cli.runner)
+            asks.wakeAutomations = { try await automations.wake() }
+            rescanAutomations = { try await automations.rescan(workbenchID: $0) }
         }
+        codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
             self?.sessionExited(id, code: code, closedByApp: closedByApp)
         }
@@ -1089,6 +1119,34 @@ final class WorkbenchesViewModel {
         }
     }
 
+    /// The Board Columns… sheet's read (board #267): the stored definition
+    /// through `watchtower workbench columns` and, per defined column, the
+    /// cards that show in it (what deleting it moves).
+    func loadBoardColumns(projectID: Int64) async throws -> (WorkbenchBoardColumns, [Int64: Int]) {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        let def = try await cli.boardColumns(projectID: projectID)
+        let counts = try await dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: projectID) }
+        return (def, counts)
+    }
+
+    /// The sheet's Save: Go replaces the whole definition or refuses it
+    /// (nothing written). The board picks a saved definition up through its
+    /// fingerprint.
+    func saveBoardColumns(_ def: WorkbenchBoardColumns, projectID: Int64) async throws -> WorkbenchBoardColumns {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        return try await cli.setBoardColumns(projectID: projectID, def)
+    }
+
+    /// A refused definition's own message (Go prints it alone on stderr);
+    /// anything else as the error describes itself.
+    static func boardColumnsMessage(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "watchtower exited with code \(code)" : text
+        }
+        return error.localizedDescription
+    }
+
     /// The header menu's "Archive Closed Targets Now" (board #415): every
     /// target closed by now leaves the board. The board picks the stamp up
     /// through its fingerprint; the reload shows "Undo Archive Now".
@@ -1119,5 +1177,14 @@ final class WorkbenchesViewModel {
     func dismissResync(projectID: Int64) {
         resyncResults[projectID] = nil
         resyncErrors[projectID] = nil
+    }
+}
+
+/// Why the Board Columns… sheet could not run its CLI call.
+enum WorkbenchBoardColumnsError: LocalizedError {
+    case cliUnavailable
+
+    var errorDescription: String? {
+        "The watchtower command-line tool is not available."
     }
 }

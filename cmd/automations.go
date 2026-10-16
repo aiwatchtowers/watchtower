@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -18,7 +16,6 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/fsutil"
 	"watchtower/internal/tools"
 )
 
@@ -182,38 +179,6 @@ func workbenchScope(database *db.DB, workbenchID int64) (automations.Scope, stri
 		return automations.Scope{}, "", err
 	}
 	return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: w.ID}, automations.WorkbenchDir(w.FolderPath), nil
-}
-
-// refuseLinkedRecipeDir refuses a workbench recipe folder (absolute, as
-// stored) with a symlink anywhere in its existing part: the scheduler never
-// scans such a folder (the indexer's workbenchPathPlain), and a write through
-// the link could land outside the workbench. The part that does not exist
-// yet is created plain by MkdirAll.
-func refuseLinkedRecipeDir(dir string) error {
-	existing := dir
-	for {
-		_, err := os.Lstat(existing)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("checking %s: %w", existing, err)
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			break
-		}
-		existing = parent
-	}
-	plain, err := fsutil.NoSymlinkComponents(existing)
-	if err != nil {
-		return fmt.Errorf("checking %s: %w", dir, err)
-	}
-	if !plain {
-		return fmt.Errorf("%s has a symlink in its path: a workbench recipe folder must be a plain directory "+
-			"(the scheduler never scans one behind a link)", dir)
-	}
-	return nil
 }
 
 // resolveAutomation finds an automation by slug in the scope of --workbench
