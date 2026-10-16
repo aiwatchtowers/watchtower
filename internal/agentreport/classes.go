@@ -91,7 +91,8 @@ func (t *ToolTimes) add(class string, ms int64) {
 	}
 }
 
-func (t ToolTimes) total() int64 {
+// Total is the tool time over all classes, in ms.
+func (t ToolTimes) Total() int64 {
 	return t.BuildTest + t.Git + t.ReadSearch + t.Edit + t.MCP + t.SubagentsFG + t.Other
 }
 
@@ -132,6 +133,6 @@ func (ts *TimeSplit) plus(u TimeSplit) {
 
 // seal sets WallMS to the category sum and ActiveMS to WallMS - AwayMS.
 func (ts *TimeSplit) seal() {
-	ts.WallMS = ts.ModelMS + ts.Tools.total() + ts.BackgroundMS + ts.OwnerMS + ts.AwayMS
+	ts.WallMS = ts.ModelMS + ts.Tools.Total() + ts.BackgroundMS + ts.OwnerMS + ts.AwayMS
 	ts.ActiveMS = ts.WallMS - ts.AwayMS
 }

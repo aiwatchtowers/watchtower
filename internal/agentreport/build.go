@@ -197,20 +197,9 @@ func BuildOverview(d *db.DB, workbenchID int64, since, now time.Time) (*Overview
 			continue
 		}
 		ov.Time.plus(ts)
-		sa := b.subs[id]
-		ov.Subagents.Count += sa.Count
-		ov.Subagents.Foreground += sa.Foreground
-		ov.Subagents.Background += sa.Background
-		ov.Subagents.Serial += sa.Serial
-		ov.Subagents.BusyMS += sa.BusyMS
-		ov.Subagents.UnionMS += sa.UnionMS
-		ov.Subagents.BlockedMS += sa.BlockedMS
-		ov.Subagents.Peak = max(ov.Subagents.Peak, sa.Peak)
+		ov.Subagents.plus(b.subs[id])
 	}
 	ov.Time.seal()
-	if ov.Subagents.UnionMS > 0 {
-		ov.Subagents.AvgParallel = float64(ov.Subagents.BusyMS) / float64(ov.Subagents.UnionMS)
-	}
 	ov.Totals = b.totals
 	ov.Totals.ActiveMS, ov.Totals.AwayMS = ov.Time.ActiveMS, ov.Time.AwayMS
 
@@ -244,7 +233,7 @@ func BuildSession(d *db.DB, workbenchID int64, sessionUUID string) (*SessionDeta
 	b := assemble(all[i:i+1], by)
 	det := &SessionDetail{Session: b.rows[0], Time: b.time[sessionUUID], Subagents: b.subs[sessionUUID],
 		Lanes: nonNil(b.lanes[sessionUUID]), Commands: nonNil(Commands(b.events[sessionUUID]))}
-	now := time.Now()
+	now := time.Now().UTC()
 	tasks := Tasks(targets, b.segments, b.events, now)
 	det.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
 	return det, nil

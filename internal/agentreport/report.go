@@ -70,3 +70,20 @@ type Lane struct {
 	Background   bool      `json:"background"`
 	Segments     []Segment `json:"segments"`
 }
+
+// plus adds the counts and times of u; Peak is the larger and AvgParallel is
+// BusyMS / UnionMS again.
+func (s *Subagents) plus(u Subagents) {
+	s.Count += u.Count
+	s.Foreground += u.Foreground
+	s.Background += u.Background
+	s.Peak = max(s.Peak, u.Peak)
+	s.Serial += u.Serial
+	s.BusyMS += u.BusyMS
+	s.UnionMS += u.UnionMS
+	s.BlockedMS += u.BlockedMS
+	s.AvgParallel = 0
+	if s.UnionMS > 0 {
+		s.AvgParallel = float64(s.BusyMS) / float64(s.UnionMS)
+	}
+}

@@ -43,6 +43,7 @@ func init() {
 	report.Flags().StringVar(&flagAgentsSince, "since", "", "first day of the period (YYYY-MM-DD, UTC)")
 	report.Flags().IntVar(&flagAgentsDays, "days", 7, "period length in days (0 = all)")
 	report.Flags().StringVar(&flagAgentsSession, "session", "", "one session's drill-down")
+	report.MarkFlagsMutuallyExclusive("since", "days")
 	_ = report.MarkFlagRequired("workbench")
 	agentsCmd.AddCommand(report)
 	rootCmd.AddCommand(agentsCmd)
@@ -192,7 +193,7 @@ func reportDur(ms int64) string {
 
 func printReportTime(w io.Writer, t agentreport.TimeSplit) {
 	fmt.Fprintf(w, "model %s · tools %s · background %s · owner %s · away %s\n",
-		reportDur(t.ModelMS), reportDur(t.Tools.BuildTest+t.Tools.Git+t.Tools.ReadSearch+t.Tools.Edit+t.Tools.MCP+t.Tools.SubagentsFG+t.Tools.Other),
+		reportDur(t.ModelMS), reportDur(t.Tools.Total()),
 		reportDur(t.BackgroundMS), reportDur(t.OwnerMS), reportDur(t.AwayMS))
 }
 

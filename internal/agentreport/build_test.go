@@ -26,6 +26,12 @@ func buildDB(t *testing.T) (*db.DB, int64) {
 // file is parsed at version.
 func putSession(t *testing.T, d *db.DB, wb int64, id string, n, version int) {
 	t.Helper()
+	putSessionWith(t, d, wb, id, n, version, nil)
+}
+
+// putSessionWith adds extra events (their SrcPath and SrcOffset are set here).
+func putSessionWith(t *testing.T, d *db.DB, wb int64, id string, n, version int, extra []db.AgentLogEvent) {
+	t.Helper()
 	path := "/tmp/x/" + id + ".jsonl"
 	start := t0.Format(tsLayout)
 	end := t0.Add(time.Duration(n) * time.Second).Format(tsLayout)
@@ -44,6 +50,10 @@ func putSession(t *testing.T, d *db.DB, wb int64, id string, n, version int) {
 		}
 		evs = append(evs, e)
 	}
+	for i, e := range extra {
+		e.SessionUUID, e.Key, e.SrcPath, e.SrcOffset = id, fmt.Sprintf("%s:x%d", id, i), path, int64(1000+i)
+		evs = append(evs, e)
+	}
 	_, err := d.ApplyAgentLogBatch(db.AgentLogBatch{
 		File: db.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: version}, ExpectOffset: -1,
 		Sessions: []db.AgentLogSession{{SessionUUID: id, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
@@ -58,8 +68,20 @@ func putSession(t *testing.T, d *db.DB, wb int64, id string, n, version int) {
 
 func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	d, wb := buildDB(t)
-	putSession(t, d, wb, "new", 40, 2)
-	putSession(t, d, wb, "old", 40, 1)
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id, status) VALUES ('goal', '2026-01-01', '2026-12-31', ?, 'in_progress')`, wb)
+	require.NoError(t, err)
+	tid, _ := res.LastInsertId()
+	_, err = d.Exec(`UPDATE target_status_history SET changed_at = ? WHERE target_id = ?`, t0.Add(-time.Hour).Format("2006-01-02T15:04:05Z"), tid)
+	require.NoError(t, err)
+	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
+	extra := []db.AgentLogEvent{
+		{Kind: "tool", Name: "Agent", Target: "general", Outcome: "ok", SpawnedAgentID: "a1", TS: at(2)},
+		{Kind: "tool", Name: "mcp__watchtower-workbench__update_target", Target: fmt.Sprintf("#%d", tid), Outcome: "ok", TS: at(3)},
+		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(5)},
+		{Kind: "api_call", Name: "claude-opus-5-5", AgentID: "a1", TS: at(9)},
+	}
+	putSessionWith(t, d, wb, "new", 40, 2, extra)
+	putSessionWith(t, d, wb, "old", 40, 1, extra)
 
 	ov, err := BuildOverview(d, wb, time.Time{}, t0.Add(time.Hour))
 	require.NoError(t, err)
@@ -76,8 +98,14 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	assert.Positive(t, rows["new"].ActiveMS)
 	assert.Equal(t, rows["new"].ActiveMS, ov.Time.ActiveMS, "only the new session is in the time split")
 	assert.Equal(t, ov.Time.ActiveMS, ov.Totals.ActiveMS)
-	assert.NotNil(t, ov.Tasks)
-	assert.NotNil(t, ov.Hints)
+	assert.Equal(t, 1, ov.Subagents.Count, "the old session's subagent is not counted")
+	require.Len(t, ov.Tasks, 1)
+	assert.Equal(t, []string{"new"}, ov.Tasks[0].Sessions)
+	for _, h := range ov.Hints {
+		for _, e := range h.Evidence {
+			assert.NotEqual(t, "old", e.Ref, "hint %s cites the old session", h.ID)
+		}
+	}
 }
 
 func TestBuildSession_UnknownIsError(t *testing.T) {
@@ -93,8 +121,8 @@ func TestBuildSession_UnknownIsError(t *testing.T) {
 }
 
 func TestBuildOverview_Performance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("generates 150k events")
+	if testing.Short() || raceEnabled {
+		t.Skip("wall-clock budget: skipped under -short and the race detector")
 	}
 	d, wb := buildDB(t)
 	now := time.Now().UTC()
@@ -130,19 +158,6 @@ func TestBuildOverview_Performance(t *testing.T) {
 		}
 	}
 	require.NoError(t, tx.Commit())
-
-	ss, err := d.AgentReportSessions(wb, "")
-	require.NoError(t, err)
-	ids := make([]string, len(ss))
-	for i, x := range ss {
-		ids[i] = x.SessionUUID
-	}
-	l := time.Now()
-	func() {
-		evs, err := d.AgentReportEvents(ids)
-		require.NoError(t, err)
-		t.Logf("load of %d events alone: %s", len(evs), time.Since(l))
-	}()
 
 	start := time.Now()
 	ov, err := BuildOverview(d, wb, time.Time{}, now)

@@ -83,6 +83,15 @@ func jsonKeys(t *testing.T, out string) []string {
 	return keys
 }
 
+func mapKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	wb := strconv.FormatInt(agentsFixture(t), 10)
 	runAgentsCmd(t, "enable", "--workbench", wb)
@@ -94,8 +103,10 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 		Sessions []map[string]json.RawMessage
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &ov))
-	assert.Len(t, ov.Sessions, 1)
-	assert.Len(t, ov.Totals, 6)
+	require.Len(t, ov.Sessions, 1)
+	assert.Equal(t, []string{"active_ms", "away_ms", "cost_estimated_calls", "cost_usd", "sessions", "tokens"}, mapKeys(ov.Totals))
+	assert.Equal(t, []string{"active_ms", "avg_parallel", "branch", "cost_usd", "ended_at", "model", "old_format", "prs",
+		"session_uuid", "started_at"}, mapKeys(ov.Sessions[0]))
 
 	out = runAgentsCmd(t, "report", "--workbench", wb, "--session", "s1", "--json")
 	assert.Equal(t, []string{"commands", "hints", "lanes", "session", "subagents", "time"}, jsonKeys(t, out))
