@@ -2558,6 +2558,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     cleanup_at        TEXT, -- its time, agent_state_at format; NULL with cleanup_result
     worktree_branch   TEXT, -- non-NULL = Watchtower created the worktree this row's folder_path is in, on this wt/<slug> branch; #535's cleanup owns that worktree and branch by record; NULL = every other row (00114)
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
+    automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2592,6 +2593,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     origin           TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')),  -- chat = a terminal question Watchtower raised after it waited
     chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
+    automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
