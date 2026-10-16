@@ -3,16 +3,22 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
 )
 
 var agentsCmd = &cobra.Command{Use: "agents", Short: "Analytics of the coding-agent sessions run in a workbench"}
 
 var (
+	flagAgentsSince     string
+	flagAgentsDays      int
+	flagAgentsSession   string
 	flagAgentsWorkbench int64
 	flagAgentsJSON      bool
 	// agentsClaudeDir is a test seam; ~/.claude, never CLAUDE_CONFIG_DIR.
@@ -31,6 +37,15 @@ func init() {
 		_ = c.MarkFlagRequired("workbench")
 		agentsCmd.AddCommand(c)
 	}
+	report := &cobra.Command{Use: "report", Short: "Time, cost and hints for a workbench's agent sessions", RunE: runAgentsReport}
+	report.Flags().Int64Var(&flagAgentsWorkbench, "workbench", 0, "workbench id")
+	report.Flags().BoolVar(&flagAgentsJSON, "json", false, "print JSON")
+	report.Flags().StringVar(&flagAgentsSince, "since", "", "first day of the period (YYYY-MM-DD, UTC)")
+	report.Flags().IntVar(&flagAgentsDays, "days", 7, "period length in days (0 = all)")
+	report.Flags().StringVar(&flagAgentsSession, "session", "", "one session's drill-down")
+	report.MarkFlagsMutuallyExclusive("since", "days")
+	_ = report.MarkFlagRequired("workbench")
+	agentsCmd.AddCommand(report)
 	rootCmd.AddCommand(agentsCmd)
 }
 
@@ -122,4 +137,68 @@ func runAgentsStats(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "%d sessions · $%.2f (Claude Code reports $%.2f) · %d owner turns\n",
 		st.Sessions, st.CostUSD, st.ReportedCostUSD, st.OwnerTurns)
 	return nil
+}
+
+func runAgentsReport(cmd *cobra.Command, _ []string) error {
+	now := time.Now().UTC()
+	var since time.Time
+	switch {
+	case flagAgentsSince != "":
+		d, err := time.Parse("2006-01-02", flagAgentsSince)
+		if err != nil {
+			return fmt.Errorf("--since must be YYYY-MM-DD: %w", err)
+		}
+		since = d
+	case flagAgentsDays < 0:
+		return errors.New("--days must not be negative")
+	case flagAgentsDays > 0:
+		since = now.AddDate(0, 0, -flagAgentsDays)
+	}
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+	if flagAgentsSession != "" {
+		det, err := agentreport.BuildSession(database, flagAgentsWorkbench, flagAgentsSession, now)
+		if err != nil {
+			return err
+		}
+		if flagAgentsJSON {
+			return writeJSON(out, det)
+		}
+		fmt.Fprintf(out, "%s · $%.2f · active %s\n", det.Session.UUID, det.Session.CostUSD, reportDur(det.Time.ActiveMS))
+		printReportTime(out, det.Time)
+		printReportHints(out, det.Hints)
+		return nil
+	}
+	ov, err := agentreport.BuildOverview(database, flagAgentsWorkbench, since, now)
+	if err != nil {
+		return err
+	}
+	if flagAgentsJSON {
+		return writeJSON(out, ov)
+	}
+	fmt.Fprintf(out, "%d sessions · $%.2f · active %s · away %s\n", ov.Totals.Sessions, ov.Totals.CostUSD,
+		reportDur(ov.Totals.ActiveMS), reportDur(ov.Totals.AwayMS))
+	printReportTime(out, ov.Time)
+	printReportHints(out, ov.Hints)
+	return nil
+}
+
+func reportDur(ms int64) string {
+	return (time.Duration(ms) * time.Millisecond).Round(time.Second).String()
+}
+
+func printReportTime(w io.Writer, t agentreport.TimeSplit) {
+	fmt.Fprintf(w, "model %s · tools %s · background %s · owner %s · away %s\n",
+		reportDur(t.ModelMS), reportDur(t.Tools.Total()),
+		reportDur(t.BackgroundMS), reportDur(t.OwnerMS), reportDur(t.AwayMS))
+}
+
+func printReportHints(w io.Writer, hints []agentreport.Hint) {
+	for _, h := range hints[:min(3, len(hints))] {
+		fmt.Fprintf(w, "- %s\n", h.Finding)
+	}
 }

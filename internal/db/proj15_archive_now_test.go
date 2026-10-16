@@ -292,7 +292,8 @@ func TestMigration00105_ArchivedThroughStartsNull(t *testing.T) {
 	// DownTo(104), not a bare Down: a later migration can move the tip past 00105.
 	require.NoError(t, goose.DownTo(d.DB, "migrations", 104))
 	assert.False(t, columnNames(t, d.DB, "projects")["archived_through"], "Down kept the column")
-	requireArchived(t, d, pid, map[int64]bool{recent: false, old: true})
+	// The view only: the board reader needs later migrations' tables (00125).
+	assert.Equal(t, map[int64]bool{recent: false, old: true}, viewArchived(t, d, pid))
 
 	require.NoError(t, goose.Up(d.DB, "migrations"))
 	w, err := d.GetWorkbench(pid)

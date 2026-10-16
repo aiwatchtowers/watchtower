@@ -12,6 +12,8 @@ package enum WorkspacePane: Codable, Hashable, Sendable {
     case sessionReport(Int64)
     case board
     case files
+    /// The workbench's agent analytics: time, cost and hints (#298).
+    case analytics
     /// The diff reviewer of a session's changes (board #328).
     case changes(Int64)
 }
@@ -25,6 +27,8 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case board
     /// The code editor's file tabs (POC).
     case files
+    /// The workbench's agent analytics (#298), project-wide like the Board.
+    case analytics
     /// A session's changes under review (board #328).
     case changes
 
@@ -35,6 +39,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
         case .sessionReport: self = .report
         case .board: self = .board
         case .files: self = .files
+        case .analytics: self = .analytics
         case .changes: self = .changes
         }
     }

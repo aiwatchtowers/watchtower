@@ -78,6 +78,14 @@ The **Session** button in the page header shows the report of one Claude Code se
 
 It refreshes every 30 seconds while on screen, and when the session's state changes. With nothing to show it says "Pick a session".
 
+### Read the Analytics view
+
+The **Analytics** button in the page header (or **Analytics** in a pane's title menu) shows where this folder's Claude Code sessions spent their time and money:
+
+- Pick **7 days**, **30 days** or **All**. The first time, press **Turn On** to load the history.
+- The hints say what would save the most. Each links to its session or board target.
+- Click a session to see its timeline: one lane for the main agent and one per subagent.
+
 ### Tidy up the list
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.

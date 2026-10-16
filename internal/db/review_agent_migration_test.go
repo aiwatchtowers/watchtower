@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMigration00125_ReviewAgentTables(t *testing.T) {
+func TestMigration00126_ReviewAgentTables(t *testing.T) {
 	d := openTestDB(t)
 	pid, sid := seedReviewSession(t, d)
 	rid, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})

@@ -745,6 +745,23 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchMethodologyState.self, from: data)
     }
 
+    /// The workbench's board column definition (board #267, PROJ-19) as
+    /// `watchtower workbench columns <id> --json` prints it.
+    func boardColumns(projectID: Int64) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(args: ["workbench", "columns", String(projectID), "--json"])
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
+    /// Replaces the whole definition (`--set -`, the JSON on stdin) and
+    /// returns the stored one. A refused definition exits 1 with Go's
+    /// message on stderr (`CLIRunnerError.nonZeroExit`); nothing is written.
+    func setBoardColumns(projectID: Int64, _ def: WorkbenchBoardColumns) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(
+            args: ["workbench", "columns", String(projectID), "--set", "-", "--json"], stdin: try JSONEncoder().encode(def)
+        )
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
     /// Desktop never does. `folder` (absolute) asks about that folder instead

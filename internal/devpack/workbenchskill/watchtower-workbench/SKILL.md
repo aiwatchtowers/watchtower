@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, whenever you start work on a target or a group, whenever you need the owner's answer, decision, check or review, and when you finish a session. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v11
+x-watchtower-pack: v12
 ---
 
 # Watchtower Workbench
@@ -140,4 +140,5 @@ Code identifiers, file paths, commands, issue keys and plan references (`docs/pl
 - Never mark a target `done` that is not done, and never resolve a comment you did not address.
 - Use the ids from the brief or from `workbench_board`; never invent one.
 - Never set the status of a target that has sub-targets. Watchtower derives it from the children every time one of them changes: all closed with at least one `done` → `done`; all `dismissed` → `dismissed`; every open child `blocked` → `blocked`; any child `in_progress`, `in_review` or `done` → `in_progress`; otherwise `todo`. Set the status of the sub-targets, and the parents follow up the whole tree.
+- When the brief shows **Board columns**, they are the owner's columns inside the statuses: move a card with `update_target` `column` when a column's description fits (it sets the status too). A status the brief marks **Turned off** is never set — the brief says what to do instead, and this overrides any methodology preset.
 - If a tool answers `workbench N no longer exists`, the workbench was deleted in Watchtower: stop using these tools and tell the owner.

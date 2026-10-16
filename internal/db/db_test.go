@@ -196,7 +196,7 @@ func TestAllTablesExist(t *testing.T) {
 		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
 		"chat_artifact_comments",
 		"projects", "project_sources", "project_comments", "project_target_images",
-		"terminal_sessions", "target_status_history", "owner_asks",
+		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
 		"review_rounds", "review_comments", "review_viewed", "review_checks",
 		"review_notes", "review_overviews", "review_reverts", "review_lessons",

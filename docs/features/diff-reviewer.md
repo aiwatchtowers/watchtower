@@ -154,7 +154,7 @@ re-marking an item replaces its earlier intent draft.
 
 ## What Plan 3 ships (agent tools, AI overview, Undo, Find repeats)
 
-**Tables (migration 00125 `review_agent_ai`; 00124 is Plan 2's `review_checks`, 00123
+**Tables (migration 00126 `review_agent_ai`, renumbered from 00125 when main took it for board #267 and agent analytics; 00124 is Plan 2's `review_checks`, 00123
 `workbench_methodology`).** `review_notes` (per workbench and session: `kind` `note` —
 path, lines, quote, text — or `chapter` — title in `text`, `paths_json`, `core`, `why` —,
 `tree_sha` of the snapshot they were checked against, `ord`); `review_overviews` (the
@@ -235,7 +235,7 @@ the AI's status as `aiStatus`. The model's wording never reaches the key, so a m
 Not done / Partly done draft it leaves) survives a new overview that words the item
 differently; an overview cached before `index` existed decodes it as 0 and adds no status.
 
-**The agent's tools (DEV-06: eighteen workbench tools; skill pack v11).**
+**The agent's tools (DEV-06: eighteen workbench tools; skill pack v12).**
 - `annotate_changes` (`internal/tools/workbench_review_annotate.go`): `notes` (≤ 40: path,
   `start_line`, `end_line`, a 1–800 rune note — why, not what), `chapters` (≤ 20: title ≤ 120
   runes, 1–200 paths, `core`, `why` ≤ 400 runes) and a `reason`. It needs the calling
