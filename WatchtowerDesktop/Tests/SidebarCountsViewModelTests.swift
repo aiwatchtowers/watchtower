@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import os
 import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
@@ -235,5 +236,65 @@ final class SidebarCountsViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.activeTaskCount, 1)
         XCTAssertEqual(vm.overdueTaskCount, 1)
+    }
+
+    // MARK: - Observation restart (board #526)
+
+    /// One read error used to end the observation for good, freezing every
+    /// badge until a relaunch. Now it starts again after the backoff pause
+    /// and reloads the counts, so a change made meanwhile shows.
+    func testAFailedObservationStartsAgainAndReloadsTheCounts() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let starts = OSAllocatedUnfairLock(initialState: 0)
+        let vm = SidebarCountsViewModel(
+            dbPool: manager.dbPool,
+            changes: { _ in
+                let start = starts.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+                return AsyncThrowingStream { continuation in
+                    // The first start fails at once; the restart delivers
+                    // its start value and stays open.
+                    if start == 1 {
+                        continuation.finish(throwing: CocoaError(.fileReadUnknown))
+                    } else {
+                        continuation.yield()
+                    }
+                }
+            },
+            backoff: RestartBackoff(first: .milliseconds(10))
+        )
+        await vm.loadInitial()
+        XCTAssertEqual(vm.catchUpTotalCount, 0)
+        try await manager.dbPool.write { try Self.insertRecap($0, status: "ready") }
+
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.catchUpTotalCount == 0 || starts.withLock({ $0 }) < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(vm.catchUpTotalCount, 1, "the restart's first value reloads the counts")
+        XCTAssertEqual(starts.withLock { $0 }, 2, "observing again after the pause, and only once")
+    }
+
+    /// The live observation follows this process's writes, one made right
+    /// after the start included (it may land in the start's own value).
+    func testTheTableObservationRefreshesOnAWrite() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await manager.dbPool.write { try Self.insertRecap($0, status: "ready") }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.catchUpTotalCount == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.catchUpTotalCount, 1)
     }
 }

@@ -28,9 +28,10 @@ final class AppStateTests: XCTestCase {
         }
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
+        // An onboarding finish builds the sidebar counts (board #526).
+        await AppState.stopIsolatedSidebarCounts()
         TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
     }
 
     // MARK: - wireMeetingRecorderLoaders
@@ -277,6 +278,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(SidebarDestination.inbox.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
+        await appState.stopSidebarCounts()?.value
     }
 
     func testAccountReloadRefreshesConnectedSources() async throws {
@@ -1702,5 +1704,6 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertTrue(appState.featureVisibility.connectedSources.jira)
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        await appState.stopSidebarCounts()?.value
     }
 }

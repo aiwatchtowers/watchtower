@@ -1315,8 +1315,8 @@ final class AppState {
         }
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
-        if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
-            Task { await initSidebarCounts(dbPool: pool) }
+        if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
+            sidebarCountsSetup = Task { await initSidebarCounts(dbPool: pool) }
         }
         if let pool = databaseManager?.dbPool {
             initAutomations(dbPool: pool)
@@ -1376,10 +1376,14 @@ final class AppState {
         )
     }
 
-    /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
+    /// Builds the sidebar counts view model, pre-loads counts, and starts
+    /// observing — unless cancelled meanwhile (`sidebarCountsSetup`).
     private func initSidebarCounts(dbPool: DatabasePool) async {
+        defer { sidebarCountsSetup = nil }
+        guard !Task.isCancelled else { return }
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
         await countsVM.loadInitial()
+        guard !Task.isCancelled else { return }
         countsVM.startObserving()
         sidebarCountsViewModel = countsVM
     }
@@ -2006,6 +2010,9 @@ final class AppState {
     /// The refresh `completeOnboarding()` kicked off — held so tests can
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+    /// The sidebar counts' build `completeOnboarding()` kicked off — held so
+    /// tests can await or cancel it before their database goes.
+    @ObservationIgnored private(set) var sidebarCountsSetup: Task<Void, Never>?
 
     /// A Slack/Google/Jira account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.
