@@ -177,6 +177,16 @@ final class WorkbenchBoardViewModel {
     /// shows too.
     var onPollTick: (() -> Void)?
 
+    /// The owner's new-target writer (board #411): Go's `workbench target
+    /// add` (`WorkbenchCLI.addTarget`), the writer the phone's create uses,
+    /// so the creation is recorded as the owner's (PROJ-06) and the parent
+    /// check and rollup are Go's. Set by the view; nil (no CLI) refuses.
+    var addTarget: ((_ title: String, _ intent: String, _ priority: String, _ parentID: Int64?) async throws -> Int64)?
+
+    /// The open New Task sheet, if any: its parent (nil = the top level).
+    var newTargetRequest: WorkbenchNewTargetRequest?
+    private(set) var isCreatingTarget = false
+
     private let dbPool: DatabasePool
     private let preferences: WorkbenchBoardPreferences
     private var fingerprint = ""
@@ -540,6 +550,76 @@ final class WorkbenchBoardViewModel {
         let moved = write("move the target", target: id, alsoTouched: { rolledUp }, body)
         if moved, let parentID { collapsed.remove(parentID) }
         return moved
+    }
+
+    // MARK: - New target
+
+    /// The header's New Task opens under the current scope (the board root
+    /// outside one); a card's New Sub-task under that card.
+    func beginNewTarget(under parentID: Int? = nil) {
+        newTargetRequest = WorkbenchNewTargetRequest(parentID: parentID ?? scopeNode?.target.id)
+    }
+
+    /// Creates a target through `addTarget`, then reports it and every parent
+    /// the rollup moved (PROJ-05) as the owner's write, expands the parent and
+    /// opens the new target.
+    /// - Returns: whether the target was created (a refusal or failure sets
+    ///   `errorMessage` and keeps the sheet's text).
+    @discardableResult
+    func createTarget(title rawTitle: String, intent rawIntent: String, priority: String, parentID: Int?) async -> Bool {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, !isCreatingTarget else { return false }
+        guard title.unicodeScalars.count <= WorkbenchNewTargetRequest.titleLimit else {
+            errorMessage = "The title is longer than \(WorkbenchNewTargetRequest.titleLimit) characters."
+            return false
+        }
+        guard WorkbenchBoardCard.editablePriorities.contains(priority) else { return false }
+        guard let addTarget else {
+            errorMessage = "Could not create the target: the watchtower CLI is not available."
+            return false
+        }
+        isCreatingTarget = true
+        defer { isCreatingTarget = false }
+        let parent = parentID.map(Int64.init)
+        let before = await chainStatuses(parent)
+        let newID: Int64
+        do {
+            newID = try await addTarget(title, rawIntent.trimmingCharacters(in: .whitespacesAndNewlines), priority, parent)
+        } catch is DecodingError {
+            // The command exited 0, so the target may well exist: a retry
+            // could add it twice.
+            newTargetRequest = nil
+            load()
+            errorMessage = "Could not read the new target's id — check the board before adding it again."
+            return false
+        } catch {
+            errorMessage = "Could not create the target: \(error.localizedDescription)"
+            return false
+        }
+        errorMessage = nil
+        onOwnerWrite?(projectID, .target(newID))
+        // Only the new target's parent chain: an agent's change elsewhere on
+        // the board meanwhile is not the owner's.
+        let after = await chainStatuses(parent)
+        for id in after.keys.sorted() where before[id] != after[id] {
+            onOwnerWrite?(projectID, .target(id))
+        }
+        if let parentID { collapsed.remove(parentID) }
+        newTargetRequest = nil
+        load()
+        select(Int(newID))
+        return true
+    }
+
+    /// `parentID` and its ancestors' statuses (empty at the top level or on
+    /// a failed read): the chain the new child may roll up (PROJ-05).
+    private func chainStatuses(_ parentID: Int64?) async -> [Int64: String] {
+        guard let parentID else { return [:] }
+        return (try? await dbPool.read { db in
+            var statuses = try WorkbenchQueries.ancestorStatuses(db, of: parentID)
+            statuses[parentID] = try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [parentID])
+            return statuses
+        }) ?? [:]
     }
 
     func setPriority(_ priority: String) {
