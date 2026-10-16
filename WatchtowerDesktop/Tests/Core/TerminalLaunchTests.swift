@@ -166,6 +166,11 @@ final class TerminalLaunchTests: XCTestCase {
                        "Work on group #7 using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .legacy),
                        "Work on group #7 using the watchtower-project skill.")
+        // `integrate status`'s group_prompt looks for this prefix in the
+        // installed skill (Go `groupPromptMarker`, internal/devpack/workbench.go).
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            XCTAssertTrue(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary).hasPrefix("Work on group #"))
+        }
         XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, skillKnowsGroups: true, vocabulary: .current),
                        TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current))
         XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, skillKnowsGroups: true, vocabulary: .current),

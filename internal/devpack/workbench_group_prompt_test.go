@@ -22,20 +22,23 @@ func TestSkillKnowsGroupPrompt_ReadsTheContent(t *testing.T) {
 		return p
 	}
 	for v, want := range map[string]bool{"v1": false, "v2": false, "v3": false, "v4": true, "v5": true, "v6": true, "v7": true, "v8": true, "v9": true} {
-		assert.Equal(t, want, SkillKnowsGroupPrompt(filepath.Join("testdata", "watchtower-workbench-"+v+".md")), v)
+		assert.Equal(t, want, skillKnowsGroupPrompt(filepath.Join("testdata", "watchtower-workbench-"+v+".md")), v)
 	}
+	// The Swift twin: TerminalLaunch.workOnGroupPrompt starts with this
+	// (TerminalLaunchTests testPromptsNameTheFoldersSkill) — change both.
+	assert.Equal(t, "Work on group #", groupPromptMarker)
 	_, shipped := WorkbenchSkill()
-	assert.True(t, SkillKnowsGroupPrompt(write("shipped.md", string(shipped))), "the shipped core skill")
+	assert.True(t, skillKnowsGroupPrompt(write("shipped.md", string(shipped))), "the shipped core skill")
 
-	cut := strings.ReplaceAll(string(shipped), GroupPromptMarker, "Work on #")
-	assert.False(t, SkillKnowsGroupPrompt(write("cut.md", cut)), "an owner's copy without the group prompt")
+	cut := strings.ReplaceAll(string(shipped), groupPromptMarker, "Work on #")
+	assert.False(t, skillKnowsGroupPrompt(write("cut.md", cut)), "an owner's copy without the group prompt")
 	v3, err := os.ReadFile(filepath.Join("testdata", "watchtower-workbench-v3.md"))
 	require.NoError(t, err)
 	added := string(v3) + "\nThe first prompt `Work on group #<id>` hands you a group: work its leaves.\n"
-	assert.True(t, SkillKnowsGroupPrompt(write("added.md", added)), "an owner's v3 copy that added group rules")
+	assert.True(t, skillKnowsGroupPrompt(write("added.md", added)), "an owner's v3 copy that added group rules")
 
-	assert.False(t, SkillKnowsGroupPrompt(filepath.Join(dir, "missing.md")))
-	assert.False(t, SkillKnowsGroupPrompt(dir), "a directory is no skill")
+	assert.False(t, skillKnowsGroupPrompt(filepath.Join(dir, "missing.md")))
+	assert.False(t, skillKnowsGroupPrompt(dir), "a directory is no skill")
 }
 
 // The Claude Code part reports the skill the session reads: the current one,
@@ -79,6 +82,15 @@ func TestStatusWorkbench_GroupPromptFollowsTheSkillTheSessionReads(t *testing.T)
 		st, err = StatusWorkbench(ctx, legacyOpts(folder, f))
 		require.NoError(t, err)
 		assert.True(t, st.GroupPrompt, "an owner's old copy that names the group prompt")
+
+		// Once the current skill is in, it is what the session reads, even
+		// beside an old copy that names the prompt.
+		_, shipped := WorkbenchSkill()
+		writeTestFile(t, workbenchSkillFile(folder), strings.ReplaceAll(string(shipped), groupPromptMarker, "Work on #"))
+		st, err = StatusWorkbench(ctx, legacyOpts(folder, f))
+		require.NoError(t, err)
+		require.NotEqual(t, StateMissing, st.Skill.State)
+		assert.False(t, st.GroupPrompt, "the current copy without the group prompt wins over the old one")
 	})
 }
 

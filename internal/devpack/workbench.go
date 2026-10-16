@@ -151,7 +151,7 @@ type WorkbenchStatus struct {
 
 	// GroupPrompt: the skill a Claude Code session here reads — the
 	// current one, else the old one while it is all there is — knows the
-	// group first prompt (SkillKnowsGroupPrompt).
+	// group first prompt (skillKnowsGroupPrompt).
 	GroupPrompt bool
 }
 
@@ -463,27 +463,29 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	}
 	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
-	ps.GroupPrompt = SkillKnowsGroupPrompt(ps.Skill.Path)
+	ps.GroupPrompt = skillKnowsGroupPrompt(ps.Skill.Path)
 	if ps.Skill.State == StateMissing && ps.LegacySkill.State != StateMissing {
-		ps.GroupPrompt = SkillKnowsGroupPrompt(ps.LegacySkill.Path)
+		ps.GroupPrompt = skillKnowsGroupPrompt(ps.LegacySkill.Path)
 	}
 	return ps, errors.Join(errs...)
 }
 
-// GroupPromptMarker is the wording the Desktop's group first prompt starts
-// with (Swift `TerminalLaunch.workOnGroupPrompt`): a skill that names it
-// has rules for it.
-const GroupPromptMarker = "Work on group #"
+// groupPromptMarker is the wording the Desktop's group first prompt starts
+// with — Swift twin `TerminalLaunch.workOnGroupPrompt`, both sides pinned by
+// a test (TestSkillKnowsGroupPrompt_ReadsTheContent, TerminalLaunchTests
+// testPromptsNameTheFoldersSkill): a skill that names it has rules for it.
+const groupPromptMarker = "Work on group #"
 
-// SkillKnowsGroupPrompt reports whether the skill file at path names the
+// skillKnowsGroupPrompt reports whether the skill file at path names the
 // group first prompt, so the Desktop may send it (board #476). It checks the
 // content, not the pack version: an owner-edited copy (PROJ-04) knows what it
 // says, and the rules' heading moved to the methodology preset in v10 while
-// the prompt stayed in the core skill. A missing or unreadable file knows
-// nothing; the Desktop then sends the target prompt.
-func SkillKnowsGroupPrompt(path string) bool {
+// the prompt stayed in the core skill. A missing file knows nothing (the
+// Desktop then sends the target prompt); an unreadable one has already
+// failed the status in statusSkill, which reports it.
+func skillKnowsGroupPrompt(path string) bool {
 	b, err := os.ReadFile(path)
-	return err == nil && bytes.Contains(b, []byte(GroupPromptMarker))
+	return err == nil && bytes.Contains(b, []byte(groupPromptMarker))
 }
 
 // statusHooks fills ps's hook fields; a malformed settings file is one

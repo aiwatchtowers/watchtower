@@ -468,7 +468,7 @@ type workbenchStatusJSON struct {
 	// Re-run Setup adds it to a folder set up before it.
 	CleanupPermission bool `json:"cleanup_permission"`
 	// GroupPrompt: the skill a Claude Code session here reads names the
-	// group first prompt (devpack.SkillKnowsGroupPrompt), so Work on It on
+	// group first prompt (checked by content in devpack), so Work on It on
 	// a group may send it (board #476). Additive.
 	GroupPrompt bool `json:"group_prompt"`
 	// Codex is the codex part (spec §4.5). hooks_trusted is null when codex

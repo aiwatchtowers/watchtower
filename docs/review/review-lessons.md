@@ -1710,3 +1710,13 @@ Entry format:
 - weak-dimension: 6. The two widening/consent paths (the form's `validate --against` and the assistant's `ConfirmedRecipe`) were each reviewed per task, but nobody compared them until the final panel.
 - rule-gap (candidate, dim 6): *when a change adds a second consent path for the same act (a form sheet and an assistant card both confirming a recipe), both compute "what's new" from one shared baseline helper, and a test runs the same unconfirmed hand edit through both and asserts that they agree.*
 - outcome: TBD
+
+## 2026-10-16 — fix/476-group-prompt-skill (board #476: `integrate status` reports per agent whether the skill the session reads names "Work on group #" (`group_prompt`, content check, not version); Desktop `TerminalLaunch.workOnPrompt` sends the group prompt only then, unknown status defaults to true; 16 files; panel: prosecutor + codex (no findings, medium-effort retry) + 3 specialists, all lanes up; judge verified against 1a6d2ad74 by reading plus the lane run logs (go/race/lint/swift green); judge synthesis, round 1) — verdict: approve
+
+- contested: the default when the status is unknown (prosecutor F1, silent MEDIUM 2). Two lanes wanted "false for groups" so that phone starts on old skills avoid the bug. It was held at `true`, because v10's core "Working a target" no longer routes a group, so a target prompt to the CURRENT skill on a group is not harmless either, and `true` equals main. **When a capability flag picks between two prompts, weigh the wrong-default cost against the majority install, not only against the bug being fixed.** [6]
+- contested: the session's own worktree (prosecutor F2). The prompt is decided from the main folder's status, but a fresh worktree gets the shipped skill installed, so a narrow regression vs main. Held as minor: it is an instance of the existing class where `vocabulary` is also taken from the main folder. [6/8]
+- false-positive: silent MEDIUM 3 ("the downgrade is invisible") was framed as a silent failure, but no error is swallowed; the target prompt is a supported path. Re-filed as a UX question for the owner. [9]
+- miss: codex returned no findings at medium effort (the xhigh run timed out). The worktree-placement interaction was found only by the prosecutor. [6]
+- weak-dimension: 7. Two mutation-surviving gaps: the current-plus-legacy precedence, and the agent passed to the VM. Plus a Go↔Swift marker string tied only by a comment, flagged by 3 lanes.
+- rule-gap (candidate, dual-path): *a Go-side string matcher that mirrors a Swift-emitted literal (a marker, a prompt prefix) is pinned by a test on both sides against the same literal; a comment-only tie is the tell.*
+- outcome: TBD
