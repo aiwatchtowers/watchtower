@@ -387,9 +387,13 @@ if (res.exit_code !== 0) {
 `save_automation` makes a proposal card; it is never applied on its own, and
 the owner's Approve is the only way it runs. The card shows the trigger, the
 permissions (what an edit newly allows is highlighted), the outputs, the
-budget, your dry-run summary and, for an edit, the diff. Approving writes the
-file and confirms exactly the text the card showed. The recipe is saved
-DISABLED: the owner enables it in the Automations tab when ready. An edit that
-changes the permissions pauses any auto grants; the owner turns them back on
-if they want them. Tell the owner these steps in plain words, and do not claim
-the automation is running.
+budget, what happens to missed runs, the concurrency, your dry-run summary,
+the whole script for a new recipe and the diff for an edit. Approving writes
+the file and confirms exactly the text the card showed. A NEW recipe is saved
+disabled: the owner enables it in the Automations tab when ready. An EDIT
+keeps the automation's on/off switch: if it was enabled, the new version runs
+on its trigger as soon as the owner approves. Any confirmed change (script,
+trigger, budget, permissions or any other reviewed field) pauses the
+automation's auto grants; the owner turns them back on if they want them.
+Tell the owner these steps in plain words, and never claim a new automation is
+running or an enabled one is off.

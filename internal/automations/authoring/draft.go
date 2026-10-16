@@ -130,8 +130,9 @@ func draftSchema() *jsonschema.Schema {
 	return s
 }
 
-// draft runs evaluate and, on the editor surface, caches its result for the
-// Desktop's Draft panel (draftcache.go).
+// draft runs evaluate and, on the editor surface, caches its result — or its
+// error, so an older draft never stays the newest — for the Desktop's Draft
+// panel (draftcache.go).
 func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if d.Enabled == nil || !d.Enabled() {
 		return nil, &tools.ValidationError{Msg: msgFeatureOff}
@@ -141,10 +142,10 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
 	res, err := evaluate(ctx, d, a)
+	d.cacheDraft(call.Binding, a.RecipeText, res, err)
 	if err != nil {
 		return nil, err
 	}
-	d.cacheDraft(call.Binding, a.RecipeText, res)
 	return res, nil
 }
 

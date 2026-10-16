@@ -724,7 +724,7 @@ func TestLatestAppliedAutomationSave_Filters(t *testing.T) {
 		}
 	}
 	args := func(path, scope, hash, prev string) string {
-		return `{"path":"` + path + `","scope":"` + scope + `","approval_hash":"` + hash + `","previous_recipe_text":"` + prev + `"}`
+		return `{"path":"` + path + `","scope":"` + scope + `","approval_hash":"` + hash + `","recipe_text":"` + prev + `"}`
 	}
 	insert("save_automation", "applied", args("/p/a.md", "personal", "h1", "one"), "2026-10-14T08:00:00Z")
 	insert("save_automation", "applied", args("/p/a.md", "personal", "h2", "two"), "2026-10-15T08:00:00Z")
@@ -743,7 +743,7 @@ func TestLatestAppliedAutomationSave_Filters(t *testing.T) {
 		if err != nil || got == nil {
 			t.Fatalf("hash %q: got %v, %v", tc.hash, got, err)
 		}
-		if got.PreviousRecipeText != tc.wantPrev || got.AppliedAt != tc.wantAt {
+		if got.RecipeText != tc.wantPrev || got.AppliedAt != tc.wantAt {
 			t.Errorf("hash %q: got %+v, want %s at %s", tc.hash, got, tc.wantPrev, tc.wantAt)
 		}
 	}

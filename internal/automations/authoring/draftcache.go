@@ -30,10 +30,13 @@ const (
 )
 
 // DraftCacheEntry is one line of the cache, decoded by the Desktop's
-// AutomationDraftPanelModel.
+// AutomationDraftPanelModel. A draft whose evaluation failed is cached too —
+// Result null, Error its message — so the panel never shows an older draft
+// as the current one.
 type DraftCacheEntry struct {
 	RecipeText string       `json:"recipe_text"`
 	Result     *DraftResult `json:"result"`
+	Error      string       `json:"error,omitempty"`
 	At         string       `json:"at"`
 }
 
@@ -42,9 +45,10 @@ func DraftCachePath(workspaceDir string, conversationID int64) string {
 	return filepath.Join(workspaceDir, DraftCacheDir, strconv.FormatInt(conversationID, 10)+".jsonl")
 }
 
-// cacheDraft records res for the editor chat that drafted it. Only the
-// automation_editor surface with a known conversation writes; best effort.
-func (d Deps) cacheDraft(b tools.Binding, text string, res *DraftResult) {
+// cacheDraft records res — or, when the evaluation failed, evalErr — for
+// the editor chat that drafted text. Only the automation_editor surface with
+// a known conversation writes; best effort.
+func (d Deps) cacheDraft(b tools.Binding, text string, res *DraftResult, evalErr error) {
 	if b.Surface != tools.AutomationEditorSurface || b.ConversationID <= 0 || d.WorkspaceDir == "" {
 		return
 	}
@@ -53,6 +57,9 @@ func (d Deps) cacheDraft(b tools.Binding, text string, res *DraftResult) {
 		now = d.Clock.Now()
 	}
 	entry := DraftCacheEntry{RecipeText: text, Result: res, At: now.UTC().Format(time.RFC3339)}
+	if evalErr != nil {
+		entry.Result, entry.Error = nil, evalErr.Error()
+	}
 	if err := appendDraftCache(DraftCachePath(d.WorkspaceDir, b.ConversationID), entry); err != nil {
 		log.Printf("draft_automation: caching the draft for conversation %d: %v", b.ConversationID, err)
 	}

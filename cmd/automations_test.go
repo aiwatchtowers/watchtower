@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,11 +18,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/tools"
 )
 
 // autoCLI is a temp workspace for the automations CLI tests: a fresh
@@ -779,7 +782,7 @@ const (
 
 func TestAutomationsCLI_ValidateAgainstComputesWidening(t *testing.T) {
 	c := newAutoCLI(t)
-	a := c.indexRecipe(t, "pay", autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000))
+	a := c.confirmedRecipe(t, "pay", autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000))
 	src := writeRecipe(t, t.TempDir(), "pay", autoCLIRecipeWith(weekdayCron, "jira:read@*", 1000))
 
 	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
@@ -800,11 +803,40 @@ func TestAutomationsCLI_ValidateAgainstComputesWidening(t *testing.T) {
 func TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray(t *testing.T) {
 	c := newAutoCLI(t)
 	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
-	a := c.indexRecipe(t, "pay", text)
+	a := c.confirmedRecipe(t, "pay", text)
 	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "tokens: 1000", "tokens: 2000", 1))
 	out, err := runAutomations(t, "validate", src, "--against", idArg(a.ID), "--json")
 	require.NoError(t, err, out)
 	assert.Contains(t, out, `"widening": []`)
+}
+
+// --against widens from the confirmed permissions, not the current ones: a
+// hand edit adds a permission, the owner then renames the recipe in the form,
+// and the widening still lists the hand-added permission (J3).
+func TestAutomationsCLI_ValidateAgainstWidensFromConfirmedPermissions(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "pay", autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000))
+	handEdited := strings.Replace(autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000),
+		"  - jira:read@PAY\noutputs: [report]", "  - jira:read@PAY\n  - slack:write@acme\noutputs: [report, slack]", 1)
+	require.NotEqual(t, autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000), handEdited)
+	c.runOnce(t, a, a.ApprovalHash) // the confirmed text is known from the run snapshot
+	saveText(t, a, handEdited)
+
+	renamed := writeRecipe(t, t.TempDir(), "pay", strings.Replace(handEdited, "name: CLI test", "name: Renamed", 1))
+	v := runAutomationsJSON(t, "validate", renamed, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, []any{"slack:write@acme"}, v["widening"], "the hand-added permission is still new since the confirmation")
+}
+
+// --against an automation never confirmed (or with no known confirmed text)
+// widens from nothing: every permission.
+func TestAutomationsCLI_ValidateAgainstUnconfirmedWidensEverything(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.indexRecipe(t, "pay", text)
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "tokens: 1000", "tokens: 2000", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{"jira:read@PAY"}, v["widening"])
 }
 
 func TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad(t *testing.T) {
@@ -836,6 +868,34 @@ func TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad(t *testing.T) {
 	fresh := filepath.Join(c.personal, "fresh.md")
 	runAutomationsJSON(t, "save", "--file", src, "--path", fresh, "--expect-content-hash", "")
 	assert.FileExists(t, fresh, `"" saves a new file`)
+}
+
+// --expect-content-hash refuses, before anything is written, a symlink or a
+// FIFO at the target — whatever hash was expected — and writes nothing
+// through it.
+func TestAutomationsCLI_SaveExpectContentHashRefusesSymlinkOrSpecialFile(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeText(`return 1`)
+	src := writeRecipe(t, t.TempDir(), "digest", text)
+	outside := writeRecipe(t, t.TempDir(), "outside", text)
+	plant := map[string]func(path string) error{
+		"symlink": func(path string) error { return os.Symlink(outside, path) },
+		"fifo":    func(path string) error { return syscall.Mkfifo(path, 0o644) },
+	}
+	for name, put := range plant {
+		path := filepath.Join(c.personal, name+".md")
+		require.NoError(t, put(path), name)
+		for _, want := range []string{"", automations.ContentHash([]byte(text))} {
+			_, err := runAutomations(t, "save", "--file", src, "--path", path, "--expect-content-hash", want)
+			require.Error(t, err, "%s with expected hash %q", name, want)
+			info, lerr := os.Lstat(path)
+			require.NoError(t, lerr)
+			assert.False(t, info.Mode().IsRegular(), "%s: the planted entry stays", name)
+		}
+	}
+	data, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	assert.Equal(t, text, string(data), "nothing written through the symlink")
 }
 
 // showChanges runs show --json and returns its Changed-block keys.
@@ -893,34 +953,52 @@ func TestAutomationsCLI_ShowChangesFromConfirmedSnapshot(t *testing.T) {
 	assert.Equal(t, row.UpdatedAt.UTC().Format(time.RFC3339), at)
 }
 
-// insertAppliedSave records an applied save_automation the way Task 2's tool
-// pins its args.
-func (c *autoCLI) insertAppliedSave(t *testing.T, a *db.Automation, approvalHash, previous, appliedAt string) {
+// assistantSave proposes, approves and applies a real save_automation of
+// text at slug — the way the owner's Approve on the card does.
+func (c *autoCLI) assistantSave(t *testing.T, slug, text string) {
 	t.Helper()
-	args, err := json.Marshal(map[string]any{"approval_hash": approvalHash, "previous_recipe_text": previous,
-		"path": a.Path, "scope": "personal", "is_new": false})
+	cfg, err := loadAutomationsConfig()
 	require.NoError(t, err)
-	_, err = c.d.Exec(`INSERT INTO agent_actions (tool, args_json, status, applied_at) VALUES ('save_automation', ?, 'applied', ?)`,
-		string(args), appliedAt)
+	deps := automationAuthoringDeps(cfg, c.d)
+	deps.Enabled = func() bool { return true }
+	reg := tools.New(c.d)
+	require.NoError(t, reg.Register(authoring.NewSaveAutomation(deps)))
+	raw, err := json.Marshal(map[string]any{"recipe_text": text, "slug": slug, "reason": "the owner asked"})
 	require.NoError(t, err)
+	rc, err := reg.Propose(t.Context(), "save_automation", raw, tools.Binding{Surface: "main"})
+	require.NoError(t, err)
+	ok, err := reg.Approve(t.Context(), rc.ActionID, nil)
+	require.NoError(t, err)
+	require.True(t, ok)
+	row, err := reg.Apply(t.Context(), rc.ActionID)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
 }
 
-func TestAutomationsCLI_ShowChangesFromSaveAutomationPreviousText(t *testing.T) {
+// An assistant save confirms its own recipe_text; a hand edit afterwards
+// (no run in between) diffs against that text (J2).
+func TestAutomationsCLI_ShowChangesFromSaveAutomationText(t *testing.T) {
 	c := newAutoCLI(t)
-	old := autoCLIRecipeWith(weekdayCron, "llm:light", 40000)
-	a := c.confirmedRecipe(t, "digest", old)
-	next := strings.Replace(autoCLIRecipeWith(weekdayCron, "llm:light", 40000), "return 1", "return 2", 1)
-	saveText(t, a, next)
-	row, err := c.d.GetAutomation(a.ID)
-	require.NoError(t, err)
-	c.insertAppliedSave(t, a, "0000", "stale text", "2026-10-14T08:00:00Z") // older, another hash
-	c.insertAppliedSave(t, a, row.ApprovalHash, old, "2026-10-15T08:00:00Z")
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeWith(weekdayCron, "llm:light", 40000))
+	saved := strings.Replace(autoCLIRecipeWith(weekdayCron, "llm:light", 40000), "return 1", "return 2", 1)
+	c.assistantSave(t, "digest", saved)
 
-	changes, known, by, at := showChanges(t, a.ID)
-	assert.Equal(t, []any{change("script", "", "")}, changes)
+	changes, known, by, _ := showChanges(t, a.ID)
+	assert.Equal(t, []any{}, changes, "the save confirmed its own text")
 	assert.True(t, known)
 	assert.Equal(t, "assistant", by)
-	assert.Equal(t, "2026-10-15T08:00:00Z", at)
+
+	saveText(t, a, strings.Replace(autoCLIRecipeWith(weekdayCron, "llm:light", 20000), "return 1", "return 2", 1))
+	row, err := c.d.GetAutomation(a.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, row.ConfirmedHash, row.ApprovalHash)
+
+	changes, known, by, at := showChanges(t, a.ID)
+	assert.Equal(t, []any{change("budget_tokens", "40000", "20000")}, changes,
+		"diffed against the saved text, not the text the save replaced")
+	assert.True(t, known)
+	assert.Empty(t, by, "a hand edit has no recorded author")
+	assert.Equal(t, row.UpdatedAt.UTC().Format(time.RFC3339), at)
 }
 
 func TestAutomationsCLI_ShowChangesUnknownWithoutSource(t *testing.T) {

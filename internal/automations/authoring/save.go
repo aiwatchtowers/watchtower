@@ -39,8 +39,9 @@ type saveArgs struct {
 
 // savePinned is what Normalize stores in agent_actions.args_json: the call's
 // args plus everything the owner's card shows and Execute checks. The keys
-// path, scope, approval_hash and previous_recipe_text are read back by
-// `automations show --json` (db.LatestAppliedAutomationSave).
+// path, scope, approval_hash and recipe_text are read back by
+// db.LatestAppliedAutomationSave (`automations show --json`'s author line and
+// automations.ConfirmedRecipe's save candidate).
 type savePinned struct {
 	saveArgs
 	Scope               string          `json:"scope"`
@@ -78,9 +79,11 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 	return &tools.Tool{
 		Name: "save_automation",
 		Description: "Propose saving an automation recipe you drafted with draft_automation. The owner reviews the " +
-			"trigger, permissions, outputs, budget and the change, and approves or rejects it; nothing is written " +
-			"until then. On approval the recipe file is written, indexed and confirmed (it stays disabled until " +
-			"the owner enables it). Pass the exact text you drafted and its dry run's summary.",
+			"trigger, permissions, outputs, budget, the script or the change, and approves or rejects it; nothing is " +
+			"written until then. On approval the recipe file is written, indexed and confirmed. A new recipe is saved " +
+			"disabled until the owner enables it; an edit keeps the automation's on/off switch, so an enabled " +
+			"automation runs the new version on its trigger right after approval. Any confirmed change pauses the " +
+			"automation's auto grants. Pass the exact text you drafted and its dry run's summary.",
 		InputSchema: saveSchema(),
 		Access:      tools.AccessWrite,
 		AlwaysAsk:   true,

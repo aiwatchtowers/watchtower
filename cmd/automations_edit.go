@@ -87,8 +87,11 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 }
 
 // validateScope is the scope validate parses in and the permissions its
-// widening starts from: with --against, that automation's scope and current
-// permissions; otherwise --workbench's scope (personal by default) and none.
+// widening starts from: with --against, that automation's scope and the
+// permissions the owner last confirmed for it (automations.ConfirmedRecipe —
+// never an unconfirmed hand edit's; none known → nil, so every permission
+// widens, like draft_automation/save_automation); otherwise --workbench's
+// scope (personal by default) and none.
 func validateScope(database *db.DB) (automations.Scope, []string, error) {
 	if autoFlags.Against == 0 {
 		scope, _, err := workbenchScope(database, autoFlags.Workbench)
@@ -104,11 +107,18 @@ func validateScope(database *db.DB) (automations.Scope, []string, error) {
 	if err != nil {
 		return automations.Scope{}, nil, err
 	}
-	perms, err := decodeAutomationList("permissions_json", a.PermissionsJSON)
+	confirmed, err := automations.ConfirmedRecipe(database, a)
 	if err != nil {
-		return automations.Scope{}, nil, fmt.Errorf("automation %d: %w", a.ID, err)
+		return automations.Scope{}, nil, fmt.Errorf("automation %d: reading its confirmed text: %w", a.ID, err)
 	}
-	return automationScopeOf(a), perms, nil
+	if confirmed == nil {
+		return automationScopeOf(a), nil, nil
+	}
+	m, err := automations.ParseManifest(confirmed.Permissions, confirmed.Outputs, confirmed.Scope)
+	if err != nil { // ParseRecipe validated the manifest already
+		return automations.Scope{}, nil, fmt.Errorf("automation %d confirmed manifest: %w", a.ID, err)
+	}
+	return automationScopeOf(a), m.Normalized(), nil
 }
 
 // rescanFolderJSON is one folder of `rescan --json`.

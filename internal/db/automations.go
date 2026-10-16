@@ -547,10 +547,11 @@ func (db *DB) AutomationRunSnapshotAt(automationID int64, recipeHash string) (st
 }
 
 // AutomationSave is what the confirmation sheet reads from an applied
-// save_automation proposal: the recipe text it replaced and when it applied.
+// save_automation proposal: the recipe text it saved (and confirmed) and when
+// it applied.
 type AutomationSave struct {
-	PreviousRecipeText string
-	AppliedAt          string
+	RecipeText string
+	AppliedAt  string
 }
 
 // LatestAppliedAutomationSave is the newest applied save_automation whose
@@ -558,13 +559,13 @@ type AutomationSave struct {
 // approvalHash is not "", pinned that approval hash; nil when there is none.
 func (db *DB) LatestAppliedAutomationSave(path, scope, approvalHash string) (*AutomationSave, error) {
 	var s AutomationSave
-	err := db.QueryRow(`SELECT COALESCE(json_extract(args_json, '$.previous_recipe_text'), ''), applied_at
+	err := db.QueryRow(`SELECT COALESCE(json_extract(args_json, '$.recipe_text'), ''), applied_at
 		FROM agent_actions
 		WHERE tool = 'save_automation' AND status = 'applied' AND json_valid(args_json)
 		  AND json_extract(args_json, '$.path') = ? AND json_extract(args_json, '$.scope') = ?
 		  AND (? = '' OR json_extract(args_json, '$.approval_hash') = ?)
 		ORDER BY applied_at DESC, id DESC LIMIT 1`, path, scope, approvalHash, approvalHash).
-		Scan(&s.PreviousRecipeText, &s.AppliedAt)
+		Scan(&s.RecipeText, &s.AppliedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

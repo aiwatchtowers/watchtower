@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"watchtower/internal/automations"
@@ -314,6 +315,94 @@ func TestSaveAutomation_RefusesHashDrift(t *testing.T) {
 	assertFailedWith(t, f.approveApply(t, id), msgRecipeTextDrifted)
 	if _, ok := f.readFile(t, "foo"); ok {
 		t.Error("Apply wrote the file under a stale approval hash")
+	}
+}
+
+// The pinned recipe_text swapped after propose (the pinned hash kept): the
+// text no longer hashes to what the owner reviewed — refused, nothing
+// written, the confirmed hash untouched.
+func TestSaveAutomation_RefusesRecipeTextDrift(t *testing.T) {
+	f := newSaveFixture(t)
+	before := f.existing(t, "foo", recipeText([]string{"llm:light"}, "", `return 1`))
+	id := f.propose(t, "foo", recipeText([]string{"llm:light"}, "", `return 2`))
+	swapped := recipeText([]string{"llm:light", "jira:read@*"}, "", `return 3`)
+	if _, err := f.d.Exec(`UPDATE agent_actions SET args_json = json_set(args_json, '$.recipe_text', ?) WHERE id = ?`,
+		swapped, id); err != nil {
+		t.Fatal(err)
+	}
+	assertFailedWith(t, f.approveApply(t, id), msgRecipeTextDrifted)
+	if got, _ := f.readFile(t, "foo"); got != before.RecipeText {
+		t.Errorf("file = %q; want it untouched", got)
+	}
+	if a := f.automation(t, "foo"); a.ConfirmedHash != before.ConfirmedHash {
+		t.Errorf("confirmed_hash = %q; want the old %q", a.ConfirmedHash, before.ConfirmedHash)
+	}
+}
+
+// Anything at the target that is not a regular file — a symlink or a FIFO —
+// is refused at propose (no row) and, when swapped in after propose, at
+// Execute (nothing written through it, nothing confirmed).
+func TestSaveAutomation_RefusesSymlinkOrSpecialFileAtTarget(t *testing.T) {
+	text := recipeText([]string{"llm:light"}, "", `return 1`)
+	plant := map[string]func(t *testing.T, path string){
+		"symlink": func(t *testing.T, path string) {
+			outside := filepath.Join(t.TempDir(), "outside.md")
+			if err := os.WriteFile(outside, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"fifo": func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, put := range plant {
+		t.Run(name+" at propose", func(t *testing.T) {
+			f := newSaveFixture(t)
+			if err := os.MkdirAll(automations.PersonalDir(f.ws), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			put(t, f.recipePath(t, "foo"))
+			_, err := f.proposeErr(map[string]any{"recipe_text": text, "slug": "foo", "reason": "r"})
+			var ve *tools.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("propose = %v; want a ValidationError", err)
+			}
+		})
+		t.Run(name+" after propose", func(t *testing.T) {
+			f := newSaveFixture(t)
+			id := f.propose(t, "foo", text)
+			if err := os.MkdirAll(automations.PersonalDir(f.ws), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := f.recipePath(t, "foo")
+			put(t, path)
+			assertFailedWith(t, f.approveApply(t, id), msgRecipeFileChanged)
+			if info, err := os.Lstat(path); err != nil || info.Mode().IsRegular() {
+				t.Errorf("target after Apply: %v, %v; want the planted entry kept", info, err)
+			}
+			if _, err := f.d.GetAutomationBySlug("personal", 0, "foo"); err == nil {
+				t.Error("an automation was indexed")
+			}
+		})
+	}
+}
+
+// An assistant save confirms its own text: after a hand edit (no run in
+// between), the next save widens from the saved text's permissions, not from
+// every permission and not from the text the save replaced (J2).
+func TestSaveAutomation_WideningAfterAssistantSaveAndHandEdit(t *testing.T) {
+	f := newSaveFixture(t)
+	f.existing(t, "foo", recipeText([]string{"llm:light"}, "", `return 1`))
+	f.approveApply(t, f.propose(t, "foo", recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 2`)))
+	f.unconfirmed(t, "foo", recipeText([]string{"llm:light", "jira:read@PAY"}, "", `return 3`))
+	p := f.pinned(t, f.propose(t, "foo", recipeText([]string{"llm:light", "jira:read@PAY", "jira:read@OPS"}, "", `return 4`)))
+	if !slices.Equal(p.Widening, []string{"jira:read@OPS"}) {
+		t.Errorf("widening = %v; want [jira:read@OPS] over the saved {llm:light, jira:read@PAY}", p.Widening)
 	}
 }
 

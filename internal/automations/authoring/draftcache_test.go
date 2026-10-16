@@ -150,3 +150,28 @@ func TestDraftCache_WriteFailureLeavesTheResultUnchanged(t *testing.T) {
 		t.Fatalf("result with a failed cache write %s; want %s", got, want)
 	}
 }
+
+// A draft whose evaluation fails is cached as an error entry, so the panel
+// never shows the older draft as the current one (J5).
+func TestDraftCache_EvaluationErrorIsCachedNewest(t *testing.T) {
+	f := newDraftFixture(t)
+	dir := t.TempDir()
+	f.callBound(t, dir, "not a recipe", editorBinding(9))
+
+	failing := recipeText([]string{"llm:light"}, "", `return 1`)
+	raw, err := json.Marshal(map[string]any{"recipe_text": failing, "workbench_id": -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.cacheTool(dir).Execute(context.Background(), f.d, tools.Call{Args: raw, Binding: editorBinding(9)}); err == nil {
+		t.Fatal("draft_automation with workbench_id -1 succeeded; want an error")
+	}
+	entries := readDraftCache(t, DraftCachePath(dir, 9))
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d; want 2", len(entries))
+	}
+	last := entries[1]
+	if last.RecipeText != failing || last.Result != nil || last.Error == "" {
+		t.Fatalf("newest entry = %+v; want the failing text, no result, its error", last)
+	}
+}
