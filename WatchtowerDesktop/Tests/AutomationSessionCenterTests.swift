@@ -103,6 +103,8 @@ private final class FakeStarter {
             ))
         }
         if let gate { await gate.wait() }
+        // As GRDB and the CLI runner do once the launch is cancelled.
+        try Task.checkCancellation()
         if let failure { throw LaunchFailure(errorDescription: failure) }
         live.insert(row.id)
         return row
@@ -336,6 +338,8 @@ final class AutomationSessionCenterTests: XCTestCase {
         starter.failure = "Codex was not found"
         go.failEnds(1)
         let center = makeCenter()
+        var disowned: [Int64] = []
+        center.onDisowned = { disowned += $0 }
 
         await center.tick()
         XCTAssertNotNil(center.lastError)
@@ -351,6 +355,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         XCTAssertTrue(runRows.isEmpty, "the refused row is no longer the run's")
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: r.workbench) }
         XCTAssertEqual(rows.count, 1, "the row itself stays")
+        XCTAssertEqual(disowned, rows.map(\.id), "the terminal center drops its marker too")
 
         // The run's next session() step gets a session of its own.
         starter.failure = nil
@@ -364,6 +369,68 @@ final class AutomationSessionCenterTests: XCTestCase {
         let freshRows = try await sessions(run: r.run)
         let fresh = try XCTUnwrap(freshRows.first)
         XCTAssertEqual(go.invocations.last, launched(next, fresh.id))
+    }
+
+    /// `stop()` cancels a launch in flight: that is not a failed launch.
+    /// Nothing is reported or disowned, and the next start picks the
+    /// request up again — here adopting the row the cancelled launch left.
+    func testStopDuringALaunchIsNotAFailure() async throws {
+        let r = try await request()
+        let gate = AsyncGate()
+        starter.gate = gate
+        let center = makeCenter()
+        var disowned: [Int64] = []
+        center.onDisowned = { disowned += $0 }
+
+        center.start()
+        await waitUntil { self.starter.calls.count == 1 }
+        center.stop()
+        gate.release()
+        await waitUntil { center.launching.isEmpty }
+
+        XCTAssertTrue(go.invocations.isEmpty, "nothing reported: \(go.invocations)")
+        XCTAssertTrue(disowned.isEmpty)
+        XCTAssertNil(center.lastError)
+        let left = try await sessions(run: r.run)
+        XCTAssertEqual(left.count, 1, "the row keeps its run marker")
+
+        starter.gate = nil
+        center.start()
+        await waitUntil { self.pacer.sleeps >= 1 && center.launching.isEmpty && !self.go.invocations.isEmpty }
+        center.stop()
+
+        XCTAssertEqual(starter.calls.count, 1, "adopted, not launched again")
+        XCTAssertEqual(go.invocations.filter { $0[1] == "session-launched" }, [launched(r.step, left[0].id)])
+        XCTAssertFalse(go.invocations.contains { $0.contains("launch_failed") })
+    }
+
+    /// A disowned row relaunched from SESSIONS runs without the run marker,
+    /// even from a copy of the row that still names the run.
+    func testDisownedRowLaunchesWithoutTheRunMarker() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt asc \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var processes: [FakeTerminalSession] = []
+        let terminals = TerminalCenter {
+            let process = FakeTerminalSession(pid: 0)
+            processes.append(process)
+            return process
+        }
+        terminals.shell = { "/bin/zsh" }
+        let r = try await request()
+        let row = try await pool.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: r.workbench, kind: .claude, title: "⚙ Review", folderPath: folder.path,
+                claudeSessionID: UUID().uuidString.lowercased(), automationRunID: r.run
+            ))
+        }
+        XCTAssertEqual(row.automationRunID, r.run, "the caller's copy still names the run")
+
+        terminals.dropAutomationRun(sessionIDs: [row.id])
+        terminals.start(row, fresh: true, prompt: "Review PR 7")
+
+        let env = try XCTUnwrap(processes.last?.launches.last?.environment)
+        XCTAssertFalse(env.contains { $0.hasPrefix("WATCHTOWER_AUTOMATION_RUN_ID=") }, "\(env)")
     }
 
     func testAttachRefusedLeavesSessionAlone() async throws {

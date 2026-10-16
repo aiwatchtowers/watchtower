@@ -18,6 +18,9 @@ private let sessionsLog = Logger(subsystem: Constants.bundleID, category: "autom
 ///   adopted instead of launching a second session.
 /// - A launch that throws is reported `launch_failed` with its message; the
 ///   row it may have left loses the run marker, so no later poll adopts it.
+///   A launch `stop()` cancelled is not a failure: nothing is reported, and
+///   the next `start()` picks the request up again (adopting the row the
+///   cancelled launch may have left, or launching one).
 /// - `attached: false` (the run was cancelled or expired meanwhile) leaves
 ///   the session as it is (§7.6).
 /// - A session whose process ends while its step waits, unfinished, is
@@ -35,6 +38,9 @@ final class AutomationSessionCenter {
     /// whose read went through.
     private(set) var lastError: String?
 
+    /// The rows a refused launch left, once their run marker is cleared
+    /// (`TerminalCenter.dropAutomationRun`).
+    @ObservationIgnored var onDisowned: ([Int64]) -> Void = { _ in }
     /// Logs a step whose args cannot be read; once per step (a seam).
     @ObservationIgnored var logUnreadable: (Int64) -> Void = { step in
         sessionsLog.error("session step \(step) has unreadable args, not launched")
@@ -83,7 +89,8 @@ final class AutomationSessionCenter {
         }
     }
 
-    /// Stops polling. A launch in flight still finishes and attaches.
+    /// Stops polling and cancels the launches in flight; a cancelled one is
+    /// left for the next `start()`.
     func stop() {
         loop?.cancel()
         loop = nil
@@ -139,6 +146,7 @@ final class AutomationSessionCenter {
                 do {
                     session = try await startSession(request)
                 } catch {
+                    if Self.isCancellation(error) { return }
                     failedLaunches[request.stepID] = error.localizedDescription
                     await disown(runID: runID)
                     await reportLaunchFailed(request, error.localizedDescription)
@@ -146,7 +154,7 @@ final class AutomationSessionCenter {
                 }
             }
         } catch {
-            fail("reading run \(request.runID)'s sessions", error)
+            if !Self.isCancellation(error) { fail("reading run \(request.runID)'s sessions", error) }
             return
         }
         do {
@@ -159,7 +167,7 @@ final class AutomationSessionCenter {
                 _ = try await cli.sessionEnded(step: request.stepID, status: .stopped, error: nil)
             }
         } catch {
-            fail("attaching session \(session.id) to step \(request.stepID)", error)
+            if !Self.isCancellation(error) { fail("attaching session \(session.id) to step \(request.stepID)", error) }
         }
     }
 
@@ -175,7 +183,8 @@ final class AutomationSessionCenter {
     /// The refused launch's row stays in SESSIONS but is no longer the run's.
     private func disown(runID: Int64) async {
         do {
-            try await dbPool.write { try AutomationQueries.disownUnattachedSessions($0, runID: runID) }
+            let ids = try await dbPool.write { try AutomationQueries.disownUnattachedSessions($0, runID: runID) }
+            if !ids.isEmpty { onDisowned(ids) }
         } catch {
             fail("releasing run \(runID)'s refused session", error)
         }
@@ -202,6 +211,12 @@ final class AutomationSessionCenter {
                 fail("reporting session \(step.sessionID) stopped", error)
             }
         }
+    }
+
+    /// `stop()` cancelled the work: GRDB throws `CancellationError`, and the
+    /// CLI runner kills its child, which surfaces as some other error.
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || Task.isCancelled
     }
 
     private func fail(_ what: String, _ error: Error) {

@@ -116,7 +116,7 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
             let refused = try session(db, projectID: p, runID: run)
             let others = try session(db, projectID: p, runID: other)
 
-            try AutomationQueries.disownUnattachedSessions(db, runID: run)
+            XCTAssertEqual(try AutomationQueries.disownUnattachedSessions(db, runID: run), [refused.id])
 
             let marker = { (id: Int64) in
                 try Row.fetchOne(db, sql: "SELECT automation_run_id FROM terminal_sessions WHERE id = ?",

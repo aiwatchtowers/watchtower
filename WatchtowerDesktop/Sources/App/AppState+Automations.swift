@@ -93,6 +93,7 @@ extension AppState {
             },
             isLive: { terminals.liveIDs.contains($0) }
         )
+        center.onDisowned = { terminals.dropAutomationRun(sessionIDs: $0) }
         terminals.onRowExit = { [weak center] id in
             Task { await center?.sessionExited(rowID: id) }
         }

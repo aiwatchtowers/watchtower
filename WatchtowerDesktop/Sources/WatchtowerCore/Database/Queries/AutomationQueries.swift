@@ -260,12 +260,20 @@ package enum AutomationQueries {
 
     /// Takes the run marker off run `runID`'s sessions that no step names —
     /// the row a refused launch left — so no later poll adopts one (Go
-    /// attaches only a session of the step's run). The rows stay.
-    package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws {
-        try db.execute(sql: """
-            UPDATE terminal_sessions SET automation_run_id = NULL WHERE automation_run_id = ?
-              AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = terminal_sessions.id)
+    /// attaches only a session of the step's run). The rows stay; returns
+    /// their ids.
+    @discardableResult
+    package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws -> [Int64] {
+        let ids = try Int64.fetchAll(db, sql: """
+            SELECT s.id FROM terminal_sessions s WHERE s.automation_run_id = ?
+              AND NOT EXISTS (SELECT 1 FROM automation_run_steps st WHERE st.session_id = s.id)
+            ORDER BY s.id
             """, arguments: [runID])
+        guard !ids.isEmpty else { return [] }
+        try db.execute(sql: """
+            UPDATE terminal_sessions SET automation_run_id = NULL WHERE id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
+            """, arguments: StatementArguments(ids))
+        return ids
     }
 
     /// The `session()` steps still waiting on a session attached to them,
