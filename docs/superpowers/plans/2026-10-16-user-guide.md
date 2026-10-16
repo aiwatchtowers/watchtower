@@ -73,36 +73,36 @@ Every `app-guide.md` section, and the task that dissolves it. A task that drops 
 
 | app-guide.md section | Task | Dropped (filled during execution) |
 |---|---|---|
-| First launch: setup | 2 | |
-| Home | 3 | |
-| Menu | 3 | |
-| Catch Up | 3 | |
-| Briefings | 3 | |
-| Day Plan | 3 | |
-| Inbox | 3 | |
-| Ideas | 3 | |
-| Voice Dictation | 5 | |
-| Calendar | 5 | |
-| Gmail | 5 | |
-| Targets (tasks) | 4 | |
-| Workbench | 9, 10 | |
-| Automations | 8 | |
-| AI Chat | 7 | |
-| Tracks | 4 | |
-| Project Map, Releases, Blockers, Workload (Jira) | 6 | |
-| Digests | 4 | |
-| People | 4 | |
-| Statistics | 4 | |
-| Search | 6 | |
-| Usage | 2 | |
-| Boards | 6 | |
-| MCP Server | 11 | |
-| iPhone | 11 | |
-| Settings | 12 | |
-| Menu Bar & App Lifecycle | 11 | |
-| Background Processes | 2 | |
-| Memory | 7 | |
-| Key Concepts | 2, 12 | |
+| First launch: setup | 2 | Loading-people progress detail; per-button empty-state inventory (feature pages); CLI flags `--provider`, `ai models` (cli reference) |
+| Home | 3 | Per-card chips and eyebrow time formats (on screen) |
+| Menu | 3 | Persisted panel widths, rail badge dots, hover help |
+| Catch Up | 3 | `catchup` CLI line (cli reference) |
+| Briefings | 3 | "Run keeps going on tab switch" (unverified); click targets |
+| Day Plan | 3 | UI tour only |
+| Inbox | 3 | Retired situations Dashboard history; per-kind link targets (examples kept) |
+| Ideas | 3 | Find Ideas calendar-grid mechanics; Merge dialog internals |
+| Voice Dictation | 5 | Download sizes (unverified); Voices window keys; Mic auto-gain and cross-window toggles (settings reference) |
+| Calendar | 5 | Now-line, highlight and countdown details; calendar CLI |
+| Gmail | 5 | `gmail login` and CLI lists |
+| Targets (tasks) | 4 | Field-by-field detail; "three replies at once / Queued" (unverified); target-roles scenario tables |
+| Workbench | 9, 10 | Layout and gesture mechanics, hover/keyboard session panel, Undo bar interplay; code-viewer internals, R-rulings, `code-languages.yaml`, cleanup catches in full; diff review Plans 2/3 and analytics #298-#300 (unshipped) |
+| Automations | 8 | SDK internals, sandbox, scheduler/DST, agent()/mcp()/shell()/session()/ask(); event triggers (disabled "soon"); briefing block caps, draft cache, hash display |
+| AI Chat | 7 | Panel widths, comment popover, keyboard nav, per-tool write list (stale-prone), Confluence block-format refusals in full |
+| Tracks | 4 | Detail-section list; weekly digests and narrative fields (stale/unshipped) |
+| Project Map, Releases, Blockers, Workload (Jira) | 6 | Per-card detail; Jira OAuth app setup and TTLs; Confluence CQL internals; Linear ports, rate limits, tracker_* views |
+| Digests | 4 | Source labels and unread-marker mechanics |
+| People | 4 | Nothing beyond on-screen detail |
+| Statistics | 4 | Column and chart names (on screen) |
+| Search | 6 | Nothing material |
+| Usage | 2 | Plan-limit projection math and states |
+| Boards | 6 | Nothing material |
+| MCP Server | 11 | Tool-by-tool table (names go stale) |
+| iPhone | 11 | Calendar/recordings/Recap detail, ask and board-conflict internals, per-error link texts, Keychain/relay ledger |
+| Settings | 12 | Account-name rules, sign-in page text, Slack gap notes, Confluence sync states, Jira board profiles, update windows; "Take over" hub text (not in Swift) |
+| Menu Bar & App Lifecycle | 11 | Voices window, automation status glyphs, multi-workspace picker screen |
+| Background Processes | 2 | Pipeline numbering (replaced by code-derived table); backfill R-rulings and v1 limits |
+| Memory | 7 | Preferences switch (inert), digest-compare roadmap, Obsidian detail, `memory` CLI (cli reference) |
+| Key Concepts | 2, 12 | Running context, People-pipeline and Dashboard situations, Skills, Feedback loop (not user vocabulary elsewhere) |
 
 ---
 
