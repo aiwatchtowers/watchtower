@@ -75,9 +75,11 @@ An imported voice only suggests a name until you confirm it. Turn the whole feat
 - **"No speech recognized":** the note says whether call audio was missing. Check the output device.
 - **Only your voice in the transcript:** call audio was not captured. The **No call audio** warning fires during the call so you can fix it.
 - **Different people share one "Speaker N":** lower **Diarization threshold** (0.3 to 0.9) in **Settings › Meetings**.
-- **Transcription or recap failed:** the audio is kept. Use **Try again** on the recording, or **Generate recap** on the Recap tab.
+- **Transcription or recap failed:** the audio is kept. Use **Retry** on the failed pill, **Re-transcribe** under the transcript, or **Generate recap** on the Recap tab.
 - **The app quit mid-recording:** at the next launch the pill offers **Transcribe recovered recording**; dismiss it to skip.
 - **"Speaker names were updated — regenerate the recap?":** names changed after the recap was made. Nothing regenerates on its own; click **Regenerate**.
+
+Recording or transcript failing? See [Recording or transcript problems](../troubleshooting/recording-or-transcript-problems.md).
 
 ## Related
 

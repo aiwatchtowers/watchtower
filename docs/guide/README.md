@@ -76,6 +76,19 @@ Every page of the guide is listed below, once, grouped the way the sidebar is.
 
 ## Troubleshooting
 
+- [Troubleshooting](troubleshooting/README.md) — find what you see on the screen and open the page that fixes it
+- [A tab is empty](troubleshooting/tab-is-empty.md) — which switch and source each tab waits for, and what its status line wants
+- [Sync is stuck or slow](troubleshooting/sync-stuck-or-slow.md) — "Sync daemon not running", a sync that never ends, data that stops arriving
+- [No briefing or day plan today](troubleshooting/no-briefing-or-day-plan.md) — the gates a daily job waits behind, and how to generate one now
+- [The Claude or Codex tool is not found or not signed in](troubleshooting/ai-tool-not-found-or-not-signed-in.md) — the red cross, "isn't signed in", and Test Connection
+- [An account needs attention](troubleshooting/account-needs-attention.md) — red dots, Re-login, and which accounts you must remove and add again
+- [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
+- [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
+- [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
+- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
+- [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
+
 ## Reference
 
 - [Settings](reference/settings.md) — what each Settings tab does that the screen doesn't say

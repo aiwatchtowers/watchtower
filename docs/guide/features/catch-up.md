@@ -57,6 +57,8 @@ The empty pane says "No recap yet" with a status line. The line reads like this:
 - **The tab isn't in the menu.** Turn on one of the three features above and connect a source.
 - **A recap misses something.** Digests need a sync first, so build after the last sync, or add a **Correction…**.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Home](home.md), [Briefings](briefings.md), [Inbox](inbox.md).

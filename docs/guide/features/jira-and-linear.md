@@ -41,6 +41,8 @@ An issue or epic key on any tab opens in Jira.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
 - **Blockers misses an issue you call blocked.** An issue is listed as blocked only when its status name contains "block"; a flag or label is not read. Issue links only build the chain shown under a listed issue.
 
+Site needs **Re-login**? See [An account needs attention](../troubleshooting/account-needs-attention.md).
+
 ## Related
 
 - [Search and knowledge](search-and-knowledge.md): Jira issues and comments are searchable by the assistant.

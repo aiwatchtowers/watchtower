@@ -70,6 +70,8 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
+Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
+
 ## Related
 
 - [Menu bar and updates](menu-bar-and-updates.md) for keeping the Mac side awake and running.

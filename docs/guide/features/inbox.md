@@ -75,6 +75,8 @@ The empty tab says "Nothing waiting for you". It shows a reaction cheat sheet: o
 
 - **No reminder yet.** A reminder shows only once it is due.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Catch Up](catch-up.md), [Briefings](briefings.md), [Ideas & Decisions](ideas-and-decisions.md), [Home](home.md).

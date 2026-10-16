@@ -41,6 +41,8 @@ Pending inbox items or open targets block both muting and leaving suggestions; a
 - **A muted channel still has old digests.** Muting stops new analysis only. Existing digests and tracks stay until dismissed.
 - **A recommendation looks wrong.** It uses message counts only, so a quiet but critical channel can be flagged. Favorite it to stop the suggestion, or ignore it.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Digests](digests.md), [Tracks](tracks.md), [People](people.md).

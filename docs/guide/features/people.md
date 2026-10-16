@@ -33,6 +33,8 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 - **The card is a day old.** Cards refresh at most daily.
 - **Your reports or manager look wrong.** Fix them under **Edit Connections** on **My Card**.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Digests](digests.md), [Statistics](statistics.md).

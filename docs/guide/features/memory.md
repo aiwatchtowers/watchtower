@@ -44,6 +44,8 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 - **A note looks wrong.** Open its sources through the links; edit the page if needed. Treat memory as notes the assistant built, possibly out of date, not as your own words.
 - **A switch seems to do nothing.** Reflection, belief revisions and `remember this:` need the Semantic tier. The Day Plan surface needs Targets & Tracks mirrors.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 - [AI Chat](ai-chat.md)

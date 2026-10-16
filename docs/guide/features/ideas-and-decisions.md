@@ -63,6 +63,8 @@ The empty tab says "No ideas yet" and "Ideas and decisions picked up from conver
 - **Nothing from mail or Jira.** Turn on Stream Digests and connect the account.
 - **The badge count differs from the list.** It counts items to review in both Ideas and Notes, never decisions.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md). A parked idea not returning is a [known issue](../troubleshooting/known-issues.md).
+
 ## Related
 
 [Inbox](inbox.md) (the :bulb: reaction saves an idea), [Briefings](briefings.md), [Catch Up](catch-up.md).

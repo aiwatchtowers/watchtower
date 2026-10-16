@@ -60,6 +60,8 @@ The empty tab says "No day plan yet" with a status line, or "Today's plan at or 
 - **Didn't work yet — retries automatically.** The last attempt failed; the line shows why. After three failures it waits until tomorrow.
 - **Plan missing though the hour passed.** The daemon may not have run (Mac off or asleep), or no connected account identifies you. Click **Generate today's plan**.
 
+No plan today? See [No briefing or day plan today](../troubleshooting/no-briefing-or-day-plan.md).
+
 ## Related
 
 [Briefings](briefings.md), [Home](home.md).

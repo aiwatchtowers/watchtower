@@ -38,6 +38,8 @@ Meeting recaps appear in the same feed once a recording has one.
 - **No mail or Jira rows.** **Stream Digests** must be on and a Gmail or Jira account connected. Rows come at most every 6 hours.
 - **A decision is missing or doubled.** Decisions appear after the next Ideas run, which merges near-duplicates. Use **Supersede** for one that was replaced and **Reverse** for one that was undone.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Tracks](tracks.md), [People](people.md), [Ideas & Decisions](ideas-and-decisions.md).

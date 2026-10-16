@@ -57,6 +57,8 @@ When your request can be read two ways, the assistant asks with a card of one to
 - **An attachment is refused.** It is over the size cap, or the provider cannot read that type (Codex and Ollama take no images or PDFs).
 - **A project edit seems ignored.** A reply being written finishes first; the change applies from the next message.
 
+Provider not signed in? See [The Claude or Codex tool is not found or not signed in](../troubleshooting/ai-tool-not-found-or-not-signed-in.md).
+
 ## Related
 
 - [Writing, Slack send, Confluence and automations from the chat](ai-chat-actions.md)

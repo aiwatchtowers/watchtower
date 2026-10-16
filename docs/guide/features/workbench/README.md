@@ -40,6 +40,8 @@ The agent writes board text in the language you use with it. Write to it in anot
 - **Workbench targets do not show elsewhere.** They live only on their board, not in Targets, the day plan or Catch-Up. The daily briefing mentions workbench activity on its own.
 - **Deleting a workbench** (**…** → **Delete…**) removes the board, asks and comments and what Watchtower installed in the folder. Your files stay.
 
+Session or ask stuck? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).
+
 ## More pages
 
 - [Board and targets](board-and-targets.md): the board, Kanban, grouping, archive, drift check.

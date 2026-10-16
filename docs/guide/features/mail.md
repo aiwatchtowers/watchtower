@@ -43,6 +43,8 @@ Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** unde
 - **Account shows an error:** use **Re-login** on the Google account to sign in again. For IMAP, remove the account and add it again.
 - **Old mail is missing:** only the last 7 days sync first. Older mail arrives with the background history backfill.
 
+Account error? See [An account needs attention](../troubleshooting/account-needs-attention.md).
+
 ## Related
 
 - [Calendar and meeting prep](calendar-and-meeting-prep.md) — the calendar side of a Google account.

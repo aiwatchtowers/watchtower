@@ -39,7 +39,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md) |
-| `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), weekly trends, synced users and channels |
+| `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
 | `watchtower ask "<question>"` | Ask the assistant a question from the terminal |
 | `watchtower kb search <query>`, `kb status`, `kb reindex` | The [knowledge index](../features/search-and-knowledge.md) |

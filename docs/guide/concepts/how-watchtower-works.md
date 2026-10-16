@@ -44,7 +44,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Linear issues | Same as Jira | A Linear account connected with `watchtower linear add` |
 | Confluence pages | Every cycle | A space picked; Confluence in search on |
 | Channel digests | Every cycle, for channels with new messages | Slack Digests on |
-| Daily and weekly rollups | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |
+| Daily rollup | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |
 | Tracks | Every cycle | Tracks and Slack Digests on |
 | People cards | At most once every 24 hours | People Cards and Slack Digests on |
 | Attention detection (no AI) | Every cycle | Attention detection on; Watchtower knows who you are |

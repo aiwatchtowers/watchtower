@@ -36,6 +36,8 @@ On a custom track, **Collecting / Paused** switches scanning. **Scan** fills the
 - **Duplicates.** The AI matches by meaning and prefers a duplicate to a wrong merge. Dismiss the extra one; rate the track with the thumbs buttons to improve later runs.
 - **A custom watch shows nothing.** It scans only while **Collecting** is on and only reads what Watchtower already holds, so use **Scan** to backfill history.
 
+Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+
 ## Related
 
 [Digests](digests.md), [Targets](targets.md), [Statistics](statistics.md).

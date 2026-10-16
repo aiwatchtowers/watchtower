@@ -86,6 +86,8 @@ Watchtower notifies you when an agent files an ask (**Agent asks: <title>**). Se
 - **A closed ask says "withdrawn by the agent" or "replaced by #N".** The agent withdrew it or filed a newer round. It opens read-only.
 - **Unsent answers on quit.** Drafts survive switching sessions, workbenches and tabs. Quitting Watchtower with unsent answers asks first.
 
+Answer not reaching the agent? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).
+
 ## Related
 
 - [Sessions](sessions.md), [Workbench overview](README.md)

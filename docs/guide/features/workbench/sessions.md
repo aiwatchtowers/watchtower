@@ -91,6 +91,8 @@ While Watchtower is in the background, a running session that stops, needs appro
 - **"Pick a session" in the Session view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
 - **A session says Working but nothing happens.** You may have interrupted it with Esc; send a prompt.
 
+Session not reporting a state? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).
+
 ## Related
 
 - [Asks](asks.md), [Board and targets](board-and-targets.md)

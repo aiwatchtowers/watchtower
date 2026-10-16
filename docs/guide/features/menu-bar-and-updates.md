@@ -68,6 +68,8 @@ Watchtower registers itself as a login item once per installed copy, so the daem
 - **"Update error".** The message under it says why (a failed download or a checksum mismatch). **Retry** checks again.
 - **Window closed but you wanted Watchtower gone.** Use **Quit Watchtower**, not the red button.
 
+Sync not running or stuck? See [Sync is stuck or slow](../troubleshooting/sync-stuck-or-slow.md).
+
 ## Related
 
 - [iPhone](iphone.md): the phone app needs Watchtower running on the Mac.

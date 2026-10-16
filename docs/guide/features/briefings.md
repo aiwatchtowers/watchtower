@@ -49,6 +49,8 @@ The empty tab says "No briefings yet" and "Generated once a day at or after 08:0
 - **No briefing today though the hour passed.** The sync may not have run (the Mac was off or the daemon isn't running), or there was nothing to summarise. See [Day Plan](day-plan.md) for the same gate.
 - **Generate manually.** With no briefings yet, **Generate Briefing** in the empty tab builds one now; a failure shows its reason in red under the button. Once a briefing exists, run `watchtower briefing generate` in a terminal. Today's briefing is never rebuilt, so the command returns the existing one.
 
+No briefing today? See [No briefing or day plan today](../troubleshooting/no-briefing-or-day-plan.md).
+
 ## Related
 
 [Day Plan](day-plan.md), [Catch Up](catch-up.md), [Home](home.md).

@@ -70,6 +70,8 @@ No recording? In the same pane, **Recap from text** under **Meeting Notes** writ
 - **Thin prep:** attendees without a Slack match, or little recent activity, give a thin prep. The **Missing Context** box names the gaps.
 - **"Refresh failed — showing the previous prep":** the old prep stays on screen with the reason. Try **Refresh** again.
 
+Events missing? See [Calendar events are missing](../troubleshooting/calendar-events-missing.md).
+
 ## Related
 
 - [Meeting recording](meeting-recording.md) — record, transcribe and recap the meeting.
