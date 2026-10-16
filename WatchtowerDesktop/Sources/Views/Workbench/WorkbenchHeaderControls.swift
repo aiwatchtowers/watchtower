@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The workbench header's trailing controls: `Terminal ▾ | Session | Board |
+/// The workbench header's trailing controls: the automation buttons, then `Terminal ▾ | Session | Board |
 /// Files | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report Part 7, the
 /// owner's pick on board #357).
 struct WorkbenchHeaderControls: View {
@@ -19,6 +19,7 @@ struct WorkbenchHeaderControls: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            WorkbenchAutomationButtons(project: project)
             viewButtons
             splitToggle
             moreMenu

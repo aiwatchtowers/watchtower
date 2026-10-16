@@ -35,6 +35,9 @@ package final class AutomationsViewModel {
     /// Unread inbox outputs — the Inbox badge's automation share. The daemon
     /// writes them from another process, so this poll is what notices them.
     package private(set) var inboxOutputCount = 0
+    /// The workbench headers' `trigger.button` recipes, keyed by workbench
+    /// id (spec §12.4); read with the list, so the poll keeps them current.
+    private var headerButtonsByProject: [Int64: [AutomationHeaderButton]] = [:]
     /// Runs when `inboxOutputCount` changes, so the Inbox sidebar badge
     /// (`SidebarCountsViewModel`, which sees only this process's writes)
     /// re-reads.
@@ -199,6 +202,7 @@ package final class AutomationsViewModel {
         var items: [AutomationListItem]
         var attentionCount: Int
         var inboxOutputCount: Int
+        var headerButtons: [Int64: [AutomationHeaderButton]]
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
 
@@ -223,10 +227,19 @@ package final class AutomationsViewModel {
             for runID in expanded {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
+            let items = try AutomationQueries.fetchList(db, now: now)
+            let buttonProjects = Set(items.compactMap { item in
+                item.automation.triggerKind == "button" ? item.automation.projectID : nil
+            })
+            var headerButtons: [Int64: [AutomationHeaderButton]] = [:]
+            for projectID in buttonProjects {
+                headerButtons[projectID] = try AutomationQueries.headerButtons(db, projectID: projectID)
+            }
             return Self(
-                items: try AutomationQueries.fetchList(db, now: now),
+                items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
                 inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
+                headerButtons: headerButtons,
                 card: card,
                 steps: steps
             )
@@ -236,6 +249,7 @@ package final class AutomationsViewModel {
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
         attentionCount = snapshot.attentionCount
+        headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
             inboxOutputCount = snapshot.inboxOutputCount
             onInboxOutputCountChanged?()
@@ -247,6 +261,11 @@ package final class AutomationsViewModel {
             reports[card.automationID] = card.reports
             grants[card.automationID] = card.grants
         }
+    }
+
+    /// Workbench `projectID`'s header buttons, in slug order.
+    package func headerButtons(projectID: Int64) -> [AutomationHeaderButton] {
+        headerButtonsByProject[projectID] ?? []
     }
 
     // MARK: - Selection
@@ -341,7 +360,9 @@ package final class AutomationsViewModel {
 
     // MARK: - CLI operations
 
-    package func runNow(_ id: Int64) async {
+    /// False when the call failed (`lastError` says why) or another call on `id` is in flight.
+    @discardableResult
+    package func runNow(_ id: Int64) async -> Bool {
         await perform(.running, on: id) { cli in _ = try await cli.run(id) }
     }
 
