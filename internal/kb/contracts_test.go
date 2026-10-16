@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/db"
 )
 
@@ -201,8 +202,15 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		n := countDocs(t, d, src)
 		require.Positive(t, n, "seedAll indexed no %s document", src)
 		if src == GuideSource {
-			// The embedded guide has more pages than one search returns.
-			assert.NotEmpty(t, res.Hits, "the guide is reachable")
+			// More pages than one search returns: search each page by a term of
+			// its own and require that page among the hits.
+			for _, p := range guide.Pages() {
+				res, err := Search(ctx, d, Request{Queries: []string{guideProbe(p)}, Sources: []string{src}, Limit: MaxLimit, Now: testNow()})
+				require.NoError(t, err, p.Path)
+				assert.Contains(t, hitRefs(res), "guide:"+p.Path, "guide page %s is reachable", p.Path)
+			}
+			n = len(guide.Pages())
+			assert.Equal(t, n, countDocs(t, d, src), "every guide page is indexed")
 		} else {
 			assert.Len(t, res.Hits, n, "every %s document is reachable", src)
 		}
@@ -234,3 +242,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		assert.True(t, seen[src], "no hit from source %s", src)
 	}
 }
+
+// guideProbe is a query that reaches the page: its title as a phrase of
+// words (OR-fallback ranks the page's own title chunk first).
+func guideProbe(p guide.Page) string { return p.Title }

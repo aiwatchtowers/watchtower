@@ -347,6 +347,14 @@ func TestSearch_IndexNoteWhileSlackBackfills(t *testing.T) {
 	empty, err := Search(ctx, db.OpenTestDB(t), Request{Queries: []string{"x"}, Now: testNow()})
 	require.NoError(t, err)
 	assert.Contains(t, empty.IndexNote, "knowledge index is empty")
+
+	// The embedded guide alone is not owner data: still reads as empty.
+	onlyGuide := db.OpenTestDB(t)
+	_, err = Run(ctx, onlyGuide, Options{Now: testNow(), Sources: []string{GuideSource}})
+	require.NoError(t, err)
+	res, err = Search(ctx, onlyGuide, Request{Queries: []string{"inbox"}, Now: testNow()})
+	require.NoError(t, err)
+	assert.Contains(t, res.IndexNote, "knowledge index is empty")
 }
 
 func TestGetDocument(t *testing.T) {
