@@ -238,6 +238,24 @@ func (db *DB) UpsertLinearIssue(i LinearIssue) error {
 	return nil
 }
 
+// KnownLinearIssueIDs returns the ids among ids that the account already
+// stores, in the order given.
+func (db *DB) KnownLinearIssueIDs(accountID int64, ids []string) ([]string, error) {
+	var out []string
+	for _, id := range ids {
+		var one int
+		err := db.QueryRow(`SELECT 1 FROM linear_issues WHERE account_id = ? AND id = ?`, accountID, id).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("looking up linear issue %s: %w", id, err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // GetLinearIssueByKey matches the current key or a previous one, across accounts.
 func (db *DB) GetLinearIssueByKey(key string) ([]LinearIssue, error) {
 	rows, err := db.Query(`SELECT account_id, id, key, previous_keys, team_id, team_key, title,

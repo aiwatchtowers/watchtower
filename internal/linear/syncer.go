@@ -122,6 +122,10 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	reconcileSince, err := s.reconcileSince(teams)
+	if err != nil {
+		return 0, err
+	}
 	total := 0
 	var firstErr error
 	for _, t := range teams {
@@ -137,6 +141,15 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if rerr := s.db.RecordLinearSyncError(s.accountID, t.ID, err.Error()); rerr != nil {
 			s.logger.Printf("team %s: %v", t.Key, rerr)
 		}
+		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			return total, err
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := s.reconcileMoved(ctx, teams, reconcileSince); err != nil {
+		s.logger.Printf("moved issues: %v", err)
 		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
 			return total, err
 		}
@@ -211,7 +224,7 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 	// Comments do not raise it: they are fetched after the issues, so a later
 	// comment would push the watermark past an issue change made mid-pass.
 	maxUpdated := since
-	n, err := s.syncIssues(ctx, t, issueFilter(t.ID, since, firstPass), &maxUpdated)
+	n, err := s.syncIssues(ctx, issueFilter(t.ID, since, firstPass), &maxUpdated)
 	if err != nil {
 		return n, fmt.Errorf("syncing issues of linear team %s: %w", t.Key, err)
 	}
@@ -225,6 +238,79 @@ func (s *Syncer) syncTeam(ctx context.Context, t db.LinearTeam) (int, error) {
 		return n, err
 	}
 	return n, nil
+}
+
+// reconcileSince is the oldest watermark among the selected teams before
+// this pass, or empty when none has one yet (nothing stored can have moved).
+func (s *Syncer) reconcileSince(teams []db.LinearTeam) (string, error) {
+	since := ""
+	for _, t := range teams {
+		if !t.IsSelected {
+			continue
+		}
+		st, err := s.db.GetLinearSyncState(s.accountID, t.ID)
+		if err != nil {
+			return "", err
+		}
+		if st.Watermark != "" && (since == "" || st.Watermark < since) {
+			since = st.Watermark
+		}
+	}
+	return since, nil
+}
+
+// reconcileChunk bounds the id list of one reconcile issues request.
+const reconcileChunk = 50
+
+// reconcileMoved refreshes stored issues that now live outside the selected
+// teams: an issue moved to an unselected team no longer matches any team
+// filter, so it is found account-wide by id among the issues changed since.
+// Issues of unselected teams that were never stored are not fetched.
+func (s *Syncer) reconcileMoved(ctx context.Context, teams []db.LinearTeam, since string) error {
+	if since == "" {
+		return nil
+	}
+	selected := []string{}
+	for _, t := range teams {
+		if t.IsSelected {
+			selected = append(selected, t.ID)
+		}
+	}
+	filter := map[string]any{
+		"team":      map[string]any{"id": map[string]any{"nin": selected}},
+		"updatedAt": map[string]any{"gte": since},
+	}
+	var changed []string
+	err := paginate(ctx, func(ctx context.Context, after *string) (pageInfo, error) {
+		var out issueIDsData
+		if err := s.client.Do(ctx, queryIssueIDs, map[string]any{"filter": filter, "after": after}, &out); err != nil {
+			return pageInfo{}, fmt.Errorf("listing changed linear issues outside the selected teams: %w", err)
+		}
+		for _, n := range out.Issues.Nodes {
+			changed = append(changed, n.ID)
+		}
+		return out.Issues.PageInfo, nil
+	})
+	if err != nil {
+		return err
+	}
+	known, err := s.db.KnownLinearIssueIDs(s.accountID, changed)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(known); start += reconcileChunk {
+		ids := known[start:min(start+reconcileChunk, len(known))]
+		byID := map[string]any{"id": map[string]any{"in": ids}}
+		unused := since
+		if _, err := s.syncIssues(ctx, byID, &unused); err != nil {
+			return fmt.Errorf("refreshing moved linear issues: %w", err)
+		}
+		comments := map[string]any{"issue": byID, "updatedAt": map[string]any{"gte": since}}
+		if err := s.syncCommentsMatching(ctx, comments); err != nil {
+			return fmt.Errorf("refreshing comments of moved linear issues: %w", err)
+		}
+	}
+	return nil
 }
 
 func issueFilter(teamID, since string, firstPass bool) map[string]any {
@@ -244,7 +330,7 @@ func keepMax(cur *string, v string) {
 	}
 }
 
-func (s *Syncer) syncIssues(ctx context.Context, t db.LinearTeam, filter map[string]any, maxUpdated *string) (int, error) {
+func (s *Syncer) syncIssues(ctx context.Context, filter map[string]any, maxUpdated *string) (int, error) {
 	count := 0
 	err := paginate(ctx, func(ctx context.Context, after *string) (pageInfo, error) {
 		var out issuesData
@@ -279,10 +365,13 @@ func (s *Syncer) storeIssue(n issueNodeJSON) error {
 }
 
 func (s *Syncer) syncComments(ctx context.Context, t db.LinearTeam, since string) error {
-	filter := map[string]any{
+	return s.syncCommentsMatching(ctx, map[string]any{
 		"issue":     map[string]any{"team": map[string]any{"id": map[string]any{"eq": t.ID}}},
 		"updatedAt": map[string]any{"gte": since},
-	}
+	})
+}
+
+func (s *Syncer) syncCommentsMatching(ctx context.Context, filter map[string]any) error {
 	return paginate(ctx, func(ctx context.Context, after *string) (pageInfo, error) {
 		var out commentsData
 		if err := s.client.Do(ctx, queryComments, map[string]any{"filter": filter, "after": after}, &out); err != nil {
@@ -359,13 +448,17 @@ func nameOf(p *idName) string {
 	return p.Name
 }
 
-// stateChangedAt is the newest history entry that set a state, else the
-// timestamp of the issue's current state category (startedAt, completedAt or
-// canceledAt), else empty.
+// stateChangedAt is when the issue's status category last changed, as Jira's
+// statuscategorychangedate: the newest history entry that moved it to another
+// category (a move within one category does not count), else the timestamp
+// of the current category (startedAt, completedAt or canceledAt), else empty.
 func stateChangedAt(n issueNodeJSON) string {
 	latest := ""
 	for _, h := range n.History.Nodes {
-		if h.ToState != nil {
+		if h.ToState == nil {
+			continue
+		}
+		if h.FromState == nil || StatusCategory(h.FromState.Type) != StatusCategory(h.ToState.Type) {
 			keepMax(&latest, h.CreatedAt)
 		}
 	}
@@ -433,7 +526,9 @@ func mapHistory(accountID int64, n issueNodeJSON) []db.LinearHistoryEntry {
 		if h.ToState != nil {
 			e := base
 			e.Field = "status"
-			e.FromValue, e.FromString = idOf(h.FromState), nameOf(h.FromState)
+			if h.FromState != nil {
+				e.FromValue, e.FromString = h.FromState.ID, h.FromState.Name
+			}
 			e.ToValue, e.ToString = h.ToState.ID, h.ToState.Name
 			out = append(out, e)
 		}

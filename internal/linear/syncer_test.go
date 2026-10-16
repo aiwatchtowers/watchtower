@@ -137,6 +137,47 @@ func TestLinear04_TeamMoveKeepsOneRow(t *testing.T) {
 	assert.Equal(t, "OPS-40", got[0].Key)
 }
 
+func TestLinear04_MoveToUnselectedTeamIsReconciled(t *testing.T) {
+	f := newFakeLinear(t)
+	f.viewerTeams = []string{"t-1"} // OPS (t-2) stays unselected
+	f.teams = []map[string]any{{"id": "t-1", "key": "ENG", "name": "Eng"}, {"id": "t-2", "key": "OPS", "name": "Ops"}}
+	f.issuePages = [][]map[string]any{{issueNode("i-1", "ENG-12", "unstarted", "2026-10-02T00:00:00.000Z")}}
+	d, s := newTestSyncer(t, f)
+	_, err := s.Sync(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, f.calls["issueIDs"], "a first pass has nothing stored that could have moved")
+
+	moved := issueNode("i-1", "OPS-40", "started", "2026-10-05T00:00:00.000Z")
+	moved["previousIdentifiers"] = []string{"ENG-12"}
+	moved["team"] = map[string]any{"id": "t-2", "key": "OPS"}
+	stranger := issueNode("i-9", "OPS-41", "started", "2026-10-05T00:00:00.000Z")
+	stranger["team"] = map[string]any{"id": "t-2", "key": "OPS"}
+	f.issuePages = [][]map[string]any{{moved, stranger}}
+	f.commentPages = [][]map[string]any{{commentNode("c-1", "i-1", "OPS-40", "", "2026-10-06T00:00:00.000Z")}}
+	_, err = s.Sync(context.Background())
+	require.NoError(t, err)
+
+	var key, team, state string
+	require.NoError(t, d.QueryRow(`SELECT key, team_id, state_type FROM linear_issues WHERE id='i-1'`).Scan(&key, &team, &state))
+	assert.Equal(t, []string{"OPS-40", "t-2", "started"}, []string{key, team, state})
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM linear_issues WHERE id='i-9'`).Scan(&n))
+	assert.Zero(t, n, "an issue of an unselected team that was never stored is not fetched")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM linear_comments WHERE id='c-1'`).Scan(&n))
+	assert.Equal(t, 1, n)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var lookup map[string]any
+	for _, r := range f.requests {
+		if r.Kind == "issueIDs" {
+			lookup, _ = r.Vars["filter"].(map[string]any)
+		}
+	}
+	b, _ := json.Marshal(lookup)
+	assert.JSONEq(t, `{"team":{"id":{"nin":["t-1"]}},"updatedAt":{"gte":"2026-10-02T00:00:00.000Z"}}`, string(b))
+}
+
 func TestSyncer_ArchivedIssueIsDeleted(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}
@@ -283,6 +324,27 @@ func TestMapIssue_HistoryRelationsAndStateChange(t *testing.T) {
 	assert.Equal(t, "2026-09-23T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
 	node["state"] = map[string]any{"name": "Todo", "type": "unstarted"}
 	assert.Empty(t, mapIssue(7, decodeIssue(t, node)).StateChangedAt)
+
+	// A move within one category does not count, as in Jira: In Progress →
+	// In Review (both started) keeps the Todo → In Progress time.
+	node["state"] = map[string]any{"name": "In Review", "type": "started"}
+	node["history"] = map[string]any{"nodes": []any{
+		map[string]any{"id": "h-1", "createdAt": "2026-09-25T00:00:00.000Z",
+			"fromState": map[string]any{"id": "s-0", "name": "Todo", "type": "unstarted"},
+			"toState":   map[string]any{"id": "s-1", "name": "In Progress", "type": "started"}},
+		map[string]any{"id": "h-3", "createdAt": "2026-09-28T00:00:00.000Z",
+			"fromState": map[string]any{"id": "s-1", "name": "In Progress", "type": "started"},
+			"toState":   map[string]any{"id": "s-2", "name": "In Review", "type": "started"}},
+	}}
+	assert.Equal(t, "2026-09-25T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
+	// Only in-category moves in the history: the category's own timestamp.
+	node["history"] = map[string]any{"nodes": []any{
+		map[string]any{"id": "h-3", "createdAt": "2026-09-28T00:00:00.000Z",
+			"fromState": map[string]any{"id": "s-1", "name": "In Progress", "type": "started"},
+			"toState":   map[string]any{"id": "s-2", "name": "In Review", "type": "started"}},
+	}}
+	assert.Equal(t, "2026-09-20T00:00:00.000Z", mapIssue(7, decodeIssue(t, node)).StateChangedAt)
+	node["state"] = map[string]any{"name": "Todo", "type": "unstarted"}
 	node["trashed"] = true
 	assert.True(t, mapIssue(7, decodeIssue(t, node)).IsDeleted)
 }

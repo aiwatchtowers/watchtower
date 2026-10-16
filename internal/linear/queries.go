@@ -15,6 +15,12 @@ type idName struct {
 	Name string `json:"name"`
 }
 
+type stateRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 type person struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
@@ -82,19 +88,19 @@ const queryIssues = `query($filter: IssueFilter!, $after: String) {
       labels(first: 20) { nodes { name } }
       relations(first: 20) { nodes { id type relatedIssue { id } } }
       history(first: 50) { nodes { id createdAt actor { id name }
-        fromState { id name } toState { id name } fromAssignee { id name } toAssignee { id name } } }
+        fromState { id name type } toState { id name type } fromAssignee { id name } toAssignee { id name } } }
     }
     pageInfo { hasNextPage endCursor }
   } }`
 
 type historyNode struct {
-	ID           string  `json:"id"`
-	CreatedAt    string  `json:"createdAt"`
-	Actor        *idName `json:"actor"`
-	FromState    *idName `json:"fromState"`
-	ToState      *idName `json:"toState"`
-	FromAssignee *idName `json:"fromAssignee"`
-	ToAssignee   *idName `json:"toAssignee"`
+	ID           string    `json:"id"`
+	CreatedAt    string    `json:"createdAt"`
+	Actor        *idName   `json:"actor"`
+	FromState    *stateRef `json:"fromState"`
+	ToState      *stateRef `json:"toState"`
+	FromAssignee *idName   `json:"fromAssignee"`
+	ToAssignee   *idName   `json:"toAssignee"`
 }
 
 // issueNodeJSON is one issues node; raw keeps the node's JSON for raw_json.
@@ -145,6 +151,23 @@ type issueNodeJSON struct {
 	} `json:"history"`
 
 	raw json.RawMessage
+}
+
+// IDs of the issues changed since $since outside the selected teams; the
+// syncer keeps those it already stores (issues moved out of a selected team).
+const queryIssueIDs = `query LinearIssueIDs($filter: IssueFilter!, $after: String) {
+  issues(filter: $filter, first: 250, after: $after, includeArchived: true) {
+    nodes { id }
+    pageInfo { hasNextPage endCursor }
+  } }`
+
+type issueIDsData struct {
+	Issues struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+		PageInfo pageInfo `json:"pageInfo"`
+	} `json:"issues"`
 }
 
 type issuesData struct {

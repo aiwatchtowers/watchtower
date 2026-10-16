@@ -52,7 +52,7 @@ func newFakeLinear(t *testing.T) *fakeLinear {
 
 func fakeKind(query string) string {
 	for _, k := range []struct{ marker, kind string }{
-		{"viewer {", "viewer"}, {"issues(", "issues"}, {"comments(", "comments"},
+		{"viewer {", "viewer"}, {"LinearIssueIDs", "issueIDs"}, {"issues(", "issues"}, {"comments(", "comments"},
 		{"users(", "users"}, {"team(id:", "planning"}, {"teams(", "teams"},
 	} {
 		if strings.Contains(query, k.marker) {
@@ -112,7 +112,9 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 				"message": "rate limited", "extensions": map[string]any{"code": "RATELIMITED"}}}})
 			return
 		}
-		data = map[string]any{"issues": pageAt(f.issuePages, req.Variables["after"])}
+		data = map[string]any{"issues": pageAt(filterIssuePages(f.issuePages, req.Variables["filter"]), req.Variables["after"])}
+	case "issueIDs":
+		data = map[string]any{"issues": pageAt(filterIssuePages(f.issuePages, req.Variables["filter"]), req.Variables["after"])}
 	case "comments":
 		if f.failComments {
 			writeGraphQLError(w, "comments unavailable")
@@ -133,6 +135,45 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+}
+
+// filterIssuePages applies the filter parts the syncer relies on to pick
+// issues — team.id eq/nin and id in; dates and the first-pass or are ignored.
+func filterIssuePages(pages [][]map[string]any, filter any) [][]map[string]any {
+	fm, _ := filter.(map[string]any)
+	team, _ := fm["team"].(map[string]any)
+	teamID, _ := team["id"].(map[string]any)
+	idCmp, _ := fm["id"].(map[string]any)
+	in := func(list any, v string) bool {
+		items, _ := list.([]any)
+		for _, x := range items {
+			if x == v {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([][]map[string]any, 0, len(pages))
+	for _, page := range pages {
+		kept := []map[string]any{}
+		for _, n := range page {
+			nodeTeam, _ := n["team"].(map[string]any)
+			tid, _ := nodeTeam["id"].(string)
+			id, _ := n["id"].(string)
+			if eq, ok := teamID["eq"]; ok && eq != tid {
+				continue
+			}
+			if nin, ok := teamID["nin"]; ok && in(nin, tid) {
+				continue
+			}
+			if ids, ok := idCmp["in"]; ok && !in(ids, id) {
+				continue
+			}
+			kept = append(kept, n)
+		}
+		out = append(out, kept)
+	}
+	return out
 }
 
 func writeGraphQLError(w http.ResponseWriter, msg string) {

@@ -79,3 +79,14 @@ func TestLinearBulkUpserts(t *testing.T) {
 		assert.Equal(t, want, n, table)
 	}
 }
+
+func TestKnownLinearIssueIDs_ScopedToAccount(t *testing.T) {
+	d := openTestDB(t)
+	a, _ := d.CreateLinearAccount("a")
+	b, _ := d.CreateLinearAccount("b")
+	require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: a, ID: "i-1", Key: "ENG-1", StatusCategory: "todo"}))
+	require.NoError(t, d.UpsertLinearIssue(LinearIssue{AccountID: b, ID: "i-2", Key: "ENG-2", StatusCategory: "todo"}))
+	got, err := d.KnownLinearIssueIDs(a, []string{"i-2", "i-1", "i-3"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"i-1"}, got)
+}
