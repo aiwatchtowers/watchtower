@@ -58,6 +58,12 @@ struct AutomationsView: View {
     /// sheet has finished closing (two sheets in one transaction can drop one).
     @State private var pendingChangeInWords: SheetTarget?
     @State private var creating = false
+    @State private var browsingTemplates = false
+    /// Which sheet to open once the one closing has finished (two sheets in
+    /// one transaction can drop one).
+    @State private var pendingSheet: HandOff?
+
+    private enum HandOff { case gallery, newAutomation }
 
     private var cardActions: AutomationsTabActions {
         var out = actions
@@ -67,6 +73,7 @@ struct AutomationsView: View {
         }
         if let chats {
             out.onNew = { creating = true }
+            out.onTemplates = { browsingTemplates = true }
             if let help = chats.unavailableHelp {
                 out.changeInWordsDisabledHelp = help
             } else {
@@ -100,8 +107,8 @@ struct AutomationsView: View {
             }
             if vm.items.isEmpty {
                 TabEmptyState(.automations, context: emptyStateContext, onTabAction: { cardActions.onNew?() }, extra: {
-                    if actions.onTemplates != nil {
-                        Button("Browse templates") { actions.onTemplates?() }
+                    if cardActions.onTemplates != nil {
+                        Button("Browse templates") { cardActions.onTemplates?() }
                             .buttonStyle(.link)
                     }
                 })
@@ -146,14 +153,37 @@ struct AutomationsView: View {
                 )
             }
         }
-        .sheet(isPresented: $creating) {
+        .sheet(isPresented: $creating, onDismiss: openPendingSheet) {
             if let chats {
                 NewAutomationSheet(vm: vm, editor: editor, makeChat: chats.openNew,
-                                   automationsDir: chats.automationsDir, onTemplates: actions.onTemplates) {
-                    creating = false
-                }
+                                   automationsDir: chats.automationsDir,
+                                   onTemplates: { pendingSheet = .gallery; creating = false },
+                                   onClose: { creating = false })
             }
         }
+        .sheet(isPresented: $browsingTemplates, onDismiss: openPendingSheet) {
+            AutomationTemplateGalleryView(vm: vm, onDescribeInWords: {
+                pendingSheet = .newAutomation
+                browsingTemplates = false
+            }, onClose: { browsingTemplates = false })
+        }
+        .onChange(of: vm.pendingEditID, initial: true) { _, _ in openInstalledTemplate() }
+    }
+
+    private func openPendingSheet() {
+        guard let pending = pendingSheet else { return openInstalledTemplate() }
+        pendingSheet = nil
+        switch pending {
+        case .gallery: browsingTemplates = true
+        case .newAutomation: creating = true
+        }
+    }
+
+    /// A template was installed: its edit form opens, unconfirmed (Save confirms).
+    private func openInstalledTemplate() {
+        guard editor != nil, !browsingTemplates, !creating, let id = vm.pendingEditID else { return }
+        vm.pendingEditID = nil
+        editing = SheetTarget(id: id)
     }
 
     /// The edit form's sheet finished closing: open the chat it handed off to.
@@ -199,8 +229,8 @@ struct AutomationsView: View {
                 Text("Automations")
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Button("Templates") { actions.onTemplates?() }
-                    .disabled(actions.onTemplates == nil)
+                Button("Templates") { cardActions.onTemplates?() }
+                    .disabled(cardActions.onTemplates == nil)
                 Button("+ New") { cardActions.onNew?() }
                     .buttonStyle(.borderedProminent)
                     .disabled(cardActions.onNew == nil)

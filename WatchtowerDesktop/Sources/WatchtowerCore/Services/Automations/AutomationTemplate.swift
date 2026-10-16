@@ -29,3 +29,14 @@ package struct AutomationTemplate: Decodable, Identifiable, Equatable, Sendable 
         outputs = try c.decodeIfPresent([String].self, forKey: .outputs) ?? []
     }
 }
+
+/// What a gallery card says about a template.
+package enum AutomationTemplateGallery {
+    /// The card's one line: when it runs, then what it may read or do
+    /// (P6's `trigger_text` and `permissions`), empty parts left out.
+    package static func summaryLine(_ template: AutomationTemplate) -> String {
+        ([template.triggerText] + template.permissions)
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+}

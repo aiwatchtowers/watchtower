@@ -66,6 +66,24 @@ package final class AutomationsViewModel {
     /// starts after a draft is saved (`startNewDraft`).
     package private(set) var newDraftID = UUID().uuidString
 
+    // MARK: Templates (plan Task 13)
+
+    /// `automations templates --json`; empty while the CLI has none (or P6's
+    /// subcommand does not exist yet).
+    package private(set) var templates: [AutomationTemplate] = []
+    package private(set) var templatesLoading = false
+    /// Why the template list could not be read; nil for "no templates".
+    package private(set) var templatesError: String?
+    /// The template being installed (one at a time).
+    package private(set) var installingTemplate: String?
+    /// The last failed install's stderr; cleared by the next install.
+    package private(set) var installError: String?
+    /// The freshly installed automation whose edit form the tab opens (the
+    /// copy stays unconfirmed, so Save confirms it). The tab clears it once
+    /// the form is up; held here so an install finishing while the tab is
+    /// off screen still opens the form on return.
+    package var pendingEditID: Int64?
+
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let now: () -> Date
@@ -256,6 +274,44 @@ package final class AutomationsViewModel {
         } catch {
             if Task.isCancelled { return }
             detailErrors[id] = Self.message(for: error)
+        }
+    }
+
+    // MARK: - Templates
+
+    /// Reads the gallery's templates. A CLI without the subcommand (P6 not
+    /// shipped) is the empty gallery, not an error.
+    package func loadTemplates() async {
+        templatesLoading = true
+        defer { templatesLoading = false }
+        do {
+            templates = try await cli.templates()
+            templatesError = nil
+        } catch {
+            templates = []
+            let message = Self.message(for: error)
+            templatesError = message.localizedCaseInsensitiveContains("unknown command") ? nil : message
+        }
+    }
+
+    /// Installs a template copy (unconfirmed, disabled), selects it and asks
+    /// the tab to open its edit form. A workbench template passes the
+    /// workbench id. Returns false when the install failed.
+    @discardableResult
+    package func installTemplate(_ template: AutomationTemplate, workbenchID: Int64? = nil) async -> Bool {
+        guard installingTemplate == nil else { return false }
+        installingTemplate = template.name
+        installError = nil
+        defer { installingTemplate = nil }
+        do {
+            let result = try await cli.installTemplate(template.name, workbenchID: workbenchID)
+            refresh()
+            select(result.automationID)
+            pendingEditID = result.automationID
+            return true
+        } catch {
+            installError = Self.message(for: error)
+            return false
         }
     }
 
