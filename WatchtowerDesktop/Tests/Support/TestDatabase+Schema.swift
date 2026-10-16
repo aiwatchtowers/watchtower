@@ -1985,6 +1985,12 @@ CREATE TABLE IF NOT EXISTS review_viewed (
   content_sha TEXT NOT NULL,
   PRIMARY KEY (round_id, path)
 );
+CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
+    terminal_session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    agent_session_id    TEXT NOT NULL,
+    first_seen_at       TEXT NOT NULL,
+    PRIMARY KEY (terminal_session_id, agent_session_id)
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2536,6 +2542,18 @@ BEGIN
         SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
     ) AS r
     WHERE targets.id = r.id AND targets.status != r.st;
+END;
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
+BEGIN
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
 """#
 }
