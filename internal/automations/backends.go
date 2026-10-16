@@ -27,8 +27,8 @@ var _ ToolRegistry = (*tools.Registry)(nil)
 // Backends is what the SDK modules call. DB is used for read-only lookups
 // only (AllowTool's account labels, a tool write's {wait} reading its
 // agent_actions row) and may be nil (a {wait} then throws NotAvailable).
-// Workbench is NewWorkbenchResolver's in the daemon and the CLI; Shell stays
-// nil until P5 wires it; a module that needs a nil backend throws
+// Workbench is NewWorkbenchResolver's and Shell NewProcessShellRunner's in
+// the daemon and the CLI; a module that needs a nil backend throws
 // NotAvailable. Later phases append fields here, never rename one.
 type Backends struct {
 	DB        *db.DB

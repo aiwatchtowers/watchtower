@@ -93,6 +93,7 @@ func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
 		Workbench: automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected),
+		Shell:     automations.NewProcessShellRunner(),
 		MCP:       newAutomationMCPCaller(cfg, database),
 		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}

@@ -390,7 +390,7 @@ script did; a call missing from it is an action nobody can audit.
 ## AUTO-12 — Dry run writes nothing outside its journal
 
 **Status:** Enforced (P1: no `agent_actions` row, no output, no state
-change) · Planned (P5: no session, no `shell()`)
+change; P5: no `shell()` process) · Planned (P5: no session)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
@@ -409,32 +409,58 @@ would make checking as dangerous as running.
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
 - P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
-- P5 adds the session/shell guard (plan `2026-10-14-automations-p5.md`) and flips that half.
+- `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
+- P5 adds the session guard (plan `2026-10-14-automations-p5.md`) and flips that half.
 
 **Locked since:** 2026-10-14
 
 ## AUTO-13 — Exact shell commands, workbench only
 
-**Status:** Planned (P5)
+**Status:** Enforced
 
-**Observable:** `shell()` runs only a command byte-equal to a `shell:` entry,
+**Observable:** `shell(cmd)` runs only a command byte-equal to a `shell:` entry,
 only in a workbench automation, in the workbench folder, with the spec §13.2
-environment. (P1 already refuses `shell:`/`session:`/`ask:` entries in a
-personal recipe at parse time and matches `shell:` entries byte-exactly in
-`AllowShell` — `internal/automations/manifest_test.go`
-`TestManifest_PersonalRefusesShellSessionAsk`, `TestManifest_ShellExactOnly`.)
+environment. The checks run in this order, and none of the refusals starts a
+process: a non-string or empty `cmd` is a `ValidationError`; a personal
+recipe's call is `PermissionDenied` (its manifest cannot hold `shell:` — P1
+refuses the entry at parse time); an `AllowShell` miss is `PermissionDenied`
+with `needed` = `shell:"<cmd>"` (no trimming, no prefix match, no `&&`
+chaining); a dry run returns `{status:"dry_run"}` (AUTO-12); a workbench in a
+protected folder is `NotAvailable` with exactly "this workbench is in a
+protected folder; use session() or move the folder", decided from the
+resolver before the folder is looked at (D9); a missing folder is
+`NotAvailable` "the workbench folder is missing"; a nil `Backends.Shell` is
+`NotAvailable`. The command runs as `/bin/sh -c <cmd>` (`NewProcessShellRunner`,
+`Backends.Shell` in the daemon and the CLI) in its own process group, with an
+environment of exactly `PATH`, `HOME`, `LANG`, `USER` from the daemon's
+(absent ones omitted) and `WATCHTOWER_AUTOMATION_RUN_ID=<run id>` — no token,
+no session marker. Its deadline is the run's remaining active time; on the
+deadline or the run ending (cancel) the whole group is killed (`SIGKILL`) and
+the run ends `timed_out`/`cancelled`; once the shell exits its group is killed
+too, so no background child outlives the call. A non-zero exit is a result
+(`exit_code`). Each stream keeps its last 256 KiB (`MaxShellStreamBytes`);
+oversized output is truncated, never a failure (owner decision ask #272, spec
+§20.1 D19): when the serialised result exceeds the 256 KiB SDK result limit
+both tails are cut further (each at most half the room after the envelope, a
+shorter stream's unused share to the other, UTF-8 boundaries, JSON escaping
+counted) until it fits; `truncated: true` marks any cut and the step's
+`result_summary` names `exit_code` and the cut streams. `shell()` never throws
+`ResultTooLarge`.
 
 **Why locked:** A shell command is the widest power an automation can hold;
 anything but exact, owner-read commands in the owner's own repository would
 turn a recipe into arbitrary code execution.
 
-**Test guards:** none yet — P5 adds them (plan
-`2026-10-14-automations-p5.md`) and flips this entry.
+**Test guards:**
+- `internal/automations/sdk_shell_test.go` — `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_RefusedInProtectedFolder`, `TestShell_NotAvailable`, `TestShell_ValidationError`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_TimeoutIsRemainingActiveBudget`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails`, `TestShell_NonZeroExitIsAResult`, `TestShell_DryRunStartsNoProcess`
+- `internal/automations/manifest_test.go` — `TestManifest_PersonalRefusesShellSessionAsk`, `TestManifest_ShellExactOnly` (P1)
+- `cmd/automations_agent_test.go` — `TestAutomationBackends_WireMCPAndAgent` (`Backends.Shell` and `Backends.Workbench` wired)
 
 **Locked since:** 2026-10-14
 
 ## Changelog
 
+- 2026-10-16 (Automations P5 Task 4, board #753; spec §5, §13.2, §20.1 D19): **AUTO-13 flips from Planned to Enforced** with the `shell()` guards listed there; **AUTO-12's `shell()` half is Enforced** (`TestShell_DryRunStartsNoProcess`), its session half stays Planned. `NewProcessShellRunner` is wired as `Backends.Shell`. Oversized `shell()` output is cut to fit, never `ResultTooLarge` (owner decision ask #272, replacing R-P5-1). No guard relaxed.
 - 2026-10-16 (Automations P6 part 1, board #753; spec §5, §6.5, §14.7): **`mcp()` and `agent()` land (runtime B, the claude CLI and the codex CLI); the templates and the gallery CLI follow in the second P6 part.** No status flips (AUTO-01/07/08/11/12 were Enforced since P1) and no guard relaxed; guards added to AUTO-01/07/08/11/12 as listed there. `agent()` is one journal step: its inner tool calls are summarised in that step (AUTO-11 counts SDK calls). Behaviours recorded with their tests: the `--surface automation` server's `get_action` shows only the bound run's own rows (`TestGetAction_ScopedToAutomationRun`); `internalmcp.WithResultCheck` applies the 256 KiB `ResultTooLarge` refusal on that server and runtime B applies `CheckAgentResult` per tool result (`TestChatMode_ResultCheckReplacesResult`, `TestAgentLoop_ResultCheckRefusesResult`, `TestCheckAgentResult_RefusesOverLimit`); a codex child runs in a per-run temporary `CODEX_HOME` (`TestAgent_CodexChildBoundToRun`); an empty `ai.provider` runs `agent()` through the claude CLI (`TestAutomationBackends_WireMCPAndAgent`); a carved minutes deadline throws a catchable `BudgetExceeded`.
 - 2026-10-15 (Automations P2 Task 9, board #814): **AUTO-02 (write side) and AUTO-03 flip from Planned to Enforced.** AUTO-02 names `output.target`/`output.slack` (shortcuts through `Registry.Propose`) and the P2 workbench write gate (until P5); AUTO-03 records the grant table (migration 00117 — 00114–00116 are unrelated main migrations), the `automations auto` refusal order and the dormant `AutomationAgent` branch (P6); AUTO-01 records D28 (ask #315: `output.slack` needs `outputs: [slack]` and `slack:write@<account>`; an unscoped `tool:send_slack_message` counts as `slack:write@*`), which changed the `TestManifest_AdmitsWrite` case formerly named "outputs slack" (admitted) to "outputs slack alone admits no grant (D28)" (refused) (a narrowing). AUTO-04/12 gain the P2 output and dry-run guards. P1's interim `TestTool_WriteNotAvailableInP1` stays retired (entry below). No guard relaxed.
 - 2026-10-15 (Automations P2 Task 5): AUTO-02's P1 guard `TestTool_WriteNotAvailableInP1` is retired as planned (P2 plan Task 5, Step 3): it pinned P1's interim "writes arrive in a later phase" branch, not a contract. `tool()` writes now go through `Registry.Propose` on the `automation` surface (`ToolWriteModule`); the write-side guard `TestAuto02_ToolWriteGoesThroughPropose` replaces it. AUTO-12 gains `TestAuto12_DryRunWriteNeverReachesRegistry` (a dry-run write, `{wait:true}` included, returns `{status:"dry_run"}` and writes no `agent_actions` row). The status flips of AUTO-02/AUTO-03 stay with Task 9.
