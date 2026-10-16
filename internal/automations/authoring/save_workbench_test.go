@@ -87,6 +87,19 @@ func TestSaveAutomation_WorkbenchWritesIntoItsFolder(t *testing.T) {
 	if row.Status != "applied" {
 		t.Fatalf("Apply = %s %q; want applied", row.Status, row.Error)
 	}
+	assertWorkbenchFolderWritten(t, folder, want, text)
+	a, err := f.d.GetAutomationBySlug(string(automations.ScopeWorkbench), wbID, "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWorkbenchRecipeRow(t, a, want, wbID)
+	if save, err := f.d.LatestAppliedAutomationSave(a.Path, p.Scope, a.ApprovalHash); err != nil || save == nil {
+		t.Errorf("LatestAppliedAutomationSave = %v, %v; want the applied save", save, err)
+	}
+}
+
+func assertWorkbenchFolderWritten(t *testing.T, folder, want, text string) {
+	t.Helper()
 	if got, err := os.ReadFile(want); err != nil || string(got) != text {
 		t.Fatalf("recipe file = %q, %v; want the text byte for byte", got, err)
 	}
@@ -96,16 +109,13 @@ func TestSaveAutomation_WorkbenchWritesIntoItsFolder(t *testing.T) {
 	if files := folderFiles(t, folder); len(files) != 1 || files[0] != filepath.Join(".watchtower", "automations", "foo.md") {
 		t.Errorf("folder files = %v; want only .watchtower/automations/foo.md", files)
 	}
-	a, err := f.d.GetAutomationBySlug(string(automations.ScopeWorkbench), wbID, "foo")
-	if err != nil {
-		t.Fatal(err)
-	}
+}
+
+func assertWorkbenchRecipeRow(t *testing.T, a *db.Automation, want string, wbID int64) {
+	t.Helper()
 	if a.Path != want || a.ProjectID != wbID || a.ConfirmedHash == "" || a.ConfirmedHash != a.ApprovalHash || a.Enabled {
 		t.Errorf("row = path %q project %d confirmed %q approval %q enabled %v; want the workbench recipe, confirmed, off",
 			a.Path, a.ProjectID, a.ConfirmedHash, a.ApprovalHash, a.Enabled)
-	}
-	if save, err := f.d.LatestAppliedAutomationSave(a.Path, p.Scope, a.ApprovalHash); err != nil || save == nil {
-		t.Errorf("LatestAppliedAutomationSave = %v, %v; want the applied save", save, err)
 	}
 }
 
