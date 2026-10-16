@@ -24,6 +24,7 @@ WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskDrawer.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskReviewBody.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskStackSection.swift
+WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardKanbanView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchFilesSection.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchPageView.swift
