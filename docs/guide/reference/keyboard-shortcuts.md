@@ -51,6 +51,7 @@ These keys work only while the panel has the keyboard: after a click on the list
 | esc | Give the keyboard back |
 | ⌘⌫ | Delete the session under the cursor (deferred, with an Undo bar) |
 | ⌘Z | Undo that delete |
+| Tab / ⇧Tab | Move focus on / back out of the panel |
 
 ## Workbench code viewer
 

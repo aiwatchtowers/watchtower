@@ -27,7 +27,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md) |
 
-Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` is common, `enable` / `disable` are not on every group. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
+Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
 
 ## Reading what Watchtower made
 
