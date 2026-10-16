@@ -29,6 +29,13 @@ enum AllowedURLSchemes {
         MemoryMarkdown.linkScheme
     ]
 
+    /// Schemes the app opens itself and never hands to the system:
+    /// `watchtower-nav` (`NavLink.scheme`) opens a screen of the app. Chat
+    /// markdown renders them (`MarkdownView`, as `renderOnly`); only the main
+    /// window's gate opens them (`openURLAction(navigate:)`), every other
+    /// surface discards them.
+    static let inAppSchemes: Set<String> = [NavLink.scheme]
+
     /// Whether `url` may be handed to the system. A URL with no scheme
     /// (relative, or a bare path) is rejected.
     ///
@@ -44,6 +51,16 @@ enum AllowedURLSchemes {
     /// handler, anything else is discarded rather than opened.
     static var openURLAction: OpenURLAction {
         OpenURLAction { url in permits(url) ? .systemAction : .discarded }
+    }
+
+    /// The main window's gate: an in-app screen link goes to `navigate`
+    /// (which ignores a hidden or unknown screen), the rest as `openURLAction`.
+    static func openURLAction(navigate: @escaping @MainActor (URL) -> Void) -> OpenURLAction {
+        OpenURLAction { url in
+            guard url.scheme?.lowercased() == NavLink.scheme else { return permits(url) ? .systemAction : .discarded }
+            MainActor.assumeIsolated { navigate(url) }
+            return .handled
+        }
     }
 
     /// Defence in depth for rendered markdown: removes the `.link` attribute

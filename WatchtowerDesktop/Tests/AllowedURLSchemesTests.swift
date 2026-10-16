@@ -131,4 +131,13 @@ final class AllowedURLSchemesTests: XCTestCase {
         XCTAssertEqual(AllowedURLSchemes.strippingDisallowedLinks(source, renderOnly: [CodeLineLinks.scheme])
             .runs.first { $0.link != nil }?.link, link, "the popover keeps it")
     }
+
+    /// In-app screen links (Ask Watchtower): never handed to the system,
+    /// kept as links in chat markdown, which only the main window's gate opens.
+    func testScreenLinksRenderInChatButAreNeverPermitted() {
+        let link = NavLink.url("calendar")
+        XCTAssertFalse(AllowedURLSchemes.permits(link))
+        let rendered = MarkdownView.inlineText([.link(destination: link.absoluteString, children: [.text("Calendar")])])
+        XCTAssertEqual(rendered.runs.first { $0.link != nil }?.link, link)
+    }
 }

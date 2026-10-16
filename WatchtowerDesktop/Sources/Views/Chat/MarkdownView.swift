@@ -29,13 +29,16 @@ struct MarkdownView: View {
     }
 
     /// Inline render with disallowed-scheme links stripped (the gate every
-    /// markdown link passes). `codeLinks` also keeps `watchtower-code`
-    /// links, which only the code question popover opens (render-only:
-    /// `AllowedURLSchemes.permits` never allows them).
+    /// markdown link passes). In-app screen links (`watchtower-nav`) stay,
+    /// opened by the main window's gate only; `codeLinks` also keeps
+    /// `watchtower-code` links, which only the code question popover opens
+    /// (render-only: `AllowedURLSchemes.permits` never allows either).
     static func inlineText(_ inlines: [MarkdownInline], codeLinks: Bool = false) -> AttributedString {
         AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
-                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [])
+                                                   renderOnly: codeLinks ? codeRenderOnly : AllowedURLSchemes.inAppSchemes)
     }
+
+    private static let codeRenderOnly = AllowedURLSchemes.inAppSchemes.union([CodeLineLinks.scheme])
 
     /// One line of markdown as a label (a button's, an ask's focus place):
     /// its inline styling without links — the label's own action is the

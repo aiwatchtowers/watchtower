@@ -316,6 +316,15 @@ final class AppState {
     private(set) var quickRunCenter: QuickRunCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// The ⌘/ "Ask Watchtower" panel is up.
+    var isAskPanelShown = false
+    /// The panel's guide index and help conversation; the CLI is resolved on the first ⌘/.
+    @ObservationIgnored private(set) lazy var askCenter = makeAskCenter()
+    /// The main window's link gate: `AllowedURLSchemes` plus in-app screen
+    /// links. One instance, so the root never swaps it on a re-render.
+    @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
+        self?.openNavLink(url)
+    }
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.

@@ -387,6 +387,9 @@ struct WatchtowerApp: App {
             }
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
+            // ⌘/ "Ask Watchtower" over every destination; the Workbench tab
+            // lives in this same window, so this one host covers it.
+            .modifier(AskPanelHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so
@@ -396,7 +399,9 @@ struct WatchtowerApp: App {
             // Same outermost placement, same reason: link surfaces live
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
-            .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            // It also opens in-app screen links (`watchtower-nav://`) from
+            // the Ask panel and AI Chat.
+            .environment(\.openURL, appState.mainWindowOpenURL)
             .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
