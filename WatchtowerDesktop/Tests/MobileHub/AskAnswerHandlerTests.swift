@@ -298,6 +298,25 @@ final class AskAnswerHandlerTests: XCTestCase {
         XCTAssertEqual(try stored(idle.ask).status, "answered")
     }
 
+    /// An automation run's ask: its answer goes to the run, never to the
+    /// brief — `automation`, kept for a re-run too.
+    func testAnAutomationAskEchoesAutomation() async throws {
+        let seeded = try await seed()
+        let ask = try await pool.write { d in
+            let automation = try TestDatabase.insertAutomation(d, slug: "release-check", workbenchID: seeded.project)
+            let run = try TestDatabase.insertAutomationRun(d, automationID: automation, status: "waiting", waitingReason: "ask")
+            return try TestDatabase.insertOwnerAsk(d, projectID: seeded.project, payload: Self.questions, automationRunID: run)
+        }
+        let handler = makeHandler(makeVM())
+        let request = action(ask: ask, workbench: seeded.project)
+
+        let first = try await handler.handle(request)
+        XCTAssertEqual(first, .applied(["delivery": .string("automation")]))
+        XCTAssertEqual(try stored(ask).status, "answered")
+        let again = try await handler.handle(request)
+        XCTAssertEqual(again, .applied(["delivery": .string("automation")]), "a re-run echoes the kept delivery")
+    }
+
     func testEveryOutcomeMapsToItsEcho() {
         let deliveries: [(OwnerAsksViewModel.Delivery, String)] = [
             (.submitted, "submitted"), (.typed, "typed"), (.held, "held"),
@@ -306,6 +325,8 @@ final class AskAnswerHandlerTests: XCTestCase {
         for (delivery, wire) in deliveries {
             XCTAssertEqual(AskAnswerHandler.outcome(.delivered(delivery)), .applied(["delivery": .string(wire)]))
         }
+        XCTAssertEqual(AskAnswerHandler.outcome(.delivered(.noSession), automation: true),
+                       .applied(["delivery": .string("automation")]))
         XCTAssertEqual(AskAnswerHandler.outcome(.notOpen), .failed(.askNotOpen))
         XCTAssertEqual(AskAnswerHandler.outcome(.invalid("bad")), .failed(.invalidAnswer, message: "bad"))
         XCTAssertEqual(AskAnswerHandler.outcome(.busy).reason, .conflict)

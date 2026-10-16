@@ -187,10 +187,10 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpAutomationOptions is `watchtower mcp --chat --surface automation
 // --automation-run N --automation-tools a,b,c` (spec 2026-10-14 §6.5): the
 // server an automation's agent() claude/codex child talks to. It starts only
-// in that run's own child (RunEnvMarker = N, never a borrowed binding) while
-// run N is running. It mounts EffectiveAgentTools — the flag's tools ∩ what
-// the run's manifest admits ∩ the automation surface, no writes in a dry run
-// — plus get_action, shows get_action only the run's own rows, and passes
+// in that run's own child (RunEnvMarker = N, never a borrowed binding, and
+// no WATCHTOWER_TERMINAL_SESSION_ID) while run N is running. It mounts
+// EffectiveAgentTools — the flag's tools ∩ what the run's manifest admits ∩
+// the automation surface, no writes in a dry run — plus get_action, shows get_action only the run's own rows, and passes
 // every call through GateAgentCall and every result through
 // CheckAgentResult. A write is a proposal stamped with the run, always
 // pending (AutomationAgent). The chat flags (--conversation, --turn,
@@ -204,6 +204,10 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 		return nil, errors.New("--surface automation requires --automation-run N")
 	case os.Getenv(automations.RunEnvMarker) != strconv.FormatInt(runID, 10):
 		return nil, fmt.Errorf("--automation-run %d serves only that run's own agent (%s=%d)", runID, automations.RunEnvMarker, runID)
+	case os.Getenv(terminalSessionEnv) != "":
+		// agent() children get an allowlisted env that never carries it; a
+		// Desktop terminal session's agent does, marker copied or not.
+		return nil, fmt.Errorf("--automation-run %d is refused inside a terminal session (%s is set)", runID, terminalSessionEnv)
 	}
 	run, err := database.GetAutomationRun(runID)
 	if err != nil {

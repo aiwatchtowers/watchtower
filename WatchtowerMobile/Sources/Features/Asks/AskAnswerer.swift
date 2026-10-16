@@ -3,10 +3,13 @@ import Observation
 import WatchtowerKit
 import WatchtowerSync
 
-/// Where the Mac's answer line went (`result.delivery`, spec §5.2).
+/// Where the Mac's answer line went (`result.delivery`, spec §5.2). A
+/// value this build does not know decodes to none (the plain saved line).
 enum AskDelivery: String, Equatable {
     case submitted, typed, held, queued, copied
     case noSession = "no_session"
+    /// An automation run's ask: the answer goes to the run, not a session.
+    case automation
 
     /// The short line shown under an answered ask.
     var text: String {
@@ -17,6 +20,7 @@ enum AskDelivery: String, Equatable {
         case .queued: "Queued behind another answer to the session"
         case .copied: "On the Mac's clipboard — paste it into the session"
         case .noSession: "No session is running — the answer is saved on the Mac"
+        case .automation: "Answer saved — the automation goes on with it"
         }
     }
 }
