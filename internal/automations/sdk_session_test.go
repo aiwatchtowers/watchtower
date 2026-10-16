@@ -174,27 +174,10 @@ func TestSession_WaitsForAppThenSessionThenFinish(t *testing.T) {
 	// No running blip between app and session: sample the run's status from
 	// before the attach until its reason is session.
 	before := s.run(t, runID).ActiveMS
-	seen := make(chan string, 1)
-	stop := make(chan struct{})
-	go func() {
-		statuses := ""
-		for {
-			select {
-			case <-stop:
-				seen <- statuses
-				return
-			default:
-			}
-			if r, err := s.d.GetAutomationRun(runID); err == nil && r.Status != db.RunWaiting {
-				statuses += r.Status + " "
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
+	stopWatch := s.watchNonWaiting(runID)
 	sess := s.launch(t, runID, p.StepID)
 	s.waitReason(t, runID, db.WaitSession)
-	close(stop)
-	if got := <-seen; got != "" {
+	if got := stopWatch(); got != "" {
 		t.Fatalf("the run left waiting between app and session: %s", got)
 	}
 	if after := s.run(t, runID).ActiveMS; after != before {
@@ -206,16 +189,47 @@ func TestSession_WaitsForAppThenSessionThenFinish(t *testing.T) {
 
 	s.setSession(t, sess, `finished_at = '2026-10-14T12:30:00.000Z', finish_summary = 'Two findings filed'`)
 	r := s.finish(t, runID, db.RunSucceeded, "")
-	out := summaryObject(t, r)
+	checkFinishedSession(t, summaryObject(t, r), sess)
+	if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.SessionID != sess || st.FinishedAt == nil ||
+		st.Permission != "session:start" {
+		t.Fatalf("step = %+v; want ok, finished, session %d, permission session:start", st, sess)
+	}
+}
+
+// watchNonWaiting samples the run's status until the returned stop is
+// called, which returns every non-waiting status seen meanwhile.
+func (s *sessFixture) watchNonWaiting(runID int64) (stop func() string) {
+	seen := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		statuses := ""
+		for {
+			select {
+			case <-done:
+				seen <- statuses
+				return
+			default:
+			}
+			if r, err := s.d.GetAutomationRun(runID); err == nil && r.Status != db.RunWaiting {
+				statuses += r.Status + " "
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	return func() string {
+		close(done)
+		return <-seen
+	}
+}
+
+// checkFinishedSession checks what the script got for a finished session.
+func checkFinishedSession(t *testing.T, out map[string]any, sess int64) {
+	t.Helper()
 	if out["status"] != "finished" || out["summary"] != "Two findings filed" || out["session_id"] != float64(sess) {
 		t.Fatalf("script got %v; want finished with the summary of session %d", out, sess)
 	}
 	if _, has := out["error"]; has {
 		t.Fatalf("script got %v; want no error key on a finished session", out)
-	}
-	if st := s.sessionStep(t, runID); st.Status != automations.StepOK || st.SessionID != sess || st.FinishedAt == nil ||
-		st.Permission != "session:start" {
-		t.Fatalf("step = %+v; want ok, finished, session %d, permission session:start", st, sess)
 	}
 }
 

@@ -96,24 +96,32 @@ func parseSessionCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (sessi
 	if req.prompt, ok = opts["prompt"].(string); !ok || req.prompt == "" {
 		return req, validationf("session(): prompt must be a non-empty string")
 	}
+	err = req.parseOptional(opts)
+	return req, err
+}
+
+// parseOptional reads session()'s optional agent, title and wait, in that
+// order.
+func (r *sessionCall) parseOptional(opts map[string]any) error {
+	var ok bool
 	if a, has := opts["agent"]; has {
 		s, _ := a.(string)
 		if _, ok := agentkind.Parse(s); !ok {
-			return req, validationf("session(): agent must be %q or %q", agentkind.Claude, agentkind.Codex)
+			return validationf("session(): agent must be %q or %q", agentkind.Claude, agentkind.Codex)
 		}
-		req.agent = s
+		r.agent = s
 	}
 	if t, has := opts["title"]; has {
-		if req.title, ok = t.(string); !ok || utf8.RuneCountInString(req.title) > maxSessionTitleRunes {
-			return req, validationf("session(): title must be a string of at most %d characters", maxSessionTitleRunes)
+		if r.title, ok = t.(string); !ok || utf8.RuneCountInString(r.title) > maxSessionTitleRunes {
+			return validationf("session(): title must be a string of at most %d characters", maxSessionTitleRunes)
 		}
 	}
 	if w, has := opts["wait"]; has {
-		if req.wait, ok = w.(string); !ok || (req.wait != sessionWaitFinish && req.wait != sessionWaitNone) {
-			return req, validationf("session(): wait must be %q or %q", sessionWaitFinish, sessionWaitNone)
+		if r.wait, ok = w.(string); !ok || (r.wait != sessionWaitFinish && r.wait != sessionWaitNone) {
+			return validationf("session(): wait must be %q or %q", sessionWaitFinish, sessionWaitNone)
 		}
 	}
-	return req, nil
+	return nil
 }
 
 // resolve fills the agent (the workbench's default when the script gave

@@ -213,21 +213,7 @@ func TestPRReviewRounds_E2E(t *testing.T) {
 		t.Fatalf("shell calls = %+v; want one %q in %s", calls, prListCmd, w.folder)
 	}
 	launches := w.desk.Launches()
-	if len(launches) != 2 {
-		t.Fatalf("launches = %+v; want two sessions", launches)
-	}
-	for i, n := range []string{"14", "15"} {
-		l := launches[i]
-		if l.Title != "⚙ PR #"+n+" review"+runLabelOf(id) || l.Agent != "claude" {
-			t.Fatalf("launch %d = title %q agent %q; want PR #%s review, claude", i, l.Title, l.Agent, n)
-		}
-		for _, want := range []string{"#" + n, "ask_owner", "after", "gh pr review " + n, "finish_session"} {
-			mustContain(t, "session prompt", l.Prompt, want)
-		}
-		if len(l.Prompt) > 3000 {
-			t.Fatalf("prompt is %d bytes; keep it well under the 4096-byte step args limit", len(l.Prompt))
-		}
-	}
+	checkReviewLaunches(t, launches, id)
 	if steps := w.stepsOfKind(t, id, automations.StepKindSession); len(steps) != 2 || steps[0].SessionID != launches[0].SessionID ||
 		steps[1].SessionID != launches[1].SessionID {
 		t.Fatalf("session steps = %+v; want two, in launch order", steps)
@@ -245,6 +231,27 @@ func TestPRReviewRounds_E2E(t *testing.T) {
 	}
 	if strings.Contains(rep.Body, "#12") {
 		t.Fatalf("report names #12, which did not change since the last round:\n%s", rep.Body)
+	}
+}
+
+// checkReviewLaunches checks the round launched one review session for
+// each of PRs #14 and #15, in that order.
+func checkReviewLaunches(t *testing.T, launches []automationstest.SessionLaunch, runID int64) {
+	t.Helper()
+	if len(launches) != 2 {
+		t.Fatalf("launches = %+v; want two sessions", launches)
+	}
+	for i, n := range []string{"14", "15"} {
+		l := launches[i]
+		if l.Title != "⚙ PR #"+n+" review"+runLabelOf(runID) || l.Agent != "claude" {
+			t.Fatalf("launch %d = title %q agent %q; want PR #%s review, claude", i, l.Title, l.Agent, n)
+		}
+		for _, want := range []string{"#" + n, "ask_owner", "after", "gh pr review " + n, "finish_session"} {
+			mustContain(t, "session prompt", l.Prompt, want)
+		}
+		if len(l.Prompt) > 3000 {
+			t.Fatalf("prompt is %d bytes; keep it well under the 4096-byte step args limit", len(l.Prompt))
+		}
 	}
 }
 
@@ -346,16 +353,7 @@ func TestAuto12_DryRunStartsNoSessionOrShell(t *testing.T) {
 					t.Fatalf("%s = %d rows after a dry run; want none", table, n)
 				}
 			}
-			kinds := map[string]int{}
-			for _, s := range w.steps(t, id) {
-				if s.Kind != automations.StepKindShell && s.Kind != automations.StepKindSession {
-					continue
-				}
-				kinds[s.Kind]++
-				if s.Status != automations.StepDryRun || s.SessionID != 0 {
-					t.Fatalf("%s step = %s session %d; want dry_run, no session", s.Kind, s.Status, s.SessionID)
-				}
-			}
+			kinds := w.dryRunStepKinds(t, id)
 			wantSessions := 1
 			if slug == "pr-review-rounds" {
 				wantSessions = 0 // no pull request list in a dry run, so no review session
@@ -365,4 +363,21 @@ func TestAuto12_DryRunStartsNoSessionOrShell(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dryRunStepKinds counts a dry run's shell and session steps, checking each
+// is dry_run and names no session.
+func (w *wbE2E) dryRunStepKinds(t *testing.T, runID int64) map[string]int {
+	t.Helper()
+	kinds := map[string]int{}
+	for _, s := range w.steps(t, runID) {
+		if s.Kind != automations.StepKindShell && s.Kind != automations.StepKindSession {
+			continue
+		}
+		kinds[s.Kind]++
+		if s.Status != automations.StepDryRun || s.SessionID != 0 {
+			t.Fatalf("%s step = %s session %d; want dry_run, no session", s.Kind, s.Status, s.SessionID)
+		}
+	}
+	return kinds
 }

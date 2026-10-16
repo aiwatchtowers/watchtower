@@ -336,6 +336,27 @@ func TestShell_OutputTailCappedAt256KiB(t *testing.T) {
 	}
 }
 
+func checkBothStreamTails(t *testing.T, out map[string]any, _ []byte) {
+	t.Helper()
+	so, se := out["stdout"].(string), out["stderr"].(string)
+	if !strings.HasSuffix(so, "\nline 29999\n") || !strings.HasSuffix(se, "\nerr 29999\n") {
+		t.Fatalf("streams are not tails: stdout …%q, stderr …%q", so[len(so)-20:], se[len(se)-20:])
+	}
+	if len(so) < 110<<10 || len(se) < 110<<10 { // each newline escapes to two bytes
+		t.Fatalf("stdout %d / stderr %d bytes; want each about half the room", len(so), len(se))
+	}
+}
+
+func checkShortStderrWhole(t *testing.T, out map[string]any, raw []byte) {
+	t.Helper()
+	if se := out["stderr"].(string); len(se) != 10240 {
+		t.Fatalf("stderr = %d bytes; want 10240, whole", len(se))
+	}
+	if len(raw) < automations.MaxSDKResultBytes-64 {
+		t.Fatalf("result = %d bytes; want stdout to fill the remaining room", len(raw))
+	}
+}
+
 func TestShell_OversizedOutputTruncatedNeverFails(t *testing.T) {
 	lines := func(prefix string) string {
 		return `awk 'BEGIN{for(i=0;i<30000;i++)print "` + prefix + ` " i}'`
@@ -347,24 +368,9 @@ func TestShell_OversizedOutputTruncatedNeverFails(t *testing.T) {
 		cut       []string
 	}{
 		{name: "both streams", cmd: lines("line") + "; " + lines("err") + " >&2; exit 4", exit: 4, cut: []string{"stdout", "stderr"},
-			check: func(t *testing.T, out map[string]any, _ []byte) {
-				so, se := out["stdout"].(string), out["stderr"].(string)
-				if !strings.HasSuffix(so, "\nline 29999\n") || !strings.HasSuffix(se, "\nerr 29999\n") {
-					t.Fatalf("streams are not tails: stdout …%q, stderr …%q", so[len(so)-20:], se[len(se)-20:])
-				}
-				if len(so) < 110<<10 || len(se) < 110<<10 { // each newline escapes to two bytes
-					t.Fatalf("stdout %d / stderr %d bytes; want each about half the room", len(so), len(se))
-				}
-			}},
+			check: checkBothStreamTails},
 		{name: "short stderr kept whole", cmd: `head -c 10240 /dev/zero | tr '\000' e >&2; head -c 409600 /dev/zero | tr '\000' o`, cut: []string{"stdout"},
-			check: func(t *testing.T, out map[string]any, raw []byte) {
-				if se := out["stderr"].(string); len(se) != 10240 {
-					t.Fatalf("stderr = %d bytes; want 10240, whole", len(se))
-				}
-				if len(raw) < automations.MaxSDKResultBytes-64 {
-					t.Fatalf("result = %d bytes; want stdout to fill the remaining room", len(raw))
-				}
-			}},
+			check: checkShortStderrWhole},
 		{name: "control characters", cmd: `head -c 200000 /dev/zero | tr '\000' '\001'`, cut: []string{"stdout"},
 			check: func(t *testing.T, out map[string]any, raw []byte) {
 				if so := out["stdout"].(string); len(so) < 40000 || strings.Trim(so, "\x01") != "" {

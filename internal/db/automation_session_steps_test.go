@@ -77,20 +77,32 @@ func TestSessionAttach_IsConditional(t *testing.T) {
 		t.Fatalf("an attached step is still pending: %+v", pending)
 	}
 
-	// A later session() step of the same run never adopts the first
-	// step's session.
+	checkLaterStepAttach(t, d, run, first, second)
+	checkForeignAttachesRefused(t, d, run)
+}
+
+// checkLaterStepAttach checks a later session() step of the same run never
+// adopts the first step's session (attached), only the run's unattached one
+// (free).
+func checkLaterStepAttach(t *testing.T, d *DB, run, attached, free int64) {
+	t.Helper()
 	laterStep, err := d.AppendAutomationRunStep(AutomationRunStep{RunID: run, Kind: "session", Name: "claude",
 		Status: "waiting", StartedAt: runTestNow})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mustAttach(t, d, laterStep, first) {
+	if mustAttach(t, d, laterStep, attached) {
 		t.Fatal("a second step of the run adopted the first step's session")
 	}
-	if !mustAttach(t, d, laterStep, second) {
+	if !mustAttach(t, d, laterStep, free) {
 		t.Fatal("the run's unattached session did not attach to its later step")
 	}
+}
 
+// checkForeignAttachesRefused checks a second run's step attaches neither
+// a session of run, nor an unknown session, nor — once cancelled — its own.
+func checkForeignAttachesRefused(t *testing.T, d *DB, run int64) {
+	t.Helper()
 	// A session row of another run never attaches.
 	wb2, run2, step2 := seedSessionStepRun(t, d, "deploy")
 	if mustAttach(t, d, step2, seedRunSession(t, d, wb2, run)) {

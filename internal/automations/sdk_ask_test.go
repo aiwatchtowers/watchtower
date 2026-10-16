@@ -96,20 +96,7 @@ func TestAsk_WaitsAndDelivers(t *testing.T) {
 	w := newWriteFixture(t)
 	a := w.seedAskAutomation(t, askScript)
 	runID, ask := w.startAskWait(t, a)
-
-	if ask.AutomationRunID != (sql.NullInt64{Int64: runID, Valid: true}) || ask.SessionID.Valid || ask.Status != "open" {
-		t.Fatalf("ask run %+v session %+v status %s; want run %d, no session, open", ask.AutomationRunID, ask.SessionID, ask.Status, runID)
-	}
-	var payload asks.Payload
-	if err := json.Unmarshal([]byte(ask.Payload), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if ask.Origin != asks.OriginAgent || ask.Level != asks.Level(asks.KindQuestion, payload, asks.OriginAgent) || ask.Level != asks.LevelQuick {
-		t.Fatalf("ask origin %s level %s; want agent, quick (asks.Level)", ask.Origin, ask.Level)
-	}
-	if ask.Kind != asks.KindQuestion || ask.Title != "Deploy now?" || ask.Summary != "The build is green." {
-		t.Fatalf("ask = %s %q %q", ask.Kind, ask.Title, ask.Summary)
-	}
+	checkFiledAsk(t, ask, runID)
 
 	// The Desktop's answer write.
 	if _, err := w.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?,
@@ -128,6 +115,24 @@ func TestAsk_WaitsAndDelivers(t *testing.T) {
 	}
 	if s := w.askStep(t, runID); s.Status != automations.StepOK || s.AskID != ask.ID || s.FinishedAt == nil {
 		t.Fatalf("ask step = %s ask %d finished %v; want ok, linked to %d", s.Status, s.AskID, s.FinishedAt != nil, ask.ID)
+	}
+}
+
+// checkFiledAsk checks the open ask askScript filed for run runID.
+func checkFiledAsk(t *testing.T, ask db.OwnerAsk, runID int64) {
+	t.Helper()
+	if ask.AutomationRunID != (sql.NullInt64{Int64: runID, Valid: true}) || ask.SessionID.Valid || ask.Status != "open" {
+		t.Fatalf("ask run %+v session %+v status %s; want run %d, no session, open", ask.AutomationRunID, ask.SessionID, ask.Status, runID)
+	}
+	var payload asks.Payload
+	if err := json.Unmarshal([]byte(ask.Payload), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if ask.Origin != asks.OriginAgent || ask.Level != asks.Level(asks.KindQuestion, payload, asks.OriginAgent) || ask.Level != asks.LevelQuick {
+		t.Fatalf("ask origin %s level %s; want agent, quick (asks.Level)", ask.Origin, ask.Level)
+	}
+	if ask.Kind != asks.KindQuestion || ask.Title != "Deploy now?" || ask.Summary != "The build is green." {
+		t.Fatalf("ask = %s %q %q", ask.Kind, ask.Title, ask.Summary)
 	}
 }
 

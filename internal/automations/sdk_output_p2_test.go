@@ -433,28 +433,36 @@ func TestWorkbenchAutomation_WritesAreProposals(t *testing.T) {
 				}
 				return
 			}
-			if len(rows) != 2 {
-				t.Fatalf("agent_actions = %+v; want two proposals", rows)
-			}
-			for _, row := range rows {
-				if row.Status != "pending" || row.ContextType != tools.AutomationContextType || row.ContextID != fmt.Sprint(id) {
-					t.Fatalf("row = %+v; want a pending proposal of run %d", row, id)
-				}
-				if ok, err := w.reg.Approve(context.Background(), row.ID, nil); err != nil || !ok {
-					t.Fatalf("approve #%d = (%v, %v)", row.ID, ok, err)
-				}
-			}
-			if applied, err := w.reg.Apply(context.Background(), rows[0].ID); err != nil || applied.Status != "applied" {
-				t.Fatalf("apply of a live workbench's row = %+v, %v; want applied", applied, err)
-			}
-			if err := w.d.DeleteWorkbench(a.ProjectID); err != nil {
-				t.Fatal(err)
-			}
-			applied, err := w.reg.Apply(context.Background(), rows[1].ID)
-			if err != nil || applied.Status != "failed" {
-				t.Fatalf("apply after the workbench was deleted = %+v, %v; want failed", applied, err)
-			}
-			mustContain(t, "apply error", applied.Error, "no longer exists")
+			w.checkWorkbenchProposals(t, rows, id, a.ProjectID)
 		})
 	}
+}
+
+// checkWorkbenchProposals checks a live workbench run's two proposals are
+// pending and carry the run, then that the first applies and the second —
+// applied after the workbench was deleted — fails.
+func (w *writeFixture) checkWorkbenchProposals(t *testing.T, rows []db.AgentAction, runID, workbenchID int64) {
+	t.Helper()
+	if len(rows) != 2 {
+		t.Fatalf("agent_actions = %+v; want two proposals", rows)
+	}
+	for _, row := range rows {
+		if row.Status != "pending" || row.ContextType != tools.AutomationContextType || row.ContextID != fmt.Sprint(runID) {
+			t.Fatalf("row = %+v; want a pending proposal of run %d", row, runID)
+		}
+		if ok, err := w.reg.Approve(context.Background(), row.ID, nil); err != nil || !ok {
+			t.Fatalf("approve #%d = (%v, %v)", row.ID, ok, err)
+		}
+	}
+	if applied, err := w.reg.Apply(context.Background(), rows[0].ID); err != nil || applied.Status != "applied" {
+		t.Fatalf("apply of a live workbench's row = %+v, %v; want applied", applied, err)
+	}
+	if err := w.d.DeleteWorkbench(workbenchID); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := w.reg.Apply(context.Background(), rows[1].ID)
+	if err != nil || applied.Status != "failed" {
+		t.Fatalf("apply after the workbench was deleted = %+v, %v; want failed", applied, err)
+	}
+	mustContain(t, "apply error", applied.Error, "no longer exists")
 }
