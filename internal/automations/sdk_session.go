@@ -160,7 +160,7 @@ func runSession(env *Env, b Backends, step *Step, req sessionCall) (any, error) 
 	if env.DryRun {
 		return dryRunResult(step, req.stepArgs()), nil
 	}
-	if env.Wait == nil || b.DB == nil {
+	if env.Wait == nil || b.DB == nil || env.Run == nil {
 		return nil, notAvailable("session() needs the automation executor")
 	}
 	if err := step.Mark(StepWaiting, db.StepFinish{}); err != nil {

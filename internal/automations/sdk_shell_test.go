@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/claude"
 	"watchtower/internal/db"
 )
 
@@ -156,6 +157,39 @@ func TestShell_RefusedInProtectedFolder(t *testing.T) {
 	}
 }
 
+// A stored folder whose folder or ANCESTOR was later replaced by a link is
+// refused before anything is stat'ed or run: the link could lead into a
+// privacy-protected folder.
+func TestShell_RefusedWhenTheFolderPathHasALink(t *testing.T) {
+	root := shellFolder(t)
+	target := shellFolder(t)
+	if err := os.MkdirAll(filepath.Join(target, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "parent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "folder")); err != nil {
+		t.Fatal(err)
+	}
+	for name, folder := range map[string]string{
+		"folder":   filepath.Join(root, "folder"),
+		"ancestor": filepath.Join(root, "parent", "repo"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sh := realShell()
+			r := runShell(t, `try { shell("pwd"); return "ran" } catch (e) { return e.name + "|" + e.message }`,
+				shellCase{perms: []string{`shell:"pwd"`}, shell: sh, wb: folderWB(folder)})
+			if want := "NotAvailable|the workbench folder path contains a symlink; rebind the workbench to its real folder"; r.out != want {
+				t.Fatalf("script returned %#v; want %q", r.out, want)
+			}
+			if n := len(sh.Calls()); n != 0 {
+				t.Fatalf("shell calls = %d; want 0 (no process)", n)
+			}
+		})
+	}
+}
+
 func TestShell_NotAvailable(t *testing.T) {
 	folder := shellFolder(t)
 	missing := &automationstest.FakeWorkbench{Info: automations.WorkbenchInfo{ID: shellWorkbenchID, Folder: filepath.Join(folder, "absent")}}
@@ -208,10 +242,14 @@ func TestShell_EnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	folder := shellFolder(t)
 	sh := realShell()
 	r := runShell(t, `return shell("env").stdout`, shellCase{perms: []string{`shell:"env"`}, shell: sh, wb: folderWB(folder)})
-	want := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LANG=en_US.UTF-8", "USER=acme",
+	want := []string{"PATH=" + claude.RichPATH(), "HOME=" + os.Getenv("HOME"), "LANG=en_US.UTF-8", "USER=acme",
 		"WATCHTOWER_AUTOMATION_RUN_ID=42"}
 	if calls := sh.Calls(); len(calls) != 1 || !slices.Equal(calls[0].Env, want) {
 		t.Fatalf("command env = %+v; want %q", calls, want)
+	}
+	// The rich PATH, not launchd's minimal one: Homebrew's gh and make resolve.
+	if !slices.Contains(filepath.SplitList(claude.RichPATH()), "/opt/homebrew/bin") {
+		t.Fatalf("PATH %q lacks /opt/homebrew/bin", claude.RichPATH())
 	}
 	got := envLines(t, r.out)
 	for _, kv := range want {

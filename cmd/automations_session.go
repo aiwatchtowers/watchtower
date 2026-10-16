@@ -13,9 +13,10 @@ import (
 var sessionWake = wakeAutomations
 
 // session-launched / session-ended are how the Desktop reports the session
-// it opened for a session() step (spec §13). They stay open under AGENT-07's
-// markers: they only report what the Desktop did, for a run whose
-// permissions the owner confirmed.
+// it opened for a session() step (spec §13). Only the Desktop reports: both
+// are refused under AGENT-07's markers (refuseUnderAgent), since an agent
+// could otherwise attach a session of its own to, or end, a step the
+// owner's run waits on.
 func init() {
 	launched := newAutomationsSubcommand("session-launched",
 		"Attach the session the Desktop launched to its waiting session() step", cobra.NoArgs, runAutomationsSessionLaunched)
@@ -33,6 +34,9 @@ func init() {
 }
 
 func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("report a session() step's session"); err != nil {
+		return err
+	}
 	if autoFlags.Step <= 0 || autoFlags.Session <= 0 {
 		return fmt.Errorf("--step and --session are required (positive ids)")
 	}
@@ -44,6 +48,9 @@ func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
 }
 
 func runAutomationsSessionEnded(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("end a session() step"); err != nil {
+		return err
+	}
 	if autoFlags.Step <= 0 {
 		return fmt.Errorf("--step is required (a positive id)")
 	}

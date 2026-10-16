@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 )
 
 // recipeExt is the extension of a recipe file; any other file is ignored.
@@ -162,12 +163,18 @@ func (ix *Indexer) RescanFolder(ctx context.Context, scope Scope, dir string) (R
 }
 
 // workbenchPathPlain reports whether the scheduler may rescan folder's
-// recipe folder: folder is a directory, not a symlink, and neither
+// recipe folder: no component of folder from the root down is a symlink
+// (fsutil.NoSymlinkComponents — a stored folder, or an ancestor of it, can
+// be replaced by a link later), folder is a directory, and neither
 // .watchtower nor .watchtower/automations is a symlink (either may be
 // absent). It only lstats, so no link is ever followed — one into a
 // privacy-protected folder (a git repo can carry such a link) would make the
 // background pass read there. Any other lstat failure answers false too.
 func (ix *Indexer) workbenchPathPlain(folder string) bool {
+	ix.touch(folder)
+	if plain, err := fsutil.NoSymlinkComponents(folder); err != nil || !plain {
+		return false
+	}
 	for i, p := range []string{folder, filepath.Join(folder, ".watchtower"), WorkbenchDir(folder)} {
 		ix.touch(p)
 		fi, err := os.Lstat(p)

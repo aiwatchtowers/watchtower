@@ -55,7 +55,7 @@ type TerminalSession struct {
 	Background      sql.NullInt64 // agent_background: in-flight background subagents; NULL = none / unknown
 	BackgroundAt    time.Time     // agent_background_at; zero when NULL or unreadable
 	ChatQuestionAt  string        // chat_question_at as stored; "" when there is no chat question
-	AutomationRunID sql.NullInt64 // automation_run_id (00122): the run that started the session; NULL = none
+	AutomationRunID sql.NullInt64 // automation_run_id (00122): the run that started the session; NULL = none. Read by the Desktop launch center (P5 part 2)
 }
 
 // AgentFailure flags a stored `waiting` as a turn that ended on an error (a

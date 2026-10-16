@@ -111,8 +111,8 @@ wrote a table directly would bypass the Inbox, trust and the owner's Approve.
 
 **Test guards:**
 - `internal/automations/sdk_tool_write_test.go` — `TestAuto02_ToolWriteGoesThroughPropose` (P2: a `tool()` write is one pending `agent_actions` row on the `automation` surface with `context_type='automation_run'`; no target is created before an approval), `TestToolWait_AppliedRejectedFailed`
-- `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesNotAvailable`
-- `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposeRefused`, `TestWorkbenchAutomation_PreexistingRowCannotBeApplied`
+- `internal/automations/sdk_output_p2_test.go` — `TestOutput_TargetGateIsOutputsNotTool`, `TestOutput_SlackIsAProposalUnlessGranted`, `TestOutput_ToolOffTheAutomationSurfaceIsNotAvailable`, `TestWorkbenchAutomation_WritesAreProposals`
+- `internal/tools/registry_automation_test.go` — `TestAgent01_AutomationWriteRecordsProposalOnly`, `TestWorkbenchAutomation_ProposesInItsRunsWorkbench`, `TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives`
 - `internal/tools/automation_reads_test.go` — `TestMemoryOpen_NoAccessBumpOnAutomationSurface`, `TestD23Tools_AutomationSurfaceOnly`
 - `cmd/automations_registry_test.go` — `TestBuildAutomationRegistry_AddsMemoryTools` (recall on this registry writes no shadow row)
 
@@ -431,11 +431,14 @@ chaining); a dry run returns `{status:"dry_run"}` (AUTO-12); a workbench in a
 protected folder is `NotAvailable` with exactly "this workbench is in a
 protected folder; use session() or move the folder", decided from the
 resolver before the folder is looked at (D9); a missing folder is
-`NotAvailable` "the workbench folder is missing"; a nil `Backends.Shell` is
+`NotAvailable` "the workbench folder is missing"; a folder path whose
+folder or any ancestor is a symlink is `NotAvailable` "the workbench folder
+path contains a symlink; rebind the workbench to its real folder", decided
+by lstats only before any stat or process (`fsutil.NoSymlinkComponents`); a nil `Backends.Shell` is
 `NotAvailable`. The command runs as `/bin/sh -c <cmd>` (`NewProcessShellRunner`,
 `Backends.Shell` in the daemon and the CLI) in its own process group, with an
-environment of exactly `PATH`, `HOME`, `LANG`, `USER` from the daemon's
-(absent ones omitted) and `WATCHTOWER_AUTOMATION_RUN_ID=<run id>` — no token,
+environment of exactly `PATH` (the daemon's resolved rich PATH,
+`claude.RichPATH`), `HOME`, `LANG`, `USER` from the daemon's (absent ones omitted) and `WATCHTOWER_AUTOMATION_RUN_ID=<run id>` — no token,
 no session marker. Its deadline is the run's remaining active time; on the
 deadline or the run ending (cancel) the whole group is killed (`SIGKILL`) and
 the run ends `timed_out`/`cancelled`; once the shell exits its group is killed
@@ -454,7 +457,7 @@ anything but exact, owner-read commands in the owner's own repository would
 turn a recipe into arbitrary code execution.
 
 **Test guards:**
-- `internal/automations/sdk_shell_test.go` — `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_RefusedInProtectedFolder`, `TestShell_NotAvailable`, `TestShell_ValidationError`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_TimeoutIsRemainingActiveBudget`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails`, `TestShell_NonZeroExitIsAResult`, `TestShell_DryRunStartsNoProcess`
+- `internal/automations/sdk_shell_test.go` — `TestAuto13_ShellExactCommandInWorkbenchFolder`, `TestAuto13_ShellRefusedInPersonalRecipe`, `TestShell_RefusedInProtectedFolder`, `TestShell_RefusedWhenTheFolderPathHasALink`, `TestShell_NotAvailable`, `TestShell_ValidationError`, `TestShell_EnvHasRunMarkerAndNoSecrets`, `TestShell_KillsProcessGroupOnInterrupt`, `TestShell_TimeoutIsRemainingActiveBudget`, `TestShell_OutputTailCappedAt256KiB`, `TestShell_OversizedOutputTruncatedNeverFails`, `TestShell_NonZeroExitIsAResult`, `TestShell_DryRunStartsNoProcess`
 - `internal/automations/manifest_test.go` — `TestManifest_PersonalRefusesShellSessionAsk`, `TestManifest_ShellExactOnly` (P1)
 - `cmd/automations_agent_test.go` — `TestAutomationBackends_WireMCPAndAgent` (`Backends.Shell` and `Backends.Workbench` wired)
 
@@ -462,6 +465,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-16 (Automations P5 part 1 final-review fixes, board #753): strengthening, no guard relaxed. A workbench folder path whose folder or any ancestor is a symlink is never followed: the daemon's rescan skips it and `shell()` refuses it with `NotAvailable` before any stat or process (`fsutil.NoSymlinkComponents`; guards `TestScheduler_NeverFollowsAnAncestorLink`, `TestShell_RefusedWhenTheFolderPathHasALink`). `shell()`'s PATH is the daemon's resolved rich PATH (`claude.RichPATH`), not launchd's minimal one; the env keys are unchanged. `automations session-launched`/`session-ended` are refused under AGENT-07's markers. Guards renamed to say what they pin, assertions unchanged: `TestWorkbenchAutomation_WritesNotAvailable` → `TestWorkbenchAutomation_WritesAreProposals` (and the three `internal/tools` ones listed in agent-actions.md).
 - 2026-10-16 (Automations P5 part 1, board #753; spec §6.1, §13, §15): P5 part 1 — workbench recipes indexed by the daemon, shell(), session(), ask(), workbench writes. **AUTO-12 and AUTO-13 are Enforced** with the guards listed on them (Tasks 4 and 7); the Desktop half of AUTO-09 (header buttons) and the Swift launch guards follow in part 2. Fail-closed fix: a stored `automation_run` row whose context id does not parse (or is 0) is refused with `ErrAutomationRunGone` at Propose, Approve and Apply instead of applying with no workbench check (`internal/tools/registry_automation_test.go::TestWorkbenchAutomation_UnparsableRunContextFailsClosed`). The workbench fixtures' failure path no longer files an `output.report` before its `throw` (a failed run commits no outputs, AUTO-04); the failure is the run's error, which carries the stderr tail. No guard relaxed.
 - 2026-10-16 (Automations P5 Task 7, board #753; spec §6.1, §13, §15 #2/#5): **AUTO-12 is Enforced in full** — its session half joins with `TestAuto12_DryRunStartsNoSessionOrShell` over the four workbench recipes (`internal/automations/testdata/workbench/`, moved into the P6 templates later), `TestSession_DryRunWaitsForNothing` and `TestAsk_DryRunCreatesNoRow`. **AUTO-02:** the P2 workbench write gate is lifted (spec §13): a workbench automation's run writes through `Registry.Propose` like a personal one, and the registry resolves its workbench from the run at Propose, Approve and Apply (AGENT-01 amended in `agent-actions.md`); `TestWorkbenchAutomation_WritesNotAvailable` keeps its name and now pins that a live run's writes are proposals, a dry run records none, and Apply after the workbench was deleted fails. No other guard relaxed.
 - 2026-10-16 (Automations P5 Task 4, board #753; spec §5, §13.2, §20.1 D19): **AUTO-13 flips from Planned to Enforced** with the `shell()` guards listed there; **AUTO-12's `shell()` half is Enforced** (`TestShell_DryRunStartsNoProcess`), its session half stays Planned. `NewProcessShellRunner` is wired as `Backends.Shell`. Oversized `shell()` output is cut to fit, never `ResultTooLarge` (owner decision ask #272, replacing R-P5-1). No guard relaxed.

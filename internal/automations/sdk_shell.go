@@ -12,7 +12,9 @@ import (
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 )
 
 // StepKindShell is the step kind of a shell() call.
@@ -22,9 +24,15 @@ const StepKindShell = "shell"
 // folder (spec §13.2): the daemon never touches such a folder.
 const errShellProtected = "this workbench is in a protected folder; use session() or move the folder"
 
-// shellEnvKeys are the daemon variables a shell() command gets, in this
-// order; one the daemon does not have is left out. RunEnvMarker follows.
-var shellEnvKeys = []string{"PATH", "HOME", "LANG", "USER"}
+// errShellSymlink refuses a stored folder whose path — the folder or an
+// ancestor, replaced after the workbench was bound — holds a symlink: it
+// could lead into a protected folder, so it is never followed.
+const errShellSymlink = "the workbench folder path contains a symlink; rebind the workbench to its real folder"
+
+// shellEnvKeys are the daemon variables a shell() command gets after PATH,
+// in this order; one the daemon does not have is left out. RunEnvMarker
+// follows.
+var shellEnvKeys = []string{"HOME", "LANG", "USER"}
 
 // ShellModule defines shell(cmd) (spec §5, §13.2; AUTO-13): only in a
 // workbench automation, only a command byte-equal to a `shell:` entry, run
@@ -98,7 +106,9 @@ func runShell(env *Env, b Backends, step *Step, cmd string) (any, error) {
 }
 
 // shellFolder resolves the workbench's folder: a protected one is refused
-// before anything looks at it (D9), a missing one is NotAvailable.
+// before anything looks at it (D9), one whose path holds a symlink is
+// refused after lstats only (fsutil.NoSymlinkComponents), a missing one is
+// NotAvailable.
 func shellFolder(ctx context.Context, b Backends, wbID int64) (string, error) {
 	if b.Workbench == nil {
 		return "", notAvailable("no workbench resolver is configured")
@@ -112,17 +122,29 @@ func shellFolder(ctx context.Context, b Backends, wbID int64) (string, error) {
 	case wb.Protected:
 		return "", notAvailable(errShellProtected)
 	}
-	if fi, err := os.Stat(wb.Folder); wb.Folder == "" || err != nil || !fi.IsDir() {
+	if wb.Folder == "" {
+		return "", notAvailable("the workbench folder is missing")
+	}
+	switch plain, err := fsutil.NoSymlinkComponents(wb.Folder); {
+	case err != nil:
+		return "", notAvailable("the workbench folder is missing")
+	case !plain:
+		return "", notAvailable(errShellSymlink)
+	}
+	if fi, err := os.Stat(wb.Folder); err != nil || !fi.IsDir() {
 		return "", notAvailable("the workbench folder is missing")
 	}
 	return wb.Folder, nil
 }
 
-// shellEnv is the command's whole environment (spec §13.2): PATH, HOME,
-// LANG and USER from the daemon's, then the run marker. Nothing else of the
-// daemon's environment — no token, no session marker — reaches it.
+// shellEnv is the command's whole environment (spec §13.2): the daemon's
+// resolved rich PATH (claude.RichPATH — a Desktop-started daemon has
+// launchd's minimal PATH, without Homebrew's gh or make), HOME, LANG and
+// USER from the daemon's, then the run marker. Nothing else of the daemon's
+// environment — no token, no session marker — reaches it.
 func shellEnv(env *Env) []string {
-	out := make([]string, 0, len(shellEnvKeys)+1)
+	out := make([]string, 0, len(shellEnvKeys)+2)
+	out = append(out, "PATH="+claude.RichPATH())
 	for _, k := range shellEnvKeys {
 		if v, ok := os.LookupEnv(k); ok {
 			out = append(out, k+"="+v)

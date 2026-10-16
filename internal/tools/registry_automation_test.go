@@ -437,7 +437,7 @@ func (f *autoFixture) actionCount(t *testing.T) int {
 // and the tool's Scope sees that workbench. A binding naming another
 // workbench than its run's is refused, and once the workbench is deleted
 // (its automations and runs cascade) Propose is refused and writes no row.
-func TestWorkbenchAutomation_ProposeRefused(t *testing.T) {
+func TestWorkbenchAutomation_ProposesInItsRunsWorkbench(t *testing.T) {
 	f := newAutoFixture(t)
 	scoped := f.wbWrite(t)
 	wb, run := f.seedWorkbenchAuto(t)
@@ -480,7 +480,7 @@ func TestWorkbenchAutomation_ProposeRefused(t *testing.T) {
 // automations and runs cascade — Apply lands the row failed without
 // Execute, Approve refuses (the row stays pending), and a row whose run
 // never existed fails closed the same way (ErrAutomationRunGone).
-func TestWorkbenchAutomation_PreexistingRowCannotBeApplied(t *testing.T) {
+func TestWorkbenchAutomation_RowAppliesOnlyWhileItsWorkbenchLives(t *testing.T) {
 	f := newAutoFixture(t)
 	scoped := f.wbWrite(t)
 	wb, run := f.seedWorkbenchAuto(t)
@@ -525,7 +525,7 @@ func TestWorkbenchAutomation_PreexistingRowCannotBeApplied(t *testing.T) {
 // carries the workbench, it applies while the workbench lives and fails at
 // Apply once the workbench was deleted after the propose. A personal run's
 // binding that names a workbench is refused — the run's automation has none.
-func TestWorkbenchAutomation_BindingWorkbenchAloneRefuses(t *testing.T) {
+func TestWorkbenchAutomation_BindingWorkbenchAloneWrites(t *testing.T) {
 	f := newAutoFixture(t)
 	f.wbWrite(t)
 	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)

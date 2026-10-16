@@ -408,7 +408,7 @@ func (w *writeFixture) seedWorkbenchOutput(t *testing.T, slug string, perms []st
 // {status: "dry_run"} and records none. A proposal applies while the
 // workbench lives; one whose workbench was deleted after the propose fails
 // at Apply.
-func TestWorkbenchAutomation_WritesNotAvailable(t *testing.T) {
+func TestWorkbenchAutomation_WritesAreProposals(t *testing.T) {
 	const script = `const out = [];
 		for (const f of [() => output.target({text: "Reply to acme"}), () => tool("create_target", {text: "x"})]) {
 			try { out.push(f().status) } catch (e) { out.push(e.name) }

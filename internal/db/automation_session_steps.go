@@ -23,7 +23,9 @@ type PendingSessionStep struct {
 
 // PendingAutomationSessionSteps returns the session() steps of workbench
 // runs waiting for the app — step waiting, no session attached, run waiting
-// with reason app — in step order (never nil).
+// with reason app — in step order (never nil). Its consumer is the Desktop
+// session launch center (automations P5 part 2); until it ships, such a step
+// waits until its run's pause timeout.
 func (db *DB) PendingAutomationSessionSteps() ([]PendingSessionStep, error) {
 	rows, err := db.Query(`SELECT st.id, st.run_id, a.id, a.project_id, st.args_json
 		FROM automation_run_steps st

@@ -473,3 +473,48 @@ func TestSession_PauseTimeoutExpiresWhileWaitingForSession(t *testing.T) {
 		t.Fatalf("late session-ended = (%v, %v); want false", ok, err)
 	}
 }
+
+// readyWaiter answers every Wait at once.
+type readyWaiter struct{}
+
+func (readyWaiter) Wait(context.Context, string, func(context.Context) (bool, error)) error {
+	return nil
+}
+
+// An Env without a run (no executor behind it) is NotAvailable, like ask():
+// session() never dereferences the missing run.
+func TestSession_NoRunIsNotAvailable(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	clock := automationstest.NewFakeClock(exStart)
+	scope := automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: 7}
+	m, err := automations.ParseManifest([]string{"session:start"}, nil, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &automations.Env{
+		Ctx:        context.Background(),
+		Automation: &db.Automation{ID: 3, Slug: "acme", Scope: "workbench", ProjectID: 7},
+		Recipe: &automations.Recipe{Script: `try { session({prompt: "x", agent: "claude"}); return "ran" } catch (e) { return e.name + "|" + e.message }`,
+			ScriptLine: 10, Scope: scope},
+		Manifest: m,
+		Journal:  automations.NewMemoryJournal(),
+		Meter:    automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock),
+		Buffer:   automations.NewCommitBuffer(nil),
+		Wait:     readyWaiter{},
+	}
+	sb, err := automations.NewSandbox(env, automations.DefaultModules(automations.Backends{DB: d, Clock: clock}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := sb.Run()
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if want := "NotAvailable|session() needs the automation executor"; out != want {
+		t.Fatalf("script returned %#v; want %q", out, want)
+	}
+}

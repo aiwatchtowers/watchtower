@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -104,9 +105,9 @@ func runAsk(env *Env, b Backends, step *Step, in askInput, payload asks.Payload)
 		return nil, err
 	}
 	if err := step.Mark(StepWaiting, db.StepFinish{AskID: id}); err != nil {
-		// No run will wait for it: withdraw the ask (the sweep catches a
-		// failed withdraw once the run ended) and keep its link on the step.
-		_ = b.DB.WithdrawOwnerAsk(wb, id, db.WithdrawnByAgent)
+		// No run will wait for it: withdraw the ask and keep its link on
+		// the step.
+		withdrawAsk(b.DB, wb, id)
 		err = fmt.Errorf("ask #%d was filed, but the run could not wait for it: %w", id, err)
 		step.Finish(db.StepFinish{Status: StepError, AskID: id, Error: err.Error()})
 		return nil, err
@@ -167,7 +168,7 @@ func waitForAnswer(env *Env, d *db.DB, wb, id int64) (*db.OwnerAsk, error) {
 		// An ask answered just before the wait ended (a cancel while the
 		// resume waited for a slot) is not open: it stays answered, never
 		// delivered, and only the owner-facing readers show it.
-		_ = d.WithdrawOwnerAsk(wb, id, db.WithdrawnByAgent)
+		withdrawAsk(d, wb, id)
 		return nil, err
 	}
 	return row, nil
@@ -197,4 +198,14 @@ func deliverAnswer(d *db.DB, step *Step, row *db.OwnerAsk, payload asks.Payload)
 	}
 	step.Finish(db.StepFinish{Status: StepOK, AskID: row.ID, ResultSummary: string(raw)})
 	return out, nil
+}
+
+// withdrawAsk withdraws (agent) an ask no run waits for. One no longer open
+// (answered or withdrawn meanwhile) is left as it is; any other failure is
+// logged, and the executor's ask sweep (sweepAsks) withdraws the ask once
+// its run ended.
+func withdrawAsk(d *db.DB, wb, id int64) {
+	if err := d.WithdrawOwnerAsk(wb, id, db.WithdrawnByAgent); err != nil && !errors.Is(err, db.ErrAskNotOpen) {
+		log.Printf("automations: withdrawing ask #%d: %v (the ask sweep withdraws it once the run ended)", id, err)
+	}
 }

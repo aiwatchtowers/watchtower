@@ -106,16 +106,25 @@ func TestAutomationsCLI_SessionCommandsJSON(t *testing.T) {
 	}
 }
 
-// The Desktop reports what it did; the commands stay open under an agent's
-// markers (the run's permissions were confirmed by the owner).
-func TestAutomationsCLI_SessionCommandsOpenUnderAgentMarkers(t *testing.T) {
-	c := newAutoCLI(t)
-	countSessionWakes(t)
-	_, step, sess := sessionCLIStep(t, c)
-	t.Setenv(automations.RunEnvMarker, "7")
-	t.Setenv("CLAUDECODE", "1")
-	assert.Equal(t, map[string]any{"attached": true},
-		runAutomationsJSON(t, "session-launched", "--step", idArg(step), "--session", idArg(sess)))
-	assert.Equal(t, map[string]any{"ended": true},
-		runAutomationsJSON(t, "session-ended", "--step", idArg(step), "--status", "stopped"))
+// Only the Desktop (no marker) reports a session step: under any AGENT-07
+// marker both commands are refused before anything is read or written — an
+// agent could otherwise end a step the owner's run waits on, or attach a
+// session of its own.
+func TestAutomationsCLI_SessionCommandsRefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			c := newAutoCLI(t)
+			wakes := countSessionWakes(t)
+			_, step, sess := sessionCLIStep(t, c)
+			t.Setenv(marker, "1")
+			_, err := runAutomations(t, "session-launched", "--step", idArg(step), "--session", idArg(sess))
+			require.ErrorContains(t, err, marker)
+			_, err = runAutomations(t, "session-ended", "--step", idArg(step), "--status", "stopped")
+			require.ErrorContains(t, err, marker)
+			assert.Zero(t, *wakes)
+			var status string
+			require.NoError(t, c.d.QueryRow(`SELECT status FROM automation_run_steps WHERE id = ?`, step).Scan(&status))
+			assert.Equal(t, "waiting", status, "the step is untouched under %s", marker)
+		})
+	}
 }

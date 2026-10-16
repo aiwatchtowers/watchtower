@@ -316,3 +316,45 @@ func mustReplaceWithLink(t *testing.T, path, target string) {
 		t.Fatal(err)
 	}
 }
+
+// A stored folder whose ANCESTOR was later replaced by a link is never
+// followed either: the scheduler lstats every component from the root down
+// and skips the workbench. The target is readable and holds no recipe, so a
+// rescan through the link would mark the row removed.
+func TestScheduler_NeverFollowsAnAncestorLink(t *testing.T) {
+	f := newSchedFixture(t, exStart)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(root, "parent", "repo")
+	wb, err := f.d.CreateWorkbench("acme", folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbenchRecipe(t, folder, "release", wbRecipeText("Drafts release notes.", `log("v1")`))
+	rescanWorkbench(t, f.ix, wb, folder) // the Desktop's pass
+	target, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(automations.WorkbenchDir(filepath.Join(target, "repo")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustReplaceWithLink(t, filepath.Join(root, "parent"), target)
+
+	var touched []string
+	automations.SetIndexerProbe(f.ix, func(path string) { touched = append(touched, path) })
+	automations.SetSchedulerProtected(f.s, func(p string) bool { return strings.HasPrefix(p, target) })
+	for i := range 2 {
+		f.tick(t, exStart.Add(time.Duration(i)*time.Minute))
+	}
+	for _, p := range touched {
+		if strings.HasPrefix(p, folder+"/") {
+			t.Fatalf("the scheduler went past the linked ancestor: %s (touched %q)", p, touched)
+		}
+	}
+	if a := workbenchRow(t, f.d, wb, "release"); a.RemovedAt != nil {
+		t.Fatal("the workbench was rescanned through the linked ancestor (row marked removed)")
+	}
+}
