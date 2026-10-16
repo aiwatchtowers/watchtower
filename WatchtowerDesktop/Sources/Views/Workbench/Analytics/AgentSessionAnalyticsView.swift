@@ -127,7 +127,7 @@ struct AgentSessionTimelineView: View {
         var parts = [segment.timeCategory?.title ?? segment.category]
         if !segment.toolClass.isEmpty { parts.append(AgentToolClass.title(segment.toolClass)) }
         if !segment.verb.isEmpty { parts.append(segment.verb) }
-        if let start = AgentAnalyticsFormat.date(segment.start), let end = AgentAnalyticsFormat.date(segment.end) {
+        if let start = AgentAnalyticsFormat.reportDate(segment.start), let end = AgentAnalyticsFormat.reportDate(segment.end) {
             parts.append(AgentAnalyticsFormat.duration(Int64(end.timeIntervalSince(start) * 1000)))
         }
         return parts.joined(separator: " · ")
@@ -202,8 +202,8 @@ struct AgentSessionTimelineView: View {
 
     private static func spans(_ lane: AgentLane) -> [Span] {
         lane.segments.enumerated().compactMap { index, segment in
-            guard let start = AgentAnalyticsFormat.date(segment.start),
-                  let end = AgentAnalyticsFormat.date(segment.end), end > start else { return nil }
+            guard let start = AgentAnalyticsFormat.reportDate(segment.start),
+                  let end = AgentAnalyticsFormat.reportDate(segment.end), end > start else { return nil }
             return Span(id: index, start: start, end: end, segment: segment)
         }
     }
