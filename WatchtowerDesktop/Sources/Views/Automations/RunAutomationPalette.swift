@@ -27,7 +27,13 @@ struct RunAutomationPaletteHost: ViewModifier {
     private var confirming: Binding<QuickRunRow?> {
         Binding(
             get: { appState.quickRunCenter.flatMap { $0.pendingOrigin == .palette ? $0.pendingConfirm : nil } },
-            set: { if $0 == nil, appState.quickRunCenter?.pendingConfirm != nil { appState.quickRunCenter?.cancelConfirm() } }
+            // Only a palette row is cancelled here: when a tray click takes
+            // over the slot the getter turns nil, and that row's alert owns it.
+            set: {
+                guard $0 == nil, let center = appState.quickRunCenter,
+                      center.pendingConfirm != nil, center.pendingOrigin == .palette else { return }
+                center.cancelConfirm()
+            }
         )
     }
 }

@@ -118,4 +118,27 @@ final class RunAutomationShortcutTests: XCTestCase {
             XCTAssertTrue(appState.isRunAutomationPaletteShown)
         }
     }
+
+    /// A tray click does not activate the app: a main window already open
+    /// behind another app is fronted and the app activated (review fix).
+    func testActivatesWhenAMainWindowIsAlreadyVisible() throws {
+        try withAppState { appState in
+            let window = VisibleWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+            window.identifier = NSUserInterfaceItemIdentifier("main-AppWindow-1")
+            var opened = 0
+            var activated = 0
+            appState.openMainWindow = { opened += 1 }
+            appState.bringMainWindowForward(windows: [window]) { activated += 1 }
+            XCTAssertEqual(activated, 1)
+            XCTAssertEqual(window.fronted, 1)
+            XCTAssertEqual(opened, 0, "the open window is reused")
+        }
+    }
+}
+
+/// Reports itself visible and records fronting, without a real window server.
+private final class VisibleWindow: NSWindow {
+    private(set) var fronted = 0
+    override var isVisible: Bool { true }
+    override func makeKeyAndOrderFront(_ sender: Any?) { fronted += 1 }
 }

@@ -48,9 +48,11 @@ extension AppState {
     }
 
     /// Fronts the main window, or opens one when none is visible (the
-    /// Settings window is key, tray-only mode). `windows` and `activate`
-    /// are test seams; with no app object or window opener (tests) nothing
-    /// is fronted or activated.
+    /// Settings window is key, tray-only mode). Activates either way, like
+    /// the tray's Open Watchtower and `bringWorkbenchForward`: a menu-bar
+    /// click does not activate the app, so a window behind another app would
+    /// otherwise stay there. `windows` and `activate` are test seams; with
+    /// no app object or window opener (tests) nothing is opened or activated.
     func bringMainWindowForward(
         windows: [NSWindow]? = nil,
         activate: () -> Void = ActivationPolicyDecision.becomeRegularAndActivate
@@ -59,6 +61,7 @@ extension AppState {
             TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized)
         }
         if let shown {
+            activate()
             if shown.isMiniaturized { shown.deminiaturize(nil) }
             shown.makeKeyAndOrderFront(nil)
         } else if let openMainWindow {
