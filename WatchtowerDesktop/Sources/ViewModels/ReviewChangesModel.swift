@@ -353,8 +353,8 @@ final class ReviewChangesModel {
     }
 
     /// Wrap-up marks live under this chapter key and the `intent` lens.
-    private static let wrapupChapter = "wrapup"
-    private static let intentLens = "intent"
+    static let wrapupChapter = "wrapup"
+    static let intentLens = "intent"
     /// Unsaved active seconds that trigger a save.
     private static let saveEverySeconds = 30
 
