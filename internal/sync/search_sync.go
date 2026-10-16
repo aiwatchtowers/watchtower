@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -116,10 +117,20 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
-	if lastDate != "" {
-		if _, err := time.Parse(searchDateFormat, lastDate); err != nil {
-			o.logger.Printf("search sync: invalid search_last_date %q, treating as first run", lastDate)
+	_, lastErr := time.Parse(searchDateFormat, lastDate)
+	if lastDate != "" && lastErr != nil {
+		o.logger.Printf("search sync: invalid search_last_date %q, treating as first run", lastDate)
+	}
+	// A first sync (FirstSyncFrom) also needs an account with no stored
+	// messages: one that always fell back to full sync has no watermark but
+	// already holds its history (F5). Read before the search saves anything.
+	firstSync := false
+	if lastErr != nil {
+		has, err := o.db.SlackAccountHasMessages(o.accountID)
+		if err != nil {
+			return fmt.Errorf("search sync: %w", err)
 		}
+		firstSync = !has
 	}
 
 	now := time.Now()
@@ -133,16 +144,102 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 
-	seenChannels := make(map[string]bool)
+	completed, totalMessages, seenChannels, err := o.searchAndSave(ctx, query, true)
+	if err != nil {
+		return err
+	}
+
+	// Advance the watermark to today only when every page was fetched. An early
+	// break (partial pagination) must leave search_last_date unchanged; otherwise
+	// the next incremental sync starts after the unfetched pages and their
+	// messages are lost forever.
+	if completed {
+		today := time.Now().Format("2006-01-02")
+		if err := o.db.SetSlackAccountSearchWatermark(o.accountID, today); err != nil {
+			return fmt.Errorf("saving search_last_date: %w", err)
+		}
+		// A completed sync that started with no usable watermark and no
+		// stored messages is the account's first: its window start is where
+		// a history backfill picks up (FirstSyncFrom). after:D is exclusive,
+		// so the first instant this sync covered is D + 1 day (R19); the
+		// backfill's top chunk then digests and rolls up day D itself. D is
+		// a local date (searchWindow formats a local now), so it is parsed
+		// and advanced in the local zone (F7).
+		if firstSync {
+			if after, ferr := time.ParseInLocation(searchDateFormat, searchAfter, time.Local); ferr == nil {
+				o.firstSyncFrom = after.AddDate(0, 0, 1)
+			}
+		}
+	} else {
+		o.searchIncomplete = true
+		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
+	}
+
+	// Populate discoveredChannelIDs (namespaced) so the full-sync fallback can skip inactive channels.
+	o.discoveredChannelIDs = make(map[string]bool, len(seenChannels))
+	for chID := range seenChannels {
+		o.discoveredChannelIDs[watchtowerslack.Namespace(o.accountID, chID)] = true
+	}
+
+	o.logger.Printf("search sync complete: %d channels, %d messages (query=%q, gap_days=%d)",
+		len(seenChannels), totalMessages, query, gapDays)
+	return nil
+}
+
+// slackSearchRange turns [from, to) into search.messages "after:"/"before:"
+// dates. Both operators are exclusive and day-granular, so each side is
+// widened by a day to keep both edge days inside; the overlap is harmless
+// (messages upsert).
+func slackSearchRange(from, to time.Time) (after, before string) {
+	return from.UTC().AddDate(0, 0, -1).Format(searchDateFormat), to.UTC().AddDate(0, 0, 1).Format(searchDateFormat)
+}
+
+// ErrBackfillIncomplete is BackfillSearch's error when Slack's search did not
+// return every page (a rate limit or partial pagination): transient, so the
+// caller holds the chunk for a later cycle instead of counting a failure
+// (R23).
+var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate limit or partial pages)")
+
+// BackfillSearch saves every message Slack's search finds in [from, to)
+// (widened to whole days; the fetch side of the chunk convention in
+// internal/historybackfill/chunk.go) without touching the search watermark, the
+// progress heartbeat or the account's auth/error state. An incomplete search
+// returns an error wrapping ErrBackfillIncomplete.
+func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
+	after, before := slackSearchRange(from, to)
+	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false)
+	if err != nil {
+		return saved, err
+	}
+	if !completed {
+		return saved, fmt.Errorf("%w: %s..%s", ErrBackfillIncomplete, after, before)
+	}
+	return saved, nil
+}
+
+// FirstSyncFrom reports whether the last Run was the account's completed
+// first search sync and, if so, the first instant it covered: UTC midnight
+// of the day after its exclusive "after:" date (R19).
+func (o *Orchestrator) FirstSyncFrom() (time.Time, bool) {
+	return o.firstSyncFrom, !o.firstSyncFrom.IsZero()
+}
+
+// searchAndSave runs search.messages for query page by page and saves every
+// match (channels, users, messages) through the search save path; completed
+// reports that every page was fetched. live=true is the forward sync: it
+// feeds the progress heartbeat and records a page-1 rate limit on the
+// Orchestrator (searchRateLimited/searchGapNote). live=false (a history
+// backfill) touches neither, and a page-1 rate limit just returns
+// completed=false with a nil error. Neither mode writes the search watermark.
+func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live bool) (completed bool, totalMessages int, seenChannels map[string]bool, err error) {
+	seenChannels = make(map[string]bool)
 	seenUsers := make(map[string]bool)
-	totalMessages := 0
 	page := 1
-	completed := false
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, totalMessages, seenChannels, ctx.Err()
 		default:
 		}
 
@@ -152,6 +249,9 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 				o.logger.Printf("search sync: non-fatal error on page %d, stopping early: %v", page, err)
 				if page == 1 {
 					if isRateLimitError(err) {
+						if !live {
+							break
+						}
 						// Slack is already throttling this token: nothing was
 						// fetched, but unlike a scope/permission problem this
 						// is transient. Don't return the error (which would
@@ -175,14 +275,14 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 					// instead of reporting a silent success with zero
 					// messages and advancing the watermark — unchanged from
 					// before the rate-limit carve-out above.
-					return fmt.Errorf("search sync (page %d): %w", page, err)
+					return false, totalMessages, seenChannels, fmt.Errorf("search sync (page %d): %w", page, err)
 				}
 				// A later page failed after partial progress: keep what we fetched
 				// but leave the watermark untouched (completed stays false) so the
 				// next run re-covers the unfetched pages instead of skipping them.
 				break
 			}
-			return fmt.Errorf("search sync (page %d): %w", page, err)
+			return false, totalMessages, seenChannels, fmt.Errorf("search sync (page %d): %w", page, err)
 		}
 
 		if len(result.Messages) == 0 {
@@ -214,7 +314,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 					dmUserID = watchtowerslack.Namespace(o.accountID, name)
 				}
 				if err := o.db.EnsureChannel(namespacedChannelID, name, chType, dmUserID); err != nil {
-					return fmt.Errorf("ensuring channel %s: %w", namespacedChannelID, err)
+					return false, totalMessages, seenChannels, fmt.Errorf("ensuring channel %s: %w", namespacedChannelID, err)
 				}
 			}
 
@@ -226,7 +326,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 					userName = msg.User
 				}
 				if err := o.db.EnsureUser(namespacedUserID, userName); err != nil {
-					return fmt.Errorf("ensuring user %s: %w", namespacedUserID, err)
+					return false, totalMessages, seenChannels, fmt.Errorf("ensuring user %s: %w", namespacedUserID, err)
 				}
 			}
 
@@ -261,13 +361,17 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		if len(dbMsgs) > 0 {
 			count, err := o.upsertSearchPage(dbMsgs)
 			if err != nil {
-				return err
+				return false, totalMessages, seenChannels, err
 			}
 			totalMessages += count
-			o.progress.AddMessages(count)
+			if live {
+				o.progress.AddMessages(count)
+			}
 		}
 
-		o.progress.SetDiscovery(page, result.Pages, len(seenChannels), len(seenUsers))
+		if live {
+			o.progress.SetDiscovery(page, result.Pages, len(seenChannels), len(seenUsers))
+		}
 		o.logger.Printf("search sync: page %d/%d, %d channels, %d users, %d messages",
 			page, result.Pages, len(seenChannels), len(seenUsers), totalMessages)
 
@@ -278,30 +382,12 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		page++
 	}
 
-	// Advance the watermark to today only when every page was fetched. An early
-	// break (partial pagination) must leave search_last_date unchanged; otherwise
-	// the next incremental sync starts after the unfetched pages and their
-	// messages are lost forever.
-	if completed {
-		today := time.Now().Format("2006-01-02")
-		if err := o.db.SetSlackAccountSearchWatermark(o.accountID, today); err != nil {
-			return fmt.Errorf("saving search_last_date: %w", err)
-		}
-	} else {
-		o.searchIncomplete = true
-		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
+	if live {
+		o.progress.SetDiscovery(page, page, len(seenChannels), len(seenUsers))
 	}
-
-	// Populate discoveredChannelIDs (namespaced) so the full-sync fallback can skip inactive channels.
-	o.discoveredChannelIDs = make(map[string]bool, len(seenChannels))
-	for chID := range seenChannels {
-		o.discoveredChannelIDs[watchtowerslack.Namespace(o.accountID, chID)] = true
-	}
-
-	o.progress.SetDiscovery(page, page, len(seenChannels), len(seenUsers))
-	o.logger.Printf("search sync complete: %d channels, %d users, %d messages from %d pages (query=%q, gap_days=%d)",
-		len(seenChannels), len(seenUsers), totalMessages, page, query, gapDays)
-	return nil
+	o.logger.Printf("search: %d channels, %d users, %d messages from %d pages (query=%q, completed=%t)",
+		len(seenChannels), len(seenUsers), totalMessages, page, query, completed)
+	return completed, totalMessages, seenChannels, nil
 }
 
 // extractThreadTSFromPermalink parses thread_ts from a Slack permalink URL.

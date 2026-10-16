@@ -7,6 +7,7 @@ struct StatusBarView: View {
     @State private var daemonManager = DaemonManager()
     @State private var lastSync: String?
     @State private var stats: WorkspaceStats?
+    @State private var backfillLine: String?
     @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
@@ -32,6 +33,11 @@ struct StatusBarView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 appState.selectedDestination = .usage
+            }
+
+            if let backfillLine {
+                Text(backfillLine)
+                    .foregroundStyle(.tertiary)
             }
 
             Spacer()
@@ -78,9 +84,7 @@ struct StatusBarView: View {
         Task.detached {
             do {
                 let (ws, st) = try await db.dbPool.read { db in
-                    let ws = try WorkspaceQueries.fetchWorkspace(db)
-                    let st = try WorkspaceStats.fetch(db)
-                    return (ws, st)
+                    (try WorkspaceQueries.fetchWorkspace(db), try WorkspaceStats.fetch(db))
                 }
                 await MainActor.run {
                     lastSync = ws?.syncedAt
@@ -89,6 +93,14 @@ struct StatusBarView: View {
             } catch {
                 // Status bar stats are decorative: a failed read keeps the last shown values.
                 NSLog("StatusBarView: failed to load stats: %@", error.localizedDescription)
+            }
+            // Its own read, so a missing history_backfill table cannot blank
+            // the stats; a failed read keeps the last line.
+            do {
+                let line = try await db.dbPool.read { BackfillProgress.line(try BackfillQueries.rows($0)) }
+                await MainActor.run { backfillLine = line }
+            } catch {
+                NSLog("StatusBarView: failed to load backfill line: %@", error.localizedDescription)
             }
         }
     }

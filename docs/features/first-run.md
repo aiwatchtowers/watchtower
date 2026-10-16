@@ -404,6 +404,10 @@ default, fallback, re-run keeps the tab), `HomeLinkTests`, `HomeViewTests`.
   `EmptyStateCopyTests` (Core); `ReadinessCenterTests`, `FeatureEmptyStateViewTests`,
   `EmptyStateTabWiringTests`, `EmptyStateCopyCoverageTests` (Desktop).
 
+## History backfill
+
+The first cycle stays shallow on purpose; a background phase then loads a month of Slack, Gmail and IMAP history behind it, with a status-bar/tray progress line. See [history-backfill.md](history-backfill.md).
+
 ## Pending
 
 - **P3 Try this → Recent work** (spec §4, #785): the `off` features Home's

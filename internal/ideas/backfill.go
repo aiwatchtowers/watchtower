@@ -98,6 +98,15 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 		return result, fatalErr
 	}
 
+	// The consolidator keeps its own gate, as in Run: with ideas.enabled=false
+	// only the stage-1 stream digests (gated by the caller on streams.enabled)
+	// run, and the registry spends nothing (FEAT-01, R17).
+	if p.cfg != nil && !p.cfg.Ideas.Enabled {
+		result.Cycles = cycles
+		result.Capped = capped1
+		return result, softErr
+	}
+
 	// Phase 2: drain the consolidator until a cycle proposes nothing, dedupes
 	// nothing, and moves no floor, or its own per-phase cycle budget runs
 	// out — independent of phase 1's budget (GB2), so a stage-1 pass that

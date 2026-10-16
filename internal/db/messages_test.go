@@ -9,6 +9,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// SlackAccountHasMessages scopes by the namespaced channel id: account 1
+// must not see account 11's messages.
+func TestSlackAccountHasMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	has, err := db.SlackAccountHasMessages(1)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "11:C1", TS: "1700000000.000001", UserID: "11:U1", Text: "x"}))
+	has, err = db.SlackAccountHasMessages(1)
+	require.NoError(t, err)
+	assert.False(t, has, "account 11's message is not account 1's")
+
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1700000000.000001", UserID: "1:U1", Text: "x"}))
+	has, err = db.SlackAccountHasMessages(1)
+	require.NoError(t, err)
+	assert.True(t, has)
+}
+
 func TestUpsertMessage(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

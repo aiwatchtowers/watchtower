@@ -176,6 +176,16 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			run: func(d *Daemon) { d.phaseMemory(context.Background()) },
 		},
 		{
+			// No history_backfill rows (an existing install, or
+			// sync.backfill_days = 0): the phase writes no run.
+			name: "history_backfill_no_rows",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Digest.Enabled = true
+				d.SetDigestPipeline(digest.New(database, cfg, gen, l))
+			},
+			run: func(d *Daemon) { d.phaseHistoryBackfill(context.Background()) },
+		},
+		{
 			name: "next_step",
 			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
 				cfg.Targets.NextStep.Enabled = false
