@@ -54,16 +54,17 @@ func (db *DB) PendingAutomationSessionSteps() ([]PendingSessionStep, error) {
 // AttachAutomationSessionStep names the session the Desktop launched for a
 // session() step, in one conditional update: the step is a waiting session
 // step with no session yet, its run waits for the app, and the session row
-// belongs to that run (automation_run_id). false (no error) when any of it
-// does not hold — a second attach, a run cancelled or expired meanwhile, a
-// session of another run. The step stays open; the run's wait resumes it.
+// belongs to that run (automation_run_id) and no step names it yet. false
+// (no error) when any of it does not hold — a second attach, a run cancelled
+// or expired meanwhile, a session of another run or of another step. The step stays open; the run's wait resumes it.
 func (db *DB) AttachAutomationSessionStep(stepID, sessionID int64) (bool, error) {
 	res, err := db.Exec(`UPDATE automation_run_steps SET session_id = ?
 		WHERE id = ? AND kind = 'session' AND status = 'waiting' AND session_id IS NULL AND finished_at IS NULL
 		  AND EXISTS (SELECT 1 FROM automation_runs r WHERE r.id = automation_run_steps.run_id
 		              AND r.status = 'waiting' AND r.waiting_reason = 'app')
 		  AND EXISTS (SELECT 1 FROM terminal_sessions s WHERE s.id = ?
-		              AND s.automation_run_id = automation_run_steps.run_id)`, sessionID, stepID, sessionID)
+		              AND s.automation_run_id = automation_run_steps.run_id)
+		  AND NOT EXISTS (SELECT 1 FROM automation_run_steps o WHERE o.session_id = ?)`, sessionID, stepID, sessionID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("attaching session %d to automation run step %d: %w", sessionID, stepID, err)
 	}

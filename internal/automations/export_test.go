@@ -1,6 +1,7 @@
 package automations
 
 import (
+	"context"
 	"time"
 
 	"watchtower/internal/db"
@@ -29,3 +30,10 @@ func SetSchedulerProtected(s *Scheduler, protected func(string) bool) { s.protec
 // SetIndexerProbe installs a recorder called with every path the indexer is
 // about to touch on disk for the scheduler (tests).
 func SetIndexerProbe(ix *Indexer, probe func(path string)) { ix.probe = probe }
+
+// SessionReady is one check of a fresh session() wait on step stepID of
+// run runID (tests drive it without the executor's poll).
+func SessionReady(d *db.DB, runID, stepID int64) (bool, error) {
+	w := &sessionWait{db: d, runID: runID, stepID: stepID}
+	return w.ready(context.Background())
+}

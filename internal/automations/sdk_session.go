@@ -2,6 +2,7 @@ package automations
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -16,11 +17,10 @@ import (
 // StepKindSession is the journal kind of a session() call.
 const StepKindSession = "session"
 
-// session() argument bounds (plan ruling R-P5-2).
-const (
-	maxSessionPromptBytes = 16384
-	maxSessionTitleRunes  = 80
-)
+// maxSessionTitleRunes bounds session()'s title (plan ruling R-P5-2); the
+// prompt is bounded by the journal (resolve: {prompt, agent, title} fits
+// StepClipBytes).
+const maxSessionTitleRunes = 80
 
 // session() wait modes: finish (the default) resumes the script when the
 // session ends; none as soon as the Desktop launched it.
@@ -93,8 +93,8 @@ func parseSessionCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (sessi
 			return req, validationf("session(): unknown option %q (use prompt, agent, title, wait)", k)
 		}
 	}
-	if req.prompt, ok = opts["prompt"].(string); !ok || req.prompt == "" || len(req.prompt) > maxSessionPromptBytes {
-		return req, validationf("session(): prompt must be a string of 1 to %d bytes", maxSessionPromptBytes)
+	if req.prompt, ok = opts["prompt"].(string); !ok || req.prompt == "" {
+		return req, validationf("session(): prompt must be a non-empty string")
 	}
 	if a, has := opts["agent"]; has {
 		s, _ := a.(string)
@@ -141,7 +141,7 @@ func (r *sessionCall) resolve(env *Env, b Backends) error {
 	}
 	r.title = runLabel(env, name)
 	if n := len(marshalForStep(r.stepArgs())); n > StepClipBytes {
-		return validationf("session(): the prompt and title take %d bytes in the run journal; they must fit %d", n, StepClipBytes)
+		return validationf("session(): the prompt is too long: {prompt, agent, title} take %d bytes as JSON; the limit is %d", n, StepClipBytes)
 	}
 	return nil
 }
@@ -204,7 +204,11 @@ func (w *sessionWait) ready(context.Context) (bool, error) {
 			w.out = map[string]any{"session_id": w.sessionID}
 			return true, nil
 		}
-		if err := w.db.SetAutomationRunWaiting(w.runID, db.WaitSession); err != nil {
+		err := w.db.SetAutomationRunWaiting(w.runID, db.WaitSession)
+		if errors.Is(err, db.ErrRunNotActive) {
+			return false, nil // ended meanwhile: the wait's next check sees the cancel
+		}
+		if err != nil {
 			return false, err
 		}
 	}

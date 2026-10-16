@@ -171,8 +171,35 @@ func TestSession_WaitsForAppThenSessionThenFinish(t *testing.T) {
 		t.Fatalf("args = %v; want the prompt, agent claude, title %q", args, wantTitle)
 	}
 
+	// No running blip between app and session: sample the run's status from
+	// before the attach until its reason is session.
+	before := s.run(t, runID).ActiveMS
+	seen := make(chan string, 1)
+	stop := make(chan struct{})
+	go func() {
+		statuses := ""
+		for {
+			select {
+			case <-stop:
+				seen <- statuses
+				return
+			default:
+			}
+			if r, err := s.d.GetAutomationRun(runID); err == nil && r.Status != db.RunWaiting {
+				statuses += r.Status + " "
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
 	sess := s.launch(t, runID, p.StepID)
 	s.waitReason(t, runID, db.WaitSession)
+	close(stop)
+	if got := <-seen; got != "" {
+		t.Fatalf("the run left waiting between app and session: %s", got)
+	}
+	if after := s.run(t, runID).ActiveMS; after != before {
+		t.Fatalf("active_ms %d → %d across the reason change; want unchanged", before, after)
+	}
 	if st := s.sessionStep(t, runID); st.Status != automations.StepWaiting || st.SessionID != sess || st.FinishedAt != nil {
 		t.Fatalf("step = %+v; want still waiting, naming session %d", st, sess)
 	}
@@ -242,8 +269,9 @@ func TestSession_IdleTurnKeepsTheRunWaiting(t *testing.T) {
 	sess := s.launch(t, runID, p.StepID)
 	s.waitReason(t, runID, db.WaitSession)
 	s.setSession(t, sess, `agent_state = 'waiting', agent_state_at = '2026-10-14T12:30:00.000Z'`)
-	s.e.Wake()
-	time.Sleep(50 * time.Millisecond)
+	if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
+		t.Fatalf("ready = (%v, %v) on an idle turn; want still waiting", done, err)
+	}
 	s.waitReason(t, runID, db.WaitSession)
 	s.cancel(t, runID)
 }
@@ -379,7 +407,7 @@ func TestSession_Validation(t *testing.T) {
 	for _, tc := range []struct{ name, opts, want string }{
 		{"empty prompt", `{prompt: ""}`, "prompt"},
 		{"no options", ``, "options"},
-		{"prompt too long", `{prompt: "a".repeat(16385)}`, "16384"},
+		{"prompt too long", `{prompt: "a".repeat(16385)}`, "4096"},
 		{"title too long", `{prompt: "x", title: "é".repeat(81)}`, "80"},
 		{"unknown agent", `{prompt: "x", agent: "x"}`, "agent"},
 		{"unknown wait", `{prompt: "x", wait: "later"}`, "wait"},
@@ -428,5 +456,20 @@ func TestSession_PauseTimeoutExpires(t *testing.T) {
 	}
 	if ok, err := s.d.AttachAutomationSessionStep(p.StepID, 1); err != nil || ok {
 		t.Fatalf("attach after expiry = (%v, %v); want false", ok, err)
+	}
+}
+
+func TestSession_PauseTimeoutExpiresWhileWaitingForSession(t *testing.T) {
+	s := newSessFixture(t, "claude")
+	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "pause_timeout_hours: 1\n", sessScript))
+	s.launch(t, runID, p.StepID)
+	s.waitReason(t, runID, db.WaitSession)
+	s.clock.Advance(61 * time.Minute)
+	s.finish(t, runID, db.RunExpired, db.ErrKindExpired)
+	if st := s.sessionStep(t, runID); st.Status != automations.StepError || st.FinishedAt == nil {
+		t.Fatalf("step = %+v; want closed error", st)
+	}
+	if ok, err := s.d.EndAutomationSessionStep(p.StepID, db.SessionStepStopped, ""); err != nil || ok {
+		t.Fatalf("late session-ended = (%v, %v); want false", ok, err)
 	}
 }
