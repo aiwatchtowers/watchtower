@@ -462,6 +462,20 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.thread.first?.message.text, "how do I snooze?")
     }
 
+    /// The popup sends through the tab's own `sendDraft`: the screen block is
+    /// sent, the typed draft is stored, and the draft is cleared.
+    func testSendDraftWithScreenSendsBlockAndStoresTypedText() async throws {
+        let vm = try makeViewModel()
+        _ = vm.newConversation()
+        vm.draft = "where is my plan?"
+        vm.sendDraft(screen: ScreenContext(tab: "Day Plan"))
+        let sent = try XCTUnwrap(lastFake().turns.last?.text)
+        XCTAssertTrue(sent.hasPrefix("=== CURRENT SCREEN ==="))
+        XCTAssertTrue(sent.hasSuffix("where is my plan?"))
+        XCTAssertEqual(vm.thread.first?.message.text, "where is my plan?")
+        XCTAssertEqual(vm.draft, "")
+    }
+
     func testRegenerateDoesNotResendScreen() async throws {
         let vm = try makeViewModel()
         _ = vm.newConversation()

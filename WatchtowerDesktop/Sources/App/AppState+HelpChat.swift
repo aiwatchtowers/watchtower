@@ -8,13 +8,31 @@ extension AppState {
             return
         }
         ensureChatViewModels()
+        resumeLastChatIfUnopened()
         isHelpChatShown = chatViewModel != nil
+    }
+
+    /// After a relaunch the AI Chat tab has not made its resume decision yet:
+    /// the popup runs the same `enterTab` landing policy from the keys the tab
+    /// stores, so it continues the last chat too.
+    private func resumeLastChatIfUnopened() {
+        guard let chatViewModel, chatViewModel.conversationID == nil else { return }
+        let defaults = UserDefaults.standard
+        let workspace = databaseManager?.dbPool.path ?? ""
+        let sameWorkspace = defaults.string(forKey: "chat.lastWorkspace") == workspace
+        let lastID = defaults.integer(forKey: "chat.lastConversationID")
+        let viewedAt = defaults.double(forKey: "chat.lastViewedAt")
+        chatViewModel.enterTab(
+            rememberedConversationID: sameWorkspace && lastID != 0 ? Int64(lastID) : nil,
+            lastViewedAt: sameWorkspace && viewedAt != 0 ? Date(timeIntervalSince1970: viewedAt) : nil,
+            now: Date())
     }
 
     /// Opens the popup with `prefill` in its composer (Search's Ask in chat); an existing draft is kept.
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
         guard let chatViewModel else { return }
+        resumeLastChatIfUnopened()
         chatViewModel.draft = HelpChatPrefill.merge(draft: chatViewModel.draft, prefill: prefill)
         isHelpChatShown = true
     }

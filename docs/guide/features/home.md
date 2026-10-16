@@ -51,14 +51,14 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good. A connected calendar counts as mail here.
 - Badges show what waits: unread briefings, proposals and due reminders in Inbox, ideas to review, one for a recap waiting for **I'm caught up**.
 
+Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
+
 ## When it's empty or wrong
 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source. You may also have hidden it: look under **HIDDEN**.
 - **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
 - **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
-
-Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there; **⌘/** opens the [assistant over this tab](ai-chat.md).
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 

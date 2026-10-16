@@ -129,21 +129,6 @@ func Slug(heading string, seen map[string]int) string {
 	return base + "-" + strconv.Itoa(n)
 }
 
-var relLink = regexp.MustCompile(`\]\(([^)\s:]+\.md)(#[^)\s]*)?\)`)
-
-// Catalogue returns README.md with its relative links rewritten to absolute
-// BaseURL ones.
-func Catalogue() string {
-	b, err := files.ReadFile("README.md")
-	if err != nil {
-		return ""
-	}
-	return relLink.ReplaceAllStringFunc(string(b), func(m string) string {
-		sub := relLink.FindStringSubmatch(m)
-		return "](" + BaseURL + path.Clean(sub[1]) + sub[2] + ")"
-	})
-}
-
 var entryLine = regexp.MustCompile(`^- \[([^\]]+)\]\(([^)\s#]+\.md)[^)]*\)`)
 
 // Map returns the README's group headings and one "- <Title> (<path>)" line

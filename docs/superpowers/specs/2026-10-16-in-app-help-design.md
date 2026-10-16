@@ -107,6 +107,7 @@ Owner, ask #239: when someone is stuck, the first thing they reach for is a **ho
 - **Prompt map.**
   - The embedded `README.md` has its relative links rewritten to GitHub URLs when it is put into the prompt.
   - Its one-line entries already cover Workbench and every other area.
+  - Amendment (controller, Task 4): the prompt carries the compact `guide.Map()` (group headings and `Title (path)`, no descriptions or URLs) instead; links come from search hits. The old `appGuide` was about 1.3 KB, the full catalogue would add +11.5 KB.
   - A fixed list of about 15 app questions is the acceptance check: each must be answered from the guide with a link, by a manual run against a dev build, recorded in the PR.
 - **Guide and the Knowledge search switch.**
   - Turning Knowledge search off or on never touches `guide` rows. The phase gate, cursors and any clean-up skip the guide source.

@@ -20,6 +20,8 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 
+Messages sent from the panel (**⌘/**) also tell the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider but is never stored, so the history shows only what you typed. For questions about Watchtower itself the assistant searches this guide and links the section.
+
 ## Using it
 
 1. Open **AI Chat**. A start page offers a composer, starter prompts, and your pinned and recent chats. If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
@@ -32,9 +34,7 @@ Only the main chat, the target chat and the automation editor can act, through p
 
 Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation the **AI Chat** tab has selected, so what you say there shows up here and the other way round. **New** starts a fresh conversation, and **Open in AI Chat** switches to the tab on this conversation.
 
-Each message you send from the panel also tells the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider with the message but is never stored, so the history shows only what you typed. For questions about Watchtower itself the assistant searches this guide and links the section.
-
-**Esc** stops a running answer; a second **Esc** closes the panel. While an answer streams you can't send another message, as in the tab. In the **AI Chat** tab, **⌘/** puts the cursor in the message box. In the **Files** editor of a Workbench, **⌘/** still toggles a comment.
+**Esc** stops a running answer; a second **Esc** closes the panel, and while one streams you can't send another message. In the **AI Chat** tab, **⌘/** puts the cursor in the message box; in a Workbench **Files** editor it still toggles a comment.
 
 ### Artifacts
 

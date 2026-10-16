@@ -592,12 +592,14 @@ final class ChatViewModel {
 
     /// Sends the composer text + the pending quote batch + any pending
     /// attachments as one owner turn; clears them only when the turn really
-    /// started (a failed send keeps them for retry).
-    func sendDraft() {
+    /// started (a failed send keeps them for retry). `screen` is the help
+    /// popup's per-turn screen block: sent with the turn, never stored.
+    func sendDraft(screen: ScreenContext? = nil) {
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: draft) ?? draft
-        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
+        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
+                screen: screen) {
             draft = ""
             _ = composerAttachments.takeForSend()
             if let batchID { quoteBatches[batchID] = nil }

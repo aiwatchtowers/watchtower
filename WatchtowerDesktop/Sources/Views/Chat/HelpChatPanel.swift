@@ -65,8 +65,6 @@ struct HelpChatPanel: View {
 
     /// The typed words are stored as they are; the screen block rides along.
     private func send() {
-        if chatVM.send(text: chatVM.draft, keepsComposer: true, screen: appState.currentScreenContext()) {
-            chatVM.draft = ""
-        }
+        chatVM.sendDraft(screen: appState.currentScreenContext())
     }
 }

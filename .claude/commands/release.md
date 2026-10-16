@@ -49,14 +49,17 @@ user-visible change must reach it before the release.
    `cmd/` or `internal/` but not `docs/guide/`:
 
    ```bash
-   git log --merges --format='%s' <last-tag>..HEAD
+   git log --first-parent --merges --format='%s' <last-tag>..HEAD
    gh pr view <N> --json files --jq '.files[].path'
    ```
 
 2. For each one that changes something a user sees, update its guide page per
    `docs/guide/WRITING.md`, or name in the release notes why none was needed.
-3. Run `go test ./docs/guide/` (links, catalogue, page size). Any failure halts
-   the release.
+3. Run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (links,
+   catalogue, page size, guide search, prompt golden). If the guide's catalogue
+   changed (a page added, renamed or re-titled), regenerate the chat prompt
+   golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update`
+   and commit it. Any other failure halts the release.
 
 ## Step 4: Pre-release gate
 

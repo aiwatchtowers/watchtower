@@ -106,16 +106,6 @@ func TestFeaturePagesUnder8KB(t *testing.T) {
 	}
 }
 
-func TestCatalogueLinksAreAbsolute(t *testing.T) {
-	c := Catalogue()
-	if mdLink.MatchString(c) {
-		t.Errorf("relative .md link left: %v", mdLink.FindString(c))
-	}
-	if !strings.Contains(c, BaseURL+"features/inbox.md") {
-		t.Error("missing absolute inbox link")
-	}
-}
-
 func TestMapIsCompact(t *testing.T) {
 	m := Map()
 	if !strings.Contains(m, "- Inbox (features/inbox.md)") {
@@ -127,7 +117,16 @@ func TestMapIsCompact(t *testing.T) {
 }
 
 func TestMapCoversEveryCatalogueEntry(t *testing.T) {
-	want := strings.Count(Catalogue(), "\n- [")
+	readme, err := files.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 0
+	for _, line := range strings.Split(string(readme), "\n") {
+		if entryLine.MatchString(line) {
+			want++
+		}
+	}
 	got := strings.Count("\n"+Map(), "\n- ")
 	if want == 0 || got != want {
 		t.Fatalf("Map has %d entries, README catalogue has %d", got, want)

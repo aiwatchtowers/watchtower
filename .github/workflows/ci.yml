@@ -89,7 +89,9 @@ jobs:
           go-version: "1.26.9"
 
       - name: Guide check
-        run: go test ./docs/guide/
+        # internal/chat pins guide.Map() in the prompt golden and internal/kb
+        # searches every guide page, so a guide-only PR must run both.
+        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/
 
   go-lint:
     name: Go Lint
