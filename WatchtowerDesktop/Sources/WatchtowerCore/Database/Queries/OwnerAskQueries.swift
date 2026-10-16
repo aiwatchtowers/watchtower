@@ -100,16 +100,20 @@ package enum OwnerAskQueries {
 
     /// A session's answered, delivered and withdrawn asks, newest first, read
     /// row by row. A nil session lists the workbench's asks filed from
-    /// outside the app.
-    package static func closedAsks(_ db: Database, projectID: Int64, sessionID: Int64?) throws -> OwnerAskRows {
+    /// outside the app, or with `automations` its automation runs' asks
+    /// (spec §13.3, filed with no session); a session's list has all of its.
+    package static func closedAsks(
+        _ db: Database, projectID: Int64, sessionID: Int64?, automations: Bool = false
+    ) throws -> OwnerAskRows {
         try OwnerAskRows.fetch(
             db,
             sql: """
                 SELECT * FROM owner_asks
                 WHERE project_id = ? AND session_id IS ? AND status != 'open'
+                  AND (session_id IS NOT NULL OR (automation_run_id IS NOT NULL) = ?)
                 ORDER BY created_at DESC, id DESC
                 """,
-            arguments: [projectID, sessionID]
+            arguments: [projectID, sessionID, automations]
         )
     }
 
@@ -124,15 +128,36 @@ package enum OwnerAskQueries {
 
     /// How many answered, delivered and withdrawn asks each session of the
     /// workbench has; the nil key counts the asks filed from outside the app.
+    /// The session-less asks an automation run filed are counted by
+    /// `closedAutomationCount`, not there.
     package static func closedCounts(_ db: Database, projectID: Int64) throws -> [Int64?: Int] {
         let rows = try Row.fetchAll(
             db,
-            sql: "SELECT session_id, COUNT(*) FROM owner_asks WHERE project_id = ? AND status != 'open' GROUP BY session_id",
+            sql: """
+                SELECT session_id, COUNT(*) FROM owner_asks
+                WHERE project_id = ? AND status != 'open'
+                  AND (session_id IS NOT NULL OR automation_run_id IS NULL)
+                GROUP BY session_id
+                """,
             arguments: [projectID]
         )
         var counts: [Int64?: Int] = [:]
         for row in rows { counts[row[0] as Int64?] = row[1] }
         return counts
+    }
+
+    /// How many of the workbench's closed session-less asks its automation
+    /// runs filed: the stack's automations line.
+    package static func closedAutomationCount(_ db: Database, projectID: Int64) throws -> Int {
+        try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) FROM owner_asks
+                WHERE project_id = ? AND status != 'open'
+                  AND session_id IS NULL AND automation_run_id IS NOT NULL
+                """,
+            arguments: [projectID]
+        ) ?? 0
     }
 
     /// A superseded ask's id → the id of the round that replaced it (the ask

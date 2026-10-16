@@ -29,6 +29,10 @@ Watchtower is careful not to talk over you:
 - If the session is not running, nothing is typed. The agent reads the answer when the session starts again.
 - If the agent withdrew the ask or replaced it with a newer round while you answered, nothing is sent and your draft is kept (**Discard draft** drops it).
 
+### Asks from an automation
+
+A workbench automation can ask you something too: a yes/no check or a question. It joins **Waiting for you** labelled "⚙ <automation> · run #N" where an agent's ask names its session, and you answer it the same way. Your answer goes back to the automation, never into a terminal: **Answer saved — the automation goes on with it**. Answered ones are under "⚙ Automations · ▸ N closed".
+
 ### The ask guard
 
 By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check reminds an agent that says its work is done to mark the session **Finished** with a short summary.

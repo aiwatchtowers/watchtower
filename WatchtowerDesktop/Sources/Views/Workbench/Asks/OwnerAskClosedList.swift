@@ -7,6 +7,8 @@ struct OwnerAskClosedButton: View {
     let vm: WorkbenchesViewModel
     let projectID: Int64
     let sessionID: Int64?
+    /// The automation runs' closed asks (`sessionID` nil).
+    var automations = false
     let count: Int
     @State private var showing = false
 
@@ -20,7 +22,9 @@ struct OwnerAskClosedButton: View {
         .foregroundStyle(.secondary)
         .help("Show the closed asks")
         .popover(isPresented: $showing, arrowEdge: .trailing) {
-            OwnerAskClosedList(vm: vm, projectID: projectID, sessionID: sessionID) { showing = false }
+            OwnerAskClosedList(vm: vm, projectID: projectID, sessionID: sessionID, automations: automations) {
+                showing = false
+            }
                 .popoverSurface()
         }
     }
@@ -33,9 +37,12 @@ struct OwnerAskClosedList: View {
     let vm: WorkbenchesViewModel
     let projectID: Int64
     let sessionID: Int64?
+    let automations: Bool
     let dismiss: () -> Void
 
-    private var key: OwnerAsksViewModel.ClosedListKey { .init(projectID: projectID, sessionID: sessionID) }
+    private var key: OwnerAsksViewModel.ClosedListKey {
+        .init(projectID: projectID, sessionID: sessionID, automations: automations)
+    }
 
     var body: some View {
         let asks = vm.asks
@@ -62,7 +69,7 @@ struct OwnerAskClosedList: View {
         .padding(12)
         .frame(width: 320)
         .frame(maxHeight: 360)
-        .task { await asks.loadClosed(projectID: projectID, sessionID: sessionID) }
+        .task { await asks.loadClosed(projectID: projectID, sessionID: sessionID, automations: automations) }
     }
 
     private func row(_ ask: OwnerAsk, replacedBy: Int64?) -> some View {
@@ -92,6 +99,7 @@ struct OwnerAskClosedList: View {
     private func caption(_ ask: OwnerAsk, replacedBy: Int64?) -> String {
         let status = OwnerAskPresentation.askStatusLine(ask, replacedBy: replacedBy)
         let age = TimeFormatting.shortAge(from: ask.createdAt, now: Date())
-        return [status, age].compactMap(\.self).joined(separator: " · ")
+        // An automation's ask names its run (spec §13.3).
+        return [vm.asks.automationLabel(ask), status, age].compactMap(\.self).joined(separator: " · ")
     }
 }
