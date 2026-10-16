@@ -60,6 +60,29 @@ package struct ReviewDiffFile: Decodable, Equatable, Sendable, Identifiable {
         case path, oldPath, status, additions, deletions, binary, collapsedReason, newBlob, newMode, hunks
     }
 
+    /// Direct construction for the pure review logic and its tests.
+    package init(
+        path: String,
+        additions: Int,
+        deletions: Int,
+        collapsedReason: String? = nil,
+        status: String = "modified",
+        binary: Bool = false,
+        newBlob: String = "",
+        newMode: String = "100644"
+    ) {
+        self.path = path
+        self.oldPath = nil
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.binary = binary
+        self.collapsedReason = collapsedReason
+        self.newBlob = newBlob
+        self.newMode = newMode
+        self.hunks = []
+    }
+
     /// Go emits `"hunks": null` for collapsed, binary and unchanged files.
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -106,6 +129,18 @@ package struct ReviewContextItem: Decodable, Equatable, Sendable {
     package let planText: String?
     package let specPath: String?
     package let missing: String?
+
+    /// Direct construction for the pure review logic and its tests.
+    package init(targetId: Int64, text: String, intent: String = "", missing: String? = nil) {
+        self.targetId = targetId
+        self.text = text
+        self.intent = intent
+        self.planPath = nil
+        self.planTask = nil
+        self.planText = nil
+        self.specPath = nil
+        self.missing = missing
+    }
 }
 
 package struct ReviewEnvelope: Decodable, Sendable {
