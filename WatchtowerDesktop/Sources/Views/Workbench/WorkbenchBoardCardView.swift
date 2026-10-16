@@ -291,6 +291,7 @@ struct WorkbenchTargetMenu: View {
                 .disabled(vm.scopeNode?.target.id == target.id)
             Divider()
         }
+        Button("New Sub-task…") { vm.beginNewTarget(under: target.id) }
         Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
         Divider()
         Menu("Move to") {

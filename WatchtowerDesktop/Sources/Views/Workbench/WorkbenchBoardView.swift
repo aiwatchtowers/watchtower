@@ -48,6 +48,9 @@ struct WorkbenchBoardView: View {
                 // that is window-wide and would steal Esc from a Claude Code
                 // terminal in the other split pane.
                 .onExitCommand { _ = escape(vm) }
+                .sheet(item: Binding(get: { vm.newTargetRequest }, set: { vm.newTargetRequest = $0 })) { request in
+                    WorkbenchNewTargetSheet(request: request, vm: vm)
+                }
             } else {
                 ProgressView()
             }
@@ -61,6 +64,13 @@ struct WorkbenchBoardView: View {
                 }
                 vm.onPollTick = { [weak projects = appState.workbenchesViewModel, projectID] in
                     Task { await projects?.refreshDrift(projectID: projectID) }
+                }
+                if let cli = appState.workbenchesViewModel?.cli {
+                    vm.addTarget = { [projectID] title, intent, priority, parentID in
+                        try await cli.addTarget(
+                            workbenchID: projectID, title: title, intent: intent, priority: priority, parentID: parentID
+                        )
+                    }
                 }
                 vm.load()
                 viewModel = vm
@@ -179,11 +189,13 @@ struct WorkbenchBoardView: View {
             }
             Divider()
             if vm.roots.isEmpty {
-                ContentUnavailableView(
-                    "No targets yet",
-                    systemImage: "square.stack.3d.up",
-                    description: Text("The agent session creates the board through the watchtower-workbench tools.")
-                )
+                ContentUnavailableView {
+                    Label("No targets yet", systemImage: "square.stack.3d.up")
+                } description: {
+                    Text("Add a task here, or let an agent session build the board through the watchtower-workbench tools.")
+                } actions: {
+                    Button("New Task…") { vm.beginNewTarget() }
+                }
                 .frame(maxHeight: .infinity)
             } else if let kanban {
                 WorkbenchBoardKanbanView(
@@ -204,6 +216,8 @@ struct WorkbenchBoardView: View {
     private func header(_ vm: WorkbenchBoardViewModel, kanban: WorkbenchBoardKanban?) -> some View {
         HStack(spacing: 10) {
             Text("Board").font(.headline)
+            Button { vm.beginNewTarget() } label: { Label("New Task", systemImage: "plus") }
+                .help(vm.scopeNode.map { "New task in \(WorkbenchTargetNumber.label($0.target.id))" } ?? "New task")
             Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {
                 Text("List").tag(WorkbenchBoardMode.list)
                 Text("Kanban").tag(WorkbenchBoardMode.kanban)
