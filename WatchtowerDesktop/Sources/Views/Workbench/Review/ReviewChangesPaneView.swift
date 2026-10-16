@@ -110,9 +110,12 @@ struct ReviewChangesPaneView: View {
                 if checklist { ReviewChecklistView(model: model) { compose = $0 } }
             }
         } else {
-            Text(model.files.isEmpty ? "No changes yet" : "Pick a file")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                Text(model.files.isEmpty ? "No changes yet" : "Pick a file")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if checklist { ReviewChecklistView(model: model) { compose = $0 } }
+            }
         }
     }
 

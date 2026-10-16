@@ -74,6 +74,13 @@ func TestParseLenses_SkipsAndReportsBadLines(t *testing.T) {
 	assert.Equal(t, "a", tests.Items[4].Text)
 }
 
+func TestParseLenses_IntentHeadingIsReserved(t *testing.T) {
+	ls, notes := ParseLenses([]byte("## Intent\n- a\n- b\n## Tests\n- c\n"))
+	assert.Equal(t, []string{`line 1: "intent" is reserved for Wrap-up`}, notes)
+	assert.NotContains(t, lensIDs(ls), "intent")
+	assert.Len(t, findLens(t, ls, "tests").Items, 5)
+}
+
 func TestLensID(t *testing.T) {
 	assert.Equal(t, "house_rules", LensID("House rules"))
 	assert.Equal(t, "api_cli", LensID("  API / CLI  "))

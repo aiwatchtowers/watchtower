@@ -98,6 +98,11 @@ func parseLensesInto(lenses []Lens, data []byte, builtin bool) ([]Lens, []string
 				cur = skippedLens
 				continue
 			}
+			if id == "intent" {
+				notes = append(notes, fmt.Sprintf("line %d: \"intent\" is reserved for Wrap-up", n))
+				cur = skippedLens
+				continue
+			}
 			cur = noLens
 			for j := range lenses {
 				if lenses[j].ID == id {
@@ -115,7 +120,7 @@ func parseLensesInto(lenses []Lens, data []byte, builtin bool) ([]Lens, []string
 				continue
 			}
 			if cur == skippedLens {
-				continue // the skipped heading's own note already covers these bullets // the skipped heading's own note already covers these bullets
+				continue // the skipped heading's own note already covers these bullets
 			}
 			q := strings.TrimSpace(strings.TrimPrefix(line, "-"))
 			if q == "" {

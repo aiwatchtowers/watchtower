@@ -44,15 +44,16 @@ struct ReviewChecklistView: View {
                         }
                     ))
                     .toggleStyle(.checkbox)
-                    .disabled(state == .commented || model.round?.status != "open")
+                    .disabled(model.round?.status != "open")
                     Spacer(minLength: 4)
                     Button(state == .commented ? "Commented" : "Comment…") {
-                        compose(.init(title: "\(lens.name): comment", prefill: item.text) { body, _ in
+                        let chapter = model.chapters.first { $0.key == chapterKey }?.title ?? chapterKey
+                        compose(.init(title: "\(lens.name): comment", prefill: "\(chapter) — \(item.text)") { body, _ in
                             try model.commentOnCheck(chapterKey: chapterKey, lens: lens.id, item: item, body: body)
                         })
                     }
                     .buttonStyle(.borderless)
-                    .disabled(state == .commented || model.round?.status != "open")
+                    .disabled(model.round?.status != "open")
                 }
                 .font(.callout)
             }

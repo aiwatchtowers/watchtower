@@ -43,7 +43,10 @@ package enum ReviewChapters {
         var testsBySubject: [String: [String]] = [:]
         var standalone: [String] = []
         for path in live where isTest(path) {
-            let subjects = subjectsByStem[stem(of: path, test: true)] ?? []
+            // A subject in the test's own directory first; else the one unique-stem subject anywhere (Swift Tests/).
+            let all = subjectsByStem[stem(of: path, test: true)] ?? []
+            let sameDir = all.filter { dirname($0) == dirname(path) }
+            let subjects = sameDir.isEmpty ? all : sameDir
             if subjects.count == 1 {
                 testsBySubject[subjects[0], default: []].append(path)
             } else {
@@ -143,9 +146,11 @@ package struct ReviewProgress: Equatable, Sendable {
     package static func make(
         files: [ReviewDiffFile], chapters: [ReviewChapter], isViewed: (String) -> Bool
     ) -> Self {
-        Self(
-            viewedLines: files.filter { isViewed($0.path) }.reduce(0) { $0 + $1.additions + $1.deletions },
-            totalLines: files.reduce(0) { $0 + $1.additions + $1.deletions },
+        // Collapsed (generated, lock) files are not review work: they count in neither number.
+        let counted = files.filter { $0.collapsedReason == nil }
+        return Self(
+            viewedLines: counted.filter { isViewed($0.path) }.reduce(0) { $0 + $1.additions + $1.deletions },
+            totalLines: counted.reduce(0) { $0 + $1.additions + $1.deletions },
             chaptersDone: chapters.filter { ReviewChapters.done($0, isViewed: isViewed) }.count,
             chapterCount: chapters.count
         )
